@@ -1,0 +1,60 @@
+[package]
+name = "sutra"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+description = "Code intelligence for manas — per-workspace structural index via tree-sitter"
+
+[[bin]]
+name = "sutra"
+path = "src/main.rs"
+
+[lib]
+name = "sutra"
+path = "src/lib.rs"
+
+[dependencies]
+# MCP (same as sangha/chitta)
+rmcp = { version = "1", features = ["server", "transport-io", "transport-streamable-http-server", "macros", "schemars"] }
+schemars = "1"
+
+# Database (same as sangha)
+rusqlite = { version = "0.32", features = ["bundled"] }
+parking_lot = "0.12"
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "net", "process"] }
+
+# HTTP
+axum = "0.8"
+tower = "0.5"
+tokio-util = "0.7"
+
+# Tree-sitter (spike-verified: all three coexist)
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-dart = "0.2"
+
+# Error handling (same as sangha)
+thiserror = "2"
+
+# IDs + time + serialization
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI + logging + env (same as sangha)
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+
+# Hashing
+blake3 = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"

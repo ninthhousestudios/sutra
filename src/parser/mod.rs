@@ -1,0 +1,127 @@
+pub mod rust;
+
+use crate::error::Result;
+
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    pub file_path: String,
+    pub language: String,
+    pub symbols: Vec<ExtractedSymbol>,
+    pub references: Vec<ExtractedRef>,
+    pub imports: Vec<ExtractedImport>,
+    pub parsed_ok: bool,
+    pub line_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractedSymbol {
+    pub qualified_name: String,
+    pub short_name: String,
+    pub kind: SymbolKind,
+    pub signature: Option<String>,
+    pub signature_hash: Option<String>,
+    pub visibility: Option<String>,
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    pub parent_qualified_name: Option<String>,
+    pub docstring: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Struct,
+    Enum,
+    Trait,
+    Impl,
+    Module,
+    Const,
+    Static,
+    TypeAlias,
+    Macro,
+    Class,
+    Mixin,
+    Extension,
+}
+
+impl SymbolKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Trait => "trait",
+            Self::Impl => "impl",
+            Self::Module => "module",
+            Self::Const => "const",
+            Self::Static => "static",
+            Self::TypeAlias => "type_alias",
+            Self::Macro => "macro",
+            Self::Class => "class",
+            Self::Mixin => "mixin",
+            Self::Extension => "extension",
+        }
+    }
+}
+
+impl std::fmt::Display for SymbolKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractedRef {
+    pub name: String,
+    pub line: usize,
+    pub col: usize,
+    pub context_kind: RefContextKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefContextKind {
+    Call,
+    TypeUse,
+    Import,
+    FieldAccess,
+    PatternBind,
+    Other,
+}
+
+impl RefContextKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::TypeUse => "type_use",
+            Self::Import => "import",
+            Self::FieldAccess => "field_access",
+            Self::PatternBind => "pattern_bind",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractedImport {
+    pub raw_path: String,
+    pub line: usize,
+}
+
+pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {
+    match language {
+        "rust" => rust::parse(source, file_path),
+        _ => Ok(ParseResult {
+            file_path: file_path.to_string(),
+            language: language.to_string(),
+            symbols: vec![],
+            references: vec![],
+            imports: vec![],
+            parsed_ok: false,
+            line_count: source.lines().count(),
+        }),
+    }
+}
