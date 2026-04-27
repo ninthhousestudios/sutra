@@ -1,0 +1,111 @@
+use std::path::PathBuf;
+
+use sutra::workspace::{self, WorkspaceEntry};
+
+fn entry(id: &str, root: &str, langs: &[&str]) -> WorkspaceEntry {
+    WorkspaceEntry {
+        id: id.to_string(),
+        root: PathBuf::from(root),
+        languages: langs.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// Write a raw TOML string to the temp file path and load it back.
+#[test]
+fn test_parse_valid_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    let toml = r#"
+[[workspace]]
+id = "alpha"
+root = "/code/alpha"
+languages = ["rust", "toml"]
+
+[[workspace]]
+id = "beta"
+root = "/code/beta"
+languages = ["dart"]
+"#;
+    std::fs::write(&path, toml).unwrap();
+
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert_eq!(config.workspace.len(), 2);
+
+    let alpha = &config.workspace[0];
+    assert_eq!(alpha.id, "alpha");
+    assert_eq!(alpha.root, PathBuf::from("/code/alpha"));
+    assert_eq!(alpha.languages, vec!["rust", "toml"]);
+
+    let beta = &config.workspace[1];
+    assert_eq!(beta.id, "beta");
+    assert_eq!(beta.languages, vec!["dart"]);
+}
+
+/// TOML with a missing required field (`languages`) should produce a parse
+/// error.
+#[test]
+fn test_parse_missing_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    // `languages` is required — omitting it should cause a deserialisation error.
+    let toml = r#"
+[[workspace]]
+id = "broken"
+root = "/code/broken"
+"#;
+    std::fs::write(&path, toml).unwrap();
+
+    let result = workspace::load_workspaces(&path);
+    assert!(
+        result.is_err(),
+        "expected error for missing `languages` field"
+    );
+}
+
+/// Adding the same workspace id twice must return an error on the second call.
+#[test]
+fn test_duplicate_workspace_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    workspace::add_workspace(&path, entry("dup", "/code/dup", &["rust"])).unwrap();
+    let result = workspace::add_workspace(&path, entry("dup", "/code/other", &["dart"]));
+    assert!(result.is_err(), "expected error for duplicate id");
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("dup"), "error message should mention the id");
+}
+
+/// Add a workspace, verify it is present, remove it, verify it is absent.
+#[test]
+fn test_add_remove_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    workspace::add_workspace(&path, entry("myws", "/code/myws", &["rust"])).unwrap();
+
+    let entries = workspace::list_workspaces(&path).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "myws");
+
+    workspace::remove_workspace(&path, "myws").unwrap();
+
+    let entries = workspace::list_workspaces(&path).unwrap();
+    assert!(entries.is_empty(), "workspace should be gone after removal");
+}
+
+/// Adding a workspace whose root path does not exist on disk should succeed —
+/// sutra validates semantics, not filesystem presence at registration time.
+#[test]
+fn test_nonexistent_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    let phantom = "/nonexistent/path/that/should/not/exist";
+    workspace::add_workspace(&path, entry("ghost", phantom, &["rust"])).unwrap();
+
+    let entries = workspace::list_workspaces(&path).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].root, PathBuf::from(phantom));
+}

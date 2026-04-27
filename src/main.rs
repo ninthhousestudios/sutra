@@ -1,7 +1,9 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use sutra::config::Config;
+use sutra::workspace::{self, WorkspaceEntry};
 
 #[derive(Parser)]
 #[command(name = "sutra", about = "Code intelligence for manas")]
@@ -72,13 +74,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             todo!("parse command — Issue 5")
         }
         Commands::Workspaces(cmd) => match cmd {
-            WorkspacesCmd::Add {
-                id: _,
-                root: _,
-                languages: _,
-            } => todo!("workspaces add — Issue 3"),
-            WorkspacesCmd::List => todo!("workspaces list — Issue 3"),
-            WorkspacesCmd::Remove { id: _ } => todo!("workspaces remove — Issue 3"),
+            WorkspacesCmd::Add { id, root, languages } => {
+                workspace::add_workspace(
+                    &config.workspaces_path,
+                    WorkspaceEntry {
+                        id: id.clone(),
+                        root: PathBuf::from(root),
+                        languages,
+                    },
+                )?;
+                println!("Workspace '{id}' added.");
+            }
+            WorkspacesCmd::List => {
+                let entries = workspace::list_workspaces(&config.workspaces_path)?;
+                if entries.is_empty() {
+                    println!("No workspaces registered.");
+                } else {
+                    for e in &entries {
+                        println!(
+                            "{}\t{}\t[{}]",
+                            e.id,
+                            e.root.display(),
+                            e.languages.join(", ")
+                        );
+                    }
+                }
+            }
+            WorkspacesCmd::Remove { id } => {
+                workspace::remove_workspace(&config.workspaces_path, &id)?;
+                println!("Workspace '{id}' removed.");
+            }
         },
         Commands::Health => {
             todo!("health command — Issue 7")
