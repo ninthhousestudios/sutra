@@ -488,6 +488,14 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Delete all refs belonging to a given file.
+    pub fn delete_refs_by_file(&self, file_id: i64) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
+        Ok(())
+    }
+
     /// Return the distinct set of file_ids that contain a reference to any of
     /// the given symbol_ids.
     pub fn find_files_referencing_symbols(&self, symbol_ids: &[i64]) -> Result<Vec<i64>> {

@@ -70,8 +70,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Serve { stdio: _ } => {
             todo!("serve command — Issue 7")
         }
-        Commands::Parse { workspace: _ } => {
-            todo!("parse command — Issue 5")
+        Commands::Parse { workspace: ws_id } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config).await?;
+            println!(
+                "Parsed {} files, {} symbols, {} refs ({} unresolved) in {}ms",
+                snapshot.files_parsed,
+                snapshot.symbols_extracted,
+                snapshot.refs_extracted,
+                snapshot.unresolved_count,
+                snapshot.duration_ms
+            );
         }
         Commands::Workspaces(cmd) => match cmd {
             WorkspacesCmd::Add { id, root, languages } => {
