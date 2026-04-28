@@ -392,8 +392,8 @@ impl Db {
             return Ok(exact);
         }
 
-        // FTS5 fuzzy fallback.
-        let fts_query = format!("{name}*");
+        let escaped = name.replace('"', "\"\"");
+        let fts_query = format!("\"{escaped}\"*");
         let ids: Vec<i64> = {
             let mut stmt = conn.prepare(
                 "SELECT symbol_id FROM symbols_fts
