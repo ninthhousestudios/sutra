@@ -1,0 +1,458 @@
+use crate::error::{Result, SutraError};
+use crate::parser::{
+    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+};
+use tree_sitter::{Node, Parser, TreeCursor};
+
+pub fn parse(source: &str, file_path: &str) -> Result<ParseResult> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_dart::LANGUAGE.into())
+        .map_err(|e| SutraError::Parse(format!("failed to set language: {e}")))?;
+
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| SutraError::Parse("tree-sitter returned no tree".to_string()))?;
+
+    let root = tree.root_node();
+    let parsed_ok = !root.has_error();
+    let src = source.as_bytes();
+
+    let mut symbols = Vec::new();
+    collect_symbols(&mut symbols, root, src, &[]);
+
+    let mut references = Vec::new();
+    collect_references(&mut references, root, src);
+
+    let mut imports = Vec::new();
+    collect_imports(&mut imports, root, src);
+
+    Ok(ParseResult {
+        file_path: file_path.to_string(),
+        language: "dart".to_string(),
+        symbols,
+        references,
+        imports,
+        parsed_ok,
+        line_count: source.lines().count(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Symbol extraction
+// ---------------------------------------------------------------------------
+
+fn collect_symbols(
+    symbols: &mut Vec<ExtractedSymbol>,
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" => {
+                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
+                {
+                    let name = sym.short_name.clone();
+                    symbols.push(sym);
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut ctx = name_context.to_vec();
+                        ctx.push(name);
+                        collect_symbols(symbols, body, src, &ctx);
+                    }
+                }
+                continue;
+            }
+            "mixin_declaration" => {
+                if let Some(sym) =
+                    extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
+                {
+                    let name = sym.short_name.clone();
+                    symbols.push(sym);
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut ctx = name_context.to_vec();
+                        ctx.push(name);
+                        collect_symbols(symbols, body, src, &ctx);
+                    }
+                }
+                continue;
+            }
+            "extension_declaration" => {
+                if let Some(sym) =
+                    extract_named_symbol(child, src, name_context, SymbolKind::Extension)
+                {
+                    let name = sym.short_name.clone();
+                    symbols.push(sym);
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut ctx = name_context.to_vec();
+                        ctx.push(name);
+                        collect_symbols(symbols, body, src, &ctx);
+                    }
+                }
+                continue;
+            }
+            "enum_declaration" => {
+                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Enum)
+                {
+                    symbols.push(sym);
+                }
+            }
+            // Top-level function declarations
+            "function_declaration" => {
+                // signature field holds the function_signature node
+                let sig_node = child
+                    .child_by_field_name("signature")
+                    .unwrap_or(child);
+                let kind = if name_context.is_empty() {
+                    SymbolKind::Function
+                } else {
+                    SymbolKind::Method
+                };
+                if let Some(sym) = extract_fn_symbol(sig_node, child, src, name_context, kind) {
+                    symbols.push(sym);
+                }
+            }
+            // Methods and getters/setters inside class/mixin/extension bodies
+            "method_declaration" => {
+                // signature field is a method_signature (wrapping function_signature/getter_signature/setter_signature)
+                let sig_node = child
+                    .child_by_field_name("signature")
+                    .unwrap_or(child);
+                if let Some(sym) =
+                    extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
+                {
+                    symbols.push(sym);
+                }
+            }
+            "type_alias" => {
+                if let Some(sym) = extract_type_alias(child, src, name_context) {
+                    symbols.push(sym);
+                }
+            }
+            _ => {
+                collect_symbols(symbols, child, src, name_context);
+            }
+        }
+    }
+}
+
+/// Extract a symbol where the name is in the `name` field of `node`.
+fn extract_named_symbol(
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+    kind: SymbolKind,
+) -> Option<ExtractedSymbol> {
+    let short_name = node.child_by_field_name("name")?.utf8_text(src).ok()?.to_string();
+
+    build_symbol(node, src, name_context, short_name, kind, None, None)
+}
+
+/// Extract a function symbol. `sig_node` carries name/params/return_type fields;
+/// `span_node` is used for position (the outer function_declaration).
+fn extract_fn_symbol(
+    sig_node: Node,
+    span_node: Node,
+    src: &[u8],
+    name_context: &[String],
+    kind: SymbolKind,
+) -> Option<ExtractedSymbol> {
+    let short_name = sig_node
+        .child_by_field_name("name")?
+        .utf8_text(src)
+        .ok()?
+        .to_string();
+    let (signature, signature_hash) = build_fn_signature(sig_node, src, &short_name);
+    build_symbol(
+        span_node,
+        src,
+        name_context,
+        short_name,
+        kind,
+        signature,
+        signature_hash,
+    )
+}
+
+/// Extract a method symbol from a method_signature node (which may wrap function_signature,
+/// getter_signature, or setter_signature).
+fn extract_method_symbol(
+    sig_node: Node,
+    span_node: Node,
+    src: &[u8],
+    name_context: &[String],
+    kind: SymbolKind,
+) -> Option<ExtractedSymbol> {
+    // method_signature wraps one of: function_signature, getter_signature, setter_signature
+    let inner = if sig_node.kind() == "method_signature" {
+        let mut c = sig_node.walk();
+        sig_node.children(&mut c).next().unwrap_or(sig_node)
+    } else {
+        sig_node
+    };
+
+    let short_name = inner
+        .child_by_field_name("name")?
+        .utf8_text(src)
+        .ok()?
+        .to_string();
+    let (signature, signature_hash) = build_fn_signature(inner, src, &short_name);
+    build_symbol(
+        span_node,
+        src,
+        name_context,
+        short_name,
+        kind,
+        signature,
+        signature_hash,
+    )
+}
+
+/// Extract a type_alias symbol. The grammar gives: (type_alias (type_identifier) ...).
+/// There is no `name` field — the name is the first `type_identifier` child.
+fn extract_type_alias(
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+) -> Option<ExtractedSymbol> {
+    let mut cursor = node.walk();
+    let short_name = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "type_identifier")?
+        .utf8_text(src)
+        .ok()?
+        .to_string();
+    build_symbol(node, src, name_context, short_name, SymbolKind::TypeAlias, None, None)
+}
+
+fn build_symbol(
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+    short_name: String,
+    kind: SymbolKind,
+    signature: Option<String>,
+    signature_hash: Option<String>,
+) -> Option<ExtractedSymbol> {
+    let qualified_name = build_qualified_name(name_context, &short_name);
+    let parent_qn = if name_context.is_empty() {
+        None
+    } else {
+        Some(name_context.join("::"))
+    };
+
+    let visibility = dart_visibility(&short_name);
+    let docstring = extract_docstring(node, src);
+
+    Some(ExtractedSymbol {
+        qualified_name,
+        short_name,
+        kind,
+        signature,
+        signature_hash,
+        visibility,
+        start_line: node.start_position().row + 1,
+        start_col: node.start_position().column,
+        end_line: node.end_position().row + 1,
+        end_col: node.end_position().column,
+        parent_qualified_name: parent_qn,
+        docstring,
+    })
+}
+
+fn build_qualified_name(context: &[String], name: &str) -> String {
+    if context.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}::{}", context.join("::"), name)
+    }
+}
+
+/// Dart visibility: names starting with `_` are private, everything else is public.
+fn dart_visibility(name: &str) -> Option<String> {
+    if name.starts_with('_') {
+        Some("private".to_string())
+    } else {
+        Some("public".to_string())
+    }
+}
+
+fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
+    let mut doc_lines: Vec<String> = Vec::new();
+
+    let mut sibling = node.prev_sibling();
+    while let Some(sib) = sibling {
+        if let Ok(text) = sib.utf8_text(src)
+            && sib.kind() == "comment" && text.starts_with("///")
+        {
+            let content = text
+                .strip_prefix("/// ")
+                .or_else(|| text.strip_prefix("///"))
+                .unwrap_or(text);
+            doc_lines.push(content.to_string());
+            sibling = sib.prev_sibling();
+            continue;
+        }
+        break;
+    }
+
+    if doc_lines.is_empty() {
+        None
+    } else {
+        doc_lines.reverse();
+        Some(doc_lines.join("\n"))
+    }
+}
+
+/// Build a function/method signature string. Returns (signature, blake3_hash).
+fn build_fn_signature(node: Node, src: &[u8], name: &str) -> (Option<String>, Option<String>) {
+    let params_text = node
+        .child_by_field_name("parameters")
+        .and_then(|n| n.utf8_text(src).ok())
+        .unwrap_or("()");
+
+    let ret_text = node
+        .child_by_field_name("return_type")
+        .and_then(|n| n.utf8_text(src).ok());
+
+    let sig = if let Some(ret) = ret_text {
+        format!("{} {}{}", ret.trim(), name, params_text)
+    } else {
+        format!("{}{}", name, params_text)
+    };
+
+    let hash = blake3::hash(sig.as_bytes()).to_hex().to_string();
+    (Some(sig), Some(hash))
+}
+
+// ---------------------------------------------------------------------------
+// Reference extraction
+// ---------------------------------------------------------------------------
+
+fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
+    let mut cursor = node.walk();
+    walk_refs_recursive(refs, &mut cursor, src);
+}
+
+fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
+    let node = cursor.node();
+
+    if node.kind() == "identifier"
+        && !is_definition_name(node)
+        && let Ok(name) = node.utf8_text(src)
+    {
+        refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind: classify_ref_context(node),
+        });
+    }
+
+    if cursor.goto_first_child() {
+        loop {
+            walk_refs_recursive(refs, cursor, src);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
+}
+
+fn is_definition_name(node: Node) -> bool {
+    if let Some(parent) = node.parent() {
+        let is_def = matches!(
+            parent.kind(),
+            "class_declaration"
+                | "mixin_declaration"
+                | "extension_declaration"
+                | "enum_declaration"
+                | "function_signature"
+                | "getter_signature"
+                | "setter_signature"
+        );
+        if is_def
+            && let Some(name_node) = parent.child_by_field_name("name")
+        {
+            return name_node.id() == node.id();
+        }
+    }
+    false
+}
+
+fn classify_ref_context(node: Node) -> RefContextKind {
+    if let Some(parent) = node.parent() {
+        match parent.kind() {
+            "call_expression" => return RefContextKind::Call,
+            "library_import" | "import_specification" | "import_or_export" => {
+                return RefContextKind::Import;
+            }
+            "member_expression" => return RefContextKind::FieldAccess,
+            "type_name" | "type_identifier" => return RefContextKind::TypeUse,
+            _ => {}
+        }
+    }
+    RefContextKind::Other
+}
+
+// ---------------------------------------------------------------------------
+// Import extraction
+// ---------------------------------------------------------------------------
+
+fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
+    let mut cursor = node.walk();
+    walk_imports_recursive(imports, &mut cursor, src);
+}
+
+fn walk_imports_recursive(
+    imports: &mut Vec<ExtractedImport>,
+    cursor: &mut TreeCursor,
+    src: &[u8],
+) {
+    let node = cursor.node();
+
+    if node.kind() == "import_or_export" {
+        extract_import_uri(node, src, imports);
+        return;
+    }
+
+    if cursor.goto_first_child() {
+        loop {
+            walk_imports_recursive(imports, cursor, src);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
+}
+
+/// Walk down import_or_export → library_import → import_specification → uri → string_literal
+/// to extract the raw URI string.
+fn extract_import_uri(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
+    let line = node.start_position().row + 1;
+    find_string_literal(node, src)
+        .into_iter()
+        .for_each(|raw_path| imports.push(ExtractedImport { raw_path, line }));
+}
+
+fn find_string_literal(node: Node, src: &[u8]) -> Vec<String> {
+    if node.kind() == "string_literal"
+        && let Ok(text) = node.utf8_text(src)
+    {
+        let raw = text.trim_matches(|c| c == '\'' || c == '"').to_string();
+        return vec![raw];
+    }
+    // Recurse into children
+    let mut result = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        result.extend(find_string_literal(child, src));
+        if !result.is_empty() {
+            break; // one import path per import_or_export
+        }
+    }
+    result
+}

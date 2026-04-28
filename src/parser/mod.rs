@@ -1,3 +1,4 @@
+pub mod dart;
 pub mod rust;
 
 use crate::error::Result;
@@ -113,6 +114,7 @@ pub struct ExtractedImport {
 
 pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {
     match language {
+        "dart" => dart::parse(source, file_path),
         "rust" => rust::parse(source, file_path),
         _ => Ok(ParseResult {
             file_path: file_path.to_string(),
