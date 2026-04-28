@@ -174,6 +174,22 @@ impl Db {
         Ok(id)
     }
 
+    /// Fetch a single file row by id.
+    pub fn file_by_id(&self, id: i64) -> Result<Option<FileRow>> {
+        let conn = self.conn.lock();
+        match conn.query_row(
+            "SELECT id, path, language, content_hash, line_count, parsed_ok,
+                    last_parsed, fan_in_files, blast_radius, pagerank
+             FROM files WHERE id = ?1",
+            params![id],
+            map_file_row,
+        ) {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(SutraError::Db(e)),
+        }
+    }
+
     /// Fetch a single file row by path.
     pub fn file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
         let conn = self.conn.lock();
@@ -415,10 +431,10 @@ impl Db {
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(SutraError::Db(e)),
                 }?
-            } {
-                if kind_filter.map_or(true, |k| sym.kind == k) {
-                    results.push(sym);
-                }
+            }
+                && kind_filter.is_none_or(|k| sym.kind == k)
+            {
+                results.push(sym);
             }
         }
         Ok(results)

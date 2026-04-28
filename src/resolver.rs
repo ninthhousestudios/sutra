@@ -146,11 +146,7 @@ fn pick_nearest_local<'a>(
     candidates
         .iter()
         .min_by_key(|s| {
-            if s.start_line > ref_line {
-                s.start_line - ref_line
-            } else {
-                ref_line - s.start_line
-            }
+            s.start_line.abs_diff(ref_line)
         })
         .copied()
 }
@@ -213,10 +209,10 @@ fn find_via_imports(
         }
 
         // Final fallback: just match short_name from this import context.
-        if last_segment == name {
-            if let Some((id, _, _)) = all_symbols.iter().find(|(_, _, sn)| sn == name) {
-                return Some(*id);
-            }
+        if last_segment == name
+            && let Some((id, _, _)) = all_symbols.iter().find(|(_, _, sn)| sn == name)
+        {
+            return Some(*id);
         }
     }
 

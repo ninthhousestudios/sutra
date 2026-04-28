@@ -455,11 +455,10 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         match pk {
             "call_expression" => return RefContextKind::Call,
             "use_declaration" | "use_as_clause" | "scoped_identifier" | "use_wildcard"
-            | "use_list" | "scoped_use_list" => {
-                // Check if we're inside a use_declaration
-                if is_inside_use(node) {
-                    return RefContextKind::Import;
-                }
+            | "use_list" | "scoped_use_list"
+                if is_inside_use(node) =>
+            {
+                return RefContextKind::Import;
             }
             "field_expression" => return RefContextKind::FieldAccess,
             _ => {}

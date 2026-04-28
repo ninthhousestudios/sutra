@@ -350,12 +350,11 @@ fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path:
                     continue;
                 }
                 stack.push(path);
-            } else if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if allowed_extensions.contains(&ext) {
-                        result.push(path);
-                    }
-                }
+            } else if path.is_file()
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && allowed_extensions.contains(&ext)
+            {
+                result.push(path);
             }
         }
     }
@@ -422,16 +421,15 @@ fn compute_rollups(db: &Db) -> Result<()> {
     for f in &files {
         let refs = db.find_refs_in_file(f.id)?;
         for r in refs {
-            if let Some(target_sym_id) = r.target_symbol_id {
-                if let Some(&target_file_id) = sym_to_file.get(&target_sym_id) {
-                    if target_file_id != f.id {
-                        fan_in_map
-                            .entry(target_file_id)
-                            .or_default()
-                            .insert(f.id);
-                        outgoing.entry(f.id).or_default().insert(target_file_id);
-                    }
-                }
+            if let Some(target_sym_id) = r.target_symbol_id
+                && let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+                && target_file_id != f.id
+            {
+                fan_in_map
+                    .entry(target_file_id)
+                    .or_default()
+                    .insert(f.id);
+                outgoing.entry(f.id).or_default().insert(target_file_id);
             }
         }
     }

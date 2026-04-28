@@ -1,1 +1,39 @@
-// sutra_outline — Issue 6
+use serde_json::json;
+
+use crate::db::Db;
+use crate::error::{Result, SutraError};
+
+pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {
+    let file = db.file_by_path(path)?.ok_or_else(|| SutraError::NotFound {
+        tool: "sutra_outline",
+        kind: format!("file `{path}`"),
+        next_action: "Check the path and try again. Use sutra_map to list available files."
+            .to_string(),
+    })?;
+
+    let symbols = db.find_symbols_by_file(file.id)?;
+
+    let items: Vec<_> = symbols
+        .iter()
+        .map(|s| {
+            json!({
+                "qualified_name": s.qualified_name,
+                "short_name": s.short_name,
+                "kind": s.kind,
+                "start_line": s.start_line,
+                "end_line": s.end_line,
+                "signature": s.signature,
+                "visibility": s.visibility,
+                "parent_symbol_id": s.parent_symbol_id,
+                "docstring": s.docstring,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "path": file.path,
+        "language": file.language,
+        "symbols": items,
+        "total": items.len(),
+    }))
+}

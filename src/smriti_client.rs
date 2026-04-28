@@ -1,5 +1,11 @@
 pub struct SmritiClient;
 
+impl Default for SmritiClient {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl SmritiClient {
     pub fn new() -> Self {
         Self
