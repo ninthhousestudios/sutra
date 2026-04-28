@@ -75,6 +75,29 @@ impl std::fmt::Display for SymbolKind {
     }
 }
 
+impl std::str::FromStr for SymbolKind {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "function" => Ok(Self::Function),
+            "method" => Ok(Self::Method),
+            "struct" => Ok(Self::Struct),
+            "enum" => Ok(Self::Enum),
+            "trait" => Ok(Self::Trait),
+            "impl" => Ok(Self::Impl),
+            "module" => Ok(Self::Module),
+            "const" => Ok(Self::Const),
+            "static" => Ok(Self::Static),
+            "type_alias" => Ok(Self::TypeAlias),
+            "macro" => Ok(Self::Macro),
+            "class" => Ok(Self::Class),
+            "mixin" => Ok(Self::Mixin),
+            "extension" => Ok(Self::Extension),
+            _ => Err(format!("unknown symbol kind: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractedRef {
     pub name: String,
@@ -102,6 +125,21 @@ impl RefContextKind {
             Self::FieldAccess => "field_access",
             Self::PatternBind => "pattern_bind",
             Self::Other => "other",
+        }
+    }
+}
+
+impl std::str::FromStr for RefContextKind {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "call" => Ok(Self::Call),
+            "type_use" => Ok(Self::TypeUse),
+            "import" => Ok(Self::Import),
+            "field_access" => Ok(Self::FieldAccess),
+            "pattern_bind" => Ok(Self::PatternBind),
+            "other" => Ok(Self::Other),
+            _ => Err(format!("unknown ref context kind: {s}")),
         }
     }
 }

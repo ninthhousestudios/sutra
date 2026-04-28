@@ -28,7 +28,9 @@ pub struct ParseSnapshot {
 const MAX_LINES: usize = 100_000;
 
 /// Directories to skip when walking the workspace.
-const SKIP_DIRS: &[&str] = &["target", "build", "node_modules"];
+const SKIP_DIRS: &[&str] = &[
+    "target", "build", "node_modules", ".git", "dist", "out", "vendor", "__pycache__", ".claude",
+];
 
 /// Map language name to file extensions.
 fn extensions_for_language(lang: &str) -> &'static [&'static str] {
@@ -45,7 +47,7 @@ fn extensions_for_language(lang: &str) -> &'static [&'static str] {
 pub async fn parse_workspace(
     workspace: &WorkspaceEntry,
     db: &Db,
-    _config: &Config,
+    config: &Config,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
 
@@ -219,9 +221,11 @@ pub async fn parse_workspace(
         }
     }
 
+    let _ = config; // reserved for parse_parallelism in a future version
+
     // --- Step 4: Resolve refs ---
-    // Load all symbols from DB for resolution.
-    let all_db_symbols = load_all_symbols(db)?;
+    // Load all symbols from DB for resolution (single query).
+    let all_db_symbols = db.all_symbols_summary()?;
     let mut unresolved_count: i64 = 0;
 
     for &file_id in &file_ids_needing_resolution {
@@ -282,9 +286,7 @@ pub async fn parse_workspace(
             &extracted_imports,
         );
 
-        // Delete old refs for this file and re-insert with resolution data.
-        // We already have the ref rows — delete them by file_id using a helper.
-        delete_refs_for_file(db, file_id)?;
+        db.delete_refs_by_file(file_id)?;
 
         for rr in &resolved {
             db.insert_ref(
@@ -362,29 +364,6 @@ fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path:
     // Sort for deterministic ordering.
     result.sort();
     result
-}
-
-/// Load all (id, qualified_name, short_name) tuples from the DB.
-fn load_all_symbols(db: &Db) -> Result<Vec<(i64, String, String)>> {
-    let files = db.all_files()?;
-    let mut all = Vec::new();
-    for f in &files {
-        let syms = db.find_symbols_by_file(f.id)?;
-        for s in syms {
-            all.push((s.id, s.qualified_name, s.short_name));
-        }
-    }
-    Ok(all)
-}
-
-/// Delete all refs for a given file_id.
-///
-/// The DB layer doesn't expose a direct "delete refs by file_id" method, but
-/// since refs have ON DELETE CASCADE from files, we can't just delete the file.
-/// Instead we use a raw approach via the existing API: we know the ref IDs from
-/// `find_refs_in_file`. We'll add a helper method on Db for this.
-fn delete_refs_for_file(db: &Db, file_id: i64) -> Result<()> {
-    db.delete_refs_by_file(file_id)
 }
 
 /// Compute fan_in_files and blast_radius for every file in the DB.
@@ -485,35 +464,16 @@ fn bfs_blast_radius(
     visited.len() - 1
 }
 
-/// Parse a kind string back into a SymbolKind.
 fn parse_symbol_kind(s: &str) -> parser::SymbolKind {
-    match s {
-        "function" => parser::SymbolKind::Function,
-        "method" => parser::SymbolKind::Method,
-        "struct" => parser::SymbolKind::Struct,
-        "enum" => parser::SymbolKind::Enum,
-        "trait" => parser::SymbolKind::Trait,
-        "impl" => parser::SymbolKind::Impl,
-        "module" => parser::SymbolKind::Module,
-        "const" => parser::SymbolKind::Const,
-        "static" => parser::SymbolKind::Static,
-        "type_alias" => parser::SymbolKind::TypeAlias,
-        "macro" => parser::SymbolKind::Macro,
-        "class" => parser::SymbolKind::Class,
-        "mixin" => parser::SymbolKind::Mixin,
-        "extension" => parser::SymbolKind::Extension,
-        _ => parser::SymbolKind::Function, // fallback
-    }
+    s.parse().unwrap_or_else(|_| {
+        warn!(kind = s, "unknown symbol kind, defaulting to function");
+        parser::SymbolKind::Function
+    })
 }
 
-/// Parse a context_kind string back into a RefContextKind.
 fn parse_ref_context_kind(s: &str) -> parser::RefContextKind {
-    match s {
-        "call" => parser::RefContextKind::Call,
-        "type_use" => parser::RefContextKind::TypeUse,
-        "import" => parser::RefContextKind::Import,
-        "field_access" => parser::RefContextKind::FieldAccess,
-        "pattern_bind" => parser::RefContextKind::PatternBind,
-        _ => parser::RefContextKind::Other,
-    }
+    s.parse().unwrap_or_else(|_| {
+        warn!(kind = s, "unknown ref context kind, defaulting to other");
+        parser::RefContextKind::Other
+    })
 }

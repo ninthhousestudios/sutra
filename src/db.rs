@@ -161,16 +161,11 @@ impl Db {
                 last_parsed  = excluded.last_parsed",
             params![path, language, content_hash, line_count, parsed_ok as i64, now],
         )?;
-        let id = conn.last_insert_rowid();
-        // ON CONFLICT DO UPDATE reuses the existing rowid; fetch it explicitly.
-        if id == 0 {
-            let real_id: i64 = conn.query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![path],
-                |row| row.get(0),
-            )?;
-            return Ok(real_id);
-        }
+        let id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
         Ok(id)
     }
 
@@ -455,6 +450,57 @@ impl Db {
         let rows: rusqlite::Result<Vec<SymbolRow>> =
             stmt.query_map(params![file_id], map_symbol_row)?.collect();
         Ok(rows?)
+    }
+
+    /// Return (file_id, symbol_count) for all files in a single query.
+    pub fn symbol_counts_by_file(&self) -> Result<std::collections::HashMap<i64, i64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, COUNT(*) FROM symbols GROUP BY file_id",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?.into_iter().collect())
+    }
+
+    /// Load all (id, qualified_name, short_name) tuples in a single query.
+    pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, qualified_name, short_name FROM symbols",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, String, String)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Resolve a symbol by name: try qualified_name first, then short_name lookup.
+    pub fn resolve_symbol(&self, name: &str, kind: Option<&str>) -> Result<Option<SymbolRow>> {
+        if let Some(sym) = self.symbol_by_qualified_name(name)? {
+            return Ok(Some(sym));
+        }
+        let mut results = self.find_symbols_by_name(name, kind, 1)?;
+        Ok(if results.is_empty() { None } else { Some(results.swap_remove(0)) })
+    }
+
+    /// Find the narrowest symbol enclosing the given line in a file.
+    pub fn find_enclosing_symbol(&self, file_id: i64, line: i64) -> Result<Option<SymbolRow>> {
+        let symbols = self.find_symbols_by_file(file_id)?;
+        let mut best: Option<&SymbolRow> = None;
+        for s in &symbols {
+            if s.start_line <= line && line <= s.end_line {
+                match best {
+                    None => best = Some(s),
+                    Some(prev) if (s.end_line - s.start_line) < (prev.end_line - prev.start_line) => {
+                        best = Some(s);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(best.cloned())
     }
 
     // -----------------------------------------------------------------------

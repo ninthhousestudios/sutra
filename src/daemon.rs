@@ -60,15 +60,27 @@ impl Daemon {
 
             if is_stale {
                 info!("workspace {} is stale, triggering reparse", ws.id);
-                match pipeline::parse_workspace(ws, &db, &self.config).await {
-                    Ok(snap) => {
+                let ws_clone = ws.clone();
+                let db_clone = Arc::clone(&db);
+                let config_clone = Arc::clone(&self.config);
+                let ws_id = ws.id.clone();
+                match tokio::task::spawn_blocking(move || {
+                    tokio::runtime::Handle::current()
+                        .block_on(pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone))
+                })
+                .await
+                {
+                    Ok(Ok(snap)) => {
                         info!(
                             "reparsed {}: {} files, {} symbols in {}ms",
-                            ws.id, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                            ws_id, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
                         );
                     }
+                    Ok(Err(e)) => {
+                        warn!("reparse failed for {}: {e}", ws_id);
+                    }
                     Err(e) => {
-                        warn!("reparse failed for {}: {e}", ws.id);
+                        warn!("reparse task panicked for {}: {e}", ws_id);
                     }
                 }
             }

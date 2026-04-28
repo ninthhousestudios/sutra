@@ -6,6 +6,7 @@ use crate::error::Result;
 pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(50);
     let files = db.all_files()?;
+    let sym_counts = db.symbol_counts_by_file()?;
 
     let mut entries: Vec<_> = files
         .into_iter()
@@ -14,7 +15,7 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
             None => true,
         })
         .map(|f| {
-            let symbol_count = db.find_symbols_by_file(f.id).map(|s| s.len()).unwrap_or(0) as i64;
+            let symbol_count = sym_counts.get(&f.id).copied().unwrap_or(0);
             let importance = symbol_count + f.fan_in_files * 2 + f.blast_radius;
             (f, symbol_count, importance)
         })

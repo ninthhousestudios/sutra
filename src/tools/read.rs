@@ -14,14 +14,7 @@ pub fn handle(
     let context_lines = context_lines.unwrap_or(5);
 
     let sym = db
-        .symbol_by_qualified_name(symbol)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            db.find_symbols_by_name(symbol, None, 1)
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        })
+        .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_read",
             kind: format!("symbol `{symbol}`"),
@@ -35,6 +28,17 @@ pub fn handle(
     })?;
 
     let abs_path = workspace_root.join(&file.path);
+
+    if !abs_path.starts_with(workspace_root) {
+        return Err(SutraError::InvalidArgument {
+            tool: "sutra_read",
+            argument: "symbol",
+            constraint: "file path must stay within workspace root".to_string(),
+            received: Some(file.path.clone()),
+            next_action: "This file path contains path traversal sequences. Report this issue."
+                .to_string(),
+        });
+    }
 
     if !abs_path.exists() {
         return Ok(json!({

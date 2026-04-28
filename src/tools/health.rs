@@ -20,10 +20,8 @@ pub fn handle(
     for ws in workspaces {
         let db = super::get_or_open_db(db_cache, &ws.id, &config.db_dir)?;
         let files = db.all_files()?;
-        let total_symbols: usize = files
-            .iter()
-            .map(|f| db.find_symbols_by_file(f.id).map(|s| s.len()).unwrap_or(0))
-            .sum();
+        let sym_counts = db.symbol_counts_by_file()?;
+        let total_symbols: i64 = sym_counts.values().sum();
         let parse_errors = files.iter().filter(|f| !f.parsed_ok).count();
         let last_parse = db.last_parse_time()?;
 

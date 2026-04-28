@@ -7,6 +7,5 @@ pub mod mcp;
 pub mod parser;
 pub mod pipeline;
 pub mod resolver;
-pub mod smriti_client;
 pub mod tools;
 pub mod workspace;

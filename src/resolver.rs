@@ -23,11 +23,6 @@ pub fn resolve_refs(
     all_symbols: &[(i64, String, String)],
     file_imports: &[ExtractedImport],
 ) -> Vec<ResolvedRef> {
-    // Pre-build a visited set for cycle detection when following import chains.
-    // In v0.1 we don't actually chase chains, but we track which import paths
-    // we've already examined to avoid looping on circular re-exports.
-    let mut _visited: HashSet<&str> = HashSet::new();
-
     refs.iter()
         .map(|r| resolve_single(r, file_symbols, all_symbols, file_imports))
         .collect()
@@ -103,12 +98,13 @@ fn resolve_single(
     }
 
     if global_matches.len() > 1 {
-        // Multiple global matches — prefer imported over non-imported, nearest
-        // line for same scope. Since we already failed the import filter above,
-        // just pick the first one (stable ordering from the DB).
+        // Multiple global matches — prefer the one with the shortest qualified name
+        // (heuristic: more specific matches tend to be shorter). Deterministic
+        // regardless of DB insertion order.
+        let best = global_matches.iter().min_by_key(|(_, qn, _)| qn.len()).unwrap();
         return ResolvedRef {
             original: r.clone(),
-            target_symbol_id: Some(global_matches[0].0),
+            target_symbol_id: Some(best.0),
             unresolved_name: None,
         };
     }

@@ -181,6 +181,18 @@ impl SutraServer {
         tools::get_or_open_db(&self.db_cache, ws_id, &self.config.db_dir).map_err(sutra_to_rmcp)
     }
 
+    fn require_analysis(&self) -> std::result::Result<(), ErrorData> {
+        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                    .to_string(),
+                None,
+            ));
+        }
+        Ok(())
+    }
+
     fn freshness(&self, db: &Db) -> serde_json::Value {
         let (as_of, is_stale) = match db.last_parse_time() {
             Ok(Some(ts)) => {
@@ -356,14 +368,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<RefsArgs>,
     ) -> Result<String, ErrorData> {
-        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
-                    .to_string(),
-                None,
-            ));
-        }
+        self.require_analysis()?;
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result = tools::refs::handle(&db, &args.symbol).map_err(sutra_to_rmcp)?;
@@ -377,14 +382,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CallsArgs>,
     ) -> Result<String, ErrorData> {
-        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
-                    .to_string(),
-                None,
-            ));
-        }
+        self.require_analysis()?;
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result = tools::calls::handle(
@@ -403,14 +401,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DiffImpactArgs>,
     ) -> Result<String, ErrorData> {
-        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
-                    .to_string(),
-                None,
-            ));
-        }
+        self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result = tools::diff_impact::handle(
@@ -429,14 +420,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
-        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
-                    .to_string(),
-                None,
-            ));
-        }
+        self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result =

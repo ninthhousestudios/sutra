@@ -7,14 +7,7 @@ use crate::error::{Result, SutraError};
 
 pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
     let sym = db
-        .symbol_by_qualified_name(symbol)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            db.find_symbols_by_name(symbol, None, 1)
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        })
+        .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_refs",
             kind: format!("symbol `{symbol}`"),

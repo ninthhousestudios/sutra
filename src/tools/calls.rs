@@ -14,14 +14,7 @@ pub fn handle(
     depth: Option<usize>,
 ) -> Result<serde_json::Value> {
     let sym = db
-        .symbol_by_qualified_name(symbol)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            db.find_symbols_by_name(symbol, None, 1)
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        })
+        .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_calls",
             kind: format!("symbol `{symbol}`"),
@@ -69,7 +62,7 @@ fn collect_callers(
                 .flatten()
                 .map(|f| f.path)
                 .unwrap_or_default();
-            let caller_sym = find_enclosing_symbol(db, r.file_id, r.line)?;
+            let caller_sym = db.find_enclosing_symbol(r.file_id, r.line)?;
             let caller_name = caller_sym.as_ref().map(|s| s.qualified_name.as_str()).unwrap_or("<unknown>");
             entries.push(json!({
                 "caller": caller_name,
@@ -149,23 +142,3 @@ fn collect_callees(
     Ok(entries)
 }
 
-fn find_enclosing_symbol(
-    db: &Db,
-    file_id: i64,
-    line: i64,
-) -> Result<Option<crate::db::SymbolRow>> {
-    let symbols = db.find_symbols_by_file(file_id)?;
-    let mut best: Option<&crate::db::SymbolRow> = None;
-    for s in &symbols {
-        if s.start_line <= line && line <= s.end_line {
-            match best {
-                None => best = Some(s),
-                Some(prev) if (s.end_line - s.start_line) < (prev.end_line - prev.start_line) => {
-                    best = Some(s);
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(best.cloned())
-}
