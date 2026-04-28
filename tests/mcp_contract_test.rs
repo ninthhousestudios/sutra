@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 
-use sutra::db::Db;
+use sutra::db::{Db, InsertSymbolParams};
 use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta};
 
 fn setup_test_db() -> (tempfile::TempDir, Db) {
@@ -9,22 +9,12 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
 
     db.upsert_file("src/main.rs", "rust", "hash1", 50, true).unwrap();
     let file = db.file_by_path("src/main.rs").unwrap().unwrap();
-    db.insert_symbol(
-        file.id,
-        "main",
-        "main",
-        "function",
-        Some("fn main()"),
-        None,
-        Some("pub"),
-        1,
-        0,
-        10,
-        0,
-        None,
-        None,
-    )
-    .unwrap();
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: file.id, qualified_name: "main", short_name: "main", kind: "function",
+        signature: Some("fn main()"), signature_hash: None, visibility: Some("pub"),
+        start_line: 1, start_col: 0, end_line: 10, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }).unwrap();
     db.insert_snapshot(1, 1, 0, 0, 100).unwrap();
 
     (dir, db)

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -129,6 +130,15 @@ pub struct CochangeArgs {
     pub window_days: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddRootArgs {
+    /// Absolute path to the workspace root directory
+    pub path: String,
+    /// Languages to index (default: ["rust", "dart"])
+    #[serde(default)]
+    pub languages: Option<Vec<String>>,
+}
+
 // ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
@@ -136,7 +146,7 @@ pub struct CochangeArgs {
 pub struct SutraServer {
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
     config: Arc<Config>,
-    workspaces: Arc<WorkspacesConfig>,
+    workspaces: Arc<RwLock<WorkspacesConfig>>,
     analysis_enabled: Arc<AtomicBool>,
     tool_router: ToolRouter<Self>,
 }
@@ -156,7 +166,7 @@ impl Clone for SutraServer {
 impl SutraServer {
     pub fn new(
         config: Arc<Config>,
-        workspaces: Arc<WorkspacesConfig>,
+        workspaces: Arc<RwLock<WorkspacesConfig>>,
         db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
     ) -> Self {
         Self {
@@ -172,7 +182,7 @@ impl SutraServer {
         &self,
         ws_id: &str,
     ) -> std::result::Result<crate::workspace::WorkspaceEntry, ErrorData> {
-        workspace::resolve_workspace(&self.workspaces, ws_id)
+        workspace::resolve_workspace(&self.workspaces.read(), ws_id)
             .cloned()
             .map_err(sutra_to_rmcp)
     }
@@ -239,7 +249,7 @@ impl SutraServer {
         #[allow(unused_variables)] Parameters(_args): Parameters<EmptyArgs>,
     ) -> Result<String, ErrorData> {
         let result =
-            tools::health::handle(&self.workspaces.workspace, &self.db_cache, &self.config)
+            tools::health::handle(&self.workspaces.read().workspace, &self.db_cache, &self.config)
                 .map_err(sutra_to_rmcp)?;
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
     }
@@ -427,6 +437,73 @@ impl SutraServer {
             tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
                 .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Register a workspace root and start indexing. \
+        Derives a workspace id from the directory name. If the workspace is already \
+        registered, triggers a reparse. Parsing runs in the background — other \
+        tools become available as soon as the parse completes.")]
+    pub async fn sutra_add_root(
+        &self,
+        Parameters(args): Parameters<AddRootArgs>,
+    ) -> Result<String, ErrorData> {
+        let root = PathBuf::from(&args.path);
+        if !root.is_absolute() || !root.is_dir() {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                format!("path must be an absolute directory that exists: {}", args.path),
+                None,
+            ));
+        }
+
+        let dir_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        let ws_id = dir_name.to_lowercase().replace(' ', "-");
+        let languages = args.languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+
+        let entry = workspace::WorkspaceEntry {
+            id: ws_id.clone(),
+            root: root.clone(),
+            languages: languages.clone(),
+        };
+
+        let already_exists = {
+            let config = self.workspaces.read();
+            config.workspace.iter().any(|w| w.id == ws_id)
+        };
+
+        if !already_exists {
+            workspace::add_workspace(&self.config.workspaces_path, entry.clone())
+                .map_err(sutra_to_rmcp)?;
+            self.workspaces.write().workspace.push(entry.clone());
+        }
+
+        let db = self.get_db(&ws_id)?;
+        let config = Arc::clone(&self.config);
+        let ws_id_bg = ws_id.clone();
+        tokio::spawn(async move {
+            match crate::pipeline::parse_workspace(&entry, &db, &config).await {
+                Ok(snap) => {
+                    tracing::info!(
+                        "add_root parse complete for {}: {} files, {} symbols in {}ms",
+                        ws_id_bg, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("add_root parse failed for {}: {e}", ws_id_bg);
+                }
+            }
+        });
+
+        let status = if already_exists { "exists, reparsing" } else { "registered, parsing" };
+        serde_json::to_string_pretty(&serde_json::json!({
+            "workspace": ws_id,
+            "root": root.display().to_string(),
+            "languages": languages,
+            "status": status,
+        })).map_err(json_to_rmcp)
     }
 }
 

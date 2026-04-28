@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sutra::db::Db;
+use sutra::db::{Db, InsertSymbolParams};
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -13,8 +13,12 @@ fn seed_file(db: &Db, path: &str) -> i64 {
 }
 
 fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
-    db.insert_symbol(file_id, qn, sn, kind, None, None, None, 1, 0, 10, 0, None, None)
-        .unwrap()
+    db.insert_symbol(&InsertSymbolParams {
+        file_id, qualified_name: qn, short_name: sn, kind,
+        signature: None, signature_hash: None, visibility: None,
+        start_line: 1, start_col: 0, end_line: 10, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -87,9 +91,12 @@ fn test_delete_file_cascade() {
 fn test_insert_and_lookup_symbol() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let sid = db
-        .insert_symbol(fid, "lib::bar", "bar", "function", Some("fn bar()"), None, Some("pub"), 1, 0, 5, 0, None, Some("docs"))
-        .unwrap();
+    let sid = db.insert_symbol(&InsertSymbolParams {
+        file_id: fid, qualified_name: "lib::bar", short_name: "bar", kind: "function",
+        signature: Some("fn bar()"), signature_hash: None, visibility: Some("pub"),
+        start_line: 1, start_col: 0, end_line: 5, end_col: 0,
+        parent_symbol_id: None, docstring: Some("docs"),
+    }).unwrap();
 
     let by_id = db.symbol_by_id(sid).unwrap().unwrap();
     assert_eq!(by_id.qualified_name, "lib::bar");
@@ -236,9 +243,12 @@ fn test_resolve_symbol_not_found() {
 fn test_find_enclosing_symbol_exact() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let sid = db
-        .insert_symbol(fid, "lib::outer", "outer", "function", None, None, None, 10, 0, 20, 0, None, None)
-        .unwrap();
+    let sid = db.insert_symbol(&InsertSymbolParams {
+        file_id: fid, qualified_name: "lib::outer", short_name: "outer", kind: "function",
+        signature: None, signature_hash: None, visibility: None,
+        start_line: 10, start_col: 0, end_line: 20, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
     assert_eq!(result.id, sid);
@@ -248,12 +258,18 @@ fn test_find_enclosing_symbol_exact() {
 fn test_find_enclosing_symbol_nested() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let outer_id = db
-        .insert_symbol(fid, "lib::outer", "outer", "function", None, None, None, 1, 0, 50, 0, None, None)
-        .unwrap();
-    let inner_id = db
-        .insert_symbol(fid, "lib::inner", "inner", "function", None, None, None, 10, 0, 20, 0, Some(outer_id), None)
-        .unwrap();
+    let outer_id = db.insert_symbol(&InsertSymbolParams {
+        file_id: fid, qualified_name: "lib::outer", short_name: "outer", kind: "function",
+        signature: None, signature_hash: None, visibility: None,
+        start_line: 1, start_col: 0, end_line: 50, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }).unwrap();
+    let inner_id = db.insert_symbol(&InsertSymbolParams {
+        file_id: fid, qualified_name: "lib::inner", short_name: "inner", kind: "function",
+        signature: None, signature_hash: None, visibility: None,
+        start_line: 10, start_col: 0, end_line: 20, end_col: 0,
+        parent_symbol_id: Some(outer_id), docstring: None,
+    }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
     assert_eq!(result.id, inner_id, "should find narrowest enclosing symbol");
@@ -263,8 +279,12 @@ fn test_find_enclosing_symbol_nested() {
 fn test_find_enclosing_symbol_outside() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    db.insert_symbol(fid, "lib::fn1", "fn1", "function", None, None, None, 1, 0, 20, 0, None, None)
-        .unwrap();
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: fid, qualified_name: "lib::fn1", short_name: "fn1", kind: "function",
+        signature: None, signature_hash: None, visibility: None,
+        start_line: 1, start_col: 0, end_line: 20, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }).unwrap();
 
     assert!(db.find_enclosing_symbol(fid, 100).unwrap().is_none());
 }

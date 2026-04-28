@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use sutra::config::Config;
 use sutra::db::Db;
 use sutra::workspace::{self, WorkspaceEntry};
@@ -138,16 +138,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 type DbCache = Arc<Mutex<HashMap<String, Arc<Db>>>>;
+type WsConfig = Arc<RwLock<workspace::WorkspacesConfig>>;
 
 fn load_workspaces_and_cache(
     config: &Config,
-) -> Result<(Arc<workspace::WorkspacesConfig>, DbCache), Box<dyn std::error::Error>> {
+) -> Result<(WsConfig, DbCache), Box<dyn std::error::Error>> {
     let ws_config = workspace::load_workspaces(&config.workspaces_path).unwrap_or_else(|_| {
         workspace::WorkspacesConfig {
             workspace: Vec::new(),
         }
     });
-    let ws_config = Arc::new(ws_config);
+    let ws_config = Arc::new(RwLock::new(ws_config));
     let db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>> = Arc::new(Mutex::new(HashMap::new()));
     Ok((ws_config, db_cache))
 }

@@ -1,16 +1,24 @@
 use std::path::PathBuf;
 
 use sutra::config::Config;
-use sutra::db::Db;
+use sutra::db::{Db, InsertSymbolParams};
 use sutra::pipeline;
 use sutra::tools::impact;
 use sutra::workspace::WorkspaceEntry;
+
+fn sym<'a>(file_id: i64, qn: &'a str, sn: &'a str, sig: Option<&'a str>, sl: i64, el: i64) -> InsertSymbolParams<'a> {
+    InsertSymbolParams {
+        file_id, qualified_name: qn, short_name: sn, kind: "function",
+        signature: sig, signature_hash: None, visibility: Some("pub"),
+        start_line: sl, start_col: 0, end_line: el, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }
+}
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("test", dir.path()).unwrap();
 
-    // Create files
     db.upsert_file("src/a.rs", "rust", "hash_a", 100, true).unwrap();
     db.upsert_file("src/b.rs", "rust", "hash_b", 50, true).unwrap();
     db.upsert_file("src/c.rs", "rust", "hash_c", 30, true).unwrap();
@@ -19,28 +27,13 @@ fn setup_db() -> (tempfile::TempDir, Db) {
     let file_b = db.file_by_path("src/b.rs").unwrap().unwrap();
     let file_c = db.file_by_path("src/c.rs").unwrap().unwrap();
 
-    // Symbol in file A: a function
-    db.insert_symbol(
-        file_a.id, "a::target_fn", "target_fn", "function",
-        Some("fn target_fn()"), None, Some("pub"), 10, 0, 20, 0, None, None,
-    ).unwrap();
-
+    db.insert_symbol(&sym(file_a.id, "a::target_fn", "target_fn", Some("fn target_fn()"), 10, 20)).unwrap();
     let target_sym = db.symbol_by_qualified_name("a::target_fn").unwrap().unwrap();
 
-    // Symbol in file B: calls target_fn
-    db.insert_symbol(
-        file_b.id, "b::caller_fn", "caller_fn", "function",
-        Some("fn caller_fn()"), None, Some("pub"), 5, 0, 15, 0, None, None,
-    ).unwrap();
-
-    // Ref from B to target_fn
+    db.insert_symbol(&sym(file_b.id, "b::caller_fn", "caller_fn", Some("fn caller_fn()"), 5, 15)).unwrap();
     db.insert_ref(file_b.id, Some(target_sym.id), None, 10, 0, "call").unwrap();
 
-    // Symbol in file C: calls caller_fn (transitive)
-    db.insert_symbol(
-        file_c.id, "c::indirect_caller", "indirect_caller", "function",
-        Some("fn indirect_caller()"), None, Some("pub"), 5, 0, 15, 0, None, None,
-    ).unwrap();
+    db.insert_symbol(&sym(file_c.id, "c::indirect_caller", "indirect_caller", Some("fn indirect_caller()"), 5, 15)).unwrap();
 
     let caller_sym = db.symbol_by_qualified_name("b::caller_fn").unwrap().unwrap();
     db.insert_ref(file_c.id, Some(caller_sym.id), None, 10, 0, "call").unwrap();
@@ -81,10 +74,7 @@ fn test_impact_high_fan_in() {
 
     db.upsert_file("src/core.rs", "rust", "hash_core", 200, true).unwrap();
     let core_file = db.file_by_path("src/core.rs").unwrap().unwrap();
-    db.insert_symbol(
-        core_file.id, "core::hot_fn", "hot_fn", "function",
-        Some("fn hot_fn()"), None, Some("pub"), 10, 0, 20, 0, None, None,
-    ).unwrap();
+    db.insert_symbol(&sym(core_file.id, "core::hot_fn", "hot_fn", Some("fn hot_fn()"), 10, 20)).unwrap();
     let hot_sym = db.symbol_by_qualified_name("core::hot_fn").unwrap().unwrap();
 
     // Create 20 files each calling hot_fn
@@ -92,10 +82,9 @@ fn test_impact_high_fan_in() {
         let path = format!("src/caller_{i}.rs");
         db.upsert_file(&path, "rust", &format!("hash_{i}"), 30, true).unwrap();
         let f = db.file_by_path(&path).unwrap().unwrap();
-        db.insert_symbol(
-            f.id, &format!("caller_{i}::fn_{i}"), &format!("fn_{i}"), "function",
-            None, None, None, 1, 0, 10, 0, None, None,
-        ).unwrap();
+        let qn = format!("caller_{i}::fn_{i}");
+        let sn = format!("fn_{i}");
+        db.insert_symbol(&sym(f.id, &qn, &sn, None, 1, 10)).unwrap();
         db.insert_ref(f.id, Some(hot_sym.id), None, 5, 0, "call").unwrap();
     }
 
@@ -158,9 +147,9 @@ fn test_fan_in_blast_radius_consistency() {
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
     let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 1, 0, 5, 0, None, None).unwrap();
-    db.insert_symbol(fb.id, "b::fn_b", "fn_b", "function", None, None, None, 1, 0, 5, 0, None, None).unwrap();
-    db.insert_symbol(fc.id, "c::fn_c", "fn_c", "function", None, None, None, 1, 0, 5, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", None, 1, 5)).unwrap();
+    db.insert_symbol(&sym(fb.id, "b::fn_b", "fn_b", None, 1, 5)).unwrap();
+    db.insert_symbol(&sym(fc.id, "c::fn_c", "fn_c", None, 1, 5)).unwrap();
 
     let sym_b = db.symbol_by_qualified_name("b::fn_b").unwrap().unwrap();
     let sym_c = db.symbol_by_qualified_name("c::fn_c").unwrap().unwrap();

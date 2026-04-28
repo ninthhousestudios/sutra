@@ -7,7 +7,7 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::db::Db;
+use crate::db::{Db, InsertSymbolParams};
 use crate::error::Result;
 use crate::parser;
 use crate::resolver;
@@ -135,21 +135,21 @@ fn parse_single_file(
 
     let mut symbols_extracted: i64 = 0;
     for sym in &parse_result.symbols {
-        db.insert_symbol(
+        db.insert_symbol(&InsertSymbolParams {
             file_id,
-            &sym.qualified_name,
-            &sym.short_name,
-            sym.kind.as_str(),
-            sym.signature.as_deref(),
-            sym.signature_hash.as_deref(),
-            sym.visibility.as_deref(),
-            sym.start_line as i64,
-            sym.start_col as i64,
-            sym.end_line as i64,
-            sym.end_col as i64,
-            None,
-            sym.docstring.as_deref(),
-        )?;
+            qualified_name: &sym.qualified_name,
+            short_name: &sym.short_name,
+            kind: sym.kind.as_str(),
+            signature: sym.signature.as_deref(),
+            signature_hash: sym.signature_hash.as_deref(),
+            visibility: sym.visibility.as_deref(),
+            start_line: sym.start_line as i64,
+            start_col: sym.start_col as i64,
+            end_line: sym.end_line as i64,
+            end_col: sym.end_col as i64,
+            parent_symbol_id: None,
+            docstring: sym.docstring.as_deref(),
+        })?;
         symbols_extracted += 1;
     }
 

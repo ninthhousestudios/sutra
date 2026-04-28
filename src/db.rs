@@ -48,6 +48,22 @@ pub struct SymbolRow {
     pub pagerank: Option<f64>,
 }
 
+pub struct InsertSymbolParams<'a> {
+    pub file_id: i64,
+    pub qualified_name: &'a str,
+    pub short_name: &'a str,
+    pub kind: &'a str,
+    pub signature: Option<&'a str>,
+    pub signature_hash: Option<&'a str>,
+    pub visibility: Option<&'a str>,
+    pub start_line: i64,
+    pub start_col: i64,
+    pub end_line: i64,
+    pub end_col: i64,
+    pub parent_symbol_id: Option<i64>,
+    pub docstring: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RefRow {
     pub id: i64,
@@ -255,25 +271,7 @@ impl Db {
     // symbols
     // -----------------------------------------------------------------------
 
-    /// Insert a symbol row and keep the FTS5 index in sync.
-    /// Returns the new symbol id.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_symbol(
-        &self,
-        file_id: i64,
-        qualified_name: &str,
-        short_name: &str,
-        kind: &str,
-        signature: Option<&str>,
-        signature_hash: Option<&str>,
-        visibility: Option<&str>,
-        start_line: i64,
-        start_col: i64,
-        end_line: i64,
-        end_col: i64,
-        parent_symbol_id: Option<i64>,
-        docstring: Option<&str>,
-    ) -> Result<i64> {
+    pub fn insert_symbol(&self, p: &InsertSymbolParams<'_>) -> Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO symbols (
@@ -283,28 +281,27 @@ impl Db {
                 parent_symbol_id, docstring
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
-                file_id,
-                qualified_name,
-                short_name,
-                kind,
-                signature,
-                signature_hash,
-                visibility,
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-                parent_symbol_id,
-                docstring,
+                p.file_id,
+                p.qualified_name,
+                p.short_name,
+                p.kind,
+                p.signature,
+                p.signature_hash,
+                p.visibility,
+                p.start_line,
+                p.start_col,
+                p.end_line,
+                p.end_col,
+                p.parent_symbol_id,
+                p.docstring,
             ],
         )?;
         let id = conn.last_insert_rowid();
 
-        // Manual FTS5 sync.
         conn.execute(
             "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
              VALUES (?1, ?2, ?3, ?4)",
-            params![id, short_name, qualified_name, docstring],
+            params![id, p.short_name, p.qualified_name, p.docstring],
         )?;
 
         Ok(id)

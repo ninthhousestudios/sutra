@@ -1,10 +1,19 @@
-use sutra::db::Db;
+use sutra::db::{Db, InsertSymbolParams};
 use sutra::tools::calls;
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("test", dir.path()).unwrap();
     (dir, db)
+}
+
+fn sym<'a>(file_id: i64, qn: &'a str, sn: &'a str, sl: i64, el: i64) -> InsertSymbolParams<'a> {
+    InsertSymbolParams {
+        file_id, qualified_name: qn, short_name: sn, kind: "function",
+        signature: None, signature_hash: None, visibility: None,
+        start_line: sl, start_col: 0, end_line: el, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+    }
 }
 
 fn setup_chain() -> (tempfile::TempDir, Db) {
@@ -18,9 +27,9 @@ fn setup_chain() -> (tempfile::TempDir, Db) {
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
     let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
-    db.insert_symbol(fb.id, "b::fn_b", "fn_b", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
-    db.insert_symbol(fc.id, "c::fn_c", "fn_c", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", 1, 20)).unwrap();
+    db.insert_symbol(&sym(fb.id, "b::fn_b", "fn_b", 1, 20)).unwrap();
+    db.insert_symbol(&sym(fc.id, "c::fn_c", "fn_c", 1, 20)).unwrap();
 
     let sym_b = db.symbol_by_qualified_name("b::fn_b").unwrap().unwrap();
     let sym_c = db.symbol_by_qualified_name("c::fn_c").unwrap().unwrap();
@@ -99,8 +108,8 @@ fn test_callees_single() {
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
-    db.insert_symbol(fb.id, "b::fn_b", "fn_b", "function", None, None, None, 1, 0, 10, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", 1, 20)).unwrap();
+    db.insert_symbol(&sym(fb.id, "b::fn_b", "fn_b", 1, 10)).unwrap();
 
     let sym_b = db.symbol_by_qualified_name("b::fn_b").unwrap().unwrap();
     db.insert_ref(fa.id, Some(sym_b.id), None, 10, 0, "call").unwrap();
@@ -121,7 +130,7 @@ fn test_callees_unresolved() {
     db.upsert_file("src/a.rs", "rust", "ha", 25, true).unwrap();
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", 1, 20)).unwrap();
     db.insert_ref(fa.id, None, Some("external_fn"), 10, 0, "call").unwrap();
 
     let result = calls::handle(&db, "a::fn_a", Some("callees"), Some(1)).unwrap();
@@ -146,7 +155,7 @@ fn test_callers_no_callers() {
 
     db.upsert_file("src/leaf.rs", "rust", "hl", 10, true).unwrap();
     let fl = db.file_by_path("src/leaf.rs").unwrap().unwrap();
-    db.insert_symbol(fl.id, "leaf::fn_leaf", "fn_leaf", "function", None, None, None, 1, 0, 10, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fl.id, "leaf::fn_leaf", "fn_leaf", 1, 10)).unwrap();
 
     let result = calls::handle(&db, "leaf::fn_leaf", Some("callers"), Some(1)).unwrap();
 
@@ -166,9 +175,9 @@ fn test_callees_ignores_refs_outside_body() {
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
     let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 5, 0, 15, 0, None, None).unwrap();
-    db.insert_symbol(fb.id, "b::fn_b", "fn_b", "function", None, None, None, 1, 0, 10, 0, None, None).unwrap();
-    db.insert_symbol(fc.id, "c::fn_c", "fn_c", "function", None, None, None, 1, 0, 10, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", 5, 15)).unwrap();
+    db.insert_symbol(&sym(fb.id, "b::fn_b", "fn_b", 1, 10)).unwrap();
+    db.insert_symbol(&sym(fc.id, "c::fn_c", "fn_c", 1, 10)).unwrap();
 
     let sym_b = db.symbol_by_qualified_name("b::fn_b").unwrap().unwrap();
     let sym_c = db.symbol_by_qualified_name("c::fn_c").unwrap().unwrap();
@@ -193,8 +202,8 @@ fn test_callers_cycle_detection() {
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
 
-    db.insert_symbol(fa.id, "a::fn_a", "fn_a", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
-    db.insert_symbol(fb.id, "b::fn_b", "fn_b", "function", None, None, None, 1, 0, 20, 0, None, None).unwrap();
+    db.insert_symbol(&sym(fa.id, "a::fn_a", "fn_a", 1, 20)).unwrap();
+    db.insert_symbol(&sym(fb.id, "b::fn_b", "fn_b", 1, 20)).unwrap();
 
     let sym_a = db.symbol_by_qualified_name("a::fn_a").unwrap().unwrap();
     let sym_b = db.symbol_by_qualified_name("b::fn_b").unwrap().unwrap();

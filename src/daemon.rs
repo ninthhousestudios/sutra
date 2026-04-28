@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::time::{Duration, interval};
 use tracing::{info, warn};
 
@@ -13,14 +13,14 @@ use crate::workspace::WorkspacesConfig;
 
 pub struct Daemon {
     config: Arc<Config>,
-    workspaces: Arc<WorkspacesConfig>,
+    workspaces: Arc<RwLock<WorkspacesConfig>>,
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
 }
 
 impl Daemon {
     pub fn new(
         config: Arc<Config>,
-        workspaces: Arc<WorkspacesConfig>,
+        workspaces: Arc<RwLock<WorkspacesConfig>>,
         db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
     ) -> Self {
         Self { config, workspaces, db_cache }
@@ -38,7 +38,8 @@ impl Daemon {
     }
 
     async fn check_stale_workspaces(&self) {
-        for ws in &self.workspaces.workspace {
+        let entries: Vec<_> = self.workspaces.read().workspace.clone();
+        for ws in &entries {
             let db = match tools::get_or_open_db(&self.db_cache, &ws.id, &self.config.db_dir) {
                 Ok(db) => db,
                 Err(e) => {
