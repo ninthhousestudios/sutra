@@ -16,7 +16,8 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
         })
         .map(|f| {
             let symbol_count = sym_counts.get(&f.id).copied().unwrap_or(0);
-            let importance = symbol_count + f.fan_in_files * 2 + f.blast_radius;
+            let pr_boost = (f.pagerank.unwrap_or(0.0) * 1000.0) as i64;
+            let importance = symbol_count + f.fan_in_files * 2 + f.blast_radius + pr_boost;
             (f, symbol_count, importance)
         })
         .collect();
@@ -34,6 +35,7 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
                 "symbols": sym_count,
                 "fan_in_files": f.fan_in_files,
                 "blast_radius": f.blast_radius,
+                "pagerank": f.pagerank,
                 "importance": importance,
             })
         })

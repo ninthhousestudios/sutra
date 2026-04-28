@@ -241,6 +241,22 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_file_pagerank(&self, file_id: i64, pagerank: f64) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE files SET pagerank = ?1 WHERE id = ?2",
+            params![pagerank, file_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_symbol_pagerank(&self, symbol_id: i64, pagerank: f64) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE symbols SET pagerank = ?1 WHERE id = ?2",
+            params![pagerank, symbol_id],
+        )?;
+        Ok(())
+    }
+
     /// Delete a file row. Foreign-key cascades remove symbols and refs.
     /// FTS5 rows must be deleted manually first.
     pub fn delete_file_cascade(&self, file_id: i64) -> Result<()> {

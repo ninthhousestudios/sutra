@@ -317,6 +317,7 @@ pub async fn parse_workspace(
     }
 
     compute_rollups(db)?;
+    compute_pagerank(db)?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
     db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
@@ -468,6 +469,115 @@ fn bfs_blast_radius(
 
     // Exclude start itself.
     visited.len() - 1
+}
+
+/// Compute PageRank on the file dependency graph (ref edges + import edges),
+/// then distribute file PageRank to symbols by incoming ref weight.
+fn compute_pagerank(db: &Db) -> Result<()> {
+    let files = db.all_files()?;
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    let file_ids: Vec<i64> = files.iter().map(|f| f.id).collect();
+    let n = file_ids.len();
+    let id_to_idx: HashMap<i64, usize> = file_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+    // Build outgoing adjacency from refs (same graph as compute_rollups).
+    let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    let mut sym_to_file: HashMap<i64, i64> = HashMap::new();
+    for f in &files {
+        for s in db.find_symbols_by_file(f.id)? {
+            sym_to_file.insert(s.id, f.id);
+        }
+    }
+    for f in &files {
+        let src_idx = id_to_idx[&f.id];
+        for r in db.find_refs_in_file(f.id)? {
+            if let Some(target_sym_id) = r.target_symbol_id
+                && let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+                && target_file_id != f.id
+                && let Some(&dst_idx) = id_to_idx.get(&target_file_id)
+            {
+                out_edges[src_idx].insert(dst_idx);
+            }
+        }
+    }
+
+    for (src, dst) in db.import_edges()? {
+        if let (Some(&si), Some(&di)) = (id_to_idx.get(&src), id_to_idx.get(&dst))
+            && si != di
+        {
+            out_edges[si].insert(di);
+        }
+    }
+
+    // Power iteration.
+    const DAMPING: f64 = 0.85;
+    const MAX_ITER: usize = 100;
+    const EPSILON: f64 = 1e-6;
+
+    let base = (1.0 - DAMPING) / n as f64;
+    let mut rank = vec![1.0 / n as f64; n];
+
+    for _ in 0..MAX_ITER {
+        let mut next = vec![base; n];
+        for (src, edges) in out_edges.iter().enumerate() {
+            if edges.is_empty() {
+                // Dangling node: distribute evenly.
+                let share = DAMPING * rank[src] / n as f64;
+                for r in next.iter_mut() {
+                    *r += share;
+                }
+            } else {
+                let share = DAMPING * rank[src] / edges.len() as f64;
+                for &dst in edges {
+                    next[dst] += share;
+                }
+            }
+        }
+
+        let max_delta = rank.iter().zip(next.iter()).map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+        rank = next;
+        if max_delta < EPSILON {
+            break;
+        }
+    }
+
+    // Write file pageranks.
+    for (i, &file_id) in file_ids.iter().enumerate() {
+        db.update_file_pagerank(file_id, rank[i])?;
+    }
+
+    // Symbol-level: distribute file PR to symbols by incoming ref count.
+    let all_refs_to: HashMap<i64, usize> = {
+        let mut counts: HashMap<i64, usize> = HashMap::new();
+        for f in &files {
+            for r in db.find_refs_in_file(f.id)? {
+                if let Some(target) = r.target_symbol_id {
+                    *counts.entry(target).or_default() += 1;
+                }
+            }
+        }
+        counts
+    };
+
+    for f in &files {
+        let file_pr = rank[id_to_idx[&f.id]];
+        let syms = db.find_symbols_by_file(f.id)?;
+        let total_incoming: usize = syms.iter().map(|s| all_refs_to.get(&s.id).copied().unwrap_or(0)).sum();
+        for s in &syms {
+            let sym_refs = all_refs_to.get(&s.id).copied().unwrap_or(0);
+            let sym_pr = if total_incoming > 0 {
+                file_pr * sym_refs as f64 / total_incoming as f64
+            } else {
+                file_pr / syms.len().max(1) as f64
+            };
+            db.update_symbol_pagerank(s.id, sym_pr)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_symbol_kind(s: &str) -> parser::SymbolKind {
