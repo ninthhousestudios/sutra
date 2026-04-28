@@ -316,7 +316,7 @@ pub async fn parse_workspace(
         skipped_count += skipped;
     }
 
-    compute_rollups(db)?;
+    compute_rollups(db, Some(&file_ids_needing_resolution))?;
     compute_pagerank(db)?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -373,61 +373,67 @@ fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path:
     result
 }
 
-/// Compute fan_in_files and blast_radius for every file in the DB.
-fn compute_rollups(db: &Db) -> Result<()> {
+type FileGraph = HashMap<i64, HashSet<i64>>;
+
+fn build_file_adjacency(
+    files: &[crate::db::FileRow],
+    db: &Db,
+) -> Result<(FileGraph, FileGraph)> {
+    let mut fan_in_map: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut outgoing: HashMap<i64, HashSet<i64>> = HashMap::new();
+
+    for f in files {
+        fan_in_map.entry(f.id).or_default();
+        outgoing.entry(f.id).or_default();
+    }
+
+    let sym_file_pairs = db.all_symbol_file_map()?;
+    let sym_to_file: HashMap<i64, i64> = sym_file_pairs.into_iter().collect();
+
+    for (src_file_id, target_sym_id) in db.all_resolved_refs()? {
+        if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+            && target_file_id != src_file_id
+        {
+            fan_in_map.entry(target_file_id).or_default().insert(src_file_id);
+            outgoing.entry(src_file_id).or_default().insert(target_file_id);
+        }
+    }
+
+    Ok((fan_in_map, outgoing))
+}
+
+/// Compute fan_in_files and blast_radius. When `changed_file_ids` is provided,
+/// only recomputes for changed files + their depth-1 neighbors.
+fn compute_rollups(db: &Db, changed_file_ids: Option<&HashSet<i64>>) -> Result<()> {
     let files = db.all_files()?;
     if files.is_empty() {
         return Ok(());
     }
 
-    // Build adjacency: for each file, which other files reference its symbols?
-    // ref.target_symbol_id → symbol.file_id gives us the "target file".
-    // ref.file_id is the "source file" (the file containing the reference).
+    let (fan_in_map, outgoing) = build_file_adjacency(&files, db)?;
 
-    // file_id → set of file_ids that reference symbols in it (fan_in).
-    let mut fan_in_map: HashMap<i64, HashSet<i64>> = HashMap::new();
-    // source_file_id → set of target_file_ids it references (outgoing edges).
-    let mut outgoing: HashMap<i64, HashSet<i64>> = HashMap::new();
-
-    for f in &files {
-        fan_in_map.entry(f.id).or_default();
-        outgoing.entry(f.id).or_default();
-    }
-
-    // Build a symbol_id → file_id lookup.
-    let mut sym_to_file: HashMap<i64, i64> = HashMap::new();
-    for f in &files {
-        let syms = db.find_symbols_by_file(f.id)?;
-        for s in syms {
-            sym_to_file.insert(s.id, f.id);
-        }
-    }
-
-    // Walk all refs to build edges.
-    for f in &files {
-        let refs = db.find_refs_in_file(f.id)?;
-        for r in refs {
-            if let Some(target_sym_id) = r.target_symbol_id
-                && let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
-                && target_file_id != f.id
-            {
-                fan_in_map
-                    .entry(target_file_id)
-                    .or_default()
-                    .insert(f.id);
-                outgoing.entry(f.id).or_default().insert(target_file_id);
+    let dirty: HashSet<i64> = match changed_file_ids {
+        Some(changed) => {
+            let mut dirty = changed.clone();
+            for &fid in changed {
+                if let Some(deps) = fan_in_map.get(&fid) {
+                    dirty.extend(deps);
+                }
+                if let Some(targets) = outgoing.get(&fid) {
+                    dirty.extend(targets);
+                }
             }
+            dirty
         }
-    }
+        None => files.iter().map(|f| f.id).collect(),
+    };
 
-    // Compute blast_radius via BFS, depth-capped at 3.
     for f in &files {
+        if !dirty.contains(&f.id) {
+            continue;
+        }
         let fan_in = fan_in_map.get(&f.id).map_or(0, |s| s.len()) as i64;
-
-        // BFS from this file through fan_in edges (files that depend on this file,
-        // then files that depend on those, etc.)
         let blast_radius = bfs_blast_radius(f.id, &fan_in_map, 3) as i64;
-
         db.update_rollups(f.id, fan_in, blast_radius)?;
     }
 
@@ -473,6 +479,7 @@ fn bfs_blast_radius(
 
 /// Compute PageRank on the file dependency graph (ref edges + import edges),
 /// then distribute file PageRank to symbols by incoming ref weight.
+/// Uses batch queries to avoid N+1 patterns.
 fn compute_pagerank(db: &Db) -> Result<()> {
     let files = db.all_files()?;
     if files.is_empty() {
@@ -483,24 +490,17 @@ fn compute_pagerank(db: &Db) -> Result<()> {
     let n = file_ids.len();
     let id_to_idx: HashMap<i64, usize> = file_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
-    // Build outgoing adjacency from refs (same graph as compute_rollups).
+    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
+    let all_refs = db.all_resolved_refs()?;
+
     let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-    let mut sym_to_file: HashMap<i64, i64> = HashMap::new();
-    for f in &files {
-        for s in db.find_symbols_by_file(f.id)? {
-            sym_to_file.insert(s.id, f.id);
-        }
-    }
-    for f in &files {
-        let src_idx = id_to_idx[&f.id];
-        for r in db.find_refs_in_file(f.id)? {
-            if let Some(target_sym_id) = r.target_symbol_id
-                && let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
-                && target_file_id != f.id
-                && let Some(&dst_idx) = id_to_idx.get(&target_file_id)
-            {
-                out_edges[src_idx].insert(dst_idx);
-            }
+    for &(src_file_id, target_sym_id) in &all_refs {
+        if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+            && target_file_id != src_file_id
+            && let Some(&src_idx) = id_to_idx.get(&src_file_id)
+            && let Some(&dst_idx) = id_to_idx.get(&target_file_id)
+        {
+            out_edges[src_idx].insert(dst_idx);
         }
     }
 
@@ -512,7 +512,6 @@ fn compute_pagerank(db: &Db) -> Result<()> {
         }
     }
 
-    // Power iteration.
     const DAMPING: f64 = 0.85;
     const MAX_ITER: usize = 100;
     const EPSILON: f64 = 1e-6;
@@ -524,7 +523,6 @@ fn compute_pagerank(db: &Db) -> Result<()> {
         let mut next = vec![base; n];
         for (src, edges) in out_edges.iter().enumerate() {
             if edges.is_empty() {
-                // Dangling node: distribute evenly.
                 let share = DAMPING * rank[src] / n as f64;
                 for r in next.iter_mut() {
                     *r += share;
@@ -544,36 +542,33 @@ fn compute_pagerank(db: &Db) -> Result<()> {
         }
     }
 
-    // Write file pageranks.
     for (i, &file_id) in file_ids.iter().enumerate() {
         db.update_file_pagerank(file_id, rank[i])?;
     }
 
-    // Symbol-level: distribute file PR to symbols by incoming ref count.
-    let all_refs_to: HashMap<i64, usize> = {
-        let mut counts: HashMap<i64, usize> = HashMap::new();
-        for f in &files {
-            for r in db.find_refs_in_file(f.id)? {
-                if let Some(target) = r.target_symbol_id {
-                    *counts.entry(target).or_default() += 1;
-                }
-            }
-        }
-        counts
-    };
+    // Symbol-level: distribute file PR by incoming ref count (batch).
+    let mut ref_counts: HashMap<i64, usize> = HashMap::new();
+    for &(_, target_sym_id) in &all_refs {
+        *ref_counts.entry(target_sym_id).or_default() += 1;
+    }
 
-    for f in &files {
-        let file_pr = rank[id_to_idx[&f.id]];
-        let syms = db.find_symbols_by_file(f.id)?;
-        let total_incoming: usize = syms.iter().map(|s| all_refs_to.get(&s.id).copied().unwrap_or(0)).sum();
-        for s in &syms {
-            let sym_refs = all_refs_to.get(&s.id).copied().unwrap_or(0);
+    // Group symbols by file (batch).
+    let mut file_symbols: HashMap<i64, Vec<(i64, usize)>> = HashMap::new();
+    for &(sym_id, file_id) in &sym_to_file.iter().map(|(&k, &v)| (k, v)).collect::<Vec<_>>() {
+        let rc = ref_counts.get(&sym_id).copied().unwrap_or(0);
+        file_symbols.entry(file_id).or_default().push((sym_id, rc));
+    }
+
+    for (&file_id, syms) in &file_symbols {
+        let file_pr = rank[id_to_idx[&file_id]];
+        let total_incoming: usize = syms.iter().map(|(_, rc)| rc).sum();
+        for &(sym_id, sym_refs) in syms {
             let sym_pr = if total_incoming > 0 {
                 file_pr * sym_refs as f64 / total_incoming as f64
             } else {
                 file_pr / syms.len().max(1) as f64
             };
-            db.update_symbol_pagerank(s.id, sym_pr)?;
+            db.update_symbol_pagerank(sym_id, sym_pr)?;
         }
     }
 

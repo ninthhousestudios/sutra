@@ -644,6 +644,28 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Batch: return (symbol_id, file_id) for every symbol.
+    pub fn all_symbol_file_map(&self) -> Result<Vec<(i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, file_id FROM symbols")?;
+        let rows: rusqlite::Result<Vec<(i64, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Batch: return (file_id, target_symbol_id) for every resolved ref.
+    pub fn all_resolved_refs(&self) -> Result<Vec<(i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, target_symbol_id FROM refs WHERE target_symbol_id IS NOT NULL",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
     // -----------------------------------------------------------------------
     // snapshots
     // -----------------------------------------------------------------------
