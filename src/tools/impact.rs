@@ -58,9 +58,15 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
         risk_factors.push("no external callers found".to_string());
     }
 
+    let sym_file_path = db
+        .file_by_id(sym.file_id)?
+        .map(|f| f.path)
+        .unwrap_or_default();
+
     Ok(json!({
         "symbol": sym.qualified_name,
         "kind": sym.kind,
+        "file": sym_file_path,
         "direct_callers": direct_caller_count,
         "transitive_symbols": visited_symbols.len(),
         "files_touched": files_touched,

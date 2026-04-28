@@ -10,6 +10,10 @@ description = "Code intelligence for manas — per-workspace structural index vi
 name = "sutra"
 path = "src/main.rs"
 
+[[bin]]
+name = "sutra-guard"
+path = "src/bin/guard.rs"
+
 [lib]
 name = "sutra"
 path = "src/lib.rs"

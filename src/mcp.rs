@@ -14,6 +14,7 @@ use serde::Deserialize;
 use crate::config::Config;
 use crate::db::Db;
 use crate::error::SutraError;
+use crate::guard;
 use crate::tools;
 use crate::workspace::{self, WorkspacesConfig};
 
@@ -319,14 +320,18 @@ impl SutraServer {
     }
 
     #[tool(description = "Blast radius analysis for a symbol. Counts direct callers, \
-        runs transitive BFS (depth 3), and computes risk level (low/medium/high).")]
+        runs transitive BFS (depth 3), and computes risk level (low/medium/high). \
+        Also acknowledges the file for the modification guard.")]
     pub async fn sutra_impact(
         &self,
         Parameters(args): Parameters<ImpactArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result = tools::impact::handle(&db, &args.symbol).map_err(sutra_to_rmcp)?;
+        if let Some(file_path) = result["file"].as_str() {
+            guard::touch_ack(&ws.root, file_path);
+        }
         self.wrap_response(&db, result)
     }
 

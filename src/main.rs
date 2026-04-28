@@ -31,8 +31,19 @@ enum Commands {
     /// Manage workspaces
     #[command(subcommand)]
     Workspaces(WorkspacesCmd),
+    /// Manage the modification guard hooks
+    #[command(subcommand)]
+    Guard(GuardCmd),
     /// Check daemon and database health
     Health,
+}
+
+#[derive(Subcommand)]
+enum GuardCmd {
+    /// Install sutra hooks into Claude Code settings (removes qartez hooks)
+    Install,
+    /// Remove sutra hooks from Claude Code settings
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -127,6 +138,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WorkspacesCmd::Remove { id } => {
                 workspace::remove_workspace(&config.workspaces_path, &id)?;
                 println!("Workspace '{id}' removed.");
+            }
+        },
+        Commands::Guard(cmd) => match cmd {
+            GuardCmd::Install => {
+                cmd_guard_install()?;
+            }
+            GuardCmd::Uninstall => {
+                cmd_guard_uninstall()?;
             }
         },
         Commands::Health => {
@@ -267,6 +286,144 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn cmd_guard_install() -> Result<(), Box<dyn std::error::Error>> {
+    let guard_bin = find_guard_binary()?;
+    let settings_path = claude_settings_path()?;
+
+    let mut settings = if settings_path.exists() {
+        let raw = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str::<serde_json::Value>(&raw)?
+    } else {
+        serde_json::json!({})
+    };
+
+    let hooks = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap();
+
+    // Remove qartez hooks first.
+    for event in &["PreToolUse", "SessionStart"] {
+        if let Some(arr) = hooks.get_mut(*event).and_then(|v| v.as_array_mut()) {
+            arr.retain(|entry| {
+                let cmd = entry
+                    .pointer("/hooks/0/command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                !cmd.contains("qartez")
+            });
+        }
+    }
+
+    let guard_str = guard_bin.to_string_lossy().to_string();
+
+    let routing_hook = serde_json::json!({
+        "matcher": "Glob|Grep",
+        "hooks": [{ "type": "command", "command": &guard_str, "timeout": 3000 }]
+    });
+    let mod_hook = serde_json::json!({
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": &guard_str, "timeout": 3000 }]
+    });
+
+    let pre_tool = hooks
+        .entry("PreToolUse")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .unwrap();
+
+    // Remove existing sutra hooks before re-adding.
+    pre_tool.retain(|entry| {
+        let cmd = entry
+            .pointer("/hooks/0/command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        !cmd.contains("sutra-guard")
+    });
+
+    pre_tool.push(routing_hook);
+    pre_tool.push(mod_hook);
+
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+
+    println!("Installed sutra-guard hooks to {}", settings_path.display());
+    println!("Guard binary: {guard_str}");
+    println!("Removed any existing qartez hooks.");
+    Ok(())
+}
+
+fn cmd_guard_uninstall() -> Result<(), Box<dyn std::error::Error>> {
+    let settings_path = claude_settings_path()?;
+    if !settings_path.exists() {
+        println!("No settings file found at {}", settings_path.display());
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(&settings_path)?;
+    let mut settings: serde_json::Value = serde_json::from_str(&raw)?;
+
+    if let Some(hooks) = settings.pointer_mut("/hooks")
+        && let Some(pre_tool) = hooks.pointer_mut("/PreToolUse").and_then(|v| v.as_array_mut())
+    {
+        pre_tool.retain(|entry| {
+            let cmd = entry
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            !cmd.contains("sutra-guard")
+        });
+    }
+
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    println!("Removed sutra-guard hooks from {}", settings_path.display());
+    Ok(())
+}
+
+fn find_guard_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Check common install locations.
+    let candidates = [
+        dirs::home_dir().map(|h| h.join(".cargo/bin/sutra-guard")),
+        Some(PathBuf::from("/usr/local/bin/sutra-guard")),
+        dirs::home_dir().map(|h| h.join(".local/bin/sutra-guard")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // Fallback: try which.
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("sutra-guard")
+        .output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    Err("sutra-guard binary not found. Run: cargo install --path . --bin sutra-guard".into())
+}
+
+fn claude_settings_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = dirs::home_dir().ok_or("cannot determine home directory")?;
+    Ok(home.join(".claude").join("settings.json"))
+}
+
+mod dirs {
+    use std::path::PathBuf;
+
+    pub fn home_dir() -> Option<PathBuf> {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
 }
 
 async fn shutdown_signal() {
