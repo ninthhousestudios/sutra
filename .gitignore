@@ -1,0 +1,8 @@
+# AgentOps session artifacts
+.agents/
+
+# Build output
+target/
+
+# Sutra ack files (guard protocol)
+.sutra/

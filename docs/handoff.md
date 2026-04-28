@@ -1,47 +1,44 @@
 # sutra — handoff
 
-Date: 2026-04-28 (post resolver improvement)
+Date: 2026-04-28 (post v0.1.5 implementation)
 
 ## status
 
-sutra v0.1.1 with 107 tests passing, zero clippy warnings. Binary at `~/.cargo/bin/sutra` (rebuilt this session). Sutra is now registered as an MCP server in Claude Code (`~/.claude.json`, stdio mode with `--stdio` flag). Smriti also added to MCP config (HTTP on 127.0.0.1:7333).
+sutra v0.1.5 with 107 tests passing, zero clippy warnings. Binary at `~/.cargo/bin/sutra`. MCP server registered in `~/.claude.json` (stdio mode). Guard hooks installed in `~/.claude/settings.json`. `~/.claude/CLAUDE.md` updated to route through sutra instead of qartez.
 
-### resolver improvement (this session, uncommitted)
+### v0.1.5 (this session)
 
-Kind-aware resolution: resolver now uses `context_kind` to filter symbol matches (TypeUse -> types, Call -> callables). Import and FieldAccess refs are skipped (not counted as unresolved). Brace-grouped Rust imports (`use std::{A, B}`) expanded into individual entries. Dart parser now captures `type_identifier` nodes.
+All 5 items from previous handoff implemented:
 
-Resolution rate on sutra's own codebase: **21% of resolvable refs** (1821 of 8341), with 1789 refs properly skipped. Precision improved — TypeUse refs no longer resolve to functions, Call refs no longer resolve to structs. The remaining ~79% unresolved are mostly local variables/params (72%) and external stdlib symbols (28%) — both out of scope for a structural index.
-
-Files changed: `resolver.rs`, `db.rs`, `pipeline.rs`, `parser/rust.rs`, `parser/dart.rs`, `main.rs`, `tools/parse.rs`, plus test files.
+1. **InsertSymbolParams struct** — Replaced 13-param `insert_symbol` with a params struct. Updated all 27 call sites across tests.
+2. **sutra_add_root MCP tool** — Auto-register + async parse a workspace. Agent calls it at session start via CLAUDE.md instruction.
+3. **PageRank population** — Power iteration on file dependency graph (damping=0.85, epsilon=1e-6). Distributed to symbols by incoming ref weight. Results: lib.rs 0.255, error.rs 0.152.
+4. **Guard hooks (routing + modification)** — `sutra-guard` binary. Routing guard denies Glob/Grep when sutra index exists. Modification guard blocks edits to load-bearing files (pagerank >= 0.05 or blast_radius >= 10) until `sutra_impact` is called (ack protocol with 600s TTL). Fail-open design.
+5. **Incremental rollup recompute** — Only recomputes changed files + depth-1 neighbors. Batch SQL queries eliminated N+1 patterns (~24% speedup).
 
 ## next steps
 
-### v0.1.5 candidates (pick any)
+### v0.2.0 candidates
 
-- **`sutra_add_root` MCP tool** — Auto-register + parse a workspace when the agent first connects. Like qartez's `qartez_add_root`. The agent calls it with cwd at session start, sutra registers the workspace and parses it. Makes sutra zero-setup for new repos. CLAUDE.md would instruct the agent to call it.
-- **PageRank population** — Schema has nullable `pagerank` columns, always NULL. Compute from the ref graph and populate. Low effort, improves `sutra_map` ranking quality immediately.
-- **Incremental rollup recompute** — Currently full-recompute every parse. Only recompute changed files + depth-1 dependents. Optimization, not urgent.
+- **Incremental parse** — Only re-parse files changed since last parse (by mtime or git diff). Currently full-reparse every time.
+- **Cross-workspace refs** — Resolve symbols across workspace boundaries (e.g., a library used by multiple projects).
+- **sutra_refactor_plan** — Generate ordered refactor steps with safety annotations, like qartez has.
+- **Test gap analysis** — Identify symbols with high blast radius but no test coverage.
+- **Watch mode** — File watcher that triggers incremental re-parse on save.
 
 ### decided against
 
 - **HTTP daemon** — Stdio gives per-project scoping for free. See chitta memory `019dd565-65f4`.
-- **Local variable extraction** — Would balloon symbol table ~10x for refs that are useless to cross-file tools (impact, refs, calls). Resolution rate would jump to ~70% but none of those refs are actionable.
-- **External crate indexing** — Parsing `~/.cargo/registry/src/` is a big scope expansion. A hardcoded stdlib list (~50 symbols) would help but resolved refs still point outside the workspace.
+- **Local variable extraction** — Would balloon symbol table ~10x for refs useless to cross-file tools.
+- **External crate indexing** — Big scope expansion for marginal gain.
 
 ### deferred from reviews (do later)
 
 - **Connection pool / read-write split** — Over-engineering for current scale.
 - **Rollups in SQL** — In-Rust computation works. Revisit at 10K+ files.
-- **InsertSymbolParams struct** — Replaces 13-param `insert_symbol`. Nice-to-have.
-
-## housekeeping
-
-- Changes from this session are **uncommitted** — commit the resolver improvement.
-- Stale worktree branches may still exist — `git worktree list` to check.
 
 ## related memories
 
 - Session summary: `019dd565-d8f2`
 - No-HTTP decision: `019dd565-65f4`
-- FTS5 bug observation: `019dd565-51c9`
 - Prior session summary (v0.1.1 review cleanup): `019dd1c1-d9e9`
