@@ -1,4 +1,7 @@
+pub mod calls;
+pub mod cochange;
 pub mod deps;
+pub mod diff_impact;
 pub mod find;
 pub mod grep;
 pub mod health;
@@ -7,6 +10,7 @@ pub mod map;
 pub mod outline;
 pub mod parse;
 pub mod read;
+pub mod refs;
 pub mod tools_meta;
 
 use std::collections::HashMap;

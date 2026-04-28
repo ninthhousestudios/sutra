@@ -96,6 +96,39 @@ pub struct ToolsMetaArgs {
     pub list: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RefsArgs {
+    pub workspace: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CallsArgs {
+    pub workspace: String,
+    pub symbol: String,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiffImpactArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub head: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CochangeArgs {
+    pub workspace: String,
+    pub path: String,
+    #[serde(default)]
+    pub window_days: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
@@ -315,6 +348,101 @@ impl SutraServer {
             args.list.unwrap_or(false),
         );
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+    }
+
+    #[tool(description = "All usages of a symbol across the codebase. \
+        Groups references by file with line numbers. Requires analysis tier.")]
+    pub async fn sutra_refs(
+        &self,
+        Parameters(args): Parameters<RefsArgs>,
+    ) -> Result<String, ErrorData> {
+        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                    .to_string(),
+                None,
+            ));
+        }
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::refs::handle(&db, &args.symbol).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Call hierarchy for a function. \
+        direction=callers (default) or callees. BFS to depth (default 1, max 3). \
+        Requires analysis tier.")]
+    pub async fn sutra_calls(
+        &self,
+        Parameters(args): Parameters<CallsArgs>,
+    ) -> Result<String, ErrorData> {
+        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                    .to_string(),
+                None,
+            ));
+        }
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::calls::handle(
+            &db,
+            &args.symbol,
+            args.direction.as_deref(),
+            args.depth,
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Blast radius of a git diff. \
+        Shows changed files, affected symbols, and their callers. Requires analysis tier.")]
+    pub async fn sutra_diff_impact(
+        &self,
+        Parameters(args): Parameters<DiffImpactArgs>,
+    ) -> Result<String, ErrorData> {
+        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                    .to_string(),
+                None,
+            ));
+        }
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::diff_impact::handle(
+            &db,
+            &ws.root,
+            args.base.as_deref(),
+            args.head.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Files that historically change together with a given file in git history. \
+        Requires analysis tier.")]
+    pub async fn sutra_cochange(
+        &self,
+        Parameters(args): Parameters<CochangeArgs>,
+    ) -> Result<String, ErrorData> {
+        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                    .to_string(),
+                None,
+            ));
+        }
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result =
+            tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
+                .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
     }
 }
 
