@@ -381,7 +381,7 @@ impl Db {
                             parent_symbol_id, docstring, pagerank
                      FROM symbols
                      WHERE short_name = ?1
-                     LIMIT ?3",
+                     LIMIT ?2",
                 )?,
             };
             let rows: rusqlite::Result<Vec<SymbolRow>> = match kind_filter {

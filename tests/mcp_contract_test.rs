@@ -1,0 +1,148 @@
+use std::sync::atomic::AtomicBool;
+
+use sutra::db::Db;
+use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta};
+
+fn setup_test_db() -> (tempfile::TempDir, Db) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("contract_test", dir.path()).unwrap();
+
+    db.upsert_file("src/main.rs", "rust", "hash1", 50, true).unwrap();
+    let file = db.file_by_path("src/main.rs").unwrap().unwrap();
+    db.insert_symbol(
+        file.id,
+        "main",
+        "main",
+        "function",
+        Some("fn main()"),
+        None,
+        Some("pub"),
+        1,
+        0,
+        10,
+        0,
+        None,
+        None,
+    )
+    .unwrap();
+    db.insert_snapshot(1, 1, 0, 0, 100).unwrap();
+
+    (dir, db)
+}
+
+#[test]
+fn test_map_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = map::handle(&db, None, None).unwrap();
+
+    let files = result["files"].as_array().expect("map result must have 'files' array");
+    assert!(!files.is_empty());
+
+    let entry = &files[0];
+    assert!(entry["path"].is_string(), "'path' must be a string");
+    assert!(entry["language"].is_string(), "'language' must be a string");
+    assert!(entry["symbols"].is_number(), "'symbols' must be a number");
+    assert!(entry["line_count"].is_number(), "'line_count' must be a number");
+}
+
+#[test]
+fn test_outline_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = outline::handle(&db, "src/main.rs").unwrap();
+
+    assert!(result["path"].is_string(), "'path' must be a string");
+    let symbols = result["symbols"].as_array().expect("outline result must have 'symbols' array");
+    assert!(!symbols.is_empty());
+
+    let sym = &symbols[0];
+    assert!(sym["qualified_name"].is_string(), "'qualified_name' must be a string");
+    assert!(sym["kind"].is_string(), "'kind' must be a string");
+    assert!(sym["start_line"].is_number(), "'start_line' must be a number");
+}
+
+#[test]
+fn test_find_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = find::handle(&db, "main", None, None).unwrap();
+
+    let matches = result["matches"].as_array().expect("find result must have 'matches' array");
+    assert!(!matches.is_empty());
+
+    let hit = &matches[0];
+    assert!(hit["qualified_name"].is_string());
+    assert!(hit["kind"].is_string());
+}
+
+#[test]
+fn test_grep_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = grep::handle(&db, "main", None, None).unwrap();
+
+    let matches = result["matches"].as_array().expect("grep result must have 'matches' array");
+    assert!(!matches.is_empty());
+
+    let hit = &matches[0];
+    assert!(hit["qualified_name"].is_string());
+    assert!(hit["kind"].is_string());
+}
+
+#[test]
+fn test_impact_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = impact::handle(&db, "main").unwrap();
+
+    assert!(result["symbol"].is_string(), "'symbol' must be a string");
+    assert!(result["risk"].is_string(), "'risk' must be a string");
+    assert!(result["direct_callers"].is_number(), "'direct_callers' must be a number");
+    assert!(result["files_touched"].is_number(), "'files_touched' must be a number");
+}
+
+#[test]
+fn test_deps_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = deps::handle(&db, Some("src/main.rs"), None).unwrap();
+
+    assert!(result["nodes"].is_array(), "'nodes' must be an array");
+    assert!(result["edges"].is_array(), "'edges' must be an array");
+}
+
+#[test]
+fn test_deps_global_contract() {
+    let (_dir, db) = setup_test_db();
+    let result = deps::handle(&db, None, None).unwrap();
+
+    assert!(result["edges"].is_array(), "'edges' must be an array");
+    assert!(result["total_edges"].is_number(), "'total_edges' must be a number");
+}
+
+#[test]
+fn test_tools_meta_contract() {
+    let flag = AtomicBool::new(false);
+    let result = tools_meta::handle(&flag, None, None, true);
+
+    let tiers = result["tiers"].as_object().expect("tools_meta must have 'tiers' object");
+    assert!(tiers.contains_key("core"), "tiers must include 'core'");
+    assert!(tiers.contains_key("analysis"), "tiers must include 'analysis'");
+
+    let core = &tiers["core"];
+    assert_eq!(core["enabled"], true, "core tier must always be enabled");
+    let tools = core["tools"].as_array().expect("core must list tools");
+    assert!(!tools.is_empty());
+}
+
+#[test]
+fn test_find_not_found() {
+    let (_dir, db) = setup_test_db();
+    let result = find::handle(&db, "nonexistent_symbol_xyz", None, None).unwrap();
+
+    let matches = result["matches"].as_array().unwrap();
+    assert!(matches.is_empty(), "nonexistent symbol should return empty matches, not an error");
+}
+
+#[test]
+fn test_outline_not_found() {
+    let (_dir, db) = setup_test_db();
+    let result = outline::handle(&db, "src/does_not_exist.rs");
+
+    assert!(result.is_err(), "outline of nonexistent file must return an error");
+}
