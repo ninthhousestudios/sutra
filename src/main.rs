@@ -82,12 +82,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
             let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config).await?;
+            let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
+            let resolved = resolvable - snapshot.unresolved_count;
+            let pct = if resolvable > 0 { resolved * 100 / resolvable } else { 0 };
             println!(
-                "Parsed {} files, {} symbols, {} refs ({} unresolved) in {}ms",
+                "Parsed {} files, {} symbols, {} refs ({} resolved of {} resolvable, {}%; {} skipped) in {}ms",
                 snapshot.files_parsed,
                 snapshot.symbols_extracted,
                 snapshot.refs_extracted,
-                snapshot.unresolved_count,
+                resolved,
+                resolvable,
+                pct,
+                snapshot.skipped_count,
                 snapshot.duration_ms
             );
         }

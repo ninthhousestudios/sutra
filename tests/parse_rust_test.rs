@@ -236,3 +236,20 @@ fn test_parse_error_tolerance() {
         );
     }
 }
+
+#[test]
+fn test_parse_braced_imports() {
+    let src = r#"
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Read, Write};
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    assert!(result.parsed_ok);
+
+    let paths: Vec<&str> = result.imports.iter().map(|i| i.raw_path.as_str()).collect();
+    assert!(paths.contains(&"std::collections::HashMap"), "paths: {paths:?}");
+    assert!(paths.contains(&"std::collections::HashSet"), "paths: {paths:?}");
+    assert!(paths.contains(&"std::io"), "self should expand to prefix: {paths:?}");
+    assert!(paths.contains(&"std::io::Read"), "paths: {paths:?}");
+    assert!(paths.contains(&"std::io::Write"), "paths: {paths:?}");
+}

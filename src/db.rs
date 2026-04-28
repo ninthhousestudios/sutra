@@ -464,14 +464,14 @@ impl Db {
         Ok(rows?.into_iter().collect())
     }
 
-    /// Load all (id, qualified_name, short_name) tuples in a single query.
-    pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String)>> {
+    /// Load all (id, qualified_name, short_name, kind) tuples in a single query.
+    pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, qualified_name, short_name FROM symbols",
+            "SELECT id, qualified_name, short_name, kind FROM symbols",
         )?;
-        let rows: rusqlite::Result<Vec<(i64, String, String)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        let rows: rusqlite::Result<Vec<(i64, String, String, String)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
             .collect();
         Ok(rows?)
     }

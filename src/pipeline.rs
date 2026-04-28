@@ -22,6 +22,8 @@ pub struct ParseSnapshot {
     pub parse_errors: i64,
     pub duration_ms: i64,
     pub unresolved_count: i64,
+    /// Refs where resolution was skipped (Import, FieldAccess contexts).
+    pub skipped_count: i64,
 }
 
 /// Maximum lines per file — files larger than this are skipped with a warning.
@@ -173,14 +175,14 @@ fn parse_single_file(
 fn resolve_file_refs(
     db: &Db,
     file_id: i64,
-    all_symbols: &[(i64, String, String)],
-) -> Result<i64> {
+    all_symbols: &[(i64, String, String, String)],
+) -> Result<(i64, i64)> {
     let file_symbols_rows = db.find_symbols_by_file(file_id)?;
     let file_refs = db.find_refs_in_file(file_id)?;
     let file_imports = db.imports_for_file(file_id)?;
 
     if file_refs.is_empty() {
-        return Ok(0);
+        return Ok((0, 0));
     }
 
     let extracted_symbols: Vec<parser::ExtractedSymbol> = file_symbols_rows
@@ -229,6 +231,7 @@ fn resolve_file_refs(
     db.delete_refs_by_file(file_id)?;
 
     let mut unresolved: i64 = 0;
+    let mut skipped: i64 = 0;
     for rr in &resolved {
         db.insert_ref(
             file_id,
@@ -238,12 +241,14 @@ fn resolve_file_refs(
             rr.original.col as i64,
             rr.original.context_kind.as_str(),
         )?;
-        if rr.target_symbol_id.is_none() {
+        if rr.skipped {
+            skipped += 1;
+        } else if rr.target_symbol_id.is_none() {
             unresolved += 1;
         }
     }
 
-    Ok(unresolved)
+    Ok((unresolved, skipped))
 }
 
 pub async fn parse_workspace(
@@ -304,8 +309,11 @@ pub async fn parse_workspace(
 
     let all_db_symbols = db.all_symbols_summary()?;
     let mut unresolved_count: i64 = 0;
+    let mut skipped_count: i64 = 0;
     for &file_id in &file_ids_needing_resolution {
-        unresolved_count += resolve_file_refs(db, file_id, &all_db_symbols)?;
+        let (unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
+        unresolved_count += unresolved;
+        skipped_count += skipped;
     }
 
     compute_rollups(db)?;
@@ -320,6 +328,7 @@ pub async fn parse_workspace(
         parse_errors,
         duration_ms,
         unresolved_count,
+        skipped_count,
     })
 }
 

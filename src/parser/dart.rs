@@ -338,7 +338,7 @@ fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
 fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
     let node = cursor.node();
 
-    if node.kind() == "identifier"
+    if (node.kind() == "identifier" || node.kind() == "type_identifier")
         && !is_definition_name(node)
         && let Ok(name) = node.utf8_text(src)
     {

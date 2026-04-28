@@ -1,55 +1,47 @@
 # sutra — handoff
 
-Date: 2026-04-27 (post-planning session)
+Date: 2026-04-28 (post resolver improvement)
 
 ## status
 
-Implementation plan complete and pre-mortem'd. No code yet. All blockers resolved.
+sutra v0.1.1 with 107 tests passing, zero clippy warnings. Binary at `~/.cargo/bin/sutra` (rebuilt this session). Sutra is now registered as an MCP server in Claude Code (`~/.claude.json`, stdio mode with `--stdio` flag). Smriti also added to MCP config (HTTP on 127.0.0.1:7333).
 
-- **Plan:** `.agents/plans/2026-04-27-sutra-v01-implementation.md` — 10 issues, 5 waves, ~5,100-5,500 LOC
-- **Pre-mortem:** `.agents/council/2026-04-27-pre-mortem-sutra-v01.md` — WARN verdict, all 10 amendments applied
-- **Design sketch:** `docs/sutra-sketch.md` — 686 lines, design of record
+### resolver improvement (this session, uncommitted)
 
-## what to pick up
+Kind-aware resolution: resolver now uses `context_kind` to filter symbol matches (TypeUse -> types, Call -> callables). Import and FieldAccess refs are skipped (not counted as unresolved). Brace-grouped Rust imports (`use std::{A, B}`) expanded into individual entries. Dart parser now captures `type_identifier` nodes.
 
-### start implementing — Issue 1 (project scaffold)
+Resolution rate on sutra's own codebase: **21% of resolvable refs** (1821 of 8341), with 1789 refs properly skipped. Precision improved — TypeUse refs no longer resolve to functions, Call refs no longer resolve to structs. The remaining ~79% unresolved are mostly local variables/params (72%) and external stdlib symbols (28%) — both out of scope for a structural index.
 
-No blockers remain. The tree-sitter compatibility spike passed (tree-sitter 0.25.10 + tree-sitter-rust 0.24.2 + tree-sitter-dart 0.2.0). All design decisions are resolved.
+Files changed: `resolver.rs`, `db.rs`, `pipeline.rs`, `parser/rust.rs`, `parser/dart.rs`, `main.rs`, `tools/parse.rs`, plus test files.
 
-Issue 1 creates: Cargo.toml, src/main.rs (clap CLI), src/lib.rs (all mod declarations), src/config.rs, src/error.rs, and stub files for every other module. Reference sangha's `main.rs`, `config.rs`, `error.rs` for the exact pattern.
+## next steps
 
-After Issue 1, Wave 2 opens: Issues 2 (db), 3 (workspace), 4 (Rust parser) can run in parallel.
+### v0.1.5 candidates (pick any)
 
-### key decisions already made
+- **`sutra_add_root` MCP tool** — Auto-register + parse a workspace when the agent first connects. Like qartez's `qartez_add_root`. The agent calls it with cwd at session start, sutra registers the workspace and parses it. Makes sutra zero-setup for new repos. CLAUDE.md would instruct the agent to call it.
+- **PageRank population** — Schema has nullable `pagerank` columns, always NULL. Compute from the ref graph and populate. Low effort, improves `sutra_map` ranking quality immediately.
+- **Incremental rollup recompute** — Currently full-recompute every parse. Only recompute changed files + depth-1 dependents. Optimization, not urgent.
 
-- **Standalone crate** (not Cargo workspace)
-- **HTTP daemon** (one instance, all workspaces; stdio as `--stdio` fallback)
-- **tree-sitter versions:** `tree-sitter = "0.25"`, `tree-sitter-rust = "0.24"`, `tree-sitter-dart = "0.2"`
-- **Resolver v0.1 scope:** local bindings + function params + module-level items + direct imports only (~60-70% resolution rate). Calibrate unresolved rate against sutra's own codebase.
+### decided against
 
-### pre-mortem amendments baked into the plan
+- **HTTP daemon** — Stdio gives per-project scoping for free. See chitta memory `019dd565-65f4`.
+- **Local variable extraction** — Would balloon symbol table ~10x for refs that are useless to cross-file tools (impact, refs, calls). Resolution rate would jump to ~70% but none of those refs are actionable.
+- **External crate indexing** — Parsing `~/.cargo/registry/src/` is a big scope expansion. A hardcoded stdlib list (~50 symbols) would help but resolved refs still point outside the workspace.
 
-The plan already includes all fixes from the pre-mortem. Key ones to remember:
-- Cross-file dirty marking in incremental reparse (Issue 5)
-- `sutra_tools` meta-tool for analysis tier gate (Issue 6)
-- `sutra_parse` MCP tool for agent-triggered reparse (Issue 6)
-- FTS5 manual sync, not triggers (Issue 2)
-- File size cap 100k lines, cycle detection in resolver (Issue 5)
-- `sutra_read` returns stale warning on deleted files, not crash (Issue 6)
+### deferred from reviews (do later)
+
+- **Connection pool / read-write split** — Over-engineering for current scale.
+- **Rollups in SQL** — In-Rust computation works. Revisit at 10K+ files.
+- **InsertSymbolParams struct** — Replaces 13-param `insert_symbol`. Nice-to-have.
+
+## housekeeping
+
+- Changes from this session are **uncommitted** — commit the resolver improvement.
+- Stale worktree branches may still exist — `git worktree list` to check.
 
 ## related memories
 
-- Session summary: `019dd066-6a22`
-- Plan observation: `019dd056-1d90`
-- Transport decision: `019dd058-87f3`
-- Pre-mortem observation: `019dd05c-7544`
-- tree-sitter spike: `019dd065-8ed0`
-- tree-sitter ABI gotcha: `019dd066-0a6c`
-- Design decisions (from prior session): `019dce02-fa04`, `019dce0f-0673`
-
-## related docs
-
-- `docs/sutra-sketch.md` — design of record
-- `.agents/plans/2026-04-27-sutra-v01-implementation.md` — implementation plan
-- `.agents/council/2026-04-27-pre-mortem-sutra-v01.md` — pre-mortem report
-- `/home/josh/soft/manas/docs/manas-architecture.md` — system context
+- Session summary: `019dd565-d8f2`
+- No-HTTP decision: `019dd565-65f4`
+- FTS5 bug observation: `019dd565-51c9`
+- Prior session summary (v0.1.1 review cleanup): `019dd1c1-d9e9`

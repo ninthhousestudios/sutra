@@ -16,6 +16,7 @@ pub async fn handle(ws: &WorkspaceEntry, db: &Db, config: &Config) -> Result<ser
         "refs_extracted": snapshot.refs_extracted,
         "parse_errors": snapshot.parse_errors,
         "unresolved_refs": snapshot.unresolved_count,
+        "skipped_refs": snapshot.skipped_count,
         "duration_ms": snapshot.duration_ms,
     }))
 }

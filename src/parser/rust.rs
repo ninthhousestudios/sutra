@@ -515,19 +515,21 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
 
     if node.kind() == "use_declaration" {
         if let Ok(text) = node.utf8_text(src) {
-            // Strip the "use " prefix and trailing ";"
             let raw = text
                 .strip_prefix("use ")
                 .unwrap_or(text)
                 .strip_suffix(';')
                 .unwrap_or(text)
                 .trim();
-            imports.push(ExtractedImport {
-                raw_path: raw.to_string(),
-                line: node.start_position().row + 1,
-            });
+            let line = node.start_position().row + 1;
+            for path in expand_braced_import(raw) {
+                imports.push(ExtractedImport {
+                    raw_path: path,
+                    line,
+                });
+            }
         }
-        return; // don't recurse into use_declaration children
+        return;
     }
 
     if cursor.goto_first_child() {
@@ -539,6 +541,61 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
         }
         cursor.goto_parent();
     }
+}
+
+/// Expand `std::collections::{HashMap, HashSet}` into individual paths.
+/// Handles `self` (e.g. `std::{self, io}` → `std` + `std::io`) and
+/// nested braces (one level deep).
+fn expand_braced_import(raw: &str) -> Vec<String> {
+    let Some(brace_start) = raw.find('{') else {
+        return vec![raw.to_string()];
+    };
+    let Some(brace_end) = raw.rfind('}') else {
+        return vec![raw.to_string()];
+    };
+
+    let prefix = raw[..brace_start].trim_end_matches("::");
+    let inner = &raw[brace_start + 1..brace_end];
+
+    let mut results = Vec::new();
+    for item in split_top_level(inner) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if item == "self" {
+            results.push(prefix.to_string());
+        } else if item.contains('{') {
+            // Nested brace group — recurse
+            let nested = format!("{prefix}::{item}");
+            results.extend(expand_braced_import(&nested));
+        } else {
+            results.push(format!("{prefix}::{item}"));
+        }
+    }
+    results
+}
+
+/// Split on commas at brace depth 0 (handles nested braces).
+fn split_top_level(s: &str) -> Vec<&str> {
+    let mut results = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                results.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        results.push(&s[start..]);
+    }
+    results
 }
 
 #[cfg(test)]
