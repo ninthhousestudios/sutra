@@ -9,7 +9,10 @@ use sutra::guard::{self, FileFacts, GuardConfig, HookInput};
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(_) => ExitCode::SUCCESS, // fail-open
+        Err(e) => {
+            eprintln!("sutra-guard: {e}");
+            ExitCode::SUCCESS // fail-open
+        }
     }
 }
 
@@ -56,8 +59,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Modification guard: only for edit/write tools.
     if !matches!(
-        hook.tool_name.as_str(),
-        "Edit" | "Write" | "MultiEdit" | "replace" | "write_file"
+        tool_lower.as_str(),
+        "edit" | "write" | "multiedit" | "replace" | "write_file"
     ) {
         return Ok(());
     }

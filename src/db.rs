@@ -241,19 +241,33 @@ impl Db {
         Ok(())
     }
 
-    pub fn update_file_pagerank(&self, file_id: i64, pagerank: f64) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE files SET pagerank = ?1 WHERE id = ?2",
-            params![pagerank, file_id],
-        )?;
+    pub fn batch_update_file_pagerank(&self, updates: &[(i64, f64)]) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = conn.prepare_cached(
+                "UPDATE files SET pagerank = ?1 WHERE id = ?2",
+            )?;
+            for &(file_id, pr) in updates {
+                stmt.execute(params![pr, file_id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
-    pub fn update_symbol_pagerank(&self, symbol_id: i64, pagerank: f64) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE symbols SET pagerank = ?1 WHERE id = ?2",
-            params![pagerank, symbol_id],
-        )?;
+    pub fn batch_update_symbol_pagerank(&self, updates: &[(i64, f64)]) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = conn.prepare_cached(
+                "UPDATE symbols SET pagerank = ?1 WHERE id = ?2",
+            )?;
+            for &(sym_id, pr) in updates {
+                stmt.execute(params![pr, sym_id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 

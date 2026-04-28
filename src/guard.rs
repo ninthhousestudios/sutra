@@ -228,7 +228,7 @@ pub fn ack_is_fresh(project_root: &Path, rel_path: &str, ttl_secs: u64) -> bool 
 
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
-    loop {
+    for _ in 0..20 {
         if current.join(".git").exists() {
             return Some(current);
         }
@@ -236,6 +236,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
             return None;
         }
     }
+    None
 }
 
 pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<String> {
@@ -244,5 +245,6 @@ pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<Str
     canonical_file
         .strip_prefix(&canonical_root)
         .ok()
+        .or_else(|| file_path.strip_prefix(project_root).ok())
         .map(|p| p.to_string_lossy().into_owned())
 }

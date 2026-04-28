@@ -316,8 +316,15 @@ pub async fn parse_workspace(
         skipped_count += skipped;
     }
 
-    compute_rollups(db, Some(&file_ids_needing_resolution))?;
-    compute_pagerank(db)?;
+    let files = db.all_files()?;
+    let adjacency = if !files.is_empty() {
+        Some(build_file_adjacency(&files, db)?)
+    } else {
+        None
+    };
+
+    compute_rollups_with_graph(db, &files, adjacency.as_ref(), Some(&file_ids_needing_resolution))?;
+    compute_pagerank(db, &files, adjacency.as_ref())?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
     db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
@@ -402,15 +409,24 @@ fn build_file_adjacency(
     Ok((fan_in_map, outgoing))
 }
 
-/// Compute fan_in_files and blast_radius. When `changed_file_ids` is provided,
-/// only recomputes for changed files + their depth-1 neighbors.
-fn compute_rollups(db: &Db, changed_file_ids: Option<&HashSet<i64>>) -> Result<()> {
-    let files = db.all_files()?;
+fn compute_rollups_with_graph(
+    db: &Db,
+    files: &[crate::db::FileRow],
+    adjacency: Option<&(FileGraph, FileGraph)>,
+    changed_file_ids: Option<&HashSet<i64>>,
+) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
 
-    let (fan_in_map, outgoing) = build_file_adjacency(&files, db)?;
+    let owned;
+    let (fan_in_map, outgoing) = match adjacency {
+        Some(pair) => (&pair.0, &pair.1),
+        None => {
+            owned = build_file_adjacency(files, db)?;
+            (&owned.0, &owned.1)
+        }
+    };
 
     let dirty: HashSet<i64> = match changed_file_ids {
         Some(changed) => {
@@ -428,12 +444,12 @@ fn compute_rollups(db: &Db, changed_file_ids: Option<&HashSet<i64>>) -> Result<(
         None => files.iter().map(|f| f.id).collect(),
     };
 
-    for f in &files {
+    for f in files {
         if !dirty.contains(&f.id) {
             continue;
         }
         let fan_in = fan_in_map.get(&f.id).map_or(0, |s| s.len()) as i64;
-        let blast_radius = bfs_blast_radius(f.id, &fan_in_map, 3) as i64;
+        let blast_radius = bfs_blast_radius(f.id, fan_in_map, 3) as i64;
         db.update_rollups(f.id, fan_in, blast_radius)?;
     }
 
@@ -479,9 +495,12 @@ fn bfs_blast_radius(
 
 /// Compute PageRank on the file dependency graph (ref edges + import edges),
 /// then distribute file PageRank to symbols by incoming ref weight.
-/// Uses batch queries to avoid N+1 patterns.
-fn compute_pagerank(db: &Db) -> Result<()> {
-    let files = db.all_files()?;
+/// Warm-starts from existing PageRank values when available.
+fn compute_pagerank(
+    db: &Db,
+    files: &[crate::db::FileRow],
+    adjacency: Option<&(FileGraph, FileGraph)>,
+) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
@@ -490,17 +509,28 @@ fn compute_pagerank(db: &Db) -> Result<()> {
     let n = file_ids.len();
     let id_to_idx: HashMap<i64, usize> = file_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
-    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
-    let all_refs = db.all_resolved_refs()?;
-
+    // Reuse adjacency graph if pre-built, otherwise compute from DB.
     let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-    for &(src_file_id, target_sym_id) in &all_refs {
-        if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
-            && target_file_id != src_file_id
-            && let Some(&src_idx) = id_to_idx.get(&src_file_id)
-            && let Some(&dst_idx) = id_to_idx.get(&target_file_id)
-        {
-            out_edges[src_idx].insert(dst_idx);
+    if let Some((_, outgoing)) = adjacency {
+        for (&src_id, targets) in outgoing {
+            if let Some(&si) = id_to_idx.get(&src_id) {
+                for &dst_id in targets {
+                    if let Some(&di) = id_to_idx.get(&dst_id) {
+                        out_edges[si].insert(di);
+                    }
+                }
+            }
+        }
+    } else {
+        let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
+        for (src_file_id, target_sym_id) in db.all_resolved_refs()? {
+            if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+                && target_file_id != src_file_id
+                && let Some(&src_idx) = id_to_idx.get(&src_file_id)
+                && let Some(&dst_idx) = id_to_idx.get(&target_file_id)
+            {
+                out_edges[src_idx].insert(dst_idx);
+            }
         }
     }
 
@@ -512,12 +542,27 @@ fn compute_pagerank(db: &Db) -> Result<()> {
         }
     }
 
+    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
+    let all_refs = db.all_resolved_refs()?;
+
     const DAMPING: f64 = 0.85;
     const MAX_ITER: usize = 100;
     const EPSILON: f64 = 1e-6;
 
     let base = (1.0 - DAMPING) / n as f64;
-    let mut rank = vec![1.0 / n as f64; n];
+
+    // Warm-start: use existing PageRank values if available.
+    let has_existing = files.iter().any(|f| f.pagerank.is_some());
+    let mut rank = if has_existing {
+        let mut r: Vec<f64> = files.iter().map(|f| f.pagerank.unwrap_or(1.0 / n as f64)).collect();
+        let sum: f64 = r.iter().sum();
+        if sum > 0.0 {
+            for v in &mut r { *v /= sum; }
+        }
+        r
+    } else {
+        vec![1.0 / n as f64; n]
+    };
 
     for _ in 0..MAX_ITER {
         let mut next = vec![base; n];
@@ -542,23 +587,22 @@ fn compute_pagerank(db: &Db) -> Result<()> {
         }
     }
 
-    for (i, &file_id) in file_ids.iter().enumerate() {
-        db.update_file_pagerank(file_id, rank[i])?;
-    }
+    let file_updates: Vec<(i64, f64)> = file_ids.iter().enumerate().map(|(i, &fid)| (fid, rank[i])).collect();
+    db.batch_update_file_pagerank(&file_updates)?;
 
-    // Symbol-level: distribute file PR by incoming ref count (batch).
+    // Symbol-level: distribute file PR by incoming ref count.
     let mut ref_counts: HashMap<i64, usize> = HashMap::new();
     for &(_, target_sym_id) in &all_refs {
         *ref_counts.entry(target_sym_id).or_default() += 1;
     }
 
-    // Group symbols by file (batch).
     let mut file_symbols: HashMap<i64, Vec<(i64, usize)>> = HashMap::new();
-    for &(sym_id, file_id) in &sym_to_file.iter().map(|(&k, &v)| (k, v)).collect::<Vec<_>>() {
+    for (&sym_id, &file_id) in &sym_to_file {
         let rc = ref_counts.get(&sym_id).copied().unwrap_or(0);
         file_symbols.entry(file_id).or_default().push((sym_id, rc));
     }
 
+    let mut sym_updates: Vec<(i64, f64)> = Vec::new();
     for (&file_id, syms) in &file_symbols {
         let file_pr = rank[id_to_idx[&file_id]];
         let total_incoming: usize = syms.iter().map(|(_, rc)| rc).sum();
@@ -568,9 +612,10 @@ fn compute_pagerank(db: &Db) -> Result<()> {
             } else {
                 file_pr / syms.len().max(1) as f64
             };
-            db.update_symbol_pagerank(sym_id, sym_pr)?;
+            sym_updates.push((sym_id, sym_pr));
         }
     }
+    db.batch_update_symbol_pagerank(&sym_updates)?;
 
     Ok(())
 }

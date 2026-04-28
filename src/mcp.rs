@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -149,6 +149,7 @@ pub struct SutraServer {
     config: Arc<Config>,
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     analysis_enabled: Arc<AtomicBool>,
+    parsing_in_progress: Arc<Mutex<HashSet<String>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -159,6 +160,7 @@ impl Clone for SutraServer {
             config: Arc::clone(&self.config),
             workspaces: Arc::clone(&self.workspaces),
             analysis_enabled: Arc::clone(&self.analysis_enabled),
+            parsing_in_progress: Arc::clone(&self.parsing_in_progress),
             tool_router: Self::tool_router(),
         }
     }
@@ -175,6 +177,7 @@ impl SutraServer {
             config,
             workspaces,
             analysis_enabled: Arc::new(AtomicBool::new(false)),
+            parsing_in_progress: Arc::new(Mutex::new(HashSet::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -475,21 +478,36 @@ impl SutraServer {
         };
 
         let already_exists = {
-            let config = self.workspaces.read();
-            config.workspace.iter().any(|w| w.id == ws_id)
+            let mut config = self.workspaces.write();
+            let exists = config.workspace.iter().any(|w| w.id == ws_id);
+            if !exists {
+                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
+                    .map_err(sutra_to_rmcp)?;
+                config.workspace.push(entry.clone());
+            }
+            exists
         };
 
-        if !already_exists {
-            workspace::add_workspace(&self.config.workspaces_path, entry.clone())
-                .map_err(sutra_to_rmcp)?;
-            self.workspaces.write().workspace.push(entry.clone());
+        {
+            let mut parsing = self.parsing_in_progress.lock();
+            if parsing.contains(&ws_id) {
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "workspace": ws_id,
+                    "root": root.display().to_string(),
+                    "status": "parse already in progress",
+                })).map_err(json_to_rmcp);
+            }
+            parsing.insert(ws_id.clone());
         }
 
         let db = self.get_db(&ws_id)?;
         let config = Arc::clone(&self.config);
         let ws_id_bg = ws_id.clone();
+        let parsing_flag = Arc::clone(&self.parsing_in_progress);
         tokio::spawn(async move {
-            match crate::pipeline::parse_workspace(&entry, &db, &config).await {
+            let result = crate::pipeline::parse_workspace(&entry, &db, &config).await;
+            parsing_flag.lock().remove(&ws_id_bg);
+            match result {
                 Ok(snap) => {
                     tracing::info!(
                         "add_root parse complete for {}: {} files, {} symbols in {}ms",
