@@ -76,7 +76,7 @@ pub fn git_churn(workspace_root: &Path, window_days: u32) -> Result<HashMap<Stri
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["log", "--format=", "--name-only", "--since"])
+        .args(["log", "--format=", "--name-only", "--no-renames", "--since"])
         .arg(&since)
         .output()
         .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;

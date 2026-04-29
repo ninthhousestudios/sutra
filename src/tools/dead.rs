@@ -8,15 +8,11 @@ pub fn handle(
     path_prefix: Option<&str>,
     include_pub: bool,
 ) -> Result<serde_json::Value> {
-    let dead_symbols = db.find_dead_symbols(include_pub)?;
-    let unreachable_files = db.find_unreachable_files()?;
+    let dead_symbols = db.find_dead_symbols(include_pub, path_prefix)?;
+    let unreachable_files = db.find_unreachable_files(path_prefix)?;
 
     let sym_items: Vec<_> = dead_symbols
         .iter()
-        .filter(|(_, path, _, _, _)| match path_prefix {
-            Some(prefix) => path.starts_with(prefix),
-            None => true,
-        })
         .map(|(qn, path, kind, line, visibility)| {
             json!({
                 "symbol": qn,
@@ -30,10 +26,6 @@ pub fn handle(
 
     let file_items: Vec<_> = unreachable_files
         .iter()
-        .filter(|(path, _)| match path_prefix {
-            Some(prefix) => path.starts_with(prefix),
-            None => true,
-        })
         .map(|(path, line_count)| {
             json!({
                 "path": path,

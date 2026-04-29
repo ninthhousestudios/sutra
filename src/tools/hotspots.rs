@@ -42,7 +42,7 @@ pub fn handle(
             let (max_cog, _) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
             let churn_norm = c as f64 / max_churn;
             let blast_norm = f.blast_radius as f64 / max_blast;
-            let complexity_norm = max_cog as f64 / max_complexity;
+            let complexity_norm = (max_cog as f64 / max_complexity).max(0.1);
             let score = (churn_norm * blast_norm * complexity_norm * 1000.0) as i64;
             Some((f, c, max_cog, score))
         })

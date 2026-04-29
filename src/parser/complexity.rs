@@ -17,20 +17,13 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
                 *count += 1;
             }
             "match_arm" => {
-                // Each arm is a path, but the first is "free" (baseline).
-                // We count all arms, then subtract 1 in the match_expression handler.
                 *count += 1;
             }
             "match_expression" => {
-                // Subtract 1 because we over-counted by one arm above.
-                if count.checked_sub(1).is_some() {
-                    *count -= 1;
-                }
+                *count = count.saturating_sub(1);
             }
-            "binary_expression" => {
-                if is_logical_operator(node, src) {
-                    *count += 1;
-                }
+            "binary_expression" if is_logical_operator(node, src) => {
+                *count += 1;
             }
             "try_expression" => {
                 *count += 1;
@@ -45,17 +38,13 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
                 *count += 1;
             }
             "switch_statement" => {
-                if count.checked_sub(1).is_some() {
-                    *count -= 1;
-                }
+                *count = count.saturating_sub(1);
             }
             "conditional_expression" => {
                 *count += 1;
             }
-            "binary_expression" => {
-                if is_logical_operator(node, src) {
-                    *count += 1;
-                }
+            "binary_expression" if is_logical_operator(node, src) => {
+                *count += 1;
             }
             _ => {}
         },
@@ -91,15 +80,11 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
     }
 
     // break/continue with labels get +1
-    if matches!(lang, "rust") && matches!(kind, "break_expression" | "continue_expression") {
-        if has_label(node) {
-            *score += 1;
-        }
+    if matches!(lang, "rust") && matches!(kind, "break_expression" | "continue_expression") && has_label(node) {
+        *score += 1;
     }
-    if matches!(lang, "dart") && matches!(kind, "break_statement" | "continue_statement") {
-        if has_label(node) {
-            *score += 1;
-        }
+    if matches!(lang, "dart") && matches!(kind, "break_statement" | "continue_statement") && has_label(node) {
+        *score += 1;
     }
 
     let child_nesting = if increments_nesting {
@@ -137,7 +122,7 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
         "rust" => match kind {
             "if_expression" => (true, true),
             "while_expression" | "for_expression" | "loop_expression" => (true, true),
-            "match_expression" => (true, true),
+            "match_expression" => (true, false),
             // Closures increment nesting but aren't a flow break
             "closure_expression" => (false, true),
             _ => (false, false),
@@ -145,7 +130,7 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
         "dart" => match kind {
             "if_statement" => (true, true),
             "while_statement" | "for_statement" | "do_statement" => (true, true),
-            "switch_statement" => (true, true),
+            "switch_statement" => (true, false),
             "conditional_expression" => (true, true),
             // Anonymous functions increment nesting
             "function_expression" => (false, true),
@@ -156,10 +141,10 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
 }
 
 fn is_logical_operator(node: Node, src: &[u8]) -> bool {
-    if let Some(op) = node.child_by_field_name("operator") {
-        if let Ok(text) = op.utf8_text(src) {
-            return text == "&&" || text == "||";
-        }
+    if let Some(op) = node.child_by_field_name("operator")
+        && let Ok(text) = op.utf8_text(src)
+    {
+        return text == "&&" || text == "||";
     }
     false
 }

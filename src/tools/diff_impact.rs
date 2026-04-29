@@ -20,22 +20,34 @@ pub fn handle(
 
     let mut changed_files: Vec<serde_json::Value> = Vec::new();
     let mut all_symbol_ids: HashSet<i64> = HashSet::new();
+    let mut max_cognitive: Option<i64> = None;
+    let mut max_cognitive_symbol: Option<String> = None;
+    let mut total_blast: i64 = 0;
 
     for path in &changed_paths {
-        let symbols = if let Some(file) = db.file_by_path(path)? {
+        if let Some(file) = db.file_by_path(path)? {
+            total_blast += file.blast_radius;
             let syms = db.find_symbols_by_file(file.id)?;
             for s in &syms {
                 all_symbol_ids.insert(s.id);
+                if let Some(c) = s.cognitive
+                    && max_cognitive.is_none_or(|prev| c > prev)
+                {
+                    max_cognitive = Some(c);
+                    max_cognitive_symbol = Some(s.qualified_name.clone());
+                }
             }
-            syms.into_iter().map(|s| s.qualified_name).collect::<Vec<_>>()
+            let symbols: Vec<_> = syms.into_iter().map(|s| s.qualified_name).collect();
+            changed_files.push(json!({
+                "path": path,
+                "symbols": symbols,
+            }));
         } else {
-            Vec::new()
-        };
-
-        changed_files.push(json!({
-            "path": path,
-            "symbols": symbols,
-        }));
+            changed_files.push(json!({
+                "path": path,
+                "symbols": Vec::<String>::new(),
+            }));
+        }
     }
 
     let symbol_ids: Vec<i64> = all_symbol_ids.into_iter().collect();
@@ -52,26 +64,6 @@ pub fn handle(
         .collect();
 
     let impact_count = affected_files.len();
-
-    // --- Verdict computation ---
-    let mut max_cognitive: Option<i64> = None;
-    let mut max_cognitive_symbol: Option<String> = None;
-    let mut total_blast: i64 = 0;
-
-    for path in &changed_paths {
-        if let Some(file) = db.file_by_path(path)? {
-            total_blast += file.blast_radius;
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                if let Some(c) = s.cognitive {
-                    if max_cognitive.is_none_or(|prev| c > prev) {
-                        max_cognitive = Some(c);
-                        max_cognitive_symbol = Some(s.qualified_name.clone());
-                    }
-                }
-            }
-        }
-    }
 
     let mut verdict_reasons: Vec<String> = Vec::new();
 

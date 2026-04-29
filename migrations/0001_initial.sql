@@ -41,9 +41,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     end_col           INTEGER NOT NULL,
     parent_symbol_id  INTEGER REFERENCES symbols(id),
     docstring         TEXT,
-    pagerank          REAL,
-    cyclomatic        INTEGER,
-    cognitive         INTEGER
+    pagerank          REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_short_name     ON symbols (short_name);

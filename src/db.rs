@@ -538,9 +538,11 @@ impl Db {
     pub fn find_dead_symbols(
         &self,
         include_pub: bool,
+        path_prefix: Option<&str>,
     ) -> Result<Vec<(String, String, String, i64, Option<String>)>> {
         let conn = self.conn.lock();
-        let sql = format!(
+        let like_pattern = path_prefix.map(|p| format!("{p}%"));
+        let mut stmt = conn.prepare(
             "SELECT s.qualified_name, f.path, s.kind, s.start_line, s.visibility
              FROM symbols s
              JOIN files f ON s.file_id = f.id
@@ -549,18 +551,12 @@ impl Db {
                AND s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
                AND s.short_name != 'main'
-               AND s.kind != 'impl'
-               {}
+               AND (?1 = 1 OR s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
+               AND (?2 IS NULL OR f.path LIKE ?2)
              ORDER BY f.path, s.start_line",
-            if include_pub {
-                ""
-            } else {
-                "AND (s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))"
-            },
-        );
-        let mut stmt = conn.prepare(&sql)?;
+        )?;
         let rows: rusqlite::Result<Vec<_>> = stmt
-            .query_map([], |row| {
+            .query_map(params![include_pub as i32, like_pattern], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -584,7 +580,6 @@ impl Db {
              LEFT JOIN refs r ON r.target_symbol_id = s.id
              WHERE s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
-               AND s.kind != 'impl'
              GROUP BY s.file_id",
         )?;
         let rows: rusqlite::Result<Vec<(i64, f64, f64)>> = stmt
@@ -601,8 +596,9 @@ impl Db {
 
     /// Find files with zero fan-in that are not root files.
     /// Returns (path, line_count).
-    pub fn find_unreachable_files(&self) -> Result<Vec<(String, i64)>> {
+    pub fn find_unreachable_files(&self, path_prefix: Option<&str>) -> Result<Vec<(String, i64)>> {
         let conn = self.conn.lock();
+        let like_pattern = path_prefix.map(|p| format!("{p}%"));
         let mut stmt = conn.prepare(
             "SELECT path, line_count FROM files
              WHERE fan_in_files = 0
@@ -611,10 +607,11 @@ impl Db {
                AND path NOT LIKE '%/mod.rs'
                AND path NOT LIKE 'src/bin/%'
                AND path NOT LIKE 'lib/%'
+               AND (?1 IS NULL OR path LIKE ?1)
              ORDER BY path",
         )?;
         let rows: rusqlite::Result<Vec<(String, i64)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![like_pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect();
         Ok(rows?)
     }

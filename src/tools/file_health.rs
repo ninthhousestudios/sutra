@@ -38,7 +38,8 @@ pub fn handle(
 
             let total_penalty =
                 blast_penalty + complexity_penalty + fan_in_penalty + dead_penalty + pr_penalty;
-            let health = (100.0 - total_penalty).max(0.0) as i64;
+            const MAX_PENALTY: f64 = 100.0;
+            let health = (MAX_PENALTY - total_penalty).max(0.0) as i64;
 
             (f, health, blast_penalty, complexity_penalty, fan_in_penalty, dead_penalty, pr_penalty, avg_cog, dead_ratio)
         })
