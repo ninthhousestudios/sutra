@@ -14,6 +14,8 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         signature: Some("fn main()"), signature_hash: None, visibility: Some("pub"),
         start_line: 1, start_col: 0, end_line: 10, end_col: 0,
         parent_symbol_id: None, docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
     db.insert_snapshot(1, 1, 0, 0, 100).unwrap();
 

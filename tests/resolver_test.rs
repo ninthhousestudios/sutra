@@ -23,6 +23,8 @@ fn make_symbol(
         end_col: 0,
         parent_qualified_name: None,
         docstring: None,
+        cyclomatic: None,
+        cognitive: None,
     }
 }
 

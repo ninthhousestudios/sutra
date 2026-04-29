@@ -46,6 +46,8 @@ pub struct SymbolRow {
     pub parent_symbol_id: Option<i64>,
     pub docstring: Option<String>,
     pub pagerank: Option<f64>,
+    pub cyclomatic: Option<i64>,
+    pub cognitive: Option<i64>,
 }
 
 pub struct InsertSymbolParams<'a> {
@@ -62,6 +64,8 @@ pub struct InsertSymbolParams<'a> {
     pub end_col: i64,
     pub parent_symbol_id: Option<i64>,
     pub docstring: Option<&'a str>,
+    pub cyclomatic: Option<i64>,
+    pub cognitive: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +144,21 @@ impl Db {
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute_batch(include_str!("../migrations/0001_initial.sql"))?;
+        // Idempotent: ALTER TABLE ADD COLUMN fails if column already exists.
+        for stmt in include_str!("../migrations/0002_complexity.sql").lines() {
+            let stmt = stmt.trim();
+            if !stmt.is_empty() {
+                match conn.execute_batch(stmt) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if !msg.contains("duplicate column") {
+                            eprintln!("migration warning: {msg}");
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -308,8 +327,8 @@ impl Db {
                 file_id, qualified_name, short_name, kind,
                 signature, signature_hash, visibility,
                 start_line, start_col, end_line, end_col,
-                parent_symbol_id, docstring
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                parent_symbol_id, docstring, cyclomatic, cognitive
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 p.file_id,
                 p.qualified_name,
@@ -324,6 +343,8 @@ impl Db {
                 p.end_col,
                 p.parent_symbol_id,
                 p.docstring,
+                p.cyclomatic,
+                p.cognitive,
             ],
         )?;
         let id = conn.last_insert_rowid();
@@ -344,7 +365,8 @@ impl Db {
             "SELECT id, file_id, qualified_name, short_name, kind,
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
-                    parent_symbol_id, docstring, pagerank
+                    parent_symbol_id, docstring, pagerank,
+                    cyclomatic, cognitive
              FROM symbols WHERE id = ?1",
             params![id],
             map_symbol_row,
@@ -362,7 +384,8 @@ impl Db {
             "SELECT id, file_id, qualified_name, short_name, kind,
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
-                    parent_symbol_id, docstring, pagerank
+                    parent_symbol_id, docstring, pagerank,
+                    cyclomatic, cognitive
              FROM symbols WHERE qualified_name = ?1",
             params![name],
             map_symbol_row,
@@ -391,7 +414,8 @@ impl Db {
                     "SELECT id, file_id, qualified_name, short_name, kind,
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
-                            parent_symbol_id, docstring, pagerank
+                            parent_symbol_id, docstring, pagerank,
+                            cyclomatic, cognitive
                      FROM symbols
                      WHERE short_name = ?1 AND kind = ?2
                      LIMIT ?3",
@@ -400,7 +424,8 @@ impl Db {
                     "SELECT id, file_id, qualified_name, short_name, kind,
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
-                            parent_symbol_id, docstring, pagerank
+                            parent_symbol_id, docstring, pagerank,
+                            cyclomatic, cognitive
                      FROM symbols
                      WHERE short_name = ?1
                      LIMIT ?2",
@@ -444,7 +469,8 @@ impl Db {
                     "SELECT id, file_id, qualified_name, short_name, kind,
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
-                            parent_symbol_id, docstring, pagerank
+                            parent_symbol_id, docstring, pagerank,
+                            cyclomatic, cognitive
                      FROM symbols WHERE id = ?1",
                     params![sid],
                     map_symbol_row,
@@ -469,7 +495,8 @@ impl Db {
             "SELECT id, file_id, qualified_name, short_name, kind,
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
-                    parent_symbol_id, docstring, pagerank
+                    parent_symbol_id, docstring, pagerank,
+                    cyclomatic, cognitive
              FROM symbols
              WHERE file_id = ?1
              ORDER BY start_line",
@@ -489,6 +516,21 @@ impl Db {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect();
         Ok(rows?.into_iter().collect())
+    }
+
+    /// Return (file_id, (max_cognitive, avg_cognitive)) for files with complexity data.
+    pub fn complexity_by_file(&self) -> Result<std::collections::HashMap<i64, (i64, f64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, MAX(cognitive), AVG(cognitive)
+             FROM symbols
+             WHERE cognitive IS NOT NULL
+             GROUP BY file_id",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64, f64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?.into_iter().map(|(fid, max_c, avg_c)| (fid, (max_c, avg_c))).collect())
     }
 
     /// Load all (id, qualified_name, short_name, kind) tuples in a single query.
@@ -757,6 +799,8 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
         parent_symbol_id: row.get(12)?,
         docstring: row.get(13)?,
         pagerank: row.get(14)?,
+        cyclomatic: row.get(15)?,
+        cognitive: row.get(16)?,
     })
 }
 

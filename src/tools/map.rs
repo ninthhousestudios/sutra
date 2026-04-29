@@ -7,6 +7,7 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
     let limit = limit.unwrap_or(50);
     let files = db.all_files()?;
     let sym_counts = db.symbol_counts_by_file()?;
+    let complexity_by_file = db.complexity_by_file()?;
 
     let mut entries: Vec<_> = files
         .into_iter()
@@ -17,8 +18,14 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
         .map(|f| {
             let symbol_count = sym_counts.get(&f.id).copied().unwrap_or(0);
             let pr_boost = (f.pagerank.unwrap_or(0.0) * 1000.0) as i64;
-            let importance = symbol_count + f.fan_in_files * 2 + f.blast_radius + pr_boost;
-            (f, symbol_count, importance)
+            let (max_cog, avg_cog) = complexity_by_file
+                .get(&f.id)
+                .copied()
+                .unwrap_or((0, 0.0));
+            let complexity_boost = max_cog.min(20);
+            let importance =
+                symbol_count + f.fan_in_files * 2 + f.blast_radius + pr_boost + complexity_boost;
+            (f, symbol_count, importance, max_cog, avg_cog)
         })
         .collect();
 
@@ -27,7 +34,7 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
 
     let items: Vec<_> = entries
         .iter()
-        .map(|(f, sym_count, importance)| {
+        .map(|(f, sym_count, importance, max_cog, avg_cog)| {
             json!({
                 "path": f.path,
                 "language": f.language,
@@ -37,6 +44,8 @@ pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<
                 "blast_radius": f.blast_radius,
                 "pagerank": f.pagerank,
                 "importance": importance,
+                "max_cognitive": max_cog,
+                "avg_cognitive": avg_cog,
             })
         })
         .collect();

@@ -16,7 +16,7 @@ pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {
     let items: Vec<_> = symbols
         .iter()
         .map(|s| {
-            json!({
+            let mut entry = json!({
                 "qualified_name": s.qualified_name,
                 "short_name": s.short_name,
                 "kind": s.kind,
@@ -26,7 +26,14 @@ pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {
                 "visibility": s.visibility,
                 "parent_symbol_id": s.parent_symbol_id,
                 "docstring": s.docstring,
-            })
+            });
+            if let Some(c) = s.cyclomatic {
+                entry["cyclomatic"] = json!(c);
+            }
+            if let Some(c) = s.cognitive {
+                entry["cognitive"] = json!(c);
+            }
+            entry
         })
         .collect();
 

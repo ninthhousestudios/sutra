@@ -149,6 +149,8 @@ fn parse_single_file(
             end_col: sym.end_col as i64,
             parent_symbol_id: None,
             docstring: sym.docstring.as_deref(),
+            cyclomatic: sym.cyclomatic.map(|v| v as i64),
+            cognitive: sym.cognitive.map(|v| v as i64),
         })?;
         symbols_extracted += 1;
     }
@@ -200,6 +202,8 @@ fn resolve_file_refs(
             end_col: s.end_col as usize,
             parent_qualified_name: None,
             docstring: s.docstring.clone(),
+            cyclomatic: s.cyclomatic.map(|v| v as u32),
+            cognitive: s.cognitive.map(|v| v as u32),
         })
         .collect();
 

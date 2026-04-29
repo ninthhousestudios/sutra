@@ -1,0 +1,2 @@
+ALTER TABLE symbols ADD COLUMN cyclomatic INTEGER;
+ALTER TABLE symbols ADD COLUMN cognitive INTEGER;

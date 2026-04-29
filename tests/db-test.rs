@@ -18,6 +18,8 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
         signature: None, signature_hash: None, visibility: None,
         start_line: 1, start_col: 0, end_line: 10, end_col: 0,
         parent_symbol_id: None, docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap()
 }
 
@@ -96,6 +98,8 @@ fn test_insert_and_lookup_symbol() {
         signature: Some("fn bar()"), signature_hash: None, visibility: Some("pub"),
         start_line: 1, start_col: 0, end_line: 5, end_col: 0,
         parent_symbol_id: None, docstring: Some("docs"),
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
 
     let by_id = db.symbol_by_id(sid).unwrap().unwrap();
@@ -248,6 +252,8 @@ fn test_find_enclosing_symbol_exact() {
         signature: None, signature_hash: None, visibility: None,
         start_line: 10, start_col: 0, end_line: 20, end_col: 0,
         parent_symbol_id: None, docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
@@ -263,12 +269,16 @@ fn test_find_enclosing_symbol_nested() {
         signature: None, signature_hash: None, visibility: None,
         start_line: 1, start_col: 0, end_line: 50, end_col: 0,
         parent_symbol_id: None, docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
     let inner_id = db.insert_symbol(&InsertSymbolParams {
         file_id: fid, qualified_name: "lib::inner", short_name: "inner", kind: "function",
         signature: None, signature_hash: None, visibility: None,
         start_line: 10, start_col: 0, end_line: 20, end_col: 0,
         parent_symbol_id: Some(outer_id), docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
@@ -284,6 +294,8 @@ fn test_find_enclosing_symbol_outside() {
         signature: None, signature_hash: None, visibility: None,
         start_line: 1, start_col: 0, end_line: 20, end_col: 0,
         parent_symbol_id: None, docstring: None,
+            cyclomatic: None,
+            cognitive: None,
     }).unwrap();
 
     assert!(db.find_enclosing_symbol(fid, 100).unwrap().is_none());

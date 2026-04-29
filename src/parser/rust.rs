@@ -1,6 +1,7 @@
 use crate::error::{Result, SutraError};
 use crate::parser::{
-    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+    complexity, ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind,
+    SymbolKind,
 };
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -180,6 +181,20 @@ fn extract_symbol(
     let docstring = extract_docstring(node, src);
     let (signature, signature_hash) = extract_signature(node, src, kind);
 
+    let (cyclomatic, cognitive) =
+        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+            if let Some(body) = node.child_by_field_name("body") {
+                (
+                    Some(complexity::cyclomatic(body, src, "rust")),
+                    Some(complexity::cognitive(body, src, "rust")),
+                )
+            } else {
+                (Some(1), Some(0))
+            }
+        } else {
+            (None, None)
+        };
+
     Some(ExtractedSymbol {
         qualified_name,
         short_name,
@@ -193,6 +208,8 @@ fn extract_symbol(
         end_col: node.end_position().column,
         parent_qualified_name: parent_qn,
         docstring,
+        cyclomatic,
+        cognitive,
     })
 }
 
@@ -229,6 +246,8 @@ fn extract_impl_symbol(
         end_col: node.end_position().column,
         parent_qualified_name: parent_qn,
         docstring,
+        cyclomatic: None,
+        cognitive: None,
     })
 }
 

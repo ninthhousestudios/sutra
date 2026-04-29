@@ -1,6 +1,7 @@
 use crate::error::{Result, SutraError};
 use crate::parser::{
-    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+    complexity, ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind,
+    SymbolKind,
 };
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -245,6 +246,20 @@ fn build_symbol(
     let visibility = dart_visibility(&short_name);
     let docstring = extract_docstring(node, src);
 
+    let (cyclomatic, cognitive) =
+        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+            if let Some(body) = node.child_by_field_name("body") {
+                (
+                    Some(complexity::cyclomatic(body, src, "dart")),
+                    Some(complexity::cognitive(body, src, "dart")),
+                )
+            } else {
+                (Some(1), Some(0))
+            }
+        } else {
+            (None, None)
+        };
+
     Some(ExtractedSymbol {
         qualified_name,
         short_name,
@@ -258,6 +273,8 @@ fn build_symbol(
         end_col: node.end_position().column,
         parent_qualified_name: parent_qn,
         docstring,
+        cyclomatic,
+        cognitive,
     })
 }
 

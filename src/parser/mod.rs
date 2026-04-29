@@ -1,3 +1,4 @@
+pub mod complexity;
 pub mod dart;
 pub mod rust;
 
@@ -28,6 +29,8 @@ pub struct ExtractedSymbol {
     pub end_col: usize,
     pub parent_qualified_name: Option<String>,
     pub docstring: Option<String>,
+    pub cyclomatic: Option<u32>,
+    pub cognitive: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
