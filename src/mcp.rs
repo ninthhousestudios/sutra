@@ -132,6 +132,33 @@ pub struct CochangeArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeadArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub include_pub: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HotspotsArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub window_days: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FileHealthArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddRootArgs {
     /// Absolute path to the workspace root directory
     pub path: String,
@@ -444,6 +471,59 @@ impl SutraServer {
         let result =
             tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
                 .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Find dead symbols (zero inbound references) and unreachable files \
+        (zero importers). Known limitation: can't detect #[test] or #[no_mangle] exemptions. \
+        Requires analysis tier.")]
+    pub async fn sutra_dead(
+        &self,
+        Parameters(args): Parameters<DeadArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::dead::handle(
+            &db,
+            args.path_prefix.as_deref(),
+            args.include_pub.unwrap_or(false),
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Riskiest files ranked by git churn × blast radius × complexity. \
+        Requires analysis tier.")]
+    pub async fn sutra_hotspots(
+        &self,
+        Parameters(args): Parameters<HotspotsArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result =
+            tools::hotspots::handle(&db, &ws.root, args.window_days, args.limit)
+                .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Per-file health score (0-100). Combines blast radius, complexity, \
+        fan-in, dead-symbol ratio, and PageRank into a single maintainability index. \
+        Worst files first. Requires analysis tier.")]
+    pub async fn sutra_file_health(
+        &self,
+        Parameters(args): Parameters<FileHealthArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::file_health::handle(
+            &db,
+            args.path.as_deref(),
+            args.limit,
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

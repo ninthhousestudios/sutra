@@ -53,11 +53,79 @@ pub fn handle(
 
     let impact_count = affected_files.len();
 
+    // --- Verdict computation ---
+    let mut max_cognitive: Option<i64> = None;
+    let mut max_cognitive_symbol: Option<String> = None;
+    let mut total_blast: i64 = 0;
+
+    for path in &changed_paths {
+        if let Some(file) = db.file_by_path(path)? {
+            total_blast += file.blast_radius;
+            let syms = db.find_symbols_by_file(file.id)?;
+            for s in &syms {
+                if let Some(c) = s.cognitive {
+                    if max_cognitive.is_none_or(|prev| c > prev) {
+                        max_cognitive = Some(c);
+                        max_cognitive_symbol = Some(s.qualified_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut verdict_reasons: Vec<String> = Vec::new();
+
+    let has_complexity = max_cognitive.is_some();
+    let max_cog = max_cognitive.unwrap_or(0);
+
+    if impact_count >= 30 {
+        verdict_reasons.push(format!("{impact_count} affected files (threshold: 30)"));
+    } else if impact_count >= 10 {
+        verdict_reasons.push(format!("{impact_count} affected files (threshold: 10)"));
+    }
+    if max_cog >= 25 {
+        verdict_reasons.push(format!(
+            "max cognitive complexity {} in {} (threshold: 25)",
+            max_cog,
+            max_cognitive_symbol.as_deref().unwrap_or("?")
+        ));
+    } else if max_cog >= 15 {
+        verdict_reasons.push(format!(
+            "max cognitive complexity {} in {} (threshold: 15)",
+            max_cog,
+            max_cognitive_symbol.as_deref().unwrap_or("?")
+        ));
+    }
+    if total_blast >= 50 {
+        verdict_reasons.push(format!("total blast radius {total_blast} (threshold: 50)"));
+    } else if total_blast >= 20 {
+        verdict_reasons.push(format!("total blast radius {total_blast} (threshold: 20)"));
+    }
+    if !has_complexity {
+        verdict_reasons.push("complexity data unavailable — reparse to populate".to_string());
+    }
+
+    let verdict = if impact_count >= 30 || max_cog >= 25 || total_blast >= 50 {
+        "fail"
+    } else if impact_count >= 10 || max_cog >= 15 || total_blast >= 20 {
+        "warn"
+    } else {
+        "pass"
+    };
+
     Ok(json!({
         "base": base,
         "head": head,
         "changed_files": changed_files,
         "affected_files": affected_files,
         "impact_count": impact_count,
+        "verdict": verdict,
+        "verdict_reasons": verdict_reasons,
+        "risk_metrics": {
+            "affected_file_count": impact_count,
+            "max_cognitive": max_cog,
+            "max_cognitive_symbol": max_cognitive_symbol,
+            "total_blast_radius": total_blast,
+        },
     }))
 }

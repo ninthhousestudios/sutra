@@ -1,10 +1,13 @@
 pub mod calls;
 pub mod cochange;
+pub mod dead;
 pub mod deps;
 pub mod diff_impact;
+pub mod file_health;
 pub mod find;
 pub mod grep;
 pub mod health;
+pub mod hotspots;
 pub mod impact;
 pub mod map;
 pub mod outline;

@@ -533,6 +533,92 @@ impl Db {
         Ok(rows?.into_iter().map(|(fid, max_c, avg_c)| (fid, (max_c, avg_c))).collect())
     }
 
+    /// Find symbols with zero inbound references (potential dead code).
+    /// Returns (qualified_name, file_path, kind, start_line, visibility).
+    pub fn find_dead_symbols(
+        &self,
+        include_pub: bool,
+    ) -> Result<Vec<(String, String, String, i64, Option<String>)>> {
+        let conn = self.conn.lock();
+        let sql = format!(
+            "SELECT s.qualified_name, f.path, s.kind, s.start_line, s.visibility
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN refs r ON r.target_symbol_id = s.id
+             WHERE r.id IS NULL
+               AND s.kind IN ('function','method','struct','enum','trait',
+                              'type_alias','class','mixin','const','static')
+               AND s.short_name != 'main'
+               AND s.kind != 'impl'
+               {}
+             ORDER BY f.path, s.start_line",
+            if include_pub {
+                ""
+            } else {
+                "AND (s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))"
+            },
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows: rusqlite::Result<Vec<_>> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Return dead-symbol ratio (0.0–1.0) per file.
+    pub fn dead_symbol_ratio_by_file(&self) -> Result<std::collections::HashMap<i64, f64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.file_id,
+                    SUM(CASE WHEN r.id IS NULL THEN 1 ELSE 0 END) AS dead,
+                    COUNT(*) AS total
+             FROM symbols s
+             LEFT JOIN refs r ON r.target_symbol_id = s.id
+             WHERE s.kind IN ('function','method','struct','enum','trait',
+                              'type_alias','class','mixin','const','static')
+               AND s.kind != 'impl'
+             GROUP BY s.file_id",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, f64, f64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?
+            .into_iter()
+            .map(|(fid, dead, total)| {
+                let ratio = if total > 0.0 { dead / total } else { 0.0 };
+                (fid, ratio)
+            })
+            .collect())
+    }
+
+    /// Find files with zero fan-in that are not root files.
+    /// Returns (path, line_count).
+    pub fn find_unreachable_files(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT path, line_count FROM files
+             WHERE fan_in_files = 0
+               AND path NOT LIKE '%/lib.rs'
+               AND path NOT LIKE '%/main.rs'
+               AND path NOT LIKE '%/mod.rs'
+               AND path NOT LIKE 'src/bin/%'
+               AND path NOT LIKE 'lib/%'
+             ORDER BY path",
+        )?;
+        let rows: rusqlite::Result<Vec<(String, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
     /// Load all (id, qualified_name, short_name, kind) tuples in a single query.
     pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String, String)>> {
         let conn = self.conn.lock();
