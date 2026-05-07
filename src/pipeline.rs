@@ -1,7 +1,7 @@
 //! Parse pipeline: walk workspace, parse files, resolve refs, compute rollups.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tracing::{info, warn};
@@ -320,6 +320,108 @@ pub async fn parse_workspace(
         skipped_count += skipped;
     }
 
+    let files = db.all_files()?;
+    let adjacency = if !files.is_empty() {
+        Some(build_file_adjacency(&files, db)?)
+    } else {
+        None
+    };
+
+    compute_rollups_with_graph(db, &files, adjacency.as_ref(), Some(&file_ids_needing_resolution))?;
+    compute_pagerank(db, &files, adjacency.as_ref())?;
+
+    let duration_ms = start.elapsed().as_millis() as i64;
+    db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
+
+    Ok(ParseSnapshot {
+        files_parsed,
+        symbols_extracted,
+        refs_extracted,
+        parse_errors,
+        duration_ms,
+        unresolved_count,
+        skipped_count,
+    })
+}
+
+pub async fn parse_changed_files(
+    workspace: &WorkspaceEntry,
+    db: &Db,
+    config: &Config,
+    changed: &[PathBuf],
+    deleted: &[PathBuf],
+) -> Result<ParseSnapshot> {
+    let start = Instant::now();
+
+    let ext_to_lang: HashMap<&str, &str> = workspace
+        .languages
+        .iter()
+        .flat_map(|lang| {
+            extensions_for_language(lang)
+                .iter()
+                .map(move |ext| (*ext, lang.as_str()))
+        })
+        .collect();
+
+    let mut files_parsed: i64 = 0;
+    let mut symbols_extracted: i64 = 0;
+    let mut refs_extracted: i64 = 0;
+    let mut parse_errors: i64 = 0;
+    let mut deleted_symbol_ids: Vec<i64> = Vec::new();
+    let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
+
+    // Phase 1: handle deletions
+    for del_path in deleted {
+        let rel_path = del_path
+            .strip_prefix(&workspace.root)
+            .unwrap_or(del_path)
+            .to_string_lossy()
+            .to_string();
+
+        if let Some(existing) = db.file_by_path(&rel_path)? {
+            let old_symbols = db.find_symbols_by_file(existing.id)?;
+            for sym in &old_symbols {
+                deleted_symbol_ids.push(sym.id);
+            }
+            db.delete_file_cascade(existing.id)?;
+        }
+    }
+
+    // Phase 2: parse changed files
+    for file_path in changed {
+        if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
+            parse_errors += result.parse_errors;
+            deleted_symbol_ids.extend(result.deleted_symbol_ids);
+            if result.file_id != 0 {
+                files_parsed += 1;
+                symbols_extracted += result.symbols_extracted;
+                refs_extracted += result.refs_extracted;
+                file_ids_needing_resolution.insert(result.file_id);
+            }
+        }
+    }
+
+    // Phase 3: cascade — files referencing deleted symbols need re-resolution
+    if !deleted_symbol_ids.is_empty() {
+        let dirty_file_ids = db.find_files_referencing_symbols(&deleted_symbol_ids)?;
+        for fid in dirty_file_ids {
+            file_ids_needing_resolution.insert(fid);
+        }
+    }
+
+    let _ = config;
+
+    // Phase 4: resolve refs for dirty set
+    let all_db_symbols = db.all_symbols_summary()?;
+    let mut unresolved_count: i64 = 0;
+    let mut skipped_count: i64 = 0;
+    for &file_id in &file_ids_needing_resolution {
+        let (unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
+        unresolved_count += unresolved;
+        skipped_count += skipped;
+    }
+
+    // Phase 5: rollups for dirty set, full pagerank
     let files = db.all_files()?;
     let adjacency = if !files.is_empty() {
         Some(build_file_adjacency(&files, db)?)
