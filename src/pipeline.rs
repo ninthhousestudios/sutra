@@ -35,7 +35,7 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 /// Map language name to file extensions.
-fn extensions_for_language(lang: &str) -> &'static [&'static str] {
+pub fn extensions_for_language(lang: &str) -> &'static [&'static str] {
     match lang {
         "rust" => &["rs"],
         "dart" => &["dart"],

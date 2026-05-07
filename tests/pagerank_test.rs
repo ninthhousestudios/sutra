@@ -12,6 +12,8 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         listen_addr: "127.0.0.1:0".to_string(),
         parse_parallelism: 1,
         stale_threshold_sec: 600,
+        watch_poll_sec: 2,
+        watch_debounce_sec: 3,
         log_level: "warn".to_string(),
     }
 }
