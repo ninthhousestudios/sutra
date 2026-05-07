@@ -180,8 +180,8 @@ impl Daemon {
                 Ok(Ok(snap)) => {
                     last_refresh.lock().insert(ws_id_log.clone(), Instant::now());
                     info!(
-                        "incremental reparse {}: {} files, {} symbols in {}ms",
-                        ws_id_log, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                        "incremental reparse {}: {}/{} files changed, {} symbols in {}ms",
+                        ws_id_log, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
                     );
                 }
                 Ok(Err(e)) => warn!("incremental reparse failed for {}: {e}", ws_id_log),
@@ -216,8 +216,8 @@ impl Daemon {
                 Ok(Ok(snap)) => {
                     last_refresh.lock().insert(ws_id.clone(), Instant::now());
                     info!(
-                        "full reparse {}: {} files, {} symbols in {}ms",
-                        ws_id, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                        "full reparse {}: {}/{} files changed, {} symbols in {}ms",
+                        ws_id, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
                     );
                 }
                 Ok(Err(e)) => warn!("full reparse failed for {}: {e}", ws_id),
@@ -271,8 +271,8 @@ impl Daemon {
                 {
                     Ok(Ok(snap)) => {
                         info!(
-                            "reparsed {}: {} files, {} symbols in {}ms",
-                            ws_id, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                            "reparsed {}: {}/{} files changed, {} symbols in {}ms",
+                            ws_id, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
                         );
                     }
                     Ok(Err(e)) => {

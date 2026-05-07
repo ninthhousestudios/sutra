@@ -616,8 +616,8 @@ impl SutraServer {
             match result {
                 Ok(snap) => {
                     tracing::info!(
-                        "add_root parse complete for {}: {} files, {} symbols in {}ms",
-                        ws_id_bg, snap.files_parsed, snap.symbols_extracted, snap.duration_ms
+                        "add_root parse complete for {}: {}/{} files changed, {} symbols in {}ms",
+                        ws_id_bg, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
                     );
                 }
                 Err(e) => {

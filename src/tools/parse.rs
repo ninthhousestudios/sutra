@@ -11,6 +11,7 @@ pub async fn handle(ws: &WorkspaceEntry, db: &Db, config: &Config) -> Result<ser
 
     Ok(json!({
         "workspace": ws.id,
+        "files_walked": snapshot.files_walked,
         "files_parsed": snapshot.files_parsed,
         "symbols_extracted": snapshot.symbols_extracted,
         "refs_extracted": snapshot.refs_extracted,

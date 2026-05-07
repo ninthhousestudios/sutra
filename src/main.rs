@@ -114,8 +114,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let resolved = resolvable - snapshot.unresolved_count;
             let pct = if resolvable > 0 { resolved * 100 / resolvable } else { 0 };
             println!(
-                "Parsed {} files, {} symbols, {} refs ({} resolved of {} resolvable, {}%; {} skipped) in {}ms",
+                "Parsed {}/{} files changed, {} symbols, {} refs ({} resolved of {} resolvable, {}%; {} skipped) in {}ms",
                 snapshot.files_parsed,
+                snapshot.files_walked,
                 snapshot.symbols_extracted,
                 snapshot.refs_extracted,
                 resolved,

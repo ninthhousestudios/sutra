@@ -16,6 +16,7 @@ use crate::workspace::WorkspaceEntry;
 /// Summary of a parse pipeline run.
 #[derive(Debug, Clone)]
 pub struct ParseSnapshot {
+    pub files_walked: i64,
     pub files_parsed: i64,
     pub symbols_extracted: i64,
     pub refs_extracted: i64,
@@ -334,6 +335,7 @@ pub async fn parse_workspace(
     db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
 
     Ok(ParseSnapshot {
+        files_walked: source_files.len() as i64,
         files_parsed,
         symbols_extracted,
         refs_extracted,
@@ -436,6 +438,7 @@ pub async fn parse_changed_files(
     db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
 
     Ok(ParseSnapshot {
+        files_walked: changed.len() as i64,
         files_parsed,
         symbols_extracted,
         refs_extracted,
