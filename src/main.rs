@@ -9,7 +9,7 @@ use sutra::db::Db;
 use sutra::workspace::{self, WorkspaceEntry};
 
 #[derive(Parser)]
-#[command(name = "sutra", about = "Code intelligence for manas")]
+#[command(name = "sutra", about = "Code intelligence for manas", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -36,6 +36,12 @@ enum Commands {
     Guard(GuardCmd),
     /// Check daemon and database health
     Health,
+    /// Install systemd user service for sutra
+    InstallServices {
+        /// Enable and start the service after installing
+        #[arg(long)]
+        enable: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -162,6 +168,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Health => {
             cmd_health(&config).await?;
         }
+        Commands::InstallServices { enable } => {
+            cmd_install_services(enable)?;
+        }
     }
 
     Ok(())
@@ -247,8 +256,14 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         shttp_config,
     );
 
+    let rest = sutra::rest::router(
+        config.clone(),
+        ws_config.clone(),
+        db_cache.clone(),
+    );
+
     #[allow(deprecated)]
-    let app = axum::Router::new().route("/mcp", any_service(mcp_service));
+    let app = rest.route("/mcp", any_service(mcp_service));
 
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!("sutra listening on {addr}");
@@ -296,6 +311,56 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    Ok(())
+}
+
+fn cmd_install_services(enable: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
+    let sutra_bin = format!("{home}/.cargo/bin/sutra");
+
+    let unit_content = format!(
+        r#"[Unit]
+Description=sutra code-intelligence daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart={sutra_bin} serve
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+"#
+    );
+
+    let service_dir = format!("{home}/.config/systemd/user");
+    std::fs::create_dir_all(&service_dir)?;
+
+    let service_path = format!("{service_dir}/sutra.service");
+    std::fs::write(&service_path, unit_content)?;
+    println!("Wrote {service_path}");
+
+    let status = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status()?;
+    if !status.success() {
+        return Err("systemctl --user daemon-reload failed".into());
+    }
+    println!("Reloaded systemd user daemon");
+
+    if enable {
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "sutra.service"])
+            .status()?;
+        if !status.success() {
+            return Err("systemctl --user enable --now sutra.service failed".into());
+        }
+        println!("Enabled and started sutra.service");
+    }
+
     Ok(())
 }
 

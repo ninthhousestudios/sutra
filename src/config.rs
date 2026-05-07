@@ -52,6 +52,21 @@ impl Config {
     }
 }
 
+impl Config {
+    pub fn test_default() -> Self {
+        Self {
+            db_dir: PathBuf::from("/tmp/sutra-test"),
+            workspaces_path: PathBuf::from("/tmp/sutra-test/workspaces.toml"),
+            listen_addr: "127.0.0.1:0".into(),
+            parse_parallelism: 1,
+            stale_threshold_sec: 600,
+            watch_poll_sec: 2,
+            watch_debounce_sec: 3,
+            log_level: "warn".into(),
+        }
+    }
+}
+
 fn default_db_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         let mut p = PathBuf::from(home);
