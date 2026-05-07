@@ -167,6 +167,15 @@ pub struct AddRootArgs {
     pub languages: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StatusArgs {
+    /// Absolute path to the workspace root directory
+    pub path: String,
+    /// Languages to index (default: ["rust", "dart"])
+    #[serde(default)]
+    pub languages: Option<Vec<String>>,
+}
+
 // ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
@@ -624,6 +633,156 @@ impl SutraServer {
             "languages": languages,
             "status": status,
         })).map_err(json_to_rmcp)
+    }
+
+    #[tool(description = "Register a workspace and return its status. \
+        Preferred session-start call — tries the daemon first (POST /workspaces), \
+        falls back to local parse if daemon is not running. \
+        Returns mode (daemon|local), status, freshness, file/symbol counts.")]
+    pub async fn sutra_status(
+        &self,
+        Parameters(args): Parameters<StatusArgs>,
+    ) -> Result<String, ErrorData> {
+        let root = PathBuf::from(&args.path);
+        if !root.is_absolute() || !root.is_dir() {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                format!("path must be an absolute directory that exists: {}", args.path),
+                None,
+            ));
+        }
+
+        let dir_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        let ws_id = dir_name.to_lowercase().replace(' ', "-");
+        let languages = args.languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+
+        let daemon_url = &self.config.listen_addr;
+
+        // Try daemon path first
+        if let Ok(resp) = self.try_daemon_register(daemon_url, &args.path, &languages).await {
+            return Ok(resp);
+        }
+
+        // Fallback: local mode — register + parse
+        let entry = workspace::WorkspaceEntry {
+            id: ws_id.clone(),
+            root: root.clone(),
+            languages: languages.clone(),
+        };
+
+        {
+            let mut config = self.workspaces.write();
+            if !config.workspace.iter().any(|w| w.id == ws_id) {
+                let _ = workspace::add_workspace(&self.config.workspaces_path, entry.clone());
+                config.workspace.push(entry.clone());
+            }
+        }
+
+        let db = self.get_db(&ws_id)?;
+
+        let needs_parse = db.last_parse_time().ok().flatten().is_none();
+        if needs_parse {
+            let _ = crate::pipeline::parse_workspace(&entry, &db, &self.config).await;
+        }
+
+        let files = db.all_files().unwrap_or_default();
+        let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
+        let total_symbols: i64 = sym_counts.values().sum();
+        let freshness = self.freshness(&db);
+        let smriti_connected = self.check_smriti_connected();
+
+        let status = if files.is_empty() { "empty" } else { "ready" };
+
+        serde_json::to_string_pretty(&serde_json::json!({
+            "workspace": ws_id,
+            "root": root.display().to_string(),
+            "mode": "local",
+            "status": status,
+            "last_parse": freshness["as_of"],
+            "is_stale": freshness["is_stale"],
+            "files": files.len(),
+            "symbols": total_symbols,
+            "smriti_connected": smriti_connected,
+        })).map_err(json_to_rmcp)
+    }
+}
+
+impl SutraServer {
+    async fn try_daemon_register(
+        &self,
+        addr: &str,
+        path: &str,
+        languages: &[String],
+    ) -> std::result::Result<String, ()> {
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|_| ())?;
+
+        // POST /workspaces to register
+        let post_resp = client
+            .post(format!("{base}/workspaces"))
+            .json(&serde_json::json!({
+                "path": path,
+                "languages": languages,
+            }))
+            .send()
+            .await
+            .map_err(|_| ())?;
+
+        if !post_resp.status().is_success() && post_resp.status().as_u16() != 409 {
+            return Err(());
+        }
+
+        let post_json: serde_json::Value = post_resp.json().await.map_err(|_| ())?;
+        let ws_id = post_json["id"].as_str().unwrap_or("unknown").to_string();
+
+        // Poll /status for up to 10s until workspace has parse data
+        for _ in 0..10 {
+            if let Ok(status) = client.get(format!("{base}/status")).send().await {
+                if let Ok(json) = status.json::<serde_json::Value>().await {
+                    if let Some(workspaces) = json["workspaces"].as_array() {
+                        if let Some(ws) = workspaces.iter().find(|w| w["id"] == ws_id) {
+                            let file_count = ws["file_count"].as_i64().unwrap_or(0);
+                            let last_parse = ws["last_parse_time"].as_str().unwrap_or("");
+                            if file_count > 0 || !last_parse.is_empty() {
+                                let smriti_connected = self.check_smriti_connected();
+                                let is_stale = last_parse.is_empty();
+                                let status_str = if file_count == 0 { "empty" } else { "ready" };
+                                return serde_json::to_string_pretty(&serde_json::json!({
+                                    "workspace": ws_id,
+                                    "root": ws["root"],
+                                    "mode": "daemon",
+                                    "status": status_str,
+                                    "last_parse": last_parse,
+                                    "is_stale": is_stale,
+                                    "files": file_count,
+                                    "symbols": ws["symbol_count"],
+                                    "smriti_connected": smriti_connected,
+                                })).map_err(|_| ());
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+
+        Err(())
+    }
+
+    fn check_smriti_connected(&self) -> bool {
+        let smriti_db = std::env::var("SUTRA_SMRITI_DB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                PathBuf::from(home).join(".smriti").join("index.db")
+            });
+        smriti_db.exists()
     }
 }
 
