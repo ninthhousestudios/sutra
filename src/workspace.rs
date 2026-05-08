@@ -43,9 +43,8 @@ pub fn save_workspaces(path: &Path, config: &WorkspacesConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let serialized = toml::to_string_pretty(config).map_err(|e| {
-        SutraError::Internal(format!("failed to serialize workspaces config: {e}"))
-    })?;
+    let serialized = toml::to_string_pretty(config)
+        .map_err(|e| SutraError::Internal(format!("failed to serialize workspaces config: {e}")))?;
 
     // Atomic write: temp file → rename
     let tmp_path = path.with_extension("toml.tmp");
@@ -56,10 +55,7 @@ pub fn save_workspaces(path: &Path, config: &WorkspacesConfig) -> Result<()> {
 }
 
 /// Find a workspace entry by id in an already-loaded config.
-pub fn resolve_workspace<'a>(
-    config: &'a WorkspacesConfig,
-    id: &str,
-) -> Result<&'a WorkspaceEntry> {
+pub fn resolve_workspace<'a>(config: &'a WorkspacesConfig, id: &str) -> Result<&'a WorkspaceEntry> {
     config
         .workspace
         .iter()

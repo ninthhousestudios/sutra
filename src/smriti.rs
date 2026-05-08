@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use tracing::warn;
 
 use crate::error::Result;
@@ -80,7 +80,8 @@ impl SmritiReader {
 
         if cursor > 0 {
             let min_id: Option<i64> =
-                self.conn.query_row("SELECT MIN(id) FROM events", [], |r| r.get(0))?;
+                self.conn
+                    .query_row("SELECT MIN(id) FROM events", [], |r| r.get(0))?;
             match min_id {
                 None => {
                     return Ok(EventPage {
@@ -91,7 +92,11 @@ impl SmritiReader {
                     });
                 }
                 Some(min) if min > cursor + 1 => {
-                    warn!(cursor, min_id = min, "smriti cursor invalidated — events pruned");
+                    warn!(
+                        cursor,
+                        min_id = min,
+                        "smriti cursor invalidated — events pruned"
+                    );
                     return Ok(EventPage {
                         cursor_valid: false,
                         events: vec![],
@@ -229,7 +234,10 @@ mod tests {
         assert_eq!(page.events.len(), 2);
 
         // Prune events 1 and 2 (simulate smriti pruning)
-        reader.conn.execute("DELETE FROM events WHERE id <= 2", []).unwrap();
+        reader
+            .conn
+            .execute("DELETE FROM events WHERE id <= 2", [])
+            .unwrap();
 
         // Cursor 2 is now invalid: min_id (3) > cursor+1 (3) is false, so still valid
         // But cursor 1 would be invalid: min_id (3) > 1+1 (2) is true

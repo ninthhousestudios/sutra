@@ -134,7 +134,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn resolve_project_root(hook_cwd: Option<&str>, file_path: Option<&std::path::Path>) -> Option<PathBuf> {
+fn resolve_project_root(
+    hook_cwd: Option<&str>,
+    file_path: Option<&std::path::Path>,
+) -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("CLAUDE_PROJECT_DIR") {
         let candidate = PathBuf::from(&explicit);
         if candidate.is_dir() {

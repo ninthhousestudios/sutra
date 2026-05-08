@@ -3,11 +3,7 @@ use serde_json::json;
 use crate::db::Db;
 use crate::error::Result;
 
-pub fn handle(
-    db: &Db,
-    path_prefix: Option<&str>,
-    include_pub: bool,
-) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, path_prefix: Option<&str>, include_pub: bool) -> Result<serde_json::Value> {
     let dead_symbols = db.find_dead_symbols(include_pub, path_prefix)?;
     let unreachable_files = db.find_unreachable_files(path_prefix)?;
 

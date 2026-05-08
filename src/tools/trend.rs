@@ -3,11 +3,7 @@ use serde_json::json;
 use crate::db::{Db, SnapshotRow};
 use crate::error::Result;
 
-pub fn handle(
-    db: &Db,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<serde_json::Value> {
     let (snap_from, snap_to) = resolve_snapshots(db, from, to)?;
 
     let deltas = json!({

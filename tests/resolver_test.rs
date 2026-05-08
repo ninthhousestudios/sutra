@@ -1,6 +1,4 @@
-use sutra::parser::{
-    ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind,
-};
+use sutra::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind};
 use sutra::resolver::resolve_refs;
 
 fn make_symbol(
@@ -108,9 +106,7 @@ fn test_resolve_ambiguous() {
 fn test_unresolved_external() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("HashMap", 30, RefContextKind::TypeUse)];
-    let all_symbols = vec![
-        sym4(1, "main::main", "main", "function"),
-    ];
+    let all_symbols = vec![sym4(1, "main::main", "main", "function")];
     let imports = vec![make_import("std::collections::HashMap", 1)];
 
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
@@ -131,7 +127,7 @@ fn test_unresolved_external() {
 #[test]
 fn test_scope_shadowing() {
     let file_symbols = vec![
-        make_symbol("main::x", "x", SymbolKind::Const, 3, 3),  // outer
+        make_symbol("main::x", "x", SymbolKind::Const, 3, 3), // outer
         make_symbol("main::inner::x", "x", SymbolKind::Const, 10, 10), // inner
     ];
     let refs = vec![make_ref("x", 12, RefContextKind::Other)]; // after inner
@@ -193,9 +189,7 @@ fn test_global_ambiguous_shortest_qn() {
 fn test_import_chain_qualified_name() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Config", 10, RefContextKind::TypeUse)];
-    let all_symbols = vec![
-        sym4(55, "config::Config", "Config", "struct"),
-    ];
+    let all_symbols = vec![sym4(55, "config::Config", "Config", "struct")];
     let imports = vec![make_import("config::Config", 1)];
 
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
@@ -212,9 +206,7 @@ fn test_import_chain_qualified_name() {
 fn test_import_prefix_match() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("User", 10, RefContextKind::TypeUse)];
-    let all_symbols = vec![
-        sym4(77, "models::db::User", "User", "struct"),
-    ];
+    let all_symbols = vec![sym4(77, "models::db::User", "User", "struct")];
     let imports = vec![make_import("models::User", 1)];
 
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
@@ -252,7 +244,13 @@ fn test_multiple_imports_first_match_wins() {
 
 #[test]
 fn test_local_over_import() {
-    let file_symbols = vec![make_symbol("local::Config", "Config", SymbolKind::Struct, 2, 10)];
+    let file_symbols = vec![make_symbol(
+        "local::Config",
+        "Config",
+        SymbolKind::Struct,
+        2,
+        10,
+    )];
     let refs = vec![make_ref("Config", 8, RefContextKind::TypeUse)];
     let all_symbols = vec![
         sym4(1, "local::Config", "Config", "struct"),
@@ -274,9 +272,7 @@ fn test_local_over_import() {
 fn test_dart_package_import() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("MyModel", 15, RefContextKind::TypeUse)];
-    let all_symbols = vec![
-        sym4(99, "myapp::models::MyModel", "MyModel", "class"),
-    ];
+    let all_symbols = vec![sym4(99, "myapp::models::MyModel", "MyModel", "class")];
     let imports = vec![make_import("package:myapp/models.dart", 1)];
 
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
@@ -303,7 +299,13 @@ fn test_empty_refs() {
 
 #[test]
 fn test_multiple_refs_mixed_resolution() {
-    let file_symbols = vec![make_symbol("app::handler", "handler", SymbolKind::Function, 1, 20)];
+    let file_symbols = vec![make_symbol(
+        "app::handler",
+        "handler",
+        SymbolKind::Function,
+        1,
+        20,
+    )];
     let refs = vec![
         make_ref("handler", 10, RefContextKind::Call),
         make_ref("Config", 12, RefContextKind::TypeUse),
@@ -318,9 +320,20 @@ fn test_multiple_refs_mixed_resolution() {
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
 
     assert_eq!(resolved.len(), 3);
-    assert_eq!(resolved[0].target_symbol_id, Some(1), "local 'handler' should resolve");
-    assert_eq!(resolved[1].target_symbol_id, Some(2), "imported 'Config' should resolve");
-    assert!(resolved[2].target_symbol_id.is_none(), "unknown ref should be unresolved");
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(1),
+        "local 'handler' should resolve"
+    );
+    assert_eq!(
+        resolved[1].target_symbol_id,
+        Some(2),
+        "imported 'Config' should resolve"
+    );
+    assert!(
+        resolved[2].target_symbol_id.is_none(),
+        "unknown ref should be unresolved"
+    );
     assert_eq!(resolved[2].unresolved_name.as_deref(), Some("UnknownThing"));
 }
 

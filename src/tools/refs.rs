@@ -22,7 +22,10 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
         .map(|_| {
             all_refs
                 .iter()
-                .filter(|r| r.target_symbol_id.is_none() && r.unresolved_name.as_deref() == Some(&sym.short_name))
+                .filter(|r| {
+                    r.target_symbol_id.is_none()
+                        && r.unresolved_name.as_deref() == Some(&sym.short_name)
+                })
                 .count()
         })
         .unwrap_or(0);
@@ -49,7 +52,10 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
         })
         .collect();
     references.sort_by(|a, b| {
-        a["file"].as_str().unwrap_or("").cmp(b["file"].as_str().unwrap_or(""))
+        a["file"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["file"].as_str().unwrap_or(""))
     });
 
     let resolved_count: usize = references

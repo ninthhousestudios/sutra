@@ -82,10 +82,9 @@ impl Daemon {
             let entries: Vec<WorkspaceEntry> = self.workspaces.read().workspace.clone();
             let config_db_dir = self.config.db_dir.clone();
 
-            let batch = tokio::task::spawn_blocking(move || {
-                poll_smriti_events(&config_db_dir, &entries)
-            })
-            .await;
+            let batch =
+                tokio::task::spawn_blocking(move || poll_smriti_events(&config_db_dir, &entries))
+                    .await;
 
             let batch = match batch {
                 Ok(b) => b,
@@ -171,17 +170,23 @@ impl Daemon {
             );
 
             match tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current().block_on(
-                    pipeline::parse_changed_files(&ws, &db, &config, &changed, &deleted),
-                )
+                tokio::runtime::Handle::current().block_on(pipeline::parse_changed_files(
+                    &ws, &db, &config, &changed, &deleted,
+                ))
             })
             .await
             {
                 Ok(Ok(snap)) => {
-                    last_refresh.lock().insert(ws_id_log.clone(), Instant::now());
+                    last_refresh
+                        .lock()
+                        .insert(ws_id_log.clone(), Instant::now());
                     info!(
                         "incremental reparse {}: {}/{} files changed, {} symbols in {}ms",
-                        ws_id_log, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
+                        ws_id_log,
+                        snap.files_parsed,
+                        snap.files_walked,
+                        snap.symbols_extracted,
+                        snap.duration_ms
                     );
                 }
                 Ok(Err(e)) => warn!("incremental reparse failed for {}: {e}", ws_id_log),
@@ -208,8 +213,11 @@ impl Daemon {
             let ws_id = ws.id.clone();
 
             match tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current()
-                    .block_on(pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone))
+                tokio::runtime::Handle::current().block_on(pipeline::parse_workspace(
+                    &ws_clone,
+                    &db_clone,
+                    &config_clone,
+                ))
             })
             .await
             {
@@ -217,7 +225,11 @@ impl Daemon {
                     last_refresh.lock().insert(ws_id.clone(), Instant::now());
                     info!(
                         "full reparse {}: {}/{} files changed, {} symbols in {}ms",
-                        ws_id, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
+                        ws_id,
+                        snap.files_parsed,
+                        snap.files_walked,
+                        snap.symbols_extracted,
+                        snap.duration_ms
                     );
                 }
                 Ok(Err(e)) => warn!("full reparse failed for {}: {e}", ws_id),
@@ -264,15 +276,22 @@ impl Daemon {
                 let config_clone = Arc::clone(&self.config);
                 let ws_id = ws.id.clone();
                 match tokio::task::spawn_blocking(move || {
-                    tokio::runtime::Handle::current()
-                        .block_on(pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone))
+                    tokio::runtime::Handle::current().block_on(pipeline::parse_workspace(
+                        &ws_clone,
+                        &db_clone,
+                        &config_clone,
+                    ))
                 })
                 .await
                 {
                     Ok(Ok(snap)) => {
                         info!(
                             "reparsed {}: {}/{} files changed, {} symbols in {}ms",
-                            ws_id, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
+                            ws_id,
+                            snap.files_parsed,
+                            snap.files_walked,
+                            snap.symbols_extracted,
+                            snap.duration_ms
                         );
                     }
                     Ok(Err(e)) => {
@@ -287,10 +306,7 @@ impl Daemon {
     }
 }
 
-fn poll_smriti_events(
-    cursor_dir: &std::path::Path,
-    workspaces: &[WorkspaceEntry],
-) -> PollBatch {
+fn poll_smriti_events(cursor_dir: &std::path::Path, workspaces: &[WorkspaceEntry]) -> PollBatch {
     let reader = match SmritiReader::open(None, cursor_dir) {
         Ok(r) => r,
         Err(_) => {
@@ -332,10 +348,7 @@ fn poll_smriti_events(
 
         for event in &page.events {
             let path = PathBuf::from(&event.path);
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext_set.contains(ext) {
                 continue;
             }

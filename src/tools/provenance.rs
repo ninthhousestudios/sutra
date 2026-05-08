@@ -53,22 +53,22 @@ pub fn compute(symbol: &str, file: &str, commits: &[CommitInfo]) -> serde_json::
     })
 }
 
-pub fn handle(
-    db: &Db,
-    workspace_root: &Path,
-    symbol: &str,
-) -> Result<serde_json::Value> {
-    let sym = db.resolve_symbol(symbol, None)?.ok_or_else(|| SutraError::NotFound {
-        tool: "sutra_provenance",
-        kind: format!("symbol `{symbol}`"),
-        next_action: "Check the symbol name and try sutra_find to search.".into(),
-    })?;
+pub fn handle(db: &Db, workspace_root: &Path, symbol: &str) -> Result<serde_json::Value> {
+    let sym = db
+        .resolve_symbol(symbol, None)?
+        .ok_or_else(|| SutraError::NotFound {
+            tool: "sutra_provenance",
+            kind: format!("symbol `{symbol}`"),
+            next_action: "Check the symbol name and try sutra_find to search.".into(),
+        })?;
 
-    let file = db.file_by_id(sym.file_id)?.ok_or_else(|| SutraError::NotFound {
-        tool: "sutra_provenance",
-        kind: format!("file for symbol `{symbol}`"),
-        next_action: "The symbol's file is missing from the index. Run sutra_parse.".into(),
-    })?;
+    let file = db
+        .file_by_id(sym.file_id)?
+        .ok_or_else(|| SutraError::NotFound {
+            tool: "sutra_provenance",
+            kind: format!("file for symbol `{symbol}`"),
+            next_action: "The symbol's file is missing from the index. Run sutra_parse.".into(),
+        })?;
 
     let commits = git_log_follow(workspace_root, &file.path)?;
 
@@ -79,12 +79,7 @@ fn git_log_follow(workspace_root: &Path, path: &str) -> Result<Vec<CommitInfo>> 
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args([
-            "log",
-            "--follow",
-            "--format=%H\x1f%an\x1f%aI\x1f%s",
-            "--",
-        ])
+        .args(["log", "--follow", "--format=%H\x1f%an\x1f%aI\x1f%s", "--"])
         .arg(path)
         .output()
         .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;

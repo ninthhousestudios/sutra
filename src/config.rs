@@ -29,15 +29,14 @@ impl Config {
                 p
             });
 
-        let listen_addr = std::env::var("SUTRA_LISTEN_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:3201".to_string());
+        let listen_addr =
+            std::env::var("SUTRA_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3201".to_string());
 
         let parse_parallelism = parse_env_or("SUTRA_PARSE_PARALLELISM", num_cpus());
         let stale_threshold_sec = parse_env_or("SUTRA_STALE_THRESHOLD_SEC", 600u64);
         let watch_poll_sec = parse_env_or("SUTRA_WATCH_POLL_SEC", 2u64);
         let watch_debounce_sec = parse_env_or("SUTRA_WATCH_DEBOUNCE_SEC", 3u64);
-        let log_level =
-            std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        let log_level = std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
 
         Ok(Self {
             db_dir,

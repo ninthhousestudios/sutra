@@ -4,11 +4,7 @@ use std::process::Command;
 
 use crate::error::{Result, SutraError};
 
-pub fn git_diff_files(
-    workspace_root: &Path,
-    base: &str,
-    head: &str,
-) -> Result<Vec<String>> {
+pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
@@ -41,7 +37,12 @@ pub fn git_cochange_files(
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["log", "--name-only", "--pretty=format:COMMIT_SEP", "--since"])
+        .args([
+            "log",
+            "--name-only",
+            "--pretty=format:COMMIT_SEP",
+            "--since",
+        ])
         .arg(&since)
         .arg("--")
         .arg(path)

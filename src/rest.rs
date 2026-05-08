@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::db::Db;
@@ -27,7 +27,11 @@ pub fn router(
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
 ) -> Router {
-    let state = AppState { config, workspaces, db_cache };
+    let state = AppState {
+        config,
+        workspaces,
+        db_cache,
+    };
     Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
@@ -52,11 +56,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
                     let files = db.all_files().unwrap_or_default();
                     let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
                     let total_symbols: i64 = sym_counts.values().sum();
-                    let last_parse = db
-                        .last_parse_time()
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
+                    let last_parse = db.last_parse_time().ok().flatten().unwrap_or_default();
                     (files.len() as i64, total_symbols, last_parse)
                 } else {
                     (0, 0, String::new())
@@ -92,7 +92,9 @@ async fn add_workspace(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| req.path.clone());
 
-    let languages = req.languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+    let languages = req
+        .languages
+        .unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
 
     let entry = crate::workspace::WorkspaceEntry {
         id: id.clone(),
@@ -101,10 +103,7 @@ async fn add_workspace(
     };
 
     if let Err(e) = crate::workspace::add_workspace(&state.config.workspaces_path, entry.clone()) {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": e.to_string()})),
-        );
+        return (StatusCode::CONFLICT, Json(json!({"error": e.to_string()})));
     }
 
     {
@@ -116,5 +115,8 @@ async fn add_workspace(
         state.db_cache.lock().insert(id.clone(), Arc::new(db));
     }
 
-    (StatusCode::OK, Json(json!({"id": id, "status": "registered"})))
+    (
+        StatusCode::OK,
+        Json(json!({"id": id, "status": "registered"})),
+    )
 }

@@ -63,7 +63,10 @@ fn collect_callers(
                 .map(|f| f.path)
                 .unwrap_or_default();
             let caller_sym = db.find_enclosing_symbol(r.file_id, r.line)?;
-            let caller_name = caller_sym.as_ref().map(|s| s.qualified_name.as_str()).unwrap_or("<unknown>");
+            let caller_name = caller_sym
+                .as_ref()
+                .map(|s| s.qualified_name.as_str())
+                .unwrap_or("<unknown>");
             entries.push(json!({
                 "caller": caller_name,
                 "file": file_path,
@@ -101,10 +104,9 @@ fn collect_callees(
             None => continue,
         };
         let refs = db.find_refs_in_file(file_id)?;
-        for r in refs
-            .iter()
-            .filter(|r| r.context_kind == "call" && r.line >= sym.start_line && r.line <= sym.end_line)
-        {
+        for r in refs.iter().filter(|r| {
+            r.context_kind == "call" && r.line >= sym.start_line && r.line <= sym.end_line
+        }) {
             if let Some(target_id) = r.target_symbol_id {
                 let callee_sym = db.symbol_by_id(target_id)?;
                 let callee_name = callee_sym
@@ -141,4 +143,3 @@ fn collect_callees(
 
     Ok(entries)
 }
-

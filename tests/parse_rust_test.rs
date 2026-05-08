@@ -1,5 +1,5 @@
-use sutra::parser::parse_file;
 use sutra::parser::SymbolKind;
+use sutra::parser::parse_file;
 
 #[test]
 fn test_parse_function() {
@@ -150,7 +150,10 @@ fn test_parse_use_statements() {
     let result = parse_file(src, "rust", "test.rs").unwrap();
     assert!(result.parsed_ok);
 
-    assert!(!result.imports.is_empty(), "should have at least one import");
+    assert!(
+        !result.imports.is_empty(),
+        "should have at least one import"
+    );
     let import = &result.imports[0];
     assert!(
         import.raw_path.contains("std::collections::HashMap"),
@@ -205,10 +208,7 @@ fn test_parse_docstrings() {
         .expect("should have fn documented");
     assert!(sym.docstring.is_some(), "docstring should be present");
     let doc = sym.docstring.as_ref().unwrap();
-    assert!(
-        doc.contains("This is a doc"),
-        "docstring was: {doc}"
-    );
+    assert!(doc.contains("This is a doc"), "docstring was: {doc}");
 }
 
 #[test]
@@ -247,9 +247,18 @@ use std::io::{self, Read, Write};
     assert!(result.parsed_ok);
 
     let paths: Vec<&str> = result.imports.iter().map(|i| i.raw_path.as_str()).collect();
-    assert!(paths.contains(&"std::collections::HashMap"), "paths: {paths:?}");
-    assert!(paths.contains(&"std::collections::HashSet"), "paths: {paths:?}");
-    assert!(paths.contains(&"std::io"), "self should expand to prefix: {paths:?}");
+    assert!(
+        paths.contains(&"std::collections::HashMap"),
+        "paths: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"std::collections::HashSet"),
+        "paths: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"std::io"),
+        "self should expand to prefix: {paths:?}"
+    );
     assert!(paths.contains(&"std::io::Read"), "paths: {paths:?}");
     assert!(paths.contains(&"std::io::Write"), "paths: {paths:?}");
 }

@@ -1,7 +1,7 @@
 use crate::error::{Result, SutraError};
 use crate::parser::{
-    complexity, ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind,
-    SymbolKind,
+    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+    complexity,
 };
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -66,8 +66,7 @@ fn collect_symbols(
                 continue;
             }
             "mixin_declaration" => {
-                if let Some(sym) =
-                    extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
+                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
                 {
                     let name = sym.short_name.clone();
                     symbols.push(sym);
@@ -102,9 +101,7 @@ fn collect_symbols(
             // Top-level function declarations
             "function_declaration" => {
                 // signature field holds the function_signature node
-                let sig_node = child
-                    .child_by_field_name("signature")
-                    .unwrap_or(child);
+                let sig_node = child.child_by_field_name("signature").unwrap_or(child);
                 let kind = if name_context.is_empty() {
                     SymbolKind::Function
                 } else {
@@ -117,9 +114,7 @@ fn collect_symbols(
             // Methods and getters/setters inside class/mixin/extension bodies
             "method_declaration" => {
                 // signature field is a method_signature (wrapping function_signature/getter_signature/setter_signature)
-                let sig_node = child
-                    .child_by_field_name("signature")
-                    .unwrap_or(child);
+                let sig_node = child.child_by_field_name("signature").unwrap_or(child);
                 if let Some(sym) =
                     extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
                 {
@@ -145,7 +140,11 @@ fn extract_named_symbol(
     name_context: &[String],
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
-    let short_name = node.child_by_field_name("name")?.utf8_text(src).ok()?.to_string();
+    let short_name = node
+        .child_by_field_name("name")?
+        .utf8_text(src)
+        .ok()?
+        .to_string();
 
     build_symbol(node, src, name_context, short_name, kind, None, None)
 }
@@ -212,11 +211,7 @@ fn extract_method_symbol(
 
 /// Extract a type_alias symbol. The grammar gives: (type_alias (type_identifier) ...).
 /// There is no `name` field — the name is the first `type_identifier` child.
-fn extract_type_alias(
-    node: Node,
-    src: &[u8],
-    name_context: &[String],
-) -> Option<ExtractedSymbol> {
+fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option<ExtractedSymbol> {
     let mut cursor = node.walk();
     let short_name = node
         .children(&mut cursor)
@@ -224,7 +219,15 @@ fn extract_type_alias(
         .utf8_text(src)
         .ok()?
         .to_string();
-    build_symbol(node, src, name_context, short_name, SymbolKind::TypeAlias, None, None)
+    build_symbol(
+        node,
+        src,
+        name_context,
+        short_name,
+        SymbolKind::TypeAlias,
+        None,
+        None,
+    )
 }
 
 fn build_symbol(
@@ -246,19 +249,18 @@ fn build_symbol(
     let visibility = dart_visibility(&short_name);
     let docstring = extract_docstring(node, src);
 
-    let (cyclomatic, cognitive) =
-        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
-            if let Some(body) = node.child_by_field_name("body") {
-                (
-                    Some(complexity::cyclomatic(body, src, "dart")),
-                    Some(complexity::cognitive(body, src, "dart")),
-                )
-            } else {
-                (Some(1), Some(0))
-            }
+    let (cyclomatic, cognitive) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+        if let Some(body) = node.child_by_field_name("body") {
+            (
+                Some(complexity::cyclomatic(body, src, "dart")),
+                Some(complexity::cognitive(body, src, "dart")),
+            )
         } else {
-            (None, None)
-        };
+            (Some(1), Some(0))
+        }
+    } else {
+        (None, None)
+    };
 
     Some(ExtractedSymbol {
         qualified_name,
@@ -302,7 +304,8 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
     let mut sibling = node.prev_sibling();
     while let Some(sib) = sibling {
         if let Ok(text) = sib.utf8_text(src)
-            && sib.kind() == "comment" && text.starts_with("///")
+            && sib.kind() == "comment"
+            && text.starts_with("///")
         {
             let content = text
                 .strip_prefix("/// ")
@@ -391,9 +394,7 @@ fn is_definition_name(node: Node) -> bool {
                 | "getter_signature"
                 | "setter_signature"
         );
-        if is_def
-            && let Some(name_node) = parent.child_by_field_name("name")
-        {
+        if is_def && let Some(name_node) = parent.child_by_field_name("name") {
             return name_node.id() == node.id();
         }
     }
@@ -424,11 +425,7 @@ fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
     walk_imports_recursive(imports, &mut cursor, src);
 }
 
-fn walk_imports_recursive(
-    imports: &mut Vec<ExtractedImport>,
-    cursor: &mut TreeCursor,
-    src: &[u8],
-) {
+fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeCursor, src: &[u8]) {
     let node = cursor.node();
 
     if node.kind() == "import_or_export" {

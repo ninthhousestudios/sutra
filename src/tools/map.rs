@@ -30,10 +30,7 @@ pub fn handle_with_freshness(
         .map(|f| {
             let symbol_count = sym_counts.get(&f.id).copied().unwrap_or(0);
             let pr_boost = (f.pagerank.unwrap_or(0.0) * 1000.0) as i64;
-            let (max_cog, avg_cog) = complexity_by_file
-                .get(&f.id)
-                .copied()
-                .unwrap_or((0, 0.0));
+            let (max_cog, avg_cog) = complexity_by_file.get(&f.id).copied().unwrap_or((0, 0.0));
             let complexity_boost = max_cog.min(20);
             let importance =
                 symbol_count + f.fan_in_files * 2 + f.blast_radius + pr_boost + complexity_boost;

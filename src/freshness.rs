@@ -106,7 +106,10 @@ mod tests {
         fs::write(&file, "fn main() {}").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         let parsed_at = chrono::Utc::now().to_rfc3339();
-        assert_eq!(check_file(dir.path(), "test.rs", &parsed_at), FileStatus::Fresh);
+        assert_eq!(
+            check_file(dir.path(), "test.rs", &parsed_at),
+            FileStatus::Fresh
+        );
     }
 
     #[test]
@@ -117,14 +120,20 @@ mod tests {
         let parsed_at = chrono::Utc::now().to_rfc3339();
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(&file, "fn main() { changed }").unwrap();
-        assert_eq!(check_file(dir.path(), "test.rs", &parsed_at), FileStatus::Edited);
+        assert_eq!(
+            check_file(dir.path(), "test.rs", &parsed_at),
+            FileStatus::Edited
+        );
     }
 
     #[test]
     fn stale_when_file_missing() {
         let dir = tempdir().unwrap();
         let parsed_at = chrono::Utc::now().to_rfc3339();
-        assert_eq!(check_file(dir.path(), "gone.rs", &parsed_at), FileStatus::Stale);
+        assert_eq!(
+            check_file(dir.path(), "gone.rs", &parsed_at),
+            FileStatus::Stale
+        );
     }
 
     #[test]

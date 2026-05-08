@@ -141,7 +141,10 @@ impl Db {
              PRAGMA busy_timeout = 5000;",
         )?;
 
-        let db = Self { conn: Mutex::new(conn), workspace_id: workspace_id.to_string() };
+        let db = Self {
+            conn: Mutex::new(conn),
+            workspace_id: workspace_id.to_string(),
+        };
         db.run_migrations()?;
         Ok(db)
     }
@@ -206,7 +209,14 @@ impl Db {
                 line_count   = excluded.line_count,
                 parsed_ok    = excluded.parsed_ok,
                 last_parsed  = excluded.last_parsed",
-            params![path, language, content_hash, line_count, parsed_ok as i64, now],
+            params![
+                path,
+                language,
+                content_hash,
+                line_count,
+                parsed_ok as i64,
+                now
+            ],
         )?;
         let id: i64 = conn.query_row(
             "SELECT id FROM files WHERE path = ?1",
@@ -258,8 +268,7 @@ impl Db {
              FROM files
              ORDER BY blast_radius DESC",
         )?;
-        let rows: rusqlite::Result<Vec<FileRow>> =
-            stmt.query_map([], map_file_row)?.collect();
+        let rows: rusqlite::Result<Vec<FileRow>> = stmt.query_map([], map_file_row)?.collect();
         Ok(rows?)
     }
 
@@ -276,9 +285,7 @@ impl Db {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         {
-            let mut stmt = conn.prepare_cached(
-                "UPDATE files SET pagerank = ?1 WHERE id = ?2",
-            )?;
+            let mut stmt = conn.prepare_cached("UPDATE files SET pagerank = ?1 WHERE id = ?2")?;
             for &(file_id, pr) in updates {
                 stmt.execute(params![pr, file_id])?;
             }
@@ -291,9 +298,7 @@ impl Db {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         {
-            let mut stmt = conn.prepare_cached(
-                "UPDATE symbols SET pagerank = ?1 WHERE id = ?2",
-            )?;
+            let mut stmt = conn.prepare_cached("UPDATE symbols SET pagerank = ?1 WHERE id = ?2")?;
             for &(sym_id, pr) in updates {
                 stmt.execute(params![pr, sym_id])?;
             }
@@ -309,18 +314,15 @@ impl Db {
 
         // Manual FTS5 sync: delete every symbol FTS row for this file.
         let symbol_ids: Vec<i64> = {
-            let mut stmt =
-                conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
-            let ids: rusqlite::Result<Vec<i64>> =
-                stmt.query_map(params![file_id], |row| row.get(0))?.collect();
+            let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
+            let ids: rusqlite::Result<Vec<i64>> = stmt
+                .query_map(params![file_id], |row| row.get(0))?
+                .collect();
             ids?
         };
 
         for sid in &symbol_ids {
-            conn.execute(
-                "DELETE FROM symbols_fts WHERE symbol_id = ?1",
-                params![sid],
-            )?;
+            conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
         }
 
         // Delete the file; FK cascades handle symbols and refs.
@@ -457,10 +459,12 @@ impl Db {
                 )?,
             };
             let rows: rusqlite::Result<Vec<SymbolRow>> = match kind_filter {
-                Some(k) => {
-                    stmt.query_map(params![name, k, limit], map_symbol_row)?.collect()
-                }
-                None => stmt.query_map(params![name, limit], map_symbol_row)?.collect(),
+                Some(k) => stmt
+                    .query_map(params![name, k, limit], map_symbol_row)?
+                    .collect(),
+                None => stmt
+                    .query_map(params![name, limit], map_symbol_row)?
+                    .collect(),
             };
             rows?
         };
@@ -477,8 +481,9 @@ impl Db {
                  WHERE symbols_fts MATCH ?1
                  LIMIT ?2",
             )?;
-            let ids: rusqlite::Result<Vec<i64>> =
-                stmt.query_map(params![fts_query, limit], |row| row.get(0))?.collect();
+            let ids: rusqlite::Result<Vec<i64>> = stmt
+                .query_map(params![fts_query, limit], |row| row.get(0))?
+                .collect();
             ids?
         };
 
@@ -504,8 +509,7 @@ impl Db {
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(SutraError::Db(e)),
                 }?
-            }
-                && kind_filter.is_none_or(|k| sym.kind == k)
+            } && kind_filter.is_none_or(|k| sym.kind == k)
             {
                 results.push(sym);
             }
@@ -534,9 +538,7 @@ impl Db {
     /// Return (file_id, symbol_count) for all files in a single query.
     pub fn symbol_counts_by_file(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT file_id, COUNT(*) FROM symbols GROUP BY file_id",
-        )?;
+        let mut stmt = conn.prepare("SELECT file_id, COUNT(*) FROM symbols GROUP BY file_id")?;
         let rows: rusqlite::Result<Vec<(i64, i64)>> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect();
@@ -555,7 +557,10 @@ impl Db {
         let rows: rusqlite::Result<Vec<(i64, i64, f64)>> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect();
-        Ok(rows?.into_iter().map(|(fid, max_c, avg_c)| (fid, (max_c, avg_c))).collect())
+        Ok(rows?
+            .into_iter()
+            .map(|(fid, max_c, avg_c)| (fid, (max_c, avg_c)))
+            .collect())
     }
 
     /// Find symbols with zero inbound references (potential dead code).
@@ -647,11 +652,11 @@ impl Db {
     /// Load all (id, qualified_name, short_name, kind) tuples in a single query.
     pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String, String)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, qualified_name, short_name, kind FROM symbols",
-        )?;
+        let mut stmt = conn.prepare("SELECT id, qualified_name, short_name, kind FROM symbols")?;
         let rows: rusqlite::Result<Vec<(i64, String, String, String)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect();
         Ok(rows?)
     }
@@ -662,7 +667,11 @@ impl Db {
             return Ok(Some(sym));
         }
         let mut results = self.find_symbols_by_name(name, kind, 1)?;
-        Ok(if results.is_empty() { None } else { Some(results.swap_remove(0)) })
+        Ok(if results.is_empty() {
+            None
+        } else {
+            Some(results.swap_remove(0))
+        })
     }
 
     /// Find the narrowest symbol enclosing the given line in a file.
@@ -673,7 +682,9 @@ impl Db {
             if s.start_line <= line && line <= s.end_line {
                 match best {
                     None => best = Some(s),
-                    Some(prev) if (s.end_line - s.start_line) < (prev.end_line - prev.start_line) => {
+                    Some(prev)
+                        if (s.end_line - s.start_line) < (prev.end_line - prev.start_line) =>
+                    {
                         best = Some(s);
                     }
                     _ => {}
@@ -701,7 +712,14 @@ impl Db {
         conn.execute(
             "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![file_id, target_symbol_id, unresolved_name, line, col, context_kind],
+            params![
+                file_id,
+                target_symbol_id,
+                unresolved_name,
+                line,
+                col,
+                context_kind
+            ],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -753,14 +771,15 @@ impl Db {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let sql = format!(
-            "SELECT DISTINCT file_id FROM refs WHERE target_symbol_id IN ({placeholders})"
-        );
+        let sql =
+            format!("SELECT DISTINCT file_id FROM refs WHERE target_symbol_id IN ({placeholders})");
 
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&sql)?;
         let ids: rusqlite::Result<Vec<i64>> = stmt
-            .query_map(rusqlite::params_from_iter(symbol_ids.iter()), |row| row.get(0))?
+            .query_map(rusqlite::params_from_iter(symbol_ids.iter()), |row| {
+                row.get(0)
+            })?
             .collect();
         Ok(ids?)
     }
@@ -859,9 +878,16 @@ impl Db {
                                     hotspot_count, health_score)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                now, files_parsed, symbols_extracted, refs_extracted,
-                parse_errors, duration_ms, total_complexity,
-                dead_symbol_count, hotspot_count, health_score,
+                now,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                parse_errors,
+                duration_ms,
+                total_complexity,
+                dead_symbol_count,
+                hotspot_count,
+                health_score,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -871,11 +897,9 @@ impl Db {
     /// snapshot has been recorded yet.
     pub fn last_parse_time(&self) -> Result<Option<String>> {
         let conn = self.conn.lock();
-        match conn.query_row(
-            "SELECT MAX(timestamp) FROM snapshots",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        ) {
+        match conn.query_row("SELECT MAX(timestamp) FROM snapshots", [], |row| {
+            row.get::<_, Option<String>>(0)
+        }) {
             Ok(ts) => Ok(ts),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(SutraError::Db(e)),

@@ -14,14 +14,24 @@ fn seed_file(db: &Db, path: &str) -> i64 {
 
 fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
     db.insert_symbol(&InsertSymbolParams {
-        file_id, qualified_name: qn, short_name: sn, kind,
-        signature: None, signature_hash: None, visibility: None,
-        start_line: 1, start_col: 0, end_line: 10, end_col: 0,
-        parent_symbol_id: None, docstring: None,
-            cyclomatic: None,
-            cognitive: None,
-            flags: 0,
-    }).unwrap()
+        file_id,
+        qualified_name: qn,
+        short_name: sn,
+        kind,
+        signature: None,
+        signature_hash: None,
+        visibility: None,
+        start_line: 1,
+        start_col: 0,
+        end_line: 10,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+    })
+    .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -32,13 +42,17 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
 fn test_upsert_file_insert_and_update() {
     let (_dir, db) = setup_db();
 
-    let id1 = db.upsert_file("src/lib.rs", "rust", "hash1", 50, true).unwrap();
+    let id1 = db
+        .upsert_file("src/lib.rs", "rust", "hash1", 50, true)
+        .unwrap();
     let row = db.file_by_path("src/lib.rs").unwrap().unwrap();
     assert_eq!(row.id, id1);
     assert_eq!(row.content_hash, "hash1");
     assert_eq!(row.line_count, 50);
 
-    let id2 = db.upsert_file("src/lib.rs", "rust", "hash2", 60, true).unwrap();
+    let id2 = db
+        .upsert_file("src/lib.rs", "rust", "hash2", 60, true)
+        .unwrap();
     assert_eq!(id1, id2);
     let row2 = db.file_by_path("src/lib.rs").unwrap().unwrap();
     assert_eq!(row2.content_hash, "hash2");
@@ -94,15 +108,26 @@ fn test_delete_file_cascade() {
 fn test_insert_and_lookup_symbol() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let sid = db.insert_symbol(&InsertSymbolParams {
-        file_id: fid, qualified_name: "lib::bar", short_name: "bar", kind: "function",
-        signature: Some("fn bar()"), signature_hash: None, visibility: Some("pub"),
-        start_line: 1, start_col: 0, end_line: 5, end_col: 0,
-        parent_symbol_id: None, docstring: Some("docs"),
+    let sid = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id: fid,
+            qualified_name: "lib::bar",
+            short_name: "bar",
+            kind: "function",
+            signature: Some("fn bar()"),
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: Some("docs"),
             cyclomatic: None,
             cognitive: None,
             flags: 0,
-    }).unwrap();
+        })
+        .unwrap();
 
     let by_id = db.symbol_by_id(sid).unwrap().unwrap();
     assert_eq!(by_id.qualified_name, "lib::bar");
@@ -134,11 +159,15 @@ fn test_find_symbols_by_name_with_kind_filter() {
     seed_symbol(&db, fid, "lib::process", "process", "function");
     seed_symbol(&db, fid, "mod::process", "process", "struct");
 
-    let fns = db.find_symbols_by_name("process", Some("function"), 10).unwrap();
+    let fns = db
+        .find_symbols_by_name("process", Some("function"), 10)
+        .unwrap();
     assert_eq!(fns.len(), 1);
     assert_eq!(fns[0].kind, "function");
 
-    let structs = db.find_symbols_by_name("process", Some("struct"), 10).unwrap();
+    let structs = db
+        .find_symbols_by_name("process", Some("struct"), 10)
+        .unwrap();
     assert_eq!(structs.len(), 1);
     assert_eq!(structs[0].kind, "struct");
 }
@@ -225,7 +254,10 @@ fn test_resolve_symbol_by_qualified_name() {
     let fid = seed_file(&db, "src/lib.rs");
     let sid = seed_symbol(&db, fid, "lib::exact_match", "exact_match", "function");
 
-    let result = db.resolve_symbol("lib::exact_match", None).unwrap().unwrap();
+    let result = db
+        .resolve_symbol("lib::exact_match", None)
+        .unwrap()
+        .unwrap();
     assert_eq!(result.id, sid);
 }
 
@@ -242,22 +274,37 @@ fn test_resolve_symbol_by_short_name() {
 #[test]
 fn test_resolve_symbol_not_found() {
     let (_dir, db) = setup_db();
-    assert!(db.resolve_symbol("totally_nonexistent_zzzz", None).unwrap().is_none());
+    assert!(
+        db.resolve_symbol("totally_nonexistent_zzzz", None)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
 fn test_find_enclosing_symbol_exact() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let sid = db.insert_symbol(&InsertSymbolParams {
-        file_id: fid, qualified_name: "lib::outer", short_name: "outer", kind: "function",
-        signature: None, signature_hash: None, visibility: None,
-        start_line: 10, start_col: 0, end_line: 20, end_col: 0,
-        parent_symbol_id: None, docstring: None,
+    let sid = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id: fid,
+            qualified_name: "lib::outer",
+            short_name: "outer",
+            kind: "function",
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            start_line: 10,
+            start_col: 0,
+            end_line: 20,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
             cyclomatic: None,
             cognitive: None,
             flags: 0,
-    }).unwrap();
+        })
+        .unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
     assert_eq!(result.id, sid);
@@ -267,27 +314,52 @@ fn test_find_enclosing_symbol_exact() {
 fn test_find_enclosing_symbol_nested() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
-    let outer_id = db.insert_symbol(&InsertSymbolParams {
-        file_id: fid, qualified_name: "lib::outer", short_name: "outer", kind: "function",
-        signature: None, signature_hash: None, visibility: None,
-        start_line: 1, start_col: 0, end_line: 50, end_col: 0,
-        parent_symbol_id: None, docstring: None,
+    let outer_id = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id: fid,
+            qualified_name: "lib::outer",
+            short_name: "outer",
+            kind: "function",
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            start_line: 1,
+            start_col: 0,
+            end_line: 50,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
             cyclomatic: None,
             cognitive: None,
             flags: 0,
-    }).unwrap();
-    let inner_id = db.insert_symbol(&InsertSymbolParams {
-        file_id: fid, qualified_name: "lib::inner", short_name: "inner", kind: "function",
-        signature: None, signature_hash: None, visibility: None,
-        start_line: 10, start_col: 0, end_line: 20, end_col: 0,
-        parent_symbol_id: Some(outer_id), docstring: None,
+        })
+        .unwrap();
+    let inner_id = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id: fid,
+            qualified_name: "lib::inner",
+            short_name: "inner",
+            kind: "function",
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            start_line: 10,
+            start_col: 0,
+            end_line: 20,
+            end_col: 0,
+            parent_symbol_id: Some(outer_id),
+            docstring: None,
             cyclomatic: None,
             cognitive: None,
             flags: 0,
-    }).unwrap();
+        })
+        .unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
-    assert_eq!(result.id, inner_id, "should find narrowest enclosing symbol");
+    assert_eq!(
+        result.id, inner_id,
+        "should find narrowest enclosing symbol"
+    );
 }
 
 #[test]
@@ -295,14 +367,24 @@ fn test_find_enclosing_symbol_outside() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
     db.insert_symbol(&InsertSymbolParams {
-        file_id: fid, qualified_name: "lib::fn1", short_name: "fn1", kind: "function",
-        signature: None, signature_hash: None, visibility: None,
-        start_line: 1, start_col: 0, end_line: 20, end_col: 0,
-        parent_symbol_id: None, docstring: None,
-            cyclomatic: None,
-            cognitive: None,
-            flags: 0,
-    }).unwrap();
+        file_id: fid,
+        qualified_name: "lib::fn1",
+        short_name: "fn1",
+        kind: "function",
+        signature: None,
+        signature_hash: None,
+        visibility: None,
+        start_line: 1,
+        start_col: 0,
+        end_line: 20,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+    })
+    .unwrap();
 
     assert!(db.find_enclosing_symbol(fid, 100).unwrap().is_none());
 }
@@ -423,7 +505,8 @@ fn test_insert_snapshot_and_last_parse_time() {
 #[test]
 fn test_snapshot_with_aggregates() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 300, 42, 5, 3, 78).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 300, 42, 5, 3, 78)
+        .unwrap();
 
     let snaps = db.latest_snapshots(1).unwrap();
     assert_eq!(snaps.len(), 1);
@@ -439,9 +522,11 @@ fn test_snapshot_with_aggregates() {
 #[test]
 fn test_latest_snapshots_ordering() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75).unwrap();
+    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75)
+        .unwrap();
 
     let snaps = db.latest_snapshots(2).unwrap();
     assert_eq!(snaps.len(), 2);
@@ -452,9 +537,11 @@ fn test_latest_snapshots_ordering() {
 #[test]
 fn test_snapshots_between() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75).unwrap();
+    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75)
+        .unwrap();
 
     let snaps = db.snapshots_between("2000-01-01", "2099-01-01").unwrap();
     assert_eq!(snaps.len(), 2);
@@ -465,9 +552,11 @@ fn test_snapshots_between() {
 #[test]
 fn test_trend_default_from_to() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 25, 4, 2, 75).unwrap();
+    db.insert_snapshot(20, 80, 40, 1, 200, 25, 4, 2, 75)
+        .unwrap();
 
     let result = sutra::tools::trend::handle(&db, None, None).unwrap();
     let deltas = &result["deltas"];
@@ -482,7 +571,8 @@ fn test_trend_default_from_to() {
 #[test]
 fn test_trend_insufficient_snapshots() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
+        .unwrap();
     let result = sutra::tools::trend::handle(&db, None, None);
     assert!(result.is_err());
 }
@@ -513,6 +603,8 @@ fn test_find_symbols_by_name_with_colons() {
     let results = db.find_symbols_by_name("foo::bar", None, 10).unwrap();
     assert!(results.is_empty() || results[0].qualified_name == "foo::bar");
 
-    let results = db.find_symbols_by_name("nonexistent::thing", None, 10).unwrap();
+    let results = db
+        .find_symbols_by_name("nonexistent::thing", None, 10)
+        .unwrap();
     assert!(results.is_empty());
 }

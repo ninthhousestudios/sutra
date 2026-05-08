@@ -30,10 +30,7 @@ fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
             symbol_kind,
             "struct" | "enum" | "trait" | "type_alias" | "class" | "mixin" | "extension"
         ),
-        RefContextKind::Call => matches!(
-            symbol_kind,
-            "function" | "method" | "macro"
-        ),
+        RefContextKind::Call => matches!(symbol_kind, "function" | "method" | "macro"),
         // PatternBind, Other — can't narrow, accept any
         _ => true,
     }
@@ -47,7 +44,10 @@ fn resolve_single(
 ) -> ResolvedRef {
     // Import refs are the `use`/`import` statement itself — not a usage.
     // FieldAccess requires type info we don't have.
-    if matches!(r.context_kind, RefContextKind::Import | RefContextKind::FieldAccess) {
+    if matches!(
+        r.context_kind,
+        RefContextKind::Import | RefContextKind::FieldAccess
+    ) {
         return ResolvedRef {
             original: r.clone(),
             target_symbol_id: None,
@@ -57,7 +57,10 @@ fn resolve_single(
     }
 
     let name = &r.name;
-    let use_kind_filter = matches!(r.context_kind, RefContextKind::TypeUse | RefContextKind::Call);
+    let use_kind_filter = matches!(
+        r.context_kind,
+        RefContextKind::TypeUse | RefContextKind::Call
+    );
 
     // --- Step 1: local scope (file_symbols by short_name) ---
     let local_matches: Vec<&ExtractedSymbol> = file_symbols
@@ -85,7 +88,14 @@ fn resolve_single(
 
     // --- Step 2: import-filtered match ---
     let mut visited: HashSet<&str> = HashSet::new();
-    if let Some(id) = find_via_imports(name, &r.context_kind, use_kind_filter, all_symbols, file_imports, &mut visited) {
+    if let Some(id) = find_via_imports(
+        name,
+        &r.context_kind,
+        use_kind_filter,
+        all_symbols,
+        file_imports,
+        &mut visited,
+    ) {
         return resolved(r, id);
     }
 
@@ -102,7 +112,10 @@ fn resolve_single(
     }
 
     if global_matches.len() > 1 {
-        let best = global_matches.iter().min_by_key(|(_, qn, _, _)| qn.len()).unwrap();
+        let best = global_matches
+            .iter()
+            .min_by_key(|(_, qn, _, _)| qn.len())
+            .unwrap();
         return resolved(r, best.0);
     }
 
@@ -181,9 +194,7 @@ fn find_via_imports(
         }
 
         // Full qualified_name match
-        if let Some((id, _, _, kind)) = all_symbols
-            .iter()
-            .find(|(_, qn, _, _)| qn == path)
+        if let Some((id, _, _, kind)) = all_symbols.iter().find(|(_, qn, _, _)| qn == path)
             && (!use_kind_filter || kind_compatible(context, kind))
         {
             return Some(*id);

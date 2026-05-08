@@ -72,13 +72,18 @@ async fn status_returns_workspace_list() {
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    let workspaces = json["workspaces"].as_array().expect("must have workspaces array");
+    let workspaces = json["workspaces"]
+        .as_array()
+        .expect("must have workspaces array");
     assert_eq!(workspaces.len(), 1);
 
     let ws0 = &workspaces[0];
     assert_eq!(ws0["id"], "test_ws");
     assert_eq!(ws0["root"], "/tmp/test_ws");
-    assert!(ws0["last_parse_time"].is_string(), "must have last_parse_time");
+    assert!(
+        ws0["last_parse_time"].is_string(),
+        "must have last_parse_time"
+    );
     assert!(ws0["file_count"].is_number(), "must have file_count");
     assert!(ws0["symbol_count"].is_number(), "must have symbol_count");
 }

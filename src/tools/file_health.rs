@@ -24,8 +24,7 @@ pub fn compute_file_scores(
     max_pagerank: f64,
 ) -> FileScores {
     let complexity_health =
-        (100.0 - (avg_cognitive * 4.0).min(60.0) - (max_cognitive as f64 * 0.5).min(40.0))
-            .max(0.0);
+        (100.0 - (avg_cognitive * 4.0).min(60.0) - (max_cognitive as f64 * 0.5).min(40.0)).max(0.0);
 
     let dead_health = (100.0 - dead_ratio * 100.0).max(0.0);
 
@@ -35,8 +34,7 @@ pub fn compute_file_scores(
     let pr_scaled = (pr_norm * 30.0).min(30.0);
     let coupling_health = (100.0 - blast_scaled - fan_in_scaled - pr_scaled).max(0.0);
 
-    let overall_health =
-        0.45 * complexity_health + 0.30 * dead_health + 0.25 * coupling_health;
+    let overall_health = 0.45 * complexity_health + 0.30 * dead_health + 0.25 * coupling_health;
 
     FileScores {
         complexity_health,

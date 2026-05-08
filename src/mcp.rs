@@ -307,7 +307,10 @@ impl SutraServer {
     }
 
     fn require_analysis(&self) -> std::result::Result<(), ErrorData> {
-        if !self.analysis_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+        if !self
+            .analysis_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
                 "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
@@ -363,9 +366,12 @@ impl SutraServer {
         &self,
         #[allow(unused_variables)] Parameters(_args): Parameters<EmptyArgs>,
     ) -> Result<String, ErrorData> {
-        let result =
-            tools::health::handle(&self.workspaces.read().workspace, &self.db_cache, &self.config)
-                .map_err(sutra_to_rmcp)?;
+        let result = tools::health::handle(
+            &self.workspaces.read().workspace,
+            &self.db_cache,
+            &self.config,
+        )
+        .map_err(sutra_to_rmcp)?;
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
     }
 
@@ -387,8 +393,10 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "File symbol table of contents — all symbols in a file with \
-        qualified names, kinds, line ranges, and signatures.")]
+    #[tool(
+        description = "File symbol table of contents — all symbols in a file with \
+        qualified names, kinds, line ranges, and signatures."
+    )]
     pub async fn sutra_outline(
         &self,
         Parameters(args): Parameters<OutlineArgs>,
@@ -399,8 +407,10 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Jump to a symbol definition by name. Three-tier search: \
-        exact short_name, exact qualified_name, then FTS5 fuzzy.")]
+    #[tool(
+        description = "Jump to a symbol definition by name. Three-tier search: \
+        exact short_name, exact qualified_name, then FTS5 fuzzy."
+    )]
     pub async fn sutra_find(
         &self,
         Parameters(args): Parameters<FindArgs>,
@@ -437,16 +447,18 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Read a symbol's source code from disk with line numbers. \
-        Includes context lines around the symbol. Returns stale warning if file was deleted.")]
+    #[tool(
+        description = "Read a symbol's source code from disk with line numbers. \
+        Includes context lines around the symbol. Returns stale warning if file was deleted."
+    )]
     pub async fn sutra_read(
         &self,
         Parameters(args): Parameters<ReadArgs>,
     ) -> Result<String, ErrorData> {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let mut result =
-            tools::read::handle(&db, &ws.root, &args.symbol, args.context_lines).map_err(sutra_to_rmcp)?;
+        let mut result = tools::read::handle(&db, &ws.root, &args.symbol, args.context_lines)
+            .map_err(sutra_to_rmcp)?;
 
         // Tier-2 stale refusal: withhold content when index is stale
         let freshness = self.freshness(&db);
@@ -467,9 +479,11 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Blast radius analysis for a symbol. Counts direct callers, \
+    #[tool(
+        description = "Blast radius analysis for a symbol. Counts direct callers, \
         runs transitive BFS (depth 3), and computes risk level (low/medium/high). \
-        Also acknowledges the file for the modification guard.")]
+        Also acknowledges the file for the modification guard."
+    )]
     pub async fn sutra_impact(
         &self,
         Parameters(args): Parameters<ImpactArgs>,
@@ -491,12 +505,15 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::deps::handle(&db, args.path.as_deref(), args.depth).map_err(sutra_to_rmcp)?;
+        let result =
+            tools::deps::handle(&db, args.path.as_deref(), args.depth).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Trigger a workspace reparse. Use after editing files to get \
-        fresh results from other tools.")]
+    #[tool(
+        description = "Trigger a workspace reparse. Use after editing files to get \
+        fresh results from other tools."
+    )]
     pub async fn sutra_parse(
         &self,
         Parameters(args): Parameters<WorkspaceArgs>,
@@ -509,9 +526,11 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Manage tool tiers. Enable or disable the analysis tier \
+    #[tool(
+        description = "Manage tool tiers. Enable or disable the analysis tier \
         (sutra_refs, sutra_calls, sutra_diff_impact, sutra_cochange). \
-        Use list=true to see available tiers and their status.")]
+        Use list=true to see available tiers and their status."
+    )]
     pub async fn sutra_tools(
         &self,
         Parameters(args): Parameters<ToolsMetaArgs>,
@@ -548,13 +567,8 @@ impl SutraServer {
         self.require_analysis()?;
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::calls::handle(
-            &db,
-            &args.symbol,
-            args.direction.as_deref(),
-            args.depth,
-        )
-        .map_err(sutra_to_rmcp)?;
+        let result = tools::calls::handle(&db, &args.symbol, args.direction.as_deref(), args.depth)
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -570,13 +584,8 @@ impl SutraServer {
         self.require_analysis()?;
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::trace::handle(
-            &db,
-            &args.symbol,
-            args.direction.as_deref(),
-            args.limit,
-        )
-        .map_err(sutra_to_rmcp)?;
+        let result = tools::trace::handle(&db, &args.symbol, args.direction.as_deref(), args.limit)
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -589,13 +598,9 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::diff_impact::handle(
-            &db,
-            &ws.root,
-            args.base.as_deref(),
-            args.head.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
+        let result =
+            tools::diff_impact::handle(&db, &ws.root, args.base.as_deref(), args.head.as_deref())
+                .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -610,19 +615,17 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::pr_risk::handle(
-            &db,
-            &ws.root,
-            args.base.as_deref(),
-            args.head.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
+        let result =
+            tools::pr_risk::handle(&db, &ws.root, args.base.as_deref(), args.head.as_deref())
+                .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Git history of a symbol's file with commit classification \
+    #[tool(
+        description = "Git history of a symbol's file with commit classification \
         (feature, bugfix, refactor, test, docs, chore, performance, unknown). \
-        Uses --follow for rename tracking. Requires analysis tier.")]
+        Uses --follow for rename tracking. Requires analysis tier."
+    )]
     pub async fn sutra_provenance(
         &self,
         Parameters(args): Parameters<ProvenanceArgs>,
@@ -630,13 +633,15 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::provenance::handle(&db, &ws.root, &args.symbol)
-            .map_err(sutra_to_rmcp)?;
+        let result =
+            tools::provenance::handle(&db, &ws.root, &args.symbol).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Files that historically change together with a given file in git history. \
-        Requires analysis tier.")]
+    #[tool(
+        description = "Files that historically change together with a given file in git history. \
+        Requires analysis tier."
+    )]
     pub async fn sutra_cochange(
         &self,
         Parameters(args): Parameters<CochangeArgs>,
@@ -644,16 +649,17 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
-                .map_err(sutra_to_rmcp)?;
+        let result = tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Find dead symbols (zero inbound references) and unreachable files \
+    #[tool(
+        description = "Find dead symbols (zero inbound references) and unreachable files \
         (zero importers). Automatically excludes #[test]/#[bench] functions, items inside \
         #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, and integration test files. \
-        Requires analysis tier.")]
+        Requires analysis tier."
+    )]
     pub async fn sutra_dead(
         &self,
         Parameters(args): Parameters<DeadArgs>,
@@ -670,8 +676,10 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Riskiest files ranked by git churn × blast radius × complexity. \
-        Requires analysis tier.")]
+    #[tool(
+        description = "Riskiest files ranked by git churn × blast radius × complexity. \
+        Requires analysis tier."
+    )]
     pub async fn sutra_hotspots(
         &self,
         Parameters(args): Parameters<HotspotsArgs>,
@@ -690,10 +698,12 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Per-file health report with three axes: complexity_health, dead_health, \
+    #[tool(
+        description = "Per-file health report with three axes: complexity_health, dead_health, \
         coupling_health (each 0-100), plus an overall health_score. Default mode='actionable' \
         filters out foundational files (high coupling but low complexity and no dead code). \
-        Use mode='all' to include everything. Worst files first. Requires analysis tier.")]
+        Use mode='all' to include everything. Worst files first. Requires analysis tier."
+    )]
     pub async fn sutra_file_health(
         &self,
         Parameters(args): Parameters<FileHealthArgs>,
@@ -712,28 +722,28 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Compare two parse snapshots and return per-metric deltas. \
+    #[tool(
+        description = "Compare two parse snapshots and return per-metric deltas. \
         Useful for CI gates and pre/post-refactor checks. \
-        Defaults to comparing the two most recent snapshots.")]
+        Defaults to comparing the two most recent snapshots."
+    )]
     pub async fn sutra_trend(
         &self,
         Parameters(args): Parameters<TrendArgs>,
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::trend::handle(
-            &db,
-            args.from.as_deref(),
-            args.to.as_deref(),
-        )
-        .map_err(sutra_to_rmcp)?;
+        let result = tools::trend::handle(&db, args.from.as_deref(), args.to.as_deref())
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Multi-axis composite query. AND-intersects filters (kind, \
+    #[tool(
+        description = "Multi-axis composite query. AND-intersects filters (kind, \
         min_complexity, min_churn, calls_to, file_glob, name_regex) and ranks results \
         by importance (PageRank), complexity, or churn. Each result includes per-axis \
-        values. Requires analysis tier for calls_to.")]
+        values. Requires analysis tier for calls_to."
+    )]
     pub async fn sutra_winnow(
         &self,
         Parameters(args): Parameters<WinnowArgs>,
@@ -754,8 +764,7 @@ impl SutraServer {
             rank_by: args.rank_by,
             limit: args.limit,
         };
-        let result = tools::winnow::handle(&db, &ws.root, &filter)
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::winnow::handle(&db, &ws.root, &filter).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -771,7 +780,10 @@ impl SutraServer {
         if !root.is_absolute() || !root.is_dir() {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                format!("path must be an absolute directory that exists: {}", args.path),
+                format!(
+                    "path must be an absolute directory that exists: {}",
+                    args.path
+                ),
                 None,
             ));
         }
@@ -781,7 +793,9 @@ impl SutraServer {
             .and_then(|n| n.to_str())
             .unwrap_or("workspace");
         let ws_id = dir_name.to_lowercase().replace(' ', "-");
-        let languages = args.languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+        let languages = args
+            .languages
+            .unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
 
         let entry = workspace::WorkspaceEntry {
             id: ws_id.clone(),
@@ -807,7 +821,8 @@ impl SutraServer {
                     "workspace": ws_id,
                     "root": root.display().to_string(),
                     "status": "parse already in progress",
-                })).map_err(json_to_rmcp);
+                }))
+                .map_err(json_to_rmcp);
             }
             parsing.insert(ws_id.clone());
         }
@@ -823,7 +838,11 @@ impl SutraServer {
                 Ok(snap) => {
                     tracing::info!(
                         "add_root parse complete for {}: {}/{} files changed, {} symbols in {}ms",
-                        ws_id_bg, snap.files_parsed, snap.files_walked, snap.symbols_extracted, snap.duration_ms
+                        ws_id_bg,
+                        snap.files_parsed,
+                        snap.files_walked,
+                        snap.symbols_extracted,
+                        snap.duration_ms
                     );
                 }
                 Err(e) => {
@@ -832,13 +851,18 @@ impl SutraServer {
             }
         });
 
-        let status = if already_exists { "exists, reparsing" } else { "registered, parsing" };
+        let status = if already_exists {
+            "exists, reparsing"
+        } else {
+            "registered, parsing"
+        };
         serde_json::to_string_pretty(&serde_json::json!({
             "workspace": ws_id,
             "root": root.display().to_string(),
             "languages": languages,
             "status": status,
-        })).map_err(json_to_rmcp)
+        }))
+        .map_err(json_to_rmcp)
     }
 
     #[tool(description = "Register a workspace and return its status. \
@@ -853,7 +877,10 @@ impl SutraServer {
         if !root.is_absolute() || !root.is_dir() {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                format!("path must be an absolute directory that exists: {}", args.path),
+                format!(
+                    "path must be an absolute directory that exists: {}",
+                    args.path
+                ),
                 None,
             ));
         }
@@ -863,12 +890,17 @@ impl SutraServer {
             .and_then(|n| n.to_str())
             .unwrap_or("workspace");
         let ws_id = dir_name.to_lowercase().replace(' ', "-");
-        let languages = args.languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+        let languages = args
+            .languages
+            .unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
 
         let daemon_url = &self.config.listen_addr;
 
         // Try daemon path first
-        if let Ok(resp) = self.try_daemon_register(daemon_url, &args.path, &languages).await {
+        if let Ok(resp) = self
+            .try_daemon_register(daemon_url, &args.path, &languages)
+            .await
+        {
             return Ok(resp);
         }
 
@@ -912,7 +944,8 @@ impl SutraServer {
             "files": files.len(),
             "symbols": total_symbols,
             "smriti_connected": smriti_connected,
-        })).map_err(json_to_rmcp)
+        }))
+        .map_err(json_to_rmcp)
     }
 }
 
@@ -969,7 +1002,8 @@ impl SutraServer {
                                     "files": file_count,
                                     "symbols": ws["symbol_count"],
                                     "smriti_connected": smriti_connected,
-                                })).map_err(|_| ());
+                                }))
+                                .map_err(|_| ());
                             }
                         }
                     }

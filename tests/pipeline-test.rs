@@ -99,7 +99,10 @@ async fn test_parse_fixture_directory() {
 
     let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
     assert_eq!(snap.files_parsed, 2);
-    assert!(snap.symbols_extracted >= 3, "expected at least Config, create_config, main");
+    assert!(
+        snap.symbols_extracted >= 3,
+        "expected at least Config, create_config, main"
+    );
     assert!(snap.refs_extracted >= 1);
 }
 
@@ -142,11 +145,7 @@ async fn test_parse_rollups_populated() {
     let src = dir.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
 
-    std::fs::write(
-        src.join("lib.rs"),
-        "pub fn shared() {}\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn shared() {}\n").unwrap();
     std::fs::write(
         src.join("main.rs"),
         "use crate::shared;\nfn main() { shared(); }\n",
@@ -233,15 +232,9 @@ async fn test_changed_single_file() {
     std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
 
     // Incremental parse with only the changed file
-    let snap = parse_changed_files(
-        &ws,
-        &db,
-        &config,
-        &[src.join("lib.rs")],
-        &[],
-    )
-    .await
-    .unwrap();
+    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[])
+        .await
+        .unwrap();
 
     assert_eq!(snap.files_parsed, 1);
     assert!(snap.symbols_extracted >= 2);
@@ -255,11 +248,7 @@ async fn test_deleted_file_with_cascade() {
     let src = dir.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
 
-    std::fs::write(
-        src.join("lib.rs"),
-        "pub fn shared_fn() {}\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn shared_fn() {}\n").unwrap();
     std::fs::write(
         src.join("main.rs"),
         "use crate::shared_fn;\nfn main() { shared_fn(); }\n",
@@ -279,15 +268,9 @@ async fn test_deleted_file_with_cascade() {
     std::fs::remove_file(src.join("lib.rs")).unwrap();
 
     // Incremental parse: lib.rs deleted
-    let snap = parse_changed_files(
-        &ws,
-        &db,
-        &config,
-        &[],
-        &[src.join("lib.rs")],
-    )
-    .await
-    .unwrap();
+    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")])
+        .await
+        .unwrap();
 
     // lib.rs should be gone from DB
     assert!(db.file_by_path("src/lib.rs").unwrap().is_none());
@@ -298,7 +281,9 @@ async fn test_deleted_file_with_cascade() {
     let refs = db.find_refs_in_file(main_file.id).unwrap();
     let resolved_to_shared: Vec<_> = refs
         .iter()
-        .filter(|r| r.unresolved_name.as_deref() == Some("shared_fn") && r.target_symbol_id.is_some())
+        .filter(|r| {
+            r.unresolved_name.as_deref() == Some("shared_fn") && r.target_symbol_id.is_some()
+        })
         .collect();
     assert!(
         resolved_to_shared.is_empty(),
@@ -328,16 +313,8 @@ async fn test_multiple_files_changed() {
     pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
 
     // Modify two files, delete one
-    std::fs::write(
-        src.join("lib.rs"),
-        "pub fn util() {}\npub fn util2() {}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        src.join("main.rs"),
-        "fn main() { util(); util2(); }\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn util() {}\npub fn util2() {}\n").unwrap();
+    std::fs::write(src.join("main.rs"), "fn main() { util(); util2(); }\n").unwrap();
     std::fs::remove_file(src.join("extra.rs")).unwrap();
 
     let snap = parse_changed_files(

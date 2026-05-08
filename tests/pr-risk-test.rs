@@ -45,8 +45,26 @@ fn setup_db_with_files() -> (tempfile::TempDir, Db) {
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
 
-    db.insert_symbol(&sym(fa.id, "a::small_fn", "small_fn", Some("fn small_fn()"), 1, 5, Some(2))).unwrap();
-    db.insert_symbol(&sym(fb.id, "b::complex_fn", "complex_fn", Some("fn complex_fn()"), 1, 30, Some(25))).unwrap();
+    db.insert_symbol(&sym(
+        fa.id,
+        "a::small_fn",
+        "small_fn",
+        Some("fn small_fn()"),
+        1,
+        5,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(
+        fb.id,
+        "b::complex_fn",
+        "complex_fn",
+        Some("fn complex_fn()"),
+        1,
+        30,
+        Some(25),
+    ))
+    .unwrap();
 
     // a has low blast, b has high blast
     db.update_rollups(fa.id, 1, 3).unwrap();
@@ -62,7 +80,10 @@ fn empty_diff_returns_zero_score() {
     let result = pr_risk::compute(&db, &changed_paths, &Default::default()).unwrap();
 
     let score = result["composite_score"].as_f64().unwrap();
-    assert!((score - 0.0).abs() < f64::EPSILON, "empty diff should be 0.0, got {score}");
+    assert!(
+        (score - 0.0).abs() < f64::EPSILON,
+        "empty diff should be 0.0, got {score}"
+    );
     assert_eq!(result["riskiest_symbols"].as_array().unwrap().len(), 0);
 }
 
@@ -73,8 +94,14 @@ fn single_low_risk_file_scores_low() {
     let result = pr_risk::compute(&db, &changed, &Default::default()).unwrap();
 
     let score = result["composite_score"].as_f64().unwrap();
-    assert!(score < 0.15, "single low-risk file should score < 0.15, got {score}");
-    assert!(score > 0.0, "should be non-zero since file has blast_radius=3");
+    assert!(
+        score < 0.15,
+        "single low-risk file should score < 0.15, got {score}"
+    );
+    assert!(
+        score > 0.0,
+        "should be non-zero since file has blast_radius=3"
+    );
 
     let signals = &result["signals"];
     assert!(signals["blast_radius"]["score"].as_f64().unwrap() < 0.2);
@@ -98,7 +125,10 @@ fn composite_combines_all_signals() {
 
     let score = result["composite_score"].as_f64().unwrap();
     // b.rs has blast=30, cognitive=25, churn=15 — should push score significantly up
-    assert!(score > 0.3, "high-risk file should push composite > 0.3, got {score}");
+    assert!(
+        score > 0.3,
+        "high-risk file should push composite > 0.3, got {score}"
+    );
     assert!(score <= 1.0, "score must be <= 1.0, got {score}");
 
     let signals = &result["signals"];
@@ -124,7 +154,10 @@ fn riskiest_symbols_ranked_correctly() {
 
     let top_risk = syms[0]["risk_score"].as_f64().unwrap();
     let bot_risk = syms[1]["risk_score"].as_f64().unwrap();
-    assert!(top_risk > bot_risk, "complex_fn should rank higher than small_fn");
+    assert!(
+        top_risk > bot_risk,
+        "complex_fn should rank higher than small_fn"
+    );
 }
 
 #[test]
@@ -135,15 +168,24 @@ fn weights_documented_with_rationale() {
     let weights = &result["weights"];
     for signal in &["blast_radius", "complexity", "churn", "volume"] {
         let entry = &weights[signal];
-        assert!(entry["weight"].as_f64().is_some(), "missing weight for {signal}");
-        assert!(entry["rationale"].as_str().is_some(), "missing rationale for {signal}");
+        assert!(
+            entry["weight"].as_f64().is_some(),
+            "missing weight for {signal}"
+        );
+        assert!(
+            entry["rationale"].as_str().is_some(),
+            "missing rationale for {signal}"
+        );
     }
 
     let sum: f64 = ["blast_radius", "complexity", "churn", "volume"]
         .iter()
         .map(|s| weights[s]["weight"].as_f64().unwrap())
         .sum();
-    assert!((sum - 1.0).abs() < 0.001, "weights should sum to 1.0, got {sum}");
+    assert!(
+        (sum - 1.0).abs() < 0.001,
+        "weights should sum to 1.0, got {sum}"
+    );
 }
 
 #[test]
@@ -153,10 +195,12 @@ fn score_clamped_to_one() {
     // Create many high-risk files to push all signals to max
     for i in 0..30 {
         let path = format!("src/big_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("h{i}"), 500, true).unwrap();
+        db.upsert_file(&path, "rust", &format!("h{i}"), 500, true)
+            .unwrap();
         let f = db.file_by_path(&path).unwrap().unwrap();
         let qn = format!("big_{i}::danger");
-        db.insert_symbol(&sym(f.id, &qn, "danger", None, 1, 100, Some(50))).unwrap();
+        db.insert_symbol(&sym(f.id, &qn, "danger", None, 1, 100, Some(50)))
+            .unwrap();
         db.update_rollups(f.id, 20, 80).unwrap();
     }
 
@@ -169,6 +213,9 @@ fn score_clamped_to_one() {
     let result = pr_risk::compute(&db, &paths, &churn).unwrap();
     let score = result["composite_score"].as_f64().unwrap();
     assert!(score <= 1.0, "score must be clamped to 1.0, got {score}");
-    assert!(score >= 0.95, "extreme risk should be near 1.0, got {score}");
+    assert!(
+        score >= 0.95,
+        "extreme risk should be near 1.0, got {score}"
+    );
     drop(dir);
 }

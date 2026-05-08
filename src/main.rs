@@ -112,7 +112,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config).await?;
             let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
             let resolved = resolvable - snapshot.unresolved_count;
-            let pct = if resolvable > 0 { resolved * 100 / resolvable } else { 0 };
+            let pct = if resolvable > 0 {
+                resolved * 100 / resolvable
+            } else {
+                0
+            };
             println!(
                 "Parsed {}/{} files changed, {} symbols, {} refs ({} resolved of {} resolvable, {}%; {} skipped) in {}ms",
                 snapshot.files_parsed,
@@ -127,7 +131,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Commands::Workspaces(cmd) => match cmd {
-            WorkspacesCmd::Add { id, root, languages } => {
+            WorkspacesCmd::Add {
+                id,
+                root,
+                languages,
+            } => {
                 workspace::add_workspace(
                     &config.workspaces_path,
                     WorkspaceEntry {
@@ -252,16 +260,18 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let ws_clone = ws_config.clone();
     let db_clone = db_cache.clone();
     let mcp_service = StreamableHttpService::new(
-        move || Ok(SutraServer::new(cfg_clone.clone(), ws_clone.clone(), db_clone.clone())),
+        move || {
+            Ok(SutraServer::new(
+                cfg_clone.clone(),
+                ws_clone.clone(),
+                db_clone.clone(),
+            ))
+        },
         session_manager,
         shttp_config,
     );
 
-    let rest = sutra::rest::router(
-        config.clone(),
-        ws_config.clone(),
-        db_cache.clone(),
-    );
+    let rest = sutra::rest::router(config.clone(), ws_config.clone(), db_cache.clone());
 
     #[allow(deprecated)]
     let app = rest.route("/mcp", any_service(mcp_service));
@@ -290,7 +300,11 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "daemon:     {}",
-        if daemon_running { "running" } else { "not running" }
+        if daemon_running {
+            "running"
+        } else {
+            "not running"
+        }
     );
     println!("listen:     {addr}");
     println!("workspaces: {}", ws_config.workspace.len());
@@ -448,7 +462,9 @@ fn cmd_guard_uninstall() -> Result<(), Box<dyn std::error::Error>> {
     let mut settings: serde_json::Value = serde_json::from_str(&raw)?;
 
     if let Some(hooks) = settings.pointer_mut("/hooks")
-        && let Some(pre_tool) = hooks.pointer_mut("/PreToolUse").and_then(|v| v.as_array_mut())
+        && let Some(pre_tool) = hooks
+            .pointer_mut("/PreToolUse")
+            .and_then(|v| v.as_array_mut())
     {
         pre_tool.retain(|entry| {
             let cmd = entry

@@ -56,12 +56,10 @@ pub enum SutraError {
 impl SutraError {
     pub fn code(&self) -> i32 {
         match self {
-            Self::MissingConfig(_)
-            | Self::InvalidArgument { .. }
-            | Self::NotFound { .. } => codes::INVALID_PARAMS,
-            Self::Db(_) | Self::Parse(_) | Self::Io(_) | Self::Internal(_) => {
-                codes::INTERNAL_ERROR
+            Self::MissingConfig(_) | Self::InvalidArgument { .. } | Self::NotFound { .. } => {
+                codes::INVALID_PARAMS
             }
+            Self::Db(_) | Self::Parse(_) | Self::Io(_) | Self::Internal(_) => codes::INTERNAL_ERROR,
         }
     }
 
@@ -128,8 +126,7 @@ impl SutraError {
             Self::Internal(msg) => ErrorData {
                 tool: "server",
                 argument: None,
-                constraint: "server completes the request without an internal fault"
-                    .to_string(),
+                constraint: "server completes the request without an internal fault".to_string(),
                 received: Some(serde_json::json!({ "message": msg })),
                 next_action: "Report this as a bug; include server logs.".to_string(),
             },
@@ -147,10 +144,8 @@ fn db_next_action(e: &rusqlite::Error) -> String {
         rusqlite::Error::QueryReturnedNoRows => {
             "The expected row was absent. Verify the id or name, then retry.".to_string()
         }
-        _ => {
-            "Retry the request. If the error repeats, check server logs and report as a \
+        _ => "Retry the request. If the error repeats, check server logs and report as a \
              bug."
-                .to_string()
-        }
+            .to_string(),
     }
 }

@@ -20,7 +20,11 @@ class Foo {
         .iter()
         .filter(|s| s.kind == SymbolKind::Method)
         .collect();
-    assert!(methods.len() >= 2, "expected at least 2 methods, got {}", methods.len());
+    assert!(
+        methods.len() >= 2,
+        "expected at least 2 methods, got {}",
+        methods.len()
+    );
 }
 
 #[test]

@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use sutra::guard::{
-    self, FileFacts, GuardConfig, GuardDecision,
-};
+use sutra::guard::{self, FileFacts, GuardConfig, GuardDecision};
 
 fn default_cfg() -> GuardConfig {
     GuardConfig::default()
@@ -169,7 +167,9 @@ fn test_render_stdout_allow_is_none() {
 
 #[test]
 fn test_render_stdout_deny_pretooluse() {
-    let decision = GuardDecision::Deny { reason: "test".into() };
+    let decision = GuardDecision::Deny {
+        reason: "test".into(),
+    };
     let json_str = guard::render_stdout(&decision, Some("PreToolUse")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
@@ -177,7 +177,9 @@ fn test_render_stdout_deny_pretooluse() {
 
 #[test]
 fn test_render_stdout_deny_beforetool() {
-    let decision = GuardDecision::Deny { reason: "test".into() };
+    let decision = GuardDecision::Deny {
+        reason: "test".into(),
+    };
     let json_str = guard::render_stdout(&decision, Some("BeforeTool")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(v["decision"], "deny");

@@ -55,11 +55,7 @@ pub fn handle(
     }))
 }
 
-fn trace_forward(
-    db: &Db,
-    target: &SymbolRow,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>> {
+fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
     let mut paths: Vec<Vec<(i64, String)>> = Vec::new();
     let mut cycles: Vec<(Vec<(i64, String)>, String)> = Vec::new();
     let mut visited = HashSet::new();
@@ -67,7 +63,15 @@ fn trace_forward(
 
     let mut stack: Vec<(i64, String)> = vec![(target.id, target.qualified_name.clone())];
 
-    dfs_callers(db, &mut stack, &mut visited, &mut paths, &mut cycles, limit, 0)?;
+    dfs_callers(
+        db,
+        &mut stack,
+        &mut visited,
+        &mut paths,
+        &mut cycles,
+        limit,
+        0,
+    )?;
 
     let mut result: Vec<serde_json::Value> = Vec::new();
 
@@ -152,11 +156,7 @@ fn dfs_callers(
     Ok(())
 }
 
-fn trace_backward(
-    db: &Db,
-    target: &SymbolRow,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>> {
+fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
     let mut paths: Vec<Vec<(i64, String)>> = Vec::new();
     let mut cycles: Vec<(Vec<(i64, String)>, String)> = Vec::new();
     let mut visited = HashSet::new();
@@ -164,7 +164,15 @@ fn trace_backward(
 
     let mut stack = vec![(target.id, target.qualified_name.clone())];
 
-    dfs_callees(db, &mut stack, &mut visited, &mut paths, &mut cycles, limit, 0)?;
+    dfs_callees(
+        db,
+        &mut stack,
+        &mut visited,
+        &mut paths,
+        &mut cycles,
+        limit,
+        0,
+    )?;
 
     let mut result: Vec<serde_json::Value> = Vec::new();
 

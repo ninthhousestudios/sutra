@@ -29,11 +29,7 @@ struct SymbolEntry {
     importance: f64,
 }
 
-pub fn handle(
-    db: &Db,
-    workspace_root: &Path,
-    filter: &WinnowFilter,
-) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<serde_json::Value> {
     let limit = filter.limit.unwrap_or(20) as usize;
     let files = db.all_files()?;
 
@@ -44,9 +40,10 @@ pub fn handle(
         Default::default()
     };
 
-    let glob_pattern = filter.file_glob.as_ref().map(|g| {
-        glob::Pattern::new(g).unwrap_or_else(|_| glob::Pattern::new("*").unwrap())
-    });
+    let glob_pattern = filter
+        .file_glob
+        .as_ref()
+        .map(|g| glob::Pattern::new(g).unwrap_or_else(|_| glob::Pattern::new("*").unwrap()));
 
     let name_re = filter.name_regex.as_ref().and_then(|r| Regex::new(r).ok());
 

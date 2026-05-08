@@ -64,7 +64,10 @@ async fn test_register_parse_query_cycle() {
     // Outline one of the parsed files — path is relative to workspace root.
     let outline_result = outline::handle(&db, "src/lib.rs").unwrap();
     let symbols = outline_result["symbols"].as_array().unwrap();
-    assert!(!symbols.is_empty(), "outline should return symbols for src/lib.rs");
+    assert!(
+        !symbols.is_empty(),
+        "outline should return symbols for src/lib.rs"
+    );
 }
 
 #[tokio::test]
@@ -86,7 +89,10 @@ async fn test_incremental_reparse() {
 
     // Second parse without any change — hash check should skip the file.
     let snap2 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
-    assert_eq!(snap2.files_parsed, 0, "unchanged file should be skipped on reparse");
+    assert_eq!(
+        snap2.files_parsed, 0,
+        "unchanged file should be skipped on reparse"
+    );
 
     // Modify the file.
     std::fs::write(&file_path, "pub fn init() {}\npub fn extra() {}\n").unwrap();
@@ -128,7 +134,10 @@ async fn test_delete_cascade() {
     let a_file = db.file_by_path("src/a.rs").unwrap();
     assert!(a_file.is_some(), "a.rs should still be in the DB");
     let syms = db.find_symbols_by_file(a_file.unwrap().id).unwrap();
-    assert!(!syms.is_empty(), "a.rs symbols must survive after b.rs deletion");
+    assert!(
+        !syms.is_empty(),
+        "a.rs symbols must survive after b.rs deletion"
+    );
 }
 
 #[tokio::test]
@@ -160,7 +169,10 @@ async fn test_stale_detection() {
     pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
 
     let last_parse = db.last_parse_time().unwrap();
-    assert!(last_parse.is_some(), "last_parse_time should be set after a parse");
+    assert!(
+        last_parse.is_some(),
+        "last_parse_time should be set after a parse"
+    );
 
     // Config with stale_threshold_sec=0 means any parse time is considered stale.
     let stale_config = Config {

@@ -19,7 +19,10 @@ fn cochange_result_is_sorted_descending() {
         assert!(
             window[0].1 >= window[1].1,
             "not sorted: {} ({}) before {} ({})",
-            window[0].0, window[0].1, window[1].0, window[1].1,
+            window[0].0,
+            window[0].1,
+            window[1].0,
+            window[1].1,
         );
     }
 }

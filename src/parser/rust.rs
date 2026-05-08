@@ -1,7 +1,7 @@
 use crate::error::{Result, SutraError};
 use crate::parser::{
-    complexity, ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind,
-    SymbolKind,
+    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+    complexity,
 };
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -131,28 +131,37 @@ fn collect_symbols_inner(
                 };
                 if let Some(mut sym) = extract_symbol(child, src, name_context, kind) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "struct_item" => {
-                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Struct) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Struct)
+                {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "enum_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Enum) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "trait_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Trait) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     let name = sym.short_name.clone();
                     symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
@@ -166,7 +175,9 @@ fn collect_symbols_inner(
             "impl_item" => {
                 if let Some(mut sym) = extract_impl_symbol(child, src, name_context) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     let impl_name = sym.short_name.clone();
                     symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
@@ -182,36 +193,48 @@ fn collect_symbols_inner(
                     extract_symbol(child, src, name_context, SymbolKind::TypeAlias)
                 {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "const_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Const) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "static_item" => {
-                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Static) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Static)
+                {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "macro_definition" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Macro) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if in_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     symbols.push(sym);
                 }
             }
             "mod_item" => {
                 let child_cfg_test = in_cfg_test || has_cfg_test_attr(child, src);
-                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Module) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Module)
+                {
                     sym.flags |= extract_flags(child, src);
-                    if child_cfg_test { sym.flags |= FLAG_CFG_TEST; }
+                    if child_cfg_test {
+                        sym.flags |= FLAG_CFG_TEST;
+                    }
                     let name = sym.short_name.clone();
                     symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
@@ -261,19 +284,18 @@ fn extract_symbol(
     let docstring = extract_docstring(node, src);
     let (signature, signature_hash) = extract_signature(node, src, kind);
 
-    let (cyclomatic, cognitive) =
-        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
-            if let Some(body) = node.child_by_field_name("body") {
-                (
-                    Some(complexity::cyclomatic(body, src, "rust")),
-                    Some(complexity::cognitive(body, src, "rust")),
-                )
-            } else {
-                (Some(1), Some(0))
-            }
+    let (cyclomatic, cognitive) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+        if let Some(body) = node.child_by_field_name("body") {
+            (
+                Some(complexity::cyclomatic(body, src, "rust")),
+                Some(complexity::cognitive(body, src, "rust")),
+            )
         } else {
-            (None, None)
-        };
+            (Some(1), Some(0))
+        }
+    } else {
+        (None, None)
+    };
 
     Some(ExtractedSymbol {
         qualified_name,
@@ -295,11 +317,7 @@ fn extract_symbol(
 }
 
 /// Extract an impl symbol — name is derived from the type (and optionally the trait).
-fn extract_impl_symbol(
-    node: Node,
-    src: &[u8],
-    name_context: &[String],
-) -> Option<ExtractedSymbol> {
+fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Option<ExtractedSymbol> {
     // impl Trait for Type  or  impl Type
     // We need to find the type being implemented.
     let impl_name = derive_impl_name(node, src)?;
@@ -438,11 +456,7 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
     }
 }
 
-fn extract_signature(
-    node: Node,
-    src: &[u8],
-    kind: SymbolKind,
-) -> (Option<String>, Option<String>) {
+fn extract_signature(node: Node, src: &[u8], kind: SymbolKind) -> (Option<String>, Option<String>) {
     match kind {
         SymbolKind::Function | SymbolKind::Method => {
             let sig = build_fn_signature(node, src);
@@ -732,9 +746,17 @@ mod tests {
     fn flag_detects_cfg_test_module() {
         let src = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}";
         let result = parse(src, "test.rs").unwrap();
-        let module = result.symbols.iter().find(|s| s.short_name == "tests").unwrap();
+        let module = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "tests")
+            .unwrap();
         assert_eq!(module.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
-        let helper = result.symbols.iter().find(|s| s.short_name == "helper").unwrap();
+        let helper = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "helper")
+            .unwrap();
         assert_eq!(helper.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
     }
 

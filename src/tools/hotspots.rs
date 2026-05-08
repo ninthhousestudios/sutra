@@ -35,7 +35,12 @@ pub fn handle_with_freshness(
     }
 
     let max_churn = churn.values().copied().max().unwrap_or(1).max(1) as f64;
-    let max_blast = files.iter().map(|f| f.blast_radius).max().unwrap_or(1).max(1) as f64;
+    let max_blast = files
+        .iter()
+        .map(|f| f.blast_radius)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
     let max_complexity = complexity
         .values()
         .map(|(max_c, _)| *max_c)

@@ -21,11 +21,13 @@ pub fn handle(
             next_action: "Use sutra_find to look up the symbol name first.".to_string(),
         })?;
 
-    let file = db.file_by_id(sym.file_id)?.ok_or_else(|| SutraError::NotFound {
-        tool: "sutra_read",
-        kind: format!("file for symbol `{symbol}`"),
-        next_action: "The file may have been deleted. Run sutra_parse to refresh.".to_string(),
-    })?;
+    let file = db
+        .file_by_id(sym.file_id)?
+        .ok_or_else(|| SutraError::NotFound {
+            tool: "sutra_read",
+            kind: format!("file for symbol `{symbol}`"),
+            next_action: "The file may have been deleted. Run sutra_parse to refresh.".to_string(),
+        })?;
 
     let abs_path = workspace_root.join(&file.path);
 
@@ -56,7 +58,9 @@ pub fn handle(
     let source = std::fs::read_to_string(&abs_path)?;
     let lines: Vec<&str> = source.lines().collect();
 
-    let start = (sym.start_line as usize).saturating_sub(1).saturating_sub(context_lines);
+    let start = (sym.start_line as usize)
+        .saturating_sub(1)
+        .saturating_sub(context_lines);
     let end = std::cmp::min(
         (sym.end_line as usize).saturating_sub(1) + context_lines + 1,
         lines.len(),

@@ -11,15 +11,28 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("main.rs"), "fn main() {}").unwrap();
 
-    db.upsert_file("src/main.rs", "rust", "hash1", 50, true).unwrap();
+    db.upsert_file("src/main.rs", "rust", "hash1", 50, true)
+        .unwrap();
     let file = db.file_by_path("src/main.rs").unwrap().unwrap();
     db.insert_symbol(&InsertSymbolParams {
-        file_id: file.id, qualified_name: "main", short_name: "main", kind: "function",
-        signature: Some("fn main()"), signature_hash: None, visibility: Some("pub"),
-        start_line: 1, start_col: 0, end_line: 10, end_col: 0,
-        parent_symbol_id: None, docstring: None,
-        cyclomatic: None, cognitive: None, flags: 0,
-    }).unwrap();
+        file_id: file.id,
+        qualified_name: "main",
+        short_name: "main",
+        kind: "function",
+        signature: Some("fn main()"),
+        signature_hash: None,
+        visibility: Some("pub"),
+        start_line: 1,
+        start_col: 0,
+        end_line: 10,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+    })
+    .unwrap();
     db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
 
     (dir, db)
@@ -29,17 +42,28 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("contract_test", dir.path()).unwrap();
 
-    db.upsert_file("src/main.rs", "rust", "hash1", 50, true).unwrap();
+    db.upsert_file("src/main.rs", "rust", "hash1", 50, true)
+        .unwrap();
     let file = db.file_by_path("src/main.rs").unwrap().unwrap();
     db.insert_symbol(&InsertSymbolParams {
-        file_id: file.id, qualified_name: "main", short_name: "main", kind: "function",
-        signature: Some("fn main()"), signature_hash: None, visibility: Some("pub"),
-        start_line: 1, start_col: 0, end_line: 10, end_col: 0,
-        parent_symbol_id: None, docstring: None,
-            cyclomatic: None,
-            cognitive: None,
-            flags: 0,
-    }).unwrap();
+        file_id: file.id,
+        qualified_name: "main",
+        short_name: "main",
+        kind: "function",
+        signature: Some("fn main()"),
+        signature_hash: None,
+        visibility: Some("pub"),
+        start_line: 1,
+        start_col: 0,
+        end_line: 10,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+    })
+    .unwrap();
     db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
 
     (dir, db)
@@ -50,14 +74,19 @@ fn test_map_contract() {
     let (_dir, db) = setup_test_db();
     let result = map::handle(&db, None, None).unwrap();
 
-    let files = result["files"].as_array().expect("map result must have 'files' array");
+    let files = result["files"]
+        .as_array()
+        .expect("map result must have 'files' array");
     assert!(!files.is_empty());
 
     let entry = &files[0];
     assert!(entry["path"].is_string(), "'path' must be a string");
     assert!(entry["language"].is_string(), "'language' must be a string");
     assert!(entry["symbols"].is_number(), "'symbols' must be a number");
-    assert!(entry["line_count"].is_number(), "'line_count' must be a number");
+    assert!(
+        entry["line_count"].is_number(),
+        "'line_count' must be a number"
+    );
 }
 
 #[test]
@@ -66,13 +95,21 @@ fn test_outline_contract() {
     let result = outline::handle(&db, "src/main.rs").unwrap();
 
     assert!(result["path"].is_string(), "'path' must be a string");
-    let symbols = result["symbols"].as_array().expect("outline result must have 'symbols' array");
+    let symbols = result["symbols"]
+        .as_array()
+        .expect("outline result must have 'symbols' array");
     assert!(!symbols.is_empty());
 
     let sym = &symbols[0];
-    assert!(sym["qualified_name"].is_string(), "'qualified_name' must be a string");
+    assert!(
+        sym["qualified_name"].is_string(),
+        "'qualified_name' must be a string"
+    );
     assert!(sym["kind"].is_string(), "'kind' must be a string");
-    assert!(sym["start_line"].is_number(), "'start_line' must be a number");
+    assert!(
+        sym["start_line"].is_number(),
+        "'start_line' must be a number"
+    );
 }
 
 #[test]
@@ -80,7 +117,9 @@ fn test_find_contract() {
     let (_dir, db) = setup_test_db();
     let result = find::handle(&db, "main", None, None).unwrap();
 
-    let matches = result["matches"].as_array().expect("find result must have 'matches' array");
+    let matches = result["matches"]
+        .as_array()
+        .expect("find result must have 'matches' array");
     assert!(!matches.is_empty());
 
     let hit = &matches[0];
@@ -93,7 +132,9 @@ fn test_grep_contract() {
     let (_dir, db) = setup_test_db();
     let result = grep::handle(&db, "main", None, None).unwrap();
 
-    let matches = result["matches"].as_array().expect("grep result must have 'matches' array");
+    let matches = result["matches"]
+        .as_array()
+        .expect("grep result must have 'matches' array");
     assert!(!matches.is_empty());
 
     let hit = &matches[0];
@@ -108,8 +149,14 @@ fn test_impact_contract() {
 
     assert!(result["symbol"].is_string(), "'symbol' must be a string");
     assert!(result["risk"].is_string(), "'risk' must be a string");
-    assert!(result["direct_callers"].is_number(), "'direct_callers' must be a number");
-    assert!(result["files_touched"].is_number(), "'files_touched' must be a number");
+    assert!(
+        result["direct_callers"].is_number(),
+        "'direct_callers' must be a number"
+    );
+    assert!(
+        result["files_touched"].is_number(),
+        "'files_touched' must be a number"
+    );
 }
 
 #[test]
@@ -127,7 +174,10 @@ fn test_deps_global_contract() {
     let result = deps::handle(&db, None, None).unwrap();
 
     assert!(result["edges"].is_array(), "'edges' must be an array");
-    assert!(result["total_edges"].is_number(), "'total_edges' must be a number");
+    assert!(
+        result["total_edges"].is_number(),
+        "'total_edges' must be a number"
+    );
 }
 
 #[test]
@@ -135,9 +185,14 @@ fn test_tools_meta_contract() {
     let flag = AtomicBool::new(false);
     let result = tools_meta::handle(&flag, None, None, true);
 
-    let tiers = result["tiers"].as_object().expect("tools_meta must have 'tiers' object");
+    let tiers = result["tiers"]
+        .as_object()
+        .expect("tools_meta must have 'tiers' object");
     assert!(tiers.contains_key("core"), "tiers must include 'core'");
-    assert!(tiers.contains_key("analysis"), "tiers must include 'analysis'");
+    assert!(
+        tiers.contains_key("analysis"),
+        "tiers must include 'analysis'"
+    );
 
     let core = &tiers["core"];
     assert_eq!(core["enabled"], true, "core tier must always be enabled");
@@ -151,7 +206,10 @@ fn test_find_not_found() {
     let result = find::handle(&db, "nonexistent_symbol_xyz", None, None).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
-    assert!(matches.is_empty(), "nonexistent symbol should return empty matches, not an error");
+    assert!(
+        matches.is_empty(),
+        "nonexistent symbol should return empty matches, not an error"
+    );
 }
 
 #[test]
@@ -159,7 +217,10 @@ fn test_outline_not_found() {
     let (_dir, db) = setup_test_db();
     let result = outline::handle(&db, "src/does_not_exist.rs");
 
-    assert!(result.is_err(), "outline of nonexistent file must return an error");
+    assert!(
+        result.is_err(),
+        "outline of nonexistent file must return an error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +247,18 @@ fn test_map_freshness_per_entry() {
     }
 
     let meta = &result["_meta"];
-    assert!(meta["freshness"]["fresh"].is_number(), "_meta.freshness.fresh must exist");
-    assert!(meta["freshness"]["edited"].is_number(), "_meta.freshness.edited must exist");
-    assert!(meta["freshness"]["stale"].is_number(), "_meta.freshness.stale must exist");
+    assert!(
+        meta["freshness"]["fresh"].is_number(),
+        "_meta.freshness.fresh must exist"
+    );
+    assert!(
+        meta["freshness"]["edited"].is_number(),
+        "_meta.freshness.edited must exist"
+    );
+    assert!(
+        meta["freshness"]["stale"].is_number(),
+        "_meta.freshness.stale must exist"
+    );
 }
 
 #[test]
@@ -199,17 +269,32 @@ fn test_find_freshness_and_confidence() {
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
     for entry in matches {
-        assert!(entry["_freshness"].is_string(), "find entry must have _freshness");
+        assert!(
+            entry["_freshness"].is_string(),
+            "find entry must have _freshness"
+        );
     }
 
     let meta = &result["_meta"];
     assert!(meta["freshness"]["fresh"].is_number());
-    assert!(meta["confidence"]["score"].is_number(), "_meta.confidence.score must exist");
-    assert!(meta["confidence"]["tier"].is_string(), "_meta.confidence.tier must exist");
-    assert!(meta["confidence"]["formula"].is_string(), "_meta.confidence.formula must exist");
+    assert!(
+        meta["confidence"]["score"].is_number(),
+        "_meta.confidence.score must exist"
+    );
+    assert!(
+        meta["confidence"]["tier"].is_string(),
+        "_meta.confidence.tier must exist"
+    );
+    assert!(
+        meta["confidence"]["formula"].is_string(),
+        "_meta.confidence.formula must exist"
+    );
 
     let score = meta["confidence"]["score"].as_f64().unwrap();
-    assert!(score > 0.0 && score <= 1.0, "confidence score must be in (0, 1], got: {score}");
+    assert!(
+        score > 0.0 && score <= 1.0,
+        "confidence score must be in (0, 1], got: {score}"
+    );
 }
 
 #[test]
@@ -220,7 +305,10 @@ fn test_grep_freshness_and_confidence() {
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
     for entry in matches {
-        assert!(entry["_freshness"].is_string(), "grep entry must have _freshness");
+        assert!(
+            entry["_freshness"].is_string(),
+            "grep entry must have _freshness"
+        );
     }
 
     let meta = &result["_meta"];
@@ -233,8 +321,14 @@ fn test_find_exact_match_confidence_is_1() {
     let (dir, db) = setup_test_db_with_root();
     let result = find::handle_with_freshness(&db, "main", None, None, Some(dir.path())).unwrap();
     let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();
-    assert_eq!(score, 1.0, "exact short_name match should yield confidence 1.0");
-    assert_eq!(result["_meta"]["confidence"]["tier"].as_str().unwrap(), "exact");
+    assert_eq!(
+        score, 1.0,
+        "exact short_name match should yield confidence 1.0"
+    );
+    assert_eq!(
+        result["_meta"]["confidence"]["tier"].as_str().unwrap(),
+        "exact"
+    );
 }
 
 #[test]
@@ -245,7 +339,10 @@ fn test_find_fts_match_confidence_below_1() {
     if !matches.is_empty() {
         let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();
         assert!(score < 1.0, "FTS match should yield confidence < 1.0");
-        assert_eq!(result["_meta"]["confidence"]["tier"].as_str().unwrap(), "fts");
+        assert_eq!(
+            result["_meta"]["confidence"]["tier"].as_str().unwrap(),
+            "fts"
+        );
     }
 }
 
@@ -253,7 +350,10 @@ fn test_find_fts_match_confidence_below_1() {
 fn test_map_without_freshness_has_no_meta() {
     let (_dir, db) = setup_test_db();
     let result = map::handle(&db, None, None).unwrap();
-    assert!(result.get("_meta").is_none(), "plain handle() should not include _meta");
+    assert!(
+        result.get("_meta").is_none(),
+        "plain handle() should not include _meta"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -281,15 +381,30 @@ fn test_winnow_no_filters() {
     let result = winnow::handle(&db, dir.path(), &filter).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
-    assert!(!matches.is_empty(), "winnow with no filters should return all symbols");
+    assert!(
+        !matches.is_empty(),
+        "winnow with no filters should return all symbols"
+    );
     let entry = &matches[0];
     assert!(entry["qualified_name"].is_string());
     assert!(entry["kind"].is_string());
     assert!(entry["file"].is_string());
-    assert!(entry["axes"]["importance"].is_number(), "each entry must include axes.importance");
-    assert!(entry["axes"]["complexity"].is_number(), "each entry must include axes.complexity");
-    assert!(entry["axes"]["churn"].is_number(), "each entry must include axes.churn");
-    assert!(entry["_freshness"].is_string(), "each entry must include _freshness");
+    assert!(
+        entry["axes"]["importance"].is_number(),
+        "each entry must include axes.importance"
+    );
+    assert!(
+        entry["axes"]["complexity"].is_number(),
+        "each entry must include axes.complexity"
+    );
+    assert!(
+        entry["axes"]["churn"].is_number(),
+        "each entry must include axes.churn"
+    );
+    assert!(
+        entry["_freshness"].is_string(),
+        "each entry must include _freshness"
+    );
 
     assert!(result["_meta"]["freshness"]["fresh"].is_number());
 }
@@ -313,7 +428,10 @@ fn test_winnow_kind_filter_no_match() {
     filter.kind = Some("trait".to_string());
     let result = winnow::handle(&db, dir.path(), &filter).unwrap();
     let matches = result["matches"].as_array().unwrap();
-    assert!(matches.is_empty(), "filtering by nonexistent kind should return empty");
+    assert!(
+        matches.is_empty(),
+        "filtering by nonexistent kind should return empty"
+    );
 }
 
 #[test]
@@ -361,7 +479,10 @@ fn test_winnow_min_complexity_filters() {
     filter.min_complexity = Some(9999);
     let result = winnow::handle(&db, dir.path(), &filter).unwrap();
     let matches = result["matches"].as_array().unwrap();
-    assert!(matches.is_empty(), "no symbol should have complexity >= 9999");
+    assert!(
+        matches.is_empty(),
+        "no symbol should have complexity >= 9999"
+    );
 }
 
 #[test]
@@ -371,12 +492,23 @@ fn test_winnow_rank_by_complexity() {
     // Add a second symbol with higher complexity
     db.insert_symbol(&InsertSymbolParams {
         file_id: db.file_by_path("src/main.rs").unwrap().unwrap().id,
-        qualified_name: "complex_fn", short_name: "complex_fn", kind: "function",
-        signature: Some("fn complex_fn()"), signature_hash: None, visibility: Some("pub"),
-        start_line: 20, start_col: 0, end_line: 50, end_col: 0,
-        parent_symbol_id: None, docstring: None,
-        cyclomatic: Some(15), cognitive: Some(25), flags: 0,
-    }).unwrap();
+        qualified_name: "complex_fn",
+        short_name: "complex_fn",
+        kind: "function",
+        signature: Some("fn complex_fn()"),
+        signature_hash: None,
+        visibility: Some("pub"),
+        start_line: 20,
+        start_col: 0,
+        end_line: 50,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: Some(15),
+        cognitive: Some(25),
+        flags: 0,
+    })
+    .unwrap();
 
     let mut filter = winnow_filter_default();
     filter.rank_by = Some("complexity".to_string());
@@ -385,5 +517,8 @@ fn test_winnow_rank_by_complexity() {
     assert!(matches.len() >= 2);
     let c0 = matches[0]["axes"]["complexity"].as_i64().unwrap();
     let c1 = matches[1]["axes"]["complexity"].as_i64().unwrap();
-    assert!(c0 >= c1, "results should be ranked by complexity descending");
+    assert!(
+        c0 >= c1,
+        "results should be ranked by complexity descending"
+    );
 }

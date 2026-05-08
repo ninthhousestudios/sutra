@@ -98,4 +98,3 @@ fn compute_risk(direct_callers: usize, files_touched: usize) -> (&'static str, V
     }
     ("low", factors)
 }
-

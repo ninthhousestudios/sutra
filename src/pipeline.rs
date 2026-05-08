@@ -32,7 +32,15 @@ const MAX_LINES: usize = 100_000;
 
 /// Directories to skip when walking the workspace.
 const SKIP_DIRS: &[&str] = &[
-    "target", "build", "node_modules", ".git", "dist", "out", "vendor", "__pycache__", ".claude",
+    "target",
+    "build",
+    "node_modules",
+    ".git",
+    "dist",
+    "out",
+    "vendor",
+    "__pycache__",
+    ".claude",
 ];
 
 /// Map language name to file extensions.
@@ -64,10 +72,7 @@ fn parse_single_file(
         .to_string_lossy()
         .to_string();
 
-    let ext = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let language = match ext_to_lang.get(ext) {
         Some(lang) => *lang,
         None => return Ok(None),
@@ -163,7 +168,14 @@ fn parse_single_file(
 
     let mut refs_extracted: i64 = 0;
     for rf in &parse_result.references {
-        db.insert_ref(file_id, None, Some(&rf.name), rf.line as i64, rf.col as i64, rf.context_kind.as_str())?;
+        db.insert_ref(
+            file_id,
+            None,
+            Some(&rf.name),
+            rf.line as i64,
+            rf.col as i64,
+            rf.context_kind.as_str(),
+        )?;
         refs_extracted += 1;
     }
 
@@ -330,15 +342,26 @@ pub async fn parse_workspace(
         None
     };
 
-    compute_rollups_with_graph(db, &files, adjacency.as_ref(), Some(&file_ids_needing_resolution))?;
+    compute_rollups_with_graph(
+        db,
+        &files,
+        adjacency.as_ref(),
+        Some(&file_ids_needing_resolution),
+    )?;
     compute_pagerank(db, &files, adjacency.as_ref())?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
     let aggregates = compute_snapshot_aggregates(db)?;
     db.insert_snapshot(
-        files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms,
-        aggregates.total_complexity, aggregates.dead_symbol_count,
-        aggregates.hotspot_count, aggregates.health_score,
+        files_parsed,
+        symbols_extracted,
+        refs_extracted,
+        parse_errors,
+        duration_ms,
+        aggregates.total_complexity,
+        aggregates.dead_symbol_count,
+        aggregates.hotspot_count,
+        aggregates.health_score,
     )?;
 
     Ok(ParseSnapshot {
@@ -438,15 +461,26 @@ pub async fn parse_changed_files(
         None
     };
 
-    compute_rollups_with_graph(db, &files, adjacency.as_ref(), Some(&file_ids_needing_resolution))?;
+    compute_rollups_with_graph(
+        db,
+        &files,
+        adjacency.as_ref(),
+        Some(&file_ids_needing_resolution),
+    )?;
     compute_pagerank(db, &files, adjacency.as_ref())?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
     let aggregates = compute_snapshot_aggregates(db)?;
     db.insert_snapshot(
-        files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms,
-        aggregates.total_complexity, aggregates.dead_symbol_count,
-        aggregates.hotspot_count, aggregates.health_score,
+        files_parsed,
+        symbols_extracted,
+        refs_extracted,
+        parse_errors,
+        duration_ms,
+        aggregates.total_complexity,
+        aggregates.dead_symbol_count,
+        aggregates.hotspot_count,
+        aggregates.health_score,
     )?;
 
     Ok(ParseSnapshot {
@@ -503,10 +537,7 @@ fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path:
 
 type FileGraph = HashMap<i64, HashSet<i64>>;
 
-fn build_file_adjacency(
-    files: &[crate::db::FileRow],
-    db: &Db,
-) -> Result<(FileGraph, FileGraph)> {
+fn build_file_adjacency(files: &[crate::db::FileRow], db: &Db) -> Result<(FileGraph, FileGraph)> {
     let mut fan_in_map: HashMap<i64, HashSet<i64>> = HashMap::new();
     let mut outgoing: HashMap<i64, HashSet<i64>> = HashMap::new();
 
@@ -522,8 +553,14 @@ fn build_file_adjacency(
         if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
             && target_file_id != src_file_id
         {
-            fan_in_map.entry(target_file_id).or_default().insert(src_file_id);
-            outgoing.entry(src_file_id).or_default().insert(target_file_id);
+            fan_in_map
+                .entry(target_file_id)
+                .or_default()
+                .insert(src_file_id);
+            outgoing
+                .entry(src_file_id)
+                .or_default()
+                .insert(target_file_id);
         }
     }
 
@@ -628,7 +665,11 @@ fn compute_pagerank(
 
     let file_ids: Vec<i64> = files.iter().map(|f| f.id).collect();
     let n = file_ids.len();
-    let id_to_idx: HashMap<i64, usize> = file_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let id_to_idx: HashMap<i64, usize> = file_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
 
     // Reuse adjacency graph if pre-built, otherwise compute from DB.
     let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
@@ -675,10 +716,15 @@ fn compute_pagerank(
     // Warm-start: use existing PageRank values if available.
     let has_existing = files.iter().any(|f| f.pagerank.is_some());
     let mut rank = if has_existing {
-        let mut r: Vec<f64> = files.iter().map(|f| f.pagerank.unwrap_or(1.0 / n as f64)).collect();
+        let mut r: Vec<f64> = files
+            .iter()
+            .map(|f| f.pagerank.unwrap_or(1.0 / n as f64))
+            .collect();
         let sum: f64 = r.iter().sum();
         if sum > 0.0 {
-            for v in &mut r { *v /= sum; }
+            for v in &mut r {
+                *v /= sum;
+            }
         }
         r
     } else {
@@ -701,14 +747,22 @@ fn compute_pagerank(
             }
         }
 
-        let max_delta = rank.iter().zip(next.iter()).map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+        let max_delta = rank
+            .iter()
+            .zip(next.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
         rank = next;
         if max_delta < EPSILON {
             break;
         }
     }
 
-    let file_updates: Vec<(i64, f64)> = file_ids.iter().enumerate().map(|(i, &fid)| (fid, rank[i])).collect();
+    let file_updates: Vec<(i64, f64)> = file_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &fid)| (fid, rank[i]))
+        .collect();
     db.batch_update_file_pagerank(&file_updates)?;
 
     // Symbol-level: distribute file PR by incoming ref count.

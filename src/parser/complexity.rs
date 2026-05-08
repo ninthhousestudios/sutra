@@ -80,10 +80,16 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
     }
 
     // break/continue with labels get +1
-    if matches!(lang, "rust") && matches!(kind, "break_expression" | "continue_expression") && has_label(node) {
+    if matches!(lang, "rust")
+        && matches!(kind, "break_expression" | "continue_expression")
+        && has_label(node)
+    {
         *score += 1;
     }
-    if matches!(lang, "dart") && matches!(kind, "break_statement" | "continue_statement") && has_label(node) {
+    if matches!(lang, "dart")
+        && matches!(kind, "break_statement" | "continue_statement")
+        && has_label(node)
+    {
         *score += 1;
     }
 

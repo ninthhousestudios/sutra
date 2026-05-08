@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use parking_lot::{Mutex, RwLock};
 
@@ -56,15 +56,9 @@ async fn test_incremental_reparse_via_smriti_events() {
     .unwrap();
 
     // Simulate what the watcher does: call parse_changed_files with the changed file
-    let snap = pipeline::parse_changed_files(
-        &ws,
-        &db,
-        &config,
-        &[src.join("lib.rs")],
-        &[],
-    )
-    .await
-    .unwrap();
+    let snap = pipeline::parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[])
+        .await
+        .unwrap();
 
     assert_eq!(snap.files_parsed, 1);
     let syms_after = db.all_symbols_summary().unwrap().len();
@@ -95,13 +89,11 @@ async fn test_stale_checker_skips_recently_refreshed() {
         workspace: vec![ws],
     }));
     let db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>> = Arc::new(Mutex::new(HashMap::new()));
-    db_cache.lock().insert("stale-skip".to_string(), Arc::new(db));
+    db_cache
+        .lock()
+        .insert("stale-skip".to_string(), Arc::new(db));
 
-    let daemon = Arc::new(Daemon::new(
-        config,
-        workspaces,
-        db_cache,
-    ));
+    let daemon = Arc::new(Daemon::new(config, workspaces, db_cache));
 
     // The daemon just constructed won't have any watcher refresh records,
     // so the stale checker would normally reparse. The test verifies the

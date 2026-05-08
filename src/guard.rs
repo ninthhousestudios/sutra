@@ -241,7 +241,10 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 
 pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<String> {
     let canonical_root = project_root.canonicalize().ok()?;
-    let canonical_file = file_path.canonicalize().ok().unwrap_or_else(|| file_path.to_path_buf());
+    let canonical_file = file_path
+        .canonicalize()
+        .ok()
+        .unwrap_or_else(|| file_path.to_path_buf());
     canonical_file
         .strip_prefix(&canonical_root)
         .ok()

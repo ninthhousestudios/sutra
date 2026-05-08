@@ -16,8 +16,8 @@ pub mod pr_risk;
 pub mod provenance;
 pub mod read;
 pub mod refs;
-pub mod trace;
 pub mod tools_meta;
+pub mod trace;
 pub mod trend;
 pub mod winnow;
 

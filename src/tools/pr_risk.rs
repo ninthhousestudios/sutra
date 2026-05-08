@@ -59,11 +59,7 @@ pub struct ChurnMap {
     pub window_days: u32,
 }
 
-pub fn compute(
-    db: &Db,
-    changed_paths: &[String],
-    churn: &ChurnMap,
-) -> Result<serde_json::Value> {
+pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
         return Ok(json!({
             "composite_score": 0.0,
