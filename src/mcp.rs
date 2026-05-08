@@ -132,6 +132,33 @@ pub struct CochangeArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TraceArgs {
+    pub workspace: String,
+    pub symbol: String,
+    /// "forward" (entry points → symbol, default) or "backward" (symbol → leaves)
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// Max number of paths to return (default 10)
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrRiskArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub head: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProvenanceArgs {
+    pub workspace: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeadArgs {
     pub workspace: String,
     #[serde(default)]
@@ -527,6 +554,28 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
+    #[tool(description = "Trace call chains through the codebase. \
+        direction=forward (default): finds paths from entry points to the symbol. \
+        direction=backward: finds paths from the symbol to leaf functions. \
+        Detects and marks cycles. Entry points: main, Dart lifecycle methods, \
+        or any symbol with zero callers. Requires analysis tier.")]
+    pub async fn sutra_trace(
+        &self,
+        Parameters(args): Parameters<TraceArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::trace::handle(
+            &db,
+            &args.symbol,
+            args.direction.as_deref(),
+            args.limit,
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
     #[tool(description = "Blast radius of a git diff. \
         Shows changed files, affected symbols, and their callers. Requires analysis tier.")]
     pub async fn sutra_diff_impact(
@@ -546,6 +595,42 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
+    #[tool(description = "Composite PR risk score (0.0–1.0) for a git diff. \
+        Combines blast_radius, complexity, churn, and volume signals with \
+        documented weights. Returns per-signal breakdown and top-N riskiest \
+        changed symbols. Requires analysis tier.")]
+    pub async fn sutra_pr_risk(
+        &self,
+        Parameters(args): Parameters<PrRiskArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::pr_risk::handle(
+            &db,
+            &ws.root,
+            args.base.as_deref(),
+            args.head.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Git history of a symbol's file with commit classification \
+        (feature, bugfix, refactor, test, docs, chore, performance, unknown). \
+        Uses --follow for rename tracking. Requires analysis tier.")]
+    pub async fn sutra_provenance(
+        &self,
+        Parameters(args): Parameters<ProvenanceArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::provenance::handle(&db, &ws.root, &args.symbol)
+            .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
     #[tool(description = "Files that historically change together with a given file in git history. \
         Requires analysis tier.")]
     pub async fn sutra_cochange(
@@ -562,7 +647,8 @@ impl SutraServer {
     }
 
     #[tool(description = "Find dead symbols (zero inbound references) and unreachable files \
-        (zero importers). Known limitation: can't detect #[test] or #[no_mangle] exemptions. \
+        (zero importers). Automatically excludes #[test]/#[bench] functions, items inside \
+        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, and integration test files. \
         Requires analysis tier.")]
     pub async fn sutra_dead(
         &self,
@@ -912,7 +998,7 @@ impl ServerHandler for SutraServer {
              Core tools: sutra_health, sutra_map, sutra_outline, sutra_find, \
              sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
-             sutra_diff_impact, sutra_cochange. \
+             sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace. \
              All responses include as_of timestamp and is_stale indicator.",
         )
     }

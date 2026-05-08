@@ -48,6 +48,7 @@ pub struct SymbolRow {
     pub pagerank: Option<f64>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
+    pub flags: i64,
 }
 
 pub struct InsertSymbolParams<'a> {
@@ -66,6 +67,7 @@ pub struct InsertSymbolParams<'a> {
     pub docstring: Option<&'a str>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
+    pub flags: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +154,7 @@ impl Db {
         for sql in [
             include_str!("../migrations/0002_complexity.sql"),
             include_str!("../migrations/0003_snapshot_aggregates.sql"),
+            include_str!("../migrations/0004_symbol_flags.sql"),
         ] {
             for stmt in sql.lines() {
                 let stmt = stmt.trim();
@@ -336,8 +339,8 @@ impl Db {
                 file_id, qualified_name, short_name, kind,
                 signature, signature_hash, visibility,
                 start_line, start_col, end_line, end_col,
-                parent_symbol_id, docstring, cyclomatic, cognitive
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                parent_symbol_id, docstring, cyclomatic, cognitive, flags
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 p.file_id,
                 p.qualified_name,
@@ -354,6 +357,7 @@ impl Db {
                 p.docstring,
                 p.cyclomatic,
                 p.cognitive,
+                p.flags,
             ],
         )?;
         let id = conn.last_insert_rowid();
@@ -375,7 +379,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive
+                    cyclomatic, cognitive, flags
              FROM symbols WHERE id = ?1",
             params![id],
             map_symbol_row,
@@ -394,7 +398,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive
+                    cyclomatic, cognitive, flags
              FROM symbols WHERE qualified_name = ?1",
             params![name],
             map_symbol_row,
@@ -436,7 +440,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive
+                            cyclomatic, cognitive, flags
                      FROM symbols
                      WHERE short_name = ?1 AND kind = ?2
                      LIMIT ?3",
@@ -446,7 +450,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive
+                            cyclomatic, cognitive, flags
                      FROM symbols
                      WHERE short_name = ?1
                      LIMIT ?2",
@@ -491,7 +495,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive
+                            cyclomatic, cognitive, flags
                      FROM symbols WHERE id = ?1",
                     params![sid],
                     map_symbol_row,
@@ -517,7 +521,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive
+                    cyclomatic, cognitive, flags
              FROM symbols
              WHERE file_id = ?1
              ORDER BY start_line",
@@ -572,6 +576,7 @@ impl Db {
                AND s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
                AND s.short_name != 'main'
+               AND (s.flags & 7) = 0
                AND (?1 = 1 OR s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
                AND (?2 IS NULL OR f.path LIKE ?2)
              ORDER BY f.path, s.start_line",
@@ -601,6 +606,7 @@ impl Db {
              LEFT JOIN refs r ON r.target_symbol_id = s.id
              WHERE s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
+               AND (s.flags & 7) = 0
              GROUP BY s.file_id",
         )?;
         let rows: rusqlite::Result<Vec<(i64, f64, f64)>> = stmt
@@ -628,6 +634,7 @@ impl Db {
                AND path NOT LIKE '%/mod.rs'
                AND path NOT LIKE 'src/bin/%'
                AND path NOT LIKE 'lib/%'
+               AND path NOT LIKE 'tests/%'
                AND (?1 IS NULL OR path LIKE ?1)
              ORDER BY path",
         )?;
@@ -948,6 +955,7 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
         pagerank: row.get(14)?,
         cyclomatic: row.get(15)?,
         cognitive: row.get(16)?,
+        flags: row.get(17)?,
     })
 }
 

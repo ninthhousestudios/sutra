@@ -275,6 +275,7 @@ fn build_symbol(
         docstring,
         cyclomatic,
         cognitive,
+        flags: 0,
     })
 }
 

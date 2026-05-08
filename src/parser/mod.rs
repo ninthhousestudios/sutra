@@ -31,6 +31,7 @@ pub struct ExtractedSymbol {
     pub docstring: Option<String>,
     pub cyclomatic: Option<u32>,
     pub cognitive: Option<u32>,
+    pub flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -14,6 +14,7 @@ fn sym<'a>(file_id: i64, qn: &'a str, sn: &'a str, sig: Option<&'a str>, sl: i64
         parent_symbol_id: None, docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }
 }
 

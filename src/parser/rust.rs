@@ -43,6 +43,59 @@ pub fn parse(source: &str, file_path: &str) -> Result<ParseResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Symbol flags
+// ---------------------------------------------------------------------------
+
+pub const FLAG_TEST: u32 = 0x01;
+pub const FLAG_CFG_TEST: u32 = 0x02;
+pub const FLAG_FFI_ENTRY: u32 = 0x04;
+
+fn extract_flags(node: Node, src: &[u8]) -> u32 {
+    let mut flags = 0u32;
+    let mut sib = node.prev_sibling();
+    while let Some(s) = sib {
+        if s.kind() == "attribute_item" {
+            let text = s.utf8_text(src).unwrap_or("");
+            if text.contains("#[test]")
+                || text.contains("tokio::test")
+                || text.contains("async_std::test")
+                || text.contains("#[bench]")
+            {
+                flags |= FLAG_TEST;
+            }
+            if text.contains("no_mangle")
+                || text.contains("export_name")
+                || text.contains("wasm_bindgen")
+                || text.contains("pyfunction")
+                || text.contains("pyo3")
+            {
+                flags |= FLAG_FFI_ENTRY;
+            }
+        } else if s.kind() != "line_comment" && s.kind() != "block_comment" {
+            break;
+        }
+        sib = s.prev_sibling();
+    }
+    flags
+}
+
+fn has_cfg_test_attr(node: Node, src: &[u8]) -> bool {
+    let mut sib = node.prev_sibling();
+    while let Some(s) = sib {
+        if s.kind() == "attribute_item" {
+            let text = s.utf8_text(src).unwrap_or("");
+            if text.contains("cfg(test)") || text.contains("cfg( test )") {
+                return true;
+            }
+        } else if s.kind() != "line_comment" && s.kind() != "block_comment" {
+            break;
+        }
+        sib = s.prev_sibling();
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // Symbol extraction
 // ---------------------------------------------------------------------------
 
@@ -53,6 +106,16 @@ fn collect_symbols(
     node: Node,
     src: &[u8],
     name_context: &[String],
+) {
+    collect_symbols_inner(symbols, node, src, name_context, false);
+}
+
+fn collect_symbols_inner(
+    symbols: &mut Vec<ExtractedSymbol>,
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+    in_cfg_test: bool,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -66,84 +129,101 @@ fn collect_symbols(
                 } else {
                     SymbolKind::Function
                 };
-                if let Some(sym) = extract_symbol(child, src, name_context, kind) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, kind) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "struct_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Struct) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Struct) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "enum_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Enum) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Enum) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "trait_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Trait) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Trait) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     let name = sym.short_name.clone();
                     symbols.push(sym);
-                    // Recurse into trait body
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        collect_symbols_inner(symbols, body, src, &ctx, in_cfg_test);
                     }
                 }
-                continue; // already recursed
+                continue;
             }
             "impl_item" => {
-                if let Some(sym) = extract_impl_symbol(child, src, name_context) {
+                if let Some(mut sym) = extract_impl_symbol(child, src, name_context) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     let impl_name = sym.short_name.clone();
                     symbols.push(sym);
-                    // Recurse into impl body — methods inside become Method
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(impl_name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        collect_symbols_inner(symbols, body, src, &ctx, in_cfg_test);
                     }
                 }
-                continue; // already recursed
+                continue;
             }
             "type_item" => {
-                if let Some(sym) =
+                if let Some(mut sym) =
                     extract_symbol(child, src, name_context, SymbolKind::TypeAlias)
                 {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "const_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Const) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Const) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "static_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Static) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Static) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "macro_definition" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Macro) {
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Macro) {
+                    sym.flags |= extract_flags(child, src);
+                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     symbols.push(sym);
                 }
             }
             "mod_item" => {
-                if let Some(sym) = extract_symbol(child, src, name_context, SymbolKind::Module) {
+                let child_cfg_test = in_cfg_test || has_cfg_test_attr(child, src);
+                if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Module) {
+                    sym.flags |= extract_flags(child, src);
+                    if child_cfg_test { sym.flags |= FLAG_CFG_TEST; }
                     let name = sym.short_name.clone();
                     symbols.push(sym);
-                    // Recurse into module body if it has one (inline module)
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        collect_symbols_inner(symbols, body, src, &ctx, child_cfg_test);
                     }
                 }
-                continue; // already recursed
+                continue;
             }
             _ => {
-                // Recurse into other nodes (e.g., declaration_list inside impls)
-                collect_symbols(symbols, child, src, name_context);
+                collect_symbols_inner(symbols, child, src, name_context, in_cfg_test);
             }
         }
     }
@@ -210,6 +290,7 @@ fn extract_symbol(
         docstring,
         cyclomatic,
         cognitive,
+        flags: 0,
     })
 }
 
@@ -248,6 +329,7 @@ fn extract_impl_symbol(
         docstring,
         cyclomatic: None,
         cognitive: None,
+        flags: 0,
     })
 }
 
@@ -629,5 +711,44 @@ mod tests {
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].short_name, "hello");
         assert_eq!(result.symbols[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn flag_detects_test_attr() {
+        let src = "#[test]\nfn my_test() {}";
+        let result = parse(src, "test.rs").unwrap();
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].flags & FLAG_TEST, FLAG_TEST);
+    }
+
+    #[test]
+    fn flag_detects_tokio_test() {
+        let src = "#[tokio::test]\nasync fn my_test() {}";
+        let result = parse(src, "test.rs").unwrap();
+        assert_eq!(result.symbols[0].flags & FLAG_TEST, FLAG_TEST);
+    }
+
+    #[test]
+    fn flag_detects_cfg_test_module() {
+        let src = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}";
+        let result = parse(src, "test.rs").unwrap();
+        let module = result.symbols.iter().find(|s| s.short_name == "tests").unwrap();
+        assert_eq!(module.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
+        let helper = result.symbols.iter().find(|s| s.short_name == "helper").unwrap();
+        assert_eq!(helper.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
+    }
+
+    #[test]
+    fn flag_detects_no_mangle() {
+        let src = "#[no_mangle]\npub extern \"C\" fn ffi_entry() {}";
+        let result = parse(src, "test.rs").unwrap();
+        assert_eq!(result.symbols[0].flags & FLAG_FFI_ENTRY, FLAG_FFI_ENTRY);
+    }
+
+    #[test]
+    fn no_flags_on_normal_function() {
+        let src = "pub fn normal() {}";
+        let result = parse(src, "test.rs").unwrap();
+        assert_eq!(result.symbols[0].flags, 0);
     }
 }

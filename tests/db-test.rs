@@ -20,6 +20,7 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
         parent_symbol_id: None, docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap()
 }
 
@@ -100,6 +101,7 @@ fn test_insert_and_lookup_symbol() {
         parent_symbol_id: None, docstring: Some("docs"),
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap();
 
     let by_id = db.symbol_by_id(sid).unwrap().unwrap();
@@ -254,6 +256,7 @@ fn test_find_enclosing_symbol_exact() {
         parent_symbol_id: None, docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
@@ -271,6 +274,7 @@ fn test_find_enclosing_symbol_nested() {
         parent_symbol_id: None, docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap();
     let inner_id = db.insert_symbol(&InsertSymbolParams {
         file_id: fid, qualified_name: "lib::inner", short_name: "inner", kind: "function",
@@ -279,6 +283,7 @@ fn test_find_enclosing_symbol_nested() {
         parent_symbol_id: Some(outer_id), docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap();
 
     let result = db.find_enclosing_symbol(fid, 15).unwrap().unwrap();
@@ -296,6 +301,7 @@ fn test_find_enclosing_symbol_outside() {
         parent_symbol_id: None, docstring: None,
             cyclomatic: None,
             cognitive: None,
+            flags: 0,
     }).unwrap();
 
     assert!(db.find_enclosing_symbol(fid, 100).unwrap().is_none());

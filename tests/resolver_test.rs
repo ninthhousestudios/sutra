@@ -25,6 +25,7 @@ fn make_symbol(
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        flags: 0,
     }
 }
 

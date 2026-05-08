@@ -152,6 +152,7 @@ fn parse_single_file(
             docstring: sym.docstring.as_deref(),
             cyclomatic: sym.cyclomatic.map(|v| v as i64),
             cognitive: sym.cognitive.map(|v| v as i64),
+            flags: sym.flags as i64,
         })?;
         symbols_extracted += 1;
     }
@@ -205,6 +206,7 @@ fn resolve_file_refs(
             docstring: s.docstring.clone(),
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),
+            flags: 0,
         })
         .collect();
 
