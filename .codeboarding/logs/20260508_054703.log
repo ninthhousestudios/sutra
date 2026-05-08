@@ -1,0 +1,6 @@
+2026-05-08 05:47:03 INFO     [tool_registry.installers:376] Installing Node.js packages: ['pyright@1.1.400', 'typescript-language-server@4.3.4', 'typescript@5.7', 'intelephense@1.16.5']
+2026-05-08 05:47:06 INFO     [tool_registry.installers:390] Node.js packages installed successfully
+2026-05-08 05:47:06 INFO     [tool_registry.installers:209]   tokei: already installed, skipping
+2026-05-08 05:47:06 INFO     [tool_registry.installers:209]   gopls: already installed, skipping
+2026-05-08 05:47:06 INFO     [tool_registry.installers:209]   rust-analyzer: already installed, skipping
+2026-05-08 05:47:06 INFO     [tool_registry.installers:417] Downloading java...

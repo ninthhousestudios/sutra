@@ -35,7 +35,7 @@ pub fn handle(
                 },
                 "analysis": {
                     "enabled": analysis_on,
-                    "tools": ["sutra_refs", "sutra_calls", "sutra_diff_impact", "sutra_cochange"],
+                    "tools": ["sutra_refs", "sutra_calls", "sutra_diff_impact", "sutra_cochange", "sutra_pr_risk", "sutra_provenance", "sutra_trace"],
                 },
             }
         })

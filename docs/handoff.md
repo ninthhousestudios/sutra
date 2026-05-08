@@ -1,44 +1,33 @@
-# sutra — handoff
+# Handoff — sutra
 
-Date: 2026-04-28 (post v0.1.5 implementation)
+## In progress
 
-## status
+**sutra/1 — watcher daemon PRD**: complete. PRD at `docs/plans/watcher-daemon-prd.md`.
+Decomposed into 6 slices (sutra/4 through sutra/9), all needs-triage.
 
-sutra v0.1.5 with 107 tests passing, zero clippy warnings. Binary at `~/.cargo/bin/sutra`. MCP server registered in `~/.claude.json` (stdio mode). Guard hooks installed in `~/.claude/settings.json`. `~/.claude/CLAUDE.md` updated to route through sutra instead of qartez.
+## What to pick up next
 
-### v0.1.5 (this session)
+### Triage the watcher slices
 
-All 5 items from previous handoff implemented:
+All six slices need triage. Three can start in parallel:
 
-1. **InsertSymbolParams struct** — Replaced 13-param `insert_symbol` with a params struct. Updated all 27 call sites across tests.
-2. **sutra_add_root MCP tool** — Auto-register + async parse a workspace. Agent calls it at session start via CLAUDE.md instruction.
-3. **PageRank population** — Power iteration on file dependency graph (damping=0.85, epsilon=1e-6). Distributed to symbols by incoming ref weight. Results: lib.rs 0.255, error.rs 0.152.
-4. **Guard hooks (routing + modification)** — `sutra-guard` binary. Routing guard denies Glob/Grep when sutra index exists. Modification guard blocks edits to load-bearing files (pagerank >= 0.05 or blast_radius >= 10) until `sutra_impact` is called (ack protocol with 600s TTL). Fail-open design.
-5. **Incremental rollup recompute** — Only recomputes changed files + depth-1 neighbors. Batch SQL queries eliminated N+1 patterns (~24% speedup).
+- **sutra/4** — incremental parse pipeline (`parse_changed_files` in `pipeline.rs`)
+- **sutra/5** — REST endpoints (`/health`, `/status`, `/workspaces`) + `install-services` CLI command
+- **sutra/6** — smriti event reader + cursor persistence (new module, direct SQLite read of smriti's `index.db`)
 
-## next steps
+Then:
+- **sutra/7** — smriti watcher loop (blocked by 4, 6)
+- **sutra/8** — `sutra_status` MCP tool (blocked by 5)
+- **sutra/9** — manas-cli health integration (blocked by 5)
 
-### v0.2.0 candidates
+### Other backlog
 
-- **Incremental parse** — Only re-parse files changed since last parse (by mtime or git diff). Currently full-reparse every time.
-- **Cross-workspace refs** — Resolve symbols across workspace boundaries (e.g., a library used by multiple projects).
-- **sutra_refactor_plan** — Generate ordered refactor steps with safety annotations, like qartez has.
-- **Test gap analysis** — Identify symbols with high blast radius but no test coverage.
-- **Watch mode** — File watcher that triggers incremental re-parse on save.
+- **sutra/3** — `--explain` flag on analysis tools (from qi comparison session)
+- Dart language gaps (else-if chain handling, unreachable-file exclusion patterns)
+- New tools from qartez survey (context, test_gaps, clones)
 
-### decided against
+## Context
 
-- **HTTP daemon** — Stdio gives per-project scoping for free. See chitta memory `019dd565-65f4`.
-- **Local variable extraction** — Would balloon symbol table ~10x for refs useless to cross-file tools.
-- **External crate indexing** — Big scope expansion for marginal gain.
-
-### deferred from reviews (do later)
-
-- **Connection pool / read-write split** — Over-engineering for current scale.
-- **Rollups in SQL** — In-Rust computation works. Revisit at 10K+ files.
-
-## related memories
-
-- Session summary: `019dd565-d8f2`
-- No-HTTP decision: `019dd565-65f4`
-- Prior session summary (v0.1.1 review cleanup): `019dd1c1-d9e9`
+- vidhi-init was run: `CLAUDE.md` + `docs/agents/` created with yojana tracker, default triage labels, single-context domain docs
+- No `CONTEXT.md` yet — will be created lazily during implementation when domain terms are resolved
+- 165 tests passing, clippy has 1 pre-existing `type_complexity` warning
