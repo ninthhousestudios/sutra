@@ -41,7 +41,7 @@ pub fn git_cochange_files(
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["log", "--name-only", "--format=COMMIT_SEP", "--since"])
+        .args(["log", "--name-only", "--pretty=format:COMMIT_SEP", "--since"])
         .arg(&since)
         .arg("--")
         .arg(path)
