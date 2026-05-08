@@ -582,6 +582,7 @@ impl Db {
                               'type_alias','class','mixin','const','static')
                AND s.short_name != 'main'
                AND (s.flags & 7) = 0
+               AND f.path NOT LIKE 'tests/%'
                AND (?1 = 1 OR s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
                AND (?2 IS NULL OR f.path LIKE ?2)
              ORDER BY f.path, s.start_line",
@@ -609,9 +610,11 @@ impl Db {
                     COUNT(*) AS total
              FROM symbols s
              LEFT JOIN refs r ON r.target_symbol_id = s.id
+             JOIN files f ON s.file_id = f.id
              WHERE s.kind IN ('function','method','struct','enum','trait',
                               'type_alias','class','mixin','const','static')
                AND (s.flags & 7) = 0
+               AND f.path NOT LIKE 'tests/%'
              GROUP BY s.file_id",
         )?;
         let rows: rusqlite::Result<Vec<(i64, f64, f64)>> = stmt
