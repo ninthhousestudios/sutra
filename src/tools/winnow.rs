@@ -66,44 +66,45 @@ pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<s
     let mut entries: Vec<SymbolEntry> = Vec::new();
 
     for file in &files {
-        if let Some(ref pat) = glob_pattern {
-            if !pat.matches(&file.path) {
-                continue;
-            }
+        if let Some(ref pat) = glob_pattern
+            && !pat.matches(&file.path)
+        {
+            continue;
         }
 
         let file_churn = churn_map.get(&file.path).copied().unwrap_or(0);
-        if let Some(min) = filter.min_churn {
-            if file_churn < min {
-                continue;
-            }
+        if let Some(min) = filter.min_churn
+            && file_churn < min
+        {
+            continue;
         }
 
         let symbols = db.find_symbols_by_file(file.id)?;
         for sym in symbols {
-            if let Some(ref k) = filter.kind {
-                if sym.kind != *k {
-                    continue;
-                }
+            if let Some(ref k) = filter.kind
+                && sym.kind != *k
+            {
+                continue;
             }
 
             let complexity = sym.cognitive.unwrap_or(0);
-            if let Some(min) = filter.min_complexity {
-                if complexity < min {
-                    continue;
-                }
+            if let Some(min) = filter.min_complexity
+                && complexity < min
+            {
+                continue;
             }
 
-            if let Some(ref re) = name_re {
-                if !re.is_match(&sym.qualified_name) && !re.is_match(&sym.short_name) {
-                    continue;
-                }
+            if let Some(ref re) = name_re
+                && !re.is_match(&sym.qualified_name)
+                && !re.is_match(&sym.short_name)
+            {
+                continue;
             }
 
-            if let Some(ref ids) = caller_ids {
-                if !ids.contains(&sym.id) {
-                    continue;
-                }
+            if let Some(ref ids) = caller_ids
+                && !ids.contains(&sym.id)
+            {
+                continue;
             }
 
             entries.push(SymbolEntry {

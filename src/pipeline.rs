@@ -671,6 +671,9 @@ fn compute_pagerank(
         .map(|(i, &id)| (id, i))
         .collect();
 
+    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
+    let all_refs = db.all_resolved_refs()?;
+
     // Reuse adjacency graph if pre-built, otherwise compute from DB.
     let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
     if let Some((_, outgoing)) = adjacency {
@@ -684,8 +687,7 @@ fn compute_pagerank(
             }
         }
     } else {
-        let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
-        for (src_file_id, target_sym_id) in db.all_resolved_refs()? {
+        for &(src_file_id, target_sym_id) in &all_refs {
             if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
                 && target_file_id != src_file_id
                 && let Some(&src_idx) = id_to_idx.get(&src_file_id)
@@ -703,9 +705,6 @@ fn compute_pagerank(
             out_edges[si].insert(di);
         }
     }
-
-    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
-    let all_refs = db.all_resolved_refs()?;
 
     const DAMPING: f64 = 0.85;
     const MAX_ITER: usize = 100;

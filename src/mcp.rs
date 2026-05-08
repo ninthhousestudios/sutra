@@ -914,7 +914,8 @@ impl SutraServer {
         {
             let mut config = self.workspaces.write();
             if !config.workspace.iter().any(|w| w.id == ws_id) {
-                let _ = workspace::add_workspace(&self.config.workspaces_path, entry.clone());
+                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
+                    .map_err(sutra_to_rmcp)?;
                 config.workspace.push(entry.clone());
             }
         }
