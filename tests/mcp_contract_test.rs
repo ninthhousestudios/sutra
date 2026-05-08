@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams};
-use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta};
+use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta, winnow};
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -253,4 +253,136 @@ fn test_map_without_freshness_has_no_meta() {
     let (_dir, db) = setup_test_db();
     let result = map::handle(&db, None, None).unwrap();
     assert!(result.get("_meta").is_none(), "plain handle() should not include _meta");
+}
+
+// ---------------------------------------------------------------------------
+// winnow contract tests
+// ---------------------------------------------------------------------------
+
+fn winnow_filter_default() -> winnow::WinnowFilter {
+    winnow::WinnowFilter {
+        kind: None,
+        min_complexity: None,
+        min_churn: None,
+        churn_window_days: None,
+        calls_to: None,
+        file_glob: None,
+        name_regex: None,
+        rank_by: None,
+        limit: None,
+    }
+}
+
+#[test]
+fn test_winnow_no_filters() {
+    let (dir, db) = setup_test_db_with_root();
+    let filter = winnow_filter_default();
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+
+    let matches = result["matches"].as_array().unwrap();
+    assert!(!matches.is_empty(), "winnow with no filters should return all symbols");
+    let entry = &matches[0];
+    assert!(entry["qualified_name"].is_string());
+    assert!(entry["kind"].is_string());
+    assert!(entry["file"].is_string());
+    assert!(entry["axes"]["importance"].is_number(), "each entry must include axes.importance");
+    assert!(entry["axes"]["complexity"].is_number(), "each entry must include axes.complexity");
+    assert!(entry["axes"]["churn"].is_number(), "each entry must include axes.churn");
+    assert!(entry["_freshness"].is_string(), "each entry must include _freshness");
+
+    assert!(result["_meta"]["freshness"]["fresh"].is_number());
+}
+
+#[test]
+fn test_winnow_kind_filter() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.kind = Some("function".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    for m in matches {
+        assert_eq!(m["kind"].as_str().unwrap(), "function");
+    }
+}
+
+#[test]
+fn test_winnow_kind_filter_no_match() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.kind = Some("trait".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(matches.is_empty(), "filtering by nonexistent kind should return empty");
+}
+
+#[test]
+fn test_winnow_name_regex() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.name_regex = Some("^main$".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(!matches.is_empty());
+    for m in matches {
+        let name = m["short_name"].as_str().unwrap();
+        assert_eq!(name, "main");
+    }
+}
+
+#[test]
+fn test_winnow_file_glob() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.file_glob = Some("src/*.rs".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(!matches.is_empty());
+    for m in matches {
+        let file = m["file"].as_str().unwrap();
+        assert!(file.starts_with("src/"), "file glob should filter to src/");
+    }
+}
+
+#[test]
+fn test_winnow_file_glob_no_match() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.file_glob = Some("nonexistent/*.rs".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(matches.is_empty());
+}
+
+#[test]
+fn test_winnow_min_complexity_filters() {
+    let (dir, db) = setup_test_db_with_root();
+    let mut filter = winnow_filter_default();
+    filter.min_complexity = Some(9999);
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(matches.is_empty(), "no symbol should have complexity >= 9999");
+}
+
+#[test]
+fn test_winnow_rank_by_complexity() {
+    let (dir, db) = setup_test_db_with_root();
+
+    // Add a second symbol with higher complexity
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: db.file_by_path("src/main.rs").unwrap().unwrap().id,
+        qualified_name: "complex_fn", short_name: "complex_fn", kind: "function",
+        signature: Some("fn complex_fn()"), signature_hash: None, visibility: Some("pub"),
+        start_line: 20, start_col: 0, end_line: 50, end_col: 0,
+        parent_symbol_id: None, docstring: None,
+        cyclomatic: Some(15), cognitive: Some(25),
+    }).unwrap();
+
+    let mut filter = winnow_filter_default();
+    filter.rank_by = Some("complexity".to_string());
+    let result = winnow::handle(&db, dir.path(), &filter).unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(matches.len() >= 2);
+    let c0 = matches[0]["axes"]["complexity"].as_i64().unwrap();
+    let c1 = matches[1]["axes"]["complexity"].as_i64().unwrap();
+    assert!(c0 >= c1, "results should be ranked by complexity descending");
 }

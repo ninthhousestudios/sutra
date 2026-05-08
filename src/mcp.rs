@@ -176,6 +176,37 @@ pub struct StatusArgs {
     pub languages: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WinnowArgs {
+    pub workspace: String,
+    /// Filter by symbol kind (function, method, struct, etc.)
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Minimum cognitive complexity
+    #[serde(default)]
+    pub min_complexity: Option<i64>,
+    /// Minimum git churn (commit count in window)
+    #[serde(default)]
+    pub min_churn: Option<u32>,
+    /// Churn window in days (default 90)
+    #[serde(default)]
+    pub churn_window_days: Option<u32>,
+    /// Symbol name that results must call
+    #[serde(default)]
+    pub calls_to: Option<String>,
+    /// Glob pattern for file paths
+    #[serde(default)]
+    pub file_glob: Option<String>,
+    /// Regex for symbol names (matched against qualified_name and short_name)
+    #[serde(default)]
+    pub name_regex: Option<String>,
+    /// Rank results by: "importance" (default), "complexity", "churn"
+    #[serde(default)]
+    pub rank_by: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
@@ -573,6 +604,35 @@ impl SutraServer {
             Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Multi-axis composite query. AND-intersects filters (kind, \
+        min_complexity, min_churn, calls_to, file_glob, name_regex) and ranks results \
+        by importance (PageRank), complexity, or churn. Each result includes per-axis \
+        values. Requires analysis tier for calls_to.")]
+    pub async fn sutra_winnow(
+        &self,
+        Parameters(args): Parameters<WinnowArgs>,
+    ) -> Result<String, ErrorData> {
+        if args.calls_to.is_some() {
+            self.require_analysis()?;
+        }
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let filter = tools::winnow::WinnowFilter {
+            kind: args.kind,
+            min_complexity: args.min_complexity,
+            min_churn: args.min_churn,
+            churn_window_days: args.churn_window_days,
+            calls_to: args.calls_to,
+            file_glob: args.file_glob,
+            name_regex: args.name_regex,
+            rank_by: args.rank_by,
+            limit: args.limit,
+        };
+        let result = tools::winnow::handle(&db, &ws.root, &filter)
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

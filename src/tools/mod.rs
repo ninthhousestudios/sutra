@@ -15,6 +15,7 @@ pub mod parse;
 pub mod read;
 pub mod refs;
 pub mod tools_meta;
+pub mod winnow;
 
 use std::collections::HashMap;
 use std::path::Path;
