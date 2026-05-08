@@ -183,6 +183,10 @@ pub struct FileHealthArgs {
     pub path: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// "actionable" (default): omits foundational files (high coupling but low complexity and \
+    /// no dead code). "all": shows every file.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -686,9 +690,10 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "Per-file health score (0-100). Combines blast radius, complexity, \
-        fan-in, dead-symbol ratio, and PageRank into a single maintainability index. \
-        Worst files first. Requires analysis tier.")]
+    #[tool(description = "Per-file health report with three axes: complexity_health, dead_health, \
+        coupling_health (each 0-100), plus an overall health_score. Default mode='actionable' \
+        filters out foundational files (high coupling but low complexity and no dead code). \
+        Use mode='all' to include everything. Worst files first. Requires analysis tier.")]
     pub async fn sutra_file_health(
         &self,
         Parameters(args): Parameters<FileHealthArgs>,
@@ -700,6 +705,7 @@ impl SutraServer {
             &db,
             args.path.as_deref(),
             args.limit,
+            args.mode.as_deref(),
             Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;

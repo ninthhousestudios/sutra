@@ -2,25 +2,71 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::db::Db;
+use crate::db::{Db, FileRow};
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
+
+pub struct FileScores {
+    pub complexity_health: f64,
+    pub dead_health: f64,
+    pub coupling_health: f64,
+    pub overall_health: f64,
+    pub avg_cognitive: f64,
+    pub max_cognitive: i64,
+    pub dead_ratio: f64,
+}
+
+pub fn compute_file_scores(
+    f: &FileRow,
+    max_cognitive: i64,
+    avg_cognitive: f64,
+    dead_ratio: f64,
+    max_pagerank: f64,
+) -> FileScores {
+    let complexity_health =
+        (100.0 - (avg_cognitive * 4.0).min(60.0) - (max_cognitive as f64 * 0.5).min(40.0))
+            .max(0.0);
+
+    let dead_health = (100.0 - dead_ratio * 100.0).max(0.0);
+
+    let pr_norm = f.pagerank.unwrap_or(0.0) / max_pagerank;
+    let blast_scaled = (f.blast_radius as f64 * 1.5).min(40.0);
+    let fan_in_scaled = (f.fan_in_files as f64 * 1.0).min(30.0);
+    let pr_scaled = (pr_norm * 30.0).min(30.0);
+    let coupling_health = (100.0 - blast_scaled - fan_in_scaled - pr_scaled).max(0.0);
+
+    let overall_health =
+        0.45 * complexity_health + 0.30 * dead_health + 0.25 * coupling_health;
+
+    FileScores {
+        complexity_health,
+        dead_health,
+        coupling_health,
+        overall_health,
+        avg_cognitive,
+        max_cognitive,
+        dead_ratio,
+    }
+}
 
 pub fn handle(
     db: &Db,
     path: Option<&str>,
     limit: Option<i64>,
+    mode: Option<&str>,
 ) -> Result<serde_json::Value> {
-    handle_with_freshness(db, path, limit, None)
+    handle_with_freshness(db, path, limit, mode, None)
 }
 
 pub fn handle_with_freshness(
     db: &Db,
     path: Option<&str>,
     limit: Option<i64>,
+    mode: Option<&str>,
     workspace_root: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(20) as usize;
+    let mode = mode.unwrap_or("actionable");
     let files = db.all_files()?;
     let complexity = db.complexity_by_file()?;
     let dead_ratios = db.dead_symbol_ratio_by_file()?;
@@ -38,64 +84,56 @@ pub fn handle_with_freshness(
             None => true,
         })
         .map(|f| {
-            let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
+            let (max_cog, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
             let dead_ratio = dead_ratios.get(&f.id).copied().unwrap_or(0.0);
-            let pr_norm = f.pagerank.unwrap_or(0.0) / max_pr;
-
-            let blast_penalty = (f.blast_radius * 2).min(25) as f64;
-            let complexity_penalty = (avg_cog * 2.0).min(25.0);
-            let fan_in_penalty = (f.fan_in_files).min(15) as f64;
-            let dead_penalty = dead_ratio * 20.0;
-            let pr_penalty = (pr_norm * 15.0).min(15.0);
-
-            let total_penalty =
-                blast_penalty + complexity_penalty + fan_in_penalty + dead_penalty + pr_penalty;
-            const MAX_PENALTY: f64 = 100.0;
-            let health = (MAX_PENALTY - total_penalty).max(0.0) as i64;
-
-            (f, health, blast_penalty, complexity_penalty, fan_in_penalty, dead_penalty, pr_penalty, avg_cog, dead_ratio)
+            let scores = compute_file_scores(f, max_cog, avg_cog, dead_ratio, max_pr);
+            (f, scores)
         })
         .collect();
 
-    scored.sort_by_key(|e| e.1);
+    if mode == "actionable" {
+        scored.retain(|(_, s)| !(s.complexity_health >= 90.0 && s.dead_health >= 90.0));
+    }
+
+    scored.sort_by(|a, b| {
+        a.1.overall_health
+            .partial_cmp(&b.1.overall_health)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit);
 
     let mut counts = FreshnessCounts::default();
     let items: Vec<_> = scored
         .iter()
-        .map(
-            |(f, health, blast_p, comp_p, fan_p, dead_p, pr_p, avg_cog, dead_ratio)| {
-                let mut entry = json!({
-                    "path": f.path,
-                    "health_score": health,
-                    "breakdown": {
-                        "blast_radius_penalty": *blast_p as i64,
-                        "complexity_penalty": *comp_p as i64,
-                        "fan_in_penalty": *fan_p as i64,
-                        "dead_symbol_penalty": *dead_p as i64,
-                        "pagerank_penalty": *pr_p as i64,
-                    },
-                    "raw": {
-                        "blast_radius": f.blast_radius,
-                        "avg_cognitive": avg_cog,
-                        "fan_in_files": f.fan_in_files,
-                        "dead_symbol_ratio": dead_ratio,
-                        "pagerank": f.pagerank,
-                    },
-                });
-                if let Some(root) = workspace_root {
-                    let status = freshness::check_file(root, &f.path, &f.last_parsed);
-                    counts.record(status);
-                    entry["_freshness"] = json!(status.as_str());
-                }
-                entry
-            },
-        )
+        .map(|(f, s)| {
+            let mut entry = json!({
+                "path": f.path,
+                "health_score": s.overall_health as i64,
+                "complexity_health": s.complexity_health as i64,
+                "dead_health": s.dead_health as i64,
+                "coupling_health": s.coupling_health as i64,
+                "raw": {
+                    "blast_radius": f.blast_radius,
+                    "avg_cognitive": s.avg_cognitive,
+                    "max_cognitive": s.max_cognitive,
+                    "fan_in_files": f.fan_in_files,
+                    "dead_symbol_ratio": s.dead_ratio,
+                    "pagerank": f.pagerank,
+                },
+            });
+            if let Some(root) = workspace_root {
+                let status = freshness::check_file(root, &f.path, &f.last_parsed);
+                counts.record(status);
+                entry["_freshness"] = json!(status.as_str());
+            }
+            entry
+        })
         .collect();
 
     let mut result = json!({
         "files": items,
         "total": items.len(),
+        "mode": mode,
     });
     if workspace_root.is_some() {
         result["_meta"] = json!({ "freshness": counts.to_json() });

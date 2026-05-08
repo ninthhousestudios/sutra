@@ -749,6 +749,8 @@ struct SnapshotAggregates {
 }
 
 fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
+    use crate::tools::file_health::compute_file_scores;
+
     let files = db.all_files()?;
     let complexity = db.complexity_by_file()?;
     let dead_ratios = db.dead_symbol_ratio_by_file()?;
@@ -771,20 +773,10 @@ fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
     let mut health_sum: f64 = 0.0;
 
     for f in &files {
-        let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
+        let (max_cog, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
         let dead_ratio = dead_ratios.get(&f.id).copied().unwrap_or(0.0);
-        let pr_norm = f.pagerank.unwrap_or(0.0) / max_pr;
-
-        let blast_penalty = (f.blast_radius * 2).min(25) as f64;
-        let complexity_penalty = (avg_cog * 2.0).min(25.0);
-        let fan_in_penalty = (f.fan_in_files).min(15) as f64;
-        let dead_penalty = dead_ratio * 20.0;
-        let pr_penalty = (pr_norm * 15.0).min(15.0);
-
-        let total_penalty =
-            blast_penalty + complexity_penalty + fan_in_penalty + dead_penalty + pr_penalty;
-        let health = (100.0 - total_penalty).max(0.0);
-        health_sum += health;
+        let scores = compute_file_scores(f, max_cog, avg_cog, dead_ratio, max_pr);
+        health_sum += scores.overall_health;
 
         if f.blast_radius >= 5 && avg_cog >= 5.0 {
             hotspot_count += 1;
