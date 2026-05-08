@@ -20,7 +20,7 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         parent_symbol_id: None, docstring: None,
         cyclomatic: None, cognitive: None,
     }).unwrap();
-    db.insert_snapshot(1, 1, 0, 0, 100).unwrap();
+    db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
 
     (dir, db)
 }
@@ -39,7 +39,7 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
             cyclomatic: None,
             cognitive: None,
     }).unwrap();
-    db.insert_snapshot(1, 1, 0, 0, 100).unwrap();
+    db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
 
     (dir, db)
 }

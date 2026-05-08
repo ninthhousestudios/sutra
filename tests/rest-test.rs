@@ -50,7 +50,7 @@ async fn status_returns_workspace_list() {
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("test_ws", dir.path()).unwrap();
-    db.insert_snapshot(1, 5, 20, 0, 100).unwrap();
+    db.insert_snapshot(1, 5, 20, 0, 100, 0, 0, 0, 0).unwrap();
 
     {
         let mut ws_guard = ws.write();

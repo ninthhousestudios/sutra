@@ -332,7 +332,12 @@ pub async fn parse_workspace(
     compute_pagerank(db, &files, adjacency.as_ref())?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
-    db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
+    let aggregates = compute_snapshot_aggregates(db)?;
+    db.insert_snapshot(
+        files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms,
+        aggregates.total_complexity, aggregates.dead_symbol_count,
+        aggregates.hotspot_count, aggregates.health_score,
+    )?;
 
     Ok(ParseSnapshot {
         files_walked: source_files.len() as i64,
@@ -435,7 +440,12 @@ pub async fn parse_changed_files(
     compute_pagerank(db, &files, adjacency.as_ref())?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
-    db.insert_snapshot(files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms)?;
+    let aggregates = compute_snapshot_aggregates(db)?;
+    db.insert_snapshot(
+        files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms,
+        aggregates.total_complexity, aggregates.dead_symbol_count,
+        aggregates.hotspot_count, aggregates.health_score,
+    )?;
 
     Ok(ParseSnapshot {
         files_walked: changed.len() as i64,
@@ -727,6 +737,70 @@ fn compute_pagerank(
     db.batch_update_symbol_pagerank(&sym_updates)?;
 
     Ok(())
+}
+
+struct SnapshotAggregates {
+    total_complexity: i64,
+    dead_symbol_count: i64,
+    hotspot_count: i64,
+    health_score: i64,
+}
+
+fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
+    let files = db.all_files()?;
+    let complexity = db.complexity_by_file()?;
+    let dead_ratios = db.dead_symbol_ratio_by_file()?;
+
+    let total_complexity: i64 = complexity
+        .values()
+        .map(|&(_, avg_cog)| avg_cog as i64)
+        .sum();
+
+    let dead_symbols = db.find_dead_symbols(false, None)?;
+    let dead_symbol_count = dead_symbols.len() as i64;
+
+    let max_pr = files
+        .iter()
+        .filter_map(|f| f.pagerank)
+        .fold(0.0_f64, f64::max)
+        .max(0.001);
+
+    let mut hotspot_count: i64 = 0;
+    let mut health_sum: f64 = 0.0;
+
+    for f in &files {
+        let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
+        let dead_ratio = dead_ratios.get(&f.id).copied().unwrap_or(0.0);
+        let pr_norm = f.pagerank.unwrap_or(0.0) / max_pr;
+
+        let blast_penalty = (f.blast_radius * 2).min(25) as f64;
+        let complexity_penalty = (avg_cog * 2.0).min(25.0);
+        let fan_in_penalty = (f.fan_in_files).min(15) as f64;
+        let dead_penalty = dead_ratio * 20.0;
+        let pr_penalty = (pr_norm * 15.0).min(15.0);
+
+        let total_penalty =
+            blast_penalty + complexity_penalty + fan_in_penalty + dead_penalty + pr_penalty;
+        let health = (100.0 - total_penalty).max(0.0);
+        health_sum += health;
+
+        if f.blast_radius >= 5 && avg_cog >= 5.0 {
+            hotspot_count += 1;
+        }
+    }
+
+    let health_score = if files.is_empty() {
+        100
+    } else {
+        (health_sum / files.len() as f64) as i64
+    };
+
+    Ok(SnapshotAggregates {
+        total_complexity,
+        dead_symbol_count,
+        hotspot_count,
+        health_score,
+    })
 }
 
 fn parse_symbol_kind(s: &str) -> parser::SymbolKind {

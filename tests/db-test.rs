@@ -409,9 +409,87 @@ fn test_import_edges() {
 #[test]
 fn test_insert_snapshot_and_last_parse_time() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 300).unwrap();
+    db.insert_snapshot(10, 50, 20, 0, 300, 0, 0, 0, 0).unwrap();
     let ts = db.last_parse_time().unwrap();
     assert!(ts.is_some());
+}
+
+#[test]
+fn test_snapshot_with_aggregates() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 300, 42, 5, 3, 78).unwrap();
+
+    let snaps = db.latest_snapshots(1).unwrap();
+    assert_eq!(snaps.len(), 1);
+    let s = &snaps[0];
+    assert_eq!(s.files_parsed, 10);
+    assert_eq!(s.symbols_extracted, 50);
+    assert_eq!(s.total_complexity, 42);
+    assert_eq!(s.dead_symbol_count, 5);
+    assert_eq!(s.hotspot_count, 3);
+    assert_eq!(s.health_score, 78);
+}
+
+#[test]
+fn test_latest_snapshots_ordering() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75).unwrap();
+
+    let snaps = db.latest_snapshots(2).unwrap();
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(snaps[0].files_parsed, 20);
+    assert_eq!(snaps[1].files_parsed, 10);
+}
+
+#[test]
+fn test_snapshots_between() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75).unwrap();
+
+    let snaps = db.snapshots_between("2000-01-01", "2099-01-01").unwrap();
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(snaps[0].files_parsed, 10);
+    assert_eq!(snaps[1].files_parsed, 20);
+}
+
+#[test]
+fn test_trend_default_from_to() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    db.insert_snapshot(20, 80, 40, 1, 200, 25, 4, 2, 75).unwrap();
+
+    let result = sutra::tools::trend::handle(&db, None, None).unwrap();
+    let deltas = &result["deltas"];
+    assert_eq!(deltas["files_parsed"], 10);
+    assert_eq!(deltas["symbols_extracted"], 30);
+    assert_eq!(deltas["total_complexity"], 15);
+    assert_eq!(deltas["dead_symbol_count"], 3);
+    assert_eq!(deltas["hotspot_count"], 2);
+    assert_eq!(deltas["health_score"], -15);
+}
+
+#[test]
+fn test_trend_insufficient_snapshots() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90).unwrap();
+    let result = sutra::tools::trend::handle(&db, None, None);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_pre_existing_snapshots_have_zero_aggregates() {
+    let (_dir, db) = setup_db();
+    db.insert_snapshot(10, 50, 20, 0, 300, 0, 0, 0, 0).unwrap();
+    let snaps = db.latest_snapshots(1).unwrap();
+    assert_eq!(snaps[0].total_complexity, 0);
+    assert_eq!(snaps[0].dead_symbol_count, 0);
+    assert_eq!(snaps[0].hotspot_count, 0);
+    assert_eq!(snaps[0].health_score, 0);
 }
 
 #[test]

@@ -177,6 +177,19 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TrendArgs {
+    pub workspace: String,
+    /// ISO timestamp for the start of the comparison window.
+    /// Defaults to the second-most-recent snapshot.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// ISO timestamp for the end of the comparison window.
+    /// Defaults to the most recent snapshot.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WinnowArgs {
     pub workspace: String,
     /// Filter by symbol kind (function, method, struct, etc.)
@@ -602,6 +615,24 @@ impl SutraServer {
             args.path.as_deref(),
             args.limit,
             Some(ws.root.as_path()),
+        )
+        .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "Compare two parse snapshots and return per-metric deltas. \
+        Useful for CI gates and pre/post-refactor checks. \
+        Defaults to comparing the two most recent snapshots.")]
+    pub async fn sutra_trend(
+        &self,
+        Parameters(args): Parameters<TrendArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::trend::handle(
+            &db,
+            args.from.as_deref(),
+            args.to.as_deref(),
         )
         .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)

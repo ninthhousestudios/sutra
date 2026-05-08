@@ -97,6 +97,10 @@ pub struct SnapshotRow {
     pub refs_extracted: i64,
     pub parse_errors: i64,
     pub duration_ms: i64,
+    pub total_complexity: i64,
+    pub dead_symbol_count: i64,
+    pub hotspot_count: i64,
+    pub health_score: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,15 +149,20 @@ impl Db {
         let conn = self.conn.lock();
         conn.execute_batch(include_str!("../migrations/0001_initial.sql"))?;
         // Idempotent: ALTER TABLE ADD COLUMN fails if column already exists.
-        for stmt in include_str!("../migrations/0002_complexity.sql").lines() {
-            let stmt = stmt.trim();
-            if !stmt.is_empty() {
-                match conn.execute_batch(stmt) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        let msg = e.to_string();
-                        if !msg.contains("duplicate column") {
-                            eprintln!("migration warning: {msg}");
+        for sql in [
+            include_str!("../migrations/0002_complexity.sql"),
+            include_str!("../migrations/0003_snapshot_aggregates.sql"),
+        ] {
+            for stmt in sql.lines() {
+                let stmt = stmt.trim();
+                if !stmt.is_empty() {
+                    match conn.execute_batch(stmt) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if !msg.contains("duplicate column") {
+                                eprintln!("migration warning: {msg}");
+                            }
                         }
                     }
                 }
@@ -829,14 +838,24 @@ impl Db {
         refs_extracted: i64,
         parse_errors: i64,
         duration_ms: i64,
+        total_complexity: i64,
+        dead_symbol_count: i64,
+        hotspot_count: i64,
+        health_score: i64,
     ) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
-                                    refs_extracted, parse_errors, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![now, files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms],
+                                    refs_extracted, parse_errors, duration_ms,
+                                    total_complexity, dead_symbol_count,
+                                    hotspot_count, health_score)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                now, files_parsed, symbols_extracted, refs_extracted,
+                parse_errors, duration_ms, total_complexity,
+                dead_symbol_count, hotspot_count, health_score,
+            ],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -854,6 +873,39 @@ impl Db {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(SutraError::Db(e)),
         }
+    }
+
+    /// Return the N most recent snapshots, ordered newest-first.
+    pub fn latest_snapshots(&self, limit: i64) -> Result<Vec<SnapshotRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, files_parsed, symbols_extracted,
+                    refs_extracted, parse_errors, duration_ms,
+                    total_complexity, dead_symbol_count,
+                    hotspot_count, health_score
+             FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], map_snapshot_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Return all snapshots whose timestamp falls within [from, to], ordered oldest-first.
+    pub fn snapshots_between(&self, from: &str, to: &str) -> Result<Vec<SnapshotRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, files_parsed, symbols_extracted,
+                    refs_extracted, parse_errors, duration_ms,
+                    total_complexity, dead_symbol_count,
+                    hotspot_count, health_score
+             FROM snapshots WHERE timestamp >= ?1 AND timestamp <= ?2
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![from, to], map_snapshot_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 }
 
@@ -918,5 +970,21 @@ fn map_import_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportRow> {
         imported_path: row.get(2)?,
         resolved_file_id: row.get(3)?,
         line: row.get(4)?,
+    })
+}
+
+fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
+    Ok(SnapshotRow {
+        id: row.get(0)?,
+        timestamp: row.get(1)?,
+        files_parsed: row.get(2)?,
+        symbols_extracted: row.get(3)?,
+        refs_extracted: row.get(4)?,
+        parse_errors: row.get(5)?,
+        duration_ms: row.get(6)?,
+        total_complexity: row.get(7)?,
+        dead_symbol_count: row.get(8)?,
+        hotspot_count: row.get(9)?,
+        health_score: row.get(10)?,
     })
 }
