@@ -252,6 +252,26 @@ pub struct WinnowArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon registration error
+// ---------------------------------------------------------------------------
+
+enum DaemonRegisterError {
+    ConnectFailed,
+    DaemonError(String),
+    ParseError(String),
+}
+
+impl std::fmt::Display for DaemonRegisterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConnectFailed => write!(f, "daemon not reachable"),
+            Self::DaemonError(msg) => write!(f, "daemon error: {msg}"),
+            Self::ParseError(msg) => write!(f, "response parse error: {msg}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
 
@@ -319,6 +339,47 @@ impl SutraServer {
             ));
         }
         Ok(())
+    }
+
+    fn register_workspace(
+        &self,
+        path: &str,
+        languages: Option<Vec<String>>,
+    ) -> std::result::Result<(String, workspace::WorkspaceEntry, bool), ErrorData> {
+        let root = PathBuf::from(path);
+        if !root.is_absolute() || !root.is_dir() {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                format!("path must be an absolute directory that exists: {path}"),
+                None,
+            ));
+        }
+
+        let dir_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        let ws_id = dir_name.to_lowercase().replace(' ', "-");
+        let languages = languages.unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
+
+        let entry = workspace::WorkspaceEntry {
+            id: ws_id.clone(),
+            root,
+            languages,
+        };
+
+        let already_exists = {
+            let mut config = self.workspaces.write();
+            let exists = config.workspace.iter().any(|w| w.id == ws_id);
+            if !exists {
+                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
+                    .map_err(sutra_to_rmcp)?;
+                config.workspace.push(entry.clone());
+            }
+            exists
+        };
+
+        Ok((ws_id, entry, already_exists))
     }
 
     fn freshness(&self, db: &Db) -> serde_json::Value {
@@ -776,50 +837,15 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<AddRootArgs>,
     ) -> Result<String, ErrorData> {
-        let root = PathBuf::from(&args.path);
-        if !root.is_absolute() || !root.is_dir() {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                format!(
-                    "path must be an absolute directory that exists: {}",
-                    args.path
-                ),
-                None,
-            ));
-        }
-
-        let dir_name = root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace");
-        let ws_id = dir_name.to_lowercase().replace(' ', "-");
-        let languages = args
-            .languages
-            .unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
-
-        let entry = workspace::WorkspaceEntry {
-            id: ws_id.clone(),
-            root: root.clone(),
-            languages: languages.clone(),
-        };
-
-        let already_exists = {
-            let mut config = self.workspaces.write();
-            let exists = config.workspace.iter().any(|w| w.id == ws_id);
-            if !exists {
-                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
-                    .map_err(sutra_to_rmcp)?;
-                config.workspace.push(entry.clone());
-            }
-            exists
-        };
+        let (ws_id, entry, already_exists) =
+            self.register_workspace(&args.path, args.languages)?;
 
         {
             let mut parsing = self.parsing_in_progress.lock();
             if parsing.contains(&ws_id) {
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "workspace": ws_id,
-                    "root": root.display().to_string(),
+                    "root": entry.root.display().to_string(),
                     "status": "parse already in progress",
                 }))
                 .map_err(json_to_rmcp);
@@ -831,8 +857,9 @@ impl SutraServer {
         let config = Arc::clone(&self.config);
         let ws_id_bg = ws_id.clone();
         let parsing_flag = Arc::clone(&self.parsing_in_progress);
+        let entry_bg = entry.clone();
         tokio::spawn(async move {
-            let result = crate::pipeline::parse_workspace(&entry, &db, &config).await;
+            let result = crate::pipeline::parse_workspace(&entry_bg, &db, &config).await;
             parsing_flag.lock().remove(&ws_id_bg);
             match result {
                 Ok(snap) => {
@@ -858,8 +885,8 @@ impl SutraServer {
         };
         serde_json::to_string_pretty(&serde_json::json!({
             "workspace": ws_id,
-            "root": root.display().to_string(),
-            "languages": languages,
+            "root": entry.root.display().to_string(),
+            "languages": entry.languages,
             "status": status,
         }))
         .map_err(json_to_rmcp)
@@ -873,52 +900,26 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<StatusArgs>,
     ) -> Result<String, ErrorData> {
-        let root = PathBuf::from(&args.path);
-        if !root.is_absolute() || !root.is_dir() {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                format!(
-                    "path must be an absolute directory that exists: {}",
-                    args.path
-                ),
-                None,
-            ));
-        }
-
-        let dir_name = root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace");
-        let ws_id = dir_name.to_lowercase().replace(' ', "-");
-        let languages = args
-            .languages
-            .unwrap_or_else(|| vec!["rust".into(), "dart".into()]);
-
         let daemon_url = &self.config.listen_addr;
 
-        // Try daemon path first
-        if let Ok(resp) = self
-            .try_daemon_register(daemon_url, &args.path, &languages)
+        // Try daemon path first — only fall back on ConnectFailed
+        match self
+            .try_daemon_register(daemon_url, &args.path, &args.languages)
             .await
         {
-            return Ok(resp);
+            Ok(resp) => return Ok(resp),
+            Err(DaemonRegisterError::ConnectFailed) => {}
+            Err(e) => {
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+                    e.to_string(),
+                    None,
+                ));
+            }
         }
 
         // Fallback: local mode — register + parse
-        let entry = workspace::WorkspaceEntry {
-            id: ws_id.clone(),
-            root: root.clone(),
-            languages: languages.clone(),
-        };
-
-        {
-            let mut config = self.workspaces.write();
-            if !config.workspace.iter().any(|w| w.id == ws_id) {
-                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
-                    .map_err(sutra_to_rmcp)?;
-                config.workspace.push(entry.clone());
-            }
-        }
+        let (ws_id, entry, _) = self.register_workspace(&args.path, args.languages)?;
 
         let db = self.get_db(&ws_id)?;
 
@@ -937,7 +938,7 @@ impl SutraServer {
 
         serde_json::to_string_pretty(&serde_json::json!({
             "workspace": ws_id,
-            "root": root.display().to_string(),
+            "root": entry.root.display().to_string(),
             "mode": "local",
             "status": status,
             "last_parse": freshness["as_of"],
@@ -955,15 +956,14 @@ impl SutraServer {
         &self,
         addr: &str,
         path: &str,
-        languages: &[String],
-    ) -> std::result::Result<String, ()> {
+        languages: &Option<Vec<String>>,
+    ) -> std::result::Result<String, DaemonRegisterError> {
         let base = format!("http://{addr}");
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
-            .map_err(|_| ())?;
+            .map_err(|_| DaemonRegisterError::ConnectFailed)?;
 
-        // POST /workspaces to register
         let post_resp = client
             .post(format!("{base}/workspaces"))
             .json(&serde_json::json!({
@@ -972,48 +972,54 @@ impl SutraServer {
             }))
             .send()
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| DaemonRegisterError::ConnectFailed)?;
 
-        if !post_resp.status().is_success() && post_resp.status().as_u16() != 409 {
-            return Err(());
+        let status_code = post_resp.status();
+        if !status_code.is_success() && status_code.as_u16() != 409 {
+            return Err(DaemonRegisterError::DaemonError(format!(
+                "POST /workspaces returned {status_code}"
+            )));
         }
 
-        let post_json: serde_json::Value = post_resp.json().await.map_err(|_| ())?;
+        let post_json: serde_json::Value = post_resp
+            .json()
+            .await
+            .map_err(|e| DaemonRegisterError::ParseError(e.to_string()))?;
         let ws_id = post_json["id"].as_str().unwrap_or("unknown").to_string();
 
         // Poll /status for up to 10s until workspace has parse data
         for _ in 0..10 {
-            if let Ok(status) = client.get(format!("{base}/status")).send().await {
-                if let Ok(json) = status.json::<serde_json::Value>().await {
-                    if let Some(workspaces) = json["workspaces"].as_array() {
-                        if let Some(ws) = workspaces.iter().find(|w| w["id"] == ws_id) {
-                            let file_count = ws["file_count"].as_i64().unwrap_or(0);
-                            let last_parse = ws["last_parse_time"].as_str().unwrap_or("");
-                            if file_count > 0 || !last_parse.is_empty() {
-                                let smriti_connected = self.check_smriti_connected();
-                                let is_stale = last_parse.is_empty();
-                                let status_str = if file_count == 0 { "empty" } else { "ready" };
-                                return serde_json::to_string_pretty(&serde_json::json!({
-                                    "workspace": ws_id,
-                                    "root": ws["root"],
-                                    "mode": "daemon",
-                                    "status": status_str,
-                                    "last_parse": last_parse,
-                                    "is_stale": is_stale,
-                                    "files": file_count,
-                                    "symbols": ws["symbol_count"],
-                                    "smriti_connected": smriti_connected,
-                                }))
-                                .map_err(|_| ());
-                            }
-                        }
-                    }
+            if let Ok(status) = client.get(format!("{base}/status")).send().await
+                && let Ok(json) = status.json::<serde_json::Value>().await
+                && let Some(workspaces) = json["workspaces"].as_array()
+                && let Some(ws) = workspaces.iter().find(|w| w["id"] == ws_id)
+            {
+                let file_count = ws["file_count"].as_i64().unwrap_or(0);
+                let last_parse = ws["last_parse_time"].as_str().unwrap_or("");
+                if file_count > 0 || !last_parse.is_empty() {
+                    let smriti_connected = self.check_smriti_connected();
+                    let is_stale = last_parse.is_empty();
+                    let status_str = if file_count == 0 { "empty" } else { "ready" };
+                    return serde_json::to_string_pretty(&serde_json::json!({
+                        "workspace": ws_id,
+                        "root": ws["root"],
+                        "mode": "daemon",
+                        "status": status_str,
+                        "last_parse": last_parse,
+                        "is_stale": is_stale,
+                        "files": file_count,
+                        "symbols": ws["symbol_count"],
+                        "smriti_connected": smriti_connected,
+                    }))
+                    .map_err(|e| DaemonRegisterError::ParseError(e.to_string()));
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
 
-        Err(())
+        Err(DaemonRegisterError::DaemonError(
+            "workspace registered but parse data not available after 10s".into(),
+        ))
     }
 
     fn check_smriti_connected(&self) -> bool {
