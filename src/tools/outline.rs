@@ -1,6 +1,14 @@
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct OutlineArgs {
+    pub workspace: String,
+    pub path: String,
+}
 use crate::error::{Result, SutraError};
 
 pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {

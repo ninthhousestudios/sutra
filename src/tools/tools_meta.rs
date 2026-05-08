@@ -1,5 +1,17 @@
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ToolsMetaArgs {
+    #[serde(default)]
+    pub enable: Option<Vec<String>>,
+    #[serde(default)]
+    pub disable: Option<Vec<String>>,
+    #[serde(default)]
+    pub list: Option<bool>,
+}
 
 pub fn handle(
     analysis_enabled: &AtomicBool,

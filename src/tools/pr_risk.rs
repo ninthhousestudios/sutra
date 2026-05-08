@@ -1,9 +1,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrRiskArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub head: Option<String>,
+}
 use crate::error::Result;
 use crate::git;
 

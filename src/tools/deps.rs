@@ -1,8 +1,19 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DepsArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub depth: Option<usize>,
+}
 use crate::error::{Result, SutraError};
 
 pub fn handle(db: &Db, path: Option<&str>, depth: Option<usize>) -> Result<serde_json::Value> {

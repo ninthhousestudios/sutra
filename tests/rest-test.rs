@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use sutra::config::Config;
-use sutra::db::Db;
+use sutra::db::{Db, SnapshotParams};
 use sutra::workspace::{WorkspaceEntry, WorkspacesConfig};
 
 type DbCache = Arc<Mutex<HashMap<String, Arc<Db>>>>;
@@ -50,7 +50,18 @@ async fn status_returns_workspace_list() {
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("test_ws", dir.path()).unwrap();
-    db.insert_snapshot(1, 5, 20, 0, 100, 0, 0, 0, 0).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 5,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0,
+    })
+    .unwrap();
 
     {
         let mut ws_guard = ws.write();

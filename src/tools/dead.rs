@@ -1,6 +1,17 @@
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeadArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub include_pub: Option<bool>,
+}
 use crate::error::Result;
 
 pub fn handle(db: &Db, path_prefix: Option<&str>, include_pub: bool) -> Result<serde_json::Value> {

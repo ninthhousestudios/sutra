@@ -1,8 +1,23 @@
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::{Db, FileRow};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FileHealthArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// "actionable" (default): omits foundational files (high coupling but low complexity and \
+    /// no dead code). "all": shows every file.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
 

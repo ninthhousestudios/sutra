@@ -4,6 +4,7 @@ pub mod db;
 pub mod error;
 pub mod freshness;
 pub mod git;
+pub mod graph;
 pub mod guard;
 pub mod mcp;
 pub mod parser;

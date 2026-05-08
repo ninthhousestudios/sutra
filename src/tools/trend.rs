@@ -1,6 +1,21 @@
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::{Db, SnapshotRow};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TrendArgs {
+    pub workspace: String,
+    /// ISO timestamp for the start of the comparison window.
+    /// Defaults to the second-most-recent snapshot.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// ISO timestamp for the end of the comparison window.
+    /// Defaults to the most recent snapshot.
+    #[serde(default)]
+    pub to: Option<String>,
+}
 use crate::error::Result;
 
 pub fn handle(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<serde_json::Value> {

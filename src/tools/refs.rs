@@ -1,8 +1,16 @@
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RefsArgs {
+    pub workspace: String,
+    pub symbol: String,
+}
 use crate::error::{Result, SutraError};
 
 pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {

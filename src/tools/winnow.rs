@@ -2,9 +2,42 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use regex::Regex;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WinnowArgs {
+    pub workspace: String,
+    /// Filter by symbol kind (function, method, struct, etc.)
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Minimum cognitive complexity
+    #[serde(default)]
+    pub min_complexity: Option<i64>,
+    /// Minimum git churn (commit count in window)
+    #[serde(default)]
+    pub min_churn: Option<u32>,
+    /// Churn window in days (default 90)
+    #[serde(default)]
+    pub churn_window_days: Option<u32>,
+    /// Symbol name that results must call
+    #[serde(default)]
+    pub calls_to: Option<String>,
+    /// Glob pattern for file paths
+    #[serde(default)]
+    pub file_glob: Option<String>,
+    /// Regex for symbol names (matched against qualified_name and short_name)
+    #[serde(default)]
+    pub name_regex: Option<String>,
+    /// Rank results by: "importance" (default), "complexity", "churn"
+    #[serde(default)]
+    pub rank_by: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
 

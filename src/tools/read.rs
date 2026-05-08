@@ -1,8 +1,18 @@
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadArgs {
+    pub workspace: String,
+    pub symbol: String,
+    #[serde(default)]
+    pub context_lines: Option<usize>,
+}
 use crate::error::{Result, SutraError};
 
 pub fn handle(

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sutra::db::{Db, InsertSymbolParams};
+use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -497,7 +497,18 @@ fn test_import_edges() {
 #[test]
 fn test_insert_snapshot_and_last_parse_time() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 300, 0, 0, 0, 0).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 300,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0,
+    })
+    .unwrap();
     let ts = db.last_parse_time().unwrap();
     assert!(ts.is_some());
 }
@@ -505,8 +516,18 @@ fn test_insert_snapshot_and_last_parse_time() {
 #[test]
 fn test_snapshot_with_aggregates() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 300, 42, 5, 3, 78)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 300,
+        total_complexity: 42,
+        dead_symbol_count: 5,
+        hotspot_count: 3,
+        health_score: 78,
+    })
+    .unwrap();
 
     let snaps = db.latest_snapshots(1).unwrap();
     assert_eq!(snaps.len(), 1);
@@ -522,11 +543,31 @@ fn test_snapshot_with_aggregates() {
 #[test]
 fn test_latest_snapshots_ordering() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 10,
+        dead_symbol_count: 1,
+        hotspot_count: 0,
+        health_score: 90,
+    })
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 20,
+        symbols_extracted: 80,
+        refs_extracted: 40,
+        parse_errors: 1,
+        duration_ms: 200,
+        total_complexity: 20,
+        dead_symbol_count: 3,
+        hotspot_count: 2,
+        health_score: 75,
+    })
+    .unwrap();
 
     let snaps = db.latest_snapshots(2).unwrap();
     assert_eq!(snaps.len(), 2);
@@ -537,11 +578,31 @@ fn test_latest_snapshots_ordering() {
 #[test]
 fn test_snapshots_between() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 10,
+        dead_symbol_count: 1,
+        hotspot_count: 0,
+        health_score: 90,
+    })
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 20, 3, 2, 75)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 20,
+        symbols_extracted: 80,
+        refs_extracted: 40,
+        parse_errors: 1,
+        duration_ms: 200,
+        total_complexity: 20,
+        dead_symbol_count: 3,
+        hotspot_count: 2,
+        health_score: 75,
+    })
+    .unwrap();
 
     let snaps = db.snapshots_between("2000-01-01", "2099-01-01").unwrap();
     assert_eq!(snaps.len(), 2);
@@ -552,11 +613,31 @@ fn test_snapshots_between() {
 #[test]
 fn test_trend_default_from_to() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 10,
+        dead_symbol_count: 1,
+        hotspot_count: 0,
+        health_score: 90,
+    })
+    .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(20, 80, 40, 1, 200, 25, 4, 2, 75)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 20,
+        symbols_extracted: 80,
+        refs_extracted: 40,
+        parse_errors: 1,
+        duration_ms: 200,
+        total_complexity: 25,
+        dead_symbol_count: 4,
+        hotspot_count: 2,
+        health_score: 75,
+    })
+    .unwrap();
 
     let result = sutra::tools::trend::handle(&db, None, None).unwrap();
     let deltas = &result["deltas"];
@@ -571,8 +652,18 @@ fn test_trend_default_from_to() {
 #[test]
 fn test_trend_insufficient_snapshots() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 100, 10, 1, 0, 90)
-        .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 10,
+        dead_symbol_count: 1,
+        hotspot_count: 0,
+        health_score: 90,
+    })
+    .unwrap();
     let result = sutra::tools::trend::handle(&db, None, None);
     assert!(result.is_err());
 }
@@ -580,7 +671,18 @@ fn test_trend_insufficient_snapshots() {
 #[test]
 fn test_pre_existing_snapshots_have_zero_aggregates() {
     let (_dir, db) = setup_db();
-    db.insert_snapshot(10, 50, 20, 0, 300, 0, 0, 0, 0).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 20,
+        parse_errors: 0,
+        duration_ms: 300,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0,
+    })
+    .unwrap();
     let snaps = db.latest_snapshots(1).unwrap();
     assert_eq!(snaps[0].total_complexity, 0);
     assert_eq!(snaps[0].dead_symbol_count, 0);

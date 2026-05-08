@@ -1,8 +1,19 @@
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HotspotsArgs {
+    pub workspace: String,
+    #[serde(default)]
+    pub window_days: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
 use crate::git;

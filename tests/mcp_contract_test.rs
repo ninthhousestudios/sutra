@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 
-use sutra::db::{Db, InsertSymbolParams};
+use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
 use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta, winnow};
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
@@ -33,7 +33,18 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         flags: 0,
     })
     .unwrap();
-    db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 1,
+        refs_extracted: 0,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0,
+    })
+    .unwrap();
 
     (dir, db)
 }
@@ -64,7 +75,18 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         flags: 0,
     })
     .unwrap();
-    db.insert_snapshot(1, 1, 0, 0, 100, 0, 0, 0, 0).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 1,
+        refs_extracted: 0,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0,
+    })
+    .unwrap();
 
     (dir, db)
 }

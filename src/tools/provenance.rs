@@ -1,9 +1,17 @@
 use std::path::Path;
 use std::process::Command;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProvenanceArgs {
+    pub workspace: String,
+    pub symbol: String,
+}
 use crate::error::{Result, SutraError};
 
 #[derive(Debug, Clone)]

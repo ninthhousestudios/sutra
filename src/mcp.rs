@@ -19,7 +19,7 @@ use crate::tools;
 use crate::workspace::{self, WorkspacesConfig};
 
 // ---------------------------------------------------------------------------
-// Args structs
+// Args structs (local — no tool module)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -28,165 +28,6 @@ pub struct EmptyArgs {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorkspaceArgs {
     pub workspace: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct MapArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct OutlineArgs {
-    pub workspace: String,
-    pub path: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct FindArgs {
-    pub workspace: String,
-    pub name: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct GrepArgs {
-    pub workspace: String,
-    pub pattern: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReadArgs {
-    pub workspace: String,
-    pub symbol: String,
-    #[serde(default)]
-    pub context_lines: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ImpactArgs {
-    pub workspace: String,
-    pub symbol: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct DepsArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub depth: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ToolsMetaArgs {
-    #[serde(default)]
-    pub enable: Option<Vec<String>>,
-    #[serde(default)]
-    pub disable: Option<Vec<String>>,
-    #[serde(default)]
-    pub list: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RefsArgs {
-    pub workspace: String,
-    pub symbol: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CallsArgs {
-    pub workspace: String,
-    pub symbol: String,
-    #[serde(default)]
-    pub direction: Option<String>,
-    #[serde(default)]
-    pub depth: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct DiffImpactArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub base: Option<String>,
-    #[serde(default)]
-    pub head: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CochangeArgs {
-    pub workspace: String,
-    pub path: String,
-    #[serde(default)]
-    pub window_days: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct TraceArgs {
-    pub workspace: String,
-    pub symbol: String,
-    /// "forward" (entry points → symbol, default) or "backward" (symbol → leaves)
-    #[serde(default)]
-    pub direction: Option<String>,
-    /// Max number of paths to return (default 10)
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct PrRiskArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub base: Option<String>,
-    #[serde(default)]
-    pub head: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ProvenanceArgs {
-    pub workspace: String,
-    pub symbol: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct DeadArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    #[serde(default)]
-    pub include_pub: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct HotspotsArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub window_days: Option<u32>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct FileHealthArgs {
-    pub workspace: String,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-    /// "actionable" (default): omits foundational files (high coupling but low complexity and \
-    /// no dead code). "all": shows every file.
-    #[serde(default)]
-    pub mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -207,49 +48,30 @@ pub struct StatusArgs {
     pub languages: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct TrendArgs {
-    pub workspace: String,
-    /// ISO timestamp for the start of the comparison window.
-    /// Defaults to the second-most-recent snapshot.
-    #[serde(default)]
-    pub from: Option<String>,
-    /// ISO timestamp for the end of the comparison window.
-    /// Defaults to the most recent snapshot.
-    #[serde(default)]
-    pub to: Option<String>,
-}
+// ---------------------------------------------------------------------------
+// Args structs re-exported from tool modules
+// ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct WinnowArgs {
-    pub workspace: String,
-    /// Filter by symbol kind (function, method, struct, etc.)
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Minimum cognitive complexity
-    #[serde(default)]
-    pub min_complexity: Option<i64>,
-    /// Minimum git churn (commit count in window)
-    #[serde(default)]
-    pub min_churn: Option<u32>,
-    /// Churn window in days (default 90)
-    #[serde(default)]
-    pub churn_window_days: Option<u32>,
-    /// Symbol name that results must call
-    #[serde(default)]
-    pub calls_to: Option<String>,
-    /// Glob pattern for file paths
-    #[serde(default)]
-    pub file_glob: Option<String>,
-    /// Regex for symbol names (matched against qualified_name and short_name)
-    #[serde(default)]
-    pub name_regex: Option<String>,
-    /// Rank results by: "importance" (default), "complexity", "churn"
-    #[serde(default)]
-    pub rank_by: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
+use crate::tools::calls::CallsArgs;
+use crate::tools::cochange::CochangeArgs;
+use crate::tools::dead::DeadArgs;
+use crate::tools::deps::DepsArgs;
+use crate::tools::diff_impact::DiffImpactArgs;
+use crate::tools::file_health::FileHealthArgs;
+use crate::tools::find::FindArgs;
+use crate::tools::grep::GrepArgs;
+use crate::tools::hotspots::HotspotsArgs;
+use crate::tools::impact::ImpactArgs;
+use crate::tools::map::MapArgs;
+use crate::tools::outline::OutlineArgs;
+use crate::tools::pr_risk::PrRiskArgs;
+use crate::tools::provenance::ProvenanceArgs;
+use crate::tools::read::ReadArgs;
+use crate::tools::refs::RefsArgs;
+use crate::tools::tools_meta::ToolsMetaArgs;
+use crate::tools::trace::TraceArgs;
+use crate::tools::trend::TrendArgs;
+use crate::tools::winnow::WinnowArgs;
 
 // ---------------------------------------------------------------------------
 // Daemon registration error
@@ -837,8 +659,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<AddRootArgs>,
     ) -> Result<String, ErrorData> {
-        let (ws_id, entry, already_exists) =
-            self.register_workspace(&args.path, args.languages)?;
+        let (ws_id, entry, already_exists) = self.register_workspace(&args.path, args.languages)?;
 
         {
             let mut parsing = self.parsing_in_progress.lock();

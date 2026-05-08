@@ -1,8 +1,18 @@
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CochangeArgs {
+    pub workspace: String,
+    pub path: String,
+    #[serde(default)]
+    pub window_days: Option<u32>,
+}
 use crate::error::Result;
 use crate::git;
 

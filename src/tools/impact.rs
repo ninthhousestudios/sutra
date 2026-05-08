@@ -1,8 +1,16 @@
 use std::collections::{HashSet, VecDeque};
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImpactArgs {
+    pub workspace: String,
+    pub symbol: String,
+}
 use crate::error::{Result, SutraError};
 
 const BFS_MAX_DEPTH: usize = 3;

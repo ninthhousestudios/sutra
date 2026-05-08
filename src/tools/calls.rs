@@ -1,8 +1,20 @@
 use std::collections::{HashSet, VecDeque};
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CallsArgs {
+    pub workspace: String,
+    pub symbol: String,
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub depth: Option<usize>,
+}
 use crate::error::{Result, SutraError};
 
 const MAX_DEPTH: usize = 3;

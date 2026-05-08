@@ -105,6 +105,19 @@ pub struct SnapshotRow {
     pub health_score: i64,
 }
 
+#[derive(Default)]
+pub struct SnapshotParams {
+    pub files_parsed: i64,
+    pub symbols_extracted: i64,
+    pub refs_extracted: i64,
+    pub parse_errors: i64,
+    pub duration_ms: i64,
+    pub total_complexity: i64,
+    pub dead_symbol_count: i64,
+    pub hotspot_count: i64,
+    pub health_score: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Db
 // ---------------------------------------------------------------------------
@@ -860,18 +873,7 @@ impl Db {
     // -----------------------------------------------------------------------
 
     /// Insert a snapshot record. Returns the new row id.
-    pub fn insert_snapshot(
-        &self,
-        files_parsed: i64,
-        symbols_extracted: i64,
-        refs_extracted: i64,
-        parse_errors: i64,
-        duration_ms: i64,
-        total_complexity: i64,
-        dead_symbol_count: i64,
-        hotspot_count: i64,
-        health_score: i64,
-    ) -> Result<i64> {
+    pub fn insert_snapshot(&self, p: &SnapshotParams) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock();
         conn.execute(
@@ -882,15 +884,15 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 now,
-                files_parsed,
-                symbols_extracted,
-                refs_extracted,
-                parse_errors,
-                duration_ms,
-                total_complexity,
-                dead_symbol_count,
-                hotspot_count,
-                health_score,
+                p.files_parsed,
+                p.symbols_extracted,
+                p.refs_extracted,
+                p.parse_errors,
+                p.duration_ms,
+                p.total_complexity,
+                p.dead_symbol_count,
+                p.hotspot_count,
+                p.health_score,
             ],
         )?;
         Ok(conn.last_insert_rowid())

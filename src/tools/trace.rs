@@ -1,8 +1,22 @@
 use std::collections::HashSet;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::{Db, SymbolRow};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TraceArgs {
+    pub workspace: String,
+    pub symbol: String,
+    /// "forward" (entry points → symbol, default) or "backward" (symbol → leaves)
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// Max number of paths to return (default 10)
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
 use crate::error::{Result, SutraError};
 
 const DEFAULT_LIMIT: usize = 10;

@@ -169,10 +169,8 @@ impl Daemon {
                 "flushing debounce buffer"
             );
 
-            match tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current().block_on(pipeline::parse_changed_files(
-                    &ws, &db, &config, &changed, &deleted,
-                ))
+            match tokio::spawn(async move {
+                pipeline::parse_changed_files(&ws, &db, &config, &changed, &deleted).await
             })
             .await
             {
@@ -212,12 +210,8 @@ impl Daemon {
             let last_refresh = Arc::clone(&self.last_watcher_refresh);
             let ws_id = ws.id.clone();
 
-            match tokio::task::spawn_blocking(move || {
-                tokio::runtime::Handle::current().block_on(pipeline::parse_workspace(
-                    &ws_clone,
-                    &db_clone,
-                    &config_clone,
-                ))
+            match tokio::spawn(async move {
+                pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone).await
             })
             .await
             {
@@ -275,12 +269,8 @@ impl Daemon {
                 let db_clone = Arc::clone(&db);
                 let config_clone = Arc::clone(&self.config);
                 let ws_id = ws.id.clone();
-                match tokio::task::spawn_blocking(move || {
-                    tokio::runtime::Handle::current().block_on(pipeline::parse_workspace(
-                        &ws_clone,
-                        &db_clone,
-                        &config_clone,
-                    ))
+                match tokio::spawn(async move {
+                    pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone).await
                 })
                 .await
                 {

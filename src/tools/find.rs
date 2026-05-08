@@ -1,8 +1,20 @@
 use std::path::Path;
 
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindArgs {
+    pub workspace: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
 
