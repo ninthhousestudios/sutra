@@ -405,6 +405,18 @@ impl Db {
         kind_filter: Option<&str>,
         limit: i64,
     ) -> Result<Vec<SymbolRow>> {
+        self.find_symbols_by_name_tiered(name, kind_filter, limit)
+            .map(|(rows, _tier)| rows)
+    }
+
+    /// Like `find_symbols_by_name` but also returns which search tier matched.
+    pub fn find_symbols_by_name_tiered(
+        &self,
+        name: &str,
+        kind_filter: Option<&str>,
+        limit: i64,
+    ) -> Result<(Vec<SymbolRow>, crate::freshness::SearchTier)> {
+        use crate::freshness::SearchTier;
         let conn = self.conn.lock();
 
         // Exact short_name match.
@@ -441,7 +453,7 @@ impl Db {
         };
 
         if !exact.is_empty() {
-            return Ok(exact);
+            return Ok((exact, SearchTier::Exact));
         }
 
         let escaped = name.replace('"', "\"\"");
@@ -458,7 +470,7 @@ impl Db {
         };
 
         if ids.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], SearchTier::Fts));
         }
 
         // Fetch full rows for matched ids, respecting kind filter.
@@ -485,7 +497,7 @@ impl Db {
                 results.push(sym);
             }
         }
-        Ok(results)
+        Ok((results, SearchTier::Fts))
     }
 
     /// Return all symbols in a file ordered by start_line.

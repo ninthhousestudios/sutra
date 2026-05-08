@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::freshness::{self, FreshnessCounts};
 use crate::git;
 
 pub fn handle(
@@ -11,6 +12,16 @@ pub fn handle(
     workspace_root: &Path,
     window_days: Option<u32>,
     limit: Option<i64>,
+) -> Result<serde_json::Value> {
+    handle_with_freshness(db, workspace_root, window_days, limit, false)
+}
+
+pub fn handle_with_freshness(
+    db: &Db,
+    workspace_root: &Path,
+    window_days: Option<u32>,
+    limit: Option<i64>,
+    include_freshness: bool,
 ) -> Result<serde_json::Value> {
     let window = window_days.unwrap_or(90);
     let limit = limit.unwrap_or(20) as usize;
@@ -51,23 +62,34 @@ pub fn handle(
     scored.sort_by_key(|e| std::cmp::Reverse(e.3));
     scored.truncate(limit);
 
+    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = scored
         .iter()
         .map(|(f, churn_count, max_cog, score)| {
-            json!({
+            let mut entry = json!({
                 "path": f.path,
                 "score": score,
                 "churn": churn_count,
                 "blast_radius": f.blast_radius,
                 "max_cognitive": max_cog,
                 "pagerank": f.pagerank,
-            })
+            });
+            if include_freshness {
+                let status = freshness::check_file(workspace_root, &f.path, &f.last_parsed);
+                counts.record(status);
+                entry["_freshness"] = json!(status.as_str());
+            }
+            entry
         })
         .collect();
 
-    Ok(json!({
+    let mut result = json!({
         "window_days": window,
         "hotspots": items,
         "total": items.len(),
-    }))
+    });
+    if include_freshness {
+        result["_meta"] = json!({ "freshness": counts.to_json() });
+    }
+    Ok(result)
 }

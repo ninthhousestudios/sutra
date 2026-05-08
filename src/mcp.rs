@@ -300,10 +300,15 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<MapArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::map::handle(&db, args.path_prefix.as_deref(), args.limit).map_err(sutra_to_rmcp)?;
+        let result = tools::map::handle_with_freshness(
+            &db,
+            args.path_prefix.as_deref(),
+            args.limit,
+            Some(ws.root.as_path()),
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -325,10 +330,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<FindArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::find::handle(&db, &args.name, args.kind.as_deref(), args.limit)
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::find::handle_with_freshness(
+            &db,
+            &args.name,
+            args.kind.as_deref(),
+            args.limit,
+            Some(ws.root.as_path()),
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -338,10 +349,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<GrepArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::grep::handle(&db, &args.pattern, args.kind.as_deref(), args.limit)
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::grep::handle_with_freshness(
+            &db,
+            &args.pattern,
+            args.kind.as_deref(),
+            args.limit,
+            Some(ws.root.as_path()),
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -528,9 +545,14 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::hotspots::handle(&db, &ws.root, args.window_days, args.limit)
-                .map_err(sutra_to_rmcp)?;
+        let result = tools::hotspots::handle_with_freshness(
+            &db,
+            &ws.root,
+            args.window_days,
+            args.limit,
+            true,
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -542,12 +564,13 @@ impl SutraServer {
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::file_health::handle(
+        let result = tools::file_health::handle_with_freshness(
             &db,
             args.path.as_deref(),
             args.limit,
+            Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)

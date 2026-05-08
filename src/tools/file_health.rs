@@ -1,12 +1,24 @@
+use std::path::Path;
+
 use serde_json::json;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::freshness::{self, FreshnessCounts};
 
 pub fn handle(
     db: &Db,
     path: Option<&str>,
     limit: Option<i64>,
+) -> Result<serde_json::Value> {
+    handle_with_freshness(db, path, limit, None)
+}
+
+pub fn handle_with_freshness(
+    db: &Db,
+    path: Option<&str>,
+    limit: Option<i64>,
+    workspace_root: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(20) as usize;
     let files = db.all_files()?;
@@ -48,11 +60,12 @@ pub fn handle(
     scored.sort_by_key(|e| e.1);
     scored.truncate(limit);
 
+    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = scored
         .iter()
         .map(
             |(f, health, blast_p, comp_p, fan_p, dead_p, pr_p, avg_cog, dead_ratio)| {
-                json!({
+                let mut entry = json!({
                     "path": f.path,
                     "health_score": health,
                     "breakdown": {
@@ -69,13 +82,23 @@ pub fn handle(
                         "dead_symbol_ratio": dead_ratio,
                         "pagerank": f.pagerank,
                     },
-                })
+                });
+                if let Some(root) = workspace_root {
+                    let status = freshness::check_file(root, &f.path, &f.last_parsed);
+                    counts.record(status);
+                    entry["_freshness"] = json!(status.as_str());
+                }
+                entry
             },
         )
         .collect();
 
-    Ok(json!({
+    let mut result = json!({
         "files": items,
         "total": items.len(),
-    }))
+    });
+    if workspace_root.is_some() {
+        result["_meta"] = json!({ "freshness": counts.to_json() });
+    }
+    Ok(result)
 }

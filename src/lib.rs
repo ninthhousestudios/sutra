@@ -2,6 +2,7 @@ pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod error;
+pub mod freshness;
 pub mod guard;
 pub mod git;
 pub mod mcp;
