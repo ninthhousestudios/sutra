@@ -569,7 +569,6 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         let pk = parent.kind();
         match pk {
             "call_expression" => return RefContextKind::Call,
-            "struct_expression" => return RefContextKind::Construction,
             "use_declaration" | "use_as_clause" | "scoped_identifier" | "use_wildcard"
             | "use_list" | "scoped_use_list"
                 if is_inside_use(node) =>
@@ -577,11 +576,13 @@ fn classify_ref_context(node: Node) -> RefContextKind {
                 return RefContextKind::Import;
             }
             "field_expression" => return RefContextKind::FieldAccess,
-            // module::Foo { .. } — type_identifier is inside scoped_type_identifier
-            "scoped_type_identifier" if is_inside_struct_expression(parent) => {
-                return RefContextKind::Construction;
-            }
             _ => {}
+        }
+
+        // Construction: only type_identifier nodes that are the name of a struct_expression.
+        // Covers Foo { .. }, inner::Foo { .. }, and Foo::<T> { .. }.
+        if node.kind() == "type_identifier" && is_struct_expression_name(node) {
+            return RefContextKind::Construction;
         }
 
         // Type use: type_identifier used in type contexts
@@ -610,13 +611,18 @@ fn classify_ref_context(node: Node) -> RefContextKind {
     RefContextKind::Other
 }
 
-fn is_inside_struct_expression(node: Node) -> bool {
-    let mut current = Some(node);
-    while let Some(n) = current {
-        if n.kind() == "struct_expression" {
-            return true;
+/// Walk ancestors from a type_identifier to see if it's the name of a struct_expression.
+/// Handles: Foo { .. }, inner::Foo { .. }, Foo::<T> { .. }, inner::Foo::<T> { .. }.
+fn is_struct_expression_name(node: Node) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "struct_expression" => return true,
+            "scoped_type_identifier" | "generic_type_with_turbofish" => {
+                current = parent;
+            }
+            _ => return false,
         }
-        current = n.parent();
     }
     false
 }

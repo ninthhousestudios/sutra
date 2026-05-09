@@ -382,4 +382,43 @@ fn make() -> inner::Foo {
         !construction_refs.is_empty(),
         "scoped struct literal (inner::Foo {{ .. }}) should have Construction ref: {foo_refs:?}"
     );
+
+    // The qualifier 'inner' must NOT be classified as Construction
+    let inner_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "inner" && r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert!(
+        inner_refs.is_empty(),
+        "qualifier 'inner' should not be Construction: {inner_refs:?}"
+    );
+}
+
+#[test]
+fn test_turbofish_struct_literal_has_construction_context() {
+    let src = r#"
+struct Foo<T> {
+    x: T,
+}
+
+fn make() -> Foo<i32> {
+    Foo::<i32> { x: 42 }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let foo_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "Foo")
+        .collect();
+
+    let construction_refs: Vec<_> = foo_refs
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert!(
+        !construction_refs.is_empty(),
+        "turbofish struct literal (Foo::<i32> {{ .. }}) should have Construction ref: {foo_refs:?}"
+    );
 }

@@ -429,3 +429,23 @@ fn test_kind_filter_fallback() {
         "should fall back to struct when no function matches a Call ref"
     );
 }
+
+#[test]
+fn test_construction_prefers_struct_over_function() {
+    let file_symbols = vec![];
+    let refs = vec![make_ref("Config", 10, RefContextKind::Construction)];
+    let all_symbols = vec![
+        sym4(1, "Config", "Config", "struct"),
+        sym4(2, "Config", "Config", "function"),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(1),
+        "Construction ref should resolve to struct, not function"
+    );
+}

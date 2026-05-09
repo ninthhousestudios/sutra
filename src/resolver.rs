@@ -26,7 +26,7 @@ pub fn resolve_refs(
 /// Returns true if a symbol kind is compatible with the ref's context_kind.
 fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
     match context {
-        RefContextKind::TypeUse => matches!(
+        RefContextKind::TypeUse | RefContextKind::Construction => matches!(
             symbol_kind,
             "struct" | "enum" | "trait" | "type_alias" | "class" | "mixin" | "extension"
         ),
@@ -59,7 +59,7 @@ fn resolve_single(
     let name = &r.name;
     let use_kind_filter = matches!(
         r.context_kind,
-        RefContextKind::TypeUse | RefContextKind::Call
+        RefContextKind::TypeUse | RefContextKind::Call | RefContextKind::Construction
     );
 
     // --- Step 1: local scope (file_symbols by short_name) ---
