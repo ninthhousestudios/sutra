@@ -111,6 +111,7 @@ async fn post_workspaces_registers_new_workspace() {
         stale_threshold_sec: 600,
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
+        parse_timeout_sec: 60,
         log_level: "warn".into(),
     });
     let ws: WsConfig = Arc::new(RwLock::new(WorkspacesConfig { workspace: vec![] }));

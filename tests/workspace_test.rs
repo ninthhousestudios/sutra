@@ -95,6 +95,49 @@ fn test_add_remove_roundtrip() {
     assert!(entries.is_empty(), "workspace should be gone after removal");
 }
 
+/// Adding a workspace whose root contains an existing workspace's root must
+/// fail — overlapping roots cause smriti event fan-out to race two reparses
+/// against the same files (see docs/reviews/2026-05-08-scheduler-wedge-bug.md).
+#[test]
+fn test_reject_ancestor_root_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    workspace::add_workspace(&path, entry("inner", "/home/u/proj", &["rust"])).unwrap();
+    let result = workspace::add_workspace(&path, entry("outer", "/home/u", &["rust"]));
+    assert!(
+        result.is_err(),
+        "expected error registering an ancestor of an existing workspace"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("overlap"), "error must mention overlap: {msg}");
+}
+
+/// And the reverse: registering a descendant of an existing workspace.
+#[test]
+fn test_reject_descendant_root_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    workspace::add_workspace(&path, entry("outer", "/home/u", &["rust"])).unwrap();
+    let result = workspace::add_workspace(&path, entry("inner", "/home/u/proj", &["rust"]));
+    assert!(
+        result.is_err(),
+        "expected error registering a descendant of an existing workspace"
+    );
+}
+
+/// Identical roots also overlap.
+#[test]
+fn test_reject_identical_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    workspace::add_workspace(&path, entry("a", "/code/proj", &["rust"])).unwrap();
+    let result = workspace::add_workspace(&path, entry("b", "/code/proj", &["rust"]));
+    assert!(result.is_err(), "expected error for identical root");
+}
+
 /// Adding a workspace whose root path does not exist on disk should succeed —
 /// sutra validates semantics, not filesystem presence at registration time.
 #[test]

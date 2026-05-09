@@ -247,6 +247,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&ws_config),
         Arc::clone(&db_cache),
     ));
+    let scheduler_tick = daemon.scheduler_last_tick_handle();
     let _scheduler = daemon.spawn_scheduler();
 
     let cancel = CancellationToken::new();
@@ -259,13 +260,13 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let cfg_clone = config.clone();
     let ws_clone = ws_config.clone();
     let db_clone = db_cache.clone();
+    let tick_clone = scheduler_tick.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
-            Ok(SutraServer::new(
-                cfg_clone.clone(),
-                ws_clone.clone(),
-                db_clone.clone(),
-            ))
+            Ok(
+                SutraServer::new(cfg_clone.clone(), ws_clone.clone(), db_clone.clone())
+                    .with_scheduler_last_tick(tick_clone.clone()),
+            )
         },
         session_manager,
         shttp_config,

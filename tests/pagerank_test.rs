@@ -14,6 +14,7 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         stale_threshold_sec: 600,
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
+        parse_timeout_sec: 60,
         log_level: "warn".to_string(),
     }
 }

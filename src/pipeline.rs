@@ -305,31 +305,39 @@ pub async fn parse_workspace(
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
     let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
-    for file_path in &source_files {
-        if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
-            parse_errors += result.parse_errors;
-            deleted_symbol_ids.extend(result.deleted_symbol_ids);
-            if result.file_id != 0 {
-                files_parsed += 1;
-                symbols_extracted += result.symbols_extracted;
-                refs_extracted += result.refs_extracted;
-                file_ids_needing_resolution.insert(result.file_id);
+    let inner = (|| -> Result<(i64, i64)> {
+        for file_path in &source_files {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
+                parse_errors += result.parse_errors;
+                deleted_symbol_ids.extend(result.deleted_symbol_ids);
+                if result.file_id != 0 {
+                    files_parsed += 1;
+                    symbols_extracted += result.symbols_extracted;
+                    refs_extracted += result.refs_extracted;
+                    file_ids_needing_resolution.insert(result.file_id);
+                }
             }
         }
-    }
-
-    let (unresolved_count, skipped_count) =
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution)?;
+        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution)
+    })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
-    record_snapshot(
+    let recorded_errors = match &inner {
+        Ok(_) => parse_errors,
+        Err(_) => parse_errors.max(1),
+    };
+    if let Err(e) = record_snapshot(
         db,
         files_parsed,
         symbols_extracted,
         refs_extracted,
-        parse_errors,
+        recorded_errors,
         duration_ms,
-    )?;
+    ) {
+        warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
+    }
+
+    let (unresolved_count, skipped_count) = inner?;
 
     Ok(ParseSnapshot {
         files_walked: source_files.len() as i64,
@@ -369,47 +377,56 @@ pub async fn parse_changed_files(
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
     let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
-    for del_path in deleted {
-        let rel_path = del_path
-            .strip_prefix(&workspace.root)
-            .unwrap_or(del_path)
-            .to_string_lossy()
-            .to_string();
+    let inner = (|| -> Result<(i64, i64)> {
+        for del_path in deleted {
+            let rel_path = del_path
+                .strip_prefix(&workspace.root)
+                .unwrap_or(del_path)
+                .to_string_lossy()
+                .to_string();
 
-        if let Some(existing) = db.file_by_path(&rel_path)? {
-            let old_symbols = db.find_symbols_by_file(existing.id)?;
-            for sym in &old_symbols {
-                deleted_symbol_ids.push(sym.id);
-            }
-            db.delete_file_cascade(existing.id)?;
-        }
-    }
-
-    for file_path in changed {
-        if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
-            parse_errors += result.parse_errors;
-            deleted_symbol_ids.extend(result.deleted_symbol_ids);
-            if result.file_id != 0 {
-                files_parsed += 1;
-                symbols_extracted += result.symbols_extracted;
-                refs_extracted += result.refs_extracted;
-                file_ids_needing_resolution.insert(result.file_id);
+            if let Some(existing) = db.file_by_path(&rel_path)? {
+                let old_symbols = db.find_symbols_by_file(existing.id)?;
+                for sym in &old_symbols {
+                    deleted_symbol_ids.push(sym.id);
+                }
+                db.delete_file_cascade(existing.id)?;
             }
         }
-    }
 
-    let (unresolved_count, skipped_count) =
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution)?;
+        for file_path in changed {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
+                parse_errors += result.parse_errors;
+                deleted_symbol_ids.extend(result.deleted_symbol_ids);
+                if result.file_id != 0 {
+                    files_parsed += 1;
+                    symbols_extracted += result.symbols_extracted;
+                    refs_extracted += result.refs_extracted;
+                    file_ids_needing_resolution.insert(result.file_id);
+                }
+            }
+        }
+
+        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution)
+    })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
-    record_snapshot(
+    let recorded_errors = match &inner {
+        Ok(_) => parse_errors,
+        Err(_) => parse_errors.max(1),
+    };
+    if let Err(e) = record_snapshot(
         db,
         files_parsed,
         symbols_extracted,
         refs_extracted,
-        parse_errors,
+        recorded_errors,
         duration_ms,
-    )?;
+    ) {
+        warn!(workspace = %workspace.id, "failed to record snapshot after incremental parse: {e}");
+    }
+
+    let (unresolved_count, skipped_count) = inner?;
 
     Ok(ParseSnapshot {
         files_walked: changed.len() as i64,

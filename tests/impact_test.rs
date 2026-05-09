@@ -184,6 +184,7 @@ async fn test_impact_real_codebase() {
         stale_threshold_sec: 600,
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
+        parse_timeout_sec: 60,
         log_level: "warn".to_string(),
     };
     let db = Db::open(&ws.id, db_dir.path()).unwrap();

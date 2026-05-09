@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -103,6 +104,10 @@ pub struct SutraServer {
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     analysis_enabled: Arc<AtomicBool>,
     parsing_in_progress: Arc<Mutex<HashSet<String>>>,
+    /// Shared with `Daemon` when running under the HTTP server. `None` in stdio
+    /// mode where there is no scheduler. Inner `Option<Instant>` is `None`
+    /// until the scheduler has run at least once.
+    scheduler_last_tick: Arc<Mutex<Option<Instant>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -114,6 +119,7 @@ impl Clone for SutraServer {
             workspaces: Arc::clone(&self.workspaces),
             analysis_enabled: Arc::clone(&self.analysis_enabled),
             parsing_in_progress: Arc::clone(&self.parsing_in_progress),
+            scheduler_last_tick: Arc::clone(&self.scheduler_last_tick),
             tool_router: Self::tool_router(),
         }
     }
@@ -131,8 +137,17 @@ impl SutraServer {
             workspaces,
             analysis_enabled: Arc::new(AtomicBool::new(false)),
             parsing_in_progress: Arc::new(Mutex::new(HashSet::new())),
+            scheduler_last_tick: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Wire this server's freshness envelope to the daemon's scheduler tick
+    /// counter. Call this after `Daemon::new` so MCP clients can see scheduler
+    /// liveness independently of per-workspace snapshot age.
+    pub fn with_scheduler_last_tick(mut self, tick: Arc<Mutex<Option<Instant>>>) -> Self {
+        self.scheduler_last_tick = tick;
+        self
     }
 
     fn resolve_workspace(
@@ -217,7 +232,34 @@ impl SutraServer {
             }
             _ => (None, true),
         };
-        serde_json::json!({ "as_of": as_of, "is_stale": is_stale })
+
+        // Scheduler liveness is independent of per-workspace snapshot age:
+        // a snapshot can be old because the workspace is quiet, OR because
+        // the scheduler has wedged. Surface both so clients can tell them
+        // apart (docs/reviews/2026-05-08-scheduler-wedge-bug.md).
+        let (scheduler_last_tick_age_sec, scheduler_alive) = {
+            let tick = self.scheduler_last_tick.lock();
+            match *tick {
+                Some(t) => {
+                    let age = t.elapsed().as_secs();
+                    // Scheduler is "alive" if it ticked within 2x the stale
+                    // threshold (it ticks every threshold/2, so a healthy
+                    // scheduler is well under this).
+                    let alive = age <= self.config.stale_threshold_sec.saturating_mul(2);
+                    (Some(age), alive)
+                }
+                // No scheduler observed yet — could be stdio mode or a
+                // cold-started HTTP daemon. Don't claim wedged.
+                None => (None, true),
+            }
+        };
+
+        serde_json::json!({
+            "as_of": as_of,
+            "is_stale": is_stale,
+            "scheduler_last_tick_age_sec": scheduler_last_tick_age_sec,
+            "scheduler_alive": scheduler_alive,
+        })
     }
 
     fn wrap_response(

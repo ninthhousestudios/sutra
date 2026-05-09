@@ -68,7 +68,11 @@ pub fn resolve_workspace<'a>(config: &'a WorkspacesConfig, id: &str) -> Result<&
 }
 
 /// Add a new workspace entry to the config file. Returns an error if an entry
-/// with the same id already exists.
+/// with the same id already exists, or if the new root overlaps an existing
+/// workspace's root in either direction (ancestor or descendant). Overlap is
+/// banned to prevent the smriti event watcher from racing two workspaces'
+/// reparses against the same files — the case that wedged the scheduler in
+/// docs/reviews/2026-05-08-scheduler-wedge-bug.md.
 pub fn add_workspace(path: &Path, entry: WorkspaceEntry) -> Result<()> {
     let mut config = load_workspaces(path)?;
     let id = &entry.id;
@@ -81,8 +85,32 @@ pub fn add_workspace(path: &Path, entry: WorkspaceEntry) -> Result<()> {
             next_action: "Choose a different workspace id.".to_string(),
         });
     }
+    if let Some(existing) = config
+        .workspace
+        .iter()
+        .find(|w| roots_overlap(&w.root, &entry.root))
+    {
+        return Err(SutraError::InvalidArgument {
+            tool: "workspaces",
+            argument: "root",
+            constraint: format!(
+                "workspace root '{}' overlaps existing workspace '{}' (root '{}'); \
+                 overlapping roots cause smriti watcher fan-out to race reparses",
+                entry.root.display(),
+                existing.id,
+                existing.root.display(),
+            ),
+            received: Some(entry.root.display().to_string()),
+            next_action: "Pick a non-overlapping root, or remove the conflicting workspace first."
+                .to_string(),
+        });
+    }
     config.workspace.push(entry);
     save_workspaces(path, &config)
+}
+
+fn roots_overlap(a: &Path, b: &Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
 }
 
 /// Remove the workspace with the given id. Returns an error if it is not

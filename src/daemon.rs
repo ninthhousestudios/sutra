@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, interval, timeout};
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -19,6 +19,8 @@ pub struct Daemon {
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
     last_watcher_refresh: Arc<Mutex<HashMap<String, Instant>>>,
+    parse_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    scheduler_last_tick: Arc<Mutex<Option<Instant>>>,
 }
 
 struct DebounceBuffer {
@@ -49,7 +51,34 @@ impl Daemon {
             workspaces,
             db_cache,
             last_watcher_refresh: Arc::new(Mutex::new(HashMap::new())),
+            parse_locks: Arc::new(Mutex::new(HashMap::new())),
+            scheduler_last_tick: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Last instant `check_stale_workspaces` started a tick. `None` until the
+    /// scheduler has run at least once. Used to surface scheduler liveness
+    /// independently of per-workspace snapshot age.
+    pub fn scheduler_last_tick(&self) -> Option<Instant> {
+        *self.scheduler_last_tick.lock()
+    }
+
+    /// Shared handle to the scheduler-tick instant. Hand to `SutraServer` so
+    /// MCP responses can report scheduler liveness even when every per-workspace
+    /// snapshot is fresh.
+    pub fn scheduler_last_tick_handle(&self) -> Arc<Mutex<Option<Instant>>> {
+        Arc::clone(&self.scheduler_last_tick)
+    }
+
+    /// Get-or-create the per-workspace parse lock. Both the scheduler and the
+    /// smriti watcher acquire this before parsing so two parses never run
+    /// concurrently against the same db.
+    fn parse_lock_for(&self, ws_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.parse_locks
+            .lock()
+            .entry(ws_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn spawn_scheduler(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -161,6 +190,7 @@ impl Daemon {
             let config = Arc::clone(&self.config);
             let last_refresh = Arc::clone(&self.last_watcher_refresh);
             let ws_id_log = ws.id.clone();
+            let parse_lock = self.parse_lock_for(&ws.id);
 
             info!(
                 workspace = %ws.id,
@@ -168,6 +198,10 @@ impl Daemon {
                 deleted = deleted.len(),
                 "flushing debounce buffer"
             );
+
+            // Wait for any concurrent scheduler reparse to finish before
+            // touching this workspace's db.
+            let _guard = parse_lock.lock().await;
 
             match tokio::spawn(async move {
                 pipeline::parse_changed_files(&ws, &db, &config, &changed, &deleted).await
@@ -209,6 +243,8 @@ impl Daemon {
             let config_clone = Arc::clone(&self.config);
             let last_refresh = Arc::clone(&self.last_watcher_refresh);
             let ws_id = ws.id.clone();
+            let parse_lock = self.parse_lock_for(&ws.id);
+            let _guard = parse_lock.lock().await;
 
             match tokio::spawn(async move {
                 pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone).await
@@ -233,6 +269,8 @@ impl Daemon {
     }
 
     async fn check_stale_workspaces(&self) {
+        *self.scheduler_last_tick.lock() = Some(Instant::now());
+
         let entries: Vec<_> = self.workspaces.read().workspace.clone();
         for ws in &entries {
             {
@@ -263,17 +301,36 @@ impl Daemon {
                 Err(_) => true,
             };
 
-            if is_stale {
-                info!("workspace {} is stale, triggering reparse", ws.id);
-                let ws_clone = ws.clone();
-                let db_clone = Arc::clone(&db);
-                let config_clone = Arc::clone(&self.config);
-                let ws_id = ws.id.clone();
-                match tokio::spawn(async move {
-                    pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone).await
-                })
-                .await
-                {
+            if !is_stale {
+                continue;
+            }
+
+            // Skip this tick for this workspace if a parse is already running
+            // (scheduler from a prior tick, or the smriti watcher). Prevents
+            // pile-up against a slow workspace; the next tick re-evaluates.
+            let lock = self.parse_lock_for(&ws.id);
+            let Ok(guard) = lock.clone().try_lock_owned() else {
+                info!(
+                    "workspace {} reparse already in flight, skipping tick",
+                    ws.id
+                );
+                continue;
+            };
+
+            info!("workspace {} is stale, triggering reparse", ws.id);
+            let ws_clone = ws.clone();
+            let db_clone = Arc::clone(&db);
+            let config_clone = Arc::clone(&self.config);
+            let ws_id = ws.id.clone();
+            let parse_timeout = Duration::from_secs(self.config.parse_timeout_sec);
+
+            // Detached: do NOT await this. Each workspace's reparse runs
+            // independently so one slow/hung workspace cannot stall ticks for
+            // any other workspace.
+            tokio::spawn(async move {
+                let _guard = guard;
+                let parse_fut = pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone);
+                match timeout(parse_timeout, parse_fut).await {
                     Ok(Ok(snap)) => {
                         info!(
                             "reparsed {}: {}/{} files changed, {} symbols in {}ms",
@@ -287,11 +344,28 @@ impl Daemon {
                     Ok(Err(e)) => {
                         warn!("reparse failed for {}: {e}", ws_id);
                     }
-                    Err(e) => {
-                        warn!("reparse task panicked for {}: {e}", ws_id);
+                    Err(_) => {
+                        warn!(
+                            "reparse for {} exceeded {}s timeout — aborting",
+                            ws_id,
+                            parse_timeout.as_secs()
+                        );
+                        // parse_workspace records a failed snapshot via its
+                        // own error path; here the future is dropped so no
+                        // snapshot is recorded. Insert a sentinel so the
+                        // workspace is not perpetually re-targeted.
+                        if let Err(e) = db_clone.insert_snapshot(&crate::db::SnapshotParams {
+                            parse_errors: 1,
+                            ..Default::default()
+                        }) {
+                            warn!(
+                                "failed to record timeout sentinel snapshot for {}: {e}",
+                                ws_id
+                            );
+                        }
                     }
                 }
-            }
+            });
         }
     }
 }
