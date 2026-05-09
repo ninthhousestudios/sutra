@@ -382,25 +382,9 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let mut result = tools::read::handle(&db, &ws.root, &args.symbol, args.context_lines)
+        let is_stale = self.freshness(&db)["is_stale"].as_bool() == Some(true);
+        let result = tools::read::handle(&db, &ws.root, &args.symbol, args.context_lines, is_stale)
             .map_err(sutra_to_rmcp)?;
-
-        // Tier-2 stale refusal: withhold content when index is stale
-        let freshness = self.freshness(&db);
-        if freshness["is_stale"].as_bool() == Some(true) {
-            if let Some(obj) = result.as_object_mut() {
-                obj.remove("content");
-                obj.insert(
-                    "refused".into(),
-                    serde_json::json!("content withheld: index is stale"),
-                );
-                obj.insert(
-                    "next_action".into(),
-                    serde_json::json!("Run sutra_parse to refresh, then retry."),
-                );
-            }
-        }
-
         self.wrap_response(&db, result)
     }
 

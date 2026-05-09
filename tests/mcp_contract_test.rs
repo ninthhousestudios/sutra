@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
-use sutra::tools::{deps, find, grep, impact, map, outline, tools_meta, winnow};
+use sutra::tools::{deps, find, grep, impact, map, outline, read, tools_meta, winnow};
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -375,6 +375,50 @@ fn test_map_without_freshness_has_no_meta() {
     assert!(
         result.get("_meta").is_none(),
         "plain handle() should not include _meta"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// read contract tests — tier-2 freshness enforcement
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_read_fresh_returns_content() {
+    let (dir, db) = setup_test_db_with_root();
+    let result = read::handle(&db, dir.path(), "main", None, false).unwrap();
+    assert!(
+        result["content"].is_string(),
+        "fresh read should include content"
+    );
+    assert!(
+        result.get("refused").is_none(),
+        "fresh read should not have refused field"
+    );
+}
+
+#[test]
+fn test_read_stale_withholds_content() {
+    let (dir, db) = setup_test_db_with_root();
+    let result = read::handle(&db, dir.path(), "main", None, true).unwrap();
+    assert!(
+        result.get("content").is_none(),
+        "stale read must not include content"
+    );
+    assert_eq!(
+        result["refused"].as_str().unwrap(),
+        "content withheld: index is stale"
+    );
+    assert!(
+        result["next_action"].is_string(),
+        "stale read should suggest next action"
+    );
+    assert!(
+        result["symbol"].is_string(),
+        "stale read should still include symbol metadata"
+    );
+    assert!(
+        result["signature"].is_string(),
+        "stale read should still include signature"
     );
 }
 

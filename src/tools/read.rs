@@ -20,6 +20,7 @@ pub fn handle(
     workspace_root: &Path,
     symbol: &str,
     context_lines: Option<usize>,
+    is_stale: bool,
 ) -> Result<serde_json::Value> {
     let context_lines = context_lines.unwrap_or(5);
 
@@ -62,6 +63,20 @@ pub fn handle(
             "is_stale": true,
             "signature": sym.signature,
             "kind": sym.kind,
+        }));
+    }
+
+    // Tier-2 freshness: withhold content when index is stale
+    if is_stale {
+        return Ok(json!({
+            "symbol": sym.qualified_name,
+            "file": file.path,
+            "start_line": sym.start_line,
+            "end_line": sym.end_line,
+            "kind": sym.kind,
+            "signature": sym.signature,
+            "refused": "content withheld: index is stale",
+            "next_action": "Run sutra_parse to refresh, then retry.",
         }));
     }
 
