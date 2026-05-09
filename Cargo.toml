@@ -15,6 +15,14 @@ path = "src/main.rs"
 name = "sutra-guard"
 path = "src/bin/guard.rs"
 
+[[bin]]
+name = "hdc-spike"
+path = "src/bin/hdc-spike.rs"
+
+[[bin]]
+name = "hdc-algebra"
+path = "src/bin/hdc-algebra.rs"
+
 [lib]
 name = "sutra"
 path = "src/lib.rs"
@@ -37,10 +45,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tower = "0.5"
 tokio-util = "0.7"
 
-# Tree-sitter (spike-verified: all three coexist)
+# Tree-sitter (spike-verified: all four coexist)
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-dart = "0.2"
+tree-sitter-c = "0.24"
 
 # Error handling (same as sangha)
 thiserror = "2"
