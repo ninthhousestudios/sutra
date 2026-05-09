@@ -569,6 +569,7 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         let pk = parent.kind();
         match pk {
             "call_expression" => return RefContextKind::Call,
+            "struct_expression" => return RefContextKind::Construction,
             "use_declaration" | "use_as_clause" | "scoped_identifier" | "use_wildcard"
             | "use_list" | "scoped_use_list"
                 if is_inside_use(node) =>
@@ -576,6 +577,10 @@ fn classify_ref_context(node: Node) -> RefContextKind {
                 return RefContextKind::Import;
             }
             "field_expression" => return RefContextKind::FieldAccess,
+            // module::Foo { .. } — type_identifier is inside scoped_type_identifier
+            "scoped_type_identifier" if is_inside_struct_expression(parent) => {
+                return RefContextKind::Construction;
+            }
             _ => {}
         }
 
@@ -603,6 +608,17 @@ fn classify_ref_context(node: Node) -> RefContextKind {
     }
 
     RefContextKind::Other
+}
+
+fn is_inside_struct_expression(node: Node) -> bool {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if n.kind() == "struct_expression" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
 }
 
 fn is_inside_use(node: Node) -> bool {

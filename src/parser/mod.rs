@@ -113,6 +113,7 @@ pub struct ExtractedRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefContextKind {
     Call,
+    Construction,
     TypeUse,
     Import,
     FieldAccess,
@@ -124,6 +125,7 @@ impl RefContextKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Call => "call",
+            Self::Construction => "construction",
             Self::TypeUse => "type_use",
             Self::Import => "import",
             Self::FieldAccess => "field_access",
@@ -138,6 +140,7 @@ impl std::str::FromStr for RefContextKind {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "call" => Ok(Self::Call),
+            "construction" => Ok(Self::Construction),
             "type_use" => Ok(Self::TypeUse),
             "import" => Ok(Self::Import),
             "field_access" => Ok(Self::FieldAccess),

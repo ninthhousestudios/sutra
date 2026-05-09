@@ -1,3 +1,4 @@
+use sutra::parser::RefContextKind;
 use sutra::parser::SymbolKind;
 use sutra::parser::parse_file;
 
@@ -261,4 +262,124 @@ use std::io::{self, Read, Write};
     );
     assert!(paths.contains(&"std::io::Read"), "paths: {paths:?}");
     assert!(paths.contains(&"std::io::Write"), "paths: {paths:?}");
+}
+
+#[test]
+fn test_struct_literal_has_construction_context() {
+    let src = r#"
+struct Config {
+    name: String,
+    count: usize,
+}
+
+fn make() -> Config {
+    Config { name: "foo".into(), count: 42 }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let config_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "Config")
+        .collect();
+
+    let construction_refs: Vec<_> = config_refs
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert_eq!(
+        construction_refs.len(),
+        1,
+        "expected exactly one Construction ref to Config, got: {config_refs:?}"
+    );
+}
+
+#[test]
+fn test_struct_literal_with_spread_has_construction_context() {
+    let src = r#"
+struct Config {
+    name: String,
+    count: usize,
+}
+
+fn make(default: Config) -> Config {
+    Config { name: "foo".into(), ..default }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let construction_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "Config" && r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert_eq!(
+        construction_refs.len(),
+        1,
+        "spread struct literal should still be Construction: {construction_refs:?}"
+    );
+}
+
+#[test]
+fn test_tuple_struct_construction_stays_call() {
+    let src = r#"
+struct Wrapper(i32);
+
+fn make() -> Wrapper {
+    Wrapper(42)
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let wrapper_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "Wrapper")
+        .collect();
+
+    let call_refs: Vec<_> = wrapper_refs
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Call)
+        .collect();
+    assert!(
+        !call_refs.is_empty(),
+        "tuple struct construction should be Call, got: {wrapper_refs:?}"
+    );
+
+    let construction_refs: Vec<_> = wrapper_refs
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert!(
+        construction_refs.is_empty(),
+        "tuple struct should NOT be Construction: {wrapper_refs:?}"
+    );
+}
+
+#[test]
+fn test_scoped_struct_literal_has_construction_context() {
+    let src = r#"
+mod inner {
+    pub struct Foo {
+        pub x: i32,
+    }
+}
+
+fn make() -> inner::Foo {
+    inner::Foo { x: 1 }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let foo_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "Foo")
+        .collect();
+
+    let construction_refs: Vec<_> = foo_refs
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Construction)
+        .collect();
+    assert!(
+        !construction_refs.is_empty(),
+        "scoped struct literal (inner::Foo {{ .. }}) should have Construction ref: {foo_refs:?}"
+    );
 }

@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
-use sutra::tools::{deps, find, grep, impact, map, outline, read, tools_meta, winnow};
+use sutra::tools::{deps, find, grep, impact, map, outline, read, refs, tools_meta, winnow};
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -586,5 +586,59 @@ fn test_winnow_rank_by_complexity() {
     assert!(
         c0 >= c1,
         "results should be ranked by complexity descending"
+    );
+}
+
+#[test]
+fn test_refs_context_kind_filter() {
+    let (_dir, db) = setup_test_db();
+    let file = db.file_by_path("src/main.rs").unwrap().unwrap();
+
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: file.id,
+        qualified_name: "Config",
+        short_name: "Config",
+        kind: "struct",
+        signature: None,
+        signature_hash: None,
+        visibility: Some("pub"),
+        start_line: 20,
+        start_col: 0,
+        end_line: 25,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+    })
+    .unwrap();
+
+    let config_sym = db.resolve_symbol("Config", None).unwrap().unwrap();
+
+    db.insert_ref(file.id, Some(config_sym.id), None, 30, 4, "construction")
+        .unwrap();
+    db.insert_ref(file.id, Some(config_sym.id), None, 40, 4, "type_use")
+        .unwrap();
+    db.insert_ref(file.id, Some(config_sym.id), None, 50, 4, "call")
+        .unwrap();
+
+    let all = refs::handle(&db, "Config", None).unwrap();
+    assert_eq!(all["total_refs"].as_i64().unwrap(), 3);
+
+    let filtered = refs::handle(&db, "Config", Some("construction")).unwrap();
+    assert_eq!(
+        filtered["total_refs"].as_i64().unwrap(),
+        1,
+        "filter should return only construction refs"
+    );
+    let locs = &filtered["references"][0]["locations"];
+    assert_eq!(locs[0]["context_kind"], "construction");
+
+    let no_match = refs::handle(&db, "Config", Some("pattern_bind")).unwrap();
+    assert_eq!(
+        no_match["total_refs"].as_i64().unwrap(),
+        0,
+        "filter with no matches should return 0 refs"
     );
 }

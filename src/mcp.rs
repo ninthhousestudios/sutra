@@ -454,7 +454,8 @@ impl SutraServer {
     }
 
     #[tool(description = "All usages of a symbol across the codebase. \
-        Groups references by file with line numbers. Requires analysis tier.")]
+        Groups references by file with line numbers. Optional context_kind filter \
+        (e.g. \"construction\", \"call\", \"type_use\") to narrow results. Requires analysis tier.")]
     pub async fn sutra_refs(
         &self,
         Parameters(args): Parameters<RefsArgs>,
@@ -462,7 +463,8 @@ impl SutraServer {
         self.require_analysis()?;
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::refs::handle(&db, &args.symbol).map_err(sutra_to_rmcp)?;
+        let result = tools::refs::handle(&db, &args.symbol, args.context_kind.as_deref())
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

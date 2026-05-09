@@ -10,10 +10,12 @@ use crate::db::Db;
 pub struct RefsArgs {
     pub workspace: String,
     pub symbol: String,
+    /// Filter to refs with this context_kind (e.g. "construction", "call", "type_use")
+    pub context_kind: Option<String>,
 }
 use crate::error::{Result, SutraError};
 
-pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde_json::Value> {
     let sym = db
         .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
@@ -41,6 +43,11 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
     let mut by_file: HashMap<i64, Vec<serde_json::Value>> = HashMap::new();
     for r in &all_refs {
         if r.target_symbol_id.is_some() {
+            if let Some(ck) = context_kind
+                && r.context_kind != ck
+            {
+                continue;
+            }
             by_file.entry(r.file_id).or_default().push(json!({
                 "line": r.line,
                 "col": r.col,
