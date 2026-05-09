@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -6,7 +7,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Db;
+use crate::db::{Db, FileRow};
+use crate::error::Result;
+use crate::freshness::{self, FreshnessCounts};
+
+type FilePredicate = Box<dyn Fn(&FileRow) -> bool>;
+type SymbolPredicate = Box<dyn Fn(&SymbolEntry) -> bool>;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WinnowArgs {
@@ -38,8 +44,6 @@ pub struct WinnowArgs {
     #[serde(default)]
     pub limit: Option<i64>,
 }
-use crate::error::Result;
-use crate::freshness::{self, FreshnessCounts};
 
 pub struct WinnowFilter {
     pub kind: Option<String>,
@@ -62,6 +66,47 @@ struct SymbolEntry {
     importance: f64,
 }
 
+// --- File-level predicate builders ---
+
+fn glob_filter(pattern: &str) -> FilePredicate {
+    let pat = glob::Pattern::new(pattern).unwrap_or_else(|_| glob::Pattern::new("*").unwrap());
+    Box::new(move |file| pat.matches(&file.path))
+}
+
+fn churn_filter(churn_map: HashMap<String, u32>, min: u32) -> FilePredicate {
+    Box::new(move |file| churn_map.get(&file.path).copied().unwrap_or(0) >= min)
+}
+
+// --- Symbol-level predicate builders ---
+
+fn kind_filter(kind: String) -> SymbolPredicate {
+    Box::new(move |e| e.sym.kind == kind)
+}
+
+fn complexity_filter(min: i64) -> SymbolPredicate {
+    Box::new(move |e| e.complexity >= min)
+}
+
+fn name_regex_filter(re: Regex) -> SymbolPredicate {
+    Box::new(move |e| re.is_match(&e.sym.qualified_name) || re.is_match(&e.sym.short_name))
+}
+
+fn calls_to_filter(db: &Db, target_name: &str) -> Result<SymbolPredicate> {
+    let targets = db.find_symbols_by_name(target_name, None, 5)?;
+    let mut ids = HashSet::new();
+    for target in &targets {
+        let refs = db.find_refs_to_symbol(target.id)?;
+        for r in refs.iter().filter(|r| r.context_kind == "call") {
+            if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line) {
+                ids.insert(caller.id);
+            }
+        }
+    }
+    Ok(Box::new(move |e| ids.contains(&e.sym.id)))
+}
+
+// --- Main entry point ---
+
 pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<serde_json::Value> {
     let limit = filter.limit.unwrap_or(20) as usize;
     let files = db.all_files()?;
@@ -73,84 +118,62 @@ pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<s
         Default::default()
     };
 
-    let glob_pattern = filter
-        .file_glob
-        .as_ref()
-        .map(|g| glob::Pattern::new(g).unwrap_or_else(|_| glob::Pattern::new("*").unwrap()));
+    // Build file-level predicates
+    let mut file_filters: Vec<FilePredicate> = Vec::new();
+    if let Some(ref pattern) = filter.file_glob {
+        file_filters.push(glob_filter(pattern));
+    }
+    if let Some(min) = filter.min_churn {
+        file_filters.push(churn_filter(churn_map.clone(), min));
+    }
 
-    let name_re = filter.name_regex.as_ref().and_then(|r| Regex::new(r).ok());
+    // Build symbol-level predicates
+    let mut sym_filters: Vec<SymbolPredicate> = Vec::new();
+    if let Some(ref k) = filter.kind {
+        sym_filters.push(kind_filter(k.clone()));
+    }
+    if let Some(min) = filter.min_complexity {
+        sym_filters.push(complexity_filter(min));
+    }
+    if let Some(ref pattern) = filter.name_regex
+        && let Ok(re) = Regex::new(pattern)
+    {
+        sym_filters.push(name_regex_filter(re));
+    }
+    if let Some(ref target_name) = filter.calls_to {
+        sym_filters.push(calls_to_filter(db, target_name)?);
+    }
 
-    let caller_ids: Option<HashSet<i64>> = if let Some(ref target_name) = filter.calls_to {
-        let targets = db.find_symbols_by_name(target_name, None, 5)?;
-        let mut ids = HashSet::new();
-        for target in &targets {
-            let refs = db.find_refs_to_symbol(target.id)?;
-            for r in refs.iter().filter(|r| r.context_kind == "call") {
-                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line) {
-                    ids.insert(caller.id);
-                }
-            }
-        }
-        Some(ids)
-    } else {
-        None
-    };
-
+    // Iterate files → symbols, applying predicates
     let mut entries: Vec<SymbolEntry> = Vec::new();
 
     for file in &files {
-        if let Some(ref pat) = glob_pattern
-            && !pat.matches(&file.path)
-        {
+        if file_filters.iter().any(|f| !f(file)) {
             continue;
         }
 
         let file_churn = churn_map.get(&file.path).copied().unwrap_or(0);
-        if let Some(min) = filter.min_churn
-            && file_churn < min
-        {
-            continue;
-        }
-
         let symbols = db.find_symbols_by_file(file.id)?;
+
         for sym in symbols {
-            if let Some(ref k) = filter.kind
-                && sym.kind != *k
-            {
-                continue;
-            }
-
-            let complexity = sym.cognitive.unwrap_or(0);
-            if let Some(min) = filter.min_complexity
-                && complexity < min
-            {
-                continue;
-            }
-
-            if let Some(ref re) = name_re
-                && !re.is_match(&sym.qualified_name)
-                && !re.is_match(&sym.short_name)
-            {
-                continue;
-            }
-
-            if let Some(ref ids) = caller_ids
-                && !ids.contains(&sym.id)
-            {
-                continue;
-            }
-
-            entries.push(SymbolEntry {
+            let entry = SymbolEntry {
                 importance: sym.pagerank.unwrap_or(0.0),
-                complexity,
+                complexity: sym.cognitive.unwrap_or(0),
                 churn: file_churn,
                 file_path: file.path.clone(),
                 file_last_parsed: file.last_parsed.clone(),
                 sym,
-            });
+            };
+
+            if sym_filters.iter().any(|f| !f(&entry)) {
+                continue;
+            }
+
+            entries.push(entry);
         }
     }
 
+    // Rank
     match filter.rank_by.as_deref() {
         Some("complexity") => entries.sort_by_key(|e| std::cmp::Reverse(e.complexity)),
         Some("churn") => entries.sort_by_key(|e| std::cmp::Reverse(e.churn)),
@@ -163,6 +186,7 @@ pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<s
 
     entries.truncate(limit);
 
+    // Format output
     let mut counts = FreshnessCounts::default();
     let items: Vec<_> = entries
         .iter()
