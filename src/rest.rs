@@ -103,7 +103,10 @@ async fn add_workspace(
     };
 
     if let Err(e) = crate::workspace::add_workspace(&state.config.workspaces_path, entry.clone()) {
-        return (StatusCode::CONFLICT, Json(json!({"error": e.to_string()})));
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"id": id, "status": "already_registered", "error": e.to_string()})),
+        );
     }
 
     {

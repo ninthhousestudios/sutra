@@ -848,7 +848,15 @@ impl SutraServer {
             .json()
             .await
             .map_err(|e| DaemonRegisterError::ParseError(e.to_string()))?;
-        let ws_id = post_json["id"].as_str().unwrap_or("unknown").to_string();
+        let ws_id = post_json["id"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            });
 
         // Poll /status for up to 10s until workspace has parse data
         for _ in 0..10 {
