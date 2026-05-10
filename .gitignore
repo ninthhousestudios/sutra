@@ -6,3 +6,4 @@ target/
 
 # Sutra ack files (guard protocol)
 .sutra/
+.codex
