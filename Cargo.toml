@@ -27,6 +27,10 @@ path = "src/bin/hdc-algebra.rs"
 name = "hrr-semantic"
 path = "src/bin/hrr-semantic.rs"
 
+[[bin]]
+name = "dd-spike"
+path = "src/bin/dd-spike.rs"
+
 [lib]
 name = "sutra"
 path = "src/lib.rs"
@@ -77,6 +81,10 @@ regex = "1"
 
 # Hashing
 blake3 = "1"
+
+# Differential dataflow (spike)
+differential-dataflow = "0.23"
+timely = "0.29"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
