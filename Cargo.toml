@@ -28,6 +28,10 @@ name = "hrr-semantic"
 path = "src/bin/hrr-semantic.rs"
 
 [[bin]]
+name = "fca-spike"
+path = "src/bin/fca-spike.rs"
+
+[[bin]]
 name = "dd-spike"
 path = "src/bin/dd-spike.rs"
 
