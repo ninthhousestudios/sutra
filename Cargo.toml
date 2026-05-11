@@ -23,6 +23,10 @@ path = "src/bin/hdc-spike.rs"
 name = "hdc-algebra"
 path = "src/bin/hdc-algebra.rs"
 
+[[bin]]
+name = "hrr-semantic"
+path = "src/bin/hrr-semantic.rs"
+
 [lib]
 name = "sutra"
 path = "src/lib.rs"
