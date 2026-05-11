@@ -34,6 +34,67 @@ enum Commands {
     /// Manage the modification guard hooks
     #[command(subcommand)]
     Guard(GuardCmd),
+    /// Query the file map (JSON output)
+    Map {
+        /// Workspace id
+        workspace: String,
+        /// Only include files under this path prefix
+        #[arg(long)]
+        path_prefix: Option<String>,
+        /// Max results
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// Search symbols by pattern (JSON output)
+    Grep {
+        /// Workspace id
+        workspace: String,
+        /// Search pattern
+        pattern: String,
+        /// Filter by symbol kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Max results
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// Find a symbol by name (JSON output)
+    Find {
+        /// Workspace id
+        workspace: String,
+        /// Symbol name
+        name: String,
+        /// Filter by symbol kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Max results
+        #[arg(long)]
+        limit: Option<i64>,
+    },
+    /// Read a symbol's source code (JSON output)
+    Read {
+        /// Workspace id
+        workspace: String,
+        /// Symbol name
+        symbol: String,
+        /// Context lines around the symbol
+        #[arg(long)]
+        context_lines: Option<usize>,
+    },
+    /// Show file outline — symbol table of contents (JSON output)
+    Outline {
+        /// Workspace id
+        workspace: String,
+        /// File path (relative to workspace root)
+        path: String,
+    },
+    /// Blast radius analysis for a symbol (JSON output)
+    Impact {
+        /// Workspace id
+        workspace: String,
+        /// Symbol name
+        symbol: String,
+    },
     /// Check daemon and database health
     Health,
     /// Install systemd user service for sutra
@@ -129,6 +190,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 snapshot.skipped_count,
                 snapshot.duration_ms
             );
+        }
+        Commands::Map {
+            workspace: ws_id,
+            path_prefix,
+            limit,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result = sutra::tools::map::handle(&db, path_prefix.as_deref(), limit)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Grep {
+            workspace: ws_id,
+            pattern,
+            kind,
+            limit,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result = sutra::tools::grep::handle(&db, &pattern, kind.as_deref(), limit)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Find {
+            workspace: ws_id,
+            name,
+            kind,
+            limit,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result = sutra::tools::find::handle(&db, &name, kind.as_deref(), limit)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Read {
+            workspace: ws_id,
+            symbol,
+            context_lines,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result =
+                sutra::tools::read::handle(&db, &ws.root, &symbol, context_lines, false)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Outline {
+            workspace: ws_id,
+            path,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result = sutra::tools::outline::handle(&db, &path)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Impact {
+            workspace: ws_id,
+            symbol,
+        } => {
+            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let result = sutra::tools::impact::handle(&db, &symbol)?;
+            println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Workspaces(cmd) => match cmd {
             WorkspacesCmd::Add {
