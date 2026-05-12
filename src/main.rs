@@ -170,7 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
-            let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config).await?;
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel)?;
             let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
             let resolved = resolvable - snapshot.unresolved_count;
             let pct = if resolvable > 0 {
@@ -245,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
             let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
-            let result = sutra::tools::outline::handle(&db, &path)?;
+            let result = sutra::tools::outline::handle(&db, &path, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Impact {
@@ -335,7 +336,8 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
     use sutra::mcp::SutraServer;
 
     let (ws_config, db_cache) = load_workspaces_and_cache(&config)?;
-    let server = SutraServer::new(config, ws_config, db_cache);
+    let parse_coord = sutra::pipeline::ParseCoordinator::new();
+    let server = SutraServer::new(config, ws_config, db_cache, parse_coord);
     let (stdin, stdout) = stdio();
     let service = server.serve((stdin, stdout)).await?;
 
@@ -376,6 +378,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&db_cache),
     ));
     let scheduler_tick = daemon.scheduler_last_tick_handle();
+    let parse_coord = daemon.parse_coordinator();
     let _scheduler = daemon.spawn_scheduler();
 
     let cancel = CancellationToken::new();
@@ -389,12 +392,16 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let ws_clone = ws_config.clone();
     let db_clone = db_cache.clone();
     let tick_clone = scheduler_tick.clone();
+    let coord_clone = parse_coord.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
-            Ok(
-                SutraServer::new(cfg_clone.clone(), ws_clone.clone(), db_clone.clone())
-                    .with_scheduler_last_tick(tick_clone.clone()),
+            Ok(SutraServer::new(
+                cfg_clone.clone(),
+                ws_clone.clone(),
+                db_clone.clone(),
+                coord_clone.clone(),
             )
+            .with_scheduler_last_tick(tick_clone.clone()))
         },
         session_manager,
         shttp_config,

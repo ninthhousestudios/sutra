@@ -8,10 +8,18 @@ use crate::db::Db;
 pub struct OutlineArgs {
     pub workspace: String,
     pub path: String,
+    /// If true (default), return only structural fields. Set false for full detail.
+    #[serde(default = "default_compact")]
+    pub compact: Option<bool>,
 }
+
+fn default_compact() -> Option<bool> {
+    Some(true)
+}
+
 use crate::error::{Result, SutraError};
 
-pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, path: &str, compact: bool) -> Result<serde_json::Value> {
     let file = db.file_by_path(path)?.ok_or_else(|| SutraError::NotFound {
         tool: "sutra_outline",
         kind: format!("file `{path}`"),
@@ -24,24 +32,34 @@ pub fn handle(db: &Db, path: &str) -> Result<serde_json::Value> {
     let items: Vec<_> = symbols
         .iter()
         .map(|s| {
-            let mut entry = json!({
-                "qualified_name": s.qualified_name,
-                "short_name": s.short_name,
-                "kind": s.kind,
-                "start_line": s.start_line,
-                "end_line": s.end_line,
-                "signature": s.signature,
-                "visibility": s.visibility,
-                "parent_symbol_id": s.parent_symbol_id,
-                "docstring": s.docstring,
-            });
-            if let Some(c) = s.cyclomatic {
-                entry["cyclomatic"] = json!(c);
+            if compact {
+                json!({
+                    "qualified_name": s.qualified_name,
+                    "kind": s.kind,
+                    "start_line": s.start_line,
+                    "end_line": s.end_line,
+                    "visibility": s.visibility,
+                })
+            } else {
+                let mut entry = json!({
+                    "qualified_name": s.qualified_name,
+                    "short_name": s.short_name,
+                    "kind": s.kind,
+                    "start_line": s.start_line,
+                    "end_line": s.end_line,
+                    "signature": s.signature,
+                    "visibility": s.visibility,
+                    "parent_symbol_id": s.parent_symbol_id,
+                    "docstring": s.docstring,
+                });
+                if let Some(c) = s.cyclomatic {
+                    entry["cyclomatic"] = json!(c);
+                }
+                if let Some(c) = s.cognitive {
+                    entry["cognitive"] = json!(c);
+                }
+                entry
             }
-            if let Some(c) = s.cognitive {
-                entry["cognitive"] = json!(c);
-            }
-            entry
         })
         .collect();
 

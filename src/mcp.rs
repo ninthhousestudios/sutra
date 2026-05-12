@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::error::SutraError;
 use crate::guard;
+use crate::pipeline::ParseCoordinator;
 use crate::tools;
 use crate::workspace::{self, WorkspacesConfig};
 
@@ -103,7 +104,7 @@ pub struct SutraServer {
     config: Arc<Config>,
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     analysis_enabled: Arc<AtomicBool>,
-    parsing_in_progress: Arc<Mutex<HashSet<String>>>,
+    parse_coord: ParseCoordinator,
     /// Shared with `Daemon` when running under the HTTP server. `None` in stdio
     /// mode where there is no scheduler. Inner `Option<Instant>` is `None`
     /// until the scheduler has run at least once.
@@ -118,7 +119,7 @@ impl Clone for SutraServer {
             config: Arc::clone(&self.config),
             workspaces: Arc::clone(&self.workspaces),
             analysis_enabled: Arc::clone(&self.analysis_enabled),
-            parsing_in_progress: Arc::clone(&self.parsing_in_progress),
+            parse_coord: self.parse_coord.clone(),
             scheduler_last_tick: Arc::clone(&self.scheduler_last_tick),
             tool_router: Self::tool_router(),
         }
@@ -130,13 +131,14 @@ impl SutraServer {
         config: Arc<Config>,
         workspaces: Arc<RwLock<WorkspacesConfig>>,
         db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
+        parse_coord: ParseCoordinator,
     ) -> Self {
         Self {
             db_cache,
             config,
             workspaces,
             analysis_enabled: Arc::new(AtomicBool::new(false)),
-            parsing_in_progress: Arc::new(Mutex::new(HashSet::new())),
+            parse_coord,
             scheduler_last_tick: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
@@ -191,6 +193,13 @@ impl SutraServer {
                 None,
             ));
         }
+        let root = root.canonicalize().map_err(|e| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                format!("cannot canonicalize path {path}: {e}"),
+                None,
+            )
+        })?;
 
         let dir_name = root
             .file_name()
@@ -328,7 +337,8 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::outline::handle(&db, &args.path).map_err(sutra_to_rmcp)?;
+        let compact = args.compact.unwrap_or(true);
+        let result = tools::outline::handle(&db, &args.path, compact).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -429,9 +439,21 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::parse::handle(&ws, &db, &self.config)
-            .await
-            .map_err(sutra_to_rmcp)?;
+        let lock = self.parse_coord.lock_for(&args.workspace);
+        let _guard = lock.lock().await;
+        let config = Arc::clone(&self.config);
+        let db_bg = Arc::clone(&db);
+        let result = tokio::task::spawn_blocking(move || {
+            let cancel = AtomicBool::new(false);
+            tools::parse::handle(&ws, &db_bg, &config, &cancel)
+        })
+        .await
+        .map_err(|e| ErrorData::new(
+            rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+            format!("parse task panicked: {e}"),
+            None,
+        ))?
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -689,29 +711,29 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let (ws_id, entry, already_exists) = self.register_workspace(&args.path, args.languages)?;
 
-        {
-            let mut parsing = self.parsing_in_progress.lock();
-            if parsing.contains(&ws_id) {
-                return serde_json::to_string_pretty(&serde_json::json!({
-                    "workspace": ws_id,
-                    "root": entry.root.display().to_string(),
-                    "status": "parse already in progress",
-                }))
-                .map_err(json_to_rmcp);
-            }
-            parsing.insert(ws_id.clone());
-        }
+        let lock = self.parse_coord.lock_for(&ws_id);
+        let Ok(guard) = lock.clone().try_lock_owned() else {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "workspace": ws_id,
+                "root": entry.root.display().to_string(),
+                "status": "parse already in progress",
+            }))
+            .map_err(json_to_rmcp);
+        };
 
         let db = self.get_db(&ws_id)?;
         let config = Arc::clone(&self.config);
         let ws_id_bg = ws_id.clone();
-        let parsing_flag = Arc::clone(&self.parsing_in_progress);
         let entry_bg = entry.clone();
         tokio::spawn(async move {
-            let result = crate::pipeline::parse_workspace(&entry_bg, &db, &config).await;
-            parsing_flag.lock().remove(&ws_id_bg);
+            let _guard = guard;
+            let result = tokio::task::spawn_blocking(move || {
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                crate::pipeline::parse_workspace(&entry_bg, &db, &config, &cancel)
+            })
+            .await;
             match result {
-                Ok(snap) => {
+                Ok(Ok(snap)) => {
                     tracing::info!(
                         "add_root parse complete for {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id_bg,
@@ -721,8 +743,11 @@ impl SutraServer {
                         snap.duration_ms
                     );
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::error!("add_root parse failed for {}: {e}", ws_id_bg);
+                }
+                Err(e) => {
+                    tracing::error!("add_root parse panicked for {}: {e}", ws_id_bg);
                 }
             }
         });
@@ -774,7 +799,14 @@ impl SutraServer {
 
         let needs_parse = db.last_parse_time().ok().flatten().is_none();
         if needs_parse {
-            let _ = crate::pipeline::parse_workspace(&entry, &db, &self.config).await;
+            let entry_bg = entry.clone();
+            let db_bg = Arc::clone(&db);
+            let config_bg = Arc::clone(&self.config);
+            let _ = tokio::task::spawn_blocking(move || {
+                let cancel = AtomicBool::new(false);
+                crate::pipeline::parse_workspace(&entry_bg, &db_bg, &config_bg, &cancel)
+            })
+            .await;
         }
 
         let files = db.all_files().unwrap_or_default();

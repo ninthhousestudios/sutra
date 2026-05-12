@@ -50,7 +50,7 @@ async fn test_register_parse_query_cycle() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert!(snap.files_parsed >= 2, "expected at least 2 files parsed");
     assert!(snap.symbols_extracted > 0, "expected symbols extracted");
 
@@ -63,7 +63,7 @@ async fn test_register_parse_query_cycle() {
     assert!(!matches.is_empty(), "find should locate 'hello'");
 
     // Outline one of the parsed files — path is relative to workspace root.
-    let outline_result = outline::handle(&db, "src/lib.rs").unwrap();
+    let outline_result = outline::handle(&db, "src/lib.rs", true).unwrap();
     let symbols = outline_result["symbols"].as_array().unwrap();
     assert!(
         !symbols.is_empty(),
@@ -85,11 +85,11 @@ async fn test_incremental_reparse() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap1 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap1 = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap1.files_parsed, 1);
 
     // Second parse without any change — hash check should skip the file.
-    let snap2 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap2 = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(
         snap2.files_parsed, 0,
         "unchanged file should be skipped on reparse"
@@ -98,7 +98,7 @@ async fn test_incremental_reparse() {
     // Modify the file.
     std::fs::write(&file_path, "pub fn init() {}\npub fn extra() {}\n").unwrap();
 
-    let snap3 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap3 = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap3.files_parsed, 1, "modified file should be reparsed");
 }
 
@@ -116,7 +116,7 @@ async fn test_delete_cascade() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap1 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap1 = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap1.files_parsed, 2);
 
     // Delete one file from disk.
@@ -125,7 +125,7 @@ async fn test_delete_cascade() {
     // Reparse — the pipeline walks the workspace and only sees a.rs.
     // b.rs will no longer be touched. A full pipeline run doesn't proactively
     // prune missing files in v0.1, so we verify the remaining file is intact.
-    let snap2 = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap2 = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     // a.rs is unchanged — hash matches, so files_parsed == 0.
     // The important assertion is that the parse doesn't error out.
@@ -149,7 +149,7 @@ async fn test_empty_workspace() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap.files_parsed, 0);
     assert_eq!(snap.symbols_extracted, 0);
     assert_eq!(snap.parse_errors, 0);
@@ -167,7 +167,7 @@ async fn test_stale_detection() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     let last_parse = db.last_parse_time().unwrap();
     assert!(
