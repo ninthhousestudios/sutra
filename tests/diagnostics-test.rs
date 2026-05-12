@@ -45,16 +45,19 @@ fn test_suggest_next_query_non_empty() {
             queried_name: "foo".into(),
             queried_kind: None,
             indexed_kinds: vec![],
+            freshness: None,
             suggestion: "try grep".into(),
         },
         Diagnostic::Ambiguous {
             queried_name: "bar".into(),
             candidates: vec![],
+            freshness: None,
             suggestion: "use qualified name".into(),
         },
         Diagnostic::Stale {
             file: "a.rs".into(),
             staleness_seconds: 60,
+            freshness: None,
             suggestion: "reparse".into(),
         },
         Diagnostic::AnalysisTierDisabled {
@@ -64,12 +67,14 @@ fn test_suggest_next_query_non_empty() {
         Diagnostic::PartialResolution {
             resolved_name: "Foo".into(),
             unresolved_count: 3,
+            freshness: None,
             suggestion: "check imports".into(),
         },
         Diagnostic::SymbolExistsWithNoResults {
             symbol: "Foo::bar".into(),
             symbol_kind: "function".into(),
             tool: "refs".into(),
+            freshness: None,
             suggestion: "may be dead code".into(),
         },
     ];
@@ -84,6 +89,7 @@ fn test_diagnostic_json_has_kind_tag() {
         queried_name: "foo".into(),
         queried_kind: None,
         indexed_kinds: vec!["function".into()],
+        freshness: None,
         suggestion: "try grep".into(),
     };
     let v = serde_json::to_value(&d).unwrap();
@@ -108,6 +114,7 @@ fn test_ambiguous_json_has_candidates() {
                 file: "src/db.rs".into(),
             },
         ],
+        freshness: None,
         suggestion: "qualify it".into(),
     };
     let v = serde_json::to_value(&d).unwrap();

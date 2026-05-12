@@ -72,20 +72,19 @@ fn test_eviction_round_trip() {
     let facts = DdFacts {
         import_edges: vec![(1, 2), (2, 3), (3, 1)],
     };
-    engine.ingest(facts.clone()).unwrap();
-    assert!(engine.is_warm());
-
+    engine.ingest(facts).unwrap();
     let first = engine.query_cycles().unwrap();
+    assert!(engine.is_warm());
 
     // Wait for idle timeout
     std::thread::sleep(Duration::from_millis(10));
     assert!(engine.evict_if_idle());
     assert!(!engine.is_warm());
+    assert!(engine.is_loaded());
 
-    // Reingest and query again — same results
-    engine.ingest(facts).unwrap();
-    assert!(engine.is_warm());
+    // Query again without re-ingesting — auto-warms from stored facts
     let second = engine.query_cycles().unwrap();
+    assert!(engine.is_warm());
     assert_eq!(first, second);
 }
 
@@ -94,6 +93,46 @@ fn test_query_on_cold_engine_errors() {
     let engine = DdEngine::new(Duration::from_secs(1800));
     let result = engine.query_cycles();
     assert!(result.is_err());
+}
+
+#[test]
+fn test_lazy_population() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    let facts = DdFacts {
+        import_edges: vec![(1, 2), (2, 3), (3, 1)],
+    };
+    engine.ingest(facts).unwrap();
+    // After ingest, engine is loaded but not warm (no worker spawned)
+    assert!(!engine.is_warm());
+    assert!(engine.is_loaded());
+
+    // First query auto-warms
+    let cycles = engine.query_cycles().unwrap();
+    assert!(engine.is_warm());
+    assert_eq!(cycles.len(), 1);
+}
+
+#[test]
+fn test_update_on_loaded_state() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    let facts = DdFacts {
+        import_edges: vec![(1, 2), (2, 3)],
+    };
+    engine.ingest(facts).unwrap();
+    assert!(!engine.is_warm());
+
+    // Update while loaded (before any query)
+    engine
+        .update(DdDelta {
+            added_edges: vec![(3, 1)],
+            removed_edges: vec![],
+        })
+        .unwrap();
+
+    // Query should reflect the update
+    let cycles = engine.query_cycles().unwrap();
+    assert_eq!(cycles.len(), 1);
+    assert_eq!(cycles[0].file_ids, vec![1, 2, 3]);
 }
 
 #[test]

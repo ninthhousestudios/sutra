@@ -13,8 +13,12 @@ pub struct DdEngine {
 
 enum DdState {
     Cold,
+    Loaded {
+        edges: Vec<(i64, i64)>,
+    },
     Warm {
         handle: WorkerHandle,
+        edges: Vec<(i64, i64)>,
         last_query: Instant,
     },
 }
@@ -29,39 +33,39 @@ impl DdEngine {
 
     pub fn ingest(&self, facts: DdFacts) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        if matches!(&*state, DdState::Warm { .. }) {
-            return Err(SutraError::Internal("DD engine already warm".into()));
+        match &*state {
+            DdState::Cold => {
+                *state = DdState::Loaded {
+                    edges: facts.import_edges,
+                };
+                Ok(())
+            }
+            DdState::Loaded { .. } | DdState::Warm { .. } => {
+                Err(SutraError::Internal("DD engine already loaded".into()))
+            }
         }
-
-        let handle = worker::spawn_worker();
-        handle
-            .send(Command::Ingest(facts.import_edges))
-            .map_err(|e| SutraError::Internal(e))?;
-
-        match handle.recv() {
-            Ok(Response::Ok) => {}
-            Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
-            _ => return Err(SutraError::Internal("unexpected response".into())),
-        }
-
-        *state = DdState::Warm {
-            handle,
-            last_query: Instant::now(),
-        };
-        Ok(())
     }
 
     pub fn update(&self, delta: DdDelta) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         match &mut *state {
             DdState::Cold => Err(SutraError::Internal("DD engine is cold".into())),
+            DdState::Loaded { edges } => {
+                for edge in &delta.added_edges {
+                    edges.push(*edge);
+                }
+                edges.retain(|e| !delta.removed_edges.contains(e));
+                Ok(())
+            }
             DdState::Warm {
-                handle, last_query, ..
+                handle,
+                edges,
+                last_query,
             } => {
                 handle
                     .send(Command::Update {
-                        added: delta.added_edges,
-                        removed: delta.removed_edges,
+                        added: delta.added_edges.clone(),
+                        removed: delta.removed_edges.clone(),
                     })
                     .map_err(|e| SutraError::Internal(e))?;
 
@@ -71,6 +75,10 @@ impl DdEngine {
                     _ => return Err(SutraError::Internal("unexpected response".into())),
                 }
 
+                for edge in &delta.added_edges {
+                    edges.push(*edge);
+                }
+                edges.retain(|e| !delta.removed_edges.contains(e));
                 *last_query = Instant::now();
                 Ok(())
             }
@@ -79,10 +87,36 @@ impl DdEngine {
 
     pub fn query_cycles(&self) -> Result<Vec<Cycle>> {
         let mut state = self.state.lock().unwrap();
-        match &mut *state {
-            DdState::Cold => Err(SutraError::Internal(
+
+        if matches!(&*state, DdState::Cold) {
+            return Err(SutraError::Internal(
                 "DD engine is cold — ingest facts first".into(),
-            )),
+            ));
+        }
+
+        // Auto-warm from Loaded state
+        if matches!(&*state, DdState::Loaded { .. }) {
+            let edges = match std::mem::replace(&mut *state, DdState::Cold) {
+                DdState::Loaded { edges } => edges,
+                _ => unreachable!(),
+            };
+            let handle = worker::spawn_worker();
+            handle
+                .send(Command::Ingest(edges.clone()))
+                .map_err(|e| SutraError::Internal(e))?;
+            match handle.recv() {
+                Ok(Response::Ok) => {}
+                Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
+                _ => return Err(SutraError::Internal("unexpected response".into())),
+            }
+            *state = DdState::Warm {
+                handle,
+                edges,
+                last_query: Instant::now(),
+            };
+        }
+
+        match &mut *state {
             DdState::Warm {
                 handle, last_query, ..
             } => {
@@ -107,16 +141,21 @@ impl DdEngine {
                     _ => Err(SutraError::Internal("unexpected response".into())),
                 }
             }
+            _ => unreachable!(),
         }
     }
 
     pub fn evict_if_idle(&self) -> bool {
         let mut state = self.state.lock().unwrap();
         match &*state {
-            DdState::Cold => false,
+            DdState::Cold | DdState::Loaded { .. } => false,
             DdState::Warm { last_query, .. } => {
                 if last_query.elapsed() >= self.idle_timeout {
-                    *state = DdState::Cold;
+                    let edges = match std::mem::replace(&mut *state, DdState::Cold) {
+                        DdState::Warm { edges, .. } => edges,
+                        _ => unreachable!(),
+                    };
+                    *state = DdState::Loaded { edges };
                     true
                 } else {
                     false
@@ -127,6 +166,13 @@ impl DdEngine {
 
     pub fn is_warm(&self) -> bool {
         matches!(&*self.state.lock().unwrap(), DdState::Warm { .. })
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        matches!(
+            &*self.state.lock().unwrap(),
+            DdState::Loaded { .. } | DdState::Warm { .. }
+        )
     }
 }
 

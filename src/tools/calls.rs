@@ -36,6 +36,7 @@ pub fn handle(
                     queried_name: symbol.to_string(),
                     queried_kind: None,
                     indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
+                    freshness: None,
                     suggestion: "Use sutra_find to search by partial name, \
                                  or sutra_grep for a text search.".to_string(),
                 }).unwrap(),
@@ -60,6 +61,7 @@ pub fn handle(
                 "diagnostic": serde_json::to_value(Diagnostic::Ambiguous {
                     queried_name: symbol.to_string(),
                     candidates: infos,
+                    freshness: None,
                     suggestion: "Use the fully qualified name to disambiguate.".to_string(),
                 }).unwrap(),
             }));

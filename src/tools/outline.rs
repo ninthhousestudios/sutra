@@ -8,13 +8,9 @@ use crate::db::Db;
 pub struct OutlineArgs {
     pub workspace: String,
     pub path: String,
-    /// If true (default), return only structural fields. Set false for full detail.
-    #[serde(default = "default_compact")]
+    /// If true, return only structural fields. Default is false (full detail).
+    #[serde(default)]
     pub compact: Option<bool>,
-}
-
-fn default_compact() -> Option<bool> {
-    Some(true)
 }
 
 use crate::error::{Result, SutraError};

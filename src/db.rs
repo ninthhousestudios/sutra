@@ -273,13 +273,79 @@ impl Db {
     fn register_retroactive(conn: &Connection) -> Result<()> {
         for &(name, sql) in MIGRATIONS {
             let hash = blake3::hash(sql.as_bytes()).to_hex().to_string();
-            conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations (name, content_hash, applied_at) \
-                 VALUES (?1, ?2, datetime('now'))",
-                params![name, hash],
-            )?;
+
+            if Self::migration_schema_present(conn, name) {
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (name, content_hash, applied_at) \
+                     VALUES (?1, ?2, datetime('now'))",
+                    params![name, hash],
+                )?;
+            } else {
+                let sp = format!("migration_{name}");
+                conn.execute_batch(&format!("SAVEPOINT {sp}"))?;
+                match conn.execute_batch(sql) {
+                    Ok(()) => {
+                        conn.execute(
+                            "INSERT INTO schema_migrations (name, content_hash, applied_at) \
+                             VALUES (?1, ?2, datetime('now'))",
+                            params![name, hash],
+                        )?;
+                        conn.execute_batch(&format!("RELEASE SAVEPOINT {sp}"))?;
+                    }
+                    Err(e) => {
+                        let _ = conn.execute_batch(&format!("ROLLBACK TO SAVEPOINT {sp}"));
+                        let _ = conn.execute_batch(&format!("RELEASE SAVEPOINT {sp}"));
+                        return Err(SutraError::Internal(format!(
+                            "retroactive migration `{name}` failed: {e}"
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    fn migration_schema_present(conn: &Connection, name: &str) -> bool {
+        match name {
+            "0001_initial" => {
+                for table in &["files", "symbols", "refs", "imports", "snapshots"] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+                            params![table],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
+                    if !exists {
+                        return false;
+                    }
+                }
+                true
+            }
+            "0002_complexity" => {
+                Self::column_exists(conn, "symbols", "cyclomatic")
+                    && Self::column_exists(conn, "symbols", "cognitive")
+            }
+            "0003_snapshot_aggregates" => {
+                Self::column_exists(conn, "snapshots", "total_complexity")
+                    && Self::column_exists(conn, "snapshots", "health_score")
+            }
+            "0004_symbol_flags" => Self::column_exists(conn, "symbols", "flags"),
+            _ => false,
+        }
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut stmt = match conn.prepare(&format!("PRAGMA table_info({table})")) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+        names.iter().any(|n| n == column)
     }
 
     // -----------------------------------------------------------------------

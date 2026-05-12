@@ -72,11 +72,21 @@ pub fn handle_with_freshness(
     }
     if items.is_empty() {
         let indexed_kinds = db.distinct_symbol_kinds().unwrap_or_default();
+        let freshness_level = if counts.stale > 0 {
+            Some(crate::freshness::FreshnessLevel::StaleIndex)
+        } else if counts.edited > 0 {
+            Some(crate::freshness::FreshnessLevel::EditedUncommitted)
+        } else if workspace_root.is_some() {
+            Some(crate::freshness::FreshnessLevel::Fresh)
+        } else {
+            None
+        };
         result["diagnostic"] = serde_json::to_value(
             crate::diagnostics::Diagnostic::NoSuchSymbol {
                 queried_name: name.to_string(),
                 queried_kind: kind.map(String::from),
                 indexed_kinds,
+                freshness: freshness_level,
                 suggestion: "Try sutra_grep for a broader text search, \
                              or verify the exact symbol name with sutra_map."
                     .to_string(),

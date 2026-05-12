@@ -337,7 +337,7 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let compact = args.compact.unwrap_or(true);
+        let compact = args.compact.unwrap_or(false);
         let result = tools::outline::handle(&db, &args.path, compact).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }

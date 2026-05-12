@@ -27,6 +27,7 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
                     queried_name: symbol.to_string(),
                     queried_kind: None,
                     indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
+                    freshness: None,
                     suggestion: "Use sutra_find to search by partial name, \
                                  or sutra_grep for a text search.".to_string(),
                 }).unwrap(),
@@ -51,6 +52,7 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
                 "diagnostic": serde_json::to_value(Diagnostic::Ambiguous {
                     queried_name: symbol.to_string(),
                     candidates: infos,
+                    freshness: None,
                     suggestion: "Use the fully qualified name to disambiguate.".to_string(),
                 }).unwrap(),
             }));
@@ -118,6 +120,7 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
             symbol: sym.qualified_name.clone(),
             symbol_kind: sym.kind.clone(),
             tool: "sutra_refs".to_string(),
+            freshness: None,
             suggestion: "The symbol exists but has no inbound references. \
                          It may be dead code, or references may be unresolved."
                 .to_string(),
