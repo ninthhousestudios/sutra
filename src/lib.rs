@@ -1,6 +1,7 @@
 pub mod config;
 pub mod daemon;
 pub mod db;
+pub mod diagnostics;
 pub mod error;
 pub mod freshness;
 pub mod git;

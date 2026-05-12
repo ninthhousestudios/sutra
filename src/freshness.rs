@@ -85,6 +85,24 @@ impl SearchTier {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessLevel {
+    Fresh,
+    EditedUncommitted,
+    StaleIndex,
+}
+
+impl From<FileStatus> for FreshnessLevel {
+    fn from(s: FileStatus) -> Self {
+        match s {
+            FileStatus::Fresh => FreshnessLevel::Fresh,
+            FileStatus::Edited => FreshnessLevel::EditedUncommitted,
+            FileStatus::Stale => FreshnessLevel::StaleIndex,
+        }
+    }
+}
+
 pub fn confidence_json(tier: SearchTier) -> serde_json::Value {
     json!({
         "score": tier.confidence(),

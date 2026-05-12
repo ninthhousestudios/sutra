@@ -70,5 +70,19 @@ pub fn handle_with_freshness(
             "confidence": freshness::confidence_json(tier),
         });
     }
+    if items.is_empty() {
+        let indexed_kinds = db.distinct_symbol_kinds().unwrap_or_default();
+        result["diagnostic"] = serde_json::to_value(
+            crate::diagnostics::Diagnostic::NoSuchSymbol {
+                queried_name: name.to_string(),
+                queried_kind: kind.map(String::from),
+                indexed_kinds,
+                suggestion: "Try sutra_grep for a broader text search, \
+                             or verify the exact symbol name with sutra_map."
+                    .to_string(),
+            },
+        )
+        .unwrap();
+    }
     Ok(result)
 }

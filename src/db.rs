@@ -118,6 +118,13 @@ pub struct SnapshotParams {
     pub health_score: i64,
 }
 
+#[derive(Debug)]
+pub enum ResolveResult {
+    Unique(SymbolRow),
+    Ambiguous(Vec<SymbolRow>),
+    NotFound,
+}
+
 // ---------------------------------------------------------------------------
 // Migrations
 // ---------------------------------------------------------------------------
@@ -778,6 +785,33 @@ impl Db {
         } else {
             Some(results.swap_remove(0))
         })
+    }
+
+    pub fn resolve_symbol_diagnostic(
+        &self,
+        name: &str,
+        kind: Option<&str>,
+    ) -> Result<ResolveResult> {
+        if let Some(sym) = self.symbol_by_qualified_name(name)? {
+            return Ok(ResolveResult::Unique(sym));
+        }
+        let results = self.find_symbols_by_name(name, kind, 10)?;
+        Ok(match results.len() {
+            0 => ResolveResult::NotFound,
+            1 => ResolveResult::Unique(results.into_iter().next().unwrap()),
+            _ => ResolveResult::Ambiguous(results),
+        })
+    }
+
+    pub fn distinct_symbol_kinds(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT DISTINCT kind FROM symbols ORDER BY kind")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut kinds = Vec::new();
+        for r in rows {
+            kinds.push(r?);
+        }
+        Ok(kinds)
     }
 
     /// Find the narrowest symbol enclosing the given line in a file.

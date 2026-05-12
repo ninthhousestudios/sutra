@@ -15,7 +15,9 @@ pub struct CallsArgs {
     #[serde(default)]
     pub depth: Option<usize>,
 }
-use crate::error::{Result, SutraError};
+use crate::db::ResolveResult;
+use crate::diagnostics::{CandidateInfo, Diagnostic};
+use crate::error::Result;
 
 const MAX_DEPTH: usize = 3;
 
@@ -25,13 +27,44 @@ pub fn handle(
     direction: Option<&str>,
     depth: Option<usize>,
 ) -> Result<serde_json::Value> {
-    let sym = db
-        .resolve_symbol(symbol, None)?
-        .ok_or_else(|| SutraError::NotFound {
-            tool: "sutra_calls",
-            kind: format!("symbol `{symbol}`"),
-            next_action: "Use sutra_find to look up the symbol name first.".to_string(),
-        })?;
+    let sym = match db.resolve_symbol_diagnostic(symbol, None)? {
+        ResolveResult::Unique(s) => s,
+        ResolveResult::NotFound => {
+            return Ok(json!({
+                "symbol": symbol,
+                "diagnostic": serde_json::to_value(Diagnostic::NoSuchSymbol {
+                    queried_name: symbol.to_string(),
+                    queried_kind: None,
+                    indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
+                    suggestion: "Use sutra_find to search by partial name, \
+                                 or sutra_grep for a text search.".to_string(),
+                }).unwrap(),
+            }));
+        }
+        ResolveResult::Ambiguous(candidates) => {
+            let infos: Vec<CandidateInfo> = candidates
+                .iter()
+                .map(|c| CandidateInfo {
+                    qualified_name: c.qualified_name.clone(),
+                    kind: c.kind.clone(),
+                    file: db
+                        .file_by_id(c.file_id)
+                        .ok()
+                        .flatten()
+                        .map(|f| f.path)
+                        .unwrap_or_default(),
+                })
+                .collect();
+            return Ok(json!({
+                "symbol": symbol,
+                "diagnostic": serde_json::to_value(Diagnostic::Ambiguous {
+                    queried_name: symbol.to_string(),
+                    candidates: infos,
+                    suggestion: "Use the fully qualified name to disambiguate.".to_string(),
+                }).unwrap(),
+            }));
+        }
+    };
 
     let direction = direction.unwrap_or("callers");
     let depth = depth.unwrap_or(1).min(MAX_DEPTH);

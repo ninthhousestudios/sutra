@@ -164,11 +164,12 @@ fn test_callees_unresolved() {
 }
 
 #[test]
-fn test_unknown_symbol_errors() {
+fn test_unknown_symbol_returns_diagnostic() {
     let (_dir, db) = setup_db();
 
-    let result = calls::handle(&db, "nonexistent::fn", Some("callers"), Some(1));
-    assert!(result.is_err());
+    let result = calls::handle(&db, "nonexistent::fn", Some("callers"), Some(1)).unwrap();
+    assert_eq!(result["diagnostic"]["kind"], "no_such_symbol");
+    assert_eq!(result["diagnostic"]["queried_name"], "nonexistent::fn");
 }
 
 #[test]
