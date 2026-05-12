@@ -138,6 +138,50 @@ fn test_reject_identical_root() {
     assert!(result.is_err(), "expected error for identical root");
 }
 
+/// Symlinked paths should be detected as overlapping after canonicalization.
+#[test]
+fn test_reject_symlink_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    let real_dir = dir.path().join("real_project");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    let link_dir = dir.path().join("link_project");
+    std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+    workspace::add_workspace(
+        &path,
+        entry("real", real_dir.to_str().unwrap(), &["rust"]),
+    )
+    .unwrap();
+    let result = workspace::add_workspace(
+        &path,
+        entry("link", link_dir.to_str().unwrap(), &["rust"]),
+    );
+    assert!(
+        result.is_err(),
+        "symlinked paths should be detected as overlapping"
+    );
+}
+
+/// Non-canonical /../ paths should be detected as overlapping.
+#[test]
+fn test_reject_dotdot_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    let proj = dir.path().join("projects").join("alpha");
+    std::fs::create_dir_all(&proj).unwrap();
+    let sibling = dir.path().join("projects").join("beta");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let dotdot = sibling.join("..").join("alpha");
+
+    workspace::add_workspace(&path, entry("a", proj.to_str().unwrap(), &["rust"])).unwrap();
+    let result = workspace::add_workspace(&path, entry("b", dotdot.to_str().unwrap(), &["rust"]));
+    assert!(
+        result.is_err(),
+        "/../ path should be detected as overlapping"
+    );
+}
+
 /// Adding a workspace whose root path does not exist on disk should succeed —
 /// sutra validates semantics, not filesystem presence at registration time.
 #[test]

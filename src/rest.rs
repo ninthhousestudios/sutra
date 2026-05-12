@@ -87,6 +87,7 @@ async fn add_workspace(
     Json(req): Json<AddWorkspaceRequest>,
 ) -> impl IntoResponse {
     let root = PathBuf::from(&req.path);
+    let root = root.canonicalize().unwrap_or(root);
     let id = root
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

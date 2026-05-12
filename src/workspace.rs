@@ -110,7 +110,9 @@ pub fn add_workspace(path: &Path, entry: WorkspaceEntry) -> Result<()> {
 }
 
 fn roots_overlap(a: &Path, b: &Path) -> bool {
-    a == b || a.starts_with(b) || b.starts_with(a)
+    let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    a == b || a.starts_with(&b) || b.starts_with(&a)
 }
 
 /// Remove the workspace with the given id. Returns an error if it is not
