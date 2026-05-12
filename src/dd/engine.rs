@@ -4,8 +4,11 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Result, SutraError};
 
+use glob::{MatchOptions, Pattern};
+
 use super::worker::{self, Command, Response, WorkerHandle};
-use super::{Cycle, DdDelta, DdFacts};
+use super::{ConstraintViolation, Cycle, DdDelta, DdFacts};
+use crate::rules::ForbiddenDep;
 
 pub struct DdEngine {
     state: Mutex<DdState>,
@@ -167,6 +170,66 @@ impl DdEngine {
             }
             _ => unreachable!(),
         }
+    }
+
+    pub fn query_forbidden_deps(
+        &self,
+        rules: &[ForbiddenDep],
+        paths: &HashMap<i64, String>,
+    ) -> Result<Vec<ConstraintViolation>> {
+        if rules.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let compiled: Vec<(Pattern, Pattern, &ForbiddenDep)> = rules
+            .iter()
+            .filter_map(|r| {
+                let from = Pattern::new(&r.from).ok()?;
+                let to = Pattern::new(&r.to).ok()?;
+                Some((from, to, r))
+            })
+            .collect();
+
+        let state = self.state.lock().unwrap();
+        let edges = match &*state {
+            DdState::Cold => {
+                return Err(SutraError::Internal(
+                    "DD engine is cold — ingest facts first".into(),
+                ))
+            }
+            DdState::Loaded { edges } | DdState::Warm { edges, .. } => edges,
+        };
+
+        let opts = MatchOptions {
+            require_literal_separator: true,
+            ..MatchOptions::default()
+        };
+
+        let mut violations = Vec::new();
+        for &(src, dst) in edges {
+            let src_path = match paths.get(&src) {
+                Some(p) => p.as_str(),
+                None => continue,
+            };
+            let dst_path = match paths.get(&dst) {
+                Some(p) => p.as_str(),
+                None => continue,
+            };
+            for (from_pat, to_pat, rule) in &compiled {
+                if from_pat.matches_with(src_path, opts)
+                    && to_pat.matches_with(dst_path, opts)
+                {
+                    violations.push(ConstraintViolation {
+                        from_id: src,
+                        to_id: dst,
+                        rule_from: rule.from.clone(),
+                        rule_to: rule.to.clone(),
+                    });
+                }
+            }
+        }
+        violations.sort_by_key(|v| (v.from_id, v.to_id));
+        Ok(violations)
     }
 
     pub fn evict_if_idle(&self) -> bool {

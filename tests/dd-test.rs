@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use sutra::dd::{DdDelta, DdEngine, DdFacts};
+use sutra::rules::ForbiddenDep;
 
 #[test]
 fn test_cycle_detection_finds_known_cycle() {
@@ -267,4 +268,142 @@ fn test_blast_radius_matches_imperative() {
             "blast radius mismatch for node {node}"
         );
     }
+}
+
+#[test]
+fn test_forbidden_deps_detects_violation() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    // Edge 1→2 where 1="src/tools/foo.rs", 2="src/daemon.rs"
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+
+    let paths: HashMap<i64, String> = [
+        (1, "src/tools/foo.rs".into()),
+        (2, "src/daemon.rs".into()),
+        (3, "src/lib.rs".into()),
+    ]
+    .into();
+
+    let rules = vec![ForbiddenDep {
+        from: "src/tools/*".into(),
+        to: "src/daemon.rs".into(),
+    }];
+
+    let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].from_id, 1);
+    assert_eq!(violations[0].to_id, 2);
+    assert_eq!(violations[0].rule_from, "src/tools/*");
+    assert_eq!(violations[0].rule_to, "src/daemon.rs");
+}
+
+#[test]
+fn test_forbidden_deps_clean_graph() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+
+    let paths: HashMap<i64, String> = [
+        (1, "src/models/user.rs".into()),
+        (2, "src/db.rs".into()),
+        (3, "src/lib.rs".into()),
+    ]
+    .into();
+
+    let rules = vec![ForbiddenDep {
+        from: "src/tools/*".into(),
+        to: "src/daemon.rs".into(),
+    }];
+
+    let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
+    assert!(violations.is_empty());
+}
+
+#[test]
+fn test_forbidden_deps_delta_update() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2)],
+        })
+        .unwrap();
+
+    let paths: HashMap<i64, String> = [
+        (1, "src/models/user.rs".into()),
+        (2, "src/db.rs".into()),
+        (3, "src/tools/parse.rs".into()),
+        (4, "src/daemon.rs".into()),
+    ]
+    .into();
+
+    let rules = vec![ForbiddenDep {
+        from: "src/tools/*".into(),
+        to: "src/daemon.rs".into(),
+    }];
+
+    // Initially no violations
+    assert!(engine.query_forbidden_deps(&rules, &paths).unwrap().is_empty());
+
+    // Add forbidden edge
+    engine
+        .update(DdDelta {
+            added_edges: vec![(3, 4)],
+            removed_edges: vec![],
+        })
+        .unwrap();
+    let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].from_id, 3);
+    assert_eq!(violations[0].to_id, 4);
+
+    // Remove the forbidden edge
+    engine
+        .update(DdDelta {
+            added_edges: vec![],
+            removed_edges: vec![(3, 4)],
+        })
+        .unwrap();
+    assert!(engine.query_forbidden_deps(&rules, &paths).unwrap().is_empty());
+}
+
+#[test]
+fn test_forbidden_deps_glob_patterns() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (3, 2), (4, 2)],
+        })
+        .unwrap();
+
+    let paths: HashMap<i64, String> = [
+        (1, "src/tools/parse.rs".into()),
+        (2, "src/internal/secret.rs".into()),
+        (3, "src/tools/sub/deep.rs".into()),
+        (4, "tests/helper.rs".into()),
+    ]
+    .into();
+
+    // Single * doesn't match path separators
+    let rules = vec![ForbiddenDep {
+        from: "src/tools/*".into(),
+        to: "src/internal/*".into(),
+    }];
+    let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
+    // Only file 1 matches "src/tools/*" (single level), not file 3 (nested)
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].from_id, 1);
+
+    // ** matches nested paths
+    let rules = vec![ForbiddenDep {
+        from: "src/tools/**".into(),
+        to: "src/internal/*".into(),
+    }];
+    let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
+    assert_eq!(violations.len(), 2);
 }
