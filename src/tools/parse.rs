@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+
 use serde_json::json;
 
 use crate::config::Config;
@@ -6,8 +8,13 @@ use crate::error::Result;
 use crate::pipeline;
 use crate::workspace::WorkspaceEntry;
 
-pub async fn handle(ws: &WorkspaceEntry, db: &Db, config: &Config) -> Result<serde_json::Value> {
-    let snapshot = pipeline::parse_workspace(ws, db, config).await?;
+pub fn handle(
+    ws: &WorkspaceEntry,
+    db: &Db,
+    config: &Config,
+    cancel: &AtomicBool,
+) -> Result<serde_json::Value> {
+    let snapshot = pipeline::parse_workspace(ws, db, config, cancel)?;
 
     Ok(json!({
         "workspace": ws.id,

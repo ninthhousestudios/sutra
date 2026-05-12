@@ -2,8 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
+use parking_lot::Mutex;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -13,6 +16,28 @@ use crate::graph;
 use crate::parser;
 use crate::resolver;
 use crate::workspace::WorkspaceEntry;
+
+/// Shared per-workspace parse lock. Both the Daemon scheduler/watcher and MCP
+/// tool handlers acquire the lock before parsing, preventing concurrent parses
+/// against the same SQLite database.
+#[derive(Clone, Default)]
+pub struct ParseCoordinator {
+    locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl ParseCoordinator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn lock_for(&self, ws_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.locks
+            .lock()
+            .entry(ws_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
 
 /// Summary of a parse pipeline run.
 #[derive(Debug, Clone)]
@@ -271,10 +296,11 @@ fn resolve_file_refs(
     Ok((unresolved, skipped))
 }
 
-pub async fn parse_workspace(
+pub fn parse_workspace(
     workspace: &WorkspaceEntry,
     db: &Db,
     _config: &Config,
+    cancel: &AtomicBool,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
 
@@ -307,6 +333,11 @@ pub async fn parse_workspace(
 
     let inner = (|| -> Result<(i64, i64)> {
         for file_path in &source_files {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(crate::error::SutraError::Internal(
+                    "parse cancelled".into(),
+                ));
+            }
             if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
@@ -351,12 +382,13 @@ pub async fn parse_workspace(
     })
 }
 
-pub async fn parse_changed_files(
+pub fn parse_changed_files(
     workspace: &WorkspaceEntry,
     db: &Db,
     _config: &Config,
     changed: &[PathBuf],
     deleted: &[PathBuf],
+    cancel: &AtomicBool,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
 
@@ -379,6 +411,11 @@ pub async fn parse_changed_files(
 
     let inner = (|| -> Result<(i64, i64)> {
         for del_path in deleted {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(crate::error::SutraError::Internal(
+                    "parse cancelled".into(),
+                ));
+            }
             let rel_path = del_path
                 .strip_prefix(&workspace.root)
                 .unwrap_or(del_path)
@@ -395,6 +432,11 @@ pub async fn parse_changed_files(
         }
 
         for file_path in changed {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(crate::error::SutraError::Internal(
+                    "parse cancelled".into(),
+                ));
+            }
             if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
