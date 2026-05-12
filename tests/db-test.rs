@@ -710,3 +710,53 @@ fn test_find_symbols_by_name_with_colons() {
         .unwrap();
     assert!(results.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Migration runner tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_fresh_db_creates_schema_migrations() {
+    let (_dir, db) = setup_db();
+    let conn = db.conn_for_test();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 4, "fresh DB should register all 4 existing migrations");
+}
+
+#[test]
+fn test_migration_reopen_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let _db1 = Db::open("test", dir.path()).unwrap();
+    drop(_db1);
+    let db2 = Db::open("test", dir.path()).unwrap();
+    let conn = db2.conn_for_test();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 4, "reopen should not duplicate migration rows");
+}
+
+#[test]
+fn test_migration_hash_mismatch_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = Db::open("test", dir.path()).unwrap();
+        let conn = db.conn_for_test();
+        conn.execute(
+            "UPDATE schema_migrations SET content_hash = 'tampered' WHERE name = '0001_initial'",
+            [],
+        )
+        .unwrap();
+    }
+    let result = Db::open("test", dir.path());
+    let msg = match result {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected hash mismatch error, got Ok"),
+    };
+    assert!(
+        msg.contains("content hash mismatch"),
+        "expected hash mismatch error, got: {msg}"
+    );
+}

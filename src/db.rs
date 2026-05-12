@@ -119,6 +119,20 @@ pub struct SnapshotParams {
 }
 
 // ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_initial", include_str!("../migrations/0001_initial.sql")),
+    ("0002_complexity", include_str!("../migrations/0002_complexity.sql")),
+    (
+        "0003_snapshot_aggregates",
+        include_str!("../migrations/0003_snapshot_aggregates.sql"),
+    ),
+    ("0004_symbol_flags", include_str!("../migrations/0004_symbol_flags.sql")),
+];
+
+// ---------------------------------------------------------------------------
 // Db
 // ---------------------------------------------------------------------------
 
@@ -162,30 +176,101 @@ impl Db {
         Ok(db)
     }
 
-    /// Execute the embedded migration SQL.
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute_batch(include_str!("../migrations/0001_initial.sql"))?;
-        // Idempotent: ALTER TABLE ADD COLUMN fails if column already exists.
-        for sql in [
-            include_str!("../migrations/0002_complexity.sql"),
-            include_str!("../migrations/0003_snapshot_aggregates.sql"),
-            include_str!("../migrations/0004_symbol_flags.sql"),
-        ] {
-            for stmt in sql.lines() {
-                let stmt = stmt.trim();
-                if !stmt.is_empty() {
-                    match conn.execute_batch(stmt) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            let msg = e.to_string();
-                            if !msg.contains("duplicate column") {
-                                eprintln!("migration warning: {msg}");
-                            }
-                        }
-                    }
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name         TEXT    NOT NULL UNIQUE,
+                 content_hash TEXT    NOT NULL,
+                 applied_at   TEXT    NOT NULL
+             )",
+        )?;
+
+        let pre_runner = Self::detect_pre_runner_db(&conn)?;
+        if pre_runner {
+            Self::register_retroactive(&conn)?;
+            return Ok(());
+        }
+
+        for &(name, sql) in MIGRATIONS {
+            let hash = blake3::hash(sql.as_bytes()).to_hex().to_string();
+
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT content_hash FROM schema_migrations WHERE name = ?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let Some(stored_hash) = existing {
+                if stored_hash != hash {
+                    return Err(SutraError::Internal(format!(
+                        "migration `{name}` content hash mismatch: \
+                         stored={stored_hash}, current={hash}. \
+                         Do not modify already-applied migrations."
+                    )));
+                }
+                continue;
+            }
+
+            let sp = format!("migration_{name}");
+            conn.execute_batch(&format!("SAVEPOINT {sp}"))?;
+
+            match conn.execute_batch(sql) {
+                Ok(()) => {
+                    conn.execute(
+                        "INSERT INTO schema_migrations (name, content_hash, applied_at) \
+                         VALUES (?1, ?2, datetime('now'))",
+                        params![name, hash],
+                    )?;
+                    conn.execute_batch(&format!("RELEASE SAVEPOINT {sp}"))?;
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch(&format!("ROLLBACK TO SAVEPOINT {sp}"));
+                    let _ = conn.execute_batch(&format!("RELEASE SAVEPOINT {sp}"));
+                    return Err(SutraError::Internal(format!(
+                        "migration `{name}` failed: {e}"
+                    )));
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn detect_pre_runner_db(conn: &Connection) -> Result<bool> {
+        let has_files: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='table' AND name='files'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_files {
+            return Ok(false);
+        }
+
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+
+        Ok(migration_count == 0)
+    }
+
+    fn register_retroactive(conn: &Connection) -> Result<()> {
+        for &(name, sql) in MIGRATIONS {
+            let hash = blake3::hash(sql.as_bytes()).to_hex().to_string();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (name, content_hash, applied_at) \
+                 VALUES (?1, ?2, datetime('now'))",
+                params![name, hash],
+            )?;
         }
         Ok(())
     }
@@ -196,6 +281,11 @@ impl Db {
 
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+
+    #[doc(hidden)]
+    pub fn conn_for_test(&self) -> parking_lot::MutexGuard<'_, Connection> {
+        self.conn.lock()
     }
 
     // -----------------------------------------------------------------------
