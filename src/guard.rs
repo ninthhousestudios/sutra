@@ -68,6 +68,29 @@ pub struct HookInput {
 #[derive(Debug, Deserialize)]
 pub struct ToolInput {
     pub file_path: Option<String>,
+    pub old_string: Option<String>,
+    pub new_string: Option<String>,
+    pub content: Option<String>,
+}
+
+pub fn is_additive_edit(tool_input: &ToolInput) -> bool {
+    match (&tool_input.old_string, &tool_input.new_string) {
+        (Some(old), Some(new)) => {
+            let old_lines: Vec<&str> = old.lines().collect();
+            let new_lines: Vec<&str> = new.lines().collect();
+            if old_lines.len() > new_lines.len() {
+                return false;
+            }
+            let mut old_idx = 0;
+            for new_line in &new_lines {
+                if old_idx < old_lines.len() && *new_line == old_lines[old_idx] {
+                    old_idx += 1;
+                }
+            }
+            old_idx == old_lines.len()
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -250,4 +273,53 @@ pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<Str
         .ok()
         .or_else(|| file_path.strip_prefix(project_root).ok())
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn additive_append() {
+        let input = ToolInput {
+            file_path: Some("src/lib.rs".into()),
+            old_string: Some("pub mod rest;\npub mod smriti;".into()),
+            new_string: Some("pub mod rest;\npub mod rules;\npub mod smriti;".into()),
+            content: None,
+        };
+        assert!(is_additive_edit(&input));
+    }
+
+    #[test]
+    fn modification_not_additive() {
+        let input = ToolInput {
+            file_path: Some("src/lib.rs".into()),
+            old_string: Some("pub mod rest;".into()),
+            new_string: Some("pub mod router;".into()),
+            content: None,
+        };
+        assert!(!is_additive_edit(&input));
+    }
+
+    #[test]
+    fn write_tool_not_additive() {
+        let input = ToolInput {
+            file_path: Some("src/lib.rs".into()),
+            old_string: None,
+            new_string: None,
+            content: Some("full file content".into()),
+        };
+        assert!(!is_additive_edit(&input));
+    }
+
+    #[test]
+    fn pure_suffix_append() {
+        let input = ToolInput {
+            file_path: Some("src/lib.rs".into()),
+            old_string: Some("use foo;\n".into()),
+            new_string: Some("use foo;\nuse bar;\n".into()),
+            content: None,
+        };
+        assert!(is_additive_edit(&input));
+    }
 }

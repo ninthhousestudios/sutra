@@ -124,6 +124,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         blast_radius,
         hot_symbols,
     };
+
+    if guard::is_additive_edit(&hook.tool_input) {
+        return Ok(());
+    }
+
     let ack_fresh = guard::ack_is_fresh(&project_root, &rel_path, cfg.ack_ttl_secs);
     let decision = guard::evaluate(&facts, &cfg, ack_fresh);
 
