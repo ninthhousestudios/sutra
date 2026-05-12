@@ -5,6 +5,7 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 use differential_dataflow::input::Input;
+use differential_dataflow::operators::CountTotal;
 use differential_dataflow::operators::iterate::Iterate;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
@@ -15,12 +16,16 @@ pub(super) enum Command {
         removed: Vec<(i64, i64)>,
     },
     QueryCycles,
+    QueryBlastRadius(i64),
+    QueryBlastRadiusAll,
     Shutdown,
 }
 
 pub(super) enum Response {
     Ok,
     Cycles(Vec<HashSet<i64>>),
+    BlastRadius(usize),
+    BlastRadiusAll(HashMap<i64, usize>),
     #[allow(dead_code)]
     Error(String),
 }
@@ -76,6 +81,9 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
 
         let edges_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));
 
+        let blast_counts = Rc::new(RefCell::new(HashMap::<i64, isize>::new()));
+        let blast_counts_inspect = blast_counts.clone();
+
         let mut probe = ProbeHandle::new();
         let mut timestamp: usize = 0;
 
@@ -96,7 +104,7 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
             });
 
             // Self-loops in TC = cycle-participating nodes
-            reachable
+            reachable.clone()
                 .filter(|(src, dst)| src == dst)
                 .map(|(s, _)| s)
                 .distinct()
@@ -106,6 +114,22 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                         buf.insert(*node);
                     } else if *diff < 0 {
                         buf.remove(node);
+                    }
+                })
+                .probe_with(&mut probe);
+
+            reachable
+                .filter(|(src, dst)| src != dst)
+                .map(|(_, dst)| dst)
+                .count_total()
+                .inspect(move |((dst, count), _time, diff)| {
+                    let mut map = blast_counts_inspect.borrow_mut();
+                    if *diff > 0 {
+                        map.insert(*dst, *count);
+                    } else if *diff < 0 {
+                        if map.get(dst) == Some(count) {
+                            map.remove(dst);
+                        }
                     }
                 })
                 .probe_with(&mut probe);
@@ -156,6 +180,19 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                     let store = edges_store.borrow();
                     let sccs = compute_sccs(&nodes, &store);
                     let _ = resp_tx.send(Response::Cycles(sccs));
+                }
+                Ok(Command::QueryBlastRadius(node)) => {
+                    let counts = blast_counts.borrow();
+                    let count = counts.get(&node).copied().unwrap_or(0).max(0) as usize;
+                    let _ = resp_tx.send(Response::BlastRadius(count));
+                }
+                Ok(Command::QueryBlastRadiusAll) => {
+                    let counts = blast_counts.borrow();
+                    let map = counts
+                        .iter()
+                        .map(|(&k, &v)| (k, v.max(0) as usize))
+                        .collect();
+                    let _ = resp_tx.send(Response::BlastRadiusAll(map));
                 }
                 Ok(Command::Shutdown) | Err(_) => break,
             }

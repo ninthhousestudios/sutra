@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use sutra::dd::{DdDelta, DdEngine, DdFacts};
@@ -148,4 +149,122 @@ fn test_multiple_sccs() {
     assert_eq!(cycles.len(), 2);
     assert_eq!(cycles[0].file_ids, vec![1, 2]);
     assert_eq!(cycles[1].file_ids, vec![3, 4]);
+}
+
+#[test]
+fn test_blast_radius_simple_chain() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    // 1→2→3: 1 imports 2, 2 imports 3
+    let facts = DdFacts {
+        import_edges: vec![(1, 2), (2, 3)],
+    };
+    engine.ingest(facts).unwrap();
+    // Node 3: reachable from 1 and 2 → blast_radius = 2
+    assert_eq!(engine.query_blast_radius(3).unwrap(), 2);
+    // Node 2: reachable from 1 → blast_radius = 1
+    assert_eq!(engine.query_blast_radius(2).unwrap(), 1);
+    // Node 1: not reachable from anyone → blast_radius = 0
+    assert_eq!(engine.query_blast_radius(1).unwrap(), 0);
+}
+
+#[test]
+fn test_blast_radius_all() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    let facts = DdFacts {
+        import_edges: vec![(1, 2), (2, 3), (1, 3)],
+    };
+    engine.ingest(facts).unwrap();
+    let all = engine.query_blast_radius_all().unwrap();
+    assert_eq!(all.get(&3).copied().unwrap_or(0), 2); // 1 and 2 reach 3
+    assert_eq!(all.get(&2).copied().unwrap_or(0), 1); // only 1 reaches 2
+    assert_eq!(all.get(&1).copied().unwrap_or(0), 0); // nothing reaches 1
+}
+
+#[test]
+fn test_blast_radius_delta_update() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    let facts = DdFacts {
+        import_edges: vec![(1, 2), (2, 3)],
+    };
+    engine.ingest(facts).unwrap();
+    assert_eq!(engine.query_blast_radius(3).unwrap(), 2);
+
+    // Add edge 3→4: now 1,2,3 all transitively reach 4
+    engine
+        .update(DdDelta {
+            added_edges: vec![(3, 4)],
+            removed_edges: vec![],
+        })
+        .unwrap();
+    assert_eq!(engine.query_blast_radius(4).unwrap(), 3);
+
+    // Remove edge 1→2: now only 2→3→4 path exists
+    engine
+        .update(DdDelta {
+            added_edges: vec![],
+            removed_edges: vec![(1, 2)],
+        })
+        .unwrap();
+    assert_eq!(engine.query_blast_radius(3).unwrap(), 1); // only 2
+    assert_eq!(engine.query_blast_radius(4).unwrap(), 2); // 2 and 3
+}
+
+#[test]
+fn test_blast_radius_matches_imperative() {
+    fn imperative_blast_radius(edges: &[(i64, i64)]) -> HashMap<i64, usize> {
+        let mut fan_in: HashMap<i64, HashSet<i64>> = HashMap::new();
+        let mut all_nodes: HashSet<i64> = HashSet::new();
+        for &(src, dst) in edges {
+            fan_in.entry(dst).or_default().insert(src);
+            all_nodes.insert(src);
+            all_nodes.insert(dst);
+        }
+
+        let mut result = HashMap::new();
+        for &node in &all_nodes {
+            let mut visited = HashSet::new();
+            visited.insert(node);
+            let mut queue = VecDeque::new();
+            if let Some(deps) = fan_in.get(&node) {
+                for &dep in deps {
+                    if visited.insert(dep) {
+                        queue.push_back(dep);
+                    }
+                }
+            }
+            while let Some(current) = queue.pop_front() {
+                if let Some(deps) = fan_in.get(&current) {
+                    for &dep in deps {
+                        if visited.insert(dep) {
+                            queue.push_back(dep);
+                        }
+                    }
+                }
+            }
+            let blast = visited.len() - 1;
+            if blast > 0 {
+                result.insert(node, blast);
+            }
+        }
+        result
+    }
+
+    let edges = vec![(1, 2), (2, 3), (1, 3), (3, 4), (4, 5), (2, 5)];
+    let expected = imperative_blast_radius(&edges);
+
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: edges,
+        })
+        .unwrap();
+    let actual = engine.query_blast_radius_all().unwrap();
+
+    for node in 1..=5i64 {
+        assert_eq!(
+            actual.get(&node).copied().unwrap_or(0),
+            expected.get(&node).copied().unwrap_or(0),
+            "blast radius mismatch for node {node}"
+        );
+    }
 }

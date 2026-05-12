@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -87,34 +88,7 @@ impl DdEngine {
 
     pub fn query_cycles(&self) -> Result<Vec<Cycle>> {
         let mut state = self.state.lock().unwrap();
-
-        if matches!(&*state, DdState::Cold) {
-            return Err(SutraError::Internal(
-                "DD engine is cold — ingest facts first".into(),
-            ));
-        }
-
-        // Auto-warm from Loaded state
-        if matches!(&*state, DdState::Loaded { .. }) {
-            let edges = match std::mem::replace(&mut *state, DdState::Cold) {
-                DdState::Loaded { edges } => edges,
-                _ => unreachable!(),
-            };
-            let handle = worker::spawn_worker();
-            handle
-                .send(Command::Ingest(edges.clone()))
-                .map_err(|e| SutraError::Internal(e))?;
-            match handle.recv() {
-                Ok(Response::Ok) => {}
-                Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
-                _ => return Err(SutraError::Internal("unexpected response".into())),
-            }
-            *state = DdState::Warm {
-                handle,
-                edges,
-                last_query: Instant::now(),
-            };
-        }
+        ensure_warm(&mut state)?;
 
         match &mut *state {
             DdState::Warm {
@@ -136,6 +110,56 @@ impl DdEngine {
                             })
                             .collect();
                         Ok(cycles)
+                    }
+                    Ok(Response::Error(e)) => Err(SutraError::Internal(e)),
+                    _ => Err(SutraError::Internal("unexpected response".into())),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn query_blast_radius(&self, node: i64) -> Result<usize> {
+        let mut state = self.state.lock().unwrap();
+        ensure_warm(&mut state)?;
+
+        match &mut *state {
+            DdState::Warm {
+                handle, last_query, ..
+            } => {
+                handle
+                    .send(Command::QueryBlastRadius(node))
+                    .map_err(|e| SutraError::Internal(e))?;
+
+                match handle.recv() {
+                    Ok(Response::BlastRadius(count)) => {
+                        *last_query = Instant::now();
+                        Ok(count)
+                    }
+                    Ok(Response::Error(e)) => Err(SutraError::Internal(e)),
+                    _ => Err(SutraError::Internal("unexpected response".into())),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn query_blast_radius_all(&self) -> Result<HashMap<i64, usize>> {
+        let mut state = self.state.lock().unwrap();
+        ensure_warm(&mut state)?;
+
+        match &mut *state {
+            DdState::Warm {
+                handle, last_query, ..
+            } => {
+                handle
+                    .send(Command::QueryBlastRadiusAll)
+                    .map_err(|e| SutraError::Internal(e))?;
+
+                match handle.recv() {
+                    Ok(Response::BlastRadiusAll(map)) => {
+                        *last_query = Instant::now();
+                        Ok(map)
                     }
                     Ok(Response::Error(e)) => Err(SutraError::Internal(e)),
                     _ => Err(SutraError::Internal("unexpected response".into())),
@@ -174,6 +198,35 @@ impl DdEngine {
             DdState::Loaded { .. } | DdState::Warm { .. }
         )
     }
+}
+
+fn ensure_warm(state: &mut DdState) -> Result<()> {
+    if matches!(&*state, DdState::Cold) {
+        return Err(SutraError::Internal(
+            "DD engine is cold — ingest facts first".into(),
+        ));
+    }
+    if matches!(&*state, DdState::Loaded { .. }) {
+        let edges = match std::mem::replace(state, DdState::Cold) {
+            DdState::Loaded { edges } => edges,
+            _ => unreachable!(),
+        };
+        let handle = worker::spawn_worker();
+        handle
+            .send(Command::Ingest(edges.clone()))
+            .map_err(|e| SutraError::Internal(e))?;
+        match handle.recv() {
+            Ok(Response::Ok) => {}
+            Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
+            _ => return Err(SutraError::Internal("unexpected response".into())),
+        }
+        *state = DdState::Warm {
+            handle,
+            edges,
+            last_query: Instant::now(),
+        };
+    }
+    Ok(())
 }
 
 impl Drop for DdEngine {
