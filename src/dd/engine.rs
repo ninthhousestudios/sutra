@@ -181,14 +181,16 @@ impl DdEngine {
             return Ok(vec![]);
         }
 
-        let compiled: Vec<(Pattern, Pattern, &ForbiddenDep)> = rules
-            .iter()
-            .filter_map(|r| {
-                let from = Pattern::new(&r.from).ok()?;
-                let to = Pattern::new(&r.to).ok()?;
-                Some((from, to, r))
-            })
-            .collect();
+        let mut compiled = Vec::with_capacity(rules.len());
+        for r in rules {
+            let from = Pattern::new(&r.from).map_err(|e| {
+                SutraError::Internal(format!("invalid glob in forbidden_deps from='{}': {e}", r.from))
+            })?;
+            let to = Pattern::new(&r.to).map_err(|e| {
+                SutraError::Internal(format!("invalid glob in forbidden_deps to='{}': {e}", r.to))
+            })?;
+            compiled.push((from, to, r));
+        }
 
         let state = self.state.lock().unwrap();
         let edges = match &*state {
@@ -275,13 +277,20 @@ fn ensure_warm(state: &mut DdState) -> Result<()> {
             _ => unreachable!(),
         };
         let handle = worker::spawn_worker();
-        handle
-            .send(Command::Ingest(edges.clone()))
-            .map_err(|e| SutraError::Internal(e))?;
+        if let Err(e) = handle.send(Command::Ingest(edges.clone())) {
+            *state = DdState::Loaded { edges };
+            return Err(SutraError::Internal(e));
+        }
         match handle.recv() {
             Ok(Response::Ok) => {}
-            Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
-            _ => return Err(SutraError::Internal("unexpected response".into())),
+            Ok(Response::Error(e)) => {
+                *state = DdState::Loaded { edges };
+                return Err(SutraError::Internal(e));
+            }
+            _ => {
+                *state = DdState::Loaded { edges };
+                return Err(SutraError::Internal("unexpected response".into()));
+            }
         }
         *state = DdState::Warm {
             handle,

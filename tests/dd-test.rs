@@ -211,8 +211,10 @@ fn test_blast_radius_delta_update() {
 }
 
 #[test]
-fn test_blast_radius_matches_imperative() {
-    fn imperative_blast_radius(edges: &[(i64, i64)]) -> HashMap<i64, usize> {
+fn test_blast_radius_matches_unbounded_reachability() {
+    // DD computes unbounded transitive reachability — the true blast radius.
+    // This differs from bfs_blast_radius() in graph.rs which caps at depth 3.
+    fn unbounded_reachability(edges: &[(i64, i64)]) -> HashMap<i64, usize> {
         let mut fan_in: HashMap<i64, HashSet<i64>> = HashMap::new();
         let mut all_nodes: HashSet<i64> = HashSet::new();
         for &(src, dst) in edges {
@@ -251,7 +253,7 @@ fn test_blast_radius_matches_imperative() {
     }
 
     let edges = vec![(1, 2), (2, 3), (1, 3), (3, 4), (4, 5), (2, 5)];
-    let expected = imperative_blast_radius(&edges);
+    let expected = unbounded_reachability(&edges);
 
     let engine = DdEngine::new(Duration::from_secs(1800));
     engine
@@ -268,6 +270,26 @@ fn test_blast_radius_matches_imperative() {
             "blast radius mismatch for node {node}"
         );
     }
+}
+
+#[test]
+fn test_blast_radius_deep_chain() {
+    // Chain deeper than 3 hops: DD should count all transitive dependents,
+    // unlike the depth-3-bounded bfs_blast_radius in graph.rs.
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    // 1→2→3→4→5→6
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)],
+        })
+        .unwrap();
+
+    // Node 6: all 5 predecessors reach it transitively
+    assert_eq!(engine.query_blast_radius(6).unwrap(), 5);
+    // Node 5: 4 predecessors (1,2,3,4)
+    assert_eq!(engine.query_blast_radius(5).unwrap(), 4);
+    // Node 1: nothing reaches it
+    assert_eq!(engine.query_blast_radius(1).unwrap(), 0);
 }
 
 #[test]
@@ -406,4 +428,29 @@ fn test_forbidden_deps_glob_patterns() {
     }];
     let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
     assert_eq!(violations.len(), 2);
+}
+
+#[test]
+fn test_forbidden_deps_invalid_glob_errors() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2)],
+        })
+        .unwrap();
+
+    let paths: HashMap<i64, String> = [
+        (1, "src/a.rs".into()),
+        (2, "src/b.rs".into()),
+    ]
+    .into();
+
+    let rules = vec![ForbiddenDep {
+        from: "src/[invalid".into(),
+        to: "src/*".into(),
+    }];
+    let result = engine.query_forbidden_deps(&rules, &paths);
+    assert!(result.is_err(), "invalid glob should produce an error");
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("invalid glob"), "error should identify the problem: {msg}");
 }
