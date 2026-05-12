@@ -65,6 +65,11 @@ regex = "1"
 # Hashing
 blake3 = "1"
 
+# Differential dataflow
+differential-dataflow = { version = "0.23", default-features = false }
+timely = "0.29"
+crossbeam-channel = "0.5"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
 use sutra::db::Db;
@@ -16,7 +17,7 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
-        log_level: "warn".to_string(),
+        log_level: "warn".to_string(), dd_idle_timeout_sec: 1800,
     }
 }
 
@@ -98,7 +99,7 @@ async fn test_parse_fixture_directory() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap.files_parsed, 2);
     assert!(
         snap.symbols_extracted >= 3,
@@ -115,7 +116,7 @@ async fn test_parse_empty_workspace() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap.files_parsed, 0);
     assert_eq!(snap.symbols_extracted, 0);
 }
@@ -136,7 +137,7 @@ async fn test_parse_skips_target_dir() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert_eq!(snap.files_parsed, 1);
 }
 
@@ -158,7 +159,7 @@ async fn test_parse_rollups_populated() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     let files = db.all_files().unwrap();
     let total_fan_in: i64 = files.iter().map(|f| f.fan_in_files).sum();
@@ -183,11 +184,11 @@ async fn test_incremental_reparse() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     std::fs::write(&file_path, "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     let hash_after = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     assert_ne!(hash_before, hash_after);
@@ -205,7 +206,7 @@ async fn test_parse_snapshot_stored() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     assert!(db.last_parse_time().unwrap().is_some());
 }
@@ -226,15 +227,15 @@ async fn test_changed_single_file() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse first
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     // Modify the file on disk
     std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
 
     // Incremental parse with only the changed file
-    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[])
-        .await
+    let cancel = AtomicBool::new(false);
+    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel)
         .unwrap();
 
     assert_eq!(snap.files_parsed, 1);
@@ -262,15 +263,15 @@ async fn test_deleted_file_with_cascade() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert!(db.file_by_path("src/lib.rs").unwrap().is_some());
 
     // Delete lib.rs from disk
     std::fs::remove_file(src.join("lib.rs")).unwrap();
 
     // Incremental parse: lib.rs deleted
-    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")])
-        .await
+    let cancel = AtomicBool::new(false);
+    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel)
         .unwrap();
 
     // lib.rs should be gone from DB
@@ -311,21 +312,22 @@ async fn test_multiple_files_changed() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     // Modify two files, delete one
     std::fs::write(src.join("lib.rs"), "pub fn util() {}\npub fn util2() {}\n").unwrap();
     std::fs::write(src.join("main.rs"), "fn main() { util(); util2(); }\n").unwrap();
     std::fs::remove_file(src.join("extra.rs")).unwrap();
 
+    let cancel = AtomicBool::new(false);
     let snap = parse_changed_files(
         &ws,
         &db,
         &config,
         &[src.join("lib.rs"), src.join("main.rs")],
         &[src.join("extra.rs")],
+        &cancel,
     )
-    .await
     .unwrap();
 
     assert_eq!(snap.files_parsed, 2);
@@ -336,4 +338,27 @@ async fn test_multiple_files_changed() {
     // Rollups should be populated
     let files = db.all_files().unwrap();
     assert_eq!(files.len(), 2, "only lib.rs and main.rs remain");
+}
+
+#[tokio::test]
+async fn test_parse_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            src.join(format!("mod{i}.rs")),
+            format!("pub fn func_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("cancel-test", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+
+    let cancel = AtomicBool::new(true);
+    let result = pipeline::parse_workspace(&ws, &db, &config, &cancel);
+    assert!(result.is_err(), "pre-cancelled parse should fail");
 }

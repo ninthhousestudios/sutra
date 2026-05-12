@@ -16,7 +16,7 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
-        log_level: "warn".to_string(),
+        log_level: "warn".to_string(), dd_idle_timeout_sec: 1800,
     }
 }
 

@@ -14,6 +14,7 @@ pub struct Config {
     pub watch_debounce_sec: u64,
     pub parse_timeout_sec: u64,
     pub log_level: String,
+    pub dd_idle_timeout_sec: u64,
 }
 
 impl Config {
@@ -39,6 +40,7 @@ impl Config {
         let watch_debounce_sec = parse_env_or("SUTRA_WATCH_DEBOUNCE_SEC", 3u64);
         let parse_timeout_sec = parse_env_or("SUTRA_PARSE_TIMEOUT_SEC", 60u64);
         let log_level = std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        let dd_idle_timeout_sec = parse_env_or("SUTRA_DD_IDLE_TIMEOUT_SEC", 1800u64);
 
         Ok(Self {
             db_dir,
@@ -50,6 +52,7 @@ impl Config {
             watch_debounce_sec,
             parse_timeout_sec,
             log_level,
+            dd_idle_timeout_sec,
         })
     }
 }
@@ -66,6 +69,7 @@ impl Config {
             watch_debounce_sec: 3,
             parse_timeout_sec: 60,
             log_level: "warn".into(),
+            dd_idle_timeout_sec: 1800,
         }
     }
 }

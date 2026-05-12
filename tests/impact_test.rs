@@ -186,10 +186,11 @@ async fn test_impact_real_codebase() {
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
         log_level: "warn".to_string(),
+            dd_idle_timeout_sec: 1800,
     };
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     assert!(
         snap.files_parsed > 0,
         "expected sutra src/ to contain Rust files"

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
@@ -20,7 +21,7 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         watch_poll_sec: 1,
         watch_debounce_sec: 0,
         parse_timeout_sec: 60,
-        log_level: "warn".to_string(),
+        log_level: "warn".to_string(), dd_idle_timeout_sec: 1800,
     }
 }
 
@@ -46,7 +47,7 @@ async fn test_incremental_reparse_via_smriti_events() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Initial full parse
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
     let syms_before = db.all_symbols_summary().unwrap().len();
 
     // Modify the file on disk
@@ -57,8 +58,8 @@ async fn test_incremental_reparse_via_smriti_events() {
     .unwrap();
 
     // Simulate what the watcher does: call parse_changed_files with the changed file
-    let snap = pipeline::parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[])
-        .await
+    let cancel = AtomicBool::new(false);
+    let snap = pipeline::parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel)
         .unwrap();
 
     assert_eq!(snap.files_parsed, 1);
@@ -84,7 +85,7 @@ async fn test_stale_checker_skips_recently_refreshed() {
     });
 
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
-    pipeline::parse_workspace(&ws, &db, &config).await.unwrap();
+    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
 
     let workspaces = Arc::new(RwLock::new(WorkspacesConfig {
         workspace: vec![ws],
