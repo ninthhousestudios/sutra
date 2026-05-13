@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use crate::rules::ForbiddenDep;
 pub struct DdEngine {
     state: Mutex<DdState>,
     idle_timeout: Duration,
+    invalidated: AtomicBool,
 }
 
 enum DdState {
@@ -32,7 +34,16 @@ impl DdEngine {
         Self {
             state: Mutex::new(DdState::Cold),
             idle_timeout,
+            invalidated: AtomicBool::new(false),
         }
+    }
+
+    pub fn invalidate(&self) {
+        self.invalidated.store(true, Ordering::Release);
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        self.invalidated.load(Ordering::Acquire)
     }
 
     pub fn ingest(&self, facts: DdFacts) -> Result<()> {

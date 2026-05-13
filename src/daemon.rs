@@ -213,7 +213,9 @@ impl Daemon {
                     last_refresh
                         .lock()
                         .insert(ws_id_log.clone(), Instant::now());
-                    dd_engines.lock().remove(&ws_id_log);
+                    if let Some(engine) = dd_engines.lock().remove(&ws_id_log) {
+                        engine.invalidate();
+                    }
                     info!(
                         "incremental reparse {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id_log,
@@ -256,7 +258,9 @@ impl Daemon {
             {
                 Ok(Ok(snap)) => {
                     last_refresh.lock().insert(ws_id.clone(), Instant::now());
-                    self.dd_engines.lock().remove(&ws_id);
+                    if let Some(engine) = self.dd_engines.lock().remove(&ws_id) {
+                        engine.invalidate();
+                    }
                     info!(
                         "full reparse {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id,
@@ -276,13 +280,17 @@ impl Daemon {
         *self.scheduler_last_tick.lock() = Some(Instant::now());
 
         // Evict idle DD engines
-        {
+        let evicted: Vec<String> = {
             let engines = self.dd_engines.lock();
-            for (ws_id, engine) in engines.iter() {
-                if engine.evict_if_idle() {
-                    info!(workspace = %ws_id, "evicted idle DD engine");
-                }
-            }
+            engines
+                .iter()
+                .filter(|(_, engine)| engine.evict_if_idle())
+                .map(|(ws_id, _)| ws_id.clone())
+                .collect()
+        };
+        for ws_id in &evicted {
+            self.dd_engines.lock().remove(ws_id);
+            info!(workspace = %ws_id, "evicted idle DD engine");
         }
 
         // Hot-reload workspaces.toml so additions/removals take effect without restart
@@ -306,7 +314,9 @@ impl Daemon {
                 }
                 for id in &removed {
                     self.db_cache.lock().remove(id);
-                    self.dd_engines.lock().remove(id);
+                    if let Some(engine) = self.dd_engines.lock().remove(id) {
+                        engine.invalidate();
+                    }
                 }
                 current.workspace = fresh.workspace;
             }

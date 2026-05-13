@@ -1,6 +1,8 @@
 use std::fs;
+use std::time::Duration;
 
 use sutra::db::{Db, InsertSymbolParams};
+use sutra::dd::DdEngine;
 use sutra::tools::review;
 
 fn sym<'a>(
@@ -711,6 +713,52 @@ fn build_findings_persists_conventions_to_db() {
         assert!(!c.first_seen.is_empty());
         assert!(!c.last_seen.is_empty());
     }
+}
+
+#[test]
+fn build_findings_falls_back_to_ephemeral_when_shared_engine_invalidated() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[constraints]
+forbidden_deps = [
+    { from = "src/ui/**", to = "src/db/**" }
+]
+"#,
+    )
+    .unwrap();
+
+    // Two files with a forbidden dep
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
+    let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
+    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1)
+        .unwrap();
+
+    // Create a shared engine, ingest, then invalidate it
+    let shared = DdEngine::new(Duration::from_secs(600));
+    shared
+        .ingest(sutra::dd::DdFacts {
+            import_edges: vec![(f_view.id, f_query.id)],
+        })
+        .unwrap();
+    shared.invalidate();
+
+    // build_findings should fall back to ephemeral and still detect the violation
+    let changed = vec!["src/ui/view.rs".to_string()];
+    let findings = review::build_findings(&db, dir.path(), &changed, Some(&shared)).unwrap();
+    assert!(
+        !findings.constraint_violations.is_empty(),
+        "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
+    );
 }
 
 #[test]

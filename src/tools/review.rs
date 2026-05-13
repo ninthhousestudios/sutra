@@ -119,7 +119,7 @@ pub fn build_findings(
     let ephemeral;
     let edges = db.import_edges()?;
     let dd: Option<&DdEngine> = if !edges.is_empty() {
-        if let Some(engine) = shared_dd {
+        if let Some(engine) = shared_dd.filter(|e| !e.is_invalidated()) {
             if !engine.is_loaded() {
                 engine.ingest(DdFacts {
                     import_edges: edges,
