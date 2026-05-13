@@ -73,7 +73,8 @@ pub fn handle(
         "staged" => git::git_diff_staged(workspace_root)?,
         "unstaged" => git::git_diff_unstaged(workspace_root)?,
         _ => {
-            let base = git::git_merge_base(workspace_root, "main")?;
+            let default_branch = git::detect_default_branch(workspace_root)?;
+            let base = git::git_merge_base(workspace_root, &default_branch)?;
             git::git_diff_files(workspace_root, &base, "HEAD")?
         }
     };

@@ -113,6 +113,45 @@ pub fn git_diff_unstaged(workspace_root: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
+    // Try remote HEAD symbolic-ref first
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok();
+
+    if let Some(ref out) = output {
+        if out.status.success() {
+            let refname = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+                return Ok(branch.to_string());
+            }
+        }
+    }
+
+    // Fall back to checking local branches
+    for candidate in &["main", "master"] {
+        let check = Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args(["rev-parse", "--verify", candidate])
+            .output()
+            .ok();
+        if let Some(ref out) = check {
+            if out.status.success() {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+
+    Err(SutraError::Internal(
+        "cannot detect default branch: no remote HEAD, and neither 'main' nor 'master' exist"
+            .into(),
+    ))
+}
+
 pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
