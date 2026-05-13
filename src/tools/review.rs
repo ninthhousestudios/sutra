@@ -66,6 +66,7 @@ pub fn handle(
     db: &Db,
     workspace_root: &Path,
     diff_mode: Option<&str>,
+    dd_engine: Option<&DdEngine>,
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
@@ -83,10 +84,11 @@ pub fn handle(
         counts: git::git_churn(workspace_root, CHURN_WINDOW_DAYS)?,
     };
 
-    let (findings, findings_error) = match build_findings(db, workspace_root, &changed_paths) {
-        Ok(f) => (f, None),
-        Err(e) => (ReviewFindings::default(), Some(e.to_string())),
-    };
+    let (findings, findings_error) =
+        match build_findings(db, workspace_root, &changed_paths, dd_engine) {
+            Ok(f) => (f, None),
+            Err(e) => (ReviewFindings::default(), Some(e.to_string())),
+        };
 
     let mut result = compute(db, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
@@ -104,6 +106,7 @@ pub fn build_findings(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
+    shared_dd: Option<&DdEngine>,
 ) -> Result<ReviewFindings> {
     let rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
@@ -113,13 +116,28 @@ pub fn build_findings(
     // DD: forbidden deps + cycles involving changed files
     let mut constraint_violations = Vec::new();
 
+    let ephemeral;
     let edges = db.import_edges()?;
-    if !edges.is_empty() {
-        let engine = DdEngine::new(Duration::from_secs(60));
-        engine.ingest(DdFacts {
-            import_edges: edges,
-        })?;
+    let dd: Option<&DdEngine> = if !edges.is_empty() {
+        if let Some(engine) = shared_dd {
+            if !engine.is_loaded() {
+                engine.ingest(DdFacts {
+                    import_edges: edges,
+                })?;
+            }
+            Some(engine)
+        } else {
+            ephemeral = DdEngine::new(Duration::from_secs(60));
+            ephemeral.ingest(DdFacts {
+                import_edges: edges,
+            })?;
+            Some(&ephemeral)
+        }
+    } else {
+        None
+    };
 
+    if let Some(engine) = dd {
         for v in engine.query_forbidden_deps(&rules.constraints.forbidden_deps, &path_map)? {
             let from_path = path_map.get(&v.from_id).cloned().unwrap_or_default();
             let to_path = path_map.get(&v.to_id).cloned().unwrap_or_default();

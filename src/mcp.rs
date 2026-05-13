@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::dd::DdEngine;
 use crate::error::SutraError;
 use crate::guard;
 use crate::pipeline::ParseCoordinator;
@@ -117,6 +118,7 @@ pub struct SutraServer {
     /// mode where there is no scheduler. Inner `Option<Instant>` is `None`
     /// until the scheduler has run at least once.
     scheduler_last_tick: Arc<Mutex<Option<Instant>>>,
+    dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -129,6 +131,7 @@ impl Clone for SutraServer {
             analysis_enabled: Arc::clone(&self.analysis_enabled),
             parse_coord: self.parse_coord.clone(),
             scheduler_last_tick: Arc::clone(&self.scheduler_last_tick),
+            dd_engines: Arc::clone(&self.dd_engines),
             tool_router: Self::tool_router(),
         }
     }
@@ -148,6 +151,7 @@ impl SutraServer {
             analysis_enabled: Arc::new(AtomicBool::new(false)),
             parse_coord,
             scheduler_last_tick: Arc::new(Mutex::new(None)),
+            dd_engines: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -158,6 +162,23 @@ impl SutraServer {
     pub fn with_scheduler_last_tick(mut self, tick: Arc<Mutex<Option<Instant>>>) -> Self {
         self.scheduler_last_tick = tick;
         self
+    }
+
+    pub fn with_dd_engines(mut self, engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>) -> Self {
+        self.dd_engines = engines;
+        self
+    }
+
+    fn get_dd_engine(&self, ws_id: &str) -> Arc<DdEngine> {
+        let mut engines = self.dd_engines.lock();
+        engines
+            .entry(ws_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(DdEngine::new(Duration::from_secs(
+                    self.config.dd_idle_timeout_sec,
+                )))
+            })
+            .clone()
     }
 
     fn resolve_workspace(
@@ -622,8 +643,9 @@ impl SutraServer {
         self.require_analysis()?;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::review::handle(&db, &ws.root, args.diff.as_deref()).map_err(sutra_to_rmcp)?;
+        let dd = self.get_dd_engine(&args.workspace);
+        let result = tools::review::handle(&db, &ws.root, args.diff.as_deref(), Some(&dd))
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

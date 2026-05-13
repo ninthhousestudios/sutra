@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::dd::DdEngine;
 use crate::pipeline::{self, ParseCoordinator};
 use crate::smriti::SmritiReader;
 use crate::tools;
@@ -19,6 +20,7 @@ pub struct Daemon {
     config: Arc<Config>,
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
+    dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
     last_watcher_refresh: Arc<Mutex<HashMap<String, Instant>>>,
     parse_coord: ParseCoordinator,
     scheduler_last_tick: Arc<Mutex<Option<Instant>>>,
@@ -51,6 +53,7 @@ impl Daemon {
             config,
             workspaces,
             db_cache,
+            dd_engines: Arc::new(Mutex::new(HashMap::new())),
             last_watcher_refresh: Arc::new(Mutex::new(HashMap::new())),
             parse_coord: ParseCoordinator::new(),
             scheduler_last_tick: Arc::new(Mutex::new(None)),
@@ -69,6 +72,10 @@ impl Daemon {
     /// snapshot is fresh.
     pub fn scheduler_last_tick_handle(&self) -> Arc<Mutex<Option<Instant>>> {
         Arc::clone(&self.scheduler_last_tick)
+    }
+
+    pub fn dd_engines(&self) -> Arc<Mutex<HashMap<String, Arc<DdEngine>>>> {
+        Arc::clone(&self.dd_engines)
     }
 
     pub fn parse_coordinator(&self) -> ParseCoordinator {
@@ -183,6 +190,7 @@ impl Daemon {
             let deleted: Vec<PathBuf> = buf.deleted.into_iter().collect();
             let config = Arc::clone(&self.config);
             let last_refresh = Arc::clone(&self.last_watcher_refresh);
+            let dd_engines = Arc::clone(&self.dd_engines);
             let ws_id_log = ws.id.clone();
             let parse_lock = self.parse_coord.lock_for(&ws.id);
 
@@ -205,6 +213,7 @@ impl Daemon {
                     last_refresh
                         .lock()
                         .insert(ws_id_log.clone(), Instant::now());
+                    dd_engines.lock().remove(&ws_id_log);
                     info!(
                         "incremental reparse {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id_log,
@@ -247,6 +256,7 @@ impl Daemon {
             {
                 Ok(Ok(snap)) => {
                     last_refresh.lock().insert(ws_id.clone(), Instant::now());
+                    self.dd_engines.lock().remove(&ws_id);
                     info!(
                         "full reparse {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id,
@@ -264,6 +274,16 @@ impl Daemon {
 
     async fn check_stale_workspaces(&self) {
         *self.scheduler_last_tick.lock() = Some(Instant::now());
+
+        // Evict idle DD engines
+        {
+            let engines = self.dd_engines.lock();
+            for (ws_id, engine) in engines.iter() {
+                if engine.evict_if_idle() {
+                    info!(workspace = %ws_id, "evicted idle DD engine");
+                }
+            }
+        }
 
         // Hot-reload workspaces.toml so additions/removals take effect without restart
         if let Ok(fresh) = crate::workspace::load_workspaces(&self.config.workspaces_path) {
@@ -286,6 +306,7 @@ impl Daemon {
                 }
                 for id in &removed {
                     self.db_cache.lock().remove(id);
+                    self.dd_engines.lock().remove(id);
                 }
                 current.workspace = fresh.workspace;
             }

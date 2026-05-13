@@ -627,7 +627,7 @@ forbidden_deps = [
         .unwrap();
 
     let changed = vec!["src/ui/view.rs".to_string()];
-    let findings = review::build_findings(&db, dir.path(), &changed).unwrap();
+    let findings = review::build_findings(&db, dir.path(), &changed, None).unwrap();
 
     // DD should find the forbidden dep
     assert!(
@@ -672,11 +672,7 @@ fn build_findings_persists_conventions_to_db() {
             .unwrap();
         let f = db.file_by_path(&path).unwrap().unwrap();
         let qn = format!("f_{i}::process");
-        let sig = if i < 38 {
-            Some("fn process()")
-        } else {
-            None
-        };
+        let sig = if i < 38 { Some("fn process()") } else { None };
         let doc = if i % 5 == 0 { Some("docs") } else { None };
         db.insert_symbol(&InsertSymbolParams {
             file_id: f.id,
@@ -701,7 +697,7 @@ fn build_findings_persists_conventions_to_db() {
 
     assert!(db.all_conventions().unwrap().is_empty());
 
-    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()]);
+    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()], None);
 
     let conventions = db.all_conventions().unwrap();
     assert!(
@@ -726,7 +722,7 @@ fn build_findings_surfaces_error_on_bad_rules() {
     fs::create_dir_all(&rules_dir).unwrap();
     fs::write(rules_dir.join("rules.toml"), "{{invalid toml").unwrap();
 
-    let result = review::build_findings(&db, dir.path(), &["src/foo.rs".to_string()]);
+    let result = review::build_findings(&db, dir.path(), &["src/foo.rs".to_string()], None);
     assert!(
         result.is_err(),
         "malformed rules.toml should return Err, not empty findings"

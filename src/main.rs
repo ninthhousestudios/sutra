@@ -377,6 +377,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&db_cache),
     ));
     let scheduler_tick = daemon.scheduler_last_tick_handle();
+    let dd_engines = daemon.dd_engines();
     let parse_coord = daemon.parse_coordinator();
     let _scheduler = daemon.spawn_scheduler();
 
@@ -392,6 +393,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let db_clone = db_cache.clone();
     let tick_clone = scheduler_tick.clone();
     let coord_clone = parse_coord.clone();
+    let dd_clone = dd_engines.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
             Ok(SutraServer::new(
@@ -400,7 +402,8 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
                 db_clone.clone(),
                 coord_clone.clone(),
             )
-            .with_scheduler_last_tick(tick_clone.clone()))
+            .with_scheduler_last_tick(tick_clone.clone())
+            .with_dd_engines(dd_clone.clone()))
         },
         session_manager,
         shttp_config,
