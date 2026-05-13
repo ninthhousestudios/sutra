@@ -113,7 +113,7 @@ async fn post_workspaces_registers_new_workspace() {
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
         log_level: "warn".into(),
-            dd_idle_timeout_sec: 1800,
+        dd_idle_timeout_sec: 1800,
     });
     let ws: WsConfig = Arc::new(RwLock::new(WorkspacesConfig { workspace: vec![] }));
     let db_cache: DbCache = Arc::new(Mutex::new(HashMap::new()));

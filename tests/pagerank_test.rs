@@ -15,7 +15,8 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
-        log_level: "warn".to_string(), dd_idle_timeout_sec: 1800,
+        log_level: "warn".to_string(),
+        dd_idle_timeout_sec: 1800,
     }
 }
 
@@ -54,7 +55,11 @@ async fn test_pagerank_populated_after_parse() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     let files = db.all_files().unwrap();
     let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
@@ -89,7 +94,11 @@ async fn test_pagerank_sums_to_one() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     let files = db.all_files().unwrap();
     let sum: f64 = files.iter().filter_map(|f| f.pagerank).sum();
@@ -118,7 +127,11 @@ async fn test_pagerank_warm_start_converges() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // First parse — cold start.
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     let files_first = db.all_files().unwrap();
     let _lib_pr1 = files_first
         .iter()
@@ -134,7 +147,11 @@ async fn test_pagerank_warm_start_converges() {
         "use crate::shared;\npub fn helper() { shared(); }\n",
     )
     .unwrap();
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     let files_second = db.all_files().unwrap();
     let lib_pr2 = files_second
         .iter()
@@ -189,7 +206,11 @@ async fn test_symbol_pagerank_distributed() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     let hot = db.resolve_symbol("hot_fn", None).unwrap();
     let cold = db.resolve_symbol("cold_fn", None).unwrap();
@@ -221,7 +242,11 @@ async fn test_dangling_node_handling() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     let files = db.all_files().unwrap();
     for f in &files {

@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use parking_lot::Mutex;
@@ -334,9 +334,7 @@ pub fn parse_workspace(
     let inner = (|| -> Result<(i64, i64)> {
         for file_path in &source_files {
             if cancel.load(Ordering::Relaxed) {
-                return Err(crate::error::SutraError::Internal(
-                    "parse cancelled".into(),
-                ));
+                return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
             if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
                 parse_errors += result.parse_errors;
@@ -412,9 +410,7 @@ pub fn parse_changed_files(
     let inner = (|| -> Result<(i64, i64)> {
         for del_path in deleted {
             if cancel.load(Ordering::Relaxed) {
-                return Err(crate::error::SutraError::Internal(
-                    "parse cancelled".into(),
-                ));
+                return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
             let rel_path = del_path
                 .strip_prefix(&workspace.root)
@@ -433,9 +429,7 @@ pub fn parse_changed_files(
 
         for file_path in changed {
             if cancel.load(Ordering::Relaxed) {
-                return Err(crate::error::SutraError::Internal(
-                    "parse cancelled".into(),
-                ));
+                return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
             if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
                 parse_errors += result.parse_errors;

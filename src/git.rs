@@ -85,7 +85,11 @@ pub fn git_diff_staged(workspace_root: &Path) -> Result<Vec<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+    Ok(stdout
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 pub fn git_diff_unstaged(workspace_root: &Path) -> Result<Vec<String>> {
@@ -102,7 +106,11 @@ pub fn git_diff_unstaged(workspace_root: &Path) -> Result<Vec<String>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+    Ok(stdout
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {

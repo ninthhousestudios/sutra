@@ -39,7 +39,8 @@ pub struct ForbiddenDep {
 }
 
 pub fn parse_rules(content: &str) -> Result<Rules> {
-    toml::from_str(content).map_err(|e| SutraError::Internal(format!("rules.toml parse error: {e}")))
+    toml::from_str(content)
+        .map_err(|e| SutraError::Internal(format!("rules.toml parse error: {e}")))
 }
 
 pub fn load_rules(root: &Path) -> Result<Rules> {

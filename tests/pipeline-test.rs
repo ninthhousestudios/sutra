@@ -17,7 +17,8 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         watch_poll_sec: 2,
         watch_debounce_sec: 3,
         parse_timeout_sec: 60,
-        log_level: "warn".to_string(), dd_idle_timeout_sec: 1800,
+        log_level: "warn".to_string(),
+        dd_idle_timeout_sec: 1800,
     }
 }
 
@@ -99,7 +100,11 @@ async fn test_parse_fixture_directory() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    let snap = {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     assert_eq!(snap.files_parsed, 2);
     assert!(
         snap.symbols_extracted >= 3,
@@ -116,7 +121,11 @@ async fn test_parse_empty_workspace() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    let snap = {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     assert_eq!(snap.files_parsed, 0);
     assert_eq!(snap.symbols_extracted, 0);
 }
@@ -137,7 +146,11 @@ async fn test_parse_skips_target_dir() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    let snap = { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    let snap = {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     assert_eq!(snap.files_parsed, 1);
 }
 
@@ -159,7 +172,11 @@ async fn test_parse_rollups_populated() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     let files = db.all_files().unwrap();
     let total_fan_in: i64 = files.iter().map(|f| f.fan_in_files).sum();
@@ -184,11 +201,19 @@ async fn test_incremental_reparse() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     std::fs::write(&file_path, "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     let hash_after = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     assert_ne!(hash_before, hash_after);
@@ -206,7 +231,11 @@ async fn test_parse_snapshot_stored() {
     let config = make_config(db_dir.path());
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     assert!(db.last_parse_time().unwrap().is_some());
 }
@@ -227,7 +256,11 @@ async fn test_changed_single_file() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse first
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
 
     // Modify the file on disk
@@ -235,8 +268,7 @@ async fn test_changed_single_file() {
 
     // Incremental parse with only the changed file
     let cancel = AtomicBool::new(false);
-    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel)
-        .unwrap();
+    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel).unwrap();
 
     assert_eq!(snap.files_parsed, 1);
     assert!(snap.symbols_extracted >= 2);
@@ -263,7 +295,11 @@ async fn test_deleted_file_with_cascade() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
     assert!(db.file_by_path("src/lib.rs").unwrap().is_some());
 
     // Delete lib.rs from disk
@@ -271,8 +307,7 @@ async fn test_deleted_file_with_cascade() {
 
     // Incremental parse: lib.rs deleted
     let cancel = AtomicBool::new(false);
-    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel)
-        .unwrap();
+    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel).unwrap();
 
     // lib.rs should be gone from DB
     assert!(db.file_by_path("src/lib.rs").unwrap().is_none());
@@ -312,7 +347,11 @@ async fn test_multiple_files_changed() {
     let db = Db::open(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
-    { let cancel = std::sync::atomic::AtomicBool::new(false); pipeline::parse_workspace(&ws, &db, &config, &cancel) }.unwrap();
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+    }
+    .unwrap();
 
     // Modify two files, delete one
     std::fs::write(src.join("lib.rs"), "pub fn util() {}\npub fn util2() {}\n").unwrap();

@@ -106,10 +106,8 @@ pub fn build_findings(
 ) -> Result<ReviewFindings> {
     let rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
-    let path_map: HashMap<i64, String> =
-        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
-    let id_map: HashMap<&str, i64> =
-        all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
+    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
 
     // DD: forbidden deps + cycles involving changed files
     let mut constraint_violations = Vec::new();
@@ -117,7 +115,9 @@ pub fn build_findings(
     let edges = db.import_edges()?;
     if !edges.is_empty() {
         let engine = DdEngine::new(Duration::from_secs(60));
-        engine.ingest(DdFacts { import_edges: edges })?;
+        engine.ingest(DdFacts {
+            import_edges: edges,
+        })?;
 
         for v in engine.query_forbidden_deps(&rules.constraints.forbidden_deps, &path_map)? {
             let from_path = path_map.get(&v.from_id).cloned().unwrap_or_default();
@@ -127,8 +127,10 @@ pub fn build_findings(
                     kind: "forbidden_dep".into(),
                     from_path: from_path.clone(),
                     to_path: to_path.clone(),
-                    detail: format!("forbidden: {} -> {} (rule: {} -> {})",
-                        from_path, to_path, v.rule_from, v.rule_to),
+                    detail: format!(
+                        "forbidden: {} -> {} (rule: {} -> {})",
+                        from_path, to_path, v.rule_from, v.rule_to
+                    ),
                 });
             }
         }
@@ -141,7 +143,9 @@ pub fn build_findings(
         if !changed_ids.is_empty() {
             for cycle in engine.query_cycles()? {
                 if cycle.file_ids.iter().any(|id| changed_ids.contains(id)) {
-                    let cycle_paths: Vec<String> = cycle.file_ids.iter()
+                    let cycle_paths: Vec<String> = cycle
+                        .file_ids
+                        .iter()
                         .filter_map(|id| path_map.get(id).cloned())
                         .collect();
                     constraint_violations.push(ConstraintViolation {
@@ -210,11 +214,7 @@ struct ChangeStats {
     hotspot_files: u32,
 }
 
-fn gather_change_stats(
-    db: &Db,
-    changed_paths: &[String],
-    churn: &ChurnMap,
-) -> Result<ChangeStats> {
+fn gather_change_stats(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<ChangeStats> {
     let mut stats = ChangeStats {
         changed_files: Vec::new(),
         changed_symbols: Vec::new(),
@@ -315,7 +315,8 @@ fn build_recommended_reads(
             .find(|(p, _)| p == &v.file)
             .map(|(_, b)| *b)
             .or_else(|| {
-                changed_files.iter()
+                changed_files
+                    .iter()
                     .find(|cf| cf["path"].as_str() == Some(v.file.as_str()))
                     .and_then(|cf| cf["blast_radius"].as_i64())
             })
@@ -374,29 +375,39 @@ pub fn compute(
     }
 
     let stats = gather_change_stats(db, changed_paths, churn)?;
-    let (affected_files, affected_symbols) =
-        gather_affected(db, &stats.symbol_ids, changed_paths)?;
+    let (affected_files, affected_symbols) = gather_affected(db, &stats.symbol_ids, changed_paths)?;
 
     let total_affected_files = affected_files.len();
     let total_affected_symbols = affected_symbols.len();
 
-    let affected_files_out: Vec<_> = affected_files.iter().take(MAX_AFFECTED)
-        .map(|(path, blast)| json!({ "path": path, "blast_radius": blast })).collect();
+    let affected_files_out: Vec<_> = affected_files
+        .iter()
+        .take(MAX_AFFECTED)
+        .map(|(path, blast)| json!({ "path": path, "blast_radius": blast }))
+        .collect();
     let affected_symbols_out: Vec<_> = affected_symbols.iter().take(MAX_AFFECTED)
         .map(|(sym, file, blast, cog)| {
             json!({ "symbol": sym, "file": file, "blast_radius": blast, "cognitive": cog })
         }).collect();
 
-    let constraint_violations_out: Vec<_> = findings.constraint_violations.iter().map(|v| {
-        json!({ "kind": v.kind, "from": v.from_path, "to": v.to_path, "detail": v.detail })
-    }).collect();
-    let convention_violations_out: Vec<_> = findings.convention_violations.iter().map(|v| {
-        json!({
-            "symbol": v.symbol, "file": v.file, "convention_id": v.convention_id,
-            "antecedent": v.antecedent, "consequent": v.consequent, "missing": v.missing,
-            "support": v.support, "confidence": v.confidence,
+    let constraint_violations_out: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .map(
+            |v| json!({ "kind": v.kind, "from": v.from_path, "to": v.to_path, "detail": v.detail }),
+        )
+        .collect();
+    let convention_violations_out: Vec<_> = findings
+        .convention_violations
+        .iter()
+        .map(|v| {
+            json!({
+                "symbol": v.symbol, "file": v.file, "convention_id": v.convention_id,
+                "antecedent": v.antecedent, "consequent": v.consequent, "missing": v.missing,
+                "support": v.support, "confidence": v.confidence,
+            })
         })
-    }).collect();
+        .collect();
 
     let file_count = changed_paths.len();
     let blast_score = (stats.total_blast as f64 / 50.0).min(1.0);

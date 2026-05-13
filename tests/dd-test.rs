@@ -370,7 +370,12 @@ fn test_forbidden_deps_delta_update() {
     }];
 
     // Initially no violations
-    assert!(engine.query_forbidden_deps(&rules, &paths).unwrap().is_empty());
+    assert!(
+        engine
+            .query_forbidden_deps(&rules, &paths)
+            .unwrap()
+            .is_empty()
+    );
 
     // Add forbidden edge
     engine
@@ -391,7 +396,12 @@ fn test_forbidden_deps_delta_update() {
             removed_edges: vec![(3, 4)],
         })
         .unwrap();
-    assert!(engine.query_forbidden_deps(&rules, &paths).unwrap().is_empty());
+    assert!(
+        engine
+            .query_forbidden_deps(&rules, &paths)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -439,11 +449,7 @@ fn test_forbidden_deps_invalid_glob_errors() {
         })
         .unwrap();
 
-    let paths: HashMap<i64, String> = [
-        (1, "src/a.rs".into()),
-        (2, "src/b.rs".into()),
-    ]
-    .into();
+    let paths: HashMap<i64, String> = [(1, "src/a.rs".into()), (2, "src/b.rs".into())].into();
 
     let rules = vec![ForbiddenDep {
         from: "src/[invalid".into(),
@@ -452,5 +458,8 @@ fn test_forbidden_deps_invalid_glob_errors() {
     let result = engine.query_forbidden_deps(&rules, &paths);
     assert!(result.is_err(), "invalid glob should produce an error");
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("invalid glob"), "error should identify the problem: {msg}");
+    assert!(
+        msg.contains("invalid glob"),
+        "error should identify the problem: {msg}"
+    );
 }

@@ -184,7 +184,10 @@ impl DdEngine {
         let mut compiled = Vec::with_capacity(rules.len());
         for r in rules {
             let from = Pattern::new(&r.from).map_err(|e| {
-                SutraError::Internal(format!("invalid glob in forbidden_deps from='{}': {e}", r.from))
+                SutraError::Internal(format!(
+                    "invalid glob in forbidden_deps from='{}': {e}",
+                    r.from
+                ))
             })?;
             let to = Pattern::new(&r.to).map_err(|e| {
                 SutraError::Internal(format!("invalid glob in forbidden_deps to='{}': {e}", r.to))
@@ -197,7 +200,7 @@ impl DdEngine {
             DdState::Cold => {
                 return Err(SutraError::Internal(
                     "DD engine is cold — ingest facts first".into(),
-                ))
+                ));
             }
             DdState::Loaded { edges } | DdState::Warm { edges, .. } => edges,
         };
@@ -218,9 +221,7 @@ impl DdEngine {
                 None => continue,
             };
             for (from_pat, to_pat, rule) in &compiled {
-                if from_pat.matches_with(src_path, opts)
-                    && to_pat.matches_with(dst_path, opts)
-                {
+                if from_pat.matches_with(src_path, opts) && to_pat.matches_with(dst_path, opts) {
                     violations.push(ConstraintViolation {
                         from_id: src,
                         to_id: dst,

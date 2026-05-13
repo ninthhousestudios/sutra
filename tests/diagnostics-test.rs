@@ -79,7 +79,10 @@ fn test_suggest_next_query_non_empty() {
         },
     ];
     for d in &variants {
-        assert!(!d.suggest_next_query().is_empty(), "empty suggestion for {d:?}");
+        assert!(
+            !d.suggest_next_query().is_empty(),
+            "empty suggestion for {d:?}"
+        );
     }
 }
 

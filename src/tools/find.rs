@@ -81,17 +81,15 @@ pub fn handle_with_freshness(
         } else {
             None
         };
-        result["diagnostic"] = serde_json::to_value(
-            crate::diagnostics::Diagnostic::NoSuchSymbol {
-                queried_name: name.to_string(),
-                queried_kind: kind.map(String::from),
-                indexed_kinds,
-                freshness: freshness_level,
-                suggestion: "Try sutra_grep for a broader text search, \
+        result["diagnostic"] = serde_json::to_value(crate::diagnostics::Diagnostic::NoSuchSymbol {
+            queried_name: name.to_string(),
+            queried_kind: kind.map(String::from),
+            indexed_kinds,
+            freshness: freshness_level,
+            suggestion: "Try sutra_grep for a broader text search, \
                              or verify the exact symbol name with sutra_map."
-                    .to_string(),
-            },
-        )
+                .to_string(),
+        })
         .unwrap();
     }
     Ok(result)

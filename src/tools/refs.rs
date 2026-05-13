@@ -64,8 +64,7 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
     let unresolved_count = all_refs
         .iter()
         .filter(|r| {
-            r.target_symbol_id.is_none()
-                && r.unresolved_name.as_deref() == Some(&*sym.short_name)
+            r.target_symbol_id.is_none() && r.unresolved_name.as_deref() == Some(&*sym.short_name)
         })
         .count();
 

@@ -148,15 +148,9 @@ fn test_reject_symlink_overlap() {
     let link_dir = dir.path().join("link_project");
     std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
 
-    workspace::add_workspace(
-        &path,
-        entry("real", real_dir.to_str().unwrap(), &["rust"]),
-    )
-    .unwrap();
-    let result = workspace::add_workspace(
-        &path,
-        entry("link", link_dir.to_str().unwrap(), &["rust"]),
-    );
+    workspace::add_workspace(&path, entry("real", real_dir.to_str().unwrap(), &["rust"])).unwrap();
+    let result =
+        workspace::add_workspace(&path, entry("link", link_dir.to_str().unwrap(), &["rust"]));
     assert!(
         result.is_err(),
         "symlinked paths should be detected as overlapping"

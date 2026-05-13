@@ -3,7 +3,14 @@ use crate::db::SymbolRow;
 use super::engine::SymbolAttrs;
 
 const MEANINGFUL_KINDS: &[&str] = &[
-    "function", "method", "struct", "enum", "trait", "impl", "type_alias", "const",
+    "function",
+    "method",
+    "struct",
+    "enum",
+    "trait",
+    "impl",
+    "type_alias",
+    "const",
 ];
 
 pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
@@ -64,10 +71,7 @@ pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAt
     }
 
     let naming = if sym.short_name.len() > 1
-        && sym
-            .short_name
-            .chars()
-            .all(|c| c.is_uppercase() || c == '_')
+        && sym.short_name.chars().all(|c| c.is_uppercase() || c == '_')
     {
         "naming:SCREAMING"
     } else if sym
@@ -139,7 +143,14 @@ mod tests {
 
     #[test]
     fn extracts_basic_function_attrs() {
-        let sym = make_symbol("function", Some("pub"), Some("fn my_func() -> Result<()>"), None, Some(3), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn my_func() -> Result<()>"),
+            None,
+            Some(3),
+            0,
+        );
         let sa = extract_symbol_attrs(&sym, "src/tools/foo.rs").unwrap();
         assert!(sa.attributes.contains(&"kind:function".to_string()));
         assert!(sa.attributes.contains(&"vis:pub".to_string()));

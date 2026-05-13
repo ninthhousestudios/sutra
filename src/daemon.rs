@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
@@ -266,23 +266,17 @@ impl Daemon {
         *self.scheduler_last_tick.lock() = Some(Instant::now());
 
         // Hot-reload workspaces.toml so additions/removals take effect without restart
-        if let Ok(fresh) =
-            crate::workspace::load_workspaces(&self.config.workspaces_path)
-        {
+        if let Ok(fresh) = crate::workspace::load_workspaces(&self.config.workspaces_path) {
             let mut current = self.workspaces.write();
             let current_ids: HashSet<&str> =
                 current.workspace.iter().map(|w| w.id.as_str()).collect();
-            let fresh_ids: HashSet<&str> =
-                fresh.workspace.iter().map(|w| w.id.as_str()).collect();
+            let fresh_ids: HashSet<&str> = fresh.workspace.iter().map(|w| w.id.as_str()).collect();
             if current_ids != fresh_ids {
                 let removed: Vec<String> = current_ids
                     .difference(&fresh_ids)
                     .map(|s| s.to_string())
                     .collect();
-                let added: Vec<&str> = fresh_ids
-                    .difference(&current_ids)
-                    .copied()
-                    .collect();
+                let added: Vec<&str> = fresh_ids.difference(&current_ids).copied().collect();
                 if !removed.is_empty() || !added.is_empty() {
                     info!(
                         "workspaces.toml changed: +[{}] -[{}]",
@@ -356,12 +350,7 @@ impl Daemon {
                 let cancel_inner = Arc::clone(&cancel);
                 let db_sentinel = Arc::clone(&db_clone);
                 let handle = tokio::task::spawn_blocking(move || {
-                    pipeline::parse_workspace(
-                        &ws_clone,
-                        &db_clone,
-                        &config_clone,
-                        &cancel_inner,
-                    )
+                    pipeline::parse_workspace(&ws_clone, &db_clone, &config_clone, &cancel_inner)
                 });
                 match timeout(parse_timeout, handle).await {
                     Ok(Ok(Ok(snap))) => {

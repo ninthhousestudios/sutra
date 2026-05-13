@@ -79,11 +79,14 @@ impl FcaEngine {
             .collect();
 
         self.context = Some(ctx);
-        self.symbol_attrs = symbols.iter().map(|s| SymbolAttrs {
-            name: s.name.clone(),
-            file: s.file.clone(),
-            attributes: s.attributes.clone(),
-        }).collect();
+        self.symbol_attrs = symbols
+            .iter()
+            .map(|s| SymbolAttrs {
+                name: s.name.clone(),
+                file: s.file.clone(),
+                attributes: s.attributes.clone(),
+            })
+            .collect();
         let _ = attr_names;
 
         self.conventions.clone()
@@ -207,40 +210,22 @@ mod tests {
 
     #[test]
     fn stable_hash_same_inputs_same_output() {
-        let id1 = Convention::compute_id(
-            &["kind:function".into()],
-            &["has_sig".into()],
-        );
-        let id2 = Convention::compute_id(
-            &["kind:function".into()],
-            &["has_sig".into()],
-        );
+        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
+        let id2 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn stable_hash_order_independent() {
-        let id1 = Convention::compute_id(
-            &["a".into(), "b".into()],
-            &["c".into(), "d".into()],
-        );
-        let id2 = Convention::compute_id(
-            &["b".into(), "a".into()],
-            &["d".into(), "c".into()],
-        );
+        let id1 = Convention::compute_id(&["a".into(), "b".into()], &["c".into(), "d".into()]);
+        let id2 = Convention::compute_id(&["b".into(), "a".into()], &["d".into(), "c".into()]);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn stable_hash_different_for_different_implications() {
-        let id1 = Convention::compute_id(
-            &["kind:function".into()],
-            &["has_sig".into()],
-        );
-        let id2 = Convention::compute_id(
-            &["kind:struct".into()],
-            &["naming:CamelCase".into()],
-        );
+        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
+        let id2 = Convention::compute_id(&["kind:struct".into()], &["naming:CamelCase".into()]);
         assert_ne!(id1, id2);
     }
 
@@ -250,9 +235,9 @@ mod tests {
         let mut engine = FcaEngine::new();
         let conventions = engine.rebuild(&symbols);
         assert!(!conventions.is_empty());
-        let found = conventions.iter().any(|c| {
-            c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]
-        });
+        let found = conventions
+            .iter()
+            .any(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]);
         assert!(found, "expected kind:function → has_sig");
     }
 
@@ -305,9 +290,9 @@ mod tests {
 
         // Remove the one function that lacks has_sig → confidence goes to 1.0, becomes exact → disappears
         let after = engine.update_incremental(&[], &["fn_9".into()]);
-        let found = after.iter().any(|c| {
-            c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]
-        });
+        let found = after
+            .iter()
+            .any(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]);
         // At 1.0 confidence it's exact, not approximate — should be gone
         assert!(!found);
     }
@@ -327,12 +312,21 @@ mod tests {
         let third = engine.update_incremental(&[extra], &[]);
 
         let count_fn = |convs: &[Convention]| {
-            convs.iter().find(|c| {
-                c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]
-            }).map(|c| (c.support, c.confidence))
+            convs
+                .iter()
+                .find(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"])
+                .map(|c| (c.support, c.confidence))
         };
-        assert_eq!(count_fn(&second), count_fn(&third), "replay should not change stats");
-        assert_eq!(count_fn(&first), count_fn(&second), "replacing with same data should be stable");
+        assert_eq!(
+            count_fn(&second),
+            count_fn(&third),
+            "replay should not change stats"
+        );
+        assert_eq!(
+            count_fn(&first),
+            count_fn(&second),
+            "replacing with same data should be stable"
+        );
     }
 
     #[test]
@@ -343,8 +337,7 @@ mod tests {
 
         let has = |ante: &str, cons: &str| -> bool {
             conventions.iter().any(|c| {
-                c.antecedent.contains(&ante.to_string())
-                    && c.consequent.contains(&cons.to_string())
+                c.antecedent.contains(&ante.to_string()) && c.consequent.contains(&cons.to_string())
             })
         };
 
@@ -503,7 +496,10 @@ mod tests {
         let violations = engine.check(&changed, &config);
 
         assert!(!violations.is_empty());
-        let v = violations.iter().find(|v| v.symbol == "bad_symbol").unwrap();
+        let v = violations
+            .iter()
+            .find(|v| v.symbol == "bad_symbol")
+            .unwrap();
         assert_eq!(v.convention_id, conv.id);
         assert_eq!(v.file, "src/bad.rs");
         assert!(!v.missing.is_empty());
@@ -524,7 +520,10 @@ mod tests {
 
         let config = ConventionsConfig::default();
         let violations = engine.check(&changed, &config);
-        let relevant: Vec<_> = violations.iter().filter(|v| v.symbol == "good_symbol" && v.convention_id == conv.id).collect();
+        let relevant: Vec<_> = violations
+            .iter()
+            .filter(|v| v.symbol == "good_symbol" && v.convention_id == conv.id)
+            .collect();
         assert!(relevant.is_empty());
     }
 
@@ -559,7 +558,10 @@ mod tests {
             ..Default::default()
         };
         let violations = engine.check(&changed, &config);
-        let relevant: Vec<_> = violations.iter().filter(|v| v.convention_id == conv.id).collect();
+        let relevant: Vec<_> = violations
+            .iter()
+            .filter(|v| v.convention_id == conv.id)
+            .collect();
         assert!(relevant.is_empty());
     }
 
@@ -582,7 +584,10 @@ mod tests {
             ..Default::default()
         };
         let violations = engine.check(&changed, &config);
-        let relevant: Vec<_> = violations.iter().filter(|v| v.symbol == "ExemptedSymbol" && v.convention_id == conv.id).collect();
+        let relevant: Vec<_> = violations
+            .iter()
+            .filter(|v| v.symbol == "ExemptedSymbol" && v.convention_id == conv.id)
+            .collect();
         assert!(relevant.is_empty());
     }
 
@@ -616,7 +621,10 @@ mod tests {
             ..Default::default()
         };
         let violations = engine.check(&changed, &config);
-        let exempt_from_a: Vec<_> = violations.iter().filter(|v| v.symbol == "PartialExempt" && v.convention_id == conv_a.id).collect();
+        let exempt_from_a: Vec<_> = violations
+            .iter()
+            .filter(|v| v.symbol == "PartialExempt" && v.convention_id == conv_a.id)
+            .collect();
         assert!(exempt_from_a.is_empty());
     }
 
@@ -645,11 +653,23 @@ mod tests {
         };
         let violations = engine.check(&[sym_a, sym_b], &config);
 
-        let foo_violations: Vec<_> = violations.iter().filter(|v| v.file == "src/foo.rs" && v.convention_id == conv.id).collect();
-        assert!(foo_violations.is_empty(), "src/foo.rs::process should be exempt");
+        let foo_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.file == "src/foo.rs" && v.convention_id == conv.id)
+            .collect();
+        assert!(
+            foo_violations.is_empty(),
+            "src/foo.rs::process should be exempt"
+        );
 
-        let bar_violations: Vec<_> = violations.iter().filter(|v| v.file == "src/bar.rs" && v.convention_id == conv.id).collect();
-        assert!(!bar_violations.is_empty(), "src/bar.rs::process should still violate");
+        let bar_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.file == "src/bar.rs" && v.convention_id == conv.id)
+            .collect();
+        assert!(
+            !bar_violations.is_empty(),
+            "src/bar.rs::process should still violate"
+        );
     }
 
     #[test]
@@ -676,7 +696,13 @@ mod tests {
             ..Default::default()
         };
         let violations = engine.check(&[sym_a, sym_b], &config);
-        let process_violations: Vec<_> = violations.iter().filter(|v| v.symbol == "process" && v.convention_id == conv.id).collect();
-        assert!(process_violations.is_empty(), "bare name exemption should exempt all files");
+        let process_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.symbol == "process" && v.convention_id == conv.id)
+            .collect();
+        assert!(
+            process_violations.is_empty(),
+            "bare name exemption should exempt all files"
+        );
     }
 }

@@ -18,10 +18,8 @@ impl FormalContext {
     ) -> Self {
         let n_objects = object_names.len();
         let n_attrs = attribute_names.len();
-        let mut object_attrs: Vec<BitSet> =
-            (0..n_objects).map(|_| BitSet::new(n_attrs)).collect();
-        let mut attr_objects: Vec<BitSet> =
-            (0..n_attrs).map(|_| BitSet::new(n_objects)).collect();
+        let mut object_attrs: Vec<BitSet> = (0..n_objects).map(|_| BitSet::new(n_attrs)).collect();
+        let mut attr_objects: Vec<BitSet> = (0..n_attrs).map(|_| BitSet::new(n_objects)).collect();
 
         for &(g, m) in relations {
             object_attrs[g].set(m);
@@ -270,9 +268,9 @@ mod tests {
         let ctx = convention_context();
         let impls = ctx.approximate_implications(3, 0.9);
         // kind:function → has_sig should appear (9/10 = 0.9)
-        let found = impls.iter().any(|i| {
-            i.antecedent == vec!["kind:function"] && i.consequent == vec!["has_sig"]
-        });
+        let found = impls
+            .iter()
+            .any(|i| i.antecedent == vec!["kind:function"] && i.consequent == vec!["has_sig"]);
         assert!(found, "expected kind:function → has_sig, got: {impls:?}");
     }
 

@@ -130,13 +130,22 @@ pub enum ResolveResult {
 // ---------------------------------------------------------------------------
 
 const MIGRATIONS: &[(&str, &str)] = &[
-    ("0001_initial", include_str!("../migrations/0001_initial.sql")),
-    ("0002_complexity", include_str!("../migrations/0002_complexity.sql")),
+    (
+        "0001_initial",
+        include_str!("../migrations/0001_initial.sql"),
+    ),
+    (
+        "0002_complexity",
+        include_str!("../migrations/0002_complexity.sql"),
+    ),
     (
         "0003_snapshot_aggregates",
         include_str!("../migrations/0003_snapshot_aggregates.sql"),
     ),
-    ("0004_symbol_flags", include_str!("../migrations/0004_symbol_flags.sql")),
+    (
+        "0004_symbol_flags",
+        include_str!("../migrations/0004_symbol_flags.sql"),
+    ),
     (
         "0005_conventions",
         include_str!("../migrations/0005_conventions.sql"),
@@ -1218,8 +1227,10 @@ impl Db {
             "DELETE FROM conventions WHERE id NOT IN ({})",
             placeholders.join(", ")
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            current_ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = current_ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         let count = conn.execute(&sql, params.as_slice())?;
         Ok(count)
     }

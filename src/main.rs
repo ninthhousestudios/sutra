@@ -235,8 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
-            let result =
-                sutra::tools::read::handle(&db, &ws.root, &symbol, context_lines, false)?;
+            let result = sutra::tools::read::handle(&db, &ws.root, &symbol, context_lines, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Outline {

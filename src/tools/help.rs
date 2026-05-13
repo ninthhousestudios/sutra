@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::Result;
 
@@ -181,31 +181,33 @@ Check `sutra_health()` to see if the daemon is running and whether workspaces ar
     },
     Topic {
         name: "conventions",
-        summary: "Detect naming and structural pattern violations",
+        summary: "Detect attribute-implication and structural pattern violations",
         content: "\
 # Conventions
 
 `sutra_review` includes convention violation detection powered by Formal Concept \
-Analysis (FCA). It learns local naming patterns from your codebase and flags \
-deviations in changed code.
+Analysis (FCA). It extracts attribute implications from your codebase and flags \
+violations in changed code.
 
 ## Check conventions in a diff
 ```
 sutra_review(workspace=\"myproject\")
 ```
-The `convention_violations` section lists symbols that break local patterns, \
-with the expected pattern and the actual name.
+The `convention_violations` section lists symbols that violate learned implications, \
+showing which attributes were expected but missing.
 
 ## What it detects
-- **Naming conventions** — function/method/type naming patterns inferred from \
-  the codebase (e.g., `handle_*` for request handlers, `*Error` for error types)
+- **Attribute implications** — rules like 'pub functions in this module tend to have \
+  docs' or 'async functions here return Result'. FCA infers these from symbol \
+  attributes (name prefixes/suffixes, kind, visibility, module, doc presence).
 - **Structural patterns** — DD-constraint violations where dependencies between \
   changed symbols break established dependency directions
 
 ## How it works
-FCA builds a concept lattice from existing symbol attributes (name prefixes/suffixes, \
-kinds, visibility, module location). When a new or changed symbol doesn't fit the \
-lattice patterns for its kind/location, it's flagged as a potential violation.",
+FCA extracts approximate implications from a formal context of symbol attributes. \
+Each implication has the form 'if a symbol has attributes A, it should also have \
+attributes B' (with support and confidence thresholds). When a changed symbol \
+satisfies the antecedent but lacks the consequent attributes, it's flagged.",
     },
     Topic {
         name: "troubleshooting",
@@ -287,7 +289,7 @@ sutra_tools(enable=\"analysis\")
 sutra_review(workspace=\"myproject\", diff=\"staged\")
 ```
 Look at the `convention_violations` and `constraint_violations` sections. \
-FCA-derived naming patterns and DD-constraint dependency directions are checked \
+FCA-derived attribute implications and DD-constraint dependency directions are checked \
 against your staged changes.
 
 ## Trace a path between two symbols

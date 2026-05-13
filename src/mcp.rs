@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
@@ -76,8 +76,8 @@ use crate::tools::outline::OutlineArgs;
 use crate::tools::pr_risk::PrRiskArgs;
 use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
-use crate::tools::review::ReviewArgs;
 use crate::tools::refs::RefsArgs;
+use crate::tools::review::ReviewArgs;
 use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
 use crate::tools::trend::TrendArgs;
@@ -317,11 +317,9 @@ impl SutraServer {
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
     }
 
-    #[tool(
-        description = "Agent-oriented help and recipes for sutra workflows. \
+    #[tool(description = "Agent-oriented help and recipes for sutra workflows. \
         Call with no args for a topic list. Call with topic (e.g. \"quickstart\", \
-        \"review\", \"recipes\") for focused guidance with concrete tool invocation examples."
-    )]
+        \"review\", \"recipes\") for focused guidance with concrete tool invocation examples.")]
     pub async fn sutra_help(
         &self,
         Parameters(args): Parameters<HelpArgs>,
@@ -469,11 +467,13 @@ impl SutraServer {
             tools::parse::handle(&ws, &db_bg, &config, &cancel)
         })
         .await
-        .map_err(|e| ErrorData::new(
-            rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
-            format!("parse task panicked: {e}"),
-            None,
-        ))?
+        .map_err(|e| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+                format!("parse task panicked: {e}"),
+                None,
+            )
+        })?
         .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
@@ -623,8 +623,7 @@ impl SutraServer {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result =
-            tools::review::handle(&db, &ws.root, args.diff.as_deref())
-                .map_err(sutra_to_rmcp)?;
+            tools::review::handle(&db, &ws.root, args.diff.as_deref()).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -948,9 +947,9 @@ impl SutraServer {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
 
-        Err(DaemonRegisterError::DaemonError(
-            format!("workspace registered but parse data not available after {max_polls}s"),
-        ))
+        Err(DaemonRegisterError::DaemonError(format!(
+            "workspace registered but parse data not available after {max_polls}s"
+        )))
     }
 
     fn check_smriti_connected(&self) -> bool {
@@ -972,7 +971,7 @@ impl SutraServer {
 impl ServerHandler for SutraServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "sutra v0.1.0 — code intelligence for manas. \
+            "sutra v0.2.1 — code intelligence for manas. \
              Core tools: sutra_health, sutra_help, sutra_map, sutra_outline, sutra_find, \
              sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
