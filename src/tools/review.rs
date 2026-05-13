@@ -13,6 +13,7 @@ use crate::fca::{self, FcaEngine};
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::rules;
+use crate::tools::scoring::{self, ChurnMap, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -22,7 +23,6 @@ pub struct ReviewArgs {
     pub diff: Option<String>,
 }
 
-const CHURN_WINDOW_DAYS: u32 = 90;
 const MAX_AFFECTED: usize = 20;
 const MAX_READS: usize = 10;
 
@@ -31,11 +31,6 @@ const W_COMPLEXITY: f64 = 0.20;
 const W_HOTSPOT: f64 = 0.15;
 const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
-
-#[derive(Default)]
-pub struct ChurnMap {
-    pub counts: HashMap<String, u32>,
-}
 
 #[derive(Clone)]
 pub struct ConstraintViolation {
@@ -82,7 +77,8 @@ pub fn handle(
     };
 
     let churn = ChurnMap {
-        counts: git::git_churn(workspace_root, CHURN_WINDOW_DAYS)?,
+        counts: git::git_churn(workspace_root, scoring::CHURN_WINDOW_DAYS)?,
+        window_days: scoring::CHURN_WINDOW_DAYS,
     };
 
     let (findings, findings_error) =
@@ -94,7 +90,7 @@ pub fn handle(
     let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
-        obj.insert("churn_window_days".into(), json!(CHURN_WINDOW_DAYS));
+        obj.insert("churn_window_days".into(), json!(scoring::CHURN_WINDOW_DAYS));
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
@@ -387,10 +383,6 @@ fn build_recommended_reads(
     }).collect()
 }
 
-fn round3(v: f64) -> f64 {
-    (v * 1000.0).round() / 1000.0
-}
-
 pub fn compute(
     db: &Db,
     workspace_root: &Path,
@@ -460,18 +452,22 @@ pub fn compute(
         .collect();
 
     let file_count = changed_paths.len();
-    let blast_score = (stats.total_blast as f64 / 50.0).min(1.0);
-    let complexity_score = (stats.max_cognitive as f64 / 30.0).min(1.0);
-    let hotspot_score = (stats.hotspot_files as f64 / (file_count as f64).max(1.0)).min(1.0);
-    let churn_score = (stats.total_churn as f64 / 20.0).min(1.0);
-    let convention_score = (findings.convention_violations.len() as f64 / 5.0).min(1.0);
+    let blast_score = scoring::normalize(stats.total_blast as f64, scoring::BLAST_NORM);
+    let complexity_score = scoring::normalize(stats.max_cognitive as f64, scoring::COMPLEXITY_NORM);
+    let hotspot_score = scoring::normalize(
+        stats.hotspot_files as f64,
+        (file_count as f64).max(1.0),
+    );
+    let churn_score = scoring::normalize(stats.total_churn as f64, scoring::CHURN_NORM);
+    let convention_score = scoring::normalize(findings.convention_violations.len() as f64, 5.0);
 
-    let risk_score = (W_BLAST * blast_score
-        + W_COMPLEXITY * complexity_score
-        + W_HOTSPOT * hotspot_score
-        + W_CHURN * churn_score
-        + W_CONVENTIONS * convention_score)
-        .min(1.0);
+    let risk_score = scoring::weighted_score(&[
+        Signal { weight: W_BLAST, score: blast_score },
+        Signal { weight: W_COMPLEXITY, score: complexity_score },
+        Signal { weight: W_HOTSPOT, score: hotspot_score },
+        Signal { weight: W_CHURN, score: churn_score },
+        Signal { weight: W_CONVENTIONS, score: convention_score },
+    ]);
 
     let recommended_reads =
         build_recommended_reads(findings, &affected_files, &stats.changed_files);
@@ -487,13 +483,13 @@ pub fn compute(
             "symbols": total_affected_symbols,
             "symbols_truncated": total_affected_symbols > MAX_AFFECTED,
         },
-        "risk_score": round3(risk_score),
+        "risk_score": scoring::round3(risk_score),
         "risk_breakdown": {
-            "blast_radius": round3(blast_score),
-            "complexity_delta": round3(complexity_score),
-            "hotspot_overlap": round3(hotspot_score),
-            "churn": round3(churn_score),
-            "convention_violations": round3(convention_score),
+            "blast_radius": scoring::round3(blast_score),
+            "complexity_delta": scoring::round3(complexity_score),
+            "hotspot_overlap": scoring::round3(hotspot_score),
+            "churn": scoring::round3(churn_score),
+            "convention_violations": scoring::round3(convention_score),
         },
         "constraint_violations": constraint_violations_out,
         "convention_violations": convention_violations_out,

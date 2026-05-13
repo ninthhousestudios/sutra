@@ -18,6 +18,7 @@ pub mod provenance;
 pub mod read;
 pub mod refs;
 pub mod review;
+pub mod scoring;
 pub mod tools_meta;
 pub mod trace;
 pub mod trend;

@@ -1,5 +1,6 @@
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::tools::pr_risk;
+use sutra::tools::scoring::ChurnMap;
 
 fn sym<'a>(
     file_id: i64,
@@ -117,7 +118,7 @@ fn single_low_risk_file_scores_low() {
 fn composite_combines_all_signals() {
     let (_dir, db) = setup_db_with_files();
     let changed = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-    let mut churn = pr_risk::ChurnMap::default();
+    let mut churn = ChurnMap::default();
     churn.counts.insert("src/b.rs".to_string(), 15);
     churn.window_days = 90;
 
@@ -205,7 +206,7 @@ fn score_clamped_to_one() {
     }
 
     let paths: Vec<String> = (0..30).map(|i| format!("src/big_{i}.rs")).collect();
-    let mut churn = pr_risk::ChurnMap::default();
+    let mut churn = ChurnMap::default();
     for p in &paths {
         churn.counts.insert(p.clone(), 50);
     }

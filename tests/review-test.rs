@@ -4,6 +4,7 @@ use std::time::Duration;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::dd::DdEngine;
 use sutra::tools::review;
+use sutra::tools::scoring::ChurnMap;
 
 fn sym<'a>(
     file_id: i64,
@@ -164,7 +165,7 @@ fn single_file_change_populates_all_fields() {
 fn risk_breakdown_sums_correctly() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string(), "src/helper.rs".to_string()];
-    let mut churn = review::ChurnMap::default();
+    let mut churn = ChurnMap::default();
     churn.counts.insert("src/core.rs".to_string(), 12);
 
     let result = review::compute(&db, dir.path(), &changed, &churn, &no_findings()).unwrap();
@@ -264,7 +265,7 @@ fn risk_score_clamped_to_one() {
     }
 
     let paths: Vec<String> = (0..30).map(|i| format!("src/extreme_{i}.rs")).collect();
-    let mut churn = review::ChurnMap::default();
+    let mut churn = ChurnMap::default();
     for p in &paths {
         churn.counts.insert(p.clone(), 50);
     }
