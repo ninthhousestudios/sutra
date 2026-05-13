@@ -175,7 +175,19 @@ pub fn build_findings(
 
     if !all_sym_attrs.is_empty() {
         let mut fca_engine = FcaEngine::new();
-        fca_engine.rebuild(&all_sym_attrs);
+        let conventions = fca_engine.rebuild(&all_sym_attrs);
+
+        for c in &conventions {
+            let _ = db.upsert_convention(
+                &c.id,
+                &c.antecedent.join(", "),
+                &c.consequent.join(", "),
+                c.support as i64,
+                c.confidence,
+            );
+        }
+        let current_ids: Vec<&str> = conventions.iter().map(|c| c.id.as_str()).collect();
+        let _ = db.delete_stale_conventions(&current_ids);
 
         let changed_set: std::collections::HashSet<&str> =
             changed_paths.iter().map(|p| p.as_str()).collect();

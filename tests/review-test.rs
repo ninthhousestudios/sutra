@@ -656,6 +656,68 @@ forbidden_deps = [
 }
 
 #[test]
+fn build_findings_persists_conventions_to_db() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(rules_dir.join("rules.toml"), "[constraints]\n").unwrap();
+
+    // 40 pub functions: 38 with signatures (95%), enough for FCA to find
+    // the implication {kind:function, vis:pub} => {has_sig} at 0.95 confidence.
+    for i in 0..40 {
+        let path = format!("src/f_{i}.rs");
+        db.upsert_file(&path, "rust", &format!("f{i}"), 50, true)
+            .unwrap();
+        let f = db.file_by_path(&path).unwrap().unwrap();
+        let qn = format!("f_{i}::process");
+        let sig = if i < 38 {
+            Some("fn process()")
+        } else {
+            None
+        };
+        let doc = if i % 5 == 0 { Some("docs") } else { None };
+        db.insert_symbol(&InsertSymbolParams {
+            file_id: f.id,
+            qualified_name: &qn,
+            short_name: "process",
+            kind: "function",
+            signature: sig,
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: doc,
+            cyclomatic: None,
+            cognitive: Some(2),
+            flags: 0,
+        })
+        .unwrap();
+    }
+
+    assert!(db.all_conventions().unwrap().is_empty());
+
+    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()]);
+
+    let conventions = db.all_conventions().unwrap();
+    assert!(
+        !conventions.is_empty(),
+        "conventions should be persisted to DB after build_findings"
+    );
+    for c in &conventions {
+        assert!(!c.id.is_empty());
+        assert!(!c.antecedent.is_empty());
+        assert!(!c.consequent.is_empty());
+        assert!(!c.first_seen.is_empty());
+        assert!(!c.last_seen.is_empty());
+    }
+}
+
+#[test]
 fn build_findings_surfaces_error_on_bad_rules() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open("test", dir.path()).unwrap();
