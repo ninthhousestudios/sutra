@@ -897,8 +897,9 @@ impl SutraServer {
                     .unwrap_or_else(|| "unknown".to_string())
             });
 
-        // Poll /status for up to 10s until workspace has parse data
-        for _ in 0..10 {
+        // Poll /status until workspace has parse data, up to parse_timeout_sec
+        let max_polls = self.config.parse_timeout_sec.min(120);
+        for _ in 0..max_polls {
             if let Ok(status) = client.get(format!("{base}/status")).send().await
                 && let Ok(json) = status.json::<serde_json::Value>().await
                 && let Some(workspaces) = json["workspaces"].as_array()
@@ -928,7 +929,7 @@ impl SutraServer {
         }
 
         Err(DaemonRegisterError::DaemonError(
-            "workspace registered but parse data not available after 10s".into(),
+            format!("workspace registered but parse data not available after {max_polls}s"),
         ))
     }
 

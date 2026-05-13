@@ -265,6 +265,38 @@ impl Daemon {
     async fn check_stale_workspaces(&self) {
         *self.scheduler_last_tick.lock() = Some(Instant::now());
 
+        // Hot-reload workspaces.toml so additions/removals take effect without restart
+        if let Ok(fresh) =
+            crate::workspace::load_workspaces(&self.config.workspaces_path)
+        {
+            let mut current = self.workspaces.write();
+            let current_ids: HashSet<&str> =
+                current.workspace.iter().map(|w| w.id.as_str()).collect();
+            let fresh_ids: HashSet<&str> =
+                fresh.workspace.iter().map(|w| w.id.as_str()).collect();
+            if current_ids != fresh_ids {
+                let removed: Vec<String> = current_ids
+                    .difference(&fresh_ids)
+                    .map(|s| s.to_string())
+                    .collect();
+                let added: Vec<&str> = fresh_ids
+                    .difference(&current_ids)
+                    .copied()
+                    .collect();
+                if !removed.is_empty() || !added.is_empty() {
+                    info!(
+                        "workspaces.toml changed: +[{}] -[{}]",
+                        added.join(", "),
+                        removed.join(", ")
+                    );
+                }
+                for id in &removed {
+                    self.db_cache.lock().remove(id);
+                }
+                current.workspace = fresh.workspace;
+            }
+        }
+
         let entries: Vec<_> = self.workspaces.read().workspace.clone();
         for ws in &entries {
             {
