@@ -36,10 +36,16 @@ fn setup_db() -> (tempfile::TempDir, Db) {
     (dir, db)
 }
 
+fn no_findings() -> review::ReviewFindings {
+    review::ReviewFindings::default()
+}
+
+// ── Structural core tests (from v1/13) ──────────────────────────────
+
 #[test]
 fn empty_diff_returns_correct_shape() {
     let (_dir, db) = setup_db();
-    let result = review::compute(&db, &[], &Default::default()).unwrap();
+    let result = review::compute(&db, &[], &Default::default(), &no_findings()).unwrap();
 
     assert_eq!(result["changed_files"].as_array().unwrap().len(), 0);
     assert_eq!(result["changed_symbols"].as_array().unwrap().len(), 0);
@@ -56,8 +62,11 @@ fn empty_diff_returns_correct_shape() {
     assert!(breakdown["complexity_delta"].as_f64().is_some());
     assert!(breakdown["hotspot_overlap"].as_f64().is_some());
     assert!(breakdown["churn"].as_f64().is_some());
+    assert!(breakdown["convention_violations"].as_f64().is_some());
 
     assert_eq!(result["recommended_reads"].as_array().unwrap().len(), 0);
+    assert_eq!(result["constraint_violations"].as_array().unwrap().len(), 0);
+    assert_eq!(result["convention_violations"].as_array().unwrap().len(), 0);
 }
 
 fn setup_db_with_files() -> (tempfile::TempDir, Db) {
@@ -92,31 +101,26 @@ fn setup_db_with_files() -> (tempfile::TempDir, Db) {
 fn single_file_change_populates_all_fields() {
     let (_dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default()).unwrap();
+    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
 
-    // Changed files
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf.len(), 1);
     assert_eq!(cf[0]["path"], "src/core.rs");
     assert!(cf[0]["blast_radius"].as_i64().unwrap() > 0);
 
-    // Changed symbols
     let cs = result["changed_symbols"].as_array().unwrap();
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0]["symbol"], "core::process");
 
-    // Affected files — consumer.rs references core::process
     let af = result["affected_files"].as_array().unwrap();
     assert!(!af.is_empty(), "consumer.rs should be affected");
     let affected_paths: Vec<&str> = af.iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert!(affected_paths.contains(&"src/consumer.rs"));
 
-    // Risk score should be > 0 since core.rs has blast=25
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk > 0.0);
     assert!(risk <= 1.0);
 
-    // Recommended reads should include affected files
     let rr = result["recommended_reads"].as_array().unwrap();
     assert!(!rr.is_empty());
 }
@@ -128,20 +132,20 @@ fn risk_breakdown_sums_correctly() {
     let mut churn = review::ChurnMap::default();
     churn.counts.insert("src/core.rs".to_string(), 12);
 
-    let result = review::compute(&db, &changed, &churn).unwrap();
+    let result = review::compute(&db, &changed, &churn, &no_findings()).unwrap();
 
     let breakdown = &result["risk_breakdown"];
     let blast = breakdown["blast_radius"].as_f64().unwrap();
     let complexity = breakdown["complexity_delta"].as_f64().unwrap();
     let hotspot = breakdown["hotspot_overlap"].as_f64().unwrap();
     let churn_s = breakdown["churn"].as_f64().unwrap();
+    let conv = breakdown["convention_violations"].as_f64().unwrap();
 
     assert!(blast > 0.0, "blast should reflect high blast_radius");
     assert!(complexity > 0.0, "complexity should reflect cognitive=20");
     assert!(churn_s > 0.0, "churn should reflect 12 commits");
 
-    // Weighted sum should match risk_score
-    let expected = (0.35 * blast + 0.25 * complexity + 0.20 * hotspot + 0.20 * churn_s).min(1.0);
+    let expected = (0.30 * blast + 0.20 * complexity + 0.15 * hotspot + 0.15 * churn_s + 0.20 * conv).min(1.0);
     let risk = result["risk_score"].as_f64().unwrap();
     assert!((risk - (expected * 1000.0).round() / 1000.0).abs() < 0.002,
         "risk_score {risk} should match weighted sum {expected}");
@@ -151,7 +155,6 @@ fn risk_breakdown_sums_correctly() {
 fn truncation_caps_affected_lists() {
     let (_dir, db) = setup_db();
 
-    // Create a "core" file that everything depends on
     db.upsert_file("src/hub.rs", "rust", "hub", 300, true).unwrap();
     let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
     let hub_sym_id = db.insert_symbol(&sym(
@@ -159,7 +162,6 @@ fn truncation_caps_affected_lists() {
     )).unwrap();
     db.update_rollups(f_hub.id, 25, 60).unwrap();
 
-    // Create 25 consumer files that reference hub::central
     for i in 0..25 {
         let path = format!("src/consumer_{i}.rs");
         db.upsert_file(&path, "rust", &format!("c{i}"), 20, true).unwrap();
@@ -171,22 +173,18 @@ fn truncation_caps_affected_lists() {
     }
 
     let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default()).unwrap();
+    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
 
-    // Affected files should be capped at 20
     let af = result["affected_files"].as_array().unwrap();
     assert_eq!(af.len(), 20, "affected files should be capped at 20");
 
-    // But total should report the true count
     let total = &result["affected_total"];
     assert!(total["files"].as_u64().unwrap() >= 25, "total should report true count");
     assert!(total["files_truncated"].as_bool().unwrap(), "should be flagged as truncated");
 
-    // Recommended reads capped at 10
     let rr = result["recommended_reads"].as_array().unwrap();
     assert!(rr.len() <= 10, "recommended_reads should be capped at 10");
 
-    // Risk score should be high given blast=60
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk > 0.3, "high blast file should produce significant risk, got {risk}");
 }
@@ -210,7 +208,19 @@ fn risk_score_clamped_to_one() {
         churn.counts.insert(p.clone(), 50);
     }
 
-    let result = review::compute(&db, &paths, &churn).unwrap();
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        convention_violations: (0..10).map(|i| review::ConventionViolation {
+            symbol: format!("extreme_{i}::danger"),
+            file: format!("src/extreme_{i}.rs"),
+            convention_id: format!("c{i}"),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_doc".into()],
+            missing: vec!["has_doc".into()],
+        }).collect(),
+    };
+
+    let result = review::compute(&db, &paths, &churn, &findings).unwrap();
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk <= 1.0, "risk must be clamped to 1.0, got {risk}");
     assert!(risk >= 0.95, "extreme risk should be near 1.0, got {risk}");
@@ -220,7 +230,7 @@ fn risk_score_clamped_to_one() {
 fn unknown_files_handled_gracefully() {
     let (_dir, db) = setup_db();
     let changed = vec!["src/nonexistent.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default()).unwrap();
+    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf.len(), 1);
@@ -229,4 +239,209 @@ fn unknown_files_handled_gracefully() {
 
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk >= 0.0);
+}
+
+// ── DD + FCA integration tests (v1/14) ──────────────────────────────
+
+#[test]
+fn constraint_violations_appear_in_output() {
+    let (_dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![
+            review::ConstraintViolation {
+                kind: "forbidden_dep".into(),
+                from_path: "src/core.rs".into(),
+                to_path: "src/internal.rs".into(),
+                detail: "forbidden: src/core.rs -> src/internal.rs".into(),
+            },
+            review::ConstraintViolation {
+                kind: "cycle".into(),
+                from_path: "src/core.rs".into(),
+                to_path: "src/helper.rs".into(),
+                detail: "import cycle: src/core.rs -> src/helper.rs -> src/core.rs".into(),
+            },
+        ],
+        convention_violations: vec![],
+    };
+
+    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+
+    let cv = result["constraint_violations"].as_array().unwrap();
+    assert_eq!(cv.len(), 2);
+    assert_eq!(cv[0]["kind"], "forbidden_dep");
+    assert_eq!(cv[0]["from"], "src/core.rs");
+    assert_eq!(cv[0]["to"], "src/internal.rs");
+    assert_eq!(cv[1]["kind"], "cycle");
+}
+
+#[test]
+fn convention_violations_appear_in_output() {
+    let (_dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        convention_violations: vec![
+            review::ConventionViolation {
+                symbol: "core::process".into(),
+                file: "src/core.rs".into(),
+                convention_id: "abc123".into(),
+                antecedent: vec!["kind:function".into(), "vis:pub".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+            },
+        ],
+    };
+
+    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+
+    let cv = result["convention_violations"].as_array().unwrap();
+    assert_eq!(cv.len(), 1);
+    assert_eq!(cv[0]["symbol"], "core::process");
+    assert_eq!(cv[0]["file"], "src/core.rs");
+    assert_eq!(cv[0]["convention_id"], "abc123");
+    assert_eq!(cv[0]["missing"].as_array().unwrap(), &[serde_json::json!("has_doc")]);
+}
+
+#[test]
+fn violations_are_structurally_distinct() {
+    let (_dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![
+            review::ConstraintViolation {
+                kind: "forbidden_dep".into(),
+                from_path: "src/core.rs".into(),
+                to_path: "src/internal.rs".into(),
+                detail: "forbidden dep".into(),
+            },
+        ],
+        convention_violations: vec![
+            review::ConventionViolation {
+                symbol: "core::process".into(),
+                file: "src/core.rs".into(),
+                convention_id: "abc123".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+            },
+        ],
+    };
+
+    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+
+    // Constraint violations have kind/from/to/detail
+    let cv = &result["constraint_violations"].as_array().unwrap()[0];
+    assert!(cv["kind"].is_string());
+    assert!(cv["from"].is_string());
+    assert!(cv["to"].is_string());
+    assert!(cv["detail"].is_string());
+    assert!(cv.get("convention_id").is_none());
+
+    // Convention violations have symbol/file/convention_id/antecedent/consequent/missing
+    let fv = &result["convention_violations"].as_array().unwrap()[0];
+    assert!(fv["symbol"].is_string());
+    assert!(fv["file"].is_string());
+    assert!(fv["convention_id"].is_string());
+    assert!(fv["antecedent"].is_array());
+    assert!(fv["consequent"].is_array());
+    assert!(fv["missing"].is_array());
+    assert!(fv.get("kind").is_none());
+}
+
+#[test]
+fn convention_violations_increase_risk_score() {
+    let (_dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let result_without = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
+    let risk_without = result_without["risk_score"].as_f64().unwrap();
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        convention_violations: vec![
+            review::ConventionViolation {
+                symbol: "core::process".into(),
+                file: "src/core.rs".into(),
+                convention_id: "c1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+            },
+            review::ConventionViolation {
+                symbol: "core::validate".into(),
+                file: "src/core.rs".into(),
+                convention_id: "c2".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["returns_result".into()],
+                missing: vec!["returns_result".into()],
+            },
+            review::ConventionViolation {
+                symbol: "core::init".into(),
+                file: "src/core.rs".into(),
+                convention_id: "c3".into(),
+                antecedent: vec!["vis:pub".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+            },
+        ],
+    };
+
+    let result_with = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let risk_with = result_with["risk_score"].as_f64().unwrap();
+
+    assert!(risk_with > risk_without,
+        "risk should increase with convention violations: {risk_with} > {risk_without}");
+
+    let conv_score = result_with["risk_breakdown"]["convention_violations"].as_f64().unwrap();
+    assert!(conv_score > 0.0, "convention_violations signal should be > 0");
+}
+
+#[test]
+fn recommended_reads_ranks_violation_sites_first() {
+    let (_dir, db) = setup_db();
+
+    // Create hub + 5 consumers
+    db.upsert_file("src/hub.rs", "rust", "hub", 300, true).unwrap();
+    let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
+    let hub_sym_id = db.insert_symbol(&sym(
+        f_hub.id, "hub::central", "central", Some("fn central()"), 1, 50, Some(10),
+    )).unwrap();
+    db.update_rollups(f_hub.id, 10, 40).unwrap();
+
+    for i in 0..5 {
+        let path = format!("src/consumer_{i}.rs");
+        db.upsert_file(&path, "rust", &format!("c{i}"), 20, true).unwrap();
+        let f = db.file_by_path(&path).unwrap().unwrap();
+        let qn = format!("consumer_{i}::use_hub");
+        db.insert_symbol(&sym(f.id, &qn, "use_hub", None, 1, 10, Some(2))).unwrap();
+        db.insert_ref(f.id, Some(hub_sym_id), None, 3, 0, "call").unwrap();
+        db.update_rollups(f.id, 0, 100 - i as i64).unwrap();
+    }
+
+    // Consumer_3 has a convention violation — should rank first in reads
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        convention_violations: vec![
+            review::ConventionViolation {
+                symbol: "consumer_3::use_hub".into(),
+                file: "src/consumer_3.rs".into(),
+                convention_id: "v1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+            },
+        ],
+    };
+
+    let changed = vec!["src/hub.rs".to_string()];
+    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+
+    let rr = result["recommended_reads"].as_array().unwrap();
+    assert!(!rr.is_empty());
+    assert_eq!(rr[0]["path"], "src/consumer_3.rs", "violation site should rank first");
+    assert_eq!(rr[0]["violation_site"], true);
 }
