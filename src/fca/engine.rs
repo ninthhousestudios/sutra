@@ -30,7 +30,7 @@ impl Convention {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConventionViolation {
     pub symbol: String,
     pub file: String,
@@ -38,6 +38,8 @@ pub struct ConventionViolation {
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub missing: Vec<String>,
+    pub support: usize,
+    pub confidence: f64,
 }
 
 const MIN_SUPPORT: usize = 3;
@@ -163,6 +165,8 @@ impl FcaEngine {
                         antecedent: conv.antecedent.clone(),
                         consequent: conv.consequent.clone(),
                         missing,
+                        support: conv.support,
+                        confidence: conv.confidence,
                     });
                 }
             }

@@ -52,6 +52,8 @@ pub struct ConventionViolation {
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub missing: Vec<String>,
+    pub support: usize,
+    pub confidence: f64,
 }
 
 #[derive(Default)]
@@ -80,17 +82,24 @@ pub fn handle(
         counts: git::git_churn(workspace_root, CHURN_WINDOW_DAYS)?,
     };
 
-    let findings = build_findings(db, workspace_root, &changed_paths).unwrap_or_default();
+    let (findings, findings_error) = match build_findings(db, workspace_root, &changed_paths) {
+        Ok(f) => (f, None),
+        Err(e) => (ReviewFindings::default(), Some(e.to_string())),
+    };
 
     let mut result = compute(db, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
         obj.insert("churn_window_days".into(), json!(CHURN_WINDOW_DAYS));
+        if let Some(err) = findings_error {
+            obj.insert("findings_degraded".into(), json!(true));
+            obj.insert("findings_error".into(), json!(err));
+        }
     }
     Ok(result)
 }
 
-fn build_findings(
+pub fn build_findings(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
@@ -179,6 +188,8 @@ fn build_findings(
                 antecedent: v.antecedent,
                 consequent: v.consequent,
                 missing: v.missing,
+                support: v.support,
+                confidence: v.confidence,
             });
         }
     }
@@ -187,6 +198,155 @@ fn build_findings(
         constraint_violations,
         convention_violations,
     })
+}
+
+struct ChangeStats {
+    changed_files: Vec<serde_json::Value>,
+    changed_symbols: Vec<serde_json::Value>,
+    symbol_ids: Vec<i64>,
+    total_blast: i64,
+    max_cognitive: i64,
+    total_churn: u32,
+    hotspot_files: u32,
+}
+
+fn gather_change_stats(
+    db: &Db,
+    changed_paths: &[String],
+    churn: &ChurnMap,
+) -> Result<ChangeStats> {
+    let mut stats = ChangeStats {
+        changed_files: Vec::new(),
+        changed_symbols: Vec::new(),
+        symbol_ids: Vec::new(),
+        total_blast: 0,
+        max_cognitive: 0,
+        total_churn: 0,
+        hotspot_files: 0,
+    };
+
+    for path in changed_paths {
+        let file_churn = churn.counts.get(path).copied().unwrap_or(0);
+        stats.total_churn += file_churn;
+
+        if let Some(file) = db.file_by_path(path)? {
+            stats.total_blast += file.blast_radius;
+            if file_churn > 5 && file.blast_radius > 10 {
+                stats.hotspot_files += 1;
+            }
+            let syms = db.find_symbols_by_file(file.id)?;
+            for s in &syms {
+                stats.symbol_ids.push(s.id);
+                let cog = s.cognitive.unwrap_or(0);
+                if cog > stats.max_cognitive {
+                    stats.max_cognitive = cog;
+                }
+                stats.changed_symbols.push(json!({
+                    "symbol": s.qualified_name, "file": path, "cognitive": cog,
+                }));
+            }
+            stats.changed_files.push(json!({
+                "path": path, "blast_radius": file.blast_radius, "symbol_count": syms.len(),
+            }));
+        } else {
+            stats.changed_files.push(json!({
+                "path": path, "blast_radius": 0, "symbol_count": 0,
+            }));
+        }
+    }
+    Ok(stats)
+}
+
+fn gather_affected(
+    db: &Db,
+    symbol_ids: &[i64],
+    changed_paths: &[String],
+) -> Result<(Vec<(String, i64)>, Vec<(String, String, i64, i64)>)> {
+    let affected_file_ids = if symbol_ids.is_empty() {
+        Vec::new()
+    } else {
+        db.find_files_referencing_symbols(symbol_ids)?
+    };
+
+    let changed_set: std::collections::HashSet<&str> =
+        changed_paths.iter().map(|p| p.as_str()).collect();
+
+    let mut files = Vec::new();
+    let mut symbols = Vec::new();
+
+    for fid in &affected_file_ids {
+        if let Some(file) = db.file_by_id(*fid)? {
+            if changed_set.contains(file.path.as_str()) {
+                continue;
+            }
+            for s in db.find_symbols_by_file(file.id)? {
+                symbols.push((
+                    s.qualified_name.clone(),
+                    file.path.clone(),
+                    file.blast_radius,
+                    s.cognitive.unwrap_or(0),
+                ));
+            }
+            files.push((file.path.clone(), file.blast_radius));
+        }
+    }
+
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.dedup_by(|a, b| a.0 == b.0);
+    symbols.sort_by(|a, b| b.2.cmp(&a.2));
+    symbols.dedup_by(|a, b| a.0 == b.0);
+
+    Ok((files, symbols))
+}
+
+fn build_recommended_reads(
+    findings: &ReviewFindings,
+    affected_files: &[(String, i64)],
+    changed_files: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut violation_sites: Vec<(String, i64, f64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for v in &findings.convention_violations {
+        if !seen.insert(v.file.clone()) {
+            continue;
+        }
+        let blast = affected_files
+            .iter()
+            .find(|(p, _)| p == &v.file)
+            .map(|(_, b)| *b)
+            .or_else(|| {
+                changed_files.iter()
+                    .find(|cf| cf["path"].as_str() == Some(v.file.as_str()))
+                    .and_then(|cf| cf["blast_radius"].as_i64())
+            })
+            .unwrap_or(0);
+        violation_sites.push((v.file.clone(), blast, v.confidence));
+    }
+    violation_sites.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    let mut reads: Vec<(String, i64, bool)> = Vec::new();
+    for (path, blast, _) in &violation_sites {
+        reads.push((path.clone(), *blast, true));
+    }
+    for (path, blast) in affected_files {
+        if !seen.contains(path) {
+            reads.push((path.clone(), *blast, false));
+        }
+    }
+    reads.truncate(MAX_READS);
+
+    reads.iter().map(|(path, blast, is_violation)| {
+        json!({ "path": path, "blast_radius": blast, "violation_site": is_violation })
+    }).collect()
+}
+
+fn round3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
 }
 
 pub fn compute(
@@ -204,11 +364,8 @@ pub fn compute(
             "affected_total": { "files": 0, "symbols": 0 },
             "risk_score": 0.0,
             "risk_breakdown": {
-                "blast_radius": 0.0,
-                "complexity_delta": 0.0,
-                "hotspot_overlap": 0.0,
-                "churn": 0.0,
-                "convention_violations": 0.0,
+                "blast_radius": 0.0, "complexity_delta": 0.0,
+                "hotspot_overlap": 0.0, "churn": 0.0, "convention_violations": 0.0,
             },
             "recommended_reads": [],
             "constraint_violations": [],
@@ -216,138 +373,36 @@ pub fn compute(
         }));
     }
 
-    let mut changed_files = Vec::new();
-    let mut changed_symbols = Vec::new();
-    let mut all_symbol_ids = Vec::new();
-    let mut total_blast: i64 = 0;
-    let mut max_cognitive: i64 = 0;
-    let mut total_churn: u32 = 0;
-    let mut hotspot_files: u32 = 0;
+    let stats = gather_change_stats(db, changed_paths, churn)?;
+    let (affected_files, affected_symbols) =
+        gather_affected(db, &stats.symbol_ids, changed_paths)?;
 
-    for path in changed_paths {
-        let file_churn = churn.counts.get(path).copied().unwrap_or(0);
-        total_churn += file_churn;
+    let total_affected_files = affected_files.len();
+    let total_affected_symbols = affected_symbols.len();
 
-        if let Some(file) = db.file_by_path(path)? {
-            total_blast += file.blast_radius;
-
-            if file_churn > 5 && file.blast_radius > 10 {
-                hotspot_files += 1;
-            }
-
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                all_symbol_ids.push(s.id);
-                let cog = s.cognitive.unwrap_or(0);
-                if cog > max_cognitive {
-                    max_cognitive = cog;
-                }
-                changed_symbols.push(json!({
-                    "symbol": s.qualified_name,
-                    "file": path,
-                    "cognitive": cog,
-                }));
-            }
-            changed_files.push(json!({
-                "path": path,
-                "blast_radius": file.blast_radius,
-                "symbol_count": syms.len(),
-            }));
-        } else {
-            changed_files.push(json!({
-                "path": path,
-                "blast_radius": 0,
-                "symbol_count": 0,
-            }));
-        }
-    }
-
-    // Find affected files and symbols (transitive impact)
-    let affected_file_ids = if all_symbol_ids.is_empty() {
-        Vec::new()
-    } else {
-        db.find_files_referencing_symbols(&all_symbol_ids)?
-    };
-
-    let changed_set: std::collections::HashSet<&str> =
-        changed_paths.iter().map(|p| p.as_str()).collect();
-
-    let mut affected_files_full = Vec::new();
-    let mut affected_symbols_full = Vec::new();
-
-    for fid in &affected_file_ids {
-        if let Some(file) = db.file_by_id(*fid)? {
-            if changed_set.contains(file.path.as_str()) {
-                continue;
-            }
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                affected_symbols_full.push((
-                    s.qualified_name.clone(),
-                    file.path.clone(),
-                    file.blast_radius,
-                    s.cognitive.unwrap_or(0),
-                ));
-            }
-            affected_files_full.push((file.path.clone(), file.blast_radius));
-        }
-    }
-
-    // Deduplicate affected files
-    affected_files_full.sort_by(|a, b| b.1.cmp(&a.1));
-    affected_files_full.dedup_by(|a, b| a.0 == b.0);
-
-    let total_affected_files = affected_files_full.len();
-    let truncated_files = total_affected_files > MAX_AFFECTED;
-
-    let affected_files_out: Vec<_> = affected_files_full
-        .iter()
-        .take(MAX_AFFECTED)
-        .map(|(path, blast)| json!({ "path": path, "blast_radius": blast }))
-        .collect();
-
-    // Sort affected symbols by blast_radius desc for truncation
-    let mut affected_syms_sorted = affected_symbols_full;
-    affected_syms_sorted.sort_by(|a, b| b.2.cmp(&a.2));
-    affected_syms_sorted.dedup_by(|a, b| a.0 == b.0);
-    let total_affected_symbols = affected_syms_sorted.len();
-    let truncated_symbols = total_affected_symbols > MAX_AFFECTED;
-
-    let affected_symbols_out: Vec<_> = affected_syms_sorted
-        .iter()
-        .take(MAX_AFFECTED)
+    let affected_files_out: Vec<_> = affected_files.iter().take(MAX_AFFECTED)
+        .map(|(path, blast)| json!({ "path": path, "blast_radius": blast })).collect();
+    let affected_symbols_out: Vec<_> = affected_symbols.iter().take(MAX_AFFECTED)
         .map(|(sym, file, blast, cog)| {
             json!({ "symbol": sym, "file": file, "blast_radius": blast, "cognitive": cog })
-        })
-        .collect();
+        }).collect();
 
-    // Serialize findings
     let constraint_violations_out: Vec<_> = findings.constraint_violations.iter().map(|v| {
-        json!({
-            "kind": v.kind,
-            "from": v.from_path,
-            "to": v.to_path,
-            "detail": v.detail,
-        })
+        json!({ "kind": v.kind, "from": v.from_path, "to": v.to_path, "detail": v.detail })
     }).collect();
-
     let convention_violations_out: Vec<_> = findings.convention_violations.iter().map(|v| {
         json!({
-            "symbol": v.symbol,
-            "file": v.file,
-            "convention_id": v.convention_id,
-            "antecedent": v.antecedent,
-            "consequent": v.consequent,
-            "missing": v.missing,
+            "symbol": v.symbol, "file": v.file, "convention_id": v.convention_id,
+            "antecedent": v.antecedent, "consequent": v.consequent, "missing": v.missing,
+            "support": v.support, "confidence": v.confidence,
         })
     }).collect();
 
-    // Risk score
     let file_count = changed_paths.len();
-    let blast_score = (total_blast as f64 / 50.0).min(1.0);
-    let complexity_score = (max_cognitive as f64 / 30.0).min(1.0);
-    let hotspot_score = (hotspot_files as f64 / (file_count as f64).max(1.0)).min(1.0);
-    let churn_score = (total_churn as f64 / 20.0).min(1.0);
+    let blast_score = (stats.total_blast as f64 / 50.0).min(1.0);
+    let complexity_score = (stats.max_cognitive as f64 / 30.0).min(1.0);
+    let hotspot_score = (stats.hotspot_files as f64 / (file_count as f64).max(1.0)).min(1.0);
+    let churn_score = (stats.total_churn as f64 / 20.0).min(1.0);
     let convention_score = (findings.convention_violations.len() as f64 / 5.0).min(1.0);
 
     let risk_score = (W_BLAST * blast_score
@@ -357,67 +412,27 @@ pub fn compute(
         + W_CONVENTIONS * convention_score)
         .min(1.0);
 
-    // Recommended reads: convention violation sites first, then affected files by blast_radius
-    let violation_files: std::collections::HashSet<&str> = findings
-        .convention_violations
-        .iter()
-        .map(|v| v.file.as_str())
-        .collect();
-
-    let mut reads: Vec<(String, i64, bool)> = Vec::new();
-
-    // Violation sites first (with their blast radius)
-    for vf in &violation_files {
-        let blast = affected_files_full
-            .iter()
-            .find(|(p, _)| p == vf)
-            .map(|(_, b)| *b)
-            .or_else(|| {
-                changed_files.iter()
-                    .find(|cf| cf["path"].as_str() == Some(vf))
-                    .and_then(|cf| cf["blast_radius"].as_i64())
-            })
-            .unwrap_or(0);
-        reads.push((vf.to_string(), blast, true));
-    }
-
-    // Then affected files not already included
-    for (path, blast) in &affected_files_full {
-        if !violation_files.contains(path.as_str()) {
-            reads.push((path.clone(), *blast, false));
-        }
-    }
-    reads.truncate(MAX_READS);
-
-    let recommended_reads: Vec<_> = reads
-        .iter()
-        .map(|(path, blast, is_violation_site)| {
-            json!({
-                "path": path,
-                "blast_radius": blast,
-                "violation_site": is_violation_site,
-            })
-        })
-        .collect();
+    let recommended_reads =
+        build_recommended_reads(findings, &affected_files, &stats.changed_files);
 
     Ok(json!({
-        "changed_files": changed_files,
-        "changed_symbols": changed_symbols,
+        "changed_files": stats.changed_files,
+        "changed_symbols": stats.changed_symbols,
         "affected_files": affected_files_out,
         "affected_symbols": affected_symbols_out,
         "affected_total": {
             "files": total_affected_files,
-            "files_truncated": truncated_files,
+            "files_truncated": total_affected_files > MAX_AFFECTED,
             "symbols": total_affected_symbols,
-            "symbols_truncated": truncated_symbols,
+            "symbols_truncated": total_affected_symbols > MAX_AFFECTED,
         },
-        "risk_score": (risk_score * 1000.0).round() / 1000.0,
+        "risk_score": round3(risk_score),
         "risk_breakdown": {
-            "blast_radius": (blast_score * 1000.0).round() / 1000.0,
-            "complexity_delta": (complexity_score * 1000.0).round() / 1000.0,
-            "hotspot_overlap": (hotspot_score * 1000.0).round() / 1000.0,
-            "churn": (churn_score * 1000.0).round() / 1000.0,
-            "convention_violations": (convention_score * 1000.0).round() / 1000.0,
+            "blast_radius": round3(blast_score),
+            "complexity_delta": round3(complexity_score),
+            "hotspot_overlap": round3(hotspot_score),
+            "churn": round3(churn_score),
+            "convention_violations": round3(convention_score),
         },
         "constraint_violations": constraint_violations_out,
         "convention_violations": convention_violations_out,
