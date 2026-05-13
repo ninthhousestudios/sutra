@@ -6,6 +6,7 @@ use crate::rules::ConventionsConfig;
 #[derive(Clone)]
 pub struct SymbolAttrs {
     pub name: String,
+    pub file: String,
     pub attributes: Vec<String>,
 }
 
@@ -32,6 +33,7 @@ impl Convention {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConventionViolation {
     pub symbol: String,
+    pub file: String,
     pub convention_id: String,
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
@@ -77,6 +79,7 @@ impl FcaEngine {
         self.context = Some(ctx);
         self.symbol_attrs = symbols.iter().map(|s| SymbolAttrs {
             name: s.name.clone(),
+            file: s.file.clone(),
             attributes: s.attributes.clone(),
         }).collect();
         let _ = attr_names;
@@ -94,6 +97,7 @@ impl FcaEngine {
             self.symbol_attrs.retain(|s| s.name != sa.name);
             self.symbol_attrs.push(SymbolAttrs {
                 name: sa.name.clone(),
+                file: sa.file.clone(),
                 attributes: sa.attributes.clone(),
             });
         }
@@ -117,7 +121,7 @@ impl FcaEngine {
                 continue;
             }
 
-            let exempted_symbols: HashSet<&str> = config
+            let exempted: Vec<&str> = config
                 .exempt
                 .iter()
                 .filter(|e| e.convention == conv.id)
@@ -125,7 +129,16 @@ impl FcaEngine {
                 .collect();
 
             for sym in changed_symbols {
-                if exempted_symbols.contains(sym.name.as_str()) {
+                let is_exempt = exempted.iter().any(|pat| {
+                    if pat.contains('/') {
+                        // file-qualified: "src/foo.rs::process"
+                        let qualified = format!("{}::{}", sym.file, sym.name);
+                        qualified == *pat
+                    } else {
+                        sym.name == *pat
+                    }
+                });
+                if is_exempt {
                     continue;
                 }
 
@@ -145,6 +158,7 @@ impl FcaEngine {
                 if !missing.is_empty() {
                     violations.push(ConventionViolation {
                         symbol: sym.name.clone(),
+                        file: sym.file.clone(),
                         convention_id: conv.id.clone(),
                         antecedent: conv.antecedent.clone(),
                         consequent: conv.consequent.clone(),
@@ -258,6 +272,7 @@ mod tests {
         // Add another function WITHOUT has_sig → lowers confidence
         let extra = SymbolAttrs {
             name: "fn_extra".into(),
+            file: "src/test.rs".into(),
             attributes: vec!["kind:function".into()],
         };
         let after = engine.update_incremental(&[extra], &[]);
@@ -301,9 +316,9 @@ mod tests {
 
         let extra = SymbolAttrs {
             name: "fn_0".into(),
+            file: "src/test.rs".into(),
             attributes: vec!["kind:function".into(), "has_sig".into()],
         };
-        // Replaying same symbol should replace, not duplicate
         let second = engine.update_incremental(&[extra.clone()], &[]);
         let third = engine.update_incremental(&[extra], &[]);
 
@@ -377,6 +392,7 @@ mod tests {
             }
             symbols.push(SymbolAttrs {
                 name: format!("fn_{i}"),
+                file: format!("src/funcs/{i}.rs"),
                 attributes: attrs,
             });
         }
@@ -397,6 +413,7 @@ mod tests {
             }
             symbols.push(SymbolAttrs {
                 name: format!("method_{i}"),
+                file: format!("src/methods/{i}.rs"),
                 attributes: attrs,
             });
         }
@@ -413,6 +430,7 @@ mod tests {
             }
             symbols.push(SymbolAttrs {
                 name: format!("Struct{i}"),
+                file: format!("src/types/{i}.rs"),
                 attributes: attrs,
             });
         }
@@ -421,6 +439,7 @@ mod tests {
         for i in 0..8 {
             symbols.push(SymbolAttrs {
                 name: format!("Enum{i}"),
+                file: format!("src/enums/{i}.rs"),
                 attributes: vec![
                     "kind:enum".into(),
                     "naming:CamelCase".into(),
@@ -442,6 +461,7 @@ mod tests {
             }
             symbols.push(SymbolAttrs {
                 name: format!("fn_{i}"),
+                file: format!("src/test_{i}.rs"),
                 attributes: attrs,
             });
         }
@@ -449,6 +469,7 @@ mod tests {
         for i in 0..5 {
             symbols.push(SymbolAttrs {
                 name: format!("Struct{i}"),
+                file: format!("src/structs/{i}.rs"),
                 attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
             });
         }
@@ -470,6 +491,7 @@ mod tests {
         let conv = &engine.conventions()[0];
         let changed = vec![SymbolAttrs {
             name: "bad_symbol".into(),
+            file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
         }];
 
@@ -479,6 +501,7 @@ mod tests {
         assert!(!violations.is_empty());
         let v = violations.iter().find(|v| v.symbol == "bad_symbol").unwrap();
         assert_eq!(v.convention_id, conv.id);
+        assert_eq!(v.file, "src/bad.rs");
         assert!(!v.missing.is_empty());
     }
 
@@ -491,6 +514,7 @@ mod tests {
         attrs.extend(conv.consequent.clone());
         let changed = vec![SymbolAttrs {
             name: "good_symbol".into(),
+            file: "src/good.rs".into(),
             attributes: attrs,
         }];
 
@@ -506,6 +530,7 @@ mod tests {
 
         let changed = vec![SymbolAttrs {
             name: "unrelated".into(),
+            file: "src/other.rs".into(),
             attributes: vec!["some_random_attr".into()],
         }];
 
@@ -521,6 +546,7 @@ mod tests {
 
         let changed = vec![SymbolAttrs {
             name: "bad_symbol".into(),
+            file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
         }];
 
@@ -540,6 +566,7 @@ mod tests {
 
         let changed = vec![SymbolAttrs {
             name: "ExemptedSymbol".into(),
+            file: "src/exempt.rs".into(),
             attributes: conv.antecedent.clone(),
         }];
 
@@ -573,6 +600,7 @@ mod tests {
 
         let changed = vec![SymbolAttrs {
             name: "PartialExempt".into(),
+            file: "src/partial.rs".into(),
             attributes: attrs,
         }];
 
@@ -586,5 +614,65 @@ mod tests {
         let violations = engine.check(&changed, &config);
         let exempt_from_a: Vec<_> = violations.iter().filter(|v| v.symbol == "PartialExempt" && v.convention_id == conv_a.id).collect();
         assert!(exempt_from_a.is_empty());
+    }
+
+    #[test]
+    fn check_file_qualified_exemption_scoped_correctly() {
+        let engine = setup_engine_with_conventions();
+        let conv = &engine.conventions()[0];
+
+        let sym_a = SymbolAttrs {
+            name: "process".into(),
+            file: "src/foo.rs".into(),
+            attributes: conv.antecedent.clone(),
+        };
+        let sym_b = SymbolAttrs {
+            name: "process".into(),
+            file: "src/bar.rs".into(),
+            attributes: conv.antecedent.clone(),
+        };
+
+        let config = ConventionsConfig {
+            exempt: vec![ConventionExemption {
+                convention: conv.id.clone(),
+                symbols: vec!["src/foo.rs::process".into()],
+            }],
+            ..Default::default()
+        };
+        let violations = engine.check(&[sym_a, sym_b], &config);
+
+        let foo_violations: Vec<_> = violations.iter().filter(|v| v.file == "src/foo.rs" && v.convention_id == conv.id).collect();
+        assert!(foo_violations.is_empty(), "src/foo.rs::process should be exempt");
+
+        let bar_violations: Vec<_> = violations.iter().filter(|v| v.file == "src/bar.rs" && v.convention_id == conv.id).collect();
+        assert!(!bar_violations.is_empty(), "src/bar.rs::process should still violate");
+    }
+
+    #[test]
+    fn check_bare_name_exemption_applies_to_all_files() {
+        let engine = setup_engine_with_conventions();
+        let conv = &engine.conventions()[0];
+
+        let sym_a = SymbolAttrs {
+            name: "process".into(),
+            file: "src/foo.rs".into(),
+            attributes: conv.antecedent.clone(),
+        };
+        let sym_b = SymbolAttrs {
+            name: "process".into(),
+            file: "src/bar.rs".into(),
+            attributes: conv.antecedent.clone(),
+        };
+
+        let config = ConventionsConfig {
+            exempt: vec![ConventionExemption {
+                convention: conv.id.clone(),
+                symbols: vec!["process".into()],
+            }],
+            ..Default::default()
+        };
+        let violations = engine.check(&[sym_a, sym_b], &config);
+        let process_violations: Vec<_> = violations.iter().filter(|v| v.symbol == "process" && v.convention_id == conv.id).collect();
+        assert!(process_violations.is_empty(), "bare name exemption should exempt all files");
     }
 }

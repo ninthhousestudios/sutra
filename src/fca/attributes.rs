@@ -98,6 +98,7 @@ pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAt
 
     Some(SymbolAttrs {
         name: sym.qualified_name.clone(),
+        file: file_path.to_string(),
         attributes,
     })
 }
