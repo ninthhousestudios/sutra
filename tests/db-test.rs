@@ -760,3 +760,63 @@ fn test_migration_hash_mismatch_errors() {
         "expected hash mismatch error, got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Convention operations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn convention_upsert_and_retrieve() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+        .unwrap();
+    let rows = db.all_conventions().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "abc123");
+    assert_eq!(rows[0].antecedent, "kind:function");
+    assert_eq!(rows[0].consequent, "has_sig");
+    assert_eq!(rows[0].support, 42);
+    assert!((rows[0].confidence - 0.95).abs() < 1e-9);
+    assert!(!rows[0].suppressed);
+}
+
+#[test]
+fn convention_upsert_updates_existing() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+        .unwrap();
+    db.upsert_convention("abc123", "kind:function", "has_sig", 50, 0.97)
+        .unwrap();
+    let rows = db.all_conventions().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].support, 50);
+    assert!((rows[0].confidence - 0.97).abs() < 1e-9);
+}
+
+#[test]
+fn convention_suppress() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+        .unwrap();
+    db.suppress_convention("abc123", true).unwrap();
+    let rows = db.all_conventions().unwrap();
+    assert!(rows[0].suppressed);
+    db.suppress_convention("abc123", false).unwrap();
+    let rows = db.all_conventions().unwrap();
+    assert!(!rows[0].suppressed);
+}
+
+#[test]
+fn convention_delete_stale() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9).unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95).unwrap();
+    db.upsert_convention("ccc", "e", "f", 30, 0.99).unwrap();
+    let deleted = db.delete_stale_conventions(&["aaa", "ccc"]).unwrap();
+    assert_eq!(deleted, 1);
+    let rows = db.all_conventions().unwrap();
+    assert_eq!(rows.len(), 2);
+    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    assert!(ids.contains(&"aaa"));
+    assert!(ids.contains(&"ccc"));
+}
