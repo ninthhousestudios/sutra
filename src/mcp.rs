@@ -28,6 +28,13 @@ use crate::workspace::{self, WorkspacesConfig};
 pub struct EmptyArgs {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct HelpArgs {
+    /// Topic name (omit for topic list)
+    #[serde(default)]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorkspaceArgs {
     pub workspace: String,
 }
@@ -307,6 +314,19 @@ impl SutraServer {
             &self.config,
         )
         .map_err(sutra_to_rmcp)?;
+        serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+    }
+
+    #[tool(
+        description = "Agent-oriented help and recipes for sutra workflows. \
+        Call with no args for a topic list. Call with topic (e.g. \"quickstart\", \
+        \"review\", \"recipes\") for focused guidance with concrete tool invocation examples."
+    )]
+    pub async fn sutra_help(
+        &self,
+        Parameters(args): Parameters<HelpArgs>,
+    ) -> Result<String, ErrorData> {
+        let result = tools::help::handle(args.topic.as_deref()).map_err(sutra_to_rmcp)?;
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
     }
 
@@ -953,11 +973,12 @@ impl ServerHandler for SutraServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "sutra v0.1.0 — code intelligence for manas. \
-             Core tools: sutra_health, sutra_map, sutra_outline, sutra_find, \
+             Core tools: sutra_health, sutra_help, sutra_map, sutra_outline, sutra_find, \
              sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
              sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace, \
              sutra_review. \
+             Call sutra_help() for workflow recipes. \
              All responses include as_of timestamp and is_stale indicator.",
         )
     }

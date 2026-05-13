@@ -7,6 +7,7 @@ pub mod file_health;
 pub mod find;
 pub mod grep;
 pub mod health;
+pub mod help;
 pub mod hotspots;
 pub mod impact;
 pub mod map;
