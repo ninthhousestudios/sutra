@@ -178,12 +178,34 @@ impl FcaEngine {
         violations
     }
 
+    const MAX_ATTRS: usize = 100;
+
     fn build_context(symbols: &[SymbolAttrs]) -> (FormalContext, Vec<String>) {
+        let mut attr_freq: HashMap<String, usize> = HashMap::new();
+        for sym in symbols {
+            for attr in &sym.attributes {
+                *attr_freq.entry(attr.clone()).or_default() += 1;
+            }
+        }
+
+        let allowed: HashSet<&str> = if attr_freq.len() > Self::MAX_ATTRS {
+            let mut by_freq: Vec<(&str, usize)> =
+                attr_freq.iter().map(|(k, &v)| (k.as_str(), v)).collect();
+            by_freq.sort_by(|a, b| b.1.cmp(&a.1));
+            by_freq.truncate(Self::MAX_ATTRS);
+            by_freq.into_iter().map(|(k, _)| k).collect()
+        } else {
+            attr_freq.keys().map(|k| k.as_str()).collect()
+        };
+
         let mut attr_map: HashMap<String, usize> = HashMap::new();
         let mut relations: Vec<(usize, usize)> = Vec::new();
 
         for (obj_idx, sym) in symbols.iter().enumerate() {
             for attr in &sym.attributes {
+                if !allowed.contains(attr.as_str()) {
+                    continue;
+                }
                 let attr_idx = {
                     let len = attr_map.len();
                     *attr_map.entry(attr.clone()).or_insert(len)

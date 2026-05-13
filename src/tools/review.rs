@@ -328,10 +328,13 @@ fn gather_affected(
         }
     }
 
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     files.dedup_by(|a, b| a.0 == b.0);
-    symbols.sort_by(|a, b| b.2.cmp(&a.2));
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    symbols.sort_by(|a, b| a.0.cmp(&b.0));
     symbols.dedup_by(|a, b| a.0 == b.0);
+    symbols.sort_by(|a, b| b.2.cmp(&a.2));
 
     Ok((files, symbols))
 }

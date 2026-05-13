@@ -148,7 +148,7 @@ impl FormalContext {
         implications.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
-                .unwrap()
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then(b.support.cmp(&a.support))
         });
         implications

@@ -26,7 +26,7 @@ pub(super) enum Response {
     Cycles(Vec<HashSet<i64>>),
     BlastRadius(usize),
     BlastRadiusAll(HashMap<i64, usize>),
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Error(String),
 }
 
@@ -128,9 +128,7 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                     if *diff > 0 {
                         map.insert(*dst, *count);
                     } else if *diff < 0 {
-                        if map.get(dst) == Some(count) {
-                            map.remove(dst);
-                        }
+                        map.remove(dst);
                     }
                 })
                 .probe_with(&mut probe);
