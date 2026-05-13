@@ -69,6 +69,7 @@ use crate::tools::outline::OutlineArgs;
 use crate::tools::pr_risk::PrRiskArgs;
 use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
+use crate::tools::review::ReviewArgs;
 use crate::tools::refs::RefsArgs;
 use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
@@ -459,7 +460,7 @@ impl SutraServer {
 
     #[tool(
         description = "Manage tool tiers. Enable or disable the analysis tier \
-        (sutra_refs, sutra_calls, sutra_diff_impact, sutra_cochange). \
+        (sutra_refs, sutra_calls, sutra_diff_impact, sutra_cochange, sutra_review). \
         Use list=true to see available tiers and their status."
     )]
     pub async fn sutra_tools(
@@ -584,6 +585,26 @@ impl SutraServer {
         let db = self.get_db(&args.workspace)?;
         let result = tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
             .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
+        description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
+        identifies changed files and symbols, computes transitive impact, calculates a \
+        0.0–1.0 risk score with breakdown, and ranks recommended reads. \
+        diff: \"branch\" (default, against main merge-base), \"staged\", or \"unstaged\". \
+        Requires analysis tier."
+    )]
+    pub async fn sutra_review(
+        &self,
+        Parameters(args): Parameters<ReviewArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result =
+            tools::review::handle(&db, &ws.root, args.diff.as_deref())
+                .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -934,7 +955,8 @@ impl ServerHandler for SutraServer {
              Core tools: sutra_health, sutra_map, sutra_outline, sutra_find, \
              sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
-             sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace. \
+             sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace, \
+             sutra_review. \
              All responses include as_of timestamp and is_stale indicator.",
         )
     }

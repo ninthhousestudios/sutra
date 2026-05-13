@@ -71,6 +71,56 @@ pub fn git_cochange_files(
     Ok(result)
 }
 
+pub fn git_diff_staged(workspace_root: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["diff", "--name-only", "--cached"])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git diff --cached failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git diff --cached: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+pub fn git_diff_unstaged(workspace_root: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["diff", "--name-only"])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git diff: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["merge-base", "HEAD", branch])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git merge-base failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git merge-base: {stderr}")));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Count how many commits touched each file in the given time window.
 pub fn git_churn(workspace_root: &Path, window_days: u32) -> Result<HashMap<String, u32>> {
     let since = format!("{window_days} days ago");
