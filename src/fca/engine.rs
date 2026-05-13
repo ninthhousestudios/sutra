@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn incremental_add_changes_conventions() {
-        let mut symbols = make_test_symbols();
+        let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
         let before = engine.rebuild(&symbols);
 

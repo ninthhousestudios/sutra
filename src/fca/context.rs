@@ -1,6 +1,7 @@
 use super::bitset::BitSet;
 
 pub struct FormalContext {
+    #[allow(dead_code)] // used by downstream violation reporting
     pub(crate) object_names: Vec<String>,
     pub(crate) attribute_names: Vec<String>,
     pub(crate) object_attrs: Vec<BitSet>,
