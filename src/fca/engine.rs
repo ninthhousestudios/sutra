@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::context::FormalContext;
+use crate::rules::ConventionsConfig;
 
 #[derive(Clone)]
 pub struct SymbolAttrs {
@@ -26,6 +27,15 @@ impl Convention {
         let input = format!("{}\0{}", ante.join("\x1f"), cons.join("\x1f"));
         blake3::hash(input.as_bytes()).to_hex()[..16].to_string()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionViolation {
+    pub symbol: String,
+    pub convention_id: String,
+    pub antecedent: Vec<String>,
+    pub consequent: Vec<String>,
+    pub missing: Vec<String>,
 }
 
 const MIN_SUPPORT: usize = 3;
@@ -94,6 +104,59 @@ impl FcaEngine {
         &self.conventions
     }
 
+    pub fn check(
+        &self,
+        changed_symbols: &[SymbolAttrs],
+        config: &ConventionsConfig,
+    ) -> Vec<ConventionViolation> {
+        let suppressed: HashSet<&str> = config.suppress.iter().map(|s| s.as_str()).collect();
+        let mut violations = Vec::new();
+
+        for conv in &self.conventions {
+            if suppressed.contains(conv.id.as_str()) {
+                continue;
+            }
+
+            let exempted_symbols: HashSet<&str> = config
+                .exempt
+                .iter()
+                .filter(|e| e.convention == conv.id)
+                .flat_map(|e| e.symbols.iter().map(|s| s.as_str()))
+                .collect();
+
+            for sym in changed_symbols {
+                if exempted_symbols.contains(sym.name.as_str()) {
+                    continue;
+                }
+
+                let attrs: HashSet<&str> = sym.attributes.iter().map(|a| a.as_str()).collect();
+                let has_antecedent = conv.antecedent.iter().all(|a| attrs.contains(a.as_str()));
+                if !has_antecedent {
+                    continue;
+                }
+
+                let missing: Vec<String> = conv
+                    .consequent
+                    .iter()
+                    .filter(|c| !attrs.contains(c.as_str()))
+                    .cloned()
+                    .collect();
+
+                if !missing.is_empty() {
+                    violations.push(ConventionViolation {
+                        symbol: sym.name.clone(),
+                        convention_id: conv.id.clone(),
+                        antecedent: conv.antecedent.clone(),
+                        consequent: conv.consequent.clone(),
+                        missing,
+                    });
+                }
+            }
+        }
+
+        violations
+    }
+
     fn build_context(symbols: &[SymbolAttrs]) -> (FormalContext, Vec<String>) {
         let mut attr_map: HashMap<String, usize> = HashMap::new();
         let mut relations: Vec<(usize, usize)> = Vec::new();
@@ -122,6 +185,7 @@ impl FcaEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ConventionExemption;
 
     #[test]
     fn stable_hash_same_inputs_same_output() {
@@ -389,5 +453,138 @@ mod tests {
             });
         }
         symbols
+    }
+
+    fn setup_engine_with_conventions() -> FcaEngine {
+        let mut engine = FcaEngine::new();
+        let symbols = make_test_symbols();
+        engine.rebuild(&symbols);
+        engine
+    }
+
+    #[test]
+    fn check_detects_violations() {
+        let engine = setup_engine_with_conventions();
+        assert!(!engine.conventions().is_empty());
+
+        let conv = &engine.conventions()[0];
+        let changed = vec![SymbolAttrs {
+            name: "bad_symbol".into(),
+            attributes: conv.antecedent.clone(),
+        }];
+
+        let config = ConventionsConfig::default();
+        let violations = engine.check(&changed, &config);
+
+        assert!(!violations.is_empty());
+        let v = violations.iter().find(|v| v.symbol == "bad_symbol").unwrap();
+        assert_eq!(v.convention_id, conv.id);
+        assert!(!v.missing.is_empty());
+    }
+
+    #[test]
+    fn check_no_violation_when_consequent_satisfied() {
+        let engine = setup_engine_with_conventions();
+        let conv = &engine.conventions()[0];
+
+        let mut attrs = conv.antecedent.clone();
+        attrs.extend(conv.consequent.clone());
+        let changed = vec![SymbolAttrs {
+            name: "good_symbol".into(),
+            attributes: attrs,
+        }];
+
+        let config = ConventionsConfig::default();
+        let violations = engine.check(&changed, &config);
+        let relevant: Vec<_> = violations.iter().filter(|v| v.symbol == "good_symbol" && v.convention_id == conv.id).collect();
+        assert!(relevant.is_empty());
+    }
+
+    #[test]
+    fn check_no_violation_when_antecedent_not_matched() {
+        let engine = setup_engine_with_conventions();
+
+        let changed = vec![SymbolAttrs {
+            name: "unrelated".into(),
+            attributes: vec!["some_random_attr".into()],
+        }];
+
+        let config = ConventionsConfig::default();
+        let violations = engine.check(&changed, &config);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn check_suppressed_conventions_skipped() {
+        let engine = setup_engine_with_conventions();
+        let conv = &engine.conventions()[0];
+
+        let changed = vec![SymbolAttrs {
+            name: "bad_symbol".into(),
+            attributes: conv.antecedent.clone(),
+        }];
+
+        let config = ConventionsConfig {
+            suppress: vec![conv.id.clone()],
+            ..Default::default()
+        };
+        let violations = engine.check(&changed, &config);
+        let relevant: Vec<_> = violations.iter().filter(|v| v.convention_id == conv.id).collect();
+        assert!(relevant.is_empty());
+    }
+
+    #[test]
+    fn check_per_symbol_exemption() {
+        let engine = setup_engine_with_conventions();
+        let conv = &engine.conventions()[0];
+
+        let changed = vec![SymbolAttrs {
+            name: "ExemptedSymbol".into(),
+            attributes: conv.antecedent.clone(),
+        }];
+
+        let config = ConventionsConfig {
+            exempt: vec![ConventionExemption {
+                convention: conv.id.clone(),
+                symbols: vec!["ExemptedSymbol".into()],
+            }],
+            ..Default::default()
+        };
+        let violations = engine.check(&changed, &config);
+        let relevant: Vec<_> = violations.iter().filter(|v| v.symbol == "ExemptedSymbol" && v.convention_id == conv.id).collect();
+        assert!(relevant.is_empty());
+    }
+
+    #[test]
+    fn check_exemption_only_applies_to_specified_convention() {
+        let engine = setup_engine_with_conventions();
+        if engine.conventions().len() < 2 {
+            return;
+        }
+        let conv_a = &engine.conventions()[0];
+        let conv_b = &engine.conventions()[1];
+
+        let mut attrs = conv_a.antecedent.clone();
+        for a in &conv_b.antecedent {
+            if !attrs.contains(a) {
+                attrs.push(a.clone());
+            }
+        }
+
+        let changed = vec![SymbolAttrs {
+            name: "PartialExempt".into(),
+            attributes: attrs,
+        }];
+
+        let config = ConventionsConfig {
+            exempt: vec![ConventionExemption {
+                convention: conv_a.id.clone(),
+                symbols: vec!["PartialExempt".into()],
+            }],
+            ..Default::default()
+        };
+        let violations = engine.check(&changed, &config);
+        let exempt_from_a: Vec<_> = violations.iter().filter(|v| v.symbol == "PartialExempt" && v.convention_id == conv_a.id).collect();
+        assert!(exempt_from_a.is_empty());
     }
 }

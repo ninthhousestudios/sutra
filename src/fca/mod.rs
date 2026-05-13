@@ -5,4 +5,4 @@ mod engine;
 
 pub use attributes::extract_symbol_attrs;
 pub use context::{FormalContext, Implication};
-pub use engine::{Convention, FcaEngine, SymbolAttrs};
+pub use engine::{Convention, ConventionViolation, FcaEngine, SymbolAttrs};

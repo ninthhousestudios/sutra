@@ -8,6 +8,22 @@ use crate::error::{Result, SutraError};
 pub struct Rules {
     #[serde(default)]
     pub constraints: Constraints,
+    #[serde(default)]
+    pub conventions: ConventionsConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ConventionsConfig {
+    #[serde(default)]
+    pub suppress: Vec<String>,
+    #[serde(default)]
+    pub exempt: Vec<ConventionExemption>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConventionExemption {
+    pub convention: String,
+    pub symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -74,5 +90,48 @@ forbidden_deps = [
     fn missing_file_returns_defaults() {
         let rules = load_rules(Path::new("/nonexistent/path")).unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
+    }
+
+    #[test]
+    fn parse_conventions_section() {
+        let toml = r#"
+[conventions]
+suppress = ["a1b4c2d1", "b2c3d4e5"]
+
+[[conventions.exempt]]
+convention = "e5f6g7h8"
+symbols = ["InternalError", "DebugHelper"]
+"#;
+        let rules = parse_rules(toml).unwrap();
+        assert_eq!(rules.conventions.suppress, vec!["a1b4c2d1", "b2c3d4e5"]);
+        assert_eq!(rules.conventions.exempt.len(), 1);
+        assert_eq!(rules.conventions.exempt[0].convention, "e5f6g7h8");
+        assert_eq!(
+            rules.conventions.exempt[0].symbols,
+            vec!["InternalError", "DebugHelper"]
+        );
+    }
+
+    #[test]
+    fn parse_missing_conventions_section() {
+        let rules = parse_rules("[constraints]\n").unwrap();
+        assert!(rules.conventions.suppress.is_empty());
+        assert!(rules.conventions.exempt.is_empty());
+    }
+
+    #[test]
+    fn parse_both_sections() {
+        let toml = r#"
+[constraints]
+forbidden_deps = [
+  { from = "src/tools/*", to = "src/daemon.rs" },
+]
+
+[conventions]
+suppress = ["abc123"]
+"#;
+        let rules = parse_rules(toml).unwrap();
+        assert_eq!(rules.constraints.forbidden_deps.len(), 1);
+        assert_eq!(rules.conventions.suppress, vec!["abc123"]);
     }
 }
