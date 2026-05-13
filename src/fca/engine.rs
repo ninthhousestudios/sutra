@@ -228,6 +228,122 @@ mod tests {
         assert!(!found);
     }
 
+    #[test]
+    fn realistic_codebase_produces_expected_conventions() {
+        let symbols = make_realistic_symbols();
+        let mut engine = FcaEngine::new();
+        let conventions = engine.rebuild(&symbols);
+
+        let has = |ante: &str, cons: &str| -> bool {
+            conventions.iter().any(|c| {
+                c.antecedent.contains(&ante.to_string())
+                    && c.consequent.contains(&cons.to_string())
+            })
+        };
+
+        // Functions with signatures: most have has_sig + naming:snake_case
+        // Spike found: has_sig ↔ naming:snake_case as a strong pattern
+        assert!(
+            has("has_sig", "naming:snake_case") || has("naming:snake_case", "has_sig"),
+            "expected has_sig ↔ naming:snake_case convention"
+        );
+
+        // Methods with self refs: takes_self_ref → is_method is exact (1.0),
+        // so it's correctly excluded from approximate implications.
+        // Instead check that kind:method → takes_self_ref appears (19/20 = 0.95)
+        assert!(
+            has("kind:method", "takes_self_ref"),
+            "expected kind:method → takes_self_ref (approximate at 0.95)"
+        );
+
+        // All conventions should have confidence >= 0.9
+        for c in &conventions {
+            assert!(
+                c.confidence >= 0.9,
+                "convention {:?} → {:?} has confidence {} < 0.9",
+                c.antecedent,
+                c.consequent,
+                c.confidence
+            );
+        }
+    }
+
+    fn make_realistic_symbols() -> Vec<SymbolAttrs> {
+        let mut symbols = Vec::new();
+
+        // 40 functions: all snake_case, 38 have signatures (95%)
+        for i in 0..40 {
+            let mut attrs = vec![
+                "kind:function".into(),
+                "naming:snake_case".into(),
+                "vis:pub".into(),
+            ];
+            if i < 38 {
+                attrs.push("has_sig".into());
+            }
+            if i < 30 {
+                attrs.push("returns_result".into());
+            }
+            if i % 5 == 0 {
+                attrs.push("has_doc".into());
+            }
+            symbols.push(SymbolAttrs {
+                name: format!("fn_{i}"),
+                attributes: attrs,
+            });
+        }
+
+        // 20 methods: all snake_case, all have sig, all is_method
+        for i in 0..20 {
+            let mut attrs = vec![
+                "kind:method".into(),
+                "naming:snake_case".into(),
+                "has_sig".into(),
+                "is_method".into(),
+            ];
+            if i < 19 {
+                attrs.push("takes_self_ref".into());
+            }
+            if i < 15 {
+                attrs.push("complexity:low".into());
+            }
+            symbols.push(SymbolAttrs {
+                name: format!("method_{i}"),
+                attributes: attrs,
+            });
+        }
+
+        // 15 structs: CamelCase, pub
+        for i in 0..15 {
+            let mut attrs = vec![
+                "kind:struct".into(),
+                "naming:CamelCase".into(),
+                "vis:pub".into(),
+            ];
+            if i < 12 {
+                attrs.push("has_doc".into());
+            }
+            symbols.push(SymbolAttrs {
+                name: format!("Struct{i}"),
+                attributes: attrs,
+            });
+        }
+
+        // 8 enums: CamelCase
+        for i in 0..8 {
+            symbols.push(SymbolAttrs {
+                name: format!("Enum{i}"),
+                attributes: vec![
+                    "kind:enum".into(),
+                    "naming:CamelCase".into(),
+                    "vis:pub".into(),
+                ],
+            });
+        }
+
+        symbols
+    }
+
     fn make_test_symbols() -> Vec<SymbolAttrs> {
         let mut symbols = Vec::new();
         // 10 functions: 9 have has_sig, 1 doesn't
