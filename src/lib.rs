@@ -1,4 +1,5 @@
 pub mod config;
+pub mod fca;
 pub mod dd;
 pub mod daemon;
 pub mod db;
