@@ -81,6 +81,7 @@ impl FcaEngine {
     ) -> Vec<Convention> {
         self.symbol_attrs.retain(|s| !removed.contains(&s.name));
         for sa in added {
+            self.symbol_attrs.retain(|s| s.name != sa.name);
             self.symbol_attrs.push(SymbolAttrs {
                 name: sa.name.clone(),
                 attributes: sa.attributes.clone(),
@@ -226,6 +227,29 @@ mod tests {
         });
         // At 1.0 confidence it's exact, not approximate — should be gone
         assert!(!found);
+    }
+
+    #[test]
+    fn incremental_add_is_idempotent() {
+        let symbols = make_test_symbols();
+        let mut engine = FcaEngine::new();
+        let first = engine.rebuild(&symbols);
+
+        let extra = SymbolAttrs {
+            name: "fn_0".into(),
+            attributes: vec!["kind:function".into(), "has_sig".into()],
+        };
+        // Replaying same symbol should replace, not duplicate
+        let second = engine.update_incremental(&[extra.clone()], &[]);
+        let third = engine.update_incremental(&[extra], &[]);
+
+        let count_fn = |convs: &[Convention]| {
+            convs.iter().find(|c| {
+                c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]
+            }).map(|c| (c.support, c.confidence))
+        };
+        assert_eq!(count_fn(&second), count_fn(&third), "replay should not change stats");
+        assert_eq!(count_fn(&first), count_fn(&second), "replacing with same data should be stable");
     }
 
     #[test]

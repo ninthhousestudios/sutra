@@ -39,6 +39,9 @@ pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAt
         if sig.contains("Option") {
             attributes.push("returns_option".into());
         }
+        if sig.contains("-> Self") || sig.contains("-> &Self") {
+            attributes.push("returns_self".into());
+        }
         if sig.contains("&self") {
             attributes.push("takes_self_ref".into());
         }
@@ -177,5 +180,12 @@ mod tests {
         let sa = extract_symbol_attrs(&sym, "src/foo.rs").unwrap();
         assert!(sa.attributes.contains(&"is_method".to_string()));
         assert!(sa.attributes.contains(&"takes_self_ref".to_string()));
+    }
+
+    #[test]
+    fn returns_self_detected() {
+        let sym = make_symbol("method", None, Some("fn new() -> Self"), None, None, 0);
+        let sa = extract_symbol_attrs(&sym, "src/foo.rs").unwrap();
+        assert!(sa.attributes.contains(&"returns_self".to_string()));
     }
 }
