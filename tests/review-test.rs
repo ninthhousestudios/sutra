@@ -48,8 +48,8 @@ fn no_findings() -> review::ReviewFindings {
 
 #[test]
 fn empty_diff_returns_correct_shape() {
-    let (_dir, db) = setup_db();
-    let result = review::compute(&db, &[], &Default::default(), &no_findings()).unwrap();
+    let (dir, db) = setup_db();
+    let result = review::compute(&db, dir.path(), &[], &Default::default(), &no_findings()).unwrap();
 
     assert_eq!(result["changed_files"].as_array().unwrap().len(), 0);
     assert_eq!(result["changed_symbols"].as_array().unwrap().len(), 0);
@@ -134,9 +134,9 @@ fn setup_db_with_files() -> (tempfile::TempDir, Db) {
 
 #[test]
 fn single_file_change_populates_all_fields() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf.len(), 1);
@@ -162,12 +162,12 @@ fn single_file_change_populates_all_fields() {
 
 #[test]
 fn risk_breakdown_sums_correctly() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string(), "src/helper.rs".to_string()];
     let mut churn = review::ChurnMap::default();
     churn.counts.insert("src/core.rs".to_string(), 12);
 
-    let result = review::compute(&db, &changed, &churn, &no_findings()).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &churn, &no_findings()).unwrap();
 
     let breakdown = &result["risk_breakdown"];
     let blast = breakdown["blast_radius"].as_f64().unwrap();
@@ -191,7 +191,7 @@ fn risk_breakdown_sums_correctly() {
 
 #[test]
 fn truncation_caps_affected_lists() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
 
     db.upsert_file("src/hub.rs", "rust", "hub", 300, true)
         .unwrap();
@@ -223,7 +223,7 @@ fn truncation_caps_affected_lists() {
     }
 
     let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
 
     let af = result["affected_files"].as_array().unwrap();
     assert_eq!(af.len(), 20, "affected files should be capped at 20");
@@ -250,7 +250,7 @@ fn truncation_caps_affected_lists() {
 
 #[test]
 fn risk_score_clamped_to_one() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
 
     for i in 0..30 {
         let path = format!("src/extreme_{i}.rs");
@@ -285,7 +285,7 @@ fn risk_score_clamped_to_one() {
             .collect(),
     };
 
-    let result = review::compute(&db, &paths, &churn, &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &paths, &churn, &findings).unwrap();
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk <= 1.0, "risk must be clamped to 1.0, got {risk}");
     assert!(risk >= 0.95, "extreme risk should be near 1.0, got {risk}");
@@ -293,9 +293,9 @@ fn risk_score_clamped_to_one() {
 
 #[test]
 fn unknown_files_handled_gracefully() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
     let changed = vec!["src/nonexistent.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
 
     let cf = result["changed_files"].as_array().unwrap();
     assert_eq!(cf.len(), 1);
@@ -310,7 +310,7 @@ fn unknown_files_handled_gracefully() {
 
 #[test]
 fn constraint_violations_appear_in_output() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
     let findings = review::ReviewFindings {
@@ -331,7 +331,7 @@ fn constraint_violations_appear_in_output() {
         convention_violations: vec![],
     };
 
-    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 2);
@@ -343,7 +343,7 @@ fn constraint_violations_appear_in_output() {
 
 #[test]
 fn convention_violations_appear_in_output() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
     let findings = review::ReviewFindings {
@@ -360,7 +360,7 @@ fn convention_violations_appear_in_output() {
         }],
     };
 
-    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
     let cv = result["convention_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 1);
@@ -377,7 +377,7 @@ fn convention_violations_appear_in_output() {
 
 #[test]
 fn violations_are_structurally_distinct() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
     let findings = review::ReviewFindings {
@@ -399,7 +399,7 @@ fn violations_are_structurally_distinct() {
         }],
     };
 
-    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
     // Constraint violations have kind/from/to/detail
     let cv = &result["constraint_violations"].as_array().unwrap()[0];
@@ -422,11 +422,11 @@ fn violations_are_structurally_distinct() {
 
 #[test]
 fn convention_violations_increase_risk_score() {
-    let (_dir, db) = setup_db_with_files();
+    let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
     let result_without =
-        review::compute(&db, &changed, &Default::default(), &no_findings()).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
     let risk_without = result_without["risk_score"].as_f64().unwrap();
 
     let findings = review::ReviewFindings {
@@ -465,7 +465,7 @@ fn convention_violations_increase_risk_score() {
         ],
     };
 
-    let result_with = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let result_with = review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
     let risk_with = result_with["risk_score"].as_f64().unwrap();
 
     assert!(
@@ -484,7 +484,7 @@ fn convention_violations_increase_risk_score() {
 
 #[test]
 fn recommended_reads_ranks_violation_sites_first() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
 
     // Create hub + 5 consumers
     db.upsert_file("src/hub.rs", "rust", "hub", 300, true)
@@ -532,7 +532,7 @@ fn recommended_reads_ranks_violation_sites_first() {
     };
 
     let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(&db, &changed, &Default::default(), &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
     let rr = result["recommended_reads"].as_array().unwrap();
     assert!(!rr.is_empty());
@@ -759,6 +759,106 @@ forbidden_deps = [
         !findings.constraint_violations.is_empty(),
         "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
     );
+}
+
+#[test]
+fn changed_files_include_freshness() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("test", dir.path()).unwrap();
+
+    // Create actual file on disk BEFORE DB upsert so last_parsed > mtime → fresh
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("fresh.rs"), "fn fresh() {}").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    db.upsert_file("src/fresh.rs", "rust", "h1", 10, true)
+        .unwrap();
+    let f = db.file_by_path("src/fresh.rs").unwrap().unwrap();
+    db.insert_symbol(&sym(f.id, "fresh::fresh", "fresh", Some("fn fresh()"), 1, 5, Some(2)))
+        .unwrap();
+    db.update_rollups(f.id, 0, 1).unwrap();
+
+    let changed = vec!["src/fresh.rs".to_string()];
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
+
+    let cf = result["changed_files"].as_array().unwrap();
+    assert_eq!(cf[0]["_freshness"], "fresh");
+}
+
+#[test]
+fn affected_files_include_freshness() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("test", dir.path()).unwrap();
+
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("hub.rs"), "fn hub() {}").unwrap();
+    fs::write(src.join("consumer.rs"), "fn consumer() {}").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    db.upsert_file("src/hub.rs", "rust", "h1", 50, true).unwrap();
+    db.upsert_file("src/consumer.rs", "rust", "h2", 30, true).unwrap();
+
+    let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
+    let f_con = db.file_by_path("src/consumer.rs").unwrap().unwrap();
+
+    let hub_sym_id = db.insert_symbol(&sym(f_hub.id, "hub::process", "process", Some("fn process()"), 1, 20, Some(5))).unwrap();
+    db.insert_symbol(&sym(f_con.id, "consumer::use_hub", "use_hub", None, 1, 10, Some(2))).unwrap();
+    db.insert_ref(f_con.id, Some(hub_sym_id), None, 3, 0, "call").unwrap();
+    db.update_rollups(f_hub.id, 1, 10).unwrap();
+    db.update_rollups(f_con.id, 0, 2).unwrap();
+
+    let changed = vec!["src/hub.rs".to_string()];
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
+
+    let af = result["affected_files"].as_array().unwrap();
+    assert!(!af.is_empty());
+    assert_eq!(af[0]["_freshness"], "fresh");
+}
+
+#[test]
+fn freshness_reflects_actual_file_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open("test", dir.path()).unwrap();
+
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+
+    // File created before DB insert → fresh
+    fs::write(src.join("fresh.rs"), "fn a() {}").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    db.upsert_file("src/fresh.rs", "rust", "h1", 10, true).unwrap();
+
+    // File modified after DB insert → edited_uncommitted
+    db.upsert_file("src/edited.rs", "rust", "h2", 10, true).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    fs::write(src.join("edited.rs"), "fn b() { changed }").unwrap();
+
+    // File not on disk → stale_index
+    db.upsert_file("src/gone.rs", "rust", "h3", 10, true).unwrap();
+
+    for path in &["src/fresh.rs", "src/edited.rs", "src/gone.rs"] {
+        let f = db.file_by_path(path).unwrap().unwrap();
+        db.insert_symbol(&sym(f.id, &format!("{path}::f"), "f", None, 1, 5, Some(1))).unwrap();
+        db.update_rollups(f.id, 0, 1).unwrap();
+    }
+
+    let changed = vec![
+        "src/fresh.rs".to_string(),
+        "src/edited.rs".to_string(),
+        "src/gone.rs".to_string(),
+    ];
+    let result = review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
+
+    let cf = result["changed_files"].as_array().unwrap();
+    let freshness: std::collections::HashMap<&str, &str> = cf.iter()
+        .map(|f| (f["path"].as_str().unwrap(), f["_freshness"].as_str().unwrap()))
+        .collect();
+
+    assert_eq!(freshness["src/fresh.rs"], "fresh");
+    assert_eq!(freshness["src/edited.rs"], "edited_uncommitted");
+    assert_eq!(freshness["src/gone.rs"], "stale_index");
 }
 
 #[test]

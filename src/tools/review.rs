@@ -10,6 +10,7 @@ use crate::db::Db;
 use crate::dd::{DdEngine, DdFacts};
 use crate::error::Result;
 use crate::fca::{self, FcaEngine};
+use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::rules;
 
@@ -90,7 +91,7 @@ pub fn handle(
             Err(e) => (ReviewFindings::default(), Some(e.to_string())),
         };
 
-    let mut result = compute(db, &changed_paths, &churn, &findings)?;
+    let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
         obj.insert("churn_window_days".into(), json!(CHURN_WINDOW_DAYS));
@@ -245,7 +246,12 @@ struct ChangeStats {
     hotspot_files: u32,
 }
 
-fn gather_change_stats(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<ChangeStats> {
+fn gather_change_stats(
+    db: &Db,
+    workspace_root: &Path,
+    changed_paths: &[String],
+    churn: &ChurnMap,
+) -> Result<ChangeStats> {
     let mut stats = ChangeStats {
         changed_files: Vec::new(),
         changed_symbols: Vec::new(),
@@ -261,6 +267,8 @@ fn gather_change_stats(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> R
         stats.total_churn += file_churn;
 
         if let Some(file) = db.file_by_path(path)? {
+            let fl: FreshnessLevel =
+                freshness::check_file(workspace_root, path, &file.last_parsed).into();
             stats.total_blast += file.blast_radius;
             if file_churn > 5 && file.blast_radius > 10 {
                 stats.hotspot_files += 1;
@@ -278,10 +286,12 @@ fn gather_change_stats(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> R
             }
             stats.changed_files.push(json!({
                 "path": path, "blast_radius": file.blast_radius, "symbol_count": syms.len(),
+                "_freshness": fl,
             }));
         } else {
             stats.changed_files.push(json!({
                 "path": path, "blast_radius": 0, "symbol_count": 0,
+                "_freshness": FreshnessLevel::StaleIndex,
             }));
         }
     }
@@ -383,6 +393,7 @@ fn round3(v: f64) -> f64 {
 
 pub fn compute(
     db: &Db,
+    workspace_root: &Path,
     changed_paths: &[String],
     churn: &ChurnMap,
     findings: &ReviewFindings,
@@ -405,7 +416,7 @@ pub fn compute(
         }));
     }
 
-    let stats = gather_change_stats(db, changed_paths, churn)?;
+    let stats = gather_change_stats(db, workspace_root, changed_paths, churn)?;
     let (affected_files, affected_symbols) = gather_affected(db, &stats.symbol_ids, changed_paths)?;
 
     let total_affected_files = affected_files.len();
@@ -414,7 +425,15 @@ pub fn compute(
     let affected_files_out: Vec<_> = affected_files
         .iter()
         .take(MAX_AFFECTED)
-        .map(|(path, blast)| json!({ "path": path, "blast_radius": blast }))
+        .map(|(path, blast)| {
+            let fl: FreshnessLevel = db
+                .file_by_path(path)
+                .ok()
+                .flatten()
+                .map(|f| freshness::check_file(workspace_root, path, &f.last_parsed).into())
+                .unwrap_or(FreshnessLevel::StaleIndex);
+            json!({ "path": path, "blast_radius": blast, "_freshness": fl })
+        })
         .collect();
     let affected_symbols_out: Vec<_> = affected_symbols.iter().take(MAX_AFFECTED)
         .map(|(sym, file, blast, cog)| {
