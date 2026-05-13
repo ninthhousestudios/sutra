@@ -816,6 +816,14 @@ fn affected_files_include_freshness() {
     let af = result["affected_files"].as_array().unwrap();
     assert!(!af.is_empty());
     assert_eq!(af[0]["_freshness"], "fresh");
+
+    let as_ = result["affected_symbols"].as_array().unwrap();
+    assert!(!as_.is_empty());
+    assert_eq!(as_[0]["_freshness"], "fresh");
+
+    let rr = result["recommended_reads"].as_array().unwrap();
+    assert!(!rr.is_empty());
+    assert_eq!(rr[0]["_freshness"], "fresh");
 }
 
 #[test]

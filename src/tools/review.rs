@@ -336,7 +336,17 @@ fn gather_affected(
     Ok((files, symbols))
 }
 
+fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel {
+    db.file_by_path(path)
+        .ok()
+        .flatten()
+        .map(|f| freshness::check_file(workspace_root, path, &f.last_parsed).into())
+        .unwrap_or(FreshnessLevel::StaleIndex)
+}
+
 fn build_recommended_reads(
+    db: &Db,
+    workspace_root: &Path,
     findings: &ReviewFindings,
     affected_files: &[(String, i64)],
     changed_files: &[serde_json::Value],
@@ -379,7 +389,8 @@ fn build_recommended_reads(
     reads.truncate(MAX_READS);
 
     reads.iter().map(|(path, blast, is_violation)| {
-        json!({ "path": path, "blast_radius": blast, "violation_site": is_violation })
+        let fl = file_freshness(db, workspace_root, path);
+        json!({ "path": path, "blast_radius": blast, "violation_site": is_violation, "_freshness": fl })
     }).collect()
 }
 
@@ -418,18 +429,14 @@ pub fn compute(
         .iter()
         .take(MAX_AFFECTED)
         .map(|(path, blast)| {
-            let fl: FreshnessLevel = db
-                .file_by_path(path)
-                .ok()
-                .flatten()
-                .map(|f| freshness::check_file(workspace_root, path, &f.last_parsed).into())
-                .unwrap_or(FreshnessLevel::StaleIndex);
+            let fl = file_freshness(db, workspace_root, path);
             json!({ "path": path, "blast_radius": blast, "_freshness": fl })
         })
         .collect();
     let affected_symbols_out: Vec<_> = affected_symbols.iter().take(MAX_AFFECTED)
         .map(|(sym, file, blast, cog)| {
-            json!({ "symbol": sym, "file": file, "blast_radius": blast, "cognitive": cog })
+            let fl = file_freshness(db, workspace_root, file);
+            json!({ "symbol": sym, "file": file, "blast_radius": blast, "cognitive": cog, "_freshness": fl })
         }).collect();
 
     let constraint_violations_out: Vec<_> = findings
@@ -470,7 +477,7 @@ pub fn compute(
     ]);
 
     let recommended_reads =
-        build_recommended_reads(findings, &affected_files, &stats.changed_files);
+        build_recommended_reads(db, workspace_root, findings, &affected_files, &stats.changed_files);
 
     Ok(json!({
         "changed_files": stats.changed_files,
