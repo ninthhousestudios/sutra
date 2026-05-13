@@ -296,6 +296,24 @@ fn resolve_file_refs(
     Ok((unresolved, skipped))
 }
 
+fn prune_deleted_files(db: &Db, workspace_root: &Path) -> usize {
+    let files = match db.all_files() {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let mut count = 0;
+    for file in &files {
+        if !workspace_root.join(&file.path).exists() {
+            if let Err(e) = db.delete_file_cascade(file.id) {
+                warn!(file = %file.path, "failed to prune deleted file: {e}");
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 pub fn parse_workspace(
     workspace: &WorkspaceEntry,
     db: &Db,
@@ -320,6 +338,12 @@ pub fn parse_workspace(
                 .map(move |ext| (*ext, lang.as_str()))
         })
         .collect();
+
+    // Prune indexed files that no longer exist on disk.
+    let pruned = prune_deleted_files(db, &workspace.root);
+    if pruned > 0 {
+        info!(workspace = %workspace.id, pruned, "pruned deleted files from index");
+    }
 
     let source_files = walk_source_files(&workspace.root, &allowed_extensions);
     info!(workspace = %workspace.id, files_found = source_files.len(), "walked workspace");
