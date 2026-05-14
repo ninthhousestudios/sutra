@@ -18,7 +18,7 @@ use crate::tools::scoring::{self, ChurnMap, Signal};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
     pub workspace: String,
-    /// "branch" (default), "staged", or "unstaged"
+    /// "branch" (default), "staged", "unstaged", or a commit spec (e.g. "HEAD~3..HEAD", "abc123")
     #[serde(default)]
     pub diff: Option<String>,
 }
@@ -69,10 +69,18 @@ pub fn handle(
     let changed_paths = match mode {
         "staged" => git::git_diff_staged(workspace_root)?,
         "unstaged" => git::git_diff_unstaged(workspace_root)?,
-        _ => {
+        "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
             git::git_diff_files(workspace_root, &base, "HEAD")?
+        }
+        spec => {
+            let (base, head) = if let Some((a, b)) = spec.split_once("..") {
+                (a.to_string(), b.to_string())
+            } else {
+                (format!("{spec}~1"), spec.to_string())
+            };
+            git::git_diff_files(workspace_root, &base, &head)?
         }
     };
 
@@ -90,7 +98,10 @@ pub fn handle(
     let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
-        obj.insert("churn_window_days".into(), json!(scoring::CHURN_WINDOW_DAYS));
+        obj.insert(
+            "churn_window_days".into(),
+            json!(scoring::CHURN_WINDOW_DAYS),
+        );
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
@@ -464,23 +475,41 @@ pub fn compute(
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(stats.total_blast as f64, scoring::BLAST_NORM);
     let complexity_score = scoring::normalize(stats.max_cognitive as f64, scoring::COMPLEXITY_NORM);
-    let hotspot_score = scoring::normalize(
-        stats.hotspot_files as f64,
-        (file_count as f64).max(1.0),
-    );
+    let hotspot_score =
+        scoring::normalize(stats.hotspot_files as f64, (file_count as f64).max(1.0));
     let churn_score = scoring::normalize(stats.total_churn as f64, scoring::CHURN_NORM);
     let convention_score = scoring::normalize(findings.convention_violations.len() as f64, 5.0);
 
     let risk_score = scoring::weighted_score(&[
-        Signal { weight: W_BLAST, score: blast_score },
-        Signal { weight: W_COMPLEXITY, score: complexity_score },
-        Signal { weight: W_HOTSPOT, score: hotspot_score },
-        Signal { weight: W_CHURN, score: churn_score },
-        Signal { weight: W_CONVENTIONS, score: convention_score },
+        Signal {
+            weight: W_BLAST,
+            score: blast_score,
+        },
+        Signal {
+            weight: W_COMPLEXITY,
+            score: complexity_score,
+        },
+        Signal {
+            weight: W_HOTSPOT,
+            score: hotspot_score,
+        },
+        Signal {
+            weight: W_CHURN,
+            score: churn_score,
+        },
+        Signal {
+            weight: W_CONVENTIONS,
+            score: convention_score,
+        },
     ]);
 
-    let recommended_reads =
-        build_recommended_reads(db, workspace_root, findings, &affected_files, &stats.changed_files);
+    let recommended_reads = build_recommended_reads(
+        db,
+        workspace_root,
+        findings,
+        &affected_files,
+        &stats.changed_files,
+    );
 
     Ok(json!({
         "changed_files": stats.changed_files,

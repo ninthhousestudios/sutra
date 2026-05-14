@@ -633,7 +633,8 @@ impl SutraServer {
         description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
         identifies changed files and symbols, computes transitive impact, calculates a \
         0.0–1.0 risk score with breakdown, and ranks recommended reads. \
-        diff: \"branch\" (default, against main merge-base), \"staged\", or \"unstaged\". \
+        diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
+        or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit. \
         Requires analysis tier."
     )]
     pub async fn sutra_review(

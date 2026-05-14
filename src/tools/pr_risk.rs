@@ -45,7 +45,10 @@ pub fn handle(
     if let Some(obj) = result.as_object_mut() {
         obj.insert("base".into(), json!(base));
         obj.insert("head".into(), json!(head));
-        obj.insert("churn_window_days".into(), json!(scoring::CHURN_WINDOW_DAYS));
+        obj.insert(
+            "churn_window_days".into(),
+            json!(scoring::CHURN_WINDOW_DAYS),
+        );
     }
     Ok(result)
 }
@@ -98,10 +101,22 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
     let volume_score = scoring::normalize(file_count as f64, 25.0);
 
     let composite = scoring::weighted_score(&[
-        Signal { weight: W_BLAST, score: blast_score },
-        Signal { weight: W_COMPLEXITY, score: complexity_score },
-        Signal { weight: W_CHURN, score: churn_score },
-        Signal { weight: W_VOLUME, score: volume_score },
+        Signal {
+            weight: W_BLAST,
+            score: blast_score,
+        },
+        Signal {
+            weight: W_COMPLEXITY,
+            score: complexity_score,
+        },
+        Signal {
+            weight: W_CHURN,
+            score: churn_score,
+        },
+        Signal {
+            weight: W_VOLUME,
+            score: volume_score,
+        },
     ]);
 
     symbol_risks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

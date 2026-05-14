@@ -176,6 +176,69 @@ fn test_reject_dotdot_overlap() {
     );
 }
 
+#[test]
+fn test_resolve_by_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    workspace::add_workspace(&path, entry("proj", "/home/u/proj", &["rust"])).unwrap();
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert_eq!(
+        workspace::resolve_workspace(&config, "proj").unwrap().id,
+        "proj"
+    );
+}
+
+#[test]
+fn test_resolve_by_root_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    workspace::add_workspace(&path, entry("proj", "/home/u/proj", &["rust"])).unwrap();
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert_eq!(
+        workspace::resolve_workspace(&config, "/home/u/proj")
+            .unwrap()
+            .id,
+        "proj"
+    );
+}
+
+#[test]
+fn test_resolve_by_root_path_trailing_slash() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    workspace::add_workspace(&path, entry("proj", "/home/u/proj", &["rust"])).unwrap();
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert_eq!(
+        workspace::resolve_workspace(&config, "/home/u/proj/")
+            .unwrap()
+            .id,
+        "proj"
+    );
+}
+
+#[test]
+fn test_resolve_by_basename_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    workspace::add_workspace(&path, entry("proj", "/home/u/proj", &["rust"])).unwrap();
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert_eq!(
+        workspace::resolve_workspace(&config, "/some/other/path/proj")
+            .unwrap()
+            .id,
+        "proj"
+    );
+}
+
+#[test]
+fn test_resolve_unknown_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+    workspace::add_workspace(&path, entry("proj", "/home/u/proj", &["rust"])).unwrap();
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert!(workspace::resolve_workspace(&config, "nonexistent").is_err());
+}
+
 /// Adding a workspace whose root path does not exist on disk should succeed —
 /// sutra validates semantics, not filesystem presence at registration time.
 #[test]

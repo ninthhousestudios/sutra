@@ -55,11 +55,25 @@ pub fn save_workspaces(path: &Path, config: &WorkspacesConfig) -> Result<()> {
 }
 
 /// Find a workspace entry by id in an already-loaded config.
+/// Falls back to matching by root path or root basename if the exact id
+/// doesn't match, so callers can pass `/home/user/project` instead of `project`.
 pub fn resolve_workspace<'a>(config: &'a WorkspacesConfig, id: &str) -> Result<&'a WorkspaceEntry> {
+    let id_trimmed = id.trim_end_matches('/');
     config
         .workspace
         .iter()
-        .find(|w| w.id == id)
+        .find(|w| w.id == id_trimmed)
+        .or_else(|| {
+            let path = std::path::Path::new(id_trimmed);
+            config
+                .workspace
+                .iter()
+                .find(|w| w.root == path)
+                .or_else(|| {
+                    let basename = path.file_name()?.to_str()?;
+                    config.workspace.iter().find(|w| w.id == basename)
+                })
+        })
         .ok_or_else(|| SutraError::NotFound {
             tool: "workspaces",
             kind: format!("workspace '{id}'"),

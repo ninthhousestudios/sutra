@@ -45,15 +45,27 @@ mod tests {
     #[test]
     fn weighted_score_sums_and_clamps() {
         let signals = vec![
-            Signal { weight: 0.5, score: 0.8 },
-            Signal { weight: 0.5, score: 0.6 },
+            Signal {
+                weight: 0.5,
+                score: 0.8,
+            },
+            Signal {
+                weight: 0.5,
+                score: 0.6,
+            },
         ];
         let s = weighted_score(&signals);
         assert!((s - 0.7).abs() < f64::EPSILON);
 
         let extreme = vec![
-            Signal { weight: 0.6, score: 1.0 },
-            Signal { weight: 0.6, score: 1.0 },
+            Signal {
+                weight: 0.6,
+                score: 1.0,
+            },
+            Signal {
+                weight: 0.6,
+                score: 1.0,
+            },
         ];
         assert!((weighted_score(&extreme) - 1.0).abs() < f64::EPSILON);
     }
