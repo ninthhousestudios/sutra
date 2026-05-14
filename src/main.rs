@@ -383,7 +383,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
 
     let cancel = CancellationToken::new();
     let mut session_manager = LocalSessionManager::default();
-    session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(900));
+    session_manager.session_config.keep_alive = None;
     let session_manager = Arc::new(session_manager);
     let shttp_config =
         StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone());
