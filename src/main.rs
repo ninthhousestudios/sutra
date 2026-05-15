@@ -336,7 +336,17 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
 
     let (ws_config, db_cache) = load_workspaces_and_cache(&config)?;
     let parse_coord = sutra::pipeline::ParseCoordinator::new();
-    let server = SutraServer::new(config, ws_config, db_cache, parse_coord);
+    let server = SutraServer::new(
+        config.clone(),
+        ws_config.clone(),
+        db_cache.clone(),
+        parse_coord.clone(),
+    );
+
+    // Background reparse: if CWD is inside a registered workspace and the
+    // index is stale, kick off a parse without blocking the MCP handshake.
+    maybe_reparse_cwd(&config, &ws_config, &db_cache, &parse_coord);
+
     let (stdin, stdout) = stdio();
     let service = server.serve((stdin, stdout)).await?;
 
@@ -345,6 +355,76 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
         _ = shutdown_signal() => { tracing::info!("shutdown signal received"); }
     }
     Ok(())
+}
+
+fn maybe_reparse_cwd(
+    config: &Arc<Config>,
+    ws_config: &WsConfig,
+    db_cache: &DbCache,
+    parse_coord: &sutra::pipeline::ParseCoordinator,
+) {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let ws_cfg = ws_config.read();
+    let entry = ws_cfg
+        .workspace
+        .iter()
+        .find(|w| cwd.starts_with(&w.root));
+    let entry = match entry {
+        Some(e) => e.clone(),
+        None => return,
+    };
+    drop(ws_cfg);
+
+    let db = match sutra::tools::get_or_open_db(db_cache, &entry.id, &config.db_dir) {
+        Ok(db) => db,
+        Err(_) => return,
+    };
+
+    let is_stale = match db.last_parse_time() {
+        Ok(Some(ts)) => chrono::DateTime::parse_from_rfc3339(&ts)
+            .map(|dt| {
+                let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
+                age.num_seconds() as u64 > config.stale_threshold_sec
+            })
+            .unwrap_or(true),
+        _ => true,
+    };
+    if !is_stale {
+        return;
+    }
+
+    let lock = parse_coord.lock_for(&entry.id);
+    let Ok(guard) = lock.clone().try_lock_owned() else {
+        return;
+    };
+
+    let config = Arc::clone(config);
+    let ws_id = entry.id.clone();
+    tokio::spawn(async move {
+        let _guard = guard;
+        let result = tokio::task::spawn_blocking(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            sutra::pipeline::parse_workspace(&entry, &db, &config, &cancel)
+        })
+        .await;
+        match result {
+            Ok(Ok(snap)) => {
+                tracing::info!(
+                    "stdio startup reparse for {ws_id}: {}/{} files, {} symbols in {}ms",
+                    snap.files_parsed,
+                    snap.files_walked,
+                    snap.symbols_extracted,
+                    snap.duration_ms,
+                );
+            }
+            Ok(Err(e)) => tracing::error!("stdio startup reparse failed for {ws_id}: {e}"),
+            Err(e) => tracing::error!("stdio startup reparse panicked for {ws_id}: {e}"),
+        }
+    });
 }
 
 async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
