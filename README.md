@@ -1,6 +1,6 @@
 # sutra
 
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — per-workspace structural index via tree-sitter, served as an MCP server.
 
@@ -161,6 +161,3 @@ The last two distinguish "this workspace is quietly old" from "the scheduler its
 
 Unresolved references are reported honestly — the v0.1 resolver handles ~60-70% of references (local bindings, module-level items, direct imports).
 
-## License
-
-MPL-2.0
