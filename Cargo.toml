@@ -3,8 +3,8 @@ name = "sutra"
 version = "0.3.1"
 edition = "2024"
 publish = false
-license = "MPL-2.0"
-repository = "https://github.com/ninthhousestudios/manas"
+license = "AGPL-3.0"
+repository = "https://github.com/ninthhousestudios/sutra"
 description = "Code intelligence for manas — per-workspace structural index via tree-sitter"
 
 [[bin]]
