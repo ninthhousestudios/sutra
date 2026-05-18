@@ -1,5 +1,4 @@
 pub mod config;
-pub mod daemon;
 pub mod db;
 pub mod dd;
 pub mod diagnostics;
@@ -15,6 +14,5 @@ pub mod pipeline;
 pub mod resolver;
 pub mod rest;
 pub mod rules;
-pub mod smriti;
 pub mod tools;
 pub mod workspace;

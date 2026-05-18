@@ -59,7 +59,7 @@ A workspace is a project root directory. Sutra indexes each workspace independen
 sutra_status(path=\"/home/user/project\")
 ```
 This registers the workspace (deriving an ID from the directory name) and returns \
-file/symbol counts, parse freshness, and mode (daemon or local).
+file/symbol counts and parse freshness.
 
 ## Force reparse
 ```
@@ -175,9 +175,7 @@ sutra_status(path=\"/home/user/project\")
 ```
 Returns the last parse time and whether the workspace is stale.
 
-## Daemon mode
-When sutra runs as a daemon, it watches for file changes and re-parses automatically. \
-Check `sutra_health()` to see if the daemon is running and whether workspaces are fresh.",
+Returns per-workspace file counts, symbol counts, parse errors, and staleness.",
     },
     Topic {
         name: "conventions",

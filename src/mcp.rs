@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -85,26 +85,6 @@ use crate::tools::trend::TrendArgs;
 use crate::tools::winnow::WinnowArgs;
 
 // ---------------------------------------------------------------------------
-// Daemon registration error
-// ---------------------------------------------------------------------------
-
-enum DaemonRegisterError {
-    ConnectFailed,
-    DaemonError(String),
-    ParseError(String),
-}
-
-impl std::fmt::Display for DaemonRegisterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ConnectFailed => write!(f, "daemon not reachable"),
-            Self::DaemonError(msg) => write!(f, "daemon error: {msg}"),
-            Self::ParseError(msg) => write!(f, "response parse error: {msg}"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // SutraServer
 // ---------------------------------------------------------------------------
 
@@ -114,10 +94,6 @@ pub struct SutraServer {
     workspaces: Arc<RwLock<WorkspacesConfig>>,
     analysis_enabled: Arc<AtomicBool>,
     parse_coord: ParseCoordinator,
-    /// Shared with `Daemon` when running under the HTTP server. `None` in stdio
-    /// mode where there is no scheduler. Inner `Option<Instant>` is `None`
-    /// until the scheduler has run at least once.
-    scheduler_last_tick: Arc<Mutex<Option<Instant>>>,
     dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
     tool_router: ToolRouter<Self>,
 }
@@ -130,7 +106,6 @@ impl Clone for SutraServer {
             workspaces: Arc::clone(&self.workspaces),
             analysis_enabled: Arc::clone(&self.analysis_enabled),
             parse_coord: self.parse_coord.clone(),
-            scheduler_last_tick: Arc::clone(&self.scheduler_last_tick),
             dd_engines: Arc::clone(&self.dd_engines),
             tool_router: Self::tool_router(),
         }
@@ -150,18 +125,9 @@ impl SutraServer {
             workspaces,
             analysis_enabled: Arc::new(AtomicBool::new(false)),
             parse_coord,
-            scheduler_last_tick: Arc::new(Mutex::new(None)),
             dd_engines: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::tool_router(),
         }
-    }
-
-    /// Wire this server's freshness envelope to the daemon's scheduler tick
-    /// counter. Call this after `Daemon::new` so MCP clients can see scheduler
-    /// liveness independently of per-workspace snapshot age.
-    pub fn with_scheduler_last_tick(mut self, tick: Arc<Mutex<Option<Instant>>>) -> Self {
-        self.scheduler_last_tick = tick;
-        self
     }
 
     pub fn with_dd_engines(mut self, engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>) -> Self {
@@ -271,32 +237,9 @@ impl SutraServer {
             _ => (None, true),
         };
 
-        // Scheduler liveness is independent of per-workspace snapshot age:
-        // a snapshot can be old because the workspace is quiet, OR because
-        // the scheduler has wedged. Surface both so clients can tell them
-        // apart (docs/reviews/2026-05-08-scheduler-wedge-bug.md).
-        let (scheduler_last_tick_age_sec, scheduler_alive) = {
-            let tick = self.scheduler_last_tick.lock();
-            match *tick {
-                Some(t) => {
-                    let age = t.elapsed().as_secs();
-                    // Scheduler is "alive" if it ticked within 2x the stale
-                    // threshold (it ticks every threshold/2, so a healthy
-                    // scheduler is well under this).
-                    let alive = age <= self.config.stale_threshold_sec.saturating_mul(2);
-                    (Some(age), alive)
-                }
-                // No scheduler observed yet — could be stdio mode or a
-                // cold-started HTTP daemon. Don't claim wedged.
-                None => (None, true),
-            }
-        };
-
         serde_json::json!({
             "as_of": as_of,
             "is_stale": is_stale,
-            "scheduler_last_tick_age_sec": scheduler_last_tick_age_sec,
-            "scheduler_alive": scheduler_alive,
         })
     }
 
@@ -830,32 +773,11 @@ impl SutraServer {
     }
 
     #[tool(description = "Register a workspace and return its status. \
-        Preferred session-start call — tries the daemon first (POST /workspaces), \
-        falls back to local parse if daemon is not running. \
-        Returns mode (daemon|local), status, freshness, file/symbol counts.")]
+        Returns status, freshness, file/symbol counts.")]
     pub async fn sutra_status(
         &self,
         Parameters(args): Parameters<StatusArgs>,
     ) -> Result<String, ErrorData> {
-        let daemon_url = &self.config.listen_addr;
-
-        // Try daemon path first — only fall back on ConnectFailed
-        match self
-            .try_daemon_register(daemon_url, &args.path, &args.languages)
-            .await
-        {
-            Ok(resp) => return Ok(resp),
-            Err(DaemonRegisterError::ConnectFailed) => {}
-            Err(e) => {
-                return Err(ErrorData::new(
-                    rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
-                    e.to_string(),
-                    None,
-                ));
-            }
-        }
-
-        // Fallback: local mode — register + parse
         let (ws_id, entry, _) = self.register_workspace(&args.path, args.languages)?;
 
         let db = self.get_db(&ws_id)?;
@@ -876,113 +798,19 @@ impl SutraServer {
         let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
         let total_symbols: i64 = sym_counts.values().sum();
         let freshness = self.freshness(&db);
-        let smriti_connected = self.check_smriti_connected();
 
         let status = if files.is_empty() { "empty" } else { "ready" };
 
         serde_json::to_string_pretty(&serde_json::json!({
             "workspace": ws_id,
             "root": entry.root.display().to_string(),
-            "mode": "local",
             "status": status,
             "last_parse": freshness["as_of"],
             "is_stale": freshness["is_stale"],
             "files": files.len(),
             "symbols": total_symbols,
-            "smriti_connected": smriti_connected,
         }))
         .map_err(json_to_rmcp)
-    }
-}
-
-impl SutraServer {
-    async fn try_daemon_register(
-        &self,
-        addr: &str,
-        path: &str,
-        languages: &Option<Vec<String>>,
-    ) -> std::result::Result<String, DaemonRegisterError> {
-        let base = format!("http://{addr}");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .map_err(|_| DaemonRegisterError::ConnectFailed)?;
-
-        let post_resp = client
-            .post(format!("{base}/workspaces"))
-            .json(&serde_json::json!({
-                "path": path,
-                "languages": languages,
-            }))
-            .send()
-            .await
-            .map_err(|_| DaemonRegisterError::ConnectFailed)?;
-
-        let status_code = post_resp.status();
-        if !status_code.is_success() && status_code.as_u16() != 409 {
-            return Err(DaemonRegisterError::DaemonError(format!(
-                "POST /workspaces returned {status_code}"
-            )));
-        }
-
-        let post_json: serde_json::Value = post_resp
-            .json()
-            .await
-            .map_err(|e| DaemonRegisterError::ParseError(e.to_string()))?;
-        let ws_id = post_json["id"]
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                std::path::Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            });
-
-        // Poll /status until workspace has parse data, up to parse_timeout_sec
-        let max_polls = self.config.parse_timeout_sec.min(120);
-        for _ in 0..max_polls {
-            if let Ok(status) = client.get(format!("{base}/status")).send().await
-                && let Ok(json) = status.json::<serde_json::Value>().await
-                && let Some(workspaces) = json["workspaces"].as_array()
-                && let Some(ws) = workspaces.iter().find(|w| w["id"] == ws_id)
-            {
-                let file_count = ws["file_count"].as_i64().unwrap_or(0);
-                let last_parse = ws["last_parse_time"].as_str().unwrap_or("");
-                if file_count > 0 || !last_parse.is_empty() {
-                    let smriti_connected = self.check_smriti_connected();
-                    let is_stale = last_parse.is_empty();
-                    let status_str = if file_count == 0 { "empty" } else { "ready" };
-                    return serde_json::to_string_pretty(&serde_json::json!({
-                        "workspace": ws_id,
-                        "root": ws["root"],
-                        "mode": "daemon",
-                        "status": status_str,
-                        "last_parse": last_parse,
-                        "is_stale": is_stale,
-                        "files": file_count,
-                        "symbols": ws["symbol_count"],
-                        "smriti_connected": smriti_connected,
-                    }))
-                    .map_err(|e| DaemonRegisterError::ParseError(e.to_string()));
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-
-        Err(DaemonRegisterError::DaemonError(format!(
-            "workspace registered but parse data not available after {max_polls}s"
-        )))
-    }
-
-    fn check_smriti_connected(&self) -> bool {
-        let smriti_db = std::env::var("SUTRA_SMRITI_DB")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-                PathBuf::from(home).join(".smriti").join("index.db")
-            });
-        smriti_db.exists()
     }
 }
 

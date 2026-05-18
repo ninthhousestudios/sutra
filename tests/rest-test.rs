@@ -109,9 +109,6 @@ async fn post_workspaces_registers_new_workspace() {
         listen_addr: "127.0.0.1:0".into(),
         parse_parallelism: 1,
         stale_threshold_sec: 600,
-        watch_poll_sec: 2,
-        watch_debounce_sec: 3,
-        parse_timeout_sec: 60,
         log_level: "warn".into(),
         dd_idle_timeout_sec: 1800,
     });

@@ -17,9 +17,8 @@ use crate::parser;
 use crate::resolver;
 use crate::workspace::WorkspaceEntry;
 
-/// Shared per-workspace parse lock. Both the Daemon scheduler/watcher and MCP
-/// tool handlers acquire the lock before parsing, preventing concurrent parses
-/// against the same SQLite database.
+/// Shared per-workspace parse lock. MCP tool handlers acquire the lock before
+/// parsing, preventing concurrent parses against the same SQLite database.
 #[derive(Clone, Default)]
 pub struct ParseCoordinator {
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,

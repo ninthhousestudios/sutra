@@ -2,7 +2,7 @@
 //!
 //! All timestamps are stored as ISO-8601 strings (TIMESTAMP columns). Access
 //! is serialised through a `parking_lot::Mutex<Connection>` — single-writer
-//! model, correct for one daemon with short-lived transactions.
+//! model, correct for one server with short-lived transactions.
 
 mod conventions;
 mod graph;

@@ -96,7 +96,7 @@ fn test_add_remove_roundtrip() {
 }
 
 /// Adding a workspace whose root contains an existing workspace's root must
-/// fail — overlapping roots cause smriti event fan-out to race two reparses
+/// fail — overlapping roots cause concurrent reparses to race
 /// against the same files (see docs/reviews/2026-05-08-scheduler-wedge-bug.md).
 #[test]
 fn test_reject_ancestor_root_overlap() {

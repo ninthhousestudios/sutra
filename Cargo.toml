@@ -33,7 +33,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tower = "0.5"
 tokio-util = "0.7"
 

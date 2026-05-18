@@ -295,7 +295,7 @@ fn test_blast_radius_deep_chain() {
 #[test]
 fn test_forbidden_deps_detects_violation() {
     let engine = DdEngine::new(Duration::from_secs(1800));
-    // Edge 1→2 where 1="src/tools/foo.rs", 2="src/daemon.rs"
+    // Edge 1→2 where 1="src/tools/foo.rs", 2="src/server.rs"
     engine
         .ingest(DdFacts {
             import_edges: vec![(1, 2), (2, 3)],
@@ -304,14 +304,14 @@ fn test_forbidden_deps_detects_violation() {
 
     let paths: HashMap<i64, String> = [
         (1, "src/tools/foo.rs".into()),
-        (2, "src/daemon.rs".into()),
+        (2, "src/server.rs".into()),
         (3, "src/lib.rs".into()),
     ]
     .into();
 
     let rules = vec![ForbiddenDep {
         from: "src/tools/*".into(),
-        to: "src/daemon.rs".into(),
+        to: "src/server.rs".into(),
     }];
 
     let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
@@ -319,7 +319,7 @@ fn test_forbidden_deps_detects_violation() {
     assert_eq!(violations[0].from_id, 1);
     assert_eq!(violations[0].to_id, 2);
     assert_eq!(violations[0].rule_from, "src/tools/*");
-    assert_eq!(violations[0].rule_to, "src/daemon.rs");
+    assert_eq!(violations[0].rule_to, "src/server.rs");
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn test_forbidden_deps_clean_graph() {
 
     let rules = vec![ForbiddenDep {
         from: "src/tools/*".into(),
-        to: "src/daemon.rs".into(),
+        to: "src/server.rs".into(),
     }];
 
     let violations = engine.query_forbidden_deps(&rules, &paths).unwrap();
@@ -360,13 +360,13 @@ fn test_forbidden_deps_delta_update() {
         (1, "src/models/user.rs".into()),
         (2, "src/db.rs".into()),
         (3, "src/tools/parse.rs".into()),
-        (4, "src/daemon.rs".into()),
+        (4, "src/server.rs".into()),
     ]
     .into();
 
     let rules = vec![ForbiddenDep {
         from: "src/tools/*".into(),
-        to: "src/daemon.rs".into(),
+        to: "src/server.rs".into(),
     }];
 
     // Initially no violations

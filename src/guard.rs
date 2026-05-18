@@ -419,8 +419,8 @@ mod tests {
     fn additive_append() {
         let input = ToolInput {
             file_path: Some("src/lib.rs".into()),
-            old_string: Some("pub mod rest;\npub mod smriti;".into()),
-            new_string: Some("pub mod rest;\npub mod rules;\npub mod smriti;".into()),
+            old_string: Some("pub mod rest;\npub mod rules;".into()),
+            new_string: Some("pub mod rest;\npub mod rules;\npub mod tools;".into()),
             content: None,
         };
         assert!(is_additive_edit(&input));

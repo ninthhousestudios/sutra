@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the sutra server (default: HTTP daemon)
+    /// Start the sutra server
     Serve {
         /// Use stdio transport instead of HTTP
         #[arg(long)]
@@ -95,7 +95,7 @@ enum Commands {
         /// Symbol name
         symbol: String,
     },
-    /// Check daemon and database health
+    /// Check server and database health
     Health,
     /// Install systemd user service for sutra
     InstallServices {
@@ -433,8 +433,8 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         session::local::LocalSessionManager,
         tower::{StreamableHttpServerConfig, StreamableHttpService},
     };
-    use sutra::daemon::Daemon;
     use sutra::mcp::SutraServer;
+    use sutra::pipeline::ParseCoordinator;
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
@@ -451,15 +451,10 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
 
     let (ws_config, db_cache) = load_workspaces_and_cache(&config)?;
 
-    let daemon = Arc::new(Daemon::new(
-        Arc::clone(&config),
-        Arc::clone(&ws_config),
-        Arc::clone(&db_cache),
+    let parse_coord = ParseCoordinator::new();
+    let dd_engines = Arc::new(parking_lot::Mutex::new(
+        std::collections::HashMap::<String, Arc<sutra::dd::DdEngine>>::new(),
     ));
-    let scheduler_tick = daemon.scheduler_last_tick_handle();
-    let dd_engines = daemon.dd_engines();
-    let parse_coord = daemon.parse_coordinator();
-    let _scheduler = daemon.spawn_scheduler();
 
     let cancel = CancellationToken::new();
     let mut session_manager = LocalSessionManager::default();
@@ -471,7 +466,6 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let cfg_clone = config.clone();
     let ws_clone = ws_config.clone();
     let db_clone = db_cache.clone();
-    let tick_clone = scheduler_tick.clone();
     let coord_clone = parse_coord.clone();
     let dd_clone = dd_engines.clone();
     let mcp_service = StreamableHttpService::new(
@@ -482,7 +476,6 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
                 db_clone.clone(),
                 coord_clone.clone(),
             )
-            .with_scheduler_last_tick(tick_clone.clone())
             .with_dd_engines(dd_clone.clone()))
         },
         session_manager,
@@ -508,7 +501,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
 
 async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr = &config.listen_addr;
-    let daemon_running = tokio::net::TcpStream::connect(addr).await.is_ok();
+    let server_running = tokio::net::TcpStream::connect(addr).await.is_ok();
 
     let ws_config = workspace::load_workspaces(&config.workspaces_path).unwrap_or_else(|_| {
         workspace::WorkspacesConfig {
@@ -517,8 +510,8 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     println!(
-        "daemon:     {}",
-        if daemon_running {
+        "server:     {}",
+        if server_running {
             "running"
         } else {
             "not running"
@@ -553,7 +546,7 @@ fn cmd_install_services(enable: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     let unit_content = format!(
         r#"[Unit]
-Description=sutra code-intelligence daemon
+Description=sutra code-intelligence server
 After=default.target
 
 [Service]
@@ -582,7 +575,7 @@ WantedBy=default.target
     if !status.success() {
         return Err("systemctl --user daemon-reload failed".into());
     }
-    println!("Reloaded systemd user daemon");
+    println!("Reloaded systemd user units");
 
     if enable {
         let status = std::process::Command::new("systemctl")

@@ -10,9 +10,6 @@ pub struct Config {
     pub listen_addr: String,
     pub parse_parallelism: usize,
     pub stale_threshold_sec: u64,
-    pub watch_poll_sec: u64,
-    pub watch_debounce_sec: u64,
-    pub parse_timeout_sec: u64,
     pub log_level: String,
     pub dd_idle_timeout_sec: u64,
 }
@@ -36,9 +33,6 @@ impl Config {
 
         let parse_parallelism = parse_env_or("SUTRA_PARSE_PARALLELISM", num_cpus());
         let stale_threshold_sec = parse_env_or("SUTRA_STALE_THRESHOLD_SEC", 600u64);
-        let watch_poll_sec = parse_env_or("SUTRA_WATCH_POLL_SEC", 2u64);
-        let watch_debounce_sec = parse_env_or("SUTRA_WATCH_DEBOUNCE_SEC", 3u64);
-        let parse_timeout_sec = parse_env_or("SUTRA_PARSE_TIMEOUT_SEC", 60u64);
         let log_level = std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let dd_idle_timeout_sec = parse_env_or("SUTRA_DD_IDLE_TIMEOUT_SEC", 1800u64);
 
@@ -48,9 +42,6 @@ impl Config {
             listen_addr,
             parse_parallelism,
             stale_threshold_sec,
-            watch_poll_sec,
-            watch_debounce_sec,
-            parse_timeout_sec,
             log_level,
             dd_idle_timeout_sec,
         })
@@ -65,9 +56,6 @@ impl Config {
             listen_addr: "127.0.0.1:0".into(),
             parse_parallelism: 1,
             stale_threshold_sec: 600,
-            watch_poll_sec: 2,
-            watch_debounce_sec: 3,
-            parse_timeout_sec: 60,
             log_level: "warn".into(),
             dd_idle_timeout_sec: 1800,
         }
