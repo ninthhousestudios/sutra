@@ -1,0 +1,14 @@
+[Unit]
+Description=sutra code-intelligence daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/home/josh/.cargo/bin/sutra serve
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
