@@ -239,10 +239,21 @@ impl SutraServer {
             _ => (None, true),
         };
 
-        serde_json::json!({
+        let parsing = self.parse_coord.is_locked(db.workspace_id());
+
+        let mut val = serde_json::json!({
             "as_of": as_of,
             "is_stale": is_stale,
-        })
+        });
+        if parsing {
+            val["parsing_in_progress"] = serde_json::Value::Bool(true);
+        }
+        val
+    }
+
+    async fn await_parse(&self, ws_id: &str) {
+        let lock = self.parse_coord.lock_for(ws_id);
+        let _guard = lock.lock().await;
     }
 
     fn wrap_response(
@@ -278,6 +289,7 @@ impl SutraServer {
             &self.workspaces.read().workspace,
             &self.db_cache,
             &self.config,
+            &self.parse_coord,
         )
         .map_err(sutra_to_rmcp)?;
         serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
@@ -516,6 +528,7 @@ impl SutraServer {
         Parameters(args): Parameters<DiffImpactArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
+        self.await_parse(&args.workspace).await;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result =
@@ -533,6 +546,7 @@ impl SutraServer {
         Parameters(args): Parameters<PrRiskArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
+        self.await_parse(&args.workspace).await;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result =
@@ -587,6 +601,7 @@ impl SutraServer {
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
+        self.await_parse(&args.workspace).await;
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
@@ -803,7 +818,7 @@ impl SutraServer {
 
         let status = if files.is_empty() { "empty" } else { "ready" };
 
-        serde_json::to_string_pretty(&serde_json::json!({
+        let mut val = serde_json::json!({
             "workspace": ws_id,
             "root": entry.root.display().to_string(),
             "status": status,
@@ -811,8 +826,11 @@ impl SutraServer {
             "is_stale": freshness["is_stale"],
             "files": files.len(),
             "symbols": total_symbols,
-        }))
-        .map_err(json_to_rmcp)
+        });
+        if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
+            val["parsing_in_progress"] = serde_json::Value::Bool(true);
+        }
+        serde_json::to_string_pretty(&val).map_err(json_to_rmcp)
     }
 }
 

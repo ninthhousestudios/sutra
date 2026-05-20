@@ -7,12 +7,14 @@ use std::collections::HashMap;
 use crate::config::Config;
 use crate::db::Db;
 use crate::error::Result;
+use crate::pipeline::ParseCoordinator;
 use crate::workspace::WorkspaceEntry;
 
 pub fn handle(
     workspaces: &[WorkspaceEntry],
     db_cache: &Mutex<HashMap<String, Arc<Db>>>,
     config: &Config,
+    parse_coord: &ParseCoordinator,
 ) -> Result<serde_json::Value> {
     let mut ws_summaries = Vec::new();
     let mut overall_ok = true;
@@ -29,7 +31,7 @@ pub fn handle(
             overall_ok = false;
         }
 
-        ws_summaries.push(json!({
+        let mut entry = json!({
             "workspace": ws.id,
             "root": ws.root.display().to_string(),
             "languages": ws.languages,
@@ -37,7 +39,11 @@ pub fn handle(
             "symbols": total_symbols,
             "parse_errors": parse_errors,
             "last_parse": last_parse,
-        }));
+        });
+        if parse_coord.is_locked(&ws.id) {
+            entry["parsing_in_progress"] = serde_json::Value::Bool(true);
+        }
+        ws_summaries.push(entry);
     }
 
     Ok(json!({

@@ -36,6 +36,15 @@ impl ParseCoordinator {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     }
+
+    /// Returns `true` if a parse is currently running for this workspace.
+    pub fn is_locked(&self, ws_id: &str) -> bool {
+        let locks = self.locks.lock();
+        match locks.get(ws_id) {
+            Some(lock) => lock.try_lock().is_err(),
+            None => false,
+        }
+    }
 }
 
 /// Summary of a parse pipeline run.
