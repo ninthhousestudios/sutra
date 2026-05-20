@@ -95,6 +95,62 @@ fn test_add_remove_roundtrip() {
     assert!(entries.is_empty(), "workspace should be gone after removal");
 }
 
+#[test]
+fn test_reject_db_dir_that_places_index_at_workspace_root() {
+    let workspace_root = PathBuf::from("/home/u/projects/yojana");
+    let config = workspace::WorkspacesConfig {
+        workspace: vec![WorkspaceEntry {
+            id: "yojana".to_string(),
+            root: workspace_root,
+            languages: vec!["rust".to_string()],
+        }],
+    };
+
+    let result = workspace::validate_db_dir_outside_workspaces(
+        PathBuf::from("/home/u/projects").as_path(),
+        &config,
+    );
+    assert!(
+        result.is_err(),
+        "expected SUTRA_DB_DIR parent of workspace to be rejected"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("SUTRA_DB_DIR") && msg.contains("inside its root"),
+        "error should explain the unsafe DB placement: {msg}"
+    );
+}
+
+#[test]
+fn test_reject_db_dir_inside_workspace_root() {
+    let entry = WorkspaceEntry {
+        id: "yojana".to_string(),
+        root: PathBuf::from("/home/u/projects/yojana"),
+        languages: vec!["rust".to_string()],
+    };
+
+    let result = workspace::validate_db_dir_for_workspace(
+        PathBuf::from("/home/u/projects/yojana/.cache").as_path(),
+        &entry,
+    );
+    assert!(
+        result.is_err(),
+        "expected SUTRA_DB_DIR inside workspace root to be rejected"
+    );
+}
+
+#[test]
+fn test_allow_default_style_db_dir_outside_workspace_root() {
+    let entry = WorkspaceEntry {
+        id: "yojana".to_string(),
+        root: PathBuf::from("/home/u/projects/yojana"),
+        languages: vec!["rust".to_string()],
+    };
+
+    workspace::validate_db_dir_for_workspace(PathBuf::from("/home/u/.sutra").as_path(), &entry)
+        .unwrap();
+}
+
 /// Adding a workspace whose root contains an existing workspace's root must
 /// fail — overlapping roots cause concurrent reparses to race
 /// against the same files (see docs/reviews/2026-05-08-scheduler-wedge-bug.md).

@@ -208,6 +208,8 @@ impl SutraServer {
             root,
             languages,
         };
+        workspace::validate_db_dir_for_workspace(&self.config.db_dir, &entry)
+            .map_err(sutra_to_rmcp)?;
 
         let already_exists = {
             let mut config = self.workspaces.write();

@@ -103,6 +103,13 @@ async fn add_workspace(
         languages: languages.clone(),
     };
 
+    if let Err(e) = crate::workspace::validate_db_dir_for_workspace(&state.config.db_dir, &entry) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"id": id, "status": "invalid_config", "error": e.to_string()})),
+        );
+    }
+
     if let Err(e) = crate::workspace::add_workspace(&state.config.workspaces_path, entry.clone()) {
         return (
             StatusCode::CONFLICT,

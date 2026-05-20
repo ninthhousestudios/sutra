@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,39 @@ pub fn load_workspaces(path: &Path) -> Result<WorkspacesConfig> {
         ))
     })?;
     Ok(config)
+}
+
+/// Reject DB directories that would place a workspace's index inside that
+/// workspace root. This catches misconfigurations like:
+/// `SUTRA_DB_DIR=/home/user/projects` with workspace id `app` and root
+/// `/home/user/projects/app`, which would create `/home/user/projects/app/index.db`.
+pub fn validate_db_dir_outside_workspaces(db_dir: &Path, config: &WorkspacesConfig) -> Result<()> {
+    for entry in &config.workspace {
+        validate_db_dir_for_workspace(db_dir, entry)?;
+    }
+    Ok(())
+}
+
+pub fn validate_db_dir_for_workspace(db_dir: &Path, entry: &WorkspaceEntry) -> Result<()> {
+    let root = normalize_path(&entry.root);
+    let db_workspace_dir = normalize_path(&db_dir.join(&entry.id));
+
+    if db_workspace_dir == root || db_workspace_dir.starts_with(&root) {
+        return Err(SutraError::InvalidArgument {
+            tool: "startup",
+            argument: "SUTRA_DB_DIR",
+            constraint: format!(
+                "database directory '{}' would place workspace '{}' index inside its root '{}'",
+                db_dir.display(),
+                entry.id,
+                entry.root.display(),
+            ),
+            received: Some(db_dir.display().to_string()),
+            next_action: "Set SUTRA_DB_DIR=/home/josh/.sutra and SUTRA_WORKSPACES=/home/josh/.sutra/workspaces.toml, then restart Sutra.".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Serialize `config` to TOML and write it to `path`, creating parent
@@ -122,9 +155,33 @@ pub fn add_workspace(path: &Path, entry: WorkspaceEntry) -> Result<()> {
 }
 
 fn roots_overlap(a: &Path, b: &Path) -> bool {
-    let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
-    let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    let a = normalize_path(a);
+    let b = normalize_path(b);
     a == b || a.starts_with(&b) || b.starts_with(&a)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    });
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Remove the workspace with the given id. Returns an error if it is not

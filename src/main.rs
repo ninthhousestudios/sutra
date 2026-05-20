@@ -167,9 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Parse { workspace: ws_id } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel)?;
             let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
@@ -197,9 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             path_prefix,
             limit,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
-            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::map::handle(&db, path_prefix.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -209,9 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             kind,
             limit,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
-            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::grep::handle(&db, &pattern, kind.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -221,9 +221,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             kind,
             limit,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
-            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::find::handle(&db, &name, kind.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -232,9 +232,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             symbol,
             context_lines,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+            let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::read::handle(&db, &ws.root, &symbol, context_lines, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -242,9 +242,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace: ws_id,
             path,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
-            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::outline::handle(&db, &path, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -252,9 +252,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace: ws_id,
             symbol,
         } => {
-            let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
-            let _ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws_id, &config.db_dir)?;
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
             let result = sutra::tools::impact::handle(&db, &symbol)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -264,14 +264,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 root,
                 languages,
             } => {
-                workspace::add_workspace(
-                    &config.workspaces_path,
-                    WorkspaceEntry {
-                        id: id.clone(),
-                        root: PathBuf::from(root),
-                        languages,
-                    },
-                )?;
+                let entry = WorkspaceEntry {
+                    id: id.clone(),
+                    root: PathBuf::from(root),
+                    languages,
+                };
+                workspace::validate_db_dir_for_workspace(&config.db_dir, &entry)?;
+                workspace::add_workspace(&config.workspaces_path, entry)?;
                 println!("Workspace '{id}' added.");
             }
             WorkspacesCmd::List => {
@@ -316,14 +315,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 type DbCache = Arc<Mutex<HashMap<String, Arc<Db>>>>;
 type WsConfig = Arc<RwLock<workspace::WorkspacesConfig>>;
 
+fn load_validated_workspaces(config: &Config) -> sutra::error::Result<workspace::WorkspacesConfig> {
+    let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
+    workspace::validate_db_dir_outside_workspaces(&config.db_dir, &ws_config)?;
+    Ok(ws_config)
+}
+
 fn load_workspaces_and_cache(
     config: &Config,
 ) -> Result<(WsConfig, DbCache), Box<dyn std::error::Error>> {
-    let ws_config = workspace::load_workspaces(&config.workspaces_path).unwrap_or_else(|_| {
-        workspace::WorkspacesConfig {
-            workspace: Vec::new(),
-        }
-    });
+    let ws_config = load_validated_workspaces(config)?;
     let ws_config = Arc::new(RwLock::new(ws_config));
     let db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>> = Arc::new(Mutex::new(HashMap::new()));
     Ok((ws_config, db_cache))
@@ -369,10 +370,7 @@ fn maybe_reparse_cwd(
     };
 
     let ws_cfg = ws_config.read();
-    let entry = ws_cfg
-        .workspace
-        .iter()
-        .find(|w| cwd.starts_with(&w.root));
+    let entry = ws_cfg.workspace.iter().find(|w| cwd.starts_with(&w.root));
     let entry = match entry {
         Some(e) => e.clone(),
         None => return,
@@ -452,9 +450,10 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let (ws_config, db_cache) = load_workspaces_and_cache(&config)?;
 
     let parse_coord = ParseCoordinator::new();
-    let dd_engines = Arc::new(parking_lot::Mutex::new(
-        std::collections::HashMap::<String, Arc<sutra::dd::DdEngine>>::new(),
-    ));
+    let dd_engines = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::<
+        String,
+        Arc<sutra::dd::DdEngine>,
+    >::new()));
 
     let cancel = CancellationToken::new();
     let mut session_manager = LocalSessionManager::default();
@@ -503,11 +502,7 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr = &config.listen_addr;
     let server_running = tokio::net::TcpStream::connect(addr).await.is_ok();
 
-    let ws_config = workspace::load_workspaces(&config.workspaces_path).unwrap_or_else(|_| {
-        workspace::WorkspacesConfig {
-            workspace: Vec::new(),
-        }
-    });
+    let ws_config = load_validated_workspaces(config)?;
 
     println!(
         "server:     {}",
