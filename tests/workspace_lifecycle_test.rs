@@ -46,7 +46,7 @@ async fn test_register_parse_query_cycle() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("lifecycle", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -85,7 +85,7 @@ async fn test_incremental_reparse() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("incremental", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap1 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -128,7 +128,7 @@ async fn test_delete_cascade() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("cascade", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap1 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -169,7 +169,7 @@ async fn test_empty_workspace() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("empty", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -191,7 +191,7 @@ async fn test_stale_detection() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("stale", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);

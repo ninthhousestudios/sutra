@@ -46,7 +46,7 @@ fn entry_point_detection() {
 // Backward from main should yield [main, process, helper]
 fn setup_linear_chain() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("trace_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("trace_test", dir.path()).unwrap();
 
     db.upsert_file("src/main.rs", "rust", "h1", 100, true)
         .unwrap();
@@ -116,7 +116,7 @@ fn backward_trace_linear_chain() {
 #[test]
 fn cycle_detected_and_marked() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("cycle_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("cycle_test", dir.path()).unwrap();
 
     db.upsert_file("src/a.rs", "rust", "ha", 50, true).unwrap();
     db.upsert_file("src/b.rs", "rust", "hb", 50, true).unwrap();
@@ -160,7 +160,7 @@ fn cycle_detected_and_marked() {
 #[test]
 fn path_limit_respected() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("limit_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("limit_test", dir.path()).unwrap();
 
     // Create a fan-in: target called by many independent callers
     db.upsert_file("src/target.rs", "rust", "ht", 20, true)

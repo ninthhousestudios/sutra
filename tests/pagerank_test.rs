@@ -50,7 +50,7 @@ async fn test_pagerank_populated_after_parse() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("pr-test", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -89,7 +89,7 @@ async fn test_pagerank_sums_to_one() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("pr-sum", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -121,7 +121,7 @@ async fn test_pagerank_warm_start_converges() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("pr-warm", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     // First parse — cold start.
     {
@@ -201,7 +201,7 @@ async fn test_symbol_pagerank_distributed() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("sym-pr", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -237,7 +237,7 @@ async fn test_dangling_node_handling() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("dangling", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);

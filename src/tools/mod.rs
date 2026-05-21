@@ -32,17 +32,18 @@ use parking_lot::Mutex;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::workspace::WorkspaceEntry;
 
 pub fn get_or_open_db(
     cache: &Mutex<HashMap<String, Arc<Db>>>,
-    workspace_id: &str,
+    workspace: &WorkspaceEntry,
     db_dir: &Path,
 ) -> Result<Arc<Db>> {
     let mut map = cache.lock();
-    if let Some(db) = map.get(workspace_id) {
+    if let Some(db) = map.get(&workspace.id) {
         return Ok(Arc::clone(db));
     }
-    let db = Arc::new(Db::open(workspace_id, db_dir)?);
-    map.insert(workspace_id.to_string(), Arc::clone(&db));
+    let db = Arc::new(Db::open_for_workspace(workspace, db_dir)?);
+    map.insert(workspace.id.clone(), Arc::clone(&db));
     Ok(db)
 }

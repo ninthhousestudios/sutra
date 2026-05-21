@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Parse { workspace: ws_id } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel)?;
             let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::map::handle(&db, path_prefix.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -211,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::grep::handle(&db, &pattern, kind.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -223,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::find::handle(&db, &name, kind.as_deref(), limit)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -234,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::read::handle(&db, &ws.root, &symbol, context_lines, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -244,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::outline::handle(&db, &path, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
-            let db = sutra::db::Db::open(&ws.id, &config.db_dir)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let result = sutra::tools::impact::handle(&db, &symbol)?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -377,7 +377,7 @@ fn maybe_reparse_cwd(
     };
     drop(ws_cfg);
 
-    let db = match sutra::tools::get_or_open_db(db_cache, &entry.id, &config.db_dir) {
+    let db = match sutra::tools::get_or_open_db(db_cache, &entry, &config.db_dir) {
         Ok(db) => db,
         Err(_) => return,
     };
@@ -516,7 +516,7 @@ async fn cmd_health(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("workspaces: {}", ws_config.workspace.len());
 
     for ws in &ws_config.workspace {
-        match Db::open(&ws.id, &config.db_dir) {
+        match Db::open_for_workspace(ws, &config.db_dir) {
             Ok(db) => {
                 let files = db.all_files().unwrap_or_default();
                 let last_parse = db.last_parse_time().unwrap_or(None);

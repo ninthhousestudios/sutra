@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::error::{Result, SutraError};
+use crate::workspace::{self, WorkspaceEntry};
 
 // ---------------------------------------------------------------------------
 // Row types
@@ -145,10 +146,21 @@ impl Db {
     // Construction
     // -----------------------------------------------------------------------
 
-    /// Open the SQLite database at `db_dir/<workspace_id>/index.db`, creating
-    /// directories as needed. Applies WAL mode and other PRAGMAs, then runs
-    /// the embedded migrations.
-    pub fn open(workspace_id: &str, db_dir: &Path) -> Result<Self> {
+    /// Open the SQLite database for a registered workspace after validating
+    /// that the configured DB directory cannot place the index inside the
+    /// workspace root.
+    pub fn open_for_workspace(workspace: &WorkspaceEntry, db_dir: &Path) -> Result<Self> {
+        workspace::validate_db_dir_for_workspace(db_dir, workspace)?;
+        Self::open_unchecked(&workspace.id, db_dir)
+    }
+
+    /// Open the SQLite database at `db_dir/<workspace_id>/index.db` without
+    /// workspace-root placement validation.
+    ///
+    /// Production code should use `open_for_workspace` so unsafe DB placement
+    /// is rejected before SQLite creates files.
+    #[doc(hidden)]
+    pub fn open_unchecked(workspace_id: &str, db_dir: &Path) -> Result<Self> {
         let dir = db_dir.join(workspace_id);
         std::fs::create_dir_all(&dir).map_err(|e| {
             SutraError::Internal(format!(

@@ -49,7 +49,7 @@ async fn status_returns_workspace_list() {
     let (config, ws, db_cache) = test_state();
 
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test_ws", dir.path()).unwrap();
+    let db = Db::open_unchecked("test_ws", dir.path()).unwrap();
     db.insert_snapshot(&SnapshotParams {
         files_parsed: 1,
         symbols_extracted: 5,

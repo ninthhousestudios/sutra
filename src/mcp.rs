@@ -157,7 +157,8 @@ impl SutraServer {
     }
 
     fn get_db(&self, ws_id: &str) -> std::result::Result<Arc<Db>, ErrorData> {
-        tools::get_or_open_db(&self.db_cache, ws_id, &self.config.db_dir).map_err(sutra_to_rmcp)
+        let ws = self.resolve_workspace(ws_id)?;
+        tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir).map_err(sutra_to_rmcp)
     }
 
     fn require_analysis(&self) -> std::result::Result<(), ErrorData> {

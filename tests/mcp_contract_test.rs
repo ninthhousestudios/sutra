@@ -5,7 +5,7 @@ use sutra::tools::{deps, find, grep, impact, map, outline, read, refs, tools_met
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("contract_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("contract_test", dir.path()).unwrap();
 
     let src = dir.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -51,7 +51,7 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
 
 fn setup_test_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("contract_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("contract_test", dir.path()).unwrap();
 
     db.upsert_file("src/main.rs", "rust", "hash1", 50, true)
         .unwrap();

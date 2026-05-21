@@ -4,7 +4,7 @@ use sutra::tools::{calls, find, refs};
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
     (dir, db)
 }
 

@@ -37,7 +37,7 @@ fn sym<'a>(
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
     (dir, db)
 }
 
@@ -582,7 +582,7 @@ fn recommended_reads_ranks_violation_sites_first() {
 #[test]
 fn build_findings_integration_with_rules_and_imports() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     // Set up rules with a forbidden dep
     let rules_dir = dir.path().join(".sutra");
@@ -694,7 +694,7 @@ forbidden_deps = [
 #[test]
 fn build_findings_persists_conventions_to_db() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     let rules_dir = dir.path().join(".sutra");
     fs::create_dir_all(&rules_dir).unwrap();
@@ -752,7 +752,7 @@ fn build_findings_persists_conventions_to_db() {
 #[test]
 fn build_findings_falls_back_to_ephemeral_when_shared_engine_invalidated() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     let rules_dir = dir.path().join(".sutra");
     fs::create_dir_all(&rules_dir).unwrap();
@@ -798,7 +798,7 @@ forbidden_deps = [
 #[test]
 fn changed_files_include_freshness() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     // Create actual file on disk BEFORE DB upsert so last_parsed > mtime → fresh
     let src = dir.path().join("src");
@@ -838,7 +838,7 @@ fn changed_files_include_freshness() {
 #[test]
 fn affected_files_include_freshness() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     let src = dir.path().join("src");
     fs::create_dir_all(&src).unwrap();
@@ -906,7 +906,7 @@ fn affected_files_include_freshness() {
 #[test]
 fn freshness_reflects_actual_file_state() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     let src = dir.path().join("src");
     fs::create_dir_all(&src).unwrap();
@@ -967,7 +967,7 @@ fn freshness_reflects_actual_file_state() {
 #[test]
 fn build_findings_surfaces_error_on_bad_rules() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     let rules_dir = dir.path().join(".sutra");
     fs::create_dir_all(&rules_dir).unwrap();

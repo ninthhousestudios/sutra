@@ -20,7 +20,7 @@ pub fn handle(
     let mut overall_ok = true;
 
     for ws in workspaces {
-        let db = super::get_or_open_db(db_cache, &ws.id, &config.db_dir)?;
+        let db = super::get_or_open_db(db_cache, ws, &config.db_dir)?;
         let files = db.all_files()?;
         let sym_counts = db.symbol_counts_by_file()?;
         let total_symbols: i64 = sym_counts.values().sum();

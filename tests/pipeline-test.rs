@@ -95,7 +95,7 @@ async fn test_parse_fixture_directory() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("fixture", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -116,7 +116,7 @@ async fn test_parse_empty_workspace() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("empty-pipeline", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -141,7 +141,7 @@ async fn test_parse_skips_target_dir() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("skip-target", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -167,7 +167,7 @@ async fn test_parse_rollups_populated() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("rollups", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -196,7 +196,7 @@ async fn test_incremental_reparse() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("incremental-pipeline", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -226,7 +226,7 @@ async fn test_parse_snapshot_stored() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("snapshot-stored", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -250,7 +250,7 @@ async fn test_changed_single_file() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("changed-single", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     // Full parse first
     {
@@ -289,7 +289,7 @@ async fn test_deleted_file_with_cascade() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("delete-cascade", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
     {
@@ -341,7 +341,7 @@ async fn test_multiple_files_changed() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("multi-change", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     // Full parse
     {
@@ -392,7 +392,7 @@ async fn test_parse_cancellation() {
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("cancel-test", dir.path().to_path_buf());
     let config = make_config(db_dir.path());
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let cancel = AtomicBool::new(true);
     let result = pipeline::parse_workspace(&ws, &db, &config, &cancel);

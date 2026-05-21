@@ -119,10 +119,10 @@ async fn add_workspace(
 
     {
         let mut ws = state.workspaces.write();
-        ws.workspace.push(entry);
+        ws.workspace.push(entry.clone());
     }
 
-    if let Ok(db) = Db::open(&id, &state.config.db_dir) {
+    if let Ok(db) = Db::open_for_workspace(&entry, &state.config.db_dir) {
         state.db_cache.lock().insert(id.clone(), Arc::new(db));
     }
 

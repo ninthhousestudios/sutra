@@ -1,11 +1,35 @@
 use std::collections::HashMap;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
+use sutra::workspace::WorkspaceEntry;
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
     (dir, db)
+}
+
+#[test]
+fn test_open_for_workspace_rejects_index_inside_workspace_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace_root = dir.path().join("project");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+
+    let entry = WorkspaceEntry {
+        id: "project".to_string(),
+        root: workspace_root.clone(),
+        languages: vec!["rust".to_string()],
+    };
+
+    let result = Db::open_for_workspace(&entry, dir.path());
+    assert!(
+        result.is_err(),
+        "expected workspace-aware DB open to reject index inside workspace root"
+    );
+    assert!(
+        !workspace_root.join("index.db").exists(),
+        "validation must happen before SQLite creates index.db"
+    );
 }
 
 fn seed_file(db: &Db, path: &str) -> i64 {
@@ -731,9 +755,9 @@ fn test_fresh_db_creates_schema_migrations() {
 #[test]
 fn test_migration_reopen_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
-    let _db1 = Db::open("test", dir.path()).unwrap();
+    let _db1 = Db::open_unchecked("test", dir.path()).unwrap();
     drop(_db1);
-    let db2 = Db::open("test", dir.path()).unwrap();
+    let db2 = Db::open_unchecked("test", dir.path()).unwrap();
     let conn = db2.conn_for_test();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
@@ -745,7 +769,7 @@ fn test_migration_reopen_is_idempotent() {
 fn test_migration_hash_mismatch_errors() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let db = Db::open("test", dir.path()).unwrap();
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
         let conn = db.conn_for_test();
         conn.execute(
             "UPDATE schema_migrations SET content_hash = 'tampered' WHERE name = '0001_initial'",
@@ -753,7 +777,7 @@ fn test_migration_hash_mismatch_errors() {
         )
         .unwrap();
     }
-    let result = Db::open("test", dir.path());
+    let result = Db::open_unchecked("test", dir.path());
     let msg = match result {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected hash mismatch error, got Ok"),

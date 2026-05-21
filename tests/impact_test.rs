@@ -36,7 +36,7 @@ fn sym<'a>(
 
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test", dir.path()).unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
 
     db.upsert_file("src/a.rs", "rust", "hash_a", 100, true)
         .unwrap();
@@ -124,7 +124,7 @@ fn test_impact_unknown_symbol() {
 #[test]
 fn test_impact_high_fan_in() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("test_high", dir.path()).unwrap();
+    let db = Db::open_unchecked("test_high", dir.path()).unwrap();
 
     db.upsert_file("src/core.rs", "rust", "hash_core", 200, true)
         .unwrap();
@@ -185,7 +185,7 @@ async fn test_impact_real_codebase() {
         log_level: "warn".to_string(),
         dd_idle_timeout_sec: 1800,
     };
-    let db = Db::open(&ws.id, db_dir.path()).unwrap();
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -222,7 +222,7 @@ fn test_fan_in_blast_radius_consistency() {
     //   depend on C, so blast_radius >= 2.
 
     let dir = tempfile::tempdir().unwrap();
-    let db = Db::open("rollup_test", dir.path()).unwrap();
+    let db = Db::open_unchecked("rollup_test", dir.path()).unwrap();
 
     db.upsert_file("src/a.rs", "rust", "ha", 10, true).unwrap();
     db.upsert_file("src/b.rs", "rust", "hb", 10, true).unwrap();
