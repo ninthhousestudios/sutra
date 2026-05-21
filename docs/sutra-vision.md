@@ -25,7 +25,7 @@ failures:
 **1. Agents work without architectural context.** Each session starts from
 scratch. The agent doesn't know the component boundaries, the naming
 conventions, the dependency rules, or the design intent. It can write correct
-Rust, but it can't write code that *fits* -- because "fitting" requires
+code, but it can't write code that *fits* -- because "fitting" requires
 knowledge that isn't in the code.
 
 **2. Humans can't verify what agents build.** The human architect can read a
