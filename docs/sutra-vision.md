@@ -80,7 +80,12 @@ refinable by human-authored constraints and boundaries.
 **2. Informs agents before they write code (Orient).**
 An agent about to modify a module gets the conventions, boundaries, key
 dependencies, and cautions that apply. The architectural context that no agent
-remembers session-to-session is persisted and served on demand.
+remembers session-to-session is persisted and served on demand. Canonical
+interactions:
+
+- "I am about to edit X; orient me."
+- "Here is my plan; check architectural fit."
+- "Give me local templates and conventions for adding Y."
 
 **3. Enforces constraints during and after writing (Guard).**
 Convention deviations, boundary violations, health degradation -- flagged
@@ -88,10 +93,14 @@ actively, not just queryable. Code that breaks architectural rules gets caught
 before it lands.
 
 **4. Enables verification without line-by-line reading (Verify).**
-Architectural delta of a change (new dependencies, boundary crossings,
-component growth). Convention compliance. Risk scoring. Correctness
-verification via orchestrated tools (property tests, contracts, bounded model
-checking) with results reported at a level the human can assess.
+Architectural delta of a change: "Here is my diff; review architectural
+delta." The primary artifact is the architectural change report --
+components touched, new dependencies, boundary crossings, conventions
+followed or broken, semantic anchors changed, health deltas, and
+recommended files to inspect manually. The human reads this report, not
+every line of implementation. Correctness verification via orchestrated
+tools (property tests, contracts, bounded model checking) enriches the
+report with behavioral evidence where available.
 
 **5. Makes the architecture legible to the human (Understand).**
 Component navigation, health dashboards, convention catalogs, architectural
@@ -114,6 +123,10 @@ actually understand the shape of what they're building.
   tree-sitter, dependency graphs, pattern analysis. LLMs enrich (better
   labels, natural-language explanations) but aren't required. Sutra works on
   a laptop with no cloud access.
+- **Own why the work exists.** Sutra owns codebase facts and enforceable
+  architectural state. Task intent lives in yojana; design rationale lives
+  in vidhi. Sutra references those systems when needed but does not
+  duplicate their data.
 
 ## Identity
 
@@ -122,11 +135,75 @@ but an active participant in development. To collaborate well, it needs to
 understand (oracle capability) and enforce (guardian capability), but the
 point isn't to sit there passively. It actively shapes what gets built.
 
+## Core loop
+
+The layer model describes sutra's internal structure. The core loop describes
+the daily experience of using it.
+
+1. Human or agent selects a task.
+2. **Orient** -- sutra briefs the agent on the relevant architecture:
+   conventions, boundaries, key dependencies, cautions, and structural
+   templates for the area being changed.
+3. Agent writes code.
+4. **Check** -- sutra checks the diff for architectural fit and convention
+   drift as the agent works, flagging violations actively.
+5. **Review** -- sutra produces an architectural change report the human can
+   assess without reading every line: components touched, boundary crossings,
+   convention compliance, semantic anchors changed, health deltas, verification
+   evidence, and recommended files to inspect manually.
+6. **Teach** -- human accepts, rejects, or refines sutra's model by updating
+   constraints, component boundaries, aliases, or convention lifecycle states.
+   Sutra learns from these corrections.
+
+The orient-check-review-teach loop is the product. The layers are how it
+works internally.
+
+## Trust model
+
+If sutra is noisy, humans and agents will route around it. Sutra needs a
+trust model, not just a rule model.
+
+**Confidence.** Every architectural claim carries provenance (see below) and a
+confidence level. Computed structural facts are high confidence. Inferred
+conventions are medium. Auto-learned concept mappings are low until confirmed.
+
+**Severity.** A boundary violation, a weak convention deviation, and a health
+regression are not the same kind of failure. Findings carry severity:
+
+- **blocking** -- must be addressed before merge (boundary violations,
+  explicit constraint failures)
+- **advisory** -- flagged for human judgment (convention deviations, health
+  regressions, inferred invariant changes)
+- **informational** -- reported but not flagged (new dependencies within
+  allowed boundaries, concept mapping updates)
+
+**Waivers.** Humans can waive specific findings with rationale. Waivers are
+tracked, not silent -- they appear in every review report that touches the
+waived area so the architect can audit what's been accepted.
+
+**Sketch mode.** Components in active prototyping can be marked as sketching
+(see Layer 1). In sketch mode, all convention lifecycle states flatten to
+informational -- conventions are tracked but not enforced. Constraints remain
+fully enforced; violating a constraint during a spike may render the spike's
+conclusions meaningless.
+
 ## The living architectural model
 
 The model is organized as layers, each building on the ones below. Lower
 layers are factual and computed; higher layers are richer and more
 interpretive. Together they constitute the "living blueprint."
+
+**Provenance.** Every claim in the model carries its origin:
+
+- **computed** -- derived directly from code (Layer 0 facts, graph metrics)
+- **inferred** -- statistically detected (FCA conventions, cluster boundaries)
+- **human-authored** -- explicit constraints, boundaries, aliases
+- **ADR-derived** -- extracted from architectural decision records
+- **agent-learned** -- auto-captured from agent sessions
+
+Discovered architecture is a proposal, not truth. Human-authored claims
+override inferred ones. Provenance lets the architect audit what sutra
+believes and why.
 
 ### Layer 0 -- Structural facts (ground truth)
 
@@ -161,6 +238,19 @@ every edit. Recompute on demand, on save, or when structural changes
 exceed a threshold. Stability is a feature -- the architecture should not
 churn on every keystroke.
 
+**Component identity and lifecycle.** Components are not ephemeral clusters;
+they are persistent entities with identity, history, and state.
+
+- *Identity:* Components have stable names and IDs that survive
+  recomputation. If clustering shifts a boundary, sutra tracks the change
+  as a merge, split, or drift -- not a fresh set of components.
+- *History:* "This component used to be X and is becoming Y" is more useful
+  than a freshly computed cluster with no memory.
+- *Lifecycle state:* Each component is either **sketching** (actively
+  prototyping -- conventions informational, constraints still enforced)
+  or **stable** (architecture locked in -- conventions and constraints both
+  enforced). Default is stable; the human sets sketching explicitly.
+
 **Ideas:**
 - *Semantic anchors:* Each component has anchor points -- the central types,
   the load-bearing functions, the key abstractions. Identified by graph
@@ -183,6 +273,20 @@ Conventions are *detected*, not authored -- they emerge from the code.
 Validated in spike (sutra/v1/3). Extract implications, filter by
 support/confidence, get real conventions. Violations are symbols that break
 implications.
+
+**Convention lifecycle.** Detected conventions aren't automatically good.
+Legacy code often follows the wrong pattern; FCA may detect conventions that
+are accidents, stale design, or local compromises. Every convention has a
+lifecycle state:
+
+- **descriptive** -- this pattern is common (default for detected conventions)
+- **preferred** -- this pattern should continue (human-promoted)
+- **deprecated** -- this pattern exists but should fade (agents warned away)
+- **forbidden** -- do not copy this (agents blocked, violations flagged)
+
+Agents are oriented with preferred conventions and warned about deprecated
+ones. Forbidden conventions generate violations when new code matches
+them. Descriptive conventions are informational until promoted.
 
 **Incrementality:** Check changed symbols against existing implications. FCA
 can update incrementally without full recomputation.
@@ -285,6 +389,12 @@ Sub-millisecond per function.
 **What it captures:** Evidence that code does what it's supposed to, without
 the human reading the implementation.
 
+**Deferral note:** This layer is the most exploratory and the most expensive
+to make broadly useful. The core sutra identity is the orient-check-review
+loop (Layers 0-4). Layer 7 enriches that loop with behavioral evidence but
+is not required for it. Build the architectural orient/review system first;
+add verification as the foundation matures.
+
 **Substrates (orchestrated, per-language):**
 - Property-based testing (proptest, hypothesis) -- "for all inputs satisfying
   X, output satisfies Y"
@@ -297,6 +407,17 @@ the human reading the implementation.
 
 **Incrementality:** On-demand, not real-time. Triggered at review time, CI
 time, or explicit request.
+
+**Verification gaps.** For human trust, sutra must be explicit about what was
+*not* verified, not just what passed. The review report includes:
+
+- no contract exists for this behavior
+- mutation score is weak in this area
+- this change touched high-risk logic with no behavioral evidence
+- this property was inferred but not human-approved
+
+Negative evidence and missing evidence are first-class findings. The human
+should never mistake silence for safety.
 
 **Ideas:**
 - *Invariant mining:* Daikon-style automatic inference from existing code and
@@ -347,6 +468,14 @@ language-independent. Per-language support via adapters/plugins for parsing,
 convention detection, and verification tool integration. Tree-sitter already
 provides multi-language parsing. Target languages: Rust, Dart, Python, C.
 
+Language-agnostic does not mean uniform. The semantic richness of languages
+varies enormously -- Rust gives rich type-level information, explicit traits,
+and strict visibility; Python's call graphs and effects are fragile to
+analyze statically. Each adapter declares **capability levels**: which facts
+it can produce, which analyses it supports, and with what confidence. The
+core adapts gracefully -- a language with no effect tracking simply produces
+fewer convention attributes, not wrong ones.
+
 **Verification tool orchestration: sutra owns the pipeline.** Sutra knows
 which verification tools apply to which language, when to run them, and how
 to parse their output into a common architectural format. The orchestration
@@ -367,6 +496,12 @@ Sutra persists these mappings so agents don't rediscover them every session.
 Sources: component labels (auto-computed), human aliases (explicit), and
 optionally auto-learned from agent sessions.
 
+**Zero-config default.** Sutra must extract high value from Layer 0 alone,
+with no configuration. Aliases, constraints, convention promotions, and
+component boundaries enrich the model, but a fresh `sutra init` on an
+unknown codebase should immediately produce useful orientation and review.
+Configuration is refinement, not setup cost.
+
 **UI: sutra serves data via API; UI is a separate concern.** Sutra exposes
 the architectural model, verification results, and navigation data through a
 structured API. Whether the UI is an embedded web server, a separate desktop
@@ -374,24 +509,22 @@ app, or both is an implementation decision. The API must exist regardless.
 
 ## Open design questions
 
-- What is the MVP subset of layers? All seven are the vision -- what ships
-  first?
-- How does correctness verification work in practice for a human who doesn't
-  read every line? The substrates exist (proptest, Kani, etc.) but the UX
-  of presenting results architecturally needs design.
 - Should concept mappings auto-learn from agent sessions, or only accept
   explicit human aliases?
 - What is the adapter interface for adding a new language? Tree-sitter
   grammars handle parsing, but what about language-specific FCA attributes,
-  verification tools, and convention detection?
+  verification tools, convention detection, and capability level declarations?
 - Where does the boundary fall between sutra's verification orchestration
   and CI's job?
 - Graph clustering (Louvain/Leiden) for Layer 1 needs a spike. How does it
-  perform on real codebases? How stable are components across changes?
+  perform on real codebases? How stable are components across changes? How
+  does component identity survive recomputation?
 - How should structural templates (from Layer 2) be represented and served
   to agents?
 - What is the right DD scope -- just constraints and transitive health, or
   should more analyses migrate into DD?
+- What is the right granularity for waiver tracking? Per-finding,
+  per-file, per-component?
 
 ## Design process
 
