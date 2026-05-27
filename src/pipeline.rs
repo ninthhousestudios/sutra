@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tracing::{info, warn};
@@ -14,7 +14,7 @@ use crate::db::{Db, InsertSymbolParams, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
-use crate::parser::adapter::LanguageRegistry;
+use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::resolver;
 use crate::workspace::WorkspaceEntry;
 
@@ -92,6 +92,7 @@ fn parse_single_file(
     file_path: &Path,
     workspace_root: &Path,
     registry: &LanguageRegistry,
+    pool: &mut ParserPool,
 ) -> Result<Option<FileParseResult>> {
     let rel_path = file_path
         .strip_prefix(workspace_root)
@@ -140,7 +141,7 @@ fn parse_single_file(
         db.delete_file_cascade(existing.id)?;
     }
 
-    let parse_result = match adapter.parse(&contents, &rel_path) {
+    let parse_result = match pool.parse_with(adapter, &contents, &rel_path) {
         Ok(r) => r,
         Err(e) => {
             warn!(path = %rel_path, error = %e, "parse failed");
@@ -319,11 +320,12 @@ fn prune_deleted_files(db: &Db, workspace_root: &Path) -> usize {
 pub fn parse_workspace(
     workspace: &WorkspaceEntry,
     db: &Db,
-    _config: &Config,
+    config: &Config,
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
+    let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
 
     let allowed_extensions: Vec<&str> = registry.extensions_for_languages(&workspace.languages);
 
@@ -348,7 +350,7 @@ pub fn parse_workspace(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry)? {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry, &mut pool)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
@@ -395,13 +397,14 @@ pub fn parse_workspace(
 pub fn parse_changed_files(
     workspace: &WorkspaceEntry,
     db: &Db,
-    _config: &Config,
+    config: &Config,
     changed: &[PathBuf],
     deleted: &[PathBuf],
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
+    let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
 
     let allowed_ext: HashSet<&str> = registry
         .extensions_for_languages(&workspace.languages)
@@ -443,7 +446,7 @@ pub fn parse_changed_files(
             if !allowed_ext.contains(ext) {
                 continue;
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry)? {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry, &mut pool)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {

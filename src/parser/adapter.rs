@@ -1,15 +1,72 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
-use crate::error::Result;
+use tree_sitter::{Language, Parser, Tree};
+
+use crate::error::{Result, SutraError};
 
 use super::ParseResult;
+
+pub struct ParseContext<'a> {
+    pub source: &'a [u8],
+    pub tree: &'a Tree,
+    pub file_path: &'a str,
+}
+
+pub struct ParserPool {
+    parsers: HashMap<String, Parser>,
+    timeout_micros: u64,
+}
+
+impl ParserPool {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            parsers: HashMap::new(),
+            timeout_micros: timeout.as_micros() as u64,
+        }
+    }
+
+    pub fn parse_with(
+        &mut self,
+        adapter: &dyn LanguageAdapter,
+        source: &str,
+        file_path: &str,
+    ) -> Result<ParseResult> {
+        let lang_id = adapter.language_id().to_string();
+        #[allow(deprecated)] // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
+        let parser = self.parsers.entry(lang_id).or_insert_with(|| {
+            let mut p = Parser::new();
+            p.set_language(&adapter.grammar())
+                .expect("adapter returned invalid grammar");
+            p.set_timeout_micros(self.timeout_micros);
+            p
+        });
+
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| SutraError::Parse("tree-sitter parse timed out or returned no tree".into()))?;
+
+        let ctx = ParseContext {
+            source: source.as_bytes(),
+            tree: &tree,
+            file_path,
+        };
+        adapter.parse(&ctx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pool_size(&self) -> usize {
+        self.parsers.len()
+    }
+}
 
 pub trait FcaAttributeSource: Send + Sync {}
 
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
     fn extensions(&self) -> &[&str];
-    fn parse(&self, source: &str, file_path: &str) -> Result<ParseResult>;
+    fn grammar(&self) -> Language;
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult>;
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         None
     }
@@ -65,8 +122,11 @@ impl LanguageAdapter for RustAdapter {
     fn extensions(&self) -> &[&str] {
         &["rs"]
     }
-    fn parse(&self, source: &str, file_path: &str) -> Result<ParseResult> {
-        super::rust::parse(source, file_path)
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::rust::parse(ctx)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
@@ -84,8 +144,11 @@ impl LanguageAdapter for DartAdapter {
     fn extensions(&self) -> &[&str] {
         &["dart"]
     }
-    fn parse(&self, source: &str, file_path: &str) -> Result<ParseResult> {
-        super::dart::parse(source, file_path)
+    fn grammar(&self) -> Language {
+        tree_sitter_dart::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::dart::parse(ctx)
     }
 }
 
@@ -109,14 +172,17 @@ mod tests {
         fn extensions(&self) -> &[&str] {
             &["tst", "test"]
         }
-        fn parse(&self, _source: &str, file_path: &str) -> Result<ParseResult> {
+        fn grammar(&self) -> Language {
+            tree_sitter_rust::LANGUAGE.into()
+        }
+        fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
             Ok(ParseResult {
-                file_path: file_path.to_string(),
+                file_path: ctx.file_path.to_string(),
                 language: "test".to_string(),
                 symbols: vec![],
                 references: vec![],
                 imports: vec![],
-                parsed_ok: true,
+                parsed_ok: !ctx.tree.root_node().has_error(),
                 line_count: 0,
             })
         }
@@ -133,7 +199,8 @@ mod tests {
         let also = registry.adapter_for_extension("test").unwrap();
         assert_eq!(also.language_id(), "test");
 
-        let result = adapter.parse("", "foo.tst").unwrap();
+        let mut pool = ParserPool::new(Duration::from_secs(5));
+        let result = pool.parse_with(adapter, "fn x() {}", "foo.tst").unwrap();
         assert_eq!(result.language, "test");
         assert!(result.parsed_ok);
 
@@ -173,5 +240,38 @@ mod tests {
 
         let test = TestAdapter;
         assert!(test.as_fca_source().is_none());
+    }
+
+    #[test]
+    fn parser_pool_reuses_parser() {
+        let mut pool = ParserPool::new(Duration::from_secs(5));
+        let adapter = RustAdapter;
+
+        let r1 = pool.parse_with(&adapter, "fn a() {}", "a.rs").unwrap();
+        assert!(r1.parsed_ok);
+
+        let r2 = pool.parse_with(&adapter, "fn b() {}", "b.rs").unwrap();
+        assert!(r2.parsed_ok);
+
+        assert_eq!(pool.pool_size(), 1);
+    }
+
+    #[test]
+    fn timeout_rejects_pathological_input() {
+        let mut pool = ParserPool::new(Duration::from_micros(1));
+        let adapter = RustAdapter;
+
+        // Generate deeply nested input that takes measurable time to parse
+        let depth = 200;
+        let mut src = String::new();
+        for _ in 0..depth {
+            src.push_str("fn f() { if true { ");
+        }
+        for _ in 0..depth {
+            src.push_str("} }");
+        }
+
+        let result = pool.parse_with(&adapter, &src, "test.rs");
+        assert!(result.is_err());
     }
 }

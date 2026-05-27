@@ -12,6 +12,7 @@ pub struct Config {
     pub stale_threshold_sec: u64,
     pub log_level: String,
     pub dd_idle_timeout_sec: u64,
+    pub parse_timeout_ms: u64,
 }
 
 impl Config {
@@ -35,6 +36,7 @@ impl Config {
         let stale_threshold_sec = parse_env_or("SUTRA_STALE_THRESHOLD_SEC", 600u64);
         let log_level = std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let dd_idle_timeout_sec = parse_env_or("SUTRA_DD_IDLE_TIMEOUT_SEC", 1800u64);
+        let parse_timeout_ms = parse_env_or("SUTRA_PARSE_TIMEOUT_MS", 5000u64);
 
         Ok(Self {
             db_dir,
@@ -44,6 +46,7 @@ impl Config {
             stale_threshold_sec,
             log_level,
             dd_idle_timeout_sec,
+            parse_timeout_ms,
         })
     }
 }
@@ -58,6 +61,7 @@ impl Config {
             stale_threshold_sec: 600,
             log_level: "warn".into(),
             dd_idle_timeout_sec: 1800,
+            parse_timeout_ms: 5000,
         }
     }
 }

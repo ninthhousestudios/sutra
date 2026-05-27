@@ -1,44 +1,35 @@
-use crate::error::{Result, SutraError};
+use crate::error::Result;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity,
 };
-use tree_sitter::{Node, Parser, TreeCursor};
+use crate::parser::adapter::ParseContext;
+use tree_sitter::{Node, TreeCursor};
 
-pub fn parse(source: &str, file_path: &str) -> Result<ParseResult> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_rust::LANGUAGE.into())
-        .map_err(|e| SutraError::Parse(format!("failed to set language: {e}")))?;
-
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| SutraError::Parse("tree-sitter returned no tree".to_string()))?;
-
-    let root = tree.root_node();
+pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
+    let root = ctx.tree.root_node();
     let parsed_ok = !root.has_error();
-    let src = source.as_bytes();
+    let src = ctx.source;
 
-    // First pass: extract symbols
     let mut symbols = Vec::new();
     collect_symbols(&mut symbols, root, src, &[]);
 
-    // Second pass: extract references
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
 
-    // Third pass: extract imports
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
 
     Ok(ParseResult {
-        file_path: file_path.to_string(),
+        file_path: ctx.file_path.to_string(),
         language: "rust".to_string(),
         symbols,
         references,
         imports,
         parsed_ok,
-        line_count: source.lines().count(),
+        line_count: std::str::from_utf8(src)
+            .map(|s| s.lines().count())
+            .unwrap_or(0),
     })
 }
 
@@ -738,11 +729,19 @@ fn split_top_level(s: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::adapter::{ParserPool, RustAdapter};
+    use std::time::Duration;
+
+    fn parse_rust(source: &str, file_path: &str) -> crate::error::Result<ParseResult> {
+        let adapter = RustAdapter;
+        let mut pool = ParserPool::new(Duration::from_secs(5));
+        pool.parse_with(&adapter, source, file_path)
+    }
 
     #[test]
     fn smoke_parse_function() {
         let src = "fn hello() {}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         assert!(result.parsed_ok);
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].short_name, "hello");
@@ -752,7 +751,7 @@ mod tests {
     #[test]
     fn flag_detects_test_attr() {
         let src = "#[test]\nfn my_test() {}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].flags & FLAG_TEST, FLAG_TEST);
     }
@@ -760,14 +759,14 @@ mod tests {
     #[test]
     fn flag_detects_tokio_test() {
         let src = "#[tokio::test]\nasync fn my_test() {}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags & FLAG_TEST, FLAG_TEST);
     }
 
     #[test]
     fn flag_detects_cfg_test_module() {
         let src = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         let module = result
             .symbols
             .iter()
@@ -785,14 +784,14 @@ mod tests {
     #[test]
     fn flag_detects_no_mangle() {
         let src = "#[no_mangle]\npub extern \"C\" fn ffi_entry() {}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags & FLAG_FFI_ENTRY, FLAG_FFI_ENTRY);
     }
 
     #[test]
     fn no_flags_on_normal_function() {
         let src = "pub fn normal() {}";
-        let result = parse(src, "test.rs").unwrap();
+        let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags, 0);
     }
 }

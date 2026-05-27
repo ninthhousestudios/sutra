@@ -161,7 +161,10 @@ pub struct ExtractedImport {
 pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {
     let registry = adapter::default_registry();
     match registry.adapter_for_language(language) {
-        Some(a) => a.parse(source, file_path),
+        Some(a) => {
+            let mut pool = adapter::ParserPool::new(std::time::Duration::from_secs(5));
+            pool.parse_with(a, source, file_path)
+        }
         None => Ok(ParseResult {
             file_path: file_path.to_string(),
             language: language.to_string(),

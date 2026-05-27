@@ -1,23 +1,15 @@
-use crate::error::{Result, SutraError};
+use crate::error::Result;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity,
 };
-use tree_sitter::{Node, Parser, TreeCursor};
+use crate::parser::adapter::ParseContext;
+use tree_sitter::{Node, TreeCursor};
 
-pub fn parse(source: &str, file_path: &str) -> Result<ParseResult> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_dart::LANGUAGE.into())
-        .map_err(|e| SutraError::Parse(format!("failed to set language: {e}")))?;
-
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| SutraError::Parse("tree-sitter returned no tree".to_string()))?;
-
-    let root = tree.root_node();
+pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
+    let root = ctx.tree.root_node();
     let parsed_ok = !root.has_error();
-    let src = source.as_bytes();
+    let src = ctx.source;
 
     let mut symbols = Vec::new();
     collect_symbols(&mut symbols, root, src, &[]);
@@ -29,13 +21,15 @@ pub fn parse(source: &str, file_path: &str) -> Result<ParseResult> {
     collect_imports(&mut imports, root, src);
 
     Ok(ParseResult {
-        file_path: file_path.to_string(),
+        file_path: ctx.file_path.to_string(),
         language: "dart".to_string(),
         symbols,
         references,
         imports,
         parsed_ok,
-        line_count: source.lines().count(),
+        line_count: std::str::from_utf8(src)
+            .map(|s| s.lines().count())
+            .unwrap_or(0),
     })
 }
 
