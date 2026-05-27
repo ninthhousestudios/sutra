@@ -171,7 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel)?;
+            let registry = sutra::parser::adapter::default_registry();
+            let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel, &registry)?;
             let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
             let resolved = resolvable - snapshot.unresolved_count;
             let pct = if resolvable > 0 {
@@ -406,7 +407,8 @@ fn maybe_reparse_cwd(
         let _guard = guard;
         let result = tokio::task::spawn_blocking(move || {
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            sutra::pipeline::parse_workspace(&entry, &db, &config, &cancel)
+            let registry = sutra::parser::adapter::default_registry();
+            sutra::pipeline::parse_workspace(&entry, &db, &config, &cancel, &registry)
         })
         .await;
         match result {

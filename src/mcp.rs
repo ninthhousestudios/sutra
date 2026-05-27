@@ -443,7 +443,8 @@ impl SutraServer {
         let db_bg = Arc::clone(&db);
         let result = tokio::task::spawn_blocking(move || {
             let cancel = AtomicBool::new(false);
-            tools::parse::handle(&ws, &db_bg, &config, &cancel)
+            let registry = crate::parser::adapter::default_registry();
+            tools::parse::handle(&ws, &db_bg, &config, &cancel, &registry)
         })
         .await
         .map_err(|e| {
@@ -753,7 +754,8 @@ impl SutraServer {
             let _guard = guard;
             let result = tokio::task::spawn_blocking(move || {
                 let cancel = std::sync::atomic::AtomicBool::new(false);
-                crate::pipeline::parse_workspace(&entry_bg, &db, &config, &cancel)
+                let registry = crate::parser::adapter::default_registry();
+                crate::pipeline::parse_workspace(&entry_bg, &db, &config, &cancel, &registry)
             })
             .await;
             match result {
@@ -807,7 +809,8 @@ impl SutraServer {
             let config_bg = Arc::clone(&self.config);
             let _ = tokio::task::spawn_blocking(move || {
                 let cancel = AtomicBool::new(false);
-                crate::pipeline::parse_workspace(&entry_bg, &db_bg, &config_bg, &cancel)
+                let registry = crate::parser::adapter::default_registry();
+                crate::pipeline::parse_workspace(&entry_bg, &db_bg, &config_bg, &cancel, &registry)
             })
             .await;
         }

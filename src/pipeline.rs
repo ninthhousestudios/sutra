@@ -14,6 +14,7 @@ use crate::db::{Db, InsertSymbolParams, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
+use crate::parser::adapter::LanguageRegistry;
 use crate::resolver;
 use crate::workspace::WorkspaceEntry;
 
@@ -77,14 +78,6 @@ const SKIP_DIRS: &[&str] = &[
     ".claude",
 ];
 
-/// Map language name to file extensions.
-pub fn extensions_for_language(lang: &str) -> &'static [&'static str] {
-    match lang {
-        "rust" => &["rs"],
-        "dart" => &["dart"],
-        _ => &[],
-    }
-}
 
 struct FileParseResult {
     file_id: i64,
@@ -98,7 +91,7 @@ fn parse_single_file(
     db: &Db,
     file_path: &Path,
     workspace_root: &Path,
-    ext_to_lang: &HashMap<&str, &str>,
+    registry: &LanguageRegistry,
 ) -> Result<Option<FileParseResult>> {
     let rel_path = file_path
         .strip_prefix(workspace_root)
@@ -107,10 +100,11 @@ fn parse_single_file(
         .to_string();
 
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let language = match ext_to_lang.get(ext) {
-        Some(lang) => *lang,
+    let adapter = match registry.adapter_for_extension(ext) {
+        Some(a) => a,
         None => return Ok(None),
     };
+    let language = adapter.language_id();
 
     let contents = match std::fs::read_to_string(file_path) {
         Ok(c) => c,
@@ -146,7 +140,7 @@ fn parse_single_file(
         db.delete_file_cascade(existing.id)?;
     }
 
-    let parse_result = match parser::parse_file(&contents, language, &rel_path) {
+    let parse_result = match adapter.parse(&contents, &rel_path) {
         Ok(r) => r,
         Err(e) => {
             warn!(path = %rel_path, error = %e, "parse failed");
@@ -327,25 +321,11 @@ pub fn parse_workspace(
     db: &Db,
     _config: &Config,
     cancel: &AtomicBool,
+    registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
 
-    let allowed_extensions: Vec<&str> = workspace
-        .languages
-        .iter()
-        .flat_map(|lang| extensions_for_language(lang))
-        .copied()
-        .collect();
-
-    let ext_to_lang: HashMap<&str, &str> = workspace
-        .languages
-        .iter()
-        .flat_map(|lang| {
-            extensions_for_language(lang)
-                .iter()
-                .map(move |ext| (*ext, lang.as_str()))
-        })
-        .collect();
+    let allowed_extensions: Vec<&str> = registry.extensions_for_languages(&workspace.languages);
 
     // Prune indexed files that no longer exist on disk.
     let pruned = prune_deleted_files(db, &workspace.root);
@@ -368,7 +348,7 @@ pub fn parse_workspace(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
@@ -419,18 +399,9 @@ pub fn parse_changed_files(
     changed: &[PathBuf],
     deleted: &[PathBuf],
     cancel: &AtomicBool,
+    registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
-
-    let ext_to_lang: HashMap<&str, &str> = workspace
-        .languages
-        .iter()
-        .flat_map(|lang| {
-            extensions_for_language(lang)
-                .iter()
-                .map(move |ext| (*ext, lang.as_str()))
-        })
-        .collect();
 
     let mut files_parsed: i64 = 0;
     let mut symbols_extracted: i64 = 0;
@@ -463,7 +434,7 @@ pub fn parse_changed_files(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, &ext_to_lang)? {
+            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry)? {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {

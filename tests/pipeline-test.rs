@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use sutra::config::Config;
 use sutra::db::Db;
 use sutra::parser::{RefContextKind, SymbolKind};
+use sutra::parser::adapter::default_registry;
 use sutra::pipeline::{self, parse_changed_files};
 use sutra::workspace::WorkspaceEntry;
 
@@ -99,7 +100,8 @@ async fn test_parse_fixture_directory() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap.files_parsed, 2);
@@ -120,7 +122,8 @@ async fn test_parse_empty_workspace() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap.files_parsed, 0);
@@ -145,7 +148,8 @@ async fn test_parse_skips_target_dir() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap.files_parsed, 1);
@@ -171,7 +175,8 @@ async fn test_parse_rollups_populated() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -200,7 +205,8 @@ async fn test_incremental_reparse() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
@@ -208,7 +214,8 @@ async fn test_incremental_reparse() {
     std::fs::write(&file_path, "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     let hash_after = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
@@ -230,7 +237,8 @@ async fn test_parse_snapshot_stored() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -255,7 +263,8 @@ async fn test_changed_single_file() {
     // Full parse first
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     let hash_before = db.file_by_path("src/lib.rs").unwrap().unwrap().content_hash;
@@ -265,7 +274,8 @@ async fn test_changed_single_file() {
 
     // Incremental parse with only the changed file
     let cancel = AtomicBool::new(false);
-    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel).unwrap();
+    let registry = default_registry();
+    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel, &registry).unwrap();
 
     assert_eq!(snap.files_parsed, 1);
     assert!(snap.symbols_extracted >= 2);
@@ -294,7 +304,8 @@ async fn test_deleted_file_with_cascade() {
     // Full parse
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert!(db.file_by_path("src/lib.rs").unwrap().is_some());
@@ -304,7 +315,8 @@ async fn test_deleted_file_with_cascade() {
 
     // Incremental parse: lib.rs deleted
     let cancel = AtomicBool::new(false);
-    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel).unwrap();
+    let registry = default_registry();
+    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel, &registry).unwrap();
 
     // lib.rs should be gone from DB
     assert!(db.file_by_path("src/lib.rs").unwrap().is_none());
@@ -346,7 +358,8 @@ async fn test_multiple_files_changed() {
     // Full parse
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -356,6 +369,7 @@ async fn test_multiple_files_changed() {
     std::fs::remove_file(src.join("extra.rs")).unwrap();
 
     let cancel = AtomicBool::new(false);
+    let registry = default_registry();
     let snap = parse_changed_files(
         &ws,
         &db,
@@ -363,6 +377,7 @@ async fn test_multiple_files_changed() {
         &[src.join("lib.rs"), src.join("main.rs")],
         &[src.join("extra.rs")],
         &cancel,
+        &registry,
     )
     .unwrap();
 
@@ -395,6 +410,7 @@ async fn test_parse_cancellation() {
     let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
 
     let cancel = AtomicBool::new(true);
-    let result = pipeline::parse_workspace(&ws, &db, &config, &cancel);
+    let registry = default_registry();
+    let result = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry);
     assert!(result.is_err(), "pre-cancelled parse should fail");
 }

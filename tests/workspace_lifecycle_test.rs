@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use sutra::config::Config;
 use sutra::db::Db;
+use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::tools::{find, map, outline};
 use sutra::workspace::WorkspaceEntry;
@@ -50,7 +51,8 @@ async fn test_register_parse_query_cycle() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert!(snap.files_parsed >= 2, "expected at least 2 files parsed");
@@ -89,7 +91,8 @@ async fn test_incremental_reparse() {
 
     let snap1 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap1.files_parsed, 1);
@@ -97,7 +100,8 @@ async fn test_incremental_reparse() {
     // Second parse without any change — hash check should skip the file.
     let snap2 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(
@@ -110,7 +114,8 @@ async fn test_incremental_reparse() {
 
     let snap3 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap3.files_parsed, 1, "modified file should be reparsed");
@@ -132,7 +137,8 @@ async fn test_delete_cascade() {
 
     let snap1 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap1.files_parsed, 2);
@@ -145,7 +151,8 @@ async fn test_delete_cascade() {
     // prune missing files in v0.1, so we verify the remaining file is intact.
     let snap2 = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -173,7 +180,8 @@ async fn test_empty_workspace() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert_eq!(snap.files_parsed, 0);
@@ -195,7 +203,8 @@ async fn test_stale_detection() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 

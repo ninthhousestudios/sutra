@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use sutra::config::Config;
 use sutra::db::Db;
+use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::workspace::WorkspaceEntry;
 
@@ -54,7 +55,8 @@ async fn test_pagerank_populated_after_parse() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -93,7 +95,8 @@ async fn test_pagerank_sums_to_one() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -126,7 +129,8 @@ async fn test_pagerank_warm_start_converges() {
     // First parse — cold start.
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     let files_first = db.all_files().unwrap();
@@ -146,7 +150,8 @@ async fn test_pagerank_warm_start_converges() {
     .unwrap();
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     let files_second = db.all_files().unwrap();
@@ -205,7 +210,8 @@ async fn test_symbol_pagerank_distributed() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 
@@ -241,7 +247,8 @@ async fn test_dangling_node_handling() {
 
     {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
 

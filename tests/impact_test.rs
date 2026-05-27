@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use sutra::config::Config;
 use sutra::db::{Db, InsertSymbolParams};
+use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::tools::impact;
 use sutra::workspace::WorkspaceEntry;
@@ -189,7 +190,8 @@ async fn test_impact_real_codebase() {
 
     let snap = {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        pipeline::parse_workspace(&ws, &db, &config, &cancel)
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
     }
     .unwrap();
     assert!(
