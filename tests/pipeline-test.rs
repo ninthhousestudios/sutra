@@ -414,3 +414,33 @@ async fn test_parse_cancellation() {
     let result = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry);
     assert!(result.is_err(), "pre-cancelled parse should fail");
 }
+
+#[tokio::test]
+async fn test_incremental_skips_unlisted_language() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(src.join("lib.rs"), "pub fn hello() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("lang-filter", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    // Add a .dart file — workspace only lists "rust"
+    std::fs::write(src.join("app.dart"), "void main() {}\n").unwrap();
+
+    let snap = parse_changed_files(
+        &ws, &db, &config,
+        &[src.join("app.dart")], &[],
+        &cancel, &registry,
+    ).unwrap();
+
+    assert_eq!(snap.files_parsed, 0, "dart file should be skipped in rust-only workspace");
+    assert!(db.file_by_path("src/app.dart").unwrap().is_none());
+}

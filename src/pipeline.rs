@@ -403,6 +403,11 @@ pub fn parse_changed_files(
 ) -> Result<ParseSnapshot> {
     let start = Instant::now();
 
+    let allowed_ext: HashSet<&str> = registry
+        .extensions_for_languages(&workspace.languages)
+        .into_iter()
+        .collect();
+
     let mut files_parsed: i64 = 0;
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;
@@ -433,6 +438,10 @@ pub fn parse_changed_files(
         for file_path in changed {
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
+            }
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !allowed_ext.contains(ext) {
+                continue;
             }
             if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry)? {
                 parse_errors += result.parse_errors;
