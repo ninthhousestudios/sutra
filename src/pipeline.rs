@@ -129,31 +129,36 @@ fn parse_single_file(
 
     let content_hash = blake3::hash(contents.as_bytes()).to_hex().to_string();
 
-    let mut deleted_symbol_ids = Vec::new();
-    if let Some(existing) = db.file_by_path(&rel_path)? {
-        if existing.content_hash == content_hash {
+    let existing = db.file_by_path(&rel_path)?;
+    if let Some(ref ex) = existing {
+        if ex.content_hash == content_hash {
             return Ok(None);
         }
-        let old_symbols = db.find_symbols_by_file(existing.id)?;
-        for sym in &old_symbols {
-            deleted_symbol_ids.push(sym.id);
-        }
-        db.delete_file_cascade(existing.id)?;
     }
 
+    // Parse before deleting old data — on failure, keep the existing index intact.
     let parse_result = match pool.parse_with(adapter, &contents, &rel_path) {
         Ok(r) => r,
         Err(e) => {
-            warn!(path = %rel_path, error = %e, "parse failed");
+            warn!(path = %rel_path, error = %e, "parse failed, keeping existing index");
             return Ok(Some(FileParseResult {
                 file_id: 0,
                 symbols_extracted: 0,
                 refs_extracted: 0,
                 parse_errors: 1,
-                deleted_symbol_ids,
+                deleted_symbol_ids: vec![],
             }));
         }
     };
+
+    let mut deleted_symbol_ids = Vec::new();
+    if let Some(ex) = existing {
+        let old_symbols = db.find_symbols_by_file(ex.id)?;
+        for sym in &old_symbols {
+            deleted_symbol_ids.push(sym.id);
+        }
+        db.delete_file_cascade(ex.id)?;
+    }
 
     let mut parse_errors: i64 = 0;
     if !parse_result.parsed_ok {

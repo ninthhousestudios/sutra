@@ -33,14 +33,15 @@ impl ParserPool {
         file_path: &str,
     ) -> Result<ParseResult> {
         let lang_id = adapter.language_id().to_string();
-        #[allow(deprecated)] // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
-        let parser = self.parsers.entry(lang_id).or_insert_with(|| {
+        if !self.parsers.contains_key(&lang_id) {
             let mut p = Parser::new();
             p.set_language(&adapter.grammar())
-                .expect("adapter returned invalid grammar");
+                .map_err(|e| SutraError::Parse(format!("failed to set language for {}: {e}", lang_id)))?;
+            #[allow(deprecated)] // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
             p.set_timeout_micros(self.timeout_micros);
-            p
-        });
+            self.parsers.insert(lang_id.clone(), p);
+        }
+        let parser = self.parsers.get_mut(&lang_id).unwrap();
 
         let tree = parser
             .parse(source, None)
