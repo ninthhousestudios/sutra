@@ -251,6 +251,91 @@ fn is_inside_impl(node: Node) -> bool {
 }
 
 /// Extract a symbol from a definition node.
+fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<String> {
+    let mut attrs = serde_json::Map::new();
+
+    let modifiers_contain = |kw: &str| -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "function_modifiers" {
+                let mut mcursor = child.walk();
+                for m in child.children(&mut mcursor) {
+                    if m.kind() == kw {
+                        return true;
+                    }
+                }
+            }
+            if child.kind() == kw {
+                return true;
+            }
+        }
+        false
+    };
+
+    match kind {
+        SymbolKind::Function | SymbolKind::Method => {
+            if modifiers_contain("async") {
+                attrs.insert("is_async".into(), true.into());
+            }
+            if modifiers_contain("unsafe") {
+                attrs.insert("is_unsafe".into(), true.into());
+            }
+
+            if let Some(ret) = node.child_by_field_name("return_type") {
+                let ret_text = ret.utf8_text(src).unwrap_or("");
+                if ret_text.contains("Result") {
+                    attrs.insert("returns_result".into(), true.into());
+                }
+                if ret_text.contains("Option") {
+                    attrs.insert("returns_option".into(), true.into());
+                }
+            }
+
+            if let Some(params) = node.child_by_field_name("parameters") {
+                let mut pcursor = params.walk();
+                for child in params.children(&mut pcursor) {
+                    if child.kind() == "self_parameter" {
+                        let text = child.utf8_text(src).unwrap_or("");
+                        if text.contains("&mut") {
+                            attrs.insert("takes_self_mut".into(), true.into());
+                        } else if text.contains('&') {
+                            attrs.insert("takes_self_ref".into(), true.into());
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if let Some(type_params) = node.child_by_field_name("type_parameters") {
+                let tp_text = type_params.utf8_text(src).unwrap_or("");
+                if tp_text.contains('\'') {
+                    attrs.insert("has_lifetime_params".into(), true.into());
+                }
+            }
+        }
+        SymbolKind::Impl | SymbolKind::Trait => {
+            if modifiers_contain("unsafe") {
+                attrs.insert("is_unsafe".into(), true.into());
+            }
+        }
+        SymbolKind::Struct | SymbolKind::Enum => {
+            if let Some(type_params) = node.child_by_field_name("type_parameters") {
+                let tp_text = type_params.utf8_text(src).unwrap_or("");
+                if tp_text.contains('\'') {
+                    attrs.insert("has_lifetime_params".into(), true.into());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if attrs.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&attrs).ok()
+    }
+}
+
 fn extract_symbol(
     node: Node,
     src: &[u8],
@@ -264,6 +349,7 @@ fn extract_symbol(
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
     let (signature, signature_hash) = extract_signature(node, src, kind);
+    let language_attrs = extract_language_attrs(node, src, kind);
 
     let (cyclomatic, cognitive) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
         if let Some(body) = node.child_by_field_name("body") {
@@ -294,7 +380,7 @@ fn extract_symbol(
         cyclomatic,
         cognitive,
         flags: 0,
-        language_attrs: None,
+        language_attrs,
     })
 }
 
@@ -308,6 +394,7 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
 
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
+    let language_attrs = extract_language_attrs(node, src, SymbolKind::Impl);
 
     Some(ExtractedSymbol {
         qualified_name,
@@ -325,7 +412,7 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
         cyclomatic: None,
         cognitive: None,
         flags: 0,
-        language_attrs: None,
+        language_attrs,
     })
 }
 

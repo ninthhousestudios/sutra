@@ -465,3 +465,78 @@ struct Foo;
     let names: Vec<&str> = flat.iter().map(|s| s.short_name.as_str()).collect();
     assert_eq!(names, vec!["top", "Foo", "method_a", "method_b", "Foo"]);
 }
+
+#[test]
+fn test_language_attrs_async_unsafe() {
+    let src = r#"
+async fn fetch() -> Result<(), Error> {}
+unsafe fn danger() {}
+fn plain() {}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+
+    let fetch = result.symbols.iter().find(|s| s.short_name == "fetch").unwrap();
+    let attrs: serde_json::Value = serde_json::from_str(
+        fetch.language_attrs.as_deref().expect("fetch should have language_attrs"),
+    )
+    .unwrap();
+    assert_eq!(attrs["is_async"], true);
+    assert_eq!(attrs["returns_result"], true);
+
+    let danger = result.symbols.iter().find(|s| s.short_name == "danger").unwrap();
+    let attrs: serde_json::Value = serde_json::from_str(
+        danger.language_attrs.as_deref().expect("danger should have language_attrs"),
+    )
+    .unwrap();
+    assert_eq!(attrs["is_unsafe"], true);
+
+    let plain = result.symbols.iter().find(|s| s.short_name == "plain").unwrap();
+    assert!(plain.language_attrs.is_none(), "plain fn should have no language_attrs");
+}
+
+#[test]
+fn test_language_attrs_self_params() {
+    let src = r#"
+struct Foo;
+impl Foo {
+    fn by_ref(&self) {}
+    fn by_mut(&mut self) {}
+    fn no_self(x: i32) {}
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let by_ref = flat.iter().find(|s| s.short_name == "by_ref").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(by_ref.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["takes_self_ref"], true);
+    assert!(attrs.get("takes_self_mut").is_none());
+
+    let by_mut = flat.iter().find(|s| s.short_name == "by_mut").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(by_mut.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["takes_self_mut"], true);
+
+    let no_self = flat.iter().find(|s| s.short_name == "no_self").unwrap();
+    assert!(no_self.language_attrs.is_none());
+}
+
+#[test]
+fn test_language_attrs_lifetime_params() {
+    let src = r#"
+struct Borrowed<'a> {
+    data: &'a str,
+}
+fn no_lt() {}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+
+    let borrowed = result.symbols.iter().find(|s| s.short_name == "Borrowed").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(borrowed.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["has_lifetime_params"], true);
+
+    let no_lt = result.symbols.iter().find(|s| s.short_name == "no_lt").unwrap();
+    assert!(no_lt.language_attrs.is_none());
+}
