@@ -138,6 +138,7 @@ mod tests {
             cyclomatic: None,
             cognitive,
             flags,
+            language_attrs: None,
         }
     }
 

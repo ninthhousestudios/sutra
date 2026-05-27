@@ -31,6 +31,7 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap();
     db.insert_snapshot(&SnapshotParams {
@@ -73,6 +74,7 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap();
     db.insert_snapshot(&SnapshotParams {
@@ -573,6 +575,7 @@ fn test_winnow_rank_by_complexity() {
         cyclomatic: Some(15),
         cognitive: Some(25),
         flags: 0,
+        language_attrs: None,
     })
     .unwrap();
 
@@ -611,6 +614,7 @@ fn test_refs_context_kind_filter() {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap();
 

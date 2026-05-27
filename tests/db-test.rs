@@ -54,6 +54,7 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap()
 }
@@ -150,6 +151,7 @@ fn test_insert_and_lookup_symbol() {
             cyclomatic: None,
             cognitive: None,
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
 
@@ -327,6 +329,7 @@ fn test_find_enclosing_symbol_exact() {
             cyclomatic: None,
             cognitive: None,
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
 
@@ -356,6 +359,7 @@ fn test_find_enclosing_symbol_nested() {
             cyclomatic: None,
             cognitive: None,
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
     let inner_id = db
@@ -376,6 +380,7 @@ fn test_find_enclosing_symbol_nested() {
             cyclomatic: None,
             cognitive: None,
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
 
@@ -407,6 +412,7 @@ fn test_find_enclosing_symbol_outside() {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap();
 
@@ -747,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 5,
-        "fresh DB should register all 5 existing migrations"
+        count, 6,
+        "fresh DB should register all 6 existing migrations"
     );
 }
 
@@ -762,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 5, "reopen should not duplicate migration rows");
+    assert_eq!(count, 6, "reopen should not duplicate migration rows");
 }
 
 #[test]

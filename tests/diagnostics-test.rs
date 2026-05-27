@@ -30,6 +30,7 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
     .unwrap()
 }

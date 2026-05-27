@@ -112,6 +112,7 @@ fn insert_symbols_dfs(
             cyclomatic: sym.cyclomatic.map(|v| v as i64),
             cognitive: sym.cognitive.map(|v| v as i64),
             flags: sym.flags as i64,
+            language_attrs: sym.language_attrs.as_deref(),
         })?;
         count += 1;
         count += insert_symbols_dfs(db, file_id, &sym.children, Some(id))?;
@@ -264,6 +265,7 @@ fn resolve_file_refs(
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),
             flags: 0,
+            language_attrs: None,
         })
         .collect();
 

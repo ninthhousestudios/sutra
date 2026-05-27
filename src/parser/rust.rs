@@ -294,6 +294,7 @@ fn extract_symbol(
         cyclomatic,
         cognitive,
         flags: 0,
+        language_attrs: None,
     })
 }
 
@@ -324,6 +325,7 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     })
 }
 

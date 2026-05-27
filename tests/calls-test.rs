@@ -25,6 +25,7 @@ fn sym<'a>(file_id: i64, qn: &'a str, sn: &'a str, sl: i64, el: i64) -> InsertSy
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     }
 }
 

@@ -32,6 +32,7 @@ fn sym<'a>(
         cyclomatic: None,
         cognitive,
         flags: 0,
+        language_attrs: None,
     }
 }
 
@@ -654,6 +655,7 @@ forbidden_deps = [
             cyclomatic: None,
             cognitive: Some(2),
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
     }
@@ -727,6 +729,7 @@ fn build_findings_persists_conventions_to_db() {
             cyclomatic: None,
             cognitive: Some(2),
             flags: 0,
+            language_attrs: None,
         })
         .unwrap();
     }

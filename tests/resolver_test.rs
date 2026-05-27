@@ -24,6 +24,7 @@ fn make_symbol(
         cyclomatic: None,
         cognitive: None,
         flags: 0,
+        language_attrs: None,
     }
 }
 

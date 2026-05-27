@@ -28,6 +28,7 @@ fn sym<'a>(
         cyclomatic: None,
         cognitive,
         flags: 0,
+        language_attrs: None,
     }
 }
 

@@ -25,6 +25,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_conventions",
         include_str!("../../migrations/0005_conventions.sql"),
     ),
+    (
+        "0006_language_attrs",
+        include_str!("../../migrations/0006_language_attrs.sql"),
+    ),
 ];
 
 impl Db {

@@ -33,6 +33,7 @@ pub struct ExtractedSymbol {
     pub cyclomatic: Option<u32>,
     pub cognitive: Option<u32>,
     pub flags: u32,
+    pub language_attrs: Option<String>,
 }
 
 pub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {
