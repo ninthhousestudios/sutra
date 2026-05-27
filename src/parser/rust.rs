@@ -282,12 +282,32 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
             }
 
             if let Some(ret) = node.child_by_field_name("return_type") {
-                let ret_text = ret.utf8_text(src).unwrap_or("");
-                if ret_text.contains("Result") {
-                    attrs.insert("returns_result".into(), true.into());
-                }
-                if ret_text.contains("Option") {
-                    attrs.insert("returns_option".into(), true.into());
+                let type_node = if ret.kind() == "generic_type" {
+                    ret.child_by_field_name("type")
+                } else {
+                    Some(ret)
+                };
+                if let Some(tn) = type_node {
+                    let name = match tn.kind() {
+                        "type_identifier" => tn.utf8_text(src).ok(),
+                        "scoped_type_identifier" => {
+                            let mut c = tn.walk();
+                            tn.children(&mut c)
+                                .filter(|ch| ch.kind() == "type_identifier")
+                                .last()
+                                .and_then(|ch| ch.utf8_text(src).ok())
+                        }
+                        _ => None,
+                    };
+                    match name {
+                        Some("Result") => {
+                            attrs.insert("returns_result".into(), true.into());
+                        }
+                        Some("Option") => {
+                            attrs.insert("returns_option".into(), true.into());
+                        }
+                        _ => {}
+                    }
                 }
             }
 

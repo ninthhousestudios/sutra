@@ -140,3 +140,35 @@ class Cache {
         .collect();
     assert!(!factory_methods.is_empty(), "should detect factory constructor");
 }
+
+#[test]
+fn test_language_attrs_async_method() {
+    let src = r#"
+class Streamer {
+    Stream<int> generate() async* {
+        yield 1;
+    }
+    Future<void> doStuff() async {
+        await Future.delayed(Duration(seconds: 1));
+    }
+    void sync_method() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/streamer.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let generate = flat.iter().find(|s| s.short_name == "generate").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(generate.language_attrs.as_deref().expect("async* method should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["is_async"], true, "async* method should be marked is_async");
+
+    let do_stuff = flat.iter().find(|s| s.short_name == "doStuff").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(do_stuff.language_attrs.as_deref().expect("async method should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["is_async"], true, "async method should be marked is_async");
+
+    let sync_method = flat.iter().find(|s| s.short_name == "sync_method").unwrap();
+    assert!(sync_method.language_attrs.is_none(), "sync method should have no attrs");
+}

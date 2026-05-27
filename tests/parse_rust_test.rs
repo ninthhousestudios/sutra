@@ -540,3 +540,38 @@ fn no_lt() {}
     let no_lt = result.symbols.iter().find(|s| s.short_name == "no_lt").unwrap();
     assert!(no_lt.language_attrs.is_none());
 }
+
+#[test]
+fn test_language_attrs_no_false_positive_on_wrapper_types() {
+    let src = r#"
+fn get_query_result() -> QueryResult {}
+fn get_optional_config() -> OptionalConfig {}
+fn get_real_result() -> Result<(), Error> {}
+fn get_scoped_result() -> anyhow::Result<()> {}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+
+    let query_result = result.symbols.iter().find(|s| s.short_name == "get_query_result").unwrap();
+    assert!(
+        query_result.language_attrs.is_none(),
+        "QueryResult should not trigger returns_result: {:?}",
+        query_result.language_attrs,
+    );
+
+    let optional_config = result.symbols.iter().find(|s| s.short_name == "get_optional_config").unwrap();
+    assert!(
+        optional_config.language_attrs.is_none(),
+        "OptionalConfig should not trigger returns_option: {:?}",
+        optional_config.language_attrs,
+    );
+
+    let real_result = result.symbols.iter().find(|s| s.short_name == "get_real_result").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(real_result.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_result"], true);
+
+    let scoped_result = result.symbols.iter().find(|s| s.short_name == "get_scoped_result").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(scoped_result.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_result"], true);
+}

@@ -274,7 +274,7 @@ fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind:
             }
 
             if let Some(body) = node.child_by_field_name("body") {
-                if has_keyword(body, "async") {
+                if has_keyword(body, "async") || has_keyword(body, "async*") {
                     attrs.insert("is_async".into(), true.into());
                 }
             }
