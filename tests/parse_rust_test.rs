@@ -1,6 +1,6 @@
 use sutra::parser::RefContextKind;
 use sutra::parser::SymbolKind;
-use sutra::parser::parse_file;
+use sutra::parser::{flatten_symbols, parse_file};
 
 #[test]
 fn test_parse_function() {
@@ -46,7 +46,7 @@ impl Foo {
     let result = parse_file(src, "rust", "test.rs").unwrap();
     assert!(result.parsed_ok);
 
-    // Should have: Struct(Foo), Impl(Foo), Method(bar)
+    // Top-level: Struct(Foo) and Impl(Foo). Method(bar) nested under Impl.
     let struct_sym = result
         .symbols
         .iter()
@@ -60,20 +60,13 @@ impl Foo {
         .find(|s| s.kind == SymbolKind::Impl)
         .expect("should have an impl");
     assert_eq!(impl_sym.short_name, "Foo");
+    assert_eq!(impl_sym.children.len(), 1);
 
-    let method_sym = result
-        .symbols
-        .iter()
-        .find(|s| s.kind == SymbolKind::Method)
-        .expect("should have a method");
+    let method_sym = &impl_sym.children[0];
     assert_eq!(method_sym.short_name, "bar");
     assert_eq!(method_sym.qualified_name, "Foo::bar");
+    assert_eq!(method_sym.kind, SymbolKind::Method);
     assert!(method_sym.signature.is_some());
-    assert!(
-        method_sym.parent_qualified_name.as_deref() == Some("Foo"),
-        "parent was: {:?}",
-        method_sym.parent_qualified_name
-    );
 }
 
 #[test]
@@ -90,16 +83,15 @@ impl Drawable for Circle {
     let result = parse_file(src, "rust", "test.rs").unwrap();
     assert!(result.parsed_ok);
 
-    let trait_sym = result
-        .symbols
+    let flat = flatten_symbols(&result.symbols);
+
+    let trait_sym = flat
         .iter()
         .find(|s| s.kind == SymbolKind::Trait)
         .expect("should have a trait");
     assert_eq!(trait_sym.short_name, "Drawable");
 
-    // The trait's draw method
-    let trait_methods: Vec<_> = result
-        .symbols
+    let trait_methods: Vec<_> = flat
         .iter()
         .filter(|s| s.kind == SymbolKind::Method && s.qualified_name.starts_with("Drawable::"))
         .collect();
@@ -109,17 +101,13 @@ impl Drawable for Circle {
         result.symbols
     );
 
-    // The impl block — name should be the type being implemented (Circle)
-    let impl_sym = result
-        .symbols
+    let impl_sym = flat
         .iter()
         .find(|s| s.kind == SymbolKind::Impl)
         .expect("should have an impl");
     assert_eq!(impl_sym.short_name, "Circle");
 
-    // The impl's draw method should be qualified under Circle
-    let impl_methods: Vec<_> = result
-        .symbols
+    let impl_methods: Vec<_> = flat
         .iter()
         .filter(|s| s.kind == SymbolKind::Method && s.qualified_name.starts_with("Circle::"))
         .collect();
@@ -228,7 +216,8 @@ fn test_parse_error_tolerance() {
     // Even with errors, tree-sitter often extracts partial information.
     // The function name "broken" may or may not be found depending on how
     // tree-sitter recovers, so we just verify we don't crash.
-    if let Some(sym) = result.symbols.iter().find(|s| s.short_name == "broken") {
+    let flat = flatten_symbols(&result.symbols);
+    if let Some(sym) = flat.iter().find(|s| s.short_name == "broken") {
         // If it was found, it should be a function
         assert!(
             sym.kind == SymbolKind::Function || sym.kind == SymbolKind::Method,
@@ -421,4 +410,58 @@ fn make() -> Foo<i32> {
         !construction_refs.is_empty(),
         "turbofish struct literal (Foo::<i32> {{ .. }}) should have Construction ref: {foo_refs:?}"
     );
+}
+
+#[test]
+fn test_tree_structured_symbols() {
+    let src = r#"
+mod inner {
+    struct Foo;
+    impl Foo {
+        fn bar(&self) {}
+    }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    assert_eq!(result.symbols.len(), 1);
+    let module = &result.symbols[0];
+    assert_eq!(module.short_name, "inner");
+    assert_eq!(module.kind, SymbolKind::Module);
+    assert_eq!(module.children.len(), 2);
+
+    let struct_sym = module
+        .children
+        .iter()
+        .find(|s| s.kind == SymbolKind::Struct)
+        .expect("module should contain struct");
+    assert_eq!(struct_sym.short_name, "Foo");
+    assert!(struct_sym.children.is_empty());
+
+    let impl_sym = module
+        .children
+        .iter()
+        .find(|s| s.kind == SymbolKind::Impl)
+        .expect("module should contain impl");
+    assert_eq!(impl_sym.children.len(), 1);
+    assert_eq!(impl_sym.children[0].short_name, "bar");
+    assert_eq!(impl_sym.children[0].kind, SymbolKind::Method);
+
+    let flat = flatten_symbols(&result.symbols);
+    assert_eq!(flat.len(), 4);
+}
+
+#[test]
+fn test_flatten_preserves_dfs_order() {
+    let src = r#"
+fn top() {}
+impl Foo {
+    fn method_a(&self) {}
+    fn method_b(&self) {}
+}
+struct Foo;
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+    let names: Vec<&str> = flat.iter().map(|s| s.short_name.as_str()).collect();
+    assert_eq!(names, vec!["top", "Foo", "method_a", "method_b", "Foo"]);
 }

@@ -1,4 +1,4 @@
-use sutra::parser::{self, SymbolKind};
+use sutra::parser::{self, flatten_symbols, SymbolKind};
 
 #[test]
 fn test_parse_dart_class() {
@@ -11,12 +11,13 @@ class Foo {
     let result = parser::parse_file(src, "dart", "lib/foo.dart").unwrap();
     assert!(result.parsed_ok);
 
-    let class = result.symbols.iter().find(|s| s.short_name == "Foo");
+    let flat = flatten_symbols(&result.symbols);
+
+    let class = flat.iter().find(|s| s.short_name == "Foo");
     assert!(class.is_some(), "expected class Foo");
     assert_eq!(class.unwrap().kind, SymbolKind::Class);
 
-    let methods: Vec<_> = result
-        .symbols
+    let methods: Vec<_> = flat
         .iter()
         .filter(|s| s.kind == SymbolKind::Method)
         .collect();

@@ -11,8 +11,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let parsed_ok = !root.has_error();
     let src = ctx.source;
 
-    let mut symbols = Vec::new();
-    collect_symbols(&mut symbols, root, src, &[]);
+    let symbols = collect_symbols(root, src, &[]);
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
@@ -38,51 +37,51 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 // ---------------------------------------------------------------------------
 
 fn collect_symbols(
-    symbols: &mut Vec<ExtractedSymbol>,
     node: Node,
     src: &[u8],
     name_context: &[String],
-) {
+) -> Vec<ExtractedSymbol> {
+    let mut symbols = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "class_declaration" => {
-                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
+                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
                 {
                     let name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
             "mixin_declaration" => {
-                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
+                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
                 {
                     let name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
             "extension_declaration" => {
-                if let Some(sym) =
+                if let Some(mut sym) =
                     extract_named_symbol(child, src, name_context, SymbolKind::Extension)
                 {
                     let name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols(symbols, body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
@@ -92,9 +91,7 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
-            // Top-level function declarations
             "function_declaration" => {
-                // signature field holds the function_signature node
                 let sig_node = child.child_by_field_name("signature").unwrap_or(child);
                 let kind = if name_context.is_empty() {
                     SymbolKind::Function
@@ -105,9 +102,7 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
-            // Methods and getters/setters inside class/mixin/extension bodies
             "method_declaration" => {
-                // signature field is a method_signature (wrapping function_signature/getter_signature/setter_signature)
                 let sig_node = child.child_by_field_name("signature").unwrap_or(child);
                 if let Some(sym) =
                     extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
@@ -121,10 +116,11 @@ fn collect_symbols(
                 }
             }
             _ => {
-                collect_symbols(symbols, child, src, name_context);
+                symbols.extend(collect_symbols(child, src, name_context));
             }
         }
     }
+    symbols
 }
 
 /// Extract a symbol where the name is in the `name` field of `node`.
@@ -234,11 +230,6 @@ fn build_symbol(
     signature_hash: Option<String>,
 ) -> Option<ExtractedSymbol> {
     let qualified_name = build_qualified_name(name_context, &short_name);
-    let parent_qn = if name_context.is_empty() {
-        None
-    } else {
-        Some(name_context.join("::"))
-    };
 
     let visibility = dart_visibility(&short_name);
     let docstring = extract_docstring(node, src);
@@ -267,7 +258,7 @@ fn build_symbol(
         start_col: node.start_position().column,
         end_line: node.end_position().row + 1,
         end_col: node.end_position().column,
-        parent_qualified_name: parent_qn,
+        children: vec![],
         docstring,
         cyclomatic,
         cognitive,

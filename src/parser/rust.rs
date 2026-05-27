@@ -11,8 +11,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let parsed_ok = !root.has_error();
     let src = ctx.source;
 
-    let mut symbols = Vec::new();
-    collect_symbols(&mut symbols, root, src, &[]);
+    let symbols = collect_symbols(root, src, &[]);
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
@@ -92,22 +91,17 @@ fn has_cfg_test_attr(node: Node, src: &[u8]) -> bool {
 
 /// Recursively walk the tree collecting symbol definitions.
 /// `name_context` carries the qualified-name prefix built from enclosing scopes.
-fn collect_symbols(
-    symbols: &mut Vec<ExtractedSymbol>,
-    node: Node,
-    src: &[u8],
-    name_context: &[String],
-) {
-    collect_symbols_inner(symbols, node, src, name_context, false);
+fn collect_symbols(node: Node, src: &[u8], name_context: &[String]) -> Vec<ExtractedSymbol> {
+    collect_symbols_inner(node, src, name_context, false)
 }
 
 fn collect_symbols_inner(
-    symbols: &mut Vec<ExtractedSymbol>,
     node: Node,
     src: &[u8],
     name_context: &[String],
     in_cfg_test: bool,
-) {
+) -> Vec<ExtractedSymbol> {
+    let mut symbols = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -154,12 +148,12 @@ fn collect_symbols_inner(
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols_inner(symbols, body, src, &ctx, in_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, in_cfg_test);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
@@ -170,12 +164,12 @@ fn collect_symbols_inner(
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let impl_name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(impl_name);
-                        collect_symbols_inner(symbols, body, src, &ctx, in_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, in_cfg_test);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
@@ -227,20 +221,21 @@ fn collect_symbols_inner(
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let name = sym.short_name.clone();
-                    symbols.push(sym);
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        collect_symbols_inner(symbols, body, src, &ctx, child_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, child_cfg_test);
                     }
+                    symbols.push(sym);
                 }
                 continue;
             }
             _ => {
-                collect_symbols_inner(symbols, child, src, name_context, in_cfg_test);
+                symbols.extend(collect_symbols_inner(child, src, name_context, in_cfg_test));
             }
         }
     }
+    symbols
 }
 
 /// Check whether a node is (transitively) inside an impl_item's body.
@@ -265,11 +260,6 @@ fn extract_symbol(
     let short_name = node_name_text(node, src)?;
 
     let qualified_name = build_qualified_name(name_context, &short_name);
-    let parent_qn = if name_context.is_empty() {
-        None
-    } else {
-        Some(name_context.join("::"))
-    };
 
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
@@ -299,7 +289,7 @@ fn extract_symbol(
         start_col: node.start_position().column,
         end_line: node.end_position().row + 1,
         end_col: node.end_position().column,
-        parent_qualified_name: parent_qn,
+        children: vec![],
         docstring,
         cyclomatic,
         cognitive,
@@ -314,11 +304,6 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
     let impl_name = derive_impl_name(node, src)?;
 
     let qualified_name = build_qualified_name(name_context, &impl_name);
-    let parent_qn = if name_context.is_empty() {
-        None
-    } else {
-        Some(name_context.join("::"))
-    };
 
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
@@ -334,7 +319,7 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
         start_col: node.start_position().column,
         end_line: node.end_position().row + 1,
         end_col: node.end_position().column,
-        parent_qualified_name: parent_qn,
+        children: vec![],
         docstring,
         cyclomatic: None,
         cognitive: None,
@@ -773,8 +758,8 @@ mod tests {
             .find(|s| s.short_name == "tests")
             .unwrap();
         assert_eq!(module.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
-        let helper = result
-            .symbols
+        let flat = crate::parser::flatten_symbols(&result.symbols);
+        let helper = flat
             .iter()
             .find(|s| s.short_name == "helper")
             .unwrap();

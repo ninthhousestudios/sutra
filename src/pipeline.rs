@@ -87,6 +87,38 @@ struct FileParseResult {
     deleted_symbol_ids: Vec<i64>,
 }
 
+fn insert_symbols_dfs(
+    db: &Db,
+    file_id: i64,
+    symbols: &[parser::ExtractedSymbol],
+    parent_id: Option<i64>,
+) -> Result<i64> {
+    let mut count = 0;
+    for sym in symbols {
+        let id = db.insert_symbol(&InsertSymbolParams {
+            file_id,
+            qualified_name: &sym.qualified_name,
+            short_name: &sym.short_name,
+            kind: sym.kind.as_str(),
+            signature: sym.signature.as_deref(),
+            signature_hash: sym.signature_hash.as_deref(),
+            visibility: sym.visibility.as_deref(),
+            start_line: sym.start_line as i64,
+            start_col: sym.start_col as i64,
+            end_line: sym.end_line as i64,
+            end_col: sym.end_col as i64,
+            parent_symbol_id: parent_id,
+            docstring: sym.docstring.as_deref(),
+            cyclomatic: sym.cyclomatic.map(|v| v as i64),
+            cognitive: sym.cognitive.map(|v| v as i64),
+            flags: sym.flags as i64,
+        })?;
+        count += 1;
+        count += insert_symbols_dfs(db, file_id, &sym.children, Some(id))?;
+    }
+    Ok(count)
+}
+
 fn parse_single_file(
     db: &Db,
     file_path: &Path,
@@ -173,28 +205,7 @@ fn parse_single_file(
         parse_result.parsed_ok,
     )?;
 
-    let mut symbols_extracted: i64 = 0;
-    for sym in &parse_result.symbols {
-        db.insert_symbol(&InsertSymbolParams {
-            file_id,
-            qualified_name: &sym.qualified_name,
-            short_name: &sym.short_name,
-            kind: sym.kind.as_str(),
-            signature: sym.signature.as_deref(),
-            signature_hash: sym.signature_hash.as_deref(),
-            visibility: sym.visibility.as_deref(),
-            start_line: sym.start_line as i64,
-            start_col: sym.start_col as i64,
-            end_line: sym.end_line as i64,
-            end_col: sym.end_col as i64,
-            parent_symbol_id: None,
-            docstring: sym.docstring.as_deref(),
-            cyclomatic: sym.cyclomatic.map(|v| v as i64),
-            cognitive: sym.cognitive.map(|v| v as i64),
-            flags: sym.flags as i64,
-        })?;
-        symbols_extracted += 1;
-    }
+    let symbols_extracted = insert_symbols_dfs(db, file_id, &parse_result.symbols, None)?;
 
     for imp in &parse_result.imports {
         db.insert_import(file_id, &imp.raw_path, None, imp.line as i64)?;
@@ -248,7 +259,7 @@ fn resolve_file_refs(
             start_col: s.start_col as usize,
             end_line: s.end_line as usize,
             end_col: s.end_col as usize,
-            parent_qualified_name: None,
+            children: vec![],
             docstring: s.docstring.clone(),
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),

@@ -19,7 +19,7 @@ fn make_symbol(
         start_col: 0,
         end_line,
         end_col: 0,
-        parent_qualified_name: None,
+        children: vec![],
         docstring: None,
         cyclomatic: None,
         cognitive: None,

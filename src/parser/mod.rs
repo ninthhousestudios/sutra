@@ -28,11 +28,23 @@ pub struct ExtractedSymbol {
     pub start_col: usize,
     pub end_line: usize,
     pub end_col: usize,
-    pub parent_qualified_name: Option<String>,
+    pub children: Vec<ExtractedSymbol>,
     pub docstring: Option<String>,
     pub cyclomatic: Option<u32>,
     pub cognitive: Option<u32>,
     pub flags: u32,
+}
+
+pub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {
+    let mut out = Vec::new();
+    fn walk<'a>(symbols: &'a [ExtractedSymbol], out: &mut Vec<&'a ExtractedSymbol>) {
+        for sym in symbols {
+            out.push(sym);
+            walk(&sym.children, out);
+        }
+    }
+    walk(tree, &mut out);
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

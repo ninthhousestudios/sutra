@@ -445,3 +445,90 @@ async fn test_incremental_skips_unlisted_language() {
     assert_eq!(snap.files_parsed, 0, "dart file should be skipped in rust-only workspace");
     assert!(db.file_by_path("src/app.dart").unwrap().is_none());
 }
+
+#[tokio::test]
+async fn test_parent_symbol_id_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub struct Foo;\nimpl Foo {\n    pub fn bar(&self) {}\n    pub fn baz(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("parent-id-rt", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
+    }
+    .unwrap();
+
+    let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
+    let symbols = db.find_symbols_by_file(file.id).unwrap();
+
+    let impl_sym = symbols.iter().find(|s| s.kind == "impl").expect("should have impl");
+    let struct_sym = symbols.iter().find(|s| s.kind == "struct").expect("should have struct");
+
+    // Struct is top-level — no parent
+    assert!(struct_sym.parent_symbol_id.is_none(), "struct should have no parent");
+    // Impl is top-level — no parent
+    assert!(impl_sym.parent_symbol_id.is_none(), "impl should have no parent");
+
+    // Methods should have impl as parent
+    let methods: Vec<_> = symbols.iter().filter(|s| s.kind == "method").collect();
+    assert_eq!(methods.len(), 2);
+    for m in &methods {
+        assert_eq!(
+            m.parent_symbol_id,
+            Some(impl_sym.id),
+            "method {} should have impl as parent",
+            m.short_name
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_nested_parent_symbol_id_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+
+    std::fs::write(
+        src.join("lib.rs"),
+        "mod inner {\n    pub struct Foo;\n    impl Foo {\n        pub fn deep(&self) {}\n    }\n}\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("nested-parent", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry)
+    }
+    .unwrap();
+
+    let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
+    let symbols = db.find_symbols_by_file(file.id).unwrap();
+
+    let module = symbols.iter().find(|s| s.kind == "module").expect("should have module");
+    let impl_sym = symbols.iter().find(|s| s.kind == "impl").expect("should have impl");
+    let method = symbols.iter().find(|s| s.kind == "method").expect("should have method");
+
+    // module is top-level
+    assert!(module.parent_symbol_id.is_none());
+    // impl is under module
+    assert_eq!(impl_sym.parent_symbol_id, Some(module.id));
+    // method is under impl
+    assert_eq!(method.parent_symbol_id, Some(impl_sym.id));
+}
