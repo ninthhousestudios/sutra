@@ -95,3 +95,48 @@ extension StringExt on String {
     assert_eq!(exts.len(), 1);
     assert_eq!(exts[0].short_name, "StringExt");
 }
+
+#[test]
+fn test_language_attrs_abstract_class() {
+    let src = r#"
+abstract class Animal {
+    void speak();
+}
+class Dog extends Animal {
+    void speak() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/animals.dart").unwrap();
+
+    let animal = result.symbols.iter().find(|s| s.short_name == "Animal").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(animal.language_attrs.as_deref().expect("abstract class should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["is_abstract"], true);
+
+    let dog = result.symbols.iter().find(|s| s.short_name == "Dog").unwrap();
+    assert!(dog.language_attrs.is_none(), "non-abstract class should have no attrs");
+}
+
+#[test]
+fn test_language_attrs_factory_constructor() {
+    let src = r#"
+class Cache {
+    factory Cache() => Cache._();
+    Cache._();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/cache.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let factory_methods: Vec<_> = flat
+        .iter()
+        .filter(|s| {
+            s.language_attrs
+                .as_deref()
+                .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
+                .is_some_and(|v| v["is_factory"] == true)
+        })
+        .collect();
+    assert!(!factory_methods.is_empty(), "should detect factory constructor");
+}

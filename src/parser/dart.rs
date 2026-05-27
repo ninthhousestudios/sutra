@@ -48,6 +48,7 @@ fn collect_symbols(
             "class_declaration" => {
                 if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
                 {
+                    sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Class);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
@@ -61,6 +62,7 @@ fn collect_symbols(
             "mixin_declaration" => {
                 if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
                 {
+                    sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Mixin);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
@@ -98,15 +100,17 @@ fn collect_symbols(
                 } else {
                     SymbolKind::Method
                 };
-                if let Some(sym) = extract_fn_symbol(sig_node, child, src, name_context, kind) {
+                if let Some(mut sym) = extract_fn_symbol(sig_node, child, src, name_context, kind) {
+                    sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, kind);
                     symbols.push(sym);
                 }
             }
             "method_declaration" => {
                 let sig_node = child.child_by_field_name("signature").unwrap_or(child);
-                if let Some(sym) =
+                if let Some(mut sym) =
                     extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
                 {
+                    sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, SymbolKind::Method);
                     symbols.push(sym);
                 }
             }
@@ -218,6 +222,71 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
         None,
         None,
     )
+}
+
+fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind: SymbolKind) -> Option<String> {
+    let mut attrs = serde_json::Map::new();
+
+    let has_keyword = |n: Node, kw: &str| -> bool {
+        let mut cursor = n.walk();
+        n.children(&mut cursor).any(|c| c.kind() == kw)
+    };
+
+    match kind {
+        SymbolKind::Class => {
+            if has_keyword(node, "abstract") {
+                attrs.insert("is_abstract".into(), true.into());
+            }
+            if has_keyword(node, "sealed") {
+                attrs.insert("is_sealed".into(), true.into());
+            }
+            if has_keyword(node, "base") {
+                attrs.insert("is_base".into(), true.into());
+            }
+            if has_keyword(node, "interface") {
+                attrs.insert("is_interface".into(), true.into());
+            }
+        }
+        SymbolKind::Mixin => {
+            if has_keyword(node, "base") {
+                attrs.insert("is_base".into(), true.into());
+            }
+        }
+        SymbolKind::Function | SymbolKind::Method => {
+            if let Some(sig) = sig_node {
+                let sig_inner = if sig.kind() == "method_signature" {
+                    let mut c = sig.walk();
+                    sig.children(&mut c).next().unwrap_or(sig)
+                } else {
+                    sig
+                };
+
+                if sig_inner.kind() == "factory_constructor_signature" {
+                    attrs.insert("is_factory".into(), true.into());
+                }
+                if sig_inner.kind() == "constructor_signature" {
+                    attrs.insert("is_constructor".into(), true.into());
+                }
+
+                if has_keyword(sig, "static") || has_keyword(node, "static") {
+                    attrs.insert("is_static".into(), true.into());
+                }
+            }
+
+            if let Some(body) = node.child_by_field_name("body") {
+                if has_keyword(body, "async") {
+                    attrs.insert("is_async".into(), true.into());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if attrs.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&attrs).ok()
+    }
 }
 
 fn build_symbol(
