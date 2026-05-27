@@ -532,3 +532,53 @@ async fn test_nested_parent_symbol_id_chain() {
     // method is under impl
     assert_eq!(method.parent_symbol_id, Some(impl_sym.id));
 }
+
+#[test]
+fn test_language_attrs_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        r#"
+async fn fetch() -> Result<(), Error> {}
+unsafe fn danger() {}
+fn plain() {}
+struct Borrowed<'a> { data: &'a str }
+"#,
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry { id: "test".into(), root: dir.path().to_path_buf(), languages: vec!["rust".into()] };
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked("test", db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
+    let symbols = db.find_symbols_by_file(file.id).unwrap();
+
+    let fetch = symbols.iter().find(|s| s.short_name == "fetch").expect("fetch");
+    let attrs: serde_json::Value =
+        serde_json::from_str(fetch.language_attrs.as_deref().expect("fetch should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["is_async"], true);
+    assert_eq!(attrs["returns_result"], true);
+
+    let danger = symbols.iter().find(|s| s.short_name == "danger").expect("danger");
+    let attrs: serde_json::Value =
+        serde_json::from_str(danger.language_attrs.as_deref().expect("danger should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["is_unsafe"], true);
+
+    let plain = symbols.iter().find(|s| s.short_name == "plain").expect("plain");
+    assert!(plain.language_attrs.is_none(), "plain fn should have no attrs");
+
+    let borrowed = symbols.iter().find(|s| s.short_name == "Borrowed").expect("Borrowed");
+    let attrs: serde_json::Value =
+        serde_json::from_str(borrowed.language_attrs.as_deref().expect("Borrowed should have attrs"))
+            .unwrap();
+    assert_eq!(attrs["has_lifetime_params"], true);
+}
