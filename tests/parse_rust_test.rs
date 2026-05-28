@@ -491,7 +491,7 @@ fn plain() {}
     assert_eq!(attrs["is_unsafe"], true);
 
     let plain = result.symbols.iter().find(|s| s.short_name == "plain").unwrap();
-    assert!(plain.language_attrs.is_none(), "plain fn should have no language_attrs");
+    assert_eq!(plain.language_attrs.as_deref(), Some("{}"), "plain fn should have empty language_attrs");
 }
 
 #[test]
@@ -519,7 +519,7 @@ impl Foo {
     assert_eq!(attrs["takes_self_mut"], true);
 
     let no_self = flat.iter().find(|s| s.short_name == "no_self").unwrap();
-    assert!(no_self.language_attrs.is_none());
+    assert_eq!(no_self.language_attrs.as_deref(), Some("{}"));
 }
 
 #[test]
@@ -538,7 +538,7 @@ fn no_lt() {}
     assert_eq!(attrs["has_lifetime_params"], true);
 
     let no_lt = result.symbols.iter().find(|s| s.short_name == "no_lt").unwrap();
-    assert!(no_lt.language_attrs.is_none());
+    assert_eq!(no_lt.language_attrs.as_deref(), Some("{}"));
 }
 
 #[test]
@@ -552,15 +552,17 @@ fn get_scoped_result() -> anyhow::Result<()> {}
     let result = parse_file(src, "rust", "test.rs").unwrap();
 
     let query_result = result.symbols.iter().find(|s| s.short_name == "get_query_result").unwrap();
-    assert!(
-        query_result.language_attrs.is_none(),
+    assert_eq!(
+        query_result.language_attrs.as_deref(),
+        Some("{}"),
         "QueryResult should not trigger returns_result: {:?}",
         query_result.language_attrs,
     );
 
     let optional_config = result.symbols.iter().find(|s| s.short_name == "get_optional_config").unwrap();
-    assert!(
-        optional_config.language_attrs.is_none(),
+    assert_eq!(
+        optional_config.language_attrs.as_deref(),
+        Some("{}"),
         "OptionalConfig should not trigger returns_option: {:?}",
         optional_config.language_attrs,
     );

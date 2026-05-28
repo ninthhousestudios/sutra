@@ -358,11 +358,7 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
         _ => {}
     }
 
-    if attrs.is_empty() {
-        None
-    } else {
-        serde_json::to_string(&attrs).ok()
-    }
+    Some(serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()))
 }
 
 fn extract_symbol(

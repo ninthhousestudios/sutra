@@ -519,6 +519,17 @@ impl Db {
         Ok(rows?)
     }
 
+    pub fn file_has_null_language_attrs(&self, file_id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM symbols
+             WHERE file_id = ?1 AND language_attrs IS NULL",
+            params![file_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Return (file_id, symbol_count) for all files in a single query.
     pub fn symbol_counts_by_file(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn.lock();

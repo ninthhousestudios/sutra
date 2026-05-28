@@ -142,13 +142,21 @@ impl FcaAttributeSource for RustAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
         let mut sa = extract_cross_language_attrs(sym, file_path)?;
         if let Some(ref la_json) = sym.language_attrs {
-            if let Ok(map) =
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json)
-            {
-                for (key, val) in &map {
-                    if val.as_bool() == Some(true) {
-                        sa.attributes.push(key.clone());
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
+                Ok(map) => {
+                    for (key, val) in &map {
+                        if val.as_bool() == Some(true) {
+                            sa.attributes.push(key.clone());
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        symbol = %sym.qualified_name,
+                        file = %file_path,
+                        error = %e,
+                        "malformed language_attrs JSON, skipping language-specific attributes"
+                    );
                 }
             }
         }

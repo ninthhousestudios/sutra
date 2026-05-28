@@ -164,7 +164,9 @@ fn parse_single_file(
 
     let existing = db.file_by_path(&rel_path)?;
     if let Some(ref ex) = existing {
-        if ex.content_hash == content_hash {
+        if ex.content_hash == content_hash
+            && !db.file_has_null_language_attrs(ex.id)?
+        {
             return Ok(None);
         }
     }

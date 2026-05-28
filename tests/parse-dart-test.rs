@@ -115,7 +115,7 @@ class Dog extends Animal {
     assert_eq!(attrs["is_abstract"], true);
 
     let dog = result.symbols.iter().find(|s| s.short_name == "Dog").unwrap();
-    assert!(dog.language_attrs.is_none(), "non-abstract class should have no attrs");
+    assert_eq!(dog.language_attrs.as_deref(), Some("{}"), "non-abstract class should have empty attrs");
 }
 
 #[test]
@@ -170,5 +170,5 @@ class Streamer {
     assert_eq!(attrs["is_async"], true, "async method should be marked is_async");
 
     let sync_method = flat.iter().find(|s| s.short_name == "sync_method").unwrap();
-    assert!(sync_method.language_attrs.is_none(), "sync method should have no attrs");
+    assert_eq!(sync_method.language_attrs.as_deref(), Some("{}"), "sync method should have empty attrs");
 }

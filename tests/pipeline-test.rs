@@ -574,7 +574,7 @@ struct Borrowed<'a> { data: &'a str }
     assert_eq!(attrs["is_unsafe"], true);
 
     let plain = symbols.iter().find(|s| s.short_name == "plain").expect("plain");
-    assert!(plain.language_attrs.is_none(), "plain fn should have no attrs");
+    assert_eq!(plain.language_attrs.as_deref(), Some("{}"), "plain fn should have empty attrs");
 
     let borrowed = symbols.iter().find(|s| s.short_name == "Borrowed").expect("Borrowed");
     let attrs: serde_json::Value =

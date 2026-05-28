@@ -282,11 +282,7 @@ fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind:
         _ => {}
     }
 
-    if attrs.is_empty() {
-        None
-    } else {
-        serde_json::to_string(&attrs).ok()
-    }
+    Some(serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()))
 }
 
 fn build_symbol(
