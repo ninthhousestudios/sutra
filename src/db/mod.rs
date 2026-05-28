@@ -19,6 +19,32 @@ use crate::error::{Result, SutraError};
 use crate::workspace::{self, WorkspaceEntry};
 
 // ---------------------------------------------------------------------------
+// Table partition metadata
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePartition {
+    Ephemeral,
+    Durable,
+}
+
+pub struct TableMeta {
+    pub name: &'static str,
+    pub partition: TablePartition,
+    pub is_virtual: bool,
+}
+
+pub const TABLE_REGISTRY: &[TableMeta] = &[
+    TableMeta { name: "files", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "symbols", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "symbols_fts", partition: TablePartition::Ephemeral, is_virtual: true },
+    TableMeta { name: "refs", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "imports", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "conventions", partition: TablePartition::Ephemeral, is_virtual: false },
+];
+
+// ---------------------------------------------------------------------------
 // Row types
 // ---------------------------------------------------------------------------
 
@@ -200,6 +226,32 @@ impl Db {
     #[doc(hidden)]
     pub fn conn_for_test(&self) -> parking_lot::MutexGuard<'_, Connection> {
         self.conn.lock()
+    }
+
+    // -----------------------------------------------------------------------
+    // Reindex
+    // -----------------------------------------------------------------------
+
+    pub fn reindex(&self) -> Result<Vec<&'static str>> {
+        let conn = self.conn.lock();
+
+        let ephemeral: Vec<&TableMeta> = TABLE_REGISTRY
+            .iter()
+            .filter(|t| t.partition == TablePartition::Ephemeral)
+            .collect();
+
+        for meta in ephemeral.iter().rev() {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS {}", meta.name))?;
+        }
+
+        conn.execute_batch("DELETE FROM schema_migrations")?;
+
+        drop(conn);
+
+        self.run_migrations()?;
+
+        let names: Vec<&'static str> = ephemeral.iter().map(|t| t.name).collect();
+        Ok(names)
     }
 
     // -----------------------------------------------------------------------

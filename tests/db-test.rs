@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
+use sutra::db::{Db, InsertSymbolParams, SnapshotParams, TablePartition, TABLE_REGISTRY};
 use sutra::workspace::WorkspaceEntry;
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -852,4 +852,55 @@ fn convention_delete_stale() {
     let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     assert!(ids.contains(&"aaa"));
     assert!(ids.contains(&"ccc"));
+}
+
+#[test]
+fn test_table_registry_covers_all_tables() {
+    let names: Vec<&str> = TABLE_REGISTRY.iter().map(|t| t.name).collect();
+    assert!(names.contains(&"files"));
+    assert!(names.contains(&"symbols"));
+    assert!(names.contains(&"symbols_fts"));
+    assert!(names.contains(&"refs"));
+    assert!(names.contains(&"imports"));
+    assert!(names.contains(&"snapshots"));
+    assert!(names.contains(&"conventions"));
+
+    for meta in TABLE_REGISTRY {
+        assert!(
+            meta.partition == TablePartition::Ephemeral
+                || meta.partition == TablePartition::Durable,
+        );
+    }
+}
+
+#[test]
+fn test_reindex_drops_ephemeral_tables() {
+    let (_dir, db) = setup_db();
+
+    let file_id = seed_file(&db, "src/main.rs");
+    seed_symbol(&db, file_id, "main", "main", "function");
+    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9)
+        .unwrap();
+
+    let files = db.all_files().unwrap();
+    assert!(!files.is_empty());
+    let conventions = db.all_conventions().unwrap();
+    assert!(!conventions.is_empty());
+
+    let dropped = db.reindex().unwrap();
+    assert!(dropped.contains(&"files"));
+    assert!(dropped.contains(&"symbols"));
+    assert!(dropped.contains(&"symbols_fts"));
+    assert!(dropped.contains(&"conventions"));
+
+    let files = db.all_files().unwrap();
+    assert!(files.is_empty(), "ephemeral files table should be empty after reindex");
+    let conventions = db.all_conventions().unwrap();
+    assert!(conventions.is_empty(), "ephemeral conventions table should be empty after reindex");
+
+    let file_id = seed_file(&db, "src/lib.rs");
+    assert!(file_id > 0, "should be able to insert after reindex");
+    seed_symbol(&db, file_id, "lib_fn", "lib_fn", "function");
+    db.upsert_convention("conv2", "kind:struct", "has_doc", 5, 0.8)
+        .unwrap();
 }
