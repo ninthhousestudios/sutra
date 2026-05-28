@@ -39,7 +39,7 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
     (
         "0007_convention_overrides",
         include_str!("../../migrations/0007_convention_overrides.sql"),
-        false,
+        true,
     ),
 ];
 
