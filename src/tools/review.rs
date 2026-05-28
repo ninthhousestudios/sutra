@@ -226,7 +226,20 @@ pub fn build_findings(
             .cloned()
             .collect();
 
-        for v in fca_engine.check(&changed_sym_attrs, &rules.conventions) {
+        let db_forbidden: Vec<String> = db
+            .all_conventions_merged()?
+            .iter()
+            .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
+            .map(|c| c.id.clone())
+            .collect();
+        let mut effective_conventions = rules.conventions.clone();
+        for id in db_forbidden {
+            if !effective_conventions.suppress.contains(&id) {
+                effective_conventions.suppress.push(id);
+            }
+        }
+
+        for v in fca_engine.check(&changed_sym_attrs, &effective_conventions) {
             convention_violations.push(ConventionViolation {
                 symbol: v.symbol,
                 file: v.file,

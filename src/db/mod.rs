@@ -8,7 +8,7 @@ mod conventions;
 mod graph;
 mod migrations;
 
-pub use conventions::ConventionRow;
+pub use conventions::{ConventionOverrideRow, ConventionRow, ConventionWithOverride};
 
 use std::path::Path;
 
@@ -42,6 +42,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "imports", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "conventions", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "convention_overrides", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -244,7 +245,12 @@ impl Db {
             conn.execute_batch(&format!("DROP TABLE IF EXISTS {}", meta.name))?;
         }
 
-        conn.execute_batch("DELETE FROM schema_migrations")?;
+        for name in Self::ephemeral_migration_names() {
+            conn.execute(
+                "DELETE FROM schema_migrations WHERE name = ?1",
+                params![name],
+            )?;
+        }
 
         drop(conn);
 

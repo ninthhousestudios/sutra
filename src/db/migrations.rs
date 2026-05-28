@@ -4,30 +4,42 @@ use crate::error::{Result, SutraError};
 
 use super::Db;
 
-const MIGRATIONS: &[(&str, &str)] = &[
+// (name, sql, ephemeral_only) — ephemeral_only migrations are cleared on reindex.
+const MIGRATIONS: &[(&str, &str, bool)] = &[
     (
         "0001_initial",
         include_str!("../../migrations/0001_initial.sql"),
+        true,
     ),
     (
         "0002_complexity",
         include_str!("../../migrations/0002_complexity.sql"),
+        true,
     ),
     (
         "0003_snapshot_aggregates",
         include_str!("../../migrations/0003_snapshot_aggregates.sql"),
+        true,
     ),
     (
         "0004_symbol_flags",
         include_str!("../../migrations/0004_symbol_flags.sql"),
+        true,
     ),
     (
         "0005_conventions",
         include_str!("../../migrations/0005_conventions.sql"),
+        true,
     ),
     (
         "0006_language_attrs",
         include_str!("../../migrations/0006_language_attrs.sql"),
+        true,
+    ),
+    (
+        "0007_convention_overrides",
+        include_str!("../../migrations/0007_convention_overrides.sql"),
+        false,
     ),
 ];
 
@@ -50,7 +62,7 @@ impl Db {
             return Ok(());
         }
 
-        for &(name, sql) in MIGRATIONS {
+        for &(name, sql, _ephemeral_only) in MIGRATIONS {
             let hash = blake3::hash(sql.as_bytes()).to_hex().to_string();
 
             let existing: Option<String> = conn
@@ -119,8 +131,16 @@ impl Db {
         Ok(migration_count == 0)
     }
 
+    pub(crate) fn ephemeral_migration_names() -> Vec<&'static str> {
+        MIGRATIONS
+            .iter()
+            .filter(|(_, _, ephemeral_only)| *ephemeral_only)
+            .map(|(name, _, _)| *name)
+            .collect()
+    }
+
     fn register_retroactive(conn: &Connection) -> Result<()> {
-        for &(name, sql) in MIGRATIONS {
+        for &(name, sql, _ephemeral_only) in MIGRATIONS {
             let hash = blake3::hash(sql.as_bytes()).to_hex().to_string();
 
             if Self::migration_schema_present(conn, name) {
@@ -184,6 +204,17 @@ impl Db {
                 let exists: bool = conn
                     .query_row(
                         "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='conventions'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(false);
+                exists
+            }
+            "0006_language_attrs" => Self::column_exists(conn, "symbols", "language_attrs"),
+            "0007_convention_overrides" => {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='convention_overrides'",
                         [],
                         |row| row.get(0),
                     )
