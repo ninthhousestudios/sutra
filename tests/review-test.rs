@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::dd::DdEngine;
+use sutra::parser::adapter::default_registry;
 use sutra::tools::review;
 use sutra::tools::scoring::ChurnMap;
 
@@ -665,7 +666,8 @@ forbidden_deps = [
         .unwrap();
 
     let changed = vec!["src/ui/view.rs".to_string()];
-    let findings = review::build_findings(&db, dir.path(), &changed, None).unwrap();
+    let registry = default_registry();
+    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
 
     // DD should find the forbidden dep
     assert!(
@@ -736,7 +738,8 @@ fn build_findings_persists_conventions_to_db() {
 
     assert!(db.all_conventions().unwrap().is_empty());
 
-    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()], None);
+    let registry = default_registry();
+    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()], None, &registry);
 
     let conventions = db.all_conventions().unwrap();
     assert!(
@@ -791,7 +794,8 @@ forbidden_deps = [
 
     // build_findings should fall back to ephemeral and still detect the violation
     let changed = vec!["src/ui/view.rs".to_string()];
-    let findings = review::build_findings(&db, dir.path(), &changed, Some(&shared)).unwrap();
+    let registry = default_registry();
+    let findings = review::build_findings(&db, dir.path(), &changed, Some(&shared), &registry).unwrap();
     assert!(
         !findings.constraint_violations.is_empty(),
         "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
@@ -976,7 +980,8 @@ fn build_findings_surfaces_error_on_bad_rules() {
     fs::create_dir_all(&rules_dir).unwrap();
     fs::write(rules_dir.join("rules.toml"), "{{invalid toml").unwrap();
 
-    let result = review::build_findings(&db, dir.path(), &["src/foo.rs".to_string()], None);
+    let registry = default_registry();
+    let result = review::build_findings(&db, dir.path(), &["src/foo.rs".to_string()], None, &registry);
     assert!(
         result.is_err(),
         "malformed rules.toml should return Err, not empty findings"

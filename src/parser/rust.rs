@@ -297,6 +297,12 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
                                 .last()
                                 .and_then(|ch| ch.utf8_text(src).ok())
                         }
+                        "reference_type" => {
+                            let mut c = tn.walk();
+                            tn.named_children(&mut c)
+                                .find(|c| c.kind() == "type_identifier")
+                                .and_then(|c| c.utf8_text(src).ok())
+                        }
                         _ => None,
                     };
                     match name {
@@ -305,6 +311,9 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
                         }
                         Some("Option") => {
                             attrs.insert("returns_option".into(), true.into());
+                        }
+                        Some("Self") => {
+                            attrs.insert("returns_self".into(), true.into());
                         }
                         _ => {}
                     }

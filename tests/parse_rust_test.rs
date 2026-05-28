@@ -575,3 +575,35 @@ fn get_scoped_result() -> anyhow::Result<()> {}
         serde_json::from_str(scoped_result.language_attrs.as_deref().unwrap()).unwrap();
     assert_eq!(attrs["returns_result"], true);
 }
+
+#[test]
+fn test_language_attrs_returns_self() {
+    let src = r#"
+struct Foo;
+impl Foo {
+    fn new() -> Self { Foo }
+    fn borrow(&self) -> &Self { self }
+    fn other() -> Foo { Foo }
+}
+"#;
+    let result = parse_file(src, "rust", "test.rs").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let new_fn = flat.iter().find(|s| s.short_name == "new").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(new_fn.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_self"], true);
+
+    let borrow_fn = flat.iter().find(|s| s.short_name == "borrow").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(borrow_fn.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_self"], true);
+
+    let other_fn = flat.iter().find(|s| s.short_name == "other").unwrap();
+    assert!(
+        other_fn.language_attrs.is_none()
+            || !other_fn.language_attrs.as_deref().unwrap_or("").contains("returns_self"),
+        "-> Foo should not trigger returns_self: {:?}",
+        other_fn.language_attrs,
+    );
+}

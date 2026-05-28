@@ -1,4 +1,5 @@
 use crate::db::SymbolRow;
+use crate::parser::adapter::LanguageRegistry;
 
 use super::engine::SymbolAttrs;
 
@@ -13,7 +14,7 @@ const MEANINGFUL_KINDS: &[&str] = &[
     "const",
 ];
 
-pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
     if sym.flags & 0x03 != 0 {
         return None;
     }
@@ -37,24 +38,6 @@ pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAt
 
     if sym.signature.is_some() {
         attributes.push("has_sig".into());
-    }
-
-    if let Some(ref sig) = sym.signature {
-        if sig.contains("Result") {
-            attributes.push("returns_result".into());
-        }
-        if sig.contains("Option") {
-            attributes.push("returns_option".into());
-        }
-        if sig.contains("-> Self") || sig.contains("-> &Self") {
-            attributes.push("returns_self".into());
-        }
-        if sig.contains("&self") {
-            attributes.push("takes_self_ref".into());
-        }
-        if sig.contains("&mut self") {
-            attributes.push("takes_self_mut".into());
-        }
     }
 
     if let Some(cog) = sym.cognitive {
@@ -107,6 +90,20 @@ pub fn extract_symbol_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAt
     })
 }
 
+pub fn extract_attrs_for_symbol(
+    sym: &SymbolRow,
+    file_path: &str,
+    file_language: &str,
+    registry: &LanguageRegistry,
+) -> Option<SymbolAttrs> {
+    if let Some(adapter) = registry.adapter_for_language(file_language) {
+        if let Some(fca_source) = adapter.as_fca_source() {
+            return fca_source.extract_attributes(sym, file_path);
+        }
+    }
+    extract_cross_language_attrs(sym, file_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,11 +149,11 @@ mod tests {
             Some(3),
             0,
         );
-        let sa = extract_symbol_attrs(&sym, "src/tools/foo.rs").unwrap();
+        let sa = extract_cross_language_attrs(&sym, "src/tools/foo.rs").unwrap();
         assert!(sa.attributes.contains(&"kind:function".to_string()));
         assert!(sa.attributes.contains(&"vis:pub".to_string()));
         assert!(sa.attributes.contains(&"has_sig".to_string()));
-        assert!(sa.attributes.contains(&"returns_result".to_string()));
+        assert!(!sa.attributes.contains(&"returns_result".to_string()));
         assert!(sa.attributes.contains(&"naming:snake_case".to_string()));
         assert!(sa.attributes.contains(&"complexity:low".to_string()));
         assert!(sa.attributes.contains(&"in:src/tools".to_string()));
@@ -168,7 +165,7 @@ mod tests {
         let mut sym = sym;
         sym.short_name = "MyStruct".into();
         sym.qualified_name = "mod::MyStruct".into();
-        let sa = extract_symbol_attrs(&sym, "src/lib.rs").unwrap();
+        let sa = extract_cross_language_attrs(&sym, "src/lib.rs").unwrap();
         assert!(sa.attributes.contains(&"kind:struct".to_string()));
         assert!(sa.attributes.contains(&"naming:CamelCase".to_string()));
         assert!(sa.attributes.contains(&"has_doc".to_string()));
@@ -178,27 +175,51 @@ mod tests {
     #[test]
     fn skips_test_symbols() {
         let sym = make_symbol("function", Some("pub"), Some("fn test()"), None, None, 0x01);
-        assert!(extract_symbol_attrs(&sym, "src/foo.rs").is_none());
+        assert!(extract_cross_language_attrs(&sym, "src/foo.rs").is_none());
     }
 
     #[test]
     fn skips_non_meaningful_kinds() {
         let sym = make_symbol("module", None, None, None, None, 0);
-        assert!(extract_symbol_attrs(&sym, "src/foo.rs").is_none());
+        assert!(extract_cross_language_attrs(&sym, "src/foo.rs").is_none());
     }
 
     #[test]
     fn method_gets_is_method_attr() {
         let sym = make_symbol("method", None, Some("fn do_it(&self)"), None, Some(0), 0);
-        let sa = extract_symbol_attrs(&sym, "src/foo.rs").unwrap();
+        let sa = extract_cross_language_attrs(&sym, "src/foo.rs").unwrap();
         assert!(sa.attributes.contains(&"is_method".to_string()));
-        assert!(sa.attributes.contains(&"takes_self_ref".to_string()));
+        assert!(!sa.attributes.contains(&"takes_self_ref".to_string()));
     }
 
     #[test]
-    fn returns_self_detected() {
-        let sym = make_symbol("method", None, Some("fn new() -> Self"), None, None, 0);
-        let sa = extract_symbol_attrs(&sym, "src/foo.rs").unwrap();
-        assert!(sa.attributes.contains(&"returns_self".to_string()));
+    fn dispatch_with_rust_adapter_includes_language_attrs() {
+        use crate::parser::adapter::default_registry;
+        let registry = default_registry();
+        let mut sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn my_func() -> Result<()>"),
+            None,
+            Some(3),
+            0,
+        );
+        sym.language_attrs = Some(r#"{"returns_result":true}"#.into());
+        let sa = extract_attrs_for_symbol(&sym, "src/tools/foo.rs", "rust", &registry).unwrap();
+        assert!(sa.attributes.contains(&"kind:function".to_string()));
+        assert!(sa.attributes.contains(&"vis:pub".to_string()));
+        assert!(sa.attributes.contains(&"returns_result".to_string()));
+        assert!(sa.attributes.contains(&"complexity:low".to_string()));
+    }
+
+    #[test]
+    fn dispatch_without_fca_source_falls_back_to_cross_language() {
+        use crate::parser::adapter::default_registry;
+        let registry = default_registry();
+        let sym = make_symbol("function", Some("pub"), Some("fn foo()"), None, Some(0), 0);
+        let sa = extract_attrs_for_symbol(&sym, "lib/foo.dart", "dart", &registry).unwrap();
+        assert!(sa.attributes.contains(&"kind:function".to_string()));
+        assert!(sa.attributes.contains(&"vis:pub".to_string()));
+        assert!(!sa.attributes.contains(&"returns_result".to_string()));
     }
 }

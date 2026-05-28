@@ -10,6 +10,7 @@ use crate::db::Db;
 use crate::dd::{DdEngine, DdFacts};
 use crate::error::Result;
 use crate::fca::{self, FcaEngine};
+use crate::parser::adapter::LanguageRegistry;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::rules;
@@ -89,8 +90,9 @@ pub fn handle(
         window_days: scoring::CHURN_WINDOW_DAYS,
     };
 
+    let registry = crate::parser::adapter::default_registry();
     let (findings, findings_error) =
-        match build_findings(db, workspace_root, &changed_paths, dd_engine) {
+        match build_findings(db, workspace_root, &changed_paths, dd_engine, &registry) {
             Ok(f) => (f, None),
             Err(e) => (ReviewFindings::default(), Some(e.to_string())),
         };
@@ -115,6 +117,7 @@ pub fn build_findings(
     workspace_root: &Path,
     changed_paths: &[String],
     shared_dd: Option<&DdEngine>,
+    registry: &LanguageRegistry,
 ) -> Result<ReviewFindings> {
     let rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
@@ -193,7 +196,7 @@ pub fn build_findings(
     for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
         for s in &syms {
-            if let Some(attrs) = fca::extract_symbol_attrs(&s, &f.path) {
+            if let Some(attrs) = fca::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
                 all_sym_attrs.push(attrs);
             }
         }

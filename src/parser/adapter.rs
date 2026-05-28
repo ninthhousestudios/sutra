@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use tree_sitter::{Language, Parser, Tree};
 
+use crate::db::SymbolRow;
 use crate::error::{Result, SutraError};
+use crate::fca::{extract_cross_language_attrs, SymbolAttrs};
 
 use super::ParseResult;
 
@@ -61,7 +63,9 @@ impl ParserPool {
     }
 }
 
-pub trait FcaAttributeSource: Send + Sync {}
+pub trait FcaAttributeSource: Send + Sync {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;
+}
 
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
@@ -134,7 +138,23 @@ impl LanguageAdapter for RustAdapter {
     }
 }
 
-impl FcaAttributeSource for RustAdapter {}
+impl FcaAttributeSource for RustAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        let mut sa = extract_cross_language_attrs(sym, file_path)?;
+        if let Some(ref la_json) = sym.language_attrs {
+            if let Ok(map) =
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json)
+            {
+                for (key, val) in &map {
+                    if val.as_bool() == Some(true) {
+                        sa.attributes.push(key.clone());
+                    }
+                }
+            }
+        }
+        Some(sa)
+    }
+}
 
 pub struct DartAdapter;
 
@@ -241,6 +261,70 @@ mod tests {
 
         let test = TestAdapter;
         assert!(test.as_fca_source().is_none());
+    }
+
+    fn make_test_symbol_row(
+        kind: &str,
+        visibility: Option<&str>,
+        signature: Option<&str>,
+        language_attrs: Option<&str>,
+    ) -> SymbolRow {
+        SymbolRow {
+            id: 1,
+            file_id: 1,
+            qualified_name: "mod::my_func".into(),
+            short_name: "my_func".into(),
+            kind: kind.into(),
+            signature: signature.map(Into::into),
+            signature_hash: None,
+            visibility: visibility.map(Into::into),
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            pagerank: None,
+            cyclomatic: None,
+            cognitive: Some(3),
+            flags: 0,
+            language_attrs: language_attrs.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn rust_fca_source_extracts_from_language_attrs() {
+        let rust = RustAdapter;
+        let fca = rust.as_fca_source().unwrap();
+        let sym = make_test_symbol_row(
+            "function",
+            Some("pub"),
+            Some("fn my_func() -> Result<()>"),
+            Some(r#"{"returns_result":true,"is_async":true}"#),
+        );
+        let attrs = fca.extract_attributes(&sym, "src/tools/foo.rs").unwrap();
+        assert!(attrs.attributes.contains(&"kind:function".to_string()));
+        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
+        assert!(attrs.attributes.contains(&"has_sig".to_string()));
+        assert!(attrs.attributes.contains(&"complexity:low".to_string()));
+        assert!(attrs.attributes.contains(&"returns_result".to_string()));
+        assert!(attrs.attributes.contains(&"is_async".to_string()));
+    }
+
+    #[test]
+    fn rust_fca_source_works_without_language_attrs() {
+        let rust = RustAdapter;
+        let fca = rust.as_fca_source().unwrap();
+        let sym = make_test_symbol_row("function", Some("pub"), Some("fn foo()"), None);
+        let attrs = fca.extract_attributes(&sym, "src/foo.rs").unwrap();
+        assert!(attrs.attributes.contains(&"kind:function".to_string()));
+        assert!(!attrs.attributes.contains(&"returns_result".to_string()));
+    }
+
+    #[test]
+    fn graceful_degradation_no_fca_source() {
+        let dart = DartAdapter;
+        assert!(dart.as_fca_source().is_none());
     }
 
     #[test]
