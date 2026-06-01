@@ -4,6 +4,7 @@
 //! is serialised through a `parking_lot::Mutex<Connection>` — single-writer
 //! model, correct for one server with short-lived transactions.
 
+mod components;
 mod conventions;
 mod graph;
 mod migrations;
@@ -43,6 +44,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "conventions", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "convention_overrides", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "components", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "semantic_anchors", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "aliases", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "component_events", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "component_membership", partition: TablePartition::Ephemeral, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -124,6 +130,14 @@ pub struct ImportRow {
     pub imported_path: String,
     pub resolved_file_id: Option<i64>,
     pub line: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComponentRow {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone)]

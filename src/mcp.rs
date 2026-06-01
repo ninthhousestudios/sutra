@@ -64,6 +64,7 @@ pub struct StatusArgs {
 
 use crate::tools::calls::CallsArgs;
 use crate::tools::cochange::CochangeArgs;
+use crate::tools::components::ComponentsArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
@@ -337,6 +338,17 @@ impl SutraServer {
         let db = self.get_db(&args.workspace)?;
         let compact = args.compact.unwrap_or(false);
         let result = tools::outline::handle(&db, &args.path, compact).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(description = "List discovered architectural components and their member files.")]
+    pub async fn sutra_components(
+        &self,
+        Parameters(args): Parameters<ComponentsArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::components::handle(&db).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -848,7 +860,8 @@ impl ServerHandler for SutraServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "sutra v0.2.1 — code intelligence for manas. \
              Core tools: sutra_health, sutra_help, sutra_map, sutra_outline, sutra_find, \
-             sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools. \
+             sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools, \
+             sutra_components. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
              sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace, \
              sutra_review. \

@@ -41,6 +41,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0007_convention_overrides.sql"),
         true,
     ),
+    (
+        "0008_components",
+        include_str!("../../migrations/0008_components.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -220,6 +225,14 @@ impl Db {
                     )
                     .unwrap_or(false);
                 exists
+            }
+            "0008_components" => {
+                conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='components'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
             }
             _ => false,
         }
