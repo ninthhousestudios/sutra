@@ -382,7 +382,7 @@ pub fn parse_workspace(
                 }
             }
         }
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root)
+        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())
     })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -479,7 +479,7 @@ pub fn parse_changed_files(
             }
         }
 
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root)
+        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())
     })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -517,6 +517,7 @@ fn post_parse_sequence(
     deleted_symbol_ids: &[i64],
     file_ids_needing_resolution: &mut HashSet<i64>,
     workspace_root: &Path,
+    boundary_multipliers: &HashMap<String, f64>,
 ) -> Result<(i64, i64)> {
     if !deleted_symbol_ids.is_empty() {
         let dirty_file_ids = db.find_files_referencing_symbols(deleted_symbol_ids)?;
@@ -544,7 +545,7 @@ fn post_parse_sequence(
             Some(file_ids_needing_resolution),
         )?;
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency)?;
-        let component_count = components::discover_components(db, &files, workspace_root)?;
+        let component_count = components::discover_components(db, &files, workspace_root, boundary_multipliers)?;
         if component_count > 0 {
             info!(component_count, "discovered components");
             let anchor_count =

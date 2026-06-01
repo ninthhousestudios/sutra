@@ -84,6 +84,41 @@ fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<(WeightedAdj, 
 }
 
 // ---------------------------------------------------------------------------
+// Module boundary hints
+// ---------------------------------------------------------------------------
+
+fn apply_boundary_hints(
+    adj: &mut WeightedAdj,
+    files: &[FileRow],
+    multipliers: &HashMap<String, f64>,
+) {
+    let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
+
+    for (&file_id, neighbors) in adj.iter_mut() {
+        let Some(file_a) = file_map.get(&file_id) else {
+            continue;
+        };
+        let multiplier = multipliers.get(&file_a.language).copied().unwrap_or(1.0);
+        if multiplier == 1.0 {
+            continue;
+        }
+
+        let parent_a = Path::new(&file_a.path).parent();
+
+        for (nbr_id, weight) in neighbors.iter_mut() {
+            let Some(file_b) = file_map.get(nbr_id) else {
+                continue;
+            };
+            if file_a.language == file_b.language
+                && Path::new(&file_b.path).parent() == parent_a
+            {
+                *weight *= multiplier;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Louvain community detection
 // ---------------------------------------------------------------------------
 
@@ -591,11 +626,14 @@ fn run_clustering<'a>(
     db: &Db,
     files: &'a [FileRow],
     config: &ComponentsConfig,
+    boundary_multipliers: &HashMap<String, f64>,
 ) -> Result<Option<(Vec<Vec<i64>>, HashMap<i64, &'a FileRow>, usize)>> {
-    let (adj, edge_count) = build_weighted_adjacency(files, db)?;
+    let (mut adj, edge_count) = build_weighted_adjacency(files, db)?;
     if !adj.values().any(|nbrs| !nbrs.is_empty()) {
         return Ok(None);
     }
+
+    apply_boundary_hints(&mut adj, files, boundary_multipliers);
 
     let result = if let Some(gamma) = config.resolution {
         louvain(&adj, gamma)
@@ -608,7 +646,12 @@ fn run_clustering<'a>(
     Ok(Some((clusters, file_map, edge_count)))
 }
 
-pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) -> Result<usize> {
+pub fn discover_components(
+    db: &Db,
+    files: &[FileRow],
+    workspace_root: &Path,
+    boundary_multipliers: &HashMap<String, f64>,
+) -> Result<usize> {
     if files.is_empty() {
         return Ok(0);
     }
@@ -626,7 +669,7 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
         }
     }
 
-    let Some((clusters, file_map, edge_count)) = run_clustering(db, files, &config)? else {
+    let Some((clusters, file_map, edge_count)) = run_clustering(db, files, &config, boundary_multipliers)? else {
         return Ok(0);
     };
 

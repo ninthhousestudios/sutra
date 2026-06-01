@@ -67,6 +67,23 @@ pub trait FcaAttributeSource: Send + Sync {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleBoundaryStrength {
+    Strong,
+    Moderate,
+    Weak,
+}
+
+impl ModuleBoundaryStrength {
+    pub fn multiplier(&self) -> f64 {
+        match self {
+            Self::Strong => 2.0,
+            Self::Moderate => 1.5,
+            Self::Weak => 1.0,
+        }
+    }
+}
+
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
     fn extensions(&self) -> &[&str];
@@ -74,6 +91,9 @@ pub trait LanguageAdapter: Send + Sync {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult>;
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         None
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Weak
     }
 }
 
@@ -116,6 +136,13 @@ impl LanguageRegistry {
             .flat_map(|a| a.extensions().iter().copied())
             .collect()
     }
+
+    pub fn boundary_multipliers(&self) -> HashMap<String, f64> {
+        self.adapters
+            .iter()
+            .map(|a| (a.language_id().to_string(), a.module_boundary_hints().multiplier()))
+            .collect()
+    }
 }
 
 pub struct RustAdapter;
@@ -135,6 +162,9 @@ impl LanguageAdapter for RustAdapter {
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Strong
     }
 }
 
@@ -178,6 +208,9 @@ impl LanguageAdapter for DartAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::dart::parse(ctx)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Moderate
     }
 }
 
@@ -366,5 +399,35 @@ mod tests {
 
         let result = pool.parse_with(&adapter, &src, "test.rs");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn module_boundary_hints_defaults() {
+        let test = TestAdapter;
+        assert_eq!(test.module_boundary_hints(), ModuleBoundaryStrength::Weak);
+        assert_eq!(ModuleBoundaryStrength::Weak.multiplier(), 1.0);
+    }
+
+    #[test]
+    fn module_boundary_hints_rust_strong() {
+        let rust = RustAdapter;
+        assert_eq!(rust.module_boundary_hints(), ModuleBoundaryStrength::Strong);
+        assert_eq!(ModuleBoundaryStrength::Strong.multiplier(), 2.0);
+    }
+
+    #[test]
+    fn module_boundary_hints_dart_moderate() {
+        let dart = DartAdapter;
+        assert_eq!(dart.module_boundary_hints(), ModuleBoundaryStrength::Moderate);
+        assert_eq!(ModuleBoundaryStrength::Moderate.multiplier(), 1.5);
+    }
+
+    #[test]
+    fn boundary_multipliers_from_registry() {
+        let registry = default_registry();
+        let mults = registry.boundary_multipliers();
+        assert_eq!(mults.get("rust"), Some(&2.0));
+        assert_eq!(mults.get("dart"), Some(&1.5));
+        assert_eq!(mults.len(), 2);
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sutra::components;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::vocabulary;
@@ -61,7 +63,7 @@ fn setup_component(db: &Db, dir: &std::path::Path) {
     insert_refs(db, a3, sa2, 10);
 
     let files = db.all_files().unwrap();
-    components::discover_components(db, &files, dir).unwrap();
+    components::discover_components(db, &files, dir, &HashMap::new()).unwrap();
     components::compute_semantic_anchors(db, dir).unwrap();
 }
 
