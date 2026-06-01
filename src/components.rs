@@ -20,6 +20,8 @@ fn to_json<T: serde::Serialize>(val: &T) -> String {
 pub struct ComponentsConfig {
     #[serde(default)]
     pub resolution: Option<f64>,
+    #[serde(default)]
+    pub staleness_threshold: Option<f64>,
 }
 
 pub fn load_config(root: &Path) -> Result<ComponentsConfig> {
@@ -44,7 +46,7 @@ pub fn parse_config(content: &str) -> Result<ComponentsConfig> {
 
 type WeightedAdj = HashMap<i64, Vec<(i64, f64)>>;
 
-fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<WeightedAdj> {
+fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<(WeightedAdj, usize)> {
     let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
     let refs = db.all_resolved_refs()?;
 
@@ -65,12 +67,13 @@ fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<WeightedAdj> {
         *undirected.entry(key).or_default() += count as f64;
     }
 
+    let edge_count = undirected.len();
     let mut adj: WeightedAdj = files.iter().map(|f| (f.id, Vec::new())).collect();
     for (&(a, b), &w) in &undirected {
         adj.entry(a).or_default().push((b, w));
         adj.entry(b).or_default().push((a, w));
     }
-    Ok(adj)
+    Ok((adj, edge_count))
 }
 
 // ---------------------------------------------------------------------------
@@ -549,20 +552,37 @@ fn detect_events(
     Ok(())
 }
 
-pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) -> Result<usize> {
-    if files.is_empty() {
-        return Ok(0);
+fn is_clustering_stale(
+    db: &Db,
+    current_edge_count: usize,
+    current_file_count: i64,
+    threshold: f64,
+) -> Result<bool> {
+    let Some((stored_edge_count, stored_file_count)) = db.clustering_meta()? else {
+        return Ok(true);
+    };
+
+    if current_file_count != stored_file_count {
+        return Ok(true);
     }
 
-    let has_existing = db.component_count()? > 0;
-    if has_existing && db.membership_count()? > 0 {
-        return Ok(0);
+    if stored_edge_count == 0 {
+        return Ok(current_edge_count > 0);
     }
 
-    let config = load_config(workspace_root)?;
-    let adj = build_weighted_adjacency(files, db)?;
+    let delta = (current_edge_count as f64 - stored_edge_count as f64).abs();
+    let ratio = delta / stored_edge_count as f64;
+    Ok(ratio > threshold)
+}
+
+fn run_clustering<'a>(
+    db: &Db,
+    files: &'a [FileRow],
+    config: &ComponentsConfig,
+) -> Result<Option<(Vec<Vec<i64>>, HashMap<i64, &'a FileRow>, usize)>> {
+    let (adj, edge_count) = build_weighted_adjacency(files, db)?;
     if !adj.values().any(|nbrs| !nbrs.is_empty()) {
-        return Ok(0);
+        return Ok(None);
     }
 
     let result = if let Some(gamma) = config.resolution {
@@ -573,12 +593,56 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
 
     let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
     let clusters = build_clusters(&result);
+    Ok(Some((clusters, file_map, edge_count)))
+}
 
-    if has_existing {
-        reconcile_components(db, &clusters, &file_map)
-    } else {
-        create_fresh_components(db, &clusters, &file_map)
+pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) -> Result<usize> {
+    if files.is_empty() {
+        return Ok(0);
     }
+
+    let has_existing = db.component_count()? > 0;
+    let has_membership = db.membership_count()? > 0;
+
+    if has_existing && has_membership {
+        let config = load_config(workspace_root)?;
+        let (adj, current_edge_count) = build_weighted_adjacency(files, db)?;
+        let threshold = config.staleness_threshold.unwrap_or(0.10);
+
+        if !is_clustering_stale(db, current_edge_count, files.len() as i64, threshold)? {
+            return Ok(0);
+        }
+
+        if !adj.values().any(|nbrs| !nbrs.is_empty()) {
+            return Ok(0);
+        }
+
+        let result = if let Some(gamma) = config.resolution {
+            louvain(&adj, gamma)
+        } else {
+            auto_tune(&adj)
+        };
+
+        let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
+        let clusters = build_clusters(&result);
+        let count = reconcile_components(db, &clusters, &file_map)?;
+        db.upsert_clustering_meta(current_edge_count as i64, files.len() as i64)?;
+        return Ok(count);
+    }
+
+    let config = load_config(workspace_root)?;
+    let Some((clusters, file_map, edge_count)) = run_clustering(db, files, &config)? else {
+        return Ok(0);
+    };
+
+    let count = if has_existing {
+        reconcile_components(db, &clusters, &file_map)?
+    } else {
+        create_fresh_components(db, &clusters, &file_map)?
+    };
+
+    db.upsert_clustering_meta(edge_count as i64, files.len() as i64)?;
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +694,18 @@ mod tests {
     fn test_parse_config_with_resolution() {
         let c = parse_config("resolution = 1.5").unwrap();
         assert_eq!(c.resolution, Some(1.5));
+    }
+
+    #[test]
+    fn test_parse_config_with_staleness_threshold() {
+        let c = parse_config("staleness_threshold = 0.25").unwrap();
+        assert_eq!(c.staleness_threshold, Some(0.25));
+    }
+
+    #[test]
+    fn test_parse_config_default_staleness_threshold() {
+        let c = parse_config("resolution = 1.0").unwrap();
+        assert!(c.staleness_threshold.is_none());
     }
 
     #[test]

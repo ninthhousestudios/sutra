@@ -49,6 +49,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "aliases", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "component_events", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "component_membership", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "component_clustering_meta", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------

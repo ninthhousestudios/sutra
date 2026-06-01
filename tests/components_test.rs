@@ -347,6 +347,16 @@ fn pin_resolution(dir: &std::path::Path) {
     std::fs::write(sutra_dir.join("components.toml"), "resolution = 1.0").unwrap();
 }
 
+fn pin_resolution_and_threshold(dir: &std::path::Path, threshold: f64) {
+    let sutra_dir = dir.join(".sutra");
+    std::fs::create_dir_all(&sutra_dir).unwrap();
+    std::fs::write(
+        sutra_dir.join("components.toml"),
+        format!("resolution = 1.0\nstaleness_threshold = {threshold}"),
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_dissolved_components_hidden_from_queries() {
     let (dir, db) = setup_db();
@@ -687,4 +697,228 @@ fn test_unmatched_cluster_creates_new_component() {
     // New component should have "tools" name
     let new_comp = active.iter().find(|c| c.id != original_id).unwrap();
     assert_eq!(new_comp.name, "tools");
+}
+
+// ---------------------------------------------------------------------------
+// Staleness detection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_staleness_skips_when_graph_unchanged() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert_eq!(count, 2);
+
+    // Metadata should be recorded
+    let meta = db.clustering_meta().unwrap();
+    assert!(meta.is_some(), "clustering metadata should be written");
+
+    // Second call with identical graph should skip
+    let count2 = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert_eq!(count2, 0, "should skip when graph is unchanged");
+}
+
+#[test]
+fn test_staleness_detects_file_addition() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    let original_meta = db.clustering_meta().unwrap().unwrap();
+
+    // Add a new file with refs into cluster A
+    let new_file = db
+        .upsert_file("src/core/a4.rs", "rust", "h7", 50, true)
+        .unwrap();
+    let new_sym = insert_symbol(&db, new_file, "core_a4");
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    insert_refs(&db, new_file, insert_symbol(&db, a1, "core_a1_v2"), 10);
+    insert_refs(&db, a1, new_sym, 10);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert!(count > 0, "should recluster when files added");
+
+    let new_meta = db.clustering_meta().unwrap().unwrap();
+    assert_ne!(
+        original_meta.1, new_meta.1,
+        "file count should have changed in metadata"
+    );
+}
+
+#[test]
+fn test_staleness_detects_edge_change_above_threshold() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    let (stored_edges, _stored_files) = db.clustering_meta().unwrap().unwrap();
+
+    // Add many cross-cluster refs to push edge change > 10%
+    // Current setup has 6 intra-cluster edges per cluster = 12 total undirected edges.
+    // Need > 1.2 new edges. Adding 2 cross-cluster edges should exceed 10%.
+    let a1_id = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let b1_id = db
+        .upsert_file("src/tools/b1.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let b2_id = db
+        .upsert_file("src/tools/b2.rs", "rust", "h5", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1_id, "core_a1_extra");
+    insert_refs(&db, b1_id, sa1, 5);
+    insert_refs(&db, b2_id, sa1, 5);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert!(count > 0, "should recluster when edge count changed by >10%");
+
+    let (new_edges, _) = db.clustering_meta().unwrap().unwrap();
+    assert!(
+        new_edges > stored_edges,
+        "new edge count ({new_edges}) should exceed stored ({stored_edges})"
+    );
+}
+
+#[test]
+fn test_staleness_ignores_edge_change_below_threshold() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+
+    // Build a large graph so a single new edge is <10%
+    // 10 files in cluster A, 10 files in cluster B -> many edges
+    let mut a_files = Vec::new();
+    let mut a_syms = Vec::new();
+    for i in 1..=10 {
+        let fid = db
+            .upsert_file(
+                &format!("src/core/a{i}.rs"),
+                "rust",
+                &format!("ha{i}"),
+                50,
+                true,
+            )
+            .unwrap();
+        let sid = insert_symbol(&db, fid, &format!("core_a{i}"));
+        a_files.push(fid);
+        a_syms.push(sid);
+    }
+    let mut b_files = Vec::new();
+    let mut b_syms = Vec::new();
+    for i in 1..=10 {
+        let fid = db
+            .upsert_file(
+                &format!("src/tools/b{i}.rs"),
+                "rust",
+                &format!("hb{i}"),
+                50,
+                true,
+            )
+            .unwrap();
+        let sid = insert_symbol(&db, fid, &format!("tools_b{i}"));
+        b_files.push(fid);
+        b_syms.push(sid);
+    }
+
+    // Dense intra-cluster refs (every pair)
+    for i in 0..10 {
+        for j in 0..10 {
+            if i != j {
+                insert_refs(&db, a_files[i], a_syms[j], 5);
+                insert_refs(&db, b_files[i], b_syms[j], 5);
+            }
+        }
+    }
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    let (stored_edges, _) = db.clustering_meta().unwrap().unwrap();
+    // 10 files * 9 neighbors / 2 = 45 undirected edges per cluster, 90 total
+    assert!(stored_edges >= 80, "should have many edges, got {stored_edges}");
+
+    // Add 1 cross-cluster edge (~1% change)
+    insert_refs(&db, a_files[0], b_syms[0], 1);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert_eq!(count, 0, "should skip when edge change is below threshold");
+}
+
+#[test]
+fn test_staleness_threshold_override() {
+    let (dir, db) = setup_db();
+    // Set a very high threshold so even significant changes are ignored
+    pin_resolution_and_threshold(dir.path(), 0.5);
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+
+    // Add cross-cluster refs that would exceed 10% but not 50%
+    let a1_id = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let b1_id = db
+        .upsert_file("src/tools/b1.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1_id, "core_a1_extra");
+    insert_refs(&db, b1_id, sa1, 5);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert_eq!(count, 0, "should skip when change is below custom 50% threshold");
+}
+
+#[test]
+fn test_clustering_meta_survives_reindex() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    let meta_before = db.clustering_meta().unwrap();
+    assert!(meta_before.is_some());
+
+    db.reindex().unwrap();
+
+    let meta_after = db.clustering_meta().unwrap();
+    assert_eq!(meta_before, meta_after, "clustering metadata should survive reindex");
+}
+
+#[test]
+fn test_first_run_records_metadata() {
+    let (dir, db) = setup_db();
+
+    let a1 = db
+        .upsert_file("src/a.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/b.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1, "fn_a");
+    insert_refs(&db, a2, sa1, 5);
+
+    // No metadata before first run
+    assert!(db.clustering_meta().unwrap().is_none());
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+
+    let meta = db.clustering_meta().unwrap();
+    assert!(meta.is_some(), "metadata should be recorded after first clustering");
+    let (edge_count, file_count) = meta.unwrap();
+    assert_eq!(file_count, 2);
+    assert!(edge_count > 0);
 }

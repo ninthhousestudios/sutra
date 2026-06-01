@@ -51,6 +51,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0009_reconciliation.sql"),
         false,
     ),
+    (
+        "0010_clustering_meta",
+        include_str!("../../migrations/0010_clustering_meta.sql"),
+        false,
+    ),
 ];
 
 impl Db {
@@ -234,6 +239,14 @@ impl Db {
             "0008_components" => {
                 conn.query_row(
                     "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='components'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            }
+            "0010_clustering_meta" => {
+                conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='component_clustering_meta'",
                     [],
                     |row| row.get(0),
                 )
