@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::components::{concept_density, ANCHOR_KINDS};
+use crate::components::concept_density;
 use crate::db::Db;
 use crate::error::Result;
 
@@ -39,14 +39,13 @@ pub fn handle(db: &Db) -> Result<serde_json::Value> {
             })
             .unwrap_or_default();
 
-        let eligible: Vec<_> = file_ids
+        let all_component_syms: Vec<_> = file_ids
             .iter()
             .filter_map(|fid| all_symbols.get(fid))
             .flatten()
-            .filter(|s| ANCHOR_KINDS.contains(&s.kind.as_str()))
             .collect();
         let total_loc: i64 = file_ids.iter().filter_map(|fid| file_loc.get(fid)).sum();
-        let density = concept_density(&eligible, total_loc);
+        let density = concept_density(&all_component_syms, total_loc);
 
         items.push(json!({
             "id": c.id,

@@ -172,25 +172,31 @@ impl Db {
         Ok(())
     }
 
-    pub fn upsert_clustering_meta(&self, edge_count: i64, file_count: i64) -> Result<()> {
+    pub fn upsert_clustering_meta(
+        &self,
+        edge_count: i64,
+        file_count: i64,
+        config_hash: &str,
+    ) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO component_clustering_meta (id, edge_count, file_count, clustered_at)
-             VALUES (1, ?1, ?2, datetime('now'))
+            "INSERT INTO component_clustering_meta (id, edge_count, file_count, clustered_at, config_hash)
+             VALUES (1, ?1, ?2, datetime('now'), ?3)
              ON CONFLICT(id) DO UPDATE SET
                 edge_count = excluded.edge_count,
                 file_count = excluded.file_count,
-                clustered_at = excluded.clustered_at",
-            params![edge_count, file_count],
+                clustered_at = excluded.clustered_at,
+                config_hash = excluded.config_hash",
+            params![edge_count, file_count, config_hash],
         )?;
         Ok(())
     }
 
-    pub fn clustering_meta(&self) -> Result<Option<(i64, i64)>> {
+    pub fn clustering_meta(&self) -> Result<Option<(i64, i64, String)>> {
         let conn = self.conn.lock();
         match conn.query_row(
-            "SELECT edge_count, file_count FROM component_clustering_meta WHERE id = 1",
+            "SELECT edge_count, file_count, config_hash FROM component_clustering_meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ) {
             Ok(tuple) => Ok(Some(tuple)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -312,13 +318,16 @@ impl Db {
         aliases: &[(String, String, String, String)],
     ) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM aliases", [])?;
-        let mut stmt = conn.prepare(
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM aliases", [])?;
+        let mut stmt = tx.prepare(
             "INSERT INTO aliases (id, term, target_kind, target_ref) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (id, term, kind, target) in aliases {
             stmt.execute(params![id, term, kind, target])?;
         }
+        drop(stmt);
+        tx.commit()?;
         Ok(())
     }
 

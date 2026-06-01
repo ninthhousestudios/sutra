@@ -599,15 +599,37 @@ fn edge_count(files: &[FileRow], db: &Db) -> Result<usize> {
     Ok(count)
 }
 
+fn clustering_config_hash(
+    boundary_multipliers: &HashMap<String, f64>,
+    resolution: Option<f64>,
+) -> String {
+    use std::fmt::Write;
+    let mut buf = String::new();
+    if let Some(r) = resolution {
+        write!(buf, "r={r};").unwrap();
+    }
+    let mut keys: Vec<_> = boundary_multipliers.keys().collect();
+    keys.sort();
+    for k in keys {
+        write!(buf, "{k}={};", boundary_multipliers[k]).unwrap();
+    }
+    buf
+}
+
 fn is_clustering_stale(
     db: &Db,
     current_edge_count: usize,
     current_file_count: i64,
     threshold: f64,
+    config_hash: &str,
 ) -> Result<bool> {
-    let Some((stored_edge_count, stored_file_count)) = db.clustering_meta()? else {
+    let Some((stored_edge_count, stored_file_count, stored_hash)) = db.clustering_meta()? else {
         return Ok(true);
     };
+
+    if stored_hash != config_hash {
+        return Ok(true);
+    }
 
     if current_file_count != stored_file_count {
         return Ok(true);
@@ -661,10 +683,11 @@ pub fn discover_components(
     let has_existing = db.component_count()? > 0;
     let has_membership = db.membership_count()? > 0;
     let file_count = files.len() as i64;
+    let cfg_hash = clustering_config_hash(boundary_multipliers, config.resolution);
 
     if has_existing && has_membership {
         let current_edge_count = edge_count(files, db)?;
-        if !is_clustering_stale(db, current_edge_count, file_count, threshold)? {
+        if !is_clustering_stale(db, current_edge_count, file_count, threshold, &cfg_hash)? {
             return Ok(0);
         }
     }
@@ -679,7 +702,7 @@ pub fn discover_components(
         create_fresh_components(db, &clusters, &file_map)?
     };
 
-    db.upsert_clustering_meta(edge_count as i64, file_count)?;
+    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash)?;
     Ok(count)
 }
 
