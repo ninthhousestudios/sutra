@@ -1,6 +1,8 @@
 use sutra::components;
 use sutra::db::{Db, InsertSymbolParams};
 
+use std::collections::HashSet;
+
 fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -920,4 +922,224 @@ fn test_first_run_records_metadata() {
     let (edge_count, file_count) = meta.unwrap();
     assert_eq!(file_count, 2);
     assert!(edge_count > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Semantic anchor tests
+// ---------------------------------------------------------------------------
+
+fn insert_symbol_with_kind(db: &Db, file_id: i64, qualified: &str, short: &str, kind: &str) -> i64 {
+    db.insert_symbol(&InsertSymbolParams {
+        file_id,
+        qualified_name: qualified,
+        short_name: short,
+        kind,
+        signature: None,
+        signature_hash: None,
+        visibility: Some("public"),
+        start_line: 1,
+        start_col: 0,
+        end_line: 10,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn test_semantic_anchors_computed_after_discovery() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+
+    let anchor_count = components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    assert!(anchor_count > 0, "should compute anchors for discovered components");
+
+    let comps = db.all_components().unwrap();
+    for c in &comps {
+        let anchors = db.anchors_for_component(&c.id).unwrap();
+        assert!(
+            !anchors.is_empty(),
+            "component '{}' should have at least one anchor",
+            c.name
+        );
+        assert!(
+            anchors.len() >= 3 && anchors.len() <= 7,
+            "component '{}' has {} anchors, expected 3-7",
+            c.name,
+            anchors.len()
+        );
+        for a in &anchors {
+            assert!(a.score.is_some());
+            assert!(a.rationale.is_some());
+        }
+    }
+}
+
+#[test]
+fn test_anchors_prefer_high_in_degree() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+
+    // Single component: 5 files under src/lib/
+    let f1 = db.upsert_file("src/lib/a.rs", "rust", "h1", 50, true).unwrap();
+    let f2 = db.upsert_file("src/lib/b.rs", "rust", "h2", 50, true).unwrap();
+    let f3 = db.upsert_file("src/lib/c.rs", "rust", "h3", 50, true).unwrap();
+    let f4 = db.upsert_file("src/lib/d.rs", "rust", "h4", 50, true).unwrap();
+    let f5 = db.upsert_file("src/lib/e.rs", "rust", "h5", 50, true).unwrap();
+
+    // "popular" symbol: called from all other files
+    let popular = insert_symbol(&db, f1, "popular_fn");
+    let _s2 = insert_symbol(&db, f2, "helper_b");
+    let _s3 = insert_symbol(&db, f3, "helper_c");
+    let _s4 = insert_symbol(&db, f4, "helper_d");
+    let _s5 = insert_symbol(&db, f5, "helper_e");
+
+    // Dense cross-refs to form one component
+    insert_refs(&db, f2, popular, 20);
+    insert_refs(&db, f3, popular, 20);
+    insert_refs(&db, f4, popular, 20);
+    insert_refs(&db, f5, popular, 20);
+    // Some intra-cluster refs to glue the cluster
+    let s2 = insert_symbol(&db, f2, "bridge_b");
+    insert_refs(&db, f1, s2, 5);
+    insert_refs(&db, f3, s2, 5);
+    insert_refs(&db, f4, s2, 5);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+
+    let comps = db.all_components().unwrap();
+    assert!(!comps.is_empty());
+
+    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+
+    // Find the component containing f1
+    let anchors = db.anchors_for_component(&comps[0].id).unwrap();
+    assert!(!anchors.is_empty());
+    // The top-ranked anchor should be "popular_fn" due to high in-degree
+    assert_eq!(
+        anchors[0].symbol_name, "popular_fn",
+        "highest in-degree symbol should rank first"
+    );
+}
+
+#[test]
+fn test_anchor_count_adaptive() {
+    // Unit test for the anchor_count function
+    assert_eq!(components::anchor_count(5), 3, "small: min 3");
+    assert_eq!(components::anchor_count(10), 3, "10 eligible: 10/8=1 → clamp to 3");
+    assert_eq!(components::anchor_count(24), 3, "24 eligible: 24/8=3");
+    assert_eq!(components::anchor_count(40), 5, "40 eligible: 40/8=5");
+    assert_eq!(components::anchor_count(56), 7, "56 eligible: 56/8=7");
+    assert_eq!(components::anchor_count(100), 7, "large: max 7");
+}
+
+#[test]
+fn test_anchors_exclude_non_anchor_kinds() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+
+    let f1 = db.upsert_file("src/pkg/a.rs", "rust", "h1", 50, true).unwrap();
+    let f2 = db.upsert_file("src/pkg/b.rs", "rust", "h2", 50, true).unwrap();
+
+    // Anchor-eligible: function, struct
+    let fn_sym = insert_symbol(&db, f1, "my_function");
+    let _struct_sym = insert_symbol_with_kind(&db, f1, "MyStruct", "MyStruct", "struct");
+    // Non-eligible: module, import
+    let _mod_sym = insert_symbol_with_kind(&db, f2, "my_module", "my_module", "module");
+
+    // Cross-refs to form cluster
+    insert_refs(&db, f2, fn_sym, 10);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+
+    let comps = db.all_components().unwrap();
+    let all_anchors = db.all_anchors_grouped().unwrap();
+    for c in &comps {
+        if let Some(anchors) = all_anchors.get(&c.id) {
+            let names: HashSet<&str> = anchors.iter().map(|a| a.symbol_name.as_str()).collect();
+            assert!(
+                !names.contains("my_module"),
+                "module symbols should not be anchors"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_anchors_in_components_tool_output() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+
+    let result = sutra::tools::components::handle(&db).unwrap();
+    let comps = result["components"].as_array().unwrap();
+    for c in comps {
+        let anchors = c["anchors"].as_array().unwrap();
+        assert!(!anchors.is_empty(), "MCP output should include anchors");
+        for a in anchors {
+            assert!(a["symbol"].is_string());
+            assert!(a["score"].is_number());
+            assert!(a["rationale"].is_string());
+        }
+    }
+}
+
+#[test]
+fn test_anchors_recomputed_on_recluster() {
+    let (dir, db) = setup_db();
+    pin_resolution_and_threshold(dir.path(), 0.05);
+    setup_two_clusters(&db);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+
+    let _comps = db.all_components().unwrap();
+    let original_anchors: HashSet<String> = {
+        let grouped = db.all_anchors_grouped().unwrap();
+        grouped.values().flatten().map(|a| a.symbol_name.clone()).collect()
+    };
+    assert!(!original_anchors.is_empty());
+
+    // Reindex wipes ephemeral tables
+    db.reindex().unwrap();
+
+    // Re-insert the same clusters plus a new file with a new popular symbol
+    setup_two_clusters(&db);
+    let new_file = db.upsert_file("src/core/new.rs", "rust", "hnew", 50, true).unwrap();
+    let new_sym = insert_symbol(&db, new_file, "new_popular_fn");
+    // Make new_sym heavily referenced within core cluster
+    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
+    insert_refs(&db, a1, new_sym, 50);
+
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert!(count > 0, "should recluster after adding new file");
+
+    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+
+    let new_anchors: HashSet<String> = {
+        let grouped = db.all_anchors_grouped().unwrap();
+        grouped.values().flatten().map(|a| a.symbol_name.clone()).collect()
+    };
+    assert!(
+        new_anchors.contains("new_popular_fn"),
+        "recomputed anchors should include the new popular symbol"
+    );
 }

@@ -655,7 +655,7 @@ const ANCHOR_KINDS: &[&str] = &[
     "static",
 ];
 
-fn anchor_count(eligible: usize) -> usize {
+pub fn anchor_count(eligible: usize) -> usize {
     (eligible / 8).clamp(3, 7)
 }
 
@@ -699,8 +699,18 @@ fn rank_normalize(values: &[f64]) -> Vec<f64> {
     let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let mut ranks = vec![0.0; n];
-    for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
-        ranks[orig_idx] = rank as f64 / (n - 1) as f64;
+    // Assign average rank to tied values
+    let mut i = 0;
+    while i < n {
+        let mut j = i;
+        while j < n && (indexed[j].1 - indexed[i].1).abs() < f64::EPSILON {
+            j += 1;
+        }
+        let avg_rank = (i + j - 1) as f64 / 2.0;
+        for item in &indexed[i..j] {
+            ranks[item.0] = avg_rank / (n - 1) as f64;
+        }
+        i = j;
     }
     ranks
 }
