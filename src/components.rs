@@ -313,8 +313,9 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
             .collect();
         let name = auto_name(&paths);
         let id = Uuid::now_v7().to_string();
+        let paths_json = serde_json::to_string(&paths).unwrap_or_default();
 
-        components.push((id.clone(), name));
+        components.push((id.clone(), name, paths_json));
         for &fid in file_ids {
             membership_rows.push((id.clone(), fid));
         }

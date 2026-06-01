@@ -138,6 +138,8 @@ pub struct ComponentRow {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    pub dissolved_at: Option<String>,
+    pub prior_paths: Option<String>,
 }
 
 #[derive(Debug, Clone)]
