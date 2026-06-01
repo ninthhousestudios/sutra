@@ -716,7 +716,7 @@ fn rank_normalize(values: &[f64]) -> Vec<f64> {
 }
 
 struct ScoredSymbol {
-    symbol: SymbolRow,
+    qualified_name: String,
     score: f64,
     rationale: String,
 }
@@ -734,6 +734,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
 
     let files = db.all_files()?;
     let file_id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let all_symbols = db.all_symbols_by_file()?;
 
     let mut component_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
     let mut file_to_component: HashMap<i64, String> = HashMap::new();
@@ -745,7 +746,6 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
         component_file_ids.insert(c.id.clone(), fids);
     }
 
-    // Pre-compute intra-component in-degree per symbol
     let mut intra_in_degree: HashMap<i64, usize> = HashMap::new();
     for &(src_file_id, target_sym_id) in &all_refs {
         if let Some(target_file_id) = sym_to_file.get(&target_sym_id) {
@@ -758,23 +758,18 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
     }
 
     let mut all_anchors = Vec::new();
-    let mut comp_ids: Vec<&str> = Vec::new();
     let mut total = 0;
 
     for c in &components {
-        comp_ids.push(&c.id);
         let fids = match component_file_ids.get(&c.id) {
             Some(f) => f,
             None => continue,
         };
 
-        let mut symbols: Vec<SymbolRow> = Vec::new();
-        for &fid in fids {
-            symbols.extend(db.find_symbols_by_file(fid)?);
-        }
-
-        let eligible: Vec<&SymbolRow> = symbols
+        let eligible: Vec<&SymbolRow> = fids
             .iter()
+            .filter_map(|fid| all_symbols.get(fid))
+            .flatten()
             .filter(|s| ANCHOR_KINDS.contains(&s.kind.as_str()))
             .filter(|s| s.parent_symbol_id.is_none() || s.kind == "method")
             .collect();
@@ -812,7 +807,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
         let mut scored: Vec<ScoredSymbol> = eligible
             .iter()
             .enumerate()
-            .map(|(i, &sym)| {
+            .map(|(i, sym)| {
                 let score = 0.35 * in_degree_norm[i]
                     + 0.30 * pagerank_norm[i]
                     + 0.20 * stability_norm[i]
@@ -822,7 +817,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
                     in_degree_norm[i], pagerank_norm[i], stability_norm[i], naming_norm[i],
                 );
                 ScoredSymbol {
-                    symbol: sym.clone(),
+                    qualified_name: sym.qualified_name.clone(),
                     score,
                     rationale,
                 }
@@ -837,7 +832,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
             all_anchors.push((
                 Uuid::now_v7().to_string(),
                 c.id.clone(),
-                s.symbol.qualified_name.clone(),
+                s.qualified_name.clone(),
                 s.score,
                 s.rationale.clone(),
             ));
@@ -845,7 +840,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
         total += scored.len();
     }
 
-    db.batch_replace_anchors(&comp_ids, &all_anchors)?;
+    db.replace_all_anchors(&all_anchors)?;
     Ok(total)
 }
 

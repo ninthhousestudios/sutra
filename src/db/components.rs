@@ -225,20 +225,14 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn batch_replace_anchors(
+    pub fn replace_all_anchors(
         &self,
-        component_ids: &[&str],
         anchors: &[(String, String, String, f64, String)],
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         {
-            let mut del = conn.prepare_cached(
-                "DELETE FROM semantic_anchors WHERE component_id = ?1",
-            )?;
-            for id in component_ids {
-                del.execute(params![id])?;
-            }
+            conn.execute_batch("DELETE FROM semantic_anchors")?;
             let mut ins = conn.prepare_cached(
                 "INSERT INTO semantic_anchors (id, component_id, symbol_name, score, rationale) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",

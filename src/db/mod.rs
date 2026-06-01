@@ -603,6 +603,26 @@ impl Db {
         Ok(rows?)
     }
 
+    pub fn all_symbols_by_file(&self) -> Result<std::collections::HashMap<i64, Vec<SymbolRow>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, file_id, qualified_name, short_name, kind,
+                    signature, signature_hash, visibility,
+                    start_line, start_col, end_line, end_col,
+                    parent_symbol_id, docstring, pagerank,
+                    cyclomatic, cognitive, flags, language_attrs
+             FROM symbols ORDER BY file_id, start_line",
+        )?;
+        let rows: rusqlite::Result<Vec<SymbolRow>> =
+            stmt.query_map([], map_symbol_row)?.collect();
+        let mut grouped: std::collections::HashMap<i64, Vec<SymbolRow>> =
+            std::collections::HashMap::new();
+        for sym in rows? {
+            grouped.entry(sym.file_id).or_default().push(sym);
+        }
+        Ok(grouped)
+    }
+
     pub fn file_has_null_language_attrs(&self, file_id: i64) -> Result<bool> {
         let conn = self.conn.lock();
         let count: i64 = conn.query_row(

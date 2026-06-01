@@ -9,12 +9,12 @@ fn setup_db() -> (tempfile::TempDir, Db) {
     (dir, db)
 }
 
-fn insert_symbol(db: &Db, file_id: i64, name: &str) -> i64 {
+fn insert_symbol_with_kind(db: &Db, file_id: i64, qualified: &str, short: &str, kind: &str) -> i64 {
     db.insert_symbol(&InsertSymbolParams {
         file_id,
-        qualified_name: name,
-        short_name: name,
-        kind: "function",
+        qualified_name: qualified,
+        short_name: short,
+        kind,
         signature: None,
         signature_hash: None,
         visibility: Some("public"),
@@ -30,6 +30,10 @@ fn insert_symbol(db: &Db, file_id: i64, name: &str) -> i64 {
         language_attrs: None,
     })
     .unwrap()
+}
+
+fn insert_symbol(db: &Db, file_id: i64, name: &str) -> i64 {
+    insert_symbol_with_kind(db, file_id, name, name, "function")
 }
 
 fn insert_refs(db: &Db, from_file: i64, to_sym: i64, count: usize) {
@@ -927,29 +931,6 @@ fn test_first_run_records_metadata() {
 // ---------------------------------------------------------------------------
 // Semantic anchor tests
 // ---------------------------------------------------------------------------
-
-fn insert_symbol_with_kind(db: &Db, file_id: i64, qualified: &str, short: &str, kind: &str) -> i64 {
-    db.insert_symbol(&InsertSymbolParams {
-        file_id,
-        qualified_name: qualified,
-        short_name: short,
-        kind,
-        signature: None,
-        signature_hash: None,
-        visibility: Some("public"),
-        start_line: 1,
-        start_col: 0,
-        end_line: 10,
-        end_col: 0,
-        parent_symbol_id: None,
-        docstring: None,
-        cyclomatic: None,
-        cognitive: None,
-        flags: 0,
-        language_attrs: None,
-    })
-    .unwrap()
-}
 
 #[test]
 fn test_semantic_anchors_computed_after_discovery() {
