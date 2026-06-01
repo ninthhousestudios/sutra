@@ -644,7 +644,7 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
 // Semantic anchors
 // ---------------------------------------------------------------------------
 
-const ANCHOR_KINDS: &[&str] = &[
+pub const ANCHOR_KINDS: &[&str] = &[
     "function",
     "struct",
     "enum",
@@ -845,6 +845,30 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
 }
 
 // ---------------------------------------------------------------------------
+// Concept density
+// ---------------------------------------------------------------------------
+
+pub fn extract_stems(symbols: &[&SymbolRow]) -> usize {
+    let mut stems: HashSet<String> = HashSet::new();
+    for s in symbols {
+        for token in tokenize_name(&s.short_name) {
+            stems.insert(token);
+        }
+    }
+    stems.len()
+}
+
+pub fn concept_density(symbols: &[&SymbolRow], total_loc: i64) -> f64 {
+    if symbols.is_empty() || total_loc <= 0 {
+        return 0.0;
+    }
+    let unique_kinds = symbols.iter().map(|s| s.kind.as_str()).collect::<HashSet<_>>().len();
+    let stem_diversity = extract_stems(symbols);
+    let raw = (unique_kinds as f64 * stem_diversity as f64) / total_loc as f64;
+    (raw * 10000.0).round() / 10000.0
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -971,5 +995,81 @@ mod tests {
             community_sets.entry(comm).or_default().push(node);
         }
         assert_eq!(community_sets.len(), 2);
+    }
+
+    fn make_symbol(id: i64, short_name: &str, kind: &str) -> SymbolRow {
+        SymbolRow {
+            id,
+            file_id: 1,
+            qualified_name: short_name.to_string(),
+            short_name: short_name.to_string(),
+            kind: kind.to_string(),
+            signature: None,
+            signature_hash: None,
+            visibility: None,
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            pagerank: None,
+            cyclomatic: None,
+            cognitive: None,
+            flags: 0,
+            language_attrs: None,
+        }
+    }
+
+    #[test]
+    fn test_extract_stems_diverse() {
+        let syms = vec![
+            make_symbol(1, "UserProfile", "struct"),
+            make_symbol(2, "fetch_data", "function"),
+            make_symbol(3, "render_chart", "function"),
+        ];
+        let refs: Vec<&SymbolRow> = syms.iter().collect();
+        let count = extract_stems(&refs);
+        // user, profile, fetch, data, render, chart = 6
+        assert_eq!(count, 6);
+    }
+
+    #[test]
+    fn test_extract_stems_repetitive() {
+        let syms = vec![
+            make_symbol(1, "handle_create", "function"),
+            make_symbol(2, "handle_update", "function"),
+            make_symbol(3, "handle_delete", "function"),
+        ];
+        let refs: Vec<&SymbolRow> = syms.iter().collect();
+        let count = extract_stems(&refs);
+        // handle, create, update, delete = 4
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn test_concept_density_formula() {
+        // 2 kinds (struct, function) × 6 stems / 100 LOC = 0.12
+        let syms = vec![
+            make_symbol(1, "UserProfile", "struct"),
+            make_symbol(2, "fetch_data", "function"),
+            make_symbol(3, "render_chart", "function"),
+        ];
+        let refs: Vec<&SymbolRow> = syms.iter().collect();
+        let d = concept_density(&refs, 100);
+        assert!((d - 0.12).abs() < 0.001, "expected 0.12, got {d}");
+    }
+
+    #[test]
+    fn test_concept_density_empty() {
+        let refs: Vec<&SymbolRow> = vec![];
+        assert_eq!(concept_density(&refs, 100), 0.0);
+    }
+
+    #[test]
+    fn test_concept_density_zero_loc() {
+        let syms = vec![make_symbol(1, "foo", "function")];
+        let refs: Vec<&SymbolRow> = syms.iter().collect();
+        assert_eq!(concept_density(&refs, 0), 0.0);
     }
 }

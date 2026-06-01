@@ -1124,3 +1124,73 @@ fn test_anchors_recomputed_on_recluster() {
         "recomputed anchors should include the new popular symbol"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Concept density tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_concept_density_in_tool_output() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+
+    // Cluster A (diverse): function + struct + enum, varied names, 30 LOC per file
+    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 30, true).unwrap();
+    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 30, true).unwrap();
+    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 30, true).unwrap();
+
+    let sa1 = insert_symbol_with_kind(&db, a1, "UserProfile", "UserProfile", "struct");
+    let sa2 = insert_symbol_with_kind(&db, a2, "fetch_data", "fetch_data", "function");
+    let sa3 = insert_symbol_with_kind(&db, a3, "RenderMode", "RenderMode", "enum");
+
+    // Cluster B (repetitive): all functions, similar names, 30 LOC per file
+    let b1 = db.upsert_file("src/handlers/b1.rs", "rust", "h4", 30, true).unwrap();
+    let b2 = db.upsert_file("src/handlers/b2.rs", "rust", "h5", 30, true).unwrap();
+    let b3 = db.upsert_file("src/handlers/b3.rs", "rust", "h6", 30, true).unwrap();
+
+    let sb1 = insert_symbol_with_kind(&db, b1, "handle_create", "handle_create", "function");
+    let sb2 = insert_symbol_with_kind(&db, b2, "handle_update", "handle_update", "function");
+    let sb3 = insert_symbol_with_kind(&db, b3, "handle_delete", "handle_delete", "function");
+
+    // Dense intra-cluster refs
+    insert_refs(&db, a1, sa2, 10);
+    insert_refs(&db, a1, sa3, 10);
+    insert_refs(&db, a2, sa1, 10);
+    insert_refs(&db, a2, sa3, 10);
+    insert_refs(&db, a3, sa1, 10);
+    insert_refs(&db, a3, sa2, 10);
+
+    insert_refs(&db, b1, sb2, 10);
+    insert_refs(&db, b1, sb3, 10);
+    insert_refs(&db, b2, sb1, 10);
+    insert_refs(&db, b2, sb3, 10);
+    insert_refs(&db, b3, sb1, 10);
+    insert_refs(&db, b3, sb2, 10);
+
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+
+    let result = sutra::tools::components::handle(&db).unwrap();
+    let comps = result["components"].as_array().unwrap();
+    assert_eq!(comps.len(), 2);
+
+    let mut densities: Vec<(String, f64)> = comps
+        .iter()
+        .map(|c| {
+            let name = c["name"].as_str().unwrap().to_string();
+            let density = c["concept_density"].as_f64().expect("concept_density should be present");
+            assert!(density >= 0.0, "density should be non-negative");
+            (name, density)
+        })
+        .collect();
+    densities.sort_by_key(|(n, _)| n.clone());
+
+    let diverse = densities.iter().find(|(n, _)| n == "core").unwrap();
+    let repetitive = densities.iter().find(|(n, _)| n == "handlers").unwrap();
+
+    assert!(
+        diverse.1 > repetitive.1,
+        "diverse component ({}: {}) should have higher density than repetitive ({}: {})",
+        diverse.0, diverse.1, repetitive.0, repetitive.1,
+    );
+}
