@@ -10,11 +10,53 @@ impl Db {
         Ok(conn.query_row("SELECT COUNT(*) FROM components", [], |r| r.get(0))?)
     }
 
+    pub fn membership_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM component_membership", [], |r| r.get(0))?)
+    }
+
     pub fn insert_component(&self, id: &str, name: &str) -> Result<()> {
         self.conn.lock().execute(
             "INSERT INTO components (id, name) VALUES (?1, ?2)",
             params![id, name],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_all_components(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute_batch(
+            "DELETE FROM component_membership; \
+             DELETE FROM component_events; \
+             DELETE FROM semantic_anchors; \
+             DELETE FROM aliases; \
+             DELETE FROM components",
+        )?;
+        Ok(())
+    }
+
+    /// Atomically insert components and their membership rows.
+    pub fn batch_create_components(
+        &self,
+        components: &[(String, String)],
+        membership: &[(String, i64)],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut comp_stmt =
+                conn.prepare_cached("INSERT INTO components (id, name) VALUES (?1, ?2)")?;
+            for (id, name) in components {
+                comp_stmt.execute(params![id, name])?;
+            }
+            let mut mem_stmt = conn.prepare_cached(
+                "INSERT INTO component_membership (component_id, file_id) VALUES (?1, ?2)",
+            )?;
+            for (cid, fid) in membership {
+                mem_stmt.execute(params![cid, fid])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 

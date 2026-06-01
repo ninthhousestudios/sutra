@@ -110,10 +110,8 @@ fn test_two_cluster_discovery() {
 }
 
 #[test]
-fn test_first_run_gate_skips_when_components_exist() {
+fn test_first_run_gate_skips_when_components_and_membership_exist() {
     let (dir, db) = setup_db();
-    db.insert_component("00000000-0000-7000-8000-000000000001", "existing")
-        .unwrap();
 
     let a1 = db
         .upsert_file("src/a.rs", "rust", "h1", 50, true)
@@ -124,9 +122,63 @@ fn test_first_run_gate_skips_when_components_exist() {
     let sa1 = insert_symbol(&db, a1, "fn_a");
     insert_refs(&db, a2, sa1, 5);
 
+    // First run creates components + membership
     let files = db.all_files().unwrap();
     let count = components::discover_components(&db, &files, dir.path()).unwrap();
-    assert_eq!(count, 0, "should skip when components already exist");
+    assert!(count > 0);
+
+    // Second run should skip — both components and membership exist
+    let count2 = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert_eq!(count2, 0, "should skip when components and membership exist");
+}
+
+#[test]
+fn test_orphan_cleanup_rediscovers_after_membership_wiped() {
+    let (dir, db) = setup_db();
+
+    let a1 = db
+        .upsert_file("src/core/a.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/b.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1, "fn_a");
+    insert_refs(&db, a2, sa1, 5);
+
+    // First run
+    let files = db.all_files().unwrap();
+    components::discover_components(&db, &files, dir.path()).unwrap();
+    let original_comps = db.all_components().unwrap();
+    assert!(!original_comps.is_empty());
+
+    // Simulate reindex wiping ephemeral membership
+    db.reindex().unwrap();
+
+    // Membership gone, components still there
+    assert!(db.component_count().unwrap() > 0);
+    assert_eq!(db.membership_count().unwrap(), 0);
+
+    // Re-insert files and refs (reindex wiped them too)
+    let a1 = db
+        .upsert_file("src/core/a.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/b.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1, "fn_a");
+    insert_refs(&db, a2, sa1, 5);
+
+    // Re-discover should clean up orphans and create fresh components
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(&db, &files, dir.path()).unwrap();
+    assert!(count > 0, "should rediscover after orphan cleanup");
+
+    // Membership should be populated again
+    assert!(db.membership_count().unwrap() > 0);
+    for c in &db.all_components().unwrap() {
+        let paths = db.component_file_paths(&c.id).unwrap();
+        assert!(!paths.is_empty(), "every component should have files");
+    }
 }
 
 #[test]

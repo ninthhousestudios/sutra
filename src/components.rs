@@ -215,7 +215,7 @@ fn auto_tune(adj: &WeightedAdj) -> LouvainResult {
             }
             let k = sizes.len();
             let max_size = sizes.values().max().copied().unwrap_or(0);
-            k >= 2 && (max_size as f64) < 0.5 * n as f64
+            k >= 2 && (max_size as f64) <= 0.5 * n as f64
         })
         .collect();
 
@@ -276,7 +276,12 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
     }
 
     if db.component_count()? > 0 {
-        return Ok(0);
+        if db.membership_count()? > 0 {
+            // Components and membership both present — reconciliation is sutra/46
+            return Ok(0);
+        }
+        // Orphaned components (membership wiped by reindex) — clean up and re-discover
+        db.delete_all_components()?;
     }
 
     let config = load_config(workspace_root)?;
@@ -299,6 +304,7 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
         clusters.entry(comm).or_default().push(file_id);
     }
 
+    let mut components = Vec::new();
     let mut membership_rows = Vec::new();
     for file_ids in clusters.values() {
         let paths: Vec<&str> = file_ids
@@ -308,12 +314,12 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
         let name = auto_name(&paths);
         let id = Uuid::now_v7().to_string();
 
-        db.insert_component(&id, &name)?;
+        components.push((id.clone(), name));
         for &fid in file_ids {
             membership_rows.push((id.clone(), fid));
         }
     }
-    db.batch_insert_membership(&membership_rows)?;
+    db.batch_create_components(&components, &membership_rows)?;
 
     Ok(clusters.len())
 }
