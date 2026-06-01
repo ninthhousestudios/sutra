@@ -133,8 +133,9 @@ fn test_first_run_gate_skips_when_components_and_membership_exist() {
 }
 
 #[test]
-fn test_orphan_cleanup_rediscovers_after_membership_wiped() {
+fn test_reconciliation_after_reindex_preserves_and_repopulates() {
     let (dir, db) = setup_db();
+    pin_resolution(dir.path());
 
     let a1 = db
         .upsert_file("src/core/a.rs", "rust", "h1", 50, true)
@@ -150,6 +151,8 @@ fn test_orphan_cleanup_rediscovers_after_membership_wiped() {
     components::discover_components(&db, &files, dir.path()).unwrap();
     let original_comps = db.all_components().unwrap();
     assert!(!original_comps.is_empty());
+    let original_ids: std::collections::HashSet<String> =
+        original_comps.iter().map(|c| c.id.clone()).collect();
 
     // Simulate reindex wiping ephemeral membership
     db.reindex().unwrap();
@@ -168,10 +171,15 @@ fn test_orphan_cleanup_rediscovers_after_membership_wiped() {
     let sa1 = insert_symbol(&db, a1, "fn_a");
     insert_refs(&db, a2, sa1, 5);
 
-    // Re-discover should clean up orphans and create fresh components
+    // Reconciliation should preserve component identity
     let files = db.all_files().unwrap();
     let count = components::discover_components(&db, &files, dir.path()).unwrap();
-    assert!(count > 0, "should rediscover after orphan cleanup");
+    assert!(count > 0, "should reconcile after reindex");
+
+    // Component IDs should be preserved
+    let reconciled_ids: std::collections::HashSet<String> =
+        db.all_components().unwrap().iter().map(|c| c.id.clone()).collect();
+    assert_eq!(original_ids, reconciled_ids, "component IDs should survive reindex");
 
     // Membership should be populated again
     assert!(db.membership_count().unwrap() > 0);
