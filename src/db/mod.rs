@@ -144,6 +144,15 @@ pub struct ComponentRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct AnchorRow {
+    pub id: String,
+    pub component_id: String,
+    pub symbol_name: String,
+    pub score: Option<f64>,
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SnapshotRow {
     pub id: i64,
     pub timestamp: String,

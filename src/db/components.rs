@@ -3,7 +3,7 @@ use serde_json;
 
 use crate::error::Result;
 
-use super::{ComponentRow, Db};
+use super::{AnchorRow, ComponentRow, Db};
 
 impl Db {
     pub fn component_count(&self) -> Result<i64> {
@@ -222,6 +222,91 @@ impl Db {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn batch_replace_anchors(
+        &self,
+        component_ids: &[&str],
+        anchors: &[(String, String, String, f64, String)],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut del = conn.prepare_cached(
+                "DELETE FROM semantic_anchors WHERE component_id = ?1",
+            )?;
+            for id in component_ids {
+                del.execute(params![id])?;
+            }
+            let mut ins = conn.prepare_cached(
+                "INSERT INTO semantic_anchors (id, component_id, symbol_name, score, rationale) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (id, cid, name, score, rationale) in anchors {
+                ins.execute(params![id, cid, name, score, rationale])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn anchors_for_component(&self, component_id: &str) -> Result<Vec<AnchorRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, component_id, symbol_name, score, rationale \
+             FROM semantic_anchors WHERE component_id = ?1 \
+             ORDER BY score DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![component_id], |r| {
+                Ok(AnchorRow {
+                    id: r.get(0)?,
+                    component_id: r.get(1)?,
+                    symbol_name: r.get(2)?,
+                    score: r.get(3)?,
+                    rationale: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn all_anchors_grouped(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<AnchorRow>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, component_id, symbol_name, score, rationale \
+             FROM semantic_anchors ORDER BY component_id, score DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(AnchorRow {
+                    id: r.get(0)?,
+                    component_id: r.get(1)?,
+                    symbol_name: r.get(2)?,
+                    score: r.get(3)?,
+                    rationale: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut grouped: std::collections::HashMap<String, Vec<AnchorRow>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            grouped.entry(row.component_id.clone()).or_default().push(row);
+        }
+        Ok(grouped)
+    }
+
+    pub fn component_file_ids(&self, component_id: &str) -> Result<Vec<i64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id FROM component_membership WHERE component_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![component_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(rows)
     }
 }

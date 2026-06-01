@@ -56,6 +56,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0010_clustering_meta.sql"),
         false,
     ),
+    (
+        "0011_anchor_score",
+        include_str!("../../migrations/0011_anchor_score.sql"),
+        false,
+    ),
 ];
 
 impl Db {
@@ -252,6 +257,7 @@ impl Db {
                 )
                 .unwrap_or(false)
             }
+            "0011_anchor_score" => Self::column_exists(conn, "semantic_anchors", "score"),
             _ => false,
         }
     }

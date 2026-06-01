@@ -547,6 +547,11 @@ fn post_parse_sequence(
         let component_count = components::discover_components(db, &files, workspace_root)?;
         if component_count > 0 {
             info!(component_count, "discovered components");
+            let anchor_count =
+                components::compute_semantic_anchors(db, workspace_root)?;
+            if anchor_count > 0 {
+                info!(anchor_count, "computed semantic anchors");
+            }
         }
     }
 

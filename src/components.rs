@@ -5,8 +5,9 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::db::{Db, FileRow};
+use crate::db::{Db, FileRow, SymbolRow};
 use crate::error::{Result, SutraError};
+use crate::git;
 
 const DEFAULT_STALENESS_THRESHOLD: f64 = 0.10;
 
@@ -637,6 +638,205 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
 
     db.upsert_clustering_meta(edge_count as i64, file_count)?;
     Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Semantic anchors
+// ---------------------------------------------------------------------------
+
+const ANCHOR_KINDS: &[&str] = &[
+    "function",
+    "struct",
+    "enum",
+    "trait",
+    "method",
+    "type_alias",
+    "const",
+    "static",
+];
+
+fn anchor_count(eligible: usize) -> usize {
+    (eligible / 8).clamp(3, 7)
+}
+
+fn tokenize_name(name: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' || ch == '/' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current).to_lowercase());
+            }
+        } else if ch.is_uppercase() && !current.is_empty() {
+            tokens.push(std::mem::take(&mut current).to_lowercase());
+            current.push(ch);
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current.to_lowercase());
+    }
+    tokens
+}
+
+fn name_alignment(symbol_name: &str, component_name: &str) -> f64 {
+    let sym_tokens: HashSet<String> = tokenize_name(symbol_name).into_iter().collect();
+    let comp_tokens: HashSet<String> = tokenize_name(component_name).into_iter().collect();
+    if sym_tokens.is_empty() || comp_tokens.is_empty() {
+        return 0.0;
+    }
+    let intersection = sym_tokens.intersection(&comp_tokens).count();
+    let union = sym_tokens.union(&comp_tokens).count();
+    intersection as f64 / union as f64
+}
+
+fn rank_normalize(values: &[f64]) -> Vec<f64> {
+    let n = values.len();
+    if n <= 1 {
+        return vec![1.0; n];
+    }
+    let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let mut ranks = vec![0.0; n];
+    for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
+        ranks[orig_idx] = rank as f64 / (n - 1) as f64;
+    }
+    ranks
+}
+
+struct ScoredSymbol {
+    symbol: SymbolRow,
+    score: f64,
+    rationale: String,
+}
+
+pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize> {
+    let components = db.all_components()?;
+    if components.is_empty() {
+        return Ok(0);
+    }
+
+    let sym_file_pairs = db.all_symbol_file_map()?;
+    let sym_to_file: HashMap<i64, i64> = sym_file_pairs.into_iter().collect();
+    let all_refs = db.all_resolved_refs()?;
+    let churn_map = git::git_churn(workspace_root, 90).unwrap_or_default();
+
+    let files = db.all_files()?;
+    let file_id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+
+    let mut component_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut file_to_component: HashMap<i64, String> = HashMap::new();
+    for c in &components {
+        let fids = db.component_file_ids(&c.id)?;
+        for &fid in &fids {
+            file_to_component.insert(fid, c.id.clone());
+        }
+        component_file_ids.insert(c.id.clone(), fids);
+    }
+
+    // Pre-compute intra-component in-degree per symbol
+    let mut intra_in_degree: HashMap<i64, usize> = HashMap::new();
+    for &(src_file_id, target_sym_id) in &all_refs {
+        if let Some(target_file_id) = sym_to_file.get(&target_sym_id) {
+            let src_comp = file_to_component.get(&src_file_id);
+            let tgt_comp = file_to_component.get(target_file_id);
+            if src_comp.is_some() && src_comp == tgt_comp {
+                *intra_in_degree.entry(target_sym_id).or_default() += 1;
+            }
+        }
+    }
+
+    let mut all_anchors = Vec::new();
+    let mut comp_ids: Vec<&str> = Vec::new();
+    let mut total = 0;
+
+    for c in &components {
+        comp_ids.push(&c.id);
+        let fids = match component_file_ids.get(&c.id) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let mut symbols: Vec<SymbolRow> = Vec::new();
+        for &fid in fids {
+            symbols.extend(db.find_symbols_by_file(fid)?);
+        }
+
+        let eligible: Vec<&SymbolRow> = symbols
+            .iter()
+            .filter(|s| ANCHOR_KINDS.contains(&s.kind.as_str()))
+            .filter(|s| s.parent_symbol_id.is_none() || s.kind == "method")
+            .collect();
+
+        if eligible.is_empty() {
+            continue;
+        }
+
+        let in_degrees: Vec<f64> = eligible
+            .iter()
+            .map(|s| intra_in_degree.get(&s.id).copied().unwrap_or(0) as f64)
+            .collect();
+        let pageranks: Vec<f64> = eligible
+            .iter()
+            .map(|s| s.pagerank.unwrap_or(0.0))
+            .collect();
+        let stabilities: Vec<f64> = eligible
+            .iter()
+            .map(|s| {
+                let path = file_id_to_path.get(&s.file_id).copied().unwrap_or("");
+                let churn = churn_map.get(path).copied().unwrap_or(0) as f64;
+                1.0 / (1.0 + churn)
+            })
+            .collect();
+        let namings: Vec<f64> = eligible
+            .iter()
+            .map(|s| name_alignment(&s.short_name, &c.name))
+            .collect();
+
+        let in_degree_norm = rank_normalize(&in_degrees);
+        let pagerank_norm = rank_normalize(&pageranks);
+        let stability_norm = rank_normalize(&stabilities);
+        let naming_norm = rank_normalize(&namings);
+
+        let mut scored: Vec<ScoredSymbol> = eligible
+            .iter()
+            .enumerate()
+            .map(|(i, &sym)| {
+                let score = 0.35 * in_degree_norm[i]
+                    + 0.30 * pagerank_norm[i]
+                    + 0.20 * stability_norm[i]
+                    + 0.15 * naming_norm[i];
+                let rationale = format!(
+                    "in_degree={:.2} pagerank={:.2} stability={:.2} naming={:.2}",
+                    in_degree_norm[i], pagerank_norm[i], stability_norm[i], naming_norm[i],
+                );
+                ScoredSymbol {
+                    symbol: sym.clone(),
+                    score,
+                    rationale,
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        let n = anchor_count(eligible.len());
+        scored.truncate(n);
+
+        for s in &scored {
+            all_anchors.push((
+                Uuid::now_v7().to_string(),
+                c.id.clone(),
+                s.symbol.qualified_name.clone(),
+                s.score,
+                s.rationale.clone(),
+            ));
+        }
+        total += scored.len();
+    }
+
+    db.batch_replace_anchors(&comp_ids, &all_anchors)?;
+    Ok(total)
 }
 
 // ---------------------------------------------------------------------------
