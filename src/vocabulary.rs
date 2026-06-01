@@ -6,7 +6,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::db::Db;
-use crate::error::{Result, SutraError};
+use crate::error::Result;
+use crate::error::SutraError;
 
 // ---------------------------------------------------------------------------
 // TOML config
@@ -43,31 +44,31 @@ pub fn load_aliases(root: &Path) -> Result<AliasConfig> {
 
 pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
     let config = load_aliases(root)?;
+    let mut seen: HashMap<&str, &str> = HashMap::new();
     let mut tuples: Vec<(String, String, String, String)> = Vec::new();
 
-    for (term, target_ref) in &config.component {
-        tuples.push((
-            Uuid::now_v7().to_string(),
-            term.clone(),
-            "component".into(),
-            target_ref.clone(),
-        ));
-    }
-    for (term, target_ref) in &config.file {
-        tuples.push((
-            Uuid::now_v7().to_string(),
-            term.clone(),
-            "file".into(),
-            target_ref.clone(),
-        ));
-    }
-    for (term, target_ref) in &config.symbol {
-        tuples.push((
-            Uuid::now_v7().to_string(),
-            term.clone(),
-            "symbol".into(),
-            target_ref.clone(),
-        ));
+    let sections: [(&str, &HashMap<String, String>); 3] = [
+        ("component", &config.component),
+        ("file", &config.file),
+        ("symbol", &config.symbol),
+    ];
+
+    for (section, map) in &sections {
+        for (term, target_ref) in *map {
+            if let Some(prev) = seen.get(term.as_str()) {
+                return Err(SutraError::Parse(format!(
+                    "duplicate alias term '{}' appears in [{}] and [{}]",
+                    term, prev, section
+                )));
+            }
+            seen.insert(term.as_str(), section);
+            tuples.push((
+                Uuid::now_v7().to_string(),
+                term.clone(),
+                (*section).into(),
+                target_ref.clone(),
+            ));
+        }
     }
 
     let count = tuples.len();
@@ -80,12 +81,20 @@ pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
+pub struct CodeLocation {
+    pub path: String,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+}
+
+#[derive(Debug)]
 pub struct ResolveMatch {
     pub source: String,
     pub target_kind: String,
     pub target_ref: String,
     pub component_id: Option<String>,
     pub orphan: bool,
+    pub locations: Vec<CodeLocation>,
 }
 
 pub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>> {
@@ -100,12 +109,14 @@ pub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>> {
         } else {
             None
         };
+        let locations = lookup_locations(db, &alias.target_kind, &alias.target_ref, component_id.as_deref())?;
         matches.push(ResolveMatch {
             source: "alias".into(),
             target_kind: alias.target_kind,
             target_ref: alias.target_ref,
             component_id,
             orphan,
+            locations,
         });
     }
 
@@ -113,12 +124,14 @@ pub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>> {
     let components = db.all_components()?;
     for c in &components {
         if c.name.to_lowercase().contains(&query_lower) {
+            let locations = lookup_locations(db, "component", &c.name, Some(&c.id))?;
             matches.push(ResolveMatch {
                 source: "component".into(),
                 target_kind: "component".into(),
                 target_ref: c.name.clone(),
                 component_id: Some(c.id.clone()),
                 orphan: false,
+                locations,
             });
         }
     }
@@ -128,12 +141,14 @@ pub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>> {
     for (comp_id, anchors) in &all_anchors {
         for a in anchors {
             if a.symbol_name.to_lowercase().contains(&query_lower) {
+                let locations = lookup_locations(db, "symbol", &a.symbol_name, Some(comp_id))?;
                 matches.push(ResolveMatch {
                     source: "anchor".into(),
                     target_kind: "symbol".into(),
                     target_ref: a.symbol_name.clone(),
                     component_id: Some(comp_id.clone()),
                     orphan: false,
+                    locations,
                 });
             }
         }
@@ -147,11 +162,22 @@ pub fn resolve_to_json(db: &Db, query: &str) -> Result<serde_json::Value> {
     let (orphans, valid): (Vec<_>, Vec<_>) = matches.into_iter().partition(|m| m.orphan);
 
     let format = |m: &ResolveMatch| {
+        let locs: Vec<_> = m.locations.iter().map(|l| {
+            let mut loc = json!({"path": l.path});
+            if let Some(sl) = l.start_line {
+                loc["start_line"] = json!(sl);
+            }
+            if let Some(el) = l.end_line {
+                loc["end_line"] = json!(el);
+            }
+            loc
+        }).collect();
         json!({
             "source": m.source,
             "target_kind": m.target_kind,
             "target_ref": m.target_ref,
             "component_id": m.component_id,
+            "locations": locs,
         })
     };
 
@@ -165,6 +191,47 @@ pub fn resolve_to_json(db: &Db, query: &str) -> Result<serde_json::Value> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn lookup_locations(
+    db: &Db,
+    target_kind: &str,
+    target_ref: &str,
+    component_id: Option<&str>,
+) -> Result<Vec<CodeLocation>> {
+    match target_kind {
+        "component" => {
+            if let Some(cid) = component_id {
+                let paths = db.component_file_paths(cid)?;
+                Ok(paths
+                    .into_iter()
+                    .map(|p| CodeLocation { path: p, start_line: None, end_line: None })
+                    .collect())
+            } else {
+                Ok(vec![])
+            }
+        }
+        "file" => Ok(vec![CodeLocation {
+            path: target_ref.to_string(),
+            start_line: None,
+            end_line: None,
+        }]),
+        "symbol" => {
+            let syms = db.find_symbols_by_name(target_ref, None, 5)?;
+            let mut locs = Vec::new();
+            for sym in &syms {
+                if let Some(f) = db.file_by_id(sym.file_id)? {
+                    locs.push(CodeLocation {
+                        path: f.path,
+                        start_line: Some(sym.start_line),
+                        end_line: Some(sym.end_line),
+                    });
+                }
+            }
+            Ok(locs)
+        }
+        _ => Ok(vec![]),
+    }
+}
 
 fn check_orphan(db: &Db, target_kind: &str, target_ref: &str) -> Result<bool> {
     match target_kind {

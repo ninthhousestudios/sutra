@@ -301,4 +301,113 @@ fn test_resolve_tool_output_shape() {
     let result = vocabulary::resolve_to_json(&db, "missing").unwrap();
     assert_eq!(result["matches"].as_array().unwrap().len(), 0);
     assert_eq!(result["orphans"].as_array().unwrap().len(), 1);
+
+    // Locations present in JSON output
+    let matches = result["orphans"].as_array().unwrap();
+    assert!(matches[0]["locations"].is_array());
+}
+
+// ---------------------------------------------------------------------------
+// Code locations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_component_includes_file_locations() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_component(&db, dir.path());
+
+    let matches = vocabulary::resolve(&db, "auth").unwrap();
+    let comp_match = matches.iter().find(|m| m.source == "component").unwrap();
+    assert!(
+        !comp_match.locations.is_empty(),
+        "component match should include file locations"
+    );
+    let paths: Vec<&str> = comp_match.locations.iter().map(|l| l.path.as_str()).collect();
+    assert!(paths.contains(&"src/auth/a1.rs"));
+    assert!(paths.contains(&"src/auth/a2.rs"));
+    assert!(paths.contains(&"src/auth/a3.rs"));
+    // Component locations have no line ranges
+    assert!(comp_match.locations.iter().all(|l| l.start_line.is_none()));
+}
+
+#[test]
+fn test_resolve_anchor_includes_symbol_location() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_component(&db, dir.path());
+
+    let matches = vocabulary::resolve(&db, "auth_login").unwrap();
+    let anchor = matches.iter().find(|m| m.source == "anchor").unwrap();
+    assert!(
+        !anchor.locations.is_empty(),
+        "anchor match should include symbol location"
+    );
+    let loc = &anchor.locations[0];
+    assert_eq!(loc.path, "src/auth/a1.rs");
+    assert!(loc.start_line.is_some(), "symbol location should have start_line");
+    assert!(loc.end_line.is_some(), "symbol location should have end_line");
+}
+
+#[test]
+fn test_resolve_file_alias_includes_path_location() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_component(&db, dir.path());
+
+    let sutra_dir = dir.path().join(".sutra");
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        "[file]\nmy-auth = \"src/auth/a1.rs\"\n",
+    )
+    .unwrap();
+    vocabulary::sync_aliases(&db, dir.path()).unwrap();
+
+    let matches = vocabulary::resolve(&db, "my-auth").unwrap();
+    let alias = &matches[0];
+    assert_eq!(alias.source, "alias");
+    assert_eq!(alias.locations.len(), 1);
+    assert_eq!(alias.locations[0].path, "src/auth/a1.rs");
+    assert!(alias.locations[0].start_line.is_none());
+}
+
+#[test]
+fn test_resolve_json_includes_locations() {
+    let (dir, db) = setup_db();
+    pin_resolution(dir.path());
+    setup_component(&db, dir.path());
+
+    let result = vocabulary::resolve_to_json(&db, "auth_login").unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    let anchor = matches.iter().find(|m| m["source"] == "anchor").unwrap();
+    let locs = anchor["locations"].as_array().unwrap();
+    assert!(!locs.is_empty());
+    assert!(locs[0]["path"].is_string());
+    assert!(locs[0]["start_line"].is_number());
+    assert!(locs[0]["end_line"].is_number());
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate term detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sync_rejects_duplicate_term_across_sections() {
+    let (dir, db) = setup_db();
+    let sutra_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&sutra_dir).unwrap();
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        "[component]\nauth = \"authentication\"\n\n[file]\nauth = \"src/auth.rs\"\n",
+    )
+    .unwrap();
+
+    let result = vocabulary::sync_aliases(&db, dir.path());
+    assert!(result.is_err(), "duplicate term across sections should error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("duplicate alias term 'auth'"),
+        "error should name the duplicate term, got: {}",
+        err
+    );
 }
