@@ -8,6 +8,8 @@ use uuid::Uuid;
 use crate::db::{Db, FileRow};
 use crate::error::{Result, SutraError};
 
+const DEFAULT_STALENESS_THRESHOLD: f64 = 0.10;
+
 fn to_json<T: serde::Serialize>(val: &T) -> String {
     serde_json::to_string(val).unwrap_or_default()
 }
@@ -36,8 +38,12 @@ pub fn load_config(root: &Path) -> Result<ComponentsConfig> {
 }
 
 pub fn parse_config(content: &str) -> Result<ComponentsConfig> {
-    toml::from_str(content)
-        .map_err(|e| SutraError::Internal(format!("components.toml parse error: {e}")))
+    let mut config: ComponentsConfig = toml::from_str(content)
+        .map_err(|e| SutraError::Internal(format!("components.toml parse error: {e}")))?;
+    if let Some(t) = config.staleness_threshold {
+        config.staleness_threshold = Some(t.clamp(0.0, 1.0));
+    }
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +558,11 @@ fn detect_events(
     Ok(())
 }
 
+fn edge_count(files: &[FileRow], db: &Db) -> Result<usize> {
+    let (_, count) = build_weighted_adjacency(files, db)?;
+    Ok(count)
+}
+
 fn is_clustering_stale(
     db: &Db,
     current_edge_count: usize,
@@ -601,36 +612,19 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
         return Ok(0);
     }
 
+    let config = load_config(workspace_root)?;
+    let threshold = config.staleness_threshold.unwrap_or(DEFAULT_STALENESS_THRESHOLD);
     let has_existing = db.component_count()? > 0;
     let has_membership = db.membership_count()? > 0;
+    let file_count = files.len() as i64;
 
     if has_existing && has_membership {
-        let config = load_config(workspace_root)?;
-        let (adj, current_edge_count) = build_weighted_adjacency(files, db)?;
-        let threshold = config.staleness_threshold.unwrap_or(0.10);
-
-        if !is_clustering_stale(db, current_edge_count, files.len() as i64, threshold)? {
+        let current_edge_count = edge_count(files, db)?;
+        if !is_clustering_stale(db, current_edge_count, file_count, threshold)? {
             return Ok(0);
         }
-
-        if !adj.values().any(|nbrs| !nbrs.is_empty()) {
-            return Ok(0);
-        }
-
-        let result = if let Some(gamma) = config.resolution {
-            louvain(&adj, gamma)
-        } else {
-            auto_tune(&adj)
-        };
-
-        let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
-        let clusters = build_clusters(&result);
-        let count = reconcile_components(db, &clusters, &file_map)?;
-        db.upsert_clustering_meta(current_edge_count as i64, files.len() as i64)?;
-        return Ok(count);
     }
 
-    let config = load_config(workspace_root)?;
     let Some((clusters, file_map, edge_count)) = run_clustering(db, files, &config)? else {
         return Ok(0);
     };
@@ -641,7 +635,7 @@ pub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) ->
         create_fresh_components(db, &clusters, &file_map)?
     };
 
-    db.upsert_clustering_meta(edge_count as i64, files.len() as i64)?;
+    db.upsert_clustering_meta(edge_count as i64, file_count)?;
     Ok(count)
 }
 
@@ -706,6 +700,14 @@ mod tests {
     fn test_parse_config_default_staleness_threshold() {
         let c = parse_config("resolution = 1.0").unwrap();
         assert!(c.staleness_threshold.is_none());
+    }
+
+    #[test]
+    fn test_parse_config_staleness_threshold_clamped() {
+        let c = parse_config("staleness_threshold = -0.5").unwrap();
+        assert_eq!(c.staleness_threshold, Some(0.0));
+        let c = parse_config("staleness_threshold = 2.0").unwrap();
+        assert_eq!(c.staleness_threshold, Some(1.0));
     }
 
     #[test]

@@ -764,9 +764,8 @@ fn test_staleness_detects_edge_change_above_threshold() {
     components::discover_components(&db, &files, dir.path()).unwrap();
     let (stored_edges, _stored_files) = db.clustering_meta().unwrap().unwrap();
 
-    // Add many cross-cluster refs to push edge change > 10%
-    // Current setup has 6 intra-cluster edges per cluster = 12 total undirected edges.
-    // Need > 1.2 new edges. Adding 2 cross-cluster edges should exceed 10%.
+    // Add cross-cluster edges exceeding 10% of stored_edges
+    assert!(stored_edges > 0, "precondition: should have edges after clustering");
     let a1_id = db
         .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
         .unwrap();
