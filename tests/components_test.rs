@@ -506,6 +506,14 @@ fn test_split_event_detected() {
 
     let detail: serde_json::Value = serde_json::from_str(&split_events[0].1).unwrap();
     assert!(detail["clusters"].as_u64().unwrap() >= 2);
+
+    // Split events must include target component IDs
+    let targets = detail["targets"].as_array().expect("split detail should have targets array");
+    assert!(targets.len() >= 2, "split should reference at least 2 target components");
+    for t in targets {
+        assert!(t["component_id"].is_string(), "each target should have a component_id");
+        assert!(t["files"].is_number(), "each target should have a files count");
+    }
 }
 
 #[test]
@@ -625,6 +633,14 @@ fn test_drift_event_detected() {
     let ratio = detail["ratio"].as_f64().unwrap();
     assert!(ratio > 0.3, "drift ratio should be > 0.3, got {}", ratio);
     assert_eq!(detail["shifted_files"].as_u64().unwrap(), 2);
+
+    // Regression: drift must NOT produce a spurious merge event on comp B
+    let active = db.all_components().unwrap();
+    for c in &active {
+        let events = db.component_events(&c.id).unwrap();
+        let merges: Vec<_> = events.iter().filter(|(t, _)| t == "merge").collect();
+        assert!(merges.is_empty(), "drift scenario should not emit merge events, but {} has {:?}", c.name, merges);
+    }
 }
 
 #[test]

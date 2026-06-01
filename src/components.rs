@@ -443,7 +443,8 @@ fn detect_events(
         cluster_to_comp.insert(ki, id.clone());
     }
 
-    // Merge: a cluster absorbed files from 2+ prior components
+    // Merge: a cluster absorbed files from 2+ prior components,
+    // but only count components that were dissolved (unmatched).
     for (ki, cset) in cluster_paths.iter().enumerate() {
         let mut contributors: Vec<(usize, usize)> = Vec::new();
         for (ci, (_, _, prior)) in existing.iter().enumerate() {
@@ -456,10 +457,7 @@ fn detect_events(
             if let Some(surviving_id) = cluster_to_comp.get(&ki) {
                 let absorbed: Vec<_> = contributors
                     .iter()
-                    .filter(|(ci, _)| {
-                        // Exclude the component that matched THIS cluster
-                        !matches.iter().any(|(mc, mk)| *mc == *ci && *mk == ki)
-                    })
+                    .filter(|(ci, _)| !matched_comps.contains(ci))
                     .map(|(ci, _)| {
                         json!({"id": &existing[*ci].0, "name": &existing[*ci].1})
                     })
@@ -488,6 +486,14 @@ fn detect_events(
             }
         }
         if cluster_distribution.len() >= 2 {
+            let targets: Vec<_> = cluster_distribution
+                .iter()
+                .filter_map(|(&ki, &count)| {
+                    cluster_to_comp.get(&ki).map(|comp_id| {
+                        json!({"component_id": comp_id, "files": count})
+                    })
+                })
+                .collect();
             if matched_comps.contains(&ci) {
                 let matched_ki = matches.iter().find(|(mc, _)| *mc == ci).unwrap().1;
                 let in_other = cluster_distribution
@@ -498,13 +504,13 @@ fn detect_events(
                 let detail = json!({
                     "files_in_matched_cluster": prior.len() - in_other,
                     "files_in_other_clusters": in_other,
+                    "targets": targets,
                 });
                 db.insert_component_event(id, "split", &detail.to_string())?;
             } else {
-                let counts: Vec<usize> = cluster_distribution.values().copied().collect();
                 let detail = json!({
                     "clusters": cluster_distribution.len(),
-                    "files_per_cluster": counts,
+                    "targets": targets,
                 });
                 db.insert_component_event(id, "split", &detail.to_string())?;
             }
