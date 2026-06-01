@@ -553,6 +553,11 @@ fn post_parse_sequence(
                 info!(anchor_count, "computed semantic anchors");
             }
         }
+
+        let alias_count = crate::vocabulary::sync_aliases(db, workspace_root)?;
+        if alias_count > 0 {
+            info!(alias_count, "synced vocabulary aliases");
+        }
     }
 
     Ok((unresolved_count, skipped_count))

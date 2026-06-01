@@ -61,6 +61,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0011_anchor_score.sql"),
         false,
     ),
+    (
+        "0012_vocabulary_aliases",
+        include_str!("../../migrations/0012_vocabulary_aliases.sql"),
+        false,
+    ),
 ];
 
 impl Db {

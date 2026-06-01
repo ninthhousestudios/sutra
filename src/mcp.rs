@@ -79,6 +79,7 @@ use crate::tools::pr_risk::PrRiskArgs;
 use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
+use crate::tools::resolve::ResolveArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
@@ -349,6 +350,21 @@ impl SutraServer {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let result = tools::components::handle(&db).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
+        description = "Resolve a vocabulary term to code locations. Searches aliases \
+        (from .sutra/aliases.toml), component names, and semantic anchor names. \
+        Returns matches in priority order with orphan detection."
+    )]
+    pub async fn sutra_resolve(
+        &self,
+        Parameters(args): Parameters<ResolveArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::resolve::handle(&db, &args.query).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

@@ -153,6 +153,14 @@ pub struct AnchorRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct AliasRow {
+    pub id: String,
+    pub term: String,
+    pub target_kind: String,
+    pub target_ref: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct SnapshotRow {
     pub id: i64,
     pub timestamp: String,

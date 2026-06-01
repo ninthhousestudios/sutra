@@ -18,6 +18,7 @@ pub mod pr_risk;
 pub mod provenance;
 pub mod read;
 pub mod refs;
+pub mod resolve;
 pub mod review;
 pub mod scoring;
 pub mod tools_meta;

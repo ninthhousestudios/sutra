@@ -3,7 +3,7 @@ use serde_json;
 
 use crate::error::Result;
 
-use super::{AnchorRow, ComponentRow, Db};
+use super::{AliasRow, AnchorRow, ComponentRow, Db};
 
 impl Db {
     pub fn component_count(&self) -> Result<i64> {
@@ -30,7 +30,6 @@ impl Db {
             "DELETE FROM component_membership; \
              DELETE FROM component_events; \
              DELETE FROM semantic_anchors; \
-             DELETE FROM aliases; \
              DELETE FROM components",
         )?;
         Ok(())
@@ -302,5 +301,60 @@ impl Db {
             .query_map(params![component_id], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(rows)
+    }
+
+    // -----------------------------------------------------------------------
+    // Vocabulary aliases
+    // -----------------------------------------------------------------------
+
+    pub fn replace_all_aliases(
+        &self,
+        aliases: &[(String, String, String, String)],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM aliases", [])?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO aliases (id, term, target_kind, target_ref) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for (id, term, kind, target) in aliases {
+            stmt.execute(params![id, term, kind, target])?;
+        }
+        Ok(())
+    }
+
+    pub fn all_aliases(&self) -> Result<Vec<AliasRow>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, term, target_kind, target_ref FROM aliases ORDER BY term")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(AliasRow {
+                    id: r.get(0)?,
+                    term: r.get(1)?,
+                    target_kind: r.get(2)?,
+                    target_ref: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn find_alias(&self, term: &str) -> Result<Option<AliasRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, term, target_kind, target_ref FROM aliases WHERE term = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![term], |r| {
+            Ok(AliasRow {
+                id: r.get(0)?,
+                term: r.get(1)?,
+                target_kind: r.get(2)?,
+                target_ref: r.get(3)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
     }
 }

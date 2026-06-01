@@ -16,4 +16,5 @@ pub mod resolver;
 pub mod rest;
 pub mod rules;
 pub mod tools;
+pub mod vocabulary;
 pub mod workspace;
