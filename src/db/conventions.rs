@@ -461,10 +461,18 @@ impl Db {
     pub fn reconcile_orphaned_waivers(&self) -> Result<Vec<ConventionWaiverRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, convention_id, symbol_qualified_name, component_id,
-                    rationale, waived_by, waived_at
-             FROM convention_waivers
-             WHERE convention_id NOT IN (SELECT id FROM conventions)",
+            "SELECT w.id, w.convention_id, w.symbol_qualified_name, w.component_id,
+                    w.rationale, w.waived_by, w.waived_at
+             FROM convention_waivers w
+             WHERE w.convention_id NOT IN (SELECT id FROM conventions)
+                OR (
+                    w.symbol_qualified_name NOT IN (SELECT qualified_name FROM symbols)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM symbols s
+                        JOIN files f ON s.file_id = f.id
+                        WHERE f.path || '::' || s.qualified_name = w.symbol_qualified_name
+                    )
+                )",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -482,18 +490,53 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn tracked_convention_ids_absent_from(
+        &self,
+        current_ids: &[&str],
+    ) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        if current_ids.is_empty() {
+            let mut stmt = conn.prepare(
+                "SELECT convention_id FROM convention_state",
+            )?;
+            let ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            return Ok(ids);
+        }
+        let placeholders: Vec<String> =
+            (1..=current_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT convention_id FROM convention_state WHERE convention_id NOT IN ({})",
+            placeholders.join(", ")
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = current_ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let ids = stmt
+            .query_map(params.as_slice(), |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
     // --- Stale convention cleanup ---
 
     pub fn delete_stale_conventions(&self, current_ids: &[&str]) -> Result<usize> {
         if current_ids.is_empty() {
             let conn = self.conn.lock();
-            let count = conn.execute("DELETE FROM conventions", [])?;
+            let count = conn.execute(
+                "DELETE FROM conventions WHERE id NOT IN (SELECT convention_id FROM convention_state)",
+                [],
+            )?;
             return Ok(count);
         }
         let conn = self.conn.lock();
         let placeholders: Vec<String> = (1..=current_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
-            "DELETE FROM conventions WHERE id NOT IN ({})",
+            "DELETE FROM conventions WHERE id NOT IN ({}) \
+             AND id NOT IN (SELECT convention_id FROM convention_state)",
             placeholders.join(", ")
         );
         let params: Vec<&dyn rusqlite::types::ToSql> = current_ids

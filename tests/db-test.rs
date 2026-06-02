@@ -753,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 18,
-        "fresh DB should register all 18 existing migrations"
+        count, 19,
+        "fresh DB should register all 19 existing migrations"
     );
 }
 
@@ -768,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 18, "reopen should not duplicate migration rows");
+    assert_eq!(count, 19, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -923,6 +923,38 @@ fn convention_delete_stale() {
 }
 
 #[test]
+fn convention_delete_stale_preserves_stateful() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
+    db.upsert_convention("ccc", "e", "f", 30, 0.99, None).unwrap();
+    db.set_convention_lifecycle("bbb", "deprecated", Some("test")).unwrap();
+
+    // bbb is not in current_ids but has convention_state → should survive
+    let deleted = db.delete_stale_conventions(&["aaa"]).unwrap();
+    assert_eq!(deleted, 1); // only ccc deleted
+    let rows = db.all_conventions().unwrap();
+    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    assert!(ids.contains(&"aaa"));
+    assert!(ids.contains(&"bbb"), "stateful convention should survive deletion");
+    assert!(!ids.contains(&"ccc"));
+}
+
+#[test]
+fn tracked_absent_conventions_identified() {
+    let (_dir, db) = setup_db();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
+    db.set_convention_lifecycle("bbb", "deprecated", Some("test")).unwrap();
+
+    let absent = db.tracked_convention_ids_absent_from(&["aaa"]).unwrap();
+    assert_eq!(absent, vec!["bbb"]);
+
+    let absent = db.tracked_convention_ids_absent_from(&["aaa", "bbb"]).unwrap();
+    assert!(absent.is_empty());
+}
+
+#[test]
 fn test_table_registry_covers_all_tables() {
     let names: Vec<&str> = TABLE_REGISTRY.iter().map(|t| t.name).collect();
     assert!(names.contains(&"files"));
@@ -1051,14 +1083,44 @@ fn waiver_orphan_detection() {
     db.create_waiver("orphan_conv", "some_sym", "", "will be orphaned", "josh")
         .unwrap();
 
+    // Convention doesn't exist → orphaned
     let orphans = db.reconcile_orphaned_waivers().unwrap();
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].convention_id, "orphan_conv");
 
+    // Convention exists but symbol doesn't → still orphaned (symbol-orphaned)
     db.upsert_convention("orphan_conv", "a", "b", 10, 0.9, None)
         .unwrap();
     let orphans = db.reconcile_orphaned_waivers().unwrap();
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 1, "waiver with nonexistent symbol should be orphaned");
+
+    // Add a matching symbol → no longer orphaned
+    let file_id = seed_file(&db, "src/lib.rs");
+    seed_symbol(&db, file_id, "some_sym", "some_sym", "function");
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert!(orphans.is_empty(), "waiver with existing symbol should not be orphaned");
+}
+
+#[test]
+fn waiver_orphan_detection_file_qualified() {
+    let (_dir, db) = setup_db();
+
+    db.upsert_convention("conv1", "a", "b", 10, 0.9, None).unwrap();
+    let file_id = seed_file(&db, "src/foo.rs");
+    seed_symbol(&db, file_id, "process", "process", "function");
+
+    // File-qualified waiver matching existing file+symbol → not orphaned
+    db.create_waiver("conv1", "src/foo.rs::process", "", "file scoped", "josh")
+        .unwrap();
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert!(orphans.is_empty(), "file-qualified waiver with matching file+symbol should not be orphaned");
+
+    // File-qualified waiver with wrong file → orphaned
+    db.create_waiver("conv1", "src/bar.rs::process", "", "wrong file", "josh")
+        .unwrap();
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].symbol_qualified_name, "src/bar.rs::process");
 }
 
 #[test]

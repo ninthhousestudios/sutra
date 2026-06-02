@@ -65,6 +65,14 @@ pub struct ConventionMatch {
 
 const MIN_SUPPORT: usize = 3;
 pub const MIN_CONFIDENCE: f64 = 0.9;
+const MAX_COMPONENT_SUPPORT: usize = 20;
+
+pub fn component_min_support(component_size: usize) -> usize {
+    std::cmp::min(
+        MAX_COMPONENT_SUPPORT,
+        std::cmp::max(2, (component_size as f64 * 0.4).ceil() as usize),
+    )
+}
 
 pub struct FcaEngine {
     context: Option<FormalContext>,
@@ -958,7 +966,7 @@ mod tests {
                 component_id: Some("comp-x".into()),
             });
         }
-        let min_support = std::cmp::max(2, (symbols.len() as f64 * 0.4).ceil() as usize);
+        let min_support = component_min_support(symbols.len());
         assert_eq!(min_support, 5);
 
         let mut engine = FcaEngine::new();
@@ -973,10 +981,12 @@ mod tests {
 
     #[test]
     fn adaptive_threshold_scales_with_size() {
-        assert_eq!(std::cmp::max(2, (5_f64 * 0.4).ceil() as usize), 2);
-        assert_eq!(std::cmp::max(2, (10_f64 * 0.4).ceil() as usize), 4);
-        assert_eq!(std::cmp::max(2, (50_f64 * 0.4).ceil() as usize), 20);
-        assert_eq!(std::cmp::max(2, (3_f64 * 0.4).ceil() as usize), 2);
+        assert_eq!(component_min_support(3), 2);
+        assert_eq!(component_min_support(5), 2);
+        assert_eq!(component_min_support(10), 4);
+        assert_eq!(component_min_support(50), 20);
+        assert_eq!(component_min_support(100), 20); // caps at 20
+        assert_eq!(component_min_support(200), 20); // caps at 20
     }
 
     #[test]
