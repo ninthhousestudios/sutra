@@ -4,6 +4,7 @@ mod context;
 pub mod drift;
 mod engine;
 pub mod lifecycle;
+pub mod templates;
 
 pub use attributes::{enrich_with_effects, extract_attrs_for_symbol, extract_cross_language_attrs, EffectPattern, ResolvedCallee};
 pub use context::{FormalContext, Implication};

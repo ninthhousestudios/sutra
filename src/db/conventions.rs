@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rusqlite::params;
+use serde_json;
 
 use crate::error::Result;
 
@@ -82,6 +83,14 @@ pub struct ConventionSnapshotRow {
     pub symbol_count: i64,
     pub attribute_distribution: String,
     pub attribute_distribution_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConventionTemplateRow {
+    pub convention_id: String,
+    pub template_text: String,
+    pub exemplar_symbols: Vec<String>,
+    pub generated_at: String,
 }
 
 impl Db {
@@ -610,5 +619,77 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn upsert_convention_template(
+        &self,
+        convention_id: &str,
+        template_text: &str,
+        exemplar_symbols: &[String],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let exemplars_json = serde_json::to_string(exemplar_symbols)
+            .map_err(|e| crate::error::SutraError::Internal(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO convention_templates (convention_id, template_text, exemplar_symbols, generated_at)
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(convention_id) DO UPDATE SET
+               template_text = excluded.template_text,
+               exemplar_symbols = excluded.exemplar_symbols,
+               generated_at = excluded.generated_at",
+            params![convention_id, template_text, exemplars_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn templates_for_conventions(
+        &self,
+        convention_ids: &[&str],
+    ) -> Result<Vec<ConventionTemplateRow>> {
+        let conn = self.conn.lock();
+        if convention_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (1..=convention_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT convention_id, template_text, exemplar_symbols, generated_at
+             FROM convention_templates WHERE convention_id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            convention_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                let exemplars_json: String = row.get(2)?;
+                let exemplar_symbols: Vec<String> =
+                    serde_json::from_str(&exemplars_json).unwrap_or_default();
+                Ok(ConventionTemplateRow {
+                    convention_id: row.get(0)?,
+                    template_text: row.get(1)?,
+                    exemplar_symbols,
+                    generated_at: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_orphan_templates(&self, live_convention_ids: &[&str]) -> Result<usize> {
+        let conn = self.conn.lock();
+        if live_convention_ids.is_empty() {
+            let count = conn.execute("DELETE FROM convention_templates", [])?;
+            return Ok(count);
+        }
+        let placeholders: Vec<String> =
+            (1..=live_convention_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "DELETE FROM convention_templates WHERE convention_id NOT IN ({})",
+            placeholders.join(", ")
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            live_convention_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let count = conn.execute(&sql, params.as_slice())?;
+        Ok(count)
     }
 }

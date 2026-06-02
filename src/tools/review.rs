@@ -223,6 +223,8 @@ pub fn build_findings(
     let mut drift_alerts = Vec::new();
 
     let mut all_sym_attrs = Vec::new();
+    let mut sig_info_map: HashMap<String, conventions::templates::SymbolSignatureInfo> =
+        HashMap::new();
     for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
         let refs = db.find_refs_in_file(f.id)?;
@@ -268,6 +270,15 @@ pub fn build_findings(
                         );
                     }
                 }
+                sig_info_map.insert(
+                    s.qualified_name.clone(),
+                    conventions::templates::SymbolSignatureInfo {
+                        signature: s.signature.clone(),
+                        visibility: s.visibility.clone(),
+                        language_attrs: s.language_attrs.clone(),
+                        cognitive: s.cognitive,
+                    },
+                );
                 all_sym_attrs.push(attrs);
             }
         }
@@ -350,6 +361,11 @@ pub fn build_findings(
         }
 
         let _ = db.delete_stale_conventions(&current_ids);
+
+        let _ = conventions::templates::generate_templates_for_conventions(
+            &all_convs, &all_sym_attrs, &sig_info_map, db,
+        );
+        let _ = db.delete_orphan_templates(&current_ids);
 
         let changed_set: std::collections::HashSet<&str> =
             changed_paths.iter().map(|p| p.as_str()).collect();

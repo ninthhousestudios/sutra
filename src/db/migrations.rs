@@ -111,6 +111,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0021_component_lifecycle.sql"),
         false,
     ),
+    (
+        "0022_convention_templates",
+        include_str!("../../migrations/0022_convention_templates.sql"),
+        true,
+    ),
 ];
 
 impl Db {
