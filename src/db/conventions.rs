@@ -73,6 +73,17 @@ pub struct ConventionWaiverRow {
     pub waived_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConventionSnapshotRow {
+    pub id: i64,
+    pub component_id: String,
+    pub snapshot_ts: String,
+    pub entropy: f64,
+    pub symbol_count: i64,
+    pub attribute_distribution: String,
+    pub attribute_distribution_hash: String,
+}
+
 impl Db {
     pub fn upsert_convention(
         &self,
@@ -545,5 +556,59 @@ impl Db {
             .collect();
         let count = conn.execute(&sql, params.as_slice())?;
         Ok(count)
+    }
+
+    pub fn insert_convention_snapshot(
+        &self,
+        component_id: &str,
+        entropy: f64,
+        symbol_count: i64,
+        attribute_distribution: &str,
+        attribute_distribution_hash: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO convention_snapshots
+             (component_id, entropy, symbol_count, attribute_distribution, attribute_distribution_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                component_id,
+                entropy,
+                symbol_count,
+                attribute_distribution,
+                attribute_distribution_hash
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn recent_convention_snapshots(
+        &self,
+        component_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ConventionSnapshotRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, component_id, snapshot_ts, entropy, symbol_count,
+                    attribute_distribution, attribute_distribution_hash
+             FROM convention_snapshots
+             WHERE component_id = ?1
+             ORDER BY snapshot_ts DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![component_id, limit as i64], |row| {
+                Ok(ConventionSnapshotRow {
+                    id: row.get(0)?,
+                    component_id: row.get(1)?,
+                    snapshot_ts: row.get(2)?,
+                    entropy: row.get(3)?,
+                    symbol_count: row.get(4)?,
+                    attribute_distribution: row.get(5)?,
+                    attribute_distribution_hash: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }

@@ -101,6 +101,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0019_drop_cascade_proposals.sql"),
         false,
     ),
+    (
+        "0020_convention_snapshots",
+        include_str!("../../migrations/0020_convention_snapshots.sql"),
+        true,
+    ),
+    (
+        "0021_component_lifecycle",
+        include_str!("../../migrations/0021_component_lifecycle.sql"),
+        false,
+    ),
 ];
 
 impl Db {

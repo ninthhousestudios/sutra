@@ -366,4 +366,26 @@ impl Db {
             None => Ok(None),
         }
     }
+
+    pub fn component_lifecycle_state(&self, component_id: &str) -> Result<String> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT lifecycle_state FROM components WHERE id = ?1",
+            params![component_id],
+            |row| row.get(0),
+        )
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok("stable".to_string()),
+            other => Err(other.into()),
+        })
+    }
+
+    pub fn set_component_lifecycle(&self, component_id: &str, state: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE components SET lifecycle_state = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![state, component_id],
+        )?;
+        Ok(())
+    }
 }
