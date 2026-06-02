@@ -301,6 +301,7 @@ fn risk_score_clamped_to_one() {
                 confidence: 0.95,
             })
             .collect(),
+        convention_matches: vec![],
     };
 
     let result = review::compute(&db, dir.path(), &paths, &churn, &findings).unwrap();
@@ -354,6 +355,7 @@ fn constraint_violations_appear_in_output() {
             },
         ],
         convention_violations: vec![],
+        convention_matches: vec![],
     };
 
     let result =
@@ -384,6 +386,7 @@ fn convention_violations_appear_in_output() {
             support: 8,
             confidence: 0.95,
         }],
+        convention_matches: vec![],
     };
 
     let result =
@@ -424,6 +427,7 @@ fn violations_are_structurally_distinct() {
             support: 5,
             confidence: 0.92,
         }],
+        convention_matches: vec![],
     };
 
     let result =
@@ -497,6 +501,7 @@ fn convention_violations_increase_risk_score() {
                 confidence: 0.93,
             },
         ],
+        convention_matches: vec![],
     };
 
     let result_with =
@@ -564,6 +569,7 @@ fn recommended_reads_ranks_violation_sites_first() {
             support: 5,
             confidence: 0.95,
         }],
+        convention_matches: vec![],
     };
 
     let changed = vec!["src/hub.rs".to_string()];

@@ -354,6 +354,22 @@ impl SutraServer {
     }
 
     #[tool(
+        description = "Manage convention lifecycle: list conventions with state and pending \
+        proposals, accept or dismiss proposals, or manually set lifecycle state. \
+        Actions: list, accept (proposal_id), dismiss (proposal_id), \
+        set_lifecycle (convention_id, lifecycle_state, reason)."
+    )]
+    pub async fn sutra_conventions(
+        &self,
+        Parameters(args): Parameters<tools::conventions::ConventionsArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::conventions::handle(&db, &args).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
         description = "Resolve a vocabulary term to code locations. Searches aliases \
         (from .sutra/aliases.toml), component names, and semantic anchor names. \
         Returns matches in priority order with orphan detection."

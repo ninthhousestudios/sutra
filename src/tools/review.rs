@@ -53,10 +53,23 @@ pub struct ConventionViolation {
     pub confidence: f64,
 }
 
+#[derive(Clone)]
+pub struct ConventionMatchFinding {
+    pub symbol: String,
+    pub file: String,
+    pub convention_id: String,
+    pub antecedent: Vec<String>,
+    pub consequent: Vec<String>,
+    pub lifecycle_state: String,
+    pub support: usize,
+    pub confidence: f64,
+}
+
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintViolation>,
     pub convention_violations: Vec<ConventionViolation>,
+    pub convention_matches: Vec<ConventionMatchFinding>,
 }
 
 pub fn handle(
@@ -191,6 +204,7 @@ pub fn build_findings(
 
     // FCA: convention violations on changed symbols
     let mut convention_violations = Vec::new();
+    let mut convention_matches = Vec::new();
 
     let mut all_sym_attrs = Vec::new();
     for f in &all_files {
@@ -298,6 +312,17 @@ pub fn build_findings(
         let current_ids: Vec<&str> = all_convs.iter().map(|c| c.id.as_str()).collect();
         let _ = db.delete_stale_conventions(&current_ids);
 
+        let snapshot_id = uuid::Uuid::new_v4().to_string();
+        for c in &all_convs {
+            let _ = db.record_convention_history(
+                &c.id, c.support as i64, c.confidence, &snapshot_id,
+            );
+        }
+
+        if let Ok(signals) = conventions::lifecycle::detect_signals(db) {
+            let _ = conventions::lifecycle::generate_proposals(db, signals);
+        }
+
         let changed_set: std::collections::HashSet<&str> =
             changed_paths.iter().map(|p| p.as_str()).collect();
         let changed_sym_attrs: Vec<_> = all_sym_attrs
@@ -334,11 +359,35 @@ pub fn build_findings(
                 confidence: v.confidence,
             });
         }
+
+        let merged = db.all_conventions_merged()?;
+        let deprecated_ids: std::collections::HashSet<String> = merged.iter()
+            .filter(|c| c.lifecycle_state.as_deref() == Some("deprecated"))
+            .map(|c| c.id.clone()).collect();
+        let forbidden_ids: std::collections::HashSet<String> = merged.iter()
+            .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
+            .map(|c| c.id.clone()).collect();
+
+        if !deprecated_ids.is_empty() || !forbidden_ids.is_empty() {
+            for m in check_engine.check_inverse(&changed_sym_attrs, &deprecated_ids, &forbidden_ids) {
+                convention_matches.push(ConventionMatchFinding {
+                    symbol: m.symbol,
+                    file: m.file,
+                    convention_id: m.convention_id,
+                    antecedent: m.antecedent,
+                    consequent: m.consequent,
+                    lifecycle_state: m.lifecycle_state,
+                    support: m.support,
+                    confidence: m.confidence,
+                });
+            }
+        }
     }
 
     Ok(ReviewFindings {
         constraint_violations,
         convention_violations,
+        convention_matches,
     })
 }
 
@@ -529,6 +578,7 @@ pub fn compute(
             "recommended_reads": [],
             "constraint_violations": [],
             "convention_violations": [],
+            "convention_matches": [],
         }));
     }
 
@@ -567,6 +617,19 @@ pub fn compute(
                 "symbol": v.symbol, "file": v.file, "convention_id": v.convention_id,
                 "antecedent": v.antecedent, "consequent": v.consequent, "missing": v.missing,
                 "support": v.support, "confidence": v.confidence,
+            })
+        })
+        .collect();
+    let convention_matches_out: Vec<_> = findings
+        .convention_matches
+        .iter()
+        .map(|m| {
+            let severity = if m.lifecycle_state == "forbidden" { "warning" } else { "advisory" };
+            json!({
+                "symbol": m.symbol, "file": m.file, "convention_id": m.convention_id,
+                "antecedent": m.antecedent, "consequent": m.consequent,
+                "lifecycle_state": m.lifecycle_state, "severity": severity,
+                "support": m.support, "confidence": m.confidence,
             })
         })
         .collect();
@@ -631,6 +694,7 @@ pub fn compute(
         },
         "constraint_violations": constraint_violations_out,
         "convention_violations": convention_violations_out,
+        "convention_matches": convention_matches_out,
         "recommended_reads": recommended_reads,
     }))
 }
