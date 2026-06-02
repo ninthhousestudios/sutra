@@ -71,6 +71,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0013_clustering_config_hash.sql"),
         false,
     ),
+    (
+        "0014_convention_state",
+        include_str!("../../migrations/0014_convention_state.sql"),
+        false,
+    ),
 ];
 
 impl Db {

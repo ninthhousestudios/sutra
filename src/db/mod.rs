@@ -9,7 +9,7 @@ mod conventions;
 mod graph;
 mod migrations;
 
-pub use conventions::{ConventionOverrideRow, ConventionRow, ConventionWithOverride};
+pub use conventions::{ConventionRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
 
@@ -43,7 +43,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "imports", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "conventions", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "convention_overrides", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "convention_state", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "components", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "semantic_anchors", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "aliases", partition: TablePartition::Durable, is_virtual: false },

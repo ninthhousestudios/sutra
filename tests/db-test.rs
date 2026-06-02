@@ -753,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 13,
-        "fresh DB should register all 13 existing migrations"
+        count, 14,
+        "fresh DB should register all 14 existing migrations"
     );
 }
 
@@ -768,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 13, "reopen should not duplicate migration rows");
+    assert_eq!(count, 14, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -833,13 +833,13 @@ fn test_set_convention_lifecycle() {
 
     db.set_convention_lifecycle("abc123", "forbidden", Some("bad pattern"))
         .unwrap();
-    let ov = db.get_convention_override("abc123").unwrap().unwrap();
+    let ov = db.get_convention_state("abc123").unwrap().unwrap();
     assert_eq!(ov.lifecycle_state, "forbidden");
     assert_eq!(ov.override_reason.as_deref(), Some("bad pattern"));
 
     db.set_convention_lifecycle("abc123", "preferred", None)
         .unwrap();
-    let ov = db.get_convention_override("abc123").unwrap().unwrap();
+    let ov = db.get_convention_state("abc123").unwrap().unwrap();
     assert_eq!(ov.lifecycle_state, "preferred");
     assert!(ov.override_reason.is_none());
 }
@@ -863,23 +863,23 @@ fn test_all_conventions_merged() {
 }
 
 #[test]
-fn test_reconcile_orphaned_overrides() {
+fn test_reconcile_orphaned_states() {
     let (_dir, db) = setup_db();
     db.set_convention_lifecycle("nonexistent", "forbidden", Some("orphan"))
         .unwrap();
 
-    let orphans = db.reconcile_orphaned_overrides().unwrap();
+    let orphans = db.reconcile_orphaned_states().unwrap();
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].convention_id, "nonexistent");
 
     db.upsert_convention("nonexistent", "x", "y", 5, 0.8)
         .unwrap();
-    let orphans = db.reconcile_orphaned_overrides().unwrap();
+    let orphans = db.reconcile_orphaned_states().unwrap();
     assert!(orphans.is_empty());
 }
 
 #[test]
-fn test_reindex_preserves_durable_overrides() {
+fn test_reindex_preserves_durable_state() {
     let (_dir, db) = setup_db();
 
     db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9)
@@ -888,16 +888,16 @@ fn test_reindex_preserves_durable_overrides() {
         .unwrap();
 
     let dropped = db.reindex().unwrap();
-    assert!(!dropped.contains(&"convention_overrides"));
+    assert!(!dropped.contains(&"convention_state"));
 
     let conventions = db.all_conventions().unwrap();
     assert!(conventions.is_empty(), "ephemeral conventions should be gone");
 
-    let ov = db.get_convention_override("conv1").unwrap().unwrap();
+    let ov = db.get_convention_state("conv1").unwrap().unwrap();
     assert_eq!(ov.lifecycle_state, "preferred");
     assert_eq!(ov.override_reason.as_deref(), Some("team standard"));
 
-    let orphans = db.reconcile_orphaned_overrides().unwrap();
+    let orphans = db.reconcile_orphaned_states().unwrap();
     assert_eq!(orphans.len(), 1, "override without convention is orphaned");
 
     db.upsert_convention("conv1", "kind:function", "has_sig", 12, 0.92)
@@ -932,7 +932,7 @@ fn test_table_registry_covers_all_tables() {
     assert!(names.contains(&"imports"));
     assert!(names.contains(&"snapshots"));
     assert!(names.contains(&"conventions"));
-    assert!(names.contains(&"convention_overrides"));
+    assert!(names.contains(&"convention_state"));
 
     for meta in TABLE_REGISTRY {
         assert!(

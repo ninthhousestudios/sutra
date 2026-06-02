@@ -16,7 +16,7 @@ pub struct ConventionRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConventionOverrideRow {
+pub struct ConventionStateRow {
     pub convention_id: String,
     pub lifecycle_state: String,
     pub override_reason: Option<String>,
@@ -25,7 +25,7 @@ pub struct ConventionOverrideRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConventionWithOverride {
+pub struct ConventionWithState {
     pub id: String,
     pub antecedent: String,
     pub consequent: String,
@@ -81,18 +81,18 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn all_conventions_merged(&self) -> Result<Vec<ConventionWithOverride>> {
+    pub fn all_conventions_merged(&self) -> Result<Vec<ConventionWithState>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT c.id, c.antecedent, c.consequent, c.support, c.confidence,
                     c.first_seen, c.last_seen, co.lifecycle_state
              FROM conventions c
-             LEFT JOIN convention_overrides co ON c.id = co.convention_id
+             LEFT JOIN convention_state co ON c.id = co.convention_id
              ORDER BY c.confidence DESC, c.support DESC",
         )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok(ConventionWithOverride {
+                Ok(ConventionWithState {
                     id: row.get(0)?,
                     antecedent: row.get(1)?,
                     consequent: row.get(2)?,
@@ -115,7 +115,7 @@ impl Db {
     ) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO convention_overrides (convention_id, lifecycle_state, override_reason)
+            "INSERT INTO convention_state (convention_id, lifecycle_state, override_reason)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(convention_id) DO UPDATE SET
                  lifecycle_state = ?2,
@@ -126,18 +126,18 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_convention_override(
+    pub fn get_convention_state(
         &self,
         convention_id: &str,
-    ) -> Result<Option<ConventionOverrideRow>> {
+    ) -> Result<Option<ConventionStateRow>> {
         let conn = self.conn.lock();
         let row = conn
             .query_row(
                 "SELECT convention_id, lifecycle_state, override_reason, created_at, updated_at
-                 FROM convention_overrides WHERE convention_id = ?1",
+                 FROM convention_state WHERE convention_id = ?1",
                 params![convention_id],
                 |row| {
-                    Ok(ConventionOverrideRow {
+                    Ok(ConventionStateRow {
                         convention_id: row.get(0)?,
                         lifecycle_state: row.get(1)?,
                         override_reason: row.get(2)?,
@@ -150,16 +150,16 @@ impl Db {
         Ok(row)
     }
 
-    pub fn reconcile_orphaned_overrides(&self) -> Result<Vec<ConventionOverrideRow>> {
+    pub fn reconcile_orphaned_states(&self) -> Result<Vec<ConventionStateRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT convention_id, lifecycle_state, override_reason, created_at, updated_at
-             FROM convention_overrides
+             FROM convention_state
              WHERE convention_id NOT IN (SELECT id FROM conventions)",
         )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok(ConventionOverrideRow {
+                Ok(ConventionStateRow {
                     convention_id: row.get(0)?,
                     lifecycle_state: row.get(1)?,
                     override_reason: row.get(2)?,
