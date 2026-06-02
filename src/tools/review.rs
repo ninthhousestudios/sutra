@@ -84,6 +84,7 @@ pub struct ReviewFindings {
     pub convention_violations: Vec<ConventionViolation>,
     pub convention_matches: Vec<ConventionMatchFinding>,
     pub waived_violations: Vec<WaivedViolation>,
+    pub drift_alerts: Vec<conventions::drift::DriftAlert>,
 }
 
 pub fn handle(
@@ -219,6 +220,7 @@ pub fn build_findings(
     // FCA: convention violations on changed symbols
     let mut convention_violations = Vec::new();
     let mut convention_matches = Vec::new();
+    let mut drift_alerts = Vec::new();
 
     let mut all_sym_attrs = Vec::new();
     for f in &all_files {
@@ -288,7 +290,9 @@ pub fn build_findings(
         let global_conventions = global_engine.rebuild(&all_sym_attrs);
 
         let mut all_convs = global_conventions.clone();
-        for (comp_id, _name, paths) in &comp_with_paths {
+        let mut comp_symbol_groups: Vec<(String, String, Vec<conventions::SymbolAttrs>)> =
+            Vec::new();
+        for (comp_id, name, paths) in &comp_with_paths {
             let path_set: std::collections::HashSet<&str> =
                 paths.iter().map(|p| p.as_str()).collect();
             let comp_symbols: Vec<_> = all_sym_attrs
@@ -310,7 +314,12 @@ pub fn build_findings(
             let deduped =
                 conventions::deduplicate_component_conventions(comp_convs, &global_conventions);
             all_convs.extend(deduped);
+            comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_symbols));
         }
+
+        drift_alerts =
+            conventions::drift::record_and_detect_drift(db, &comp_symbol_groups)
+                .unwrap_or_default();
 
         for c in &all_convs {
             let _ = db.upsert_convention(
@@ -449,6 +458,7 @@ pub fn build_findings(
         convention_violations: unwaived,
         convention_matches,
         waived_violations,
+        drift_alerts,
     })
 }
 
@@ -641,6 +651,7 @@ pub fn compute(
             "convention_violations": [],
             "convention_matches": [],
             "waived_violations": [],
+            "drift_alerts": [],
         }));
     }
 
@@ -707,6 +718,31 @@ pub fn compute(
             })
         })
         .collect();
+    let drift_alerts_out: Vec<_> = findings
+        .drift_alerts
+        .iter()
+        .map(|a| {
+            let diverging: Vec<_> = a
+                .diverging_attributes
+                .iter()
+                .map(|d| {
+                    json!({
+                        "attribute": d.attribute,
+                        "old_proportion": scoring::round3(d.old_proportion),
+                        "new_proportion": scoring::round3(d.new_proportion),
+                    })
+                })
+                .collect();
+            json!({
+                "component_id": a.component_id,
+                "component_name": a.component_name,
+                "entropy_old": scoring::round3(a.entropy_old),
+                "entropy_new": scoring::round3(a.entropy_new),
+                "delta": scoring::round3(a.delta),
+                "diverging_attributes": diverging,
+            })
+        })
+        .collect();
 
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(stats.total_blast as f64, scoring::BLAST_NORM);
@@ -770,6 +806,7 @@ pub fn compute(
         "convention_violations": convention_violations_out,
         "convention_matches": convention_matches_out,
         "waived_violations": waived_violations_out,
+        "drift_alerts": drift_alerts_out,
         "recommended_reads": recommended_reads,
     }))
 }
