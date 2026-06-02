@@ -76,6 +76,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0014_convention_state.sql"),
         false,
     ),
+    (
+        "0015_convention_component_id",
+        include_str!("../../migrations/0015_convention_component_id.sql"),
+        true,
+    ),
 ];
 
 impl Db {

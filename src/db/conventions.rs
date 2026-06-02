@@ -13,6 +13,7 @@ pub struct ConventionRow {
     pub confidence: f64,
     pub first_seen: String,
     pub last_seen: String,
+    pub component_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,7 @@ pub struct ConventionWithState {
     pub first_seen: String,
     pub last_seen: String,
     pub lifecycle_state: Option<String>,
+    pub component_id: Option<String>,
 }
 
 impl Db {
@@ -44,16 +46,18 @@ impl Db {
         consequent: &str,
         support: i64,
         confidence: f64,
+        component_id: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO conventions (id, antecedent, consequent, support, confidence)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO conventions (id, antecedent, consequent, support, confidence, component_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET
                  support = ?4,
                  confidence = ?5,
+                 component_id = ?6,
                  last_seen = datetime('now')",
-            params![id, antecedent, consequent, support, confidence],
+            params![id, antecedent, consequent, support, confidence, component_id],
         )?;
         Ok(())
     }
@@ -62,7 +66,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, antecedent, consequent, support, confidence,
-                    first_seen, last_seen
+                    first_seen, last_seen, component_id
              FROM conventions ORDER BY confidence DESC, support DESC",
         )?;
         let rows = stmt
@@ -75,6 +79,7 @@ impl Db {
                     confidence: row.get(4)?,
                     first_seen: row.get(5)?,
                     last_seen: row.get(6)?,
+                    component_id: row.get(7)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -85,7 +90,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT c.id, c.antecedent, c.consequent, c.support, c.confidence,
-                    c.first_seen, c.last_seen, co.lifecycle_state
+                    c.first_seen, c.last_seen, co.lifecycle_state, c.component_id
              FROM conventions c
              LEFT JOIN convention_state co ON c.id = co.convention_id
              ORDER BY c.confidence DESC, c.support DESC",
@@ -101,6 +106,7 @@ impl Db {
                     first_seen: row.get(5)?,
                     last_seen: row.get(6)?,
                     lifecycle_state: row.get(7)?,
+                    component_id: row.get(8)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

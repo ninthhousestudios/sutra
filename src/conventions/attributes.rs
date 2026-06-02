@@ -97,6 +97,7 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
         name: sym.qualified_name.clone(),
         file: file_path.to_string(),
         attributes,
+        component_id: None,
     })
 }
 

@@ -8,6 +8,7 @@ pub struct SymbolAttrs {
     pub name: String,
     pub file: String,
     pub attributes: Vec<String>,
+    pub component_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,15 +18,23 @@ pub struct Convention {
     pub consequent: Vec<String>,
     pub support: usize,
     pub confidence: f64,
+    pub component_id: Option<String>,
 }
 
 impl Convention {
-    pub fn compute_id(antecedent: &[String], consequent: &[String]) -> String {
+    pub fn compute_id(
+        antecedent: &[String],
+        consequent: &[String],
+        component_id: Option<&str>,
+    ) -> String {
         let mut ante = antecedent.to_vec();
         ante.sort();
         let mut cons = consequent.to_vec();
         cons.sort();
-        let input = format!("{}\0{}", ante.join("\x1f"), cons.join("\x1f"));
+        let input = match component_id {
+            Some(cid) => format!("{}\x02{}\0{}", cid, ante.join("\x1f"), cons.join("\x1f")),
+            None => format!("{}\0{}", ante.join("\x1f"), cons.join("\x1f")),
+        };
         blake3::hash(input.as_bytes()).to_hex()[..16].to_string()
     }
 }
@@ -43,7 +52,7 @@ pub struct ConventionViolation {
 }
 
 const MIN_SUPPORT: usize = 3;
-const MIN_CONFIDENCE: f64 = 0.9;
+pub const MIN_CONFIDENCE: f64 = 0.9;
 
 pub struct FcaEngine {
     context: Option<FormalContext>,
@@ -63,39 +72,43 @@ impl FcaEngine {
     }
 
     pub fn rebuild(&mut self, symbols: &[SymbolAttrs]) -> Vec<Convention> {
+        self.rebuild_with_params(symbols, MIN_SUPPORT, MIN_CONFIDENCE, None)
+    }
+
+    pub fn rebuild_with_params(
+        &mut self,
+        symbols: &[SymbolAttrs],
+        min_support: usize,
+        min_confidence: f64,
+        component_id: Option<&str>,
+    ) -> Vec<Convention> {
         let hash = Self::hash_matrix(symbols);
         if self.last_matrix_hash == Some(hash) {
             return self.conventions.clone();
         }
 
-        let (ctx, attr_names) = Self::build_context(symbols);
-        let impls = ctx.approximate_implications(MIN_SUPPORT, MIN_CONFIDENCE);
+        let (ctx, _attr_names) = Self::build_context(symbols);
+        let impls = ctx.approximate_implications(min_support, min_confidence);
 
         self.conventions = impls
             .into_iter()
             .map(|imp| {
-                let id = Convention::compute_id(&imp.antecedent, &imp.consequent);
+                let id =
+                    Convention::compute_id(&imp.antecedent, &imp.consequent, component_id);
                 Convention {
                     id,
                     antecedent: imp.antecedent,
                     consequent: imp.consequent,
                     support: imp.support,
                     confidence: imp.confidence,
+                    component_id: component_id.map(|s| s.to_string()),
                 }
             })
             .collect();
 
         self.context = Some(ctx);
-        self.symbol_attrs = symbols
-            .iter()
-            .map(|s| SymbolAttrs {
-                name: s.name.clone(),
-                file: s.file.clone(),
-                attributes: s.attributes.clone(),
-            })
-            .collect();
+        self.symbol_attrs = symbols.to_vec();
         self.last_matrix_hash = Some(hash);
-        let _ = attr_names;
 
         self.conventions.clone()
     }
@@ -108,13 +121,13 @@ impl FcaEngine {
         self.symbol_attrs.retain(|s| !removed.contains(&s.name));
         for sa in added {
             self.symbol_attrs.retain(|s| s.name != sa.name);
-            self.symbol_attrs.push(SymbolAttrs {
-                name: sa.name.clone(),
-                file: sa.file.clone(),
-                attributes: sa.attributes.clone(),
-            });
+            self.symbol_attrs.push(sa.clone());
         }
         self.rebuild(&self.symbol_attrs.clone())
+    }
+
+    pub fn set_conventions(&mut self, conventions: Vec<Convention>) {
+        self.conventions = conventions;
     }
 
     pub fn conventions(&self) -> &[Convention] {
@@ -142,6 +155,12 @@ impl FcaEngine {
                 .collect();
 
             for sym in changed_symbols {
+                if let Some(conv_comp) = &conv.component_id {
+                    if sym.component_id.as_ref() != Some(conv_comp) {
+                        continue;
+                    }
+                }
+
                 let is_exempt = exempted.iter().any(|pat| {
                     if pat.contains('/') {
                         // file-qualified: "src/foo.rs::process"
@@ -257,6 +276,22 @@ impl FcaEngine {
     }
 }
 
+pub fn deduplicate_component_conventions(
+    component_convs: Vec<Convention>,
+    global_convs: &[Convention],
+) -> Vec<Convention> {
+    component_convs
+        .into_iter()
+        .filter(|cc| {
+            !global_convs.iter().any(|gc| {
+                gc.antecedent == cc.antecedent
+                    && gc.consequent == cc.consequent
+                    && gc.confidence >= cc.confidence
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,22 +299,22 @@ mod tests {
 
     #[test]
     fn stable_hash_same_inputs_same_output() {
-        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
-        let id2 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
+        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None);
+        let id2 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn stable_hash_order_independent() {
-        let id1 = Convention::compute_id(&["a".into(), "b".into()], &["c".into(), "d".into()]);
-        let id2 = Convention::compute_id(&["b".into(), "a".into()], &["d".into(), "c".into()]);
+        let id1 = Convention::compute_id(&["a".into(), "b".into()], &["c".into(), "d".into()], None);
+        let id2 = Convention::compute_id(&["b".into(), "a".into()], &["d".into(), "c".into()], None);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn stable_hash_different_for_different_implications() {
-        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()]);
-        let id2 = Convention::compute_id(&["kind:struct".into()], &["naming:CamelCase".into()]);
+        let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None);
+        let id2 = Convention::compute_id(&["kind:struct".into()], &["naming:CamelCase".into()], None);
         assert_ne!(id1, id2);
     }
 
@@ -330,6 +365,7 @@ mod tests {
             name: "new_struct".into(),
             file: "new.rs".into(),
             attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
+        component_id: None,
         });
         engine.rebuild(&symbols);
         assert_ne!(engine.last_matrix_hash, hash_before);
@@ -346,6 +382,7 @@ mod tests {
             name: "fn_extra".into(),
             file: "src/test.rs".into(),
             attributes: vec!["kind:function".into()],
+        component_id: None,
         };
         let after = engine.update_incremental(&[extra], &[]);
 
@@ -390,6 +427,7 @@ mod tests {
             name: "fn_0".into(),
             file: "src/test.rs".into(),
             attributes: vec!["kind:function".into(), "has_sig".into()],
+        component_id: None,
         };
         let second = engine.update_incremental(&[extra.clone()], &[]);
         let third = engine.update_incremental(&[extra], &[]);
@@ -474,6 +512,7 @@ mod tests {
                 name: format!("fn_{i}"),
                 file: format!("src/funcs/{i}.rs"),
                 attributes: attrs,
+            component_id: None,
             });
         }
 
@@ -495,6 +534,7 @@ mod tests {
                 name: format!("method_{i}"),
                 file: format!("src/methods/{i}.rs"),
                 attributes: attrs,
+            component_id: None,
             });
         }
 
@@ -512,6 +552,7 @@ mod tests {
                 name: format!("Struct{i}"),
                 file: format!("src/types/{i}.rs"),
                 attributes: attrs,
+            component_id: None,
             });
         }
 
@@ -525,6 +566,7 @@ mod tests {
                     "naming:CamelCase".into(),
                     "vis:pub".into(),
                 ],
+            component_id: None,
             });
         }
 
@@ -543,6 +585,7 @@ mod tests {
                 name: format!("fn_{i}"),
                 file: format!("src/test_{i}.rs"),
                 attributes: attrs,
+            component_id: None,
             });
         }
         // 5 structs with naming:CamelCase
@@ -551,6 +594,7 @@ mod tests {
                 name: format!("Struct{i}"),
                 file: format!("src/structs/{i}.rs"),
                 attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
+            component_id: None,
             });
         }
         symbols
@@ -573,6 +617,7 @@ mod tests {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -599,6 +644,7 @@ mod tests {
             name: "good_symbol".into(),
             file: "src/good.rs".into(),
             attributes: attrs,
+        component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -618,6 +664,7 @@ mod tests {
             name: "unrelated".into(),
             file: "src/other.rs".into(),
             attributes: vec!["some_random_attr".into()],
+        component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -634,6 +681,7 @@ mod tests {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -657,6 +705,7 @@ mod tests {
             name: "ExemptedSymbol".into(),
             file: "src/exempt.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -694,6 +743,7 @@ mod tests {
             name: "PartialExempt".into(),
             file: "src/partial.rs".into(),
             attributes: attrs,
+        component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -720,11 +770,13 @@ mod tests {
             name: "process".into(),
             file: "src/foo.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         };
 
         let config = ConventionsConfig {
@@ -764,11 +816,13 @@ mod tests {
             name: "process".into(),
             file: "src/foo.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
             attributes: conv.antecedent.clone(),
+        component_id: None,
         };
 
         let config = ConventionsConfig {

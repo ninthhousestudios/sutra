@@ -753,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 14,
-        "fresh DB should register all 14 existing migrations"
+        count, 15,
+        "fresh DB should register all 15 existing migrations"
     );
 }
 
@@ -768,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 14, "reopen should not duplicate migration rows");
+    assert_eq!(count, 15, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -801,7 +801,7 @@ fn test_migration_hash_mismatch_errors() {
 #[test]
 fn convention_upsert_and_retrieve() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
         .unwrap();
     let rows = db.all_conventions().unwrap();
     assert_eq!(rows.len(), 1);
@@ -815,9 +815,9 @@ fn convention_upsert_and_retrieve() {
 #[test]
 fn convention_upsert_updates_existing() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
         .unwrap();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 50, 0.97)
+    db.upsert_convention("abc123", "kind:function", "has_sig", 50, 0.97, None)
         .unwrap();
     let rows = db.all_conventions().unwrap();
     assert_eq!(rows.len(), 1);
@@ -828,7 +828,7 @@ fn convention_upsert_updates_existing() {
 #[test]
 fn test_set_convention_lifecycle() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95)
+    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
         .unwrap();
 
     db.set_convention_lifecycle("abc123", "forbidden", Some("bad pattern"))
@@ -847,8 +847,8 @@ fn test_set_convention_lifecycle() {
 #[test]
 fn test_all_conventions_merged() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
     db.set_convention_lifecycle("aaa", "deprecated", Some("outdated"))
         .unwrap();
 
@@ -872,7 +872,7 @@ fn test_reconcile_orphaned_states() {
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].convention_id, "nonexistent");
 
-    db.upsert_convention("nonexistent", "x", "y", 5, 0.8)
+    db.upsert_convention("nonexistent", "x", "y", 5, 0.8, None)
         .unwrap();
     let orphans = db.reconcile_orphaned_states().unwrap();
     assert!(orphans.is_empty());
@@ -882,7 +882,7 @@ fn test_reconcile_orphaned_states() {
 fn test_reindex_preserves_durable_state() {
     let (_dir, db) = setup_db();
 
-    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9)
+    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9, None)
         .unwrap();
     db.set_convention_lifecycle("conv1", "preferred", Some("team standard"))
         .unwrap();
@@ -900,7 +900,7 @@ fn test_reindex_preserves_durable_state() {
     let orphans = db.reconcile_orphaned_states().unwrap();
     assert_eq!(orphans.len(), 1, "override without convention is orphaned");
 
-    db.upsert_convention("conv1", "kind:function", "has_sig", 12, 0.92)
+    db.upsert_convention("conv1", "kind:function", "has_sig", 12, 0.92, None)
         .unwrap();
     let merged = db.all_conventions_merged().unwrap();
     assert_eq!(merged.len(), 1);
@@ -910,9 +910,9 @@ fn test_reindex_preserves_durable_state() {
 #[test]
 fn convention_delete_stale() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95).unwrap();
-    db.upsert_convention("ccc", "e", "f", 30, 0.99).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
+    db.upsert_convention("ccc", "e", "f", 30, 0.99, None).unwrap();
     let deleted = db.delete_stale_conventions(&["aaa", "ccc"]).unwrap();
     assert_eq!(deleted, 1);
     let rows = db.all_conventions().unwrap();
@@ -948,7 +948,7 @@ fn test_reindex_drops_ephemeral_tables() {
 
     let file_id = seed_file(&db, "src/main.rs");
     seed_symbol(&db, file_id, "main", "main", "function");
-    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9)
+    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9, None)
         .unwrap();
 
     let files = db.all_files().unwrap();
@@ -970,6 +970,6 @@ fn test_reindex_drops_ephemeral_tables() {
     let file_id = seed_file(&db, "src/lib.rs");
     assert!(file_id > 0, "should be able to insert after reindex");
     seed_symbol(&db, file_id, "lib_fn", "lib_fn", "function");
-    db.upsert_convention("conv2", "kind:struct", "has_doc", 5, 0.8)
+    db.upsert_convention("conv2", "kind:struct", "has_doc", 5, 0.8, None)
         .unwrap();
 }

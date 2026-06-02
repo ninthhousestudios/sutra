@@ -244,19 +244,58 @@ pub fn build_findings(
     }
 
     if !all_sym_attrs.is_empty() {
-        let mut fca_engine = FcaEngine::new();
-        let conventions = fca_engine.rebuild(&all_sym_attrs);
+        let comp_with_paths = db.active_components_with_paths()?;
+        let mut file_to_component: HashMap<String, String> = HashMap::new();
+        for (comp_id, _name, paths) in &comp_with_paths {
+            for path in paths {
+                file_to_component.insert(path.clone(), comp_id.clone());
+            }
+        }
 
-        for c in &conventions {
+        for sa in &mut all_sym_attrs {
+            sa.component_id = file_to_component.get(&sa.file).cloned();
+        }
+
+        let mut global_engine = FcaEngine::new();
+        let global_conventions = global_engine.rebuild(&all_sym_attrs);
+
+        let mut all_convs = global_conventions.clone();
+        for (comp_id, _name, paths) in &comp_with_paths {
+            let path_set: std::collections::HashSet<&str> =
+                paths.iter().map(|p| p.as_str()).collect();
+            let comp_symbols: Vec<_> = all_sym_attrs
+                .iter()
+                .filter(|s| path_set.contains(s.file.as_str()))
+                .cloned()
+                .collect();
+            if comp_symbols.len() < 2 {
+                continue;
+            }
+            let min_support =
+                std::cmp::max(2, (comp_symbols.len() as f64 * 0.4).ceil() as usize);
+            let mut comp_engine = FcaEngine::new();
+            let comp_convs = comp_engine.rebuild_with_params(
+                &comp_symbols,
+                min_support,
+                conventions::MIN_CONFIDENCE,
+                Some(comp_id),
+            );
+            let deduped =
+                conventions::deduplicate_component_conventions(comp_convs, &global_conventions);
+            all_convs.extend(deduped);
+        }
+
+        for c in &all_convs {
             let _ = db.upsert_convention(
                 &c.id,
                 &c.antecedent.join(", "),
                 &c.consequent.join(", "),
                 c.support as i64,
                 c.confidence,
+                c.component_id.as_deref(),
             );
         }
-        let current_ids: Vec<&str> = conventions.iter().map(|c| c.id.as_str()).collect();
+        let current_ids: Vec<&str> = all_convs.iter().map(|c| c.id.as_str()).collect();
         let _ = db.delete_stale_conventions(&current_ids);
 
         let changed_set: std::collections::HashSet<&str> =
@@ -280,7 +319,10 @@ pub fn build_findings(
             }
         }
 
-        for v in fca_engine.check(&changed_sym_attrs, &effective_conventions) {
+        let mut check_engine = FcaEngine::new();
+        check_engine.set_conventions(all_convs);
+
+        for v in check_engine.check(&changed_sym_attrs, &effective_conventions) {
             convention_violations.push(ConventionViolation {
                 symbol: v.symbol,
                 file: v.file,
