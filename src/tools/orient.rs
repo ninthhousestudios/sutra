@@ -144,6 +144,7 @@ pub fn handle(db: &Db, scope: &str) -> Result<serde_json::Value> {
 
     let all_conventions = db.all_conventions_merged()?;
     let all_proposals = db.pending_proposals()?;
+    let all_waivers = db.list_waivers(None).unwrap_or_default();
 
     let mut orientation_sections = Vec::new();
 
@@ -163,8 +164,6 @@ pub fn handle(db: &Db, scope: &str) -> Result<serde_json::Value> {
             .iter()
             .map(|t| (t.convention_id.as_str(), t.template_text.as_str()))
             .collect();
-
-        let all_waivers = db.list_waivers(None).unwrap_or_default();
         let in_scope_waivers: Vec<_> = all_waivers
             .iter()
             .filter(|w| {
@@ -191,8 +190,8 @@ pub fn handle(db: &Db, scope: &str) -> Result<serde_json::Value> {
             };
             let mut entry = json!({
                 "convention_id": c.id,
-                "antecedent": c.antecedent,
-                "consequent": c.consequent,
+                "antecedent": c.antecedent.split(", ").collect::<Vec<_>>(),
+                "consequent": c.consequent.split(", ").collect::<Vec<_>>(),
                 "support": c.support,
                 "confidence": c.confidence,
                 "scope": if c.component_id.is_some() { "component" } else { "global" },
@@ -208,7 +207,11 @@ pub fn handle(db: &Db, scope: &str) -> Result<serde_json::Value> {
             }
         }
 
-        let drift = check_drift_from_snapshots(db, &comp.id, &comp.name);
+        let drift = if is_sketch {
+            None
+        } else {
+            check_drift_from_snapshots(db, &comp.id, &comp.name)
+        };
 
         let mut section = json!({
             "component_id": comp.id,

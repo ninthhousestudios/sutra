@@ -362,10 +362,14 @@ pub fn build_findings(
 
         let _ = db.delete_stale_conventions(&current_ids);
 
-        let _ = conventions::templates::generate_templates_for_conventions(
+        if let Err(e) = conventions::templates::generate_templates_for_conventions(
             &all_convs, &all_sym_attrs, &sig_info_map, db,
-        );
-        let _ = db.delete_orphan_templates(&current_ids);
+        ) {
+            tracing::warn!("template generation failed: {e}");
+        }
+        if let Err(e) = db.delete_orphan_templates(&current_ids) {
+            tracing::warn!("orphan template cleanup failed: {e}");
+        }
 
         let changed_set: std::collections::HashSet<&str> =
             changed_paths.iter().map(|p| p.as_str()).collect();
