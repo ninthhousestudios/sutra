@@ -9,7 +9,7 @@ mod conventions;
 mod graph;
 mod migrations;
 
-pub use conventions::{ConventionRow, ConventionStateRow, ConventionWithState};
+pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
 
@@ -50,6 +50,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "component_events", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "component_membership", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "component_clustering_meta", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "convention_history", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "convention_proposals", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------

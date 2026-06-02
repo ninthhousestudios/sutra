@@ -38,6 +38,28 @@ pub struct ConventionWithState {
     pub component_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConventionHistoryRow {
+    pub id: i64,
+    pub convention_id: String,
+    pub support: i64,
+    pub confidence: f64,
+    pub snapshot_id: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConventionProposalRow {
+    pub id: i64,
+    pub convention_id: String,
+    pub proposed_transition: String,
+    pub signal_rationale: String,
+    pub signal_direction: String,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
 impl Db {
     pub fn upsert_convention(
         &self,
@@ -175,6 +197,158 @@ impl Db {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // --- Convention history ---
+
+    pub fn record_convention_history(
+        &self,
+        convention_id: &str,
+        support: i64,
+        confidence: f64,
+        snapshot_id: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO convention_history (convention_id, support, confidence, snapshot_id)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![convention_id, support, confidence, snapshot_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn convention_history(
+        &self,
+        convention_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ConventionHistoryRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, convention_id, support, confidence, snapshot_id, recorded_at
+             FROM convention_history
+             WHERE convention_id = ?1
+             ORDER BY recorded_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![convention_id, limit as i64], |row| {
+                Ok(ConventionHistoryRow {
+                    id: row.get(0)?,
+                    convention_id: row.get(1)?,
+                    support: row.get(2)?,
+                    confidence: row.get(3)?,
+                    snapshot_id: row.get(4)?,
+                    recorded_at: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    // --- Convention proposals ---
+
+    pub fn create_proposal(
+        &self,
+        convention_id: &str,
+        proposed_transition: &str,
+        signal_rationale: &str,
+        signal_direction: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO convention_proposals
+             (convention_id, proposed_transition, signal_rationale, signal_direction)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![convention_id, proposed_transition, signal_rationale, signal_direction],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn pending_proposals(&self) -> Result<Vec<ConventionProposalRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, convention_id, proposed_transition, signal_rationale,
+                    signal_direction, status, created_at, resolved_at
+             FROM convention_proposals
+             WHERE status = 'pending'
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ConventionProposalRow {
+                    id: row.get(0)?,
+                    convention_id: row.get(1)?,
+                    proposed_transition: row.get(2)?,
+                    signal_rationale: row.get(3)?,
+                    signal_direction: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                    resolved_at: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_proposal(&self, proposal_id: i64) -> Result<Option<ConventionProposalRow>> {
+        let conn = self.conn.lock();
+        let row = conn
+            .query_row(
+                "SELECT id, convention_id, proposed_transition, signal_rationale,
+                        signal_direction, status, created_at, resolved_at
+                 FROM convention_proposals WHERE id = ?1",
+                params![proposal_id],
+                |row| {
+                    Ok(ConventionProposalRow {
+                        id: row.get(0)?,
+                        convention_id: row.get(1)?,
+                        proposed_transition: row.get(2)?,
+                        signal_rationale: row.get(3)?,
+                        signal_direction: row.get(4)?,
+                        status: row.get(5)?,
+                        created_at: row.get(6)?,
+                        resolved_at: row.get(7)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
+    pub fn resolve_proposal(&self, proposal_id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE convention_proposals SET status = ?1, resolved_at = datetime('now')
+             WHERE id = ?2",
+            params![status, proposal_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn has_pending_proposal(&self, convention_id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM convention_proposals
+             WHERE convention_id = ?1 AND status = 'pending'",
+            params![convention_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn dismissed_proposal_for_convention(
+        &self,
+        convention_id: &str,
+        signal_direction: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM convention_proposals
+             WHERE convention_id = ?1 AND signal_direction = ?2 AND status = 'dismissed'",
+            params![convention_id, signal_direction],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     pub fn delete_stale_conventions(&self, current_ids: &[&str]) -> Result<usize> {
