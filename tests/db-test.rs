@@ -753,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 17,
-        "fresh DB should register all 17 existing migrations"
+        count, 18,
+        "fresh DB should register all 18 existing migrations"
     );
 }
 
@@ -768,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 17, "reopen should not duplicate migration rows");
+    assert_eq!(count, 18, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -972,4 +972,112 @@ fn test_reindex_drops_ephemeral_tables() {
     seed_symbol(&db, file_id, "lib_fn", "lib_fn", "function");
     db.upsert_convention("conv2", "kind:struct", "has_doc", 5, 0.8, None)
         .unwrap();
+}
+
+// --- Convention waiver tests ---
+
+#[test]
+fn waiver_create_list_revoke() {
+    let (_dir, db) = setup_db();
+
+    let id = db
+        .create_waiver("conv1", "process", "", "intentional deviation", "josh")
+        .unwrap();
+    assert!(id > 0);
+
+    let waivers = db.list_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].convention_id, "conv1");
+    assert_eq!(waivers[0].symbol_qualified_name, "process");
+    assert_eq!(waivers[0].rationale, "intentional deviation");
+    assert_eq!(waivers[0].waived_by, "josh");
+
+    let revoked = db.revoke_waiver(id).unwrap();
+    assert!(revoked);
+
+    let waivers = db.list_waivers(None).unwrap();
+    assert!(waivers.is_empty());
+
+    let not_found = db.revoke_waiver(id).unwrap();
+    assert!(!not_found);
+}
+
+#[test]
+fn waiver_uniqueness_upserts() {
+    let (_dir, db) = setup_db();
+
+    db.create_waiver("conv1", "process", "", "first reason", "alice")
+        .unwrap();
+    db.create_waiver("conv1", "process", "", "updated reason", "bob")
+        .unwrap();
+
+    let waivers = db.list_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].rationale, "updated reason");
+    assert_eq!(waivers[0].waived_by, "bob");
+}
+
+#[test]
+fn waiver_component_scoping() {
+    let (_dir, db) = setup_db();
+
+    db.create_waiver("conv1", "process", "", "global waiver", "josh")
+        .unwrap();
+    db.create_waiver("conv1", "process", "comp_a", "scoped waiver", "josh")
+        .unwrap();
+
+    let all = db.list_waivers(None).unwrap();
+    assert_eq!(all.len(), 2);
+
+    let by_conv = db.list_waivers(Some("conv1")).unwrap();
+    assert_eq!(by_conv.len(), 2);
+
+    let check_map = db.waivers_for_check().unwrap();
+    assert_eq!(check_map.len(), 2);
+    assert_eq!(
+        check_map.get(&("conv1".into(), "process".into(), "".into())),
+        Some(&"global waiver".to_string())
+    );
+    assert_eq!(
+        check_map.get(&("conv1".into(), "process".into(), "comp_a".into())),
+        Some(&"scoped waiver".to_string())
+    );
+}
+
+#[test]
+fn waiver_orphan_detection() {
+    let (_dir, db) = setup_db();
+
+    db.create_waiver("orphan_conv", "some_sym", "", "will be orphaned", "josh")
+        .unwrap();
+
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].convention_id, "orphan_conv");
+
+    db.upsert_convention("orphan_conv", "a", "b", 10, 0.9, None)
+        .unwrap();
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert!(orphans.is_empty());
+}
+
+#[test]
+fn waiver_survives_reindex() {
+    let (_dir, db) = setup_db();
+
+    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9, None)
+        .unwrap();
+    db.create_waiver("conv1", "process", "", "intentional", "josh")
+        .unwrap();
+
+    let dropped = db.reindex().unwrap();
+    assert!(!dropped.contains(&"convention_waivers"));
+
+    let waivers = db.list_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].convention_id, "conv1");
+    assert_eq!(waivers[0].rationale, "intentional");
+
+    let orphans = db.reconcile_orphaned_waivers().unwrap();
+    assert_eq!(orphans.len(), 1, "waiver is orphaned after reindex clears conventions");
 }

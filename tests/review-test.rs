@@ -302,6 +302,7 @@ fn risk_score_clamped_to_one() {
             })
             .collect(),
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let result = review::compute(&db, dir.path(), &paths, &churn, &findings).unwrap();
@@ -356,6 +357,7 @@ fn constraint_violations_appear_in_output() {
         ],
         convention_violations: vec![],
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let result =
@@ -387,6 +389,7 @@ fn convention_violations_appear_in_output() {
             confidence: 0.95,
         }],
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let result =
@@ -428,6 +431,7 @@ fn violations_are_structurally_distinct() {
             confidence: 0.92,
         }],
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let result =
@@ -502,6 +506,7 @@ fn convention_violations_increase_risk_score() {
             },
         ],
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let result_with =
@@ -570,6 +575,7 @@ fn recommended_reads_ranks_violation_sites_first() {
             confidence: 0.95,
         }],
         convention_matches: vec![],
+        waived_violations: vec![],
     };
 
     let changed = vec!["src/hub.rs".to_string()];

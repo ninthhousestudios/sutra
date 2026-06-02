@@ -91,6 +91,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0017_convention_proposals.sql"),
         false,
     ),
+    (
+        "0018_convention_waivers",
+        include_str!("../../migrations/0018_convention_waivers.sql"),
+        false,
+    ),
 ];
 
 impl Db {
