@@ -65,11 +65,25 @@ pub struct ConventionMatchFinding {
     pub confidence: f64,
 }
 
+#[derive(Clone)]
+pub struct WaivedViolation {
+    pub symbol: String,
+    pub file: String,
+    pub convention_id: String,
+    pub antecedent: Vec<String>,
+    pub consequent: Vec<String>,
+    pub missing: Vec<String>,
+    pub support: usize,
+    pub confidence: f64,
+    pub rationale: String,
+}
+
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintViolation>,
     pub convention_violations: Vec<ConventionViolation>,
     pub convention_matches: Vec<ConventionMatchFinding>,
+    pub waived_violations: Vec<WaivedViolation>,
 }
 
 pub fn handle(
@@ -384,10 +398,52 @@ pub fn build_findings(
         }
     }
 
+    let waivers = db.waivers_for_check()?;
+    let sym_component: HashMap<(&str, &str), &str> = all_sym_attrs
+        .iter()
+        .filter_map(|s| s.component_id.as_deref().map(|c| ((s.file.as_str(), s.name.as_str()), c)))
+        .collect();
+    let mut waived_violations = Vec::new();
+    let mut unwaived = Vec::new();
+    for v in convention_violations {
+        let comp = sym_component
+            .get(&(v.file.as_str(), v.symbol.as_str()))
+            .copied()
+            .unwrap_or("");
+        let file_qualified = format!("{}::{}", v.file, v.symbol);
+        let rationale = [
+            (v.convention_id.as_str(), v.symbol.as_str(), comp),
+            (v.convention_id.as_str(), file_qualified.as_str(), comp),
+            (v.convention_id.as_str(), v.symbol.as_str(), ""),
+            (v.convention_id.as_str(), file_qualified.as_str(), ""),
+        ]
+        .iter()
+        .find_map(|(cid, sym, cmp)| {
+            waivers.get(&(cid.to_string(), sym.to_string(), cmp.to_string()))
+        })
+        .cloned();
+        if let Some(rationale) = rationale {
+            waived_violations.push(WaivedViolation {
+                symbol: v.symbol,
+                file: v.file,
+                convention_id: v.convention_id,
+                antecedent: v.antecedent,
+                consequent: v.consequent,
+                missing: v.missing,
+                support: v.support,
+                confidence: v.confidence,
+                rationale,
+            });
+        } else {
+            unwaived.push(v);
+        }
+    }
+
     Ok(ReviewFindings {
         constraint_violations,
-        convention_violations,
+        convention_violations: unwaived,
         convention_matches,
+        waived_violations,
     })
 }
 
@@ -579,6 +635,7 @@ pub fn compute(
             "constraint_violations": [],
             "convention_violations": [],
             "convention_matches": [],
+            "waived_violations": [],
         }));
     }
 
@@ -630,6 +687,18 @@ pub fn compute(
                 "antecedent": m.antecedent, "consequent": m.consequent,
                 "lifecycle_state": m.lifecycle_state, "severity": severity,
                 "support": m.support, "confidence": m.confidence,
+            })
+        })
+        .collect();
+    let waived_violations_out: Vec<_> = findings
+        .waived_violations
+        .iter()
+        .map(|w| {
+            json!({
+                "symbol": w.symbol, "file": w.file, "convention_id": w.convention_id,
+                "antecedent": w.antecedent, "consequent": w.consequent, "missing": w.missing,
+                "support": w.support, "confidence": w.confidence,
+                "waived": true, "rationale": w.rationale,
             })
         })
         .collect();
@@ -695,6 +764,7 @@ pub fn compute(
         "constraint_violations": constraint_violations_out,
         "convention_violations": convention_violations_out,
         "convention_matches": convention_matches_out,
+        "waived_violations": waived_violations_out,
         "recommended_reads": recommended_reads,
     }))
 }
