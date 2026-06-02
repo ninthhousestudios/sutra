@@ -1,7 +1,12 @@
-use crate::db::SymbolRow;
+use crate::db::{RefRow, SymbolRow};
 use crate::parser::adapter::LanguageRegistry;
 
 use super::engine::SymbolAttrs;
+
+pub struct EffectPattern {
+    pub attr_name: &'static str,
+    pub callee_prefixes: &'static [&'static str],
+}
 
 const MEANINGFUL_KINDS: &[&str] = &[
     "function",
@@ -102,6 +107,31 @@ pub fn extract_attrs_for_symbol(
         }
     }
     extract_cross_language_attrs(sym, file_path)
+}
+
+pub fn enrich_with_effects(
+    sym_attrs: &mut SymbolAttrs,
+    sym: &SymbolRow,
+    call_refs: &[&RefRow],
+    resolve_name: &dyn Fn(i64) -> Option<String>,
+    patterns: &[EffectPattern],
+) {
+    for pattern in patterns {
+        let matched = call_refs.iter().any(|r| {
+            r.target_symbol_id
+                .and_then(|id| resolve_name(id))
+                .is_some_and(|name| pattern.callee_prefixes.iter().any(|p| name.starts_with(p)))
+        });
+        if matched {
+            sym_attrs.attributes.push(pattern.attr_name.to_string());
+        }
+    }
+
+    if let Some(ref sig) = sym.signature {
+        if sig.contains("&mut self") || sig.contains("&mut ") {
+            sym_attrs.attributes.push("effect:mut_state".into());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +251,122 @@ mod tests {
         assert!(sa.attributes.contains(&"kind:function".to_string()));
         assert!(sa.attributes.contains(&"vis:pub".to_string()));
         assert!(!sa.attributes.contains(&"returns_result".to_string()));
+    }
+
+    fn make_ref(target_id: Option<i64>, line: i64) -> RefRow {
+        RefRow {
+            id: 1,
+            file_id: 1,
+            target_symbol_id: target_id,
+            unresolved_name: None,
+            line,
+            col: 0,
+            context_kind: "call".into(),
+        }
+    }
+
+    #[test]
+    fn effect_enrichment_matches_callee_prefix() {
+        let sym = make_symbol("function", Some("pub"), Some("fn read_file()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/io.rs").unwrap();
+        let r = make_ref(Some(100), 5);
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["std::fs::"],
+        }];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r],
+            &|id| {
+                if id == 100 {
+                    Some("std::fs::read_to_string".into())
+                } else {
+                    None
+                }
+            },
+            &patterns,
+        );
+        assert!(attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    #[test]
+    fn effect_enrichment_no_match_no_attrs() {
+        let sym = make_symbol("function", Some("pub"), Some("fn compute()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/math.rs").unwrap();
+        let r = make_ref(Some(200), 5);
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["std::fs::"],
+        }];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r],
+            &|_| Some("my_crate::util::helper".into()),
+            &patterns,
+        );
+        assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    #[test]
+    fn effect_enrichment_multiple_patterns() {
+        let sym = make_symbol("function", Some("pub"), Some("fn sync_data()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/sync.rs").unwrap();
+        let r1 = make_ref(Some(10), 3);
+        let r2 = make_ref(Some(20), 7);
+        let patterns = [
+            EffectPattern {
+                attr_name: "effect:fs",
+                callee_prefixes: &["std::fs::"],
+            },
+            EffectPattern {
+                attr_name: "effect:net",
+                callee_prefixes: &["reqwest::"],
+            },
+        ];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r1, &r2],
+            &|id| match id {
+                10 => Some("std::fs::write".into()),
+                20 => Some("reqwest::Client::get".into()),
+                _ => None,
+            },
+            &patterns,
+        );
+        assert!(attrs.attributes.contains(&"effect:fs".to_string()));
+        assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn effect_mut_state_from_signature() {
+        let sym = make_symbol(
+            "method",
+            Some("pub"),
+            Some("fn update(&mut self, val: i32)"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/state.rs").unwrap();
+        enrich_with_effects(&mut attrs, &sym, &[], &|_| None, &[]);
+        assert!(attrs.attributes.contains(&"effect:mut_state".to_string()));
+    }
+
+    #[test]
+    fn effect_no_mut_state_for_immutable_ref() {
+        let sym = make_symbol(
+            "method",
+            Some("pub"),
+            Some("fn query(&self) -> Vec<String>"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/query.rs").unwrap();
+        enrich_with_effects(&mut attrs, &sym, &[], &|_| None, &[]);
+        assert!(!attrs.attributes.contains(&"effect:mut_state".to_string()));
     }
 }

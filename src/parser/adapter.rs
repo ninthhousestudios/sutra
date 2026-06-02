@@ -5,7 +5,7 @@ use tree_sitter::{Language, Parser, Tree};
 
 use crate::db::SymbolRow;
 use crate::error::{Result, SutraError};
-use crate::conventions::{extract_cross_language_attrs, SymbolAttrs};
+use crate::conventions::{extract_cross_language_attrs, EffectPattern, SymbolAttrs};
 
 use super::ParseResult;
 
@@ -65,6 +65,9 @@ impl ParserPool {
 
 pub trait FcaAttributeSource: Send + Sync {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        &[]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +171,21 @@ impl LanguageAdapter for RustAdapter {
     }
 }
 
+const RUST_EFFECT_PATTERNS: &[EffectPattern] = &[
+    EffectPattern {
+        attr_name: "effect:fs",
+        callee_prefixes: &["std::fs::", "tokio::fs::"],
+    },
+    EffectPattern {
+        attr_name: "effect:net",
+        callee_prefixes: &["std::net::", "tokio::net::", "hyper::", "reqwest::"],
+    },
+    EffectPattern {
+        attr_name: "effect:db",
+        callee_prefixes: &["sqlx::", "diesel::", "rusqlite::"],
+    },
+];
+
 impl FcaAttributeSource for RustAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
         let mut sa = extract_cross_language_attrs(sym, file_path)?;
@@ -191,6 +209,10 @@ impl FcaAttributeSource for RustAdapter {
             }
         }
         Some(sa)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        RUST_EFFECT_PATTERNS
     }
 }
 
@@ -429,5 +451,23 @@ mod tests {
         assert_eq!(mults.get("rust"), Some(&2.0));
         assert_eq!(mults.get("dart"), Some(&1.5));
         assert_eq!(mults.len(), 2);
+    }
+
+    #[test]
+    fn rust_adapter_has_effect_patterns() {
+        let rust = RustAdapter;
+        let source = rust.as_fca_source().unwrap();
+        let patterns = source.effect_patterns();
+        assert!(!patterns.is_empty());
+        let names: Vec<_> = patterns.iter().map(|p| p.attr_name).collect();
+        assert!(names.contains(&"effect:fs"));
+        assert!(names.contains(&"effect:net"));
+        assert!(names.contains(&"effect:db"));
+    }
+
+    #[test]
+    fn dart_adapter_has_no_effect_patterns() {
+        let dart = DartAdapter;
+        assert!(dart.as_fca_source().is_none());
     }
 }

@@ -195,8 +195,33 @@ pub fn build_findings(
     let mut all_sym_attrs = Vec::new();
     for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
+        let refs = db.find_refs_in_file(f.id)?;
         for s in &syms {
-            if let Some(attrs) = conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
+            if let Some(mut attrs) = conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
+                if let Some(adapter) = registry.adapter_for_language(&f.language) {
+                    if let Some(fca_source) = adapter.as_fca_source() {
+                        let call_refs: Vec<_> = refs
+                            .iter()
+                            .filter(|r| {
+                                r.context_kind == "call"
+                                    && r.line >= s.start_line
+                                    && r.line <= s.end_line
+                            })
+                            .collect();
+                        conventions::enrich_with_effects(
+                            &mut attrs,
+                            s,
+                            &call_refs,
+                            &|id| {
+                                db.symbol_by_id(id)
+                                    .ok()
+                                    .flatten()
+                                    .map(|s| s.qualified_name)
+                            },
+                            fca_source.effect_patterns(),
+                        );
+                    }
+                }
                 all_sym_attrs.push(attrs);
             }
         }
