@@ -842,4 +842,272 @@ mod tests {
             "bare name exemption should exempt all files"
         );
     }
+
+    #[test]
+    fn rebuild_with_params_uses_custom_threshold() {
+        let symbols = make_test_symbols();
+        let mut engine_high = FcaEngine::new();
+        let convs_high = engine_high.rebuild_with_params(&symbols, 10, 0.9, None);
+
+        let mut engine_low = FcaEngine::new();
+        let convs_low = engine_low.rebuild_with_params(&symbols, 2, 0.9, None);
+
+        assert!(
+            convs_high.len() <= convs_low.len(),
+            "higher min_support should produce fewer or equal conventions"
+        );
+    }
+
+    #[test]
+    fn rebuild_with_params_tags_component_id() {
+        let symbols = make_test_symbols();
+        let mut engine = FcaEngine::new();
+        let convs = engine.rebuild_with_params(&symbols, 3, 0.9, Some("comp-a"));
+        assert!(!convs.is_empty());
+        for c in &convs {
+            assert_eq!(c.component_id.as_deref(), Some("comp-a"));
+        }
+    }
+
+    #[test]
+    fn rebuild_without_component_produces_global_conventions() {
+        let symbols = make_test_symbols();
+        let mut engine = FcaEngine::new();
+        let convs = engine.rebuild(&symbols);
+        assert!(!convs.is_empty());
+        for c in &convs {
+            assert!(c.component_id.is_none());
+        }
+    }
+
+    #[test]
+    fn adaptive_threshold_discovers_component_local_pattern() {
+        // 12 symbols in a component: 11 have has_doc, 1 doesn't.
+        // Adaptive min_support = max(2, ceil(12 * 0.4)) = 5
+        // Support = 11 (≥ 5), confidence = 11/12 ≈ 0.917 (≥ 0.9)
+        // This convention would also be found globally at MIN_SUPPORT=3, but the test
+        // verifies that the adaptive threshold + component tagging works end to end.
+        let mut symbols = Vec::new();
+        for i in 0..12 {
+            let mut attrs = vec!["kind:function".into()];
+            if i < 11 {
+                attrs.push("has_doc".into());
+            }
+            symbols.push(SymbolAttrs {
+                name: format!("comp_fn_{i}"),
+                file: format!("src/comp/{i}.rs"),
+                attributes: attrs,
+                component_id: Some("comp-x".into()),
+            });
+        }
+        let min_support = std::cmp::max(2, (symbols.len() as f64 * 0.4).ceil() as usize);
+        assert_eq!(min_support, 5);
+
+        let mut engine = FcaEngine::new();
+        let convs = engine.rebuild_with_params(&symbols, min_support, MIN_CONFIDENCE, Some("comp-x"));
+        let has_fn_doc = convs.iter().any(|c| {
+            c.antecedent.contains(&"kind:function".to_string())
+                && c.consequent.contains(&"has_doc".to_string())
+        });
+        assert!(has_fn_doc, "component FCA should discover kind:function → has_doc");
+        assert!(convs.iter().all(|c| c.component_id.as_deref() == Some("comp-x")));
+    }
+
+    #[test]
+    fn adaptive_threshold_scales_with_size() {
+        assert_eq!(std::cmp::max(2, (5_f64 * 0.4).ceil() as usize), 2);
+        assert_eq!(std::cmp::max(2, (10_f64 * 0.4).ceil() as usize), 4);
+        assert_eq!(std::cmp::max(2, (50_f64 * 0.4).ceil() as usize), 20);
+        assert_eq!(std::cmp::max(2, (3_f64 * 0.4).ceil() as usize), 2);
+    }
+
+    #[test]
+    fn dedup_removes_subsumed_component_conventions() {
+        let global = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:function".into()],
+                &["has_sig".into()],
+                None,
+            ),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_sig".into()],
+            support: 10,
+            confidence: 0.95,
+            component_id: None,
+        }];
+        let comp = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:function".into()],
+                &["has_sig".into()],
+                Some("c1"),
+            ),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_sig".into()],
+            support: 3,
+            confidence: 0.9,
+            component_id: Some("c1".into()),
+        }];
+        let result = deduplicate_component_conventions(comp, &global);
+        assert!(result.is_empty(), "component convention subsumed by global should be dropped");
+    }
+
+    #[test]
+    fn dedup_keeps_non_subsumed_component_conventions() {
+        let global = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:function".into()],
+                &["has_sig".into()],
+                None,
+            ),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_sig".into()],
+            support: 10,
+            confidence: 0.95,
+            component_id: None,
+        }];
+        let comp = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:struct".into()],
+                &["has_doc".into()],
+                Some("c1"),
+            ),
+            antecedent: vec!["kind:struct".into()],
+            consequent: vec!["has_doc".into()],
+            support: 5,
+            confidence: 0.92,
+            component_id: Some("c1".into()),
+        }];
+        let result = deduplicate_component_conventions(comp, &global);
+        assert_eq!(result.len(), 1, "different implication should survive dedup");
+    }
+
+    #[test]
+    fn dedup_keeps_higher_confidence_component_convention() {
+        let global = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:function".into()],
+                &["has_sig".into()],
+                None,
+            ),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_sig".into()],
+            support: 10,
+            confidence: 0.85,
+            component_id: None,
+        }];
+        let comp = vec![Convention {
+            id: Convention::compute_id(
+                &["kind:function".into()],
+                &["has_sig".into()],
+                Some("c1"),
+            ),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_sig".into()],
+            support: 5,
+            confidence: 0.95,
+            component_id: Some("c1".into()),
+        }];
+        let result = deduplicate_component_conventions(comp, &global);
+        assert_eq!(
+            result.len(),
+            1,
+            "component convention with higher confidence than global should survive"
+        );
+    }
+
+    #[test]
+    fn check_scoped_to_symbol_component() {
+        let mut engine = FcaEngine::new();
+        engine.set_conventions(vec![
+            Convention {
+                id: "global-1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_sig".into()],
+                support: 10,
+                confidence: 0.95,
+                component_id: None,
+            },
+            Convention {
+                id: "comp-a-1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                support: 5,
+                confidence: 0.92,
+                component_id: Some("a".into()),
+            },
+            Convention {
+                id: "comp-b-1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["naming:snake_case".into()],
+                support: 4,
+                confidence: 0.91,
+                component_id: Some("b".into()),
+            },
+        ]);
+
+        let sym_in_a = SymbolAttrs {
+            name: "my_func".into(),
+            file: "src/a/mod.rs".into(),
+            attributes: vec!["kind:function".into()],
+            component_id: Some("a".into()),
+        };
+        let violations = engine.check(&[sym_in_a], &ConventionsConfig::default());
+
+        let conv_ids: Vec<&str> = violations.iter().map(|v| v.convention_id.as_str()).collect();
+        assert!(conv_ids.contains(&"global-1"), "should violate global convention");
+        assert!(conv_ids.contains(&"comp-a-1"), "should violate own component convention");
+        assert!(
+            !conv_ids.contains(&"comp-b-1"),
+            "should NOT violate other component's convention"
+        );
+    }
+
+    #[test]
+    fn orphan_symbols_only_checked_against_globals() {
+        let mut engine = FcaEngine::new();
+        engine.set_conventions(vec![
+            Convention {
+                id: "global-1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_sig".into()],
+                support: 10,
+                confidence: 0.95,
+                component_id: None,
+            },
+            Convention {
+                id: "comp-a-1".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                support: 5,
+                confidence: 0.92,
+                component_id: Some("a".into()),
+            },
+        ]);
+
+        let orphan = SymbolAttrs {
+            name: "orphan_func".into(),
+            file: "src/orphan.rs".into(),
+            attributes: vec!["kind:function".into()],
+            component_id: None,
+        };
+        let violations = engine.check(&[orphan], &ConventionsConfig::default());
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].convention_id, "global-1");
+    }
+
+    #[test]
+    fn compute_id_differs_by_component_scope() {
+        let global_id = Convention::compute_id(
+            &["kind:function".into()],
+            &["has_sig".into()],
+            None,
+        );
+        let comp_id = Convention::compute_id(
+            &["kind:function".into()],
+            &["has_sig".into()],
+            Some("comp-1"),
+        );
+        assert_ne!(global_id, comp_id, "same implication in different scopes should have different IDs");
+    }
 }
