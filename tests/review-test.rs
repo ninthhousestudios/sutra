@@ -409,6 +409,50 @@ fn convention_violations_appear_in_output() {
 }
 
 #[test]
+fn waived_violations_appear_in_output() {
+    let (dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        convention_violations: vec![],
+        convention_matches: vec![],
+        waived_violations: vec![review::WaivedViolation {
+            symbol: "core::process".into(),
+            file: "src/core.rs".into(),
+            convention_id: "abc123".into(),
+            antecedent: vec!["kind:function".into()],
+            consequent: vec!["has_doc".into()],
+            missing: vec!["has_doc".into()],
+            support: 8,
+            confidence: 0.95,
+            rationale: "intentional omission".into(),
+        }],
+    };
+
+    let result =
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+
+    let wv = result["waived_violations"].as_array().unwrap();
+    assert_eq!(wv.len(), 1);
+    assert_eq!(wv[0]["symbol"], "core::process");
+    assert_eq!(wv[0]["waived"], true);
+    assert_eq!(wv[0]["rationale"], "intentional omission");
+    assert_eq!(wv[0]["convention_id"], "abc123");
+
+    let cv = result["convention_violations"].as_array().unwrap();
+    assert!(cv.is_empty(), "waived violations should not appear as regular violations");
+
+    let conv_score = result["risk_breakdown"]["convention_violations"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        conv_score == 0.0,
+        "waived violations should not contribute to risk score"
+    );
+}
+
+#[test]
 fn violations_are_structurally_distinct() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
