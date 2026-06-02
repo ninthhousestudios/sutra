@@ -354,6 +354,22 @@ impl SutraServer {
     }
 
     #[tool(
+        description = "Convention-aware orientation for a component or file scope. \
+        Returns preferred conventions with signature templates, deprecated/forbidden \
+        warnings, drift alerts, active waivers, and pending lifecycle proposals. \
+        Scope can be a component name, component ID, or file path."
+    )]
+    pub async fn sutra_orient(
+        &self,
+        Parameters(args): Parameters<tools::orient::OrientArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::orient::handle(&db, &args.scope).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
         description = "Manage convention lifecycle and waivers: list conventions with state \
         and pending proposals, accept or dismiss proposals, manually set lifecycle state, \
         or manage waivers for reviewed-and-intentional deviations. \
@@ -896,7 +912,7 @@ impl ServerHandler for SutraServer {
             "sutra v0.2.1 — code intelligence for manas. \
              Core tools: sutra_health, sutra_help, sutra_map, sutra_outline, sutra_find, \
              sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools, \
-             sutra_components. \
+             sutra_components, sutra_orient. \
              Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
              sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace, \
              sutra_review. \

@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each convention-system landing.
 
-Last updated: 2026-06-02 (5c-8: structural convention templates)
+Last updated: 2026-06-02 (5c-9: convention-aware orient integration)
 
 ## Module layout
 
@@ -43,6 +43,10 @@ src/tools/
                       compute (JSON assembly), ReviewFindings struct
   conventions.rs    — MCP tool actions: list, violations, promote, demote,
                       waiver CRUD, proposals
+  orient.rs         — sutra_orient MCP tool: convention-aware orientation
+                      per scope. Resolves component, assembles preferred
+                      conventions + templates, warnings, drift, waivers,
+                      pending proposals. Core tier (no analysis required).
 ```
 
 ## Key types
@@ -64,6 +68,10 @@ Aggregation passed from `build_findings` to `compute`. Fields:
 Fields: `component_id`, `component_name`, `entropy_old`, `entropy_new`,
 `delta`, `diverging_attributes: Vec<DivergingAttribute>`.
 
+### ConventionTemplateRow (db/conventions.rs)
+Fields: `convention_id`, `template_text`, `exemplar_symbols: Vec<String>` (qualified names),
+`generated_at`. Queried via `Db::templates_for_conventions(&[&str])`.
+
 ## Data flow: review pipeline
 
 ```
@@ -71,7 +79,8 @@ build_findings(db, workspace_root, changed_paths, dd_engine, registry)
   |
   +-- DD engine: forbidden deps + cycles --> constraint_violations
   |
-  +-- Build all_sym_attrs (all files, all symbols, extract + enrich attributes)
+  +-- Build all_sym_attrs + sig_info_map (all files, all symbols,
+  |     extract + enrich attributes, collect signature/visibility/language_attrs)
   |
   +-- Assign component_id to each SymbolAttrs via file_to_component map
   |
@@ -95,7 +104,7 @@ build_findings(db, workspace_root, changed_paths, dd_engine, registry)
   |     delete stale conventions
   |
   +-- Template generation:
-  |     generate_templates_for_conventions(all_convs, all_sym_attrs, sig_info)
+  |     generate_templates_for_conventions(all_convs, all_sym_attrs, sig_info_map, db)
   |       Per convention (skip if support < 3):
   |         select_exemplars (rank by coverage, median complexity, recency)
   |         decompose_signature (parse sig text + language_attrs)

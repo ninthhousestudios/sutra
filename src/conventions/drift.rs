@@ -5,8 +5,8 @@ use crate::error::Result;
 
 use super::engine::SymbolAttrs;
 
-const DRIFT_THRESHOLD: f64 = 0.15;
-const DRIFT_WINDOW: usize = 3;
+pub const DRIFT_THRESHOLD: f64 = 0.15;
+pub const DRIFT_WINDOW: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct DriftAlert {
@@ -49,7 +49,7 @@ pub fn compute_attribute_distribution(symbols: &[SymbolAttrs]) -> HashMap<String
     counts.into_iter().map(|(k, v)| (k, v as f64 / n)).collect()
 }
 
-fn find_diverging_attributes(
+pub fn find_diverging_attributes(
     old: &HashMap<String, f64>,
     new: &HashMap<String, f64>,
 ) -> Vec<DivergingAttribute> {
