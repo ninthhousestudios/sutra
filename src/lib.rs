@@ -4,7 +4,7 @@ pub mod db;
 pub mod dd;
 pub mod diagnostics;
 pub mod error;
-pub mod fca;
+pub mod conventions;
 pub mod freshness;
 pub mod git;
 pub mod graph;

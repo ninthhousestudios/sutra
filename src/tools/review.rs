@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::db::Db;
 use crate::dd::{DdEngine, DdFacts};
 use crate::error::Result;
-use crate::fca::{self, FcaEngine};
+use crate::conventions::{self, FcaEngine};
 use crate::parser::adapter::LanguageRegistry;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
@@ -196,7 +196,7 @@ pub fn build_findings(
     for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
         for s in &syms {
-            if let Some(attrs) = fca::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
+            if let Some(attrs) = conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
                 all_sym_attrs.push(attrs);
             }
         }

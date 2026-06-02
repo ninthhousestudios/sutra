@@ -5,7 +5,7 @@ use tree_sitter::{Language, Parser, Tree};
 
 use crate::db::SymbolRow;
 use crate::error::{Result, SutraError};
-use crate::fca::{extract_cross_language_attrs, SymbolAttrs};
+use crate::conventions::{extract_cross_language_attrs, SymbolAttrs};
 
 use super::ParseResult;
 
