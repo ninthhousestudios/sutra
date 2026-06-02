@@ -354,10 +354,13 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Manage convention lifecycle: list conventions with state and pending \
-        proposals, accept or dismiss proposals, or manually set lifecycle state. \
+        description = "Manage convention lifecycle and waivers: list conventions with state \
+        and pending proposals, accept or dismiss proposals, manually set lifecycle state, \
+        or manage waivers for reviewed-and-intentional deviations. \
         Actions: list, accept (proposal_id), dismiss (proposal_id), \
-        set_lifecycle (convention_id, lifecycle_state, reason)."
+        set_lifecycle (convention_id, lifecycle_state, reason), \
+        waive (convention_id, symbol, rationale, waived_by, optional component_id), \
+        list_waivers (optional convention_id), revoke_waiver (waiver_id)."
     )]
     pub async fn sutra_conventions(
         &self,

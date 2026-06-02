@@ -52,6 +52,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "component_clustering_meta", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "convention_history", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "convention_proposals", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "convention_waivers", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------

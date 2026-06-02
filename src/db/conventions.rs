@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::params;
 
 use crate::error::Result;
@@ -58,6 +60,17 @@ pub struct ConventionProposalRow {
     pub status: String,
     pub created_at: String,
     pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConventionWaiverRow {
+    pub id: i64,
+    pub convention_id: String,
+    pub symbol_qualified_name: String,
+    pub component_id: String,
+    pub rationale: String,
+    pub waived_by: String,
+    pub waived_at: String,
 }
 
 impl Db {
@@ -350,6 +363,126 @@ impl Db {
         )?;
         Ok(count > 0)
     }
+
+    // --- Convention waivers ---
+
+    pub fn create_waiver(
+        &self,
+        convention_id: &str,
+        symbol_qualified_name: &str,
+        component_id: &str,
+        rationale: &str,
+        waived_by: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO convention_waivers
+             (convention_id, symbol_qualified_name, component_id, rationale, waived_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(convention_id, symbol_qualified_name, component_id) DO UPDATE SET
+                 rationale = ?4,
+                 waived_by = ?5,
+                 waived_at = datetime('now')",
+            params![convention_id, symbol_qualified_name, component_id, rationale, waived_by],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_waivers(
+        &self,
+        convention_id: Option<&str>,
+    ) -> Result<Vec<ConventionWaiverRow>> {
+        let conn = self.conn.lock();
+        let map_row = |row: &rusqlite::Row| {
+            Ok(ConventionWaiverRow {
+                id: row.get(0)?,
+                convention_id: row.get(1)?,
+                symbol_qualified_name: row.get(2)?,
+                component_id: row.get(3)?,
+                rationale: row.get(4)?,
+                waived_by: row.get(5)?,
+                waived_at: row.get(6)?,
+            })
+        };
+        let rows = match convention_id {
+            Some(id) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, convention_id, symbol_qualified_name, component_id,
+                            rationale, waived_by, waived_at
+                     FROM convention_waivers WHERE convention_id = ?1
+                     ORDER BY waived_at DESC",
+                )?;
+                stmt.query_map(params![id], map_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, convention_id, symbol_qualified_name, component_id,
+                            rationale, waived_by, waived_at
+                     FROM convention_waivers ORDER BY waived_at DESC",
+                )?;
+                stmt.query_map([], map_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            }
+        };
+        Ok(rows)
+    }
+
+    pub fn revoke_waiver(&self, waiver_id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        let count = conn.execute(
+            "DELETE FROM convention_waivers WHERE id = ?1",
+            params![waiver_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn waivers_for_check(&self) -> Result<HashMap<(String, String, String), String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT convention_id, symbol_qualified_name, component_id, rationale
+             FROM convention_waivers",
+        )?;
+        let map = stmt
+            .query_map([], |row| {
+                Ok((
+                    (
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()?;
+        Ok(map)
+    }
+
+    pub fn reconcile_orphaned_waivers(&self) -> Result<Vec<ConventionWaiverRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, convention_id, symbol_qualified_name, component_id,
+                    rationale, waived_by, waived_at
+             FROM convention_waivers
+             WHERE convention_id NOT IN (SELECT id FROM conventions)",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ConventionWaiverRow {
+                    id: row.get(0)?,
+                    convention_id: row.get(1)?,
+                    symbol_qualified_name: row.get(2)?,
+                    component_id: row.get(3)?,
+                    rationale: row.get(4)?,
+                    waived_by: row.get(5)?,
+                    waived_at: row.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    // --- Stale convention cleanup ---
 
     pub fn delete_stale_conventions(&self, current_ids: &[&str]) -> Result<usize> {
         if current_ids.is_empty() {
