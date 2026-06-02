@@ -8,6 +8,11 @@ pub struct EffectPattern {
     pub callee_prefixes: &'static [&'static str],
 }
 
+pub struct ResolvedCallee {
+    pub qualified_name: String,
+    pub signature: Option<String>,
+}
+
 const MEANINGFUL_KINDS: &[&str] = &[
     "function",
     "method",
@@ -113,22 +118,39 @@ pub fn enrich_with_effects(
     sym_attrs: &mut SymbolAttrs,
     sym: &SymbolRow,
     call_refs: &[&RefRow],
-    resolve_name: &dyn Fn(i64) -> Option<String>,
+    resolve_callee: &dyn Fn(i64) -> Option<ResolvedCallee>,
     patterns: &[EffectPattern],
 ) {
+    let mut has_unsafe_callee = false;
+
+    let resolved: Vec<_> = call_refs
+        .iter()
+        .filter_map(|r| r.target_symbol_id.and_then(|id| resolve_callee(id)))
+        .collect();
+
     for pattern in patterns {
-        let matched = call_refs.iter().any(|r| {
-            r.target_symbol_id
-                .and_then(|id| resolve_name(id))
-                .is_some_and(|name| pattern.callee_prefixes.iter().any(|p| name.starts_with(p)))
-        });
-        if matched {
+        if resolved
+            .iter()
+            .any(|c| pattern.callee_prefixes.iter().any(|p| c.qualified_name.starts_with(p)))
+        {
             sym_attrs.attributes.push(pattern.attr_name.to_string());
         }
     }
 
+    for callee in &resolved {
+        if let Some(ref sig) = callee.signature {
+            if sig.contains("unsafe ") {
+                has_unsafe_callee = true;
+                break;
+            }
+        }
+    }
+    if has_unsafe_callee {
+        sym_attrs.attributes.push("effect:unsafe_transitive".into());
+    }
+
     if let Some(ref sig) = sym.signature {
-        if sig.contains("&mut self") || sig.contains("&mut ") {
+        if sig.contains("&mut ") {
             sym_attrs.attributes.push("effect:mut_state".into());
         }
     }
@@ -265,6 +287,13 @@ mod tests {
         }
     }
 
+    fn resolve_with(name: &str, sig: Option<&str>) -> ResolvedCallee {
+        ResolvedCallee {
+            qualified_name: name.into(),
+            signature: sig.map(|s| s.into()),
+        }
+    }
+
     #[test]
     fn effect_enrichment_matches_callee_prefix() {
         let sym = make_symbol("function", Some("pub"), Some("fn read_file()"), None, Some(1), 0);
@@ -278,13 +307,7 @@ mod tests {
             &mut attrs,
             &sym,
             &[&r],
-            &|id| {
-                if id == 100 {
-                    Some("std::fs::read_to_string".into())
-                } else {
-                    None
-                }
-            },
+            &|id| (id == 100).then(|| resolve_with("std::fs::read_to_string", Some("fn read_to_string(path: impl AsRef<Path>) -> Result<String>"))),
             &patterns,
         );
         assert!(attrs.attributes.contains(&"effect:fs".to_string()));
@@ -303,7 +326,7 @@ mod tests {
             &mut attrs,
             &sym,
             &[&r],
-            &|_| Some("my_crate::util::helper".into()),
+            &|_| Some(resolve_with("my_crate::util::helper", Some("fn helper()"))),
             &patterns,
         );
         assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
@@ -330,14 +353,44 @@ mod tests {
             &sym,
             &[&r1, &r2],
             &|id| match id {
-                10 => Some("std::fs::write".into()),
-                20 => Some("reqwest::Client::get".into()),
+                10 => Some(resolve_with("std::fs::write", Some("fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()>"))),
+                20 => Some(resolve_with("reqwest::Client::get", Some("fn get(&self, url: impl IntoUrl) -> RequestBuilder"))),
                 _ => None,
             },
             &patterns,
         );
         assert!(attrs.attributes.contains(&"effect:fs".to_string()));
         assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn effect_unsafe_transitive_from_callee_signature() {
+        let sym = make_symbol("function", Some("pub"), Some("fn safe_wrapper()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/ffi.rs").unwrap();
+        let r = make_ref(Some(50), 5);
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r],
+            &|id| (id == 50).then(|| resolve_with("libc::malloc", Some("unsafe fn malloc(size: usize) -> *mut c_void"))),
+            &[],
+        );
+        assert!(attrs.attributes.contains(&"effect:unsafe_transitive".to_string()));
+    }
+
+    #[test]
+    fn effect_no_unsafe_transitive_for_safe_callee() {
+        let sym = make_symbol("function", Some("pub"), Some("fn do_stuff()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/lib.rs").unwrap();
+        let r = make_ref(Some(60), 5);
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r],
+            &|id| (id == 60).then(|| resolve_with("std::vec::Vec::push", Some("fn push(&mut self, value: T)"))),
+            &[],
+        );
+        assert!(!attrs.attributes.contains(&"effect:unsafe_transitive".to_string()));
     }
 
     #[test]

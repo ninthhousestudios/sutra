@@ -196,6 +196,24 @@ pub fn build_findings(
     for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
         let refs = db.find_refs_in_file(f.id)?;
+
+        let target_ids: Vec<i64> = refs
+            .iter()
+            .filter(|r| r.context_kind == "call")
+            .filter_map(|r| r.target_symbol_id)
+            .collect();
+        let mut callee_cache: HashMap<i64, conventions::ResolvedCallee> = HashMap::new();
+        for id in &target_ids {
+            if !callee_cache.contains_key(id) {
+                if let Some(sym) = db.symbol_by_id(*id)? {
+                    callee_cache.insert(*id, conventions::ResolvedCallee {
+                        qualified_name: sym.qualified_name,
+                        signature: sym.signature,
+                    });
+                }
+            }
+        }
+
         for s in &syms {
             if let Some(mut attrs) = conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
                 if let Some(adapter) = registry.adapter_for_language(&f.language) {
@@ -212,12 +230,10 @@ pub fn build_findings(
                             &mut attrs,
                             s,
                             &call_refs,
-                            &|id| {
-                                db.symbol_by_id(id)
-                                    .ok()
-                                    .flatten()
-                                    .map(|s| s.qualified_name)
-                            },
+                            &|id| callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
+                                qualified_name: c.qualified_name.clone(),
+                                signature: c.signature.clone(),
+                            }),
                             fca_source.effect_patterns(),
                         );
                     }
