@@ -10,7 +10,7 @@ pub struct SymbolAttrs {
     pub attributes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Convention {
     pub id: String,
     pub antecedent: Vec<String>,
@@ -49,6 +49,7 @@ pub struct FcaEngine {
     context: Option<FormalContext>,
     conventions: Vec<Convention>,
     symbol_attrs: Vec<SymbolAttrs>,
+    last_matrix_hash: Option<blake3::Hash>,
 }
 
 impl FcaEngine {
@@ -57,10 +58,16 @@ impl FcaEngine {
             context: None,
             conventions: Vec::new(),
             symbol_attrs: Vec::new(),
+            last_matrix_hash: None,
         }
     }
 
     pub fn rebuild(&mut self, symbols: &[SymbolAttrs]) -> Vec<Convention> {
+        let hash = Self::hash_matrix(symbols);
+        if self.last_matrix_hash == Some(hash) {
+            return self.conventions.clone();
+        }
+
         let (ctx, attr_names) = Self::build_context(symbols);
         let impls = ctx.approximate_implications(MIN_SUPPORT, MIN_CONFIDENCE);
 
@@ -87,6 +94,7 @@ impl FcaEngine {
                 attributes: s.attributes.clone(),
             })
             .collect();
+        self.last_matrix_hash = Some(hash);
         let _ = attr_names;
 
         self.conventions.clone()
@@ -180,6 +188,30 @@ impl FcaEngine {
 
     const MAX_ATTRS: usize = 100;
 
+    fn hash_matrix(symbols: &[SymbolAttrs]) -> blake3::Hash {
+        let mut sorted: Vec<(&str, Vec<&str>)> = symbols
+            .iter()
+            .map(|s| {
+                let mut attrs: Vec<&str> = s.attributes.iter().map(|a| a.as_str()).collect();
+                attrs.sort_unstable();
+                (s.name.as_str(), attrs)
+            })
+            .collect();
+        sorted.sort_unstable_by_key(|(name, _)| *name);
+
+        let mut hasher = blake3::Hasher::new();
+        for (name, attrs) in &sorted {
+            hasher.update(name.as_bytes());
+            hasher.update(b"\0");
+            for attr in attrs {
+                hasher.update(attr.as_bytes());
+                hasher.update(b"\x1f");
+            }
+            hasher.update(b"\n");
+        }
+        hasher.finalize()
+    }
+
     fn build_context(symbols: &[SymbolAttrs]) -> (FormalContext, Vec<String>) {
         let mut attr_freq: HashMap<String, usize> = HashMap::new();
         for sym in symbols {
@@ -272,6 +304,35 @@ mod tests {
         let ids1: Vec<&str> = conv1.iter().map(|c| c.id.as_str()).collect();
         let ids2: Vec<&str> = conv2.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids1, ids2);
+    }
+
+    #[test]
+    fn rebuild_skips_when_input_unchanged() {
+        let symbols = make_test_symbols();
+        let mut engine = FcaEngine::new();
+        let first = engine.rebuild(&symbols);
+        assert!(engine.last_matrix_hash.is_some());
+        let hash_after_first = engine.last_matrix_hash;
+
+        let second = engine.rebuild(&symbols);
+        assert_eq!(first, second);
+        assert_eq!(engine.last_matrix_hash, hash_after_first);
+    }
+
+    #[test]
+    fn rebuild_recomputes_when_input_changes() {
+        let mut symbols = make_test_symbols();
+        let mut engine = FcaEngine::new();
+        engine.rebuild(&symbols);
+        let hash_before = engine.last_matrix_hash;
+
+        symbols.push(SymbolAttrs {
+            name: "new_struct".into(),
+            file: "new.rs".into(),
+            attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
+        });
+        engine.rebuild(&symbols);
+        assert_ne!(engine.last_matrix_hash, hash_before);
     }
 
     #[test]
