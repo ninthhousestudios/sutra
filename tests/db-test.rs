@@ -1186,13 +1186,18 @@ fn constraint_waiver_crud() {
 fn constraint_waiver_upsert_on_conflict() {
     let (_dir, db) = setup_db();
 
-    db.create_constraint_waiver("abc", None, "src/a.rs", None, "first reason", "alice")
+    let first_id = db
+        .create_constraint_waiver("abc", None, "src/a.rs", None, "first reason", "alice")
         .unwrap();
-    db.create_constraint_waiver("abc", Some("named"), "src/a.rs", None, "updated reason", "bob")
+    let second_id = db
+        .create_constraint_waiver("abc", Some("named"), "src/a.rs", None, "updated reason", "bob")
         .unwrap();
+
+    assert_eq!(first_id, second_id, "upsert must return the existing row's id");
 
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].id, first_id);
     assert_eq!(waivers[0].rationale, "updated reason");
     assert_eq!(waivers[0].waived_by, "bob");
     assert_eq!(waivers[0].constraint_name.as_deref(), Some("named"));

@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use glob::{MatchOptions, Pattern};
 use tracing::warn;
@@ -10,6 +12,7 @@ use crate::rules::{Constraint, ConstraintKind};
 struct ResolvedCache {
     pairs: Vec<(i64, i64)>,
     membership_generation: Option<(i64, i64, String)>,
+    input_hash: u64,
 }
 
 pub struct ConstraintResolver {
@@ -28,9 +31,12 @@ impl ConstraintResolver {
         path_map: &HashMap<i64, String>,
     ) -> Result<Vec<(i64, i64)>> {
         let current_gen = db.clustering_meta()?;
+        let current_input_hash = compute_input_hash(constraints, path_map);
 
         if let Some(ref cache) = self.cache {
-            if cache.membership_generation == current_gen {
+            if cache.membership_generation == current_gen
+                && cache.input_hash == current_input_hash
+            {
                 return Ok(cache.pairs.clone());
             }
         }
@@ -99,6 +105,7 @@ impl ConstraintResolver {
         self.cache = Some(ResolvedCache {
             pairs: pairs.clone(),
             membership_generation: current_gen,
+            input_hash: current_input_hash,
         });
 
         Ok(pairs)
@@ -120,6 +127,22 @@ fn file_ids_for(
     let ids = db.component_file_ids(component_id)?;
     cache.insert(component_id.to_string(), ids.clone());
     Ok(ids)
+}
+
+fn compute_input_hash(constraints: &[Constraint], path_map: &HashMap<i64, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut ids: Vec<&str> = constraints.iter().map(|c| c.id.as_str()).collect();
+    ids.sort();
+    for id in ids {
+        id.hash(&mut hasher);
+    }
+    let mut entries: Vec<_> = path_map.iter().collect();
+    entries.sort_by_key(|&(&k, _)| k);
+    for (k, v) in entries {
+        k.hash(&mut hasher);
+        v.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn find_component(components: &[ComponentRow], name_or_id: &str) -> Option<String> {

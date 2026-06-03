@@ -65,7 +65,14 @@ impl Db {
                 waived_by,
             ],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id: i64 = conn.query_row(
+            "SELECT id FROM constraint_waivers \
+             WHERE constraint_id = ?1 AND file_path = ?2 \
+             AND COALESCE(symbol_qualified_name, '') = COALESCE(?3, '')",
+            params![constraint_id, file_path, symbol_qualified_name],
+            |row| row.get(0),
+        )?;
+        Ok(id)
     }
 
     pub fn get_constraint_waivers(
