@@ -7,6 +7,7 @@ This workspace is indexed by sutra (MCP code intelligence). For code exploration
 - Use `sutra_read` to read specific symbols by name instead of reading full files
 
 For convention system work, read `docs/conventions-map.md` first — it's a compressed architecture reference that replaces broad exploration.
+For constraint system work, read `docs/constraints-map.md` first — same idea, covers DD engine, rules parsing, TOML format, and remaining task graph.
 
 ## Agent skills
 
