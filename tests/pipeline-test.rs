@@ -16,7 +16,7 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         parse_parallelism: 1,
         stale_threshold_sec: 600,
         log_level: "warn".to_string(),
-        dd_idle_timeout_sec: 1800,
+        constraints_idle_timeout_sec: 1800,
         parse_timeout_ms: 5000,
     }
 }

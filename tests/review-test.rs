@@ -2,7 +2,7 @@ use std::fs;
 use std::time::Duration;
 
 use sutra::db::{Db, InsertSymbolParams};
-use sutra::dd::DdEngine;
+use sutra::constraints::DdEngine;
 use sutra::parser::adapter::default_registry;
 use sutra::tools::review;
 use sutra::tools::scoring::ChurnMap;
@@ -849,7 +849,7 @@ forbidden_deps = [
     // Create a shared engine, ingest, then invalidate it
     let shared = DdEngine::new(Duration::from_secs(600));
     shared
-        .ingest(sutra::dd::DdFacts {
+        .ingest(sutra::constraints::DdFacts {
             import_edges: vec![(f_view.id, f_query.id)],
         })
         .unwrap();

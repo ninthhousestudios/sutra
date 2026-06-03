@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::db::Db;
-use crate::dd::DdEngine;
+use crate::constraints::DdEngine;
 use crate::error::SutraError;
 use crate::guard;
 use crate::pipeline::ParseCoordinator;
@@ -143,7 +143,7 @@ impl SutraServer {
             .entry(ws_id.to_string())
             .or_insert_with(|| {
                 Arc::new(DdEngine::new(Duration::from_secs(
-                    self.config.dd_idle_timeout_sec,
+                    self.config.constraints_idle_timeout_sec,
                 )))
             })
             .clone()

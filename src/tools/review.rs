@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
-use crate::dd::{DdEngine, DdFacts};
+use crate::constraints::{DdEngine, DdFacts};
 use crate::error::Result;
 use crate::conventions::{self, FcaEngine};
 use crate::parser::adapter::LanguageRegistry;

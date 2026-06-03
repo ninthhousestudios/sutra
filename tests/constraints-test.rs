@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
-use sutra::dd::{DdDelta, DdEngine, DdFacts};
+use sutra::constraints::{DdDelta, DdEngine, DdFacts};
 use sutra::rules::ForbiddenDep;
 
 #[test]

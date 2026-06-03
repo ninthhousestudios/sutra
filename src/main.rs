@@ -454,7 +454,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let parse_coord = ParseCoordinator::new();
     let dd_engines = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::<
         String,
-        Arc<sutra::dd::DdEngine>,
+        Arc<sutra::constraints::DdEngine>,
     >::new()));
 
     let cancel = CancellationToken::new();
