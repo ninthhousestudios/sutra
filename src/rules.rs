@@ -3,6 +3,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use tracing::warn;
+
 use crate::error::{Result, SutraError};
 
 // --- Public types ---
@@ -54,6 +56,8 @@ pub struct Constraint {
 }
 
 impl Constraint {
+    /// Identity = blake3(kind_tag, kind-specific params, scope). Scope is part of
+    /// identity because constraints scoped to different paths are semantically distinct.
     fn compute_id(kind: &ConstraintKind, scope: Option<&str>) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(kind.kind_tag().as_bytes());
@@ -169,7 +173,7 @@ pub struct Rules {
 impl Rules {
     pub fn all_constraints(&self) -> Result<Vec<Constraint>> {
         let mut seen: HashMap<String, usize> = HashMap::new();
-        let mut out = Vec::new();
+        let mut out: Vec<Constraint> = Vec::new();
 
         for fd in &self.constraints.forbidden_deps {
             let kind = ConstraintKind::ForbiddenDep {
@@ -177,7 +181,10 @@ impl Rules {
                 to: fd.to.clone(),
             };
             let id = Constraint::compute_id(&kind, None);
-            if seen.contains_key(&id) {
+            if let Some(&idx) = seen.get(&id) {
+                if out[idx].severity != Severity::Blocking {
+                    warn!(id = %id, "duplicate constraint with different severity, keeping first");
+                }
                 continue;
             }
             seen.insert(id.clone(), out.len());
@@ -193,7 +200,10 @@ impl Rules {
 
         for raw in self.constraint.clone() {
             let c = raw.into_constraint()?;
-            if seen.contains_key(&c.id) {
+            if let Some(&idx) = seen.get(&c.id) {
+                if out[idx].severity != c.severity {
+                    warn!(id = %c.id, "duplicate constraint with different severity, keeping first");
+                }
                 continue;
             }
             seen.insert(c.id.clone(), out.len());
