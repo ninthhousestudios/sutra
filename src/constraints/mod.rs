@@ -1,7 +1,9 @@
 mod engine;
+mod resolver;
 mod worker;
 
 pub use engine::DdEngine;
+pub use resolver::ConstraintResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cycle {
