@@ -21,10 +21,12 @@ enum DdState {
     Cold,
     Loaded {
         edges: Vec<(i64, i64)>,
+        forbidden_pairs: Vec<(i64, i64)>,
     },
     Warm {
         handle: WorkerHandle,
         edges: Vec<(i64, i64)>,
+        forbidden_pairs: Vec<(i64, i64)>,
         last_query: Instant,
     },
 }
@@ -52,6 +54,7 @@ impl DdEngine {
             DdState::Cold => {
                 *state = DdState::Loaded {
                     edges: facts.import_edges,
+                    forbidden_pairs: Vec::new(),
                 };
                 Ok(())
             }
@@ -65,7 +68,7 @@ impl DdEngine {
         let mut state = self.state.lock().unwrap();
         match &mut *state {
             DdState::Cold => Err(SutraError::Internal("DD engine is cold".into())),
-            DdState::Loaded { edges } => {
+            DdState::Loaded { edges, .. } => {
                 for edge in &delta.added_edges {
                     edges.push(*edge);
                 }
@@ -76,6 +79,7 @@ impl DdEngine {
                 handle,
                 edges,
                 last_query,
+                ..
             } => {
                 handle
                     .send(Command::Update {
@@ -183,6 +187,64 @@ impl DdEngine {
         }
     }
 
+    pub fn set_forbidden_pairs(&self, pairs: Vec<(i64, i64)>) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        match &mut *state {
+            DdState::Cold => Err(SutraError::Internal(
+                "cannot set forbidden pairs before ingest".into(),
+            )),
+            DdState::Loaded {
+                forbidden_pairs, ..
+            } => {
+                *forbidden_pairs = pairs;
+                Ok(())
+            }
+            DdState::Warm {
+                handle,
+                forbidden_pairs,
+                last_query,
+                ..
+            } => {
+                handle
+                    .send(Command::SetForbiddenPairs(pairs.clone()))
+                    .map_err(SutraError::Internal)?;
+                match handle.recv() {
+                    Ok(Response::Ok) => {
+                        *forbidden_pairs = pairs;
+                        *last_query = Instant::now();
+                        Ok(())
+                    }
+                    Ok(Response::Error(e)) => Err(SutraError::Internal(e)),
+                    _ => Err(SutraError::Internal("unexpected response".into())),
+                }
+            }
+        }
+    }
+
+    pub fn query_violations(&self) -> Result<Vec<(i64, i64)>> {
+        let mut state = self.state.lock().unwrap();
+        ensure_warm(&mut state)?;
+        match &mut *state {
+            DdState::Warm {
+                handle, last_query, ..
+            } => {
+                handle
+                    .send(Command::QueryViolations)
+                    .map_err(SutraError::Internal)?;
+                match handle.recv() {
+                    Ok(Response::Violations(v)) => {
+                        *last_query = Instant::now();
+                        Ok(v)
+                    }
+                    Ok(Response::Error(e)) => Err(SutraError::Internal(e)),
+                    _ => Err(SutraError::Internal("unexpected response".into())),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[deprecated(note = "use set_forbidden_pairs + query_violations instead")]
     pub fn query_forbidden_deps(
         &self,
         rules: &[ForbiddenDep],
@@ -213,7 +275,7 @@ impl DdEngine {
                     "DD engine is cold — ingest facts first".into(),
                 ));
             }
-            DdState::Loaded { edges } | DdState::Warm { edges, .. } => edges,
+            DdState::Loaded { edges, .. } | DdState::Warm { edges, .. } => edges,
         };
 
         let opts = MatchOptions {
@@ -252,11 +314,19 @@ impl DdEngine {
             DdState::Cold | DdState::Loaded { .. } => false,
             DdState::Warm { last_query, .. } => {
                 if last_query.elapsed() >= self.idle_timeout {
-                    let edges = match std::mem::replace(&mut *state, DdState::Cold) {
-                        DdState::Warm { edges, .. } => edges,
-                        _ => unreachable!(),
+                    let (edges, forbidden_pairs) =
+                        match std::mem::replace(&mut *state, DdState::Cold) {
+                            DdState::Warm {
+                                edges,
+                                forbidden_pairs,
+                                ..
+                            } => (edges, forbidden_pairs),
+                            _ => unreachable!(),
+                        };
+                    *state = DdState::Loaded {
+                        edges,
+                        forbidden_pairs,
                     };
-                    *state = DdState::Loaded { edges };
                     true
                 } else {
                     false
@@ -284,29 +354,56 @@ fn ensure_warm(state: &mut DdState) -> Result<()> {
         ));
     }
     if matches!(&*state, DdState::Loaded { .. }) {
-        let edges = match std::mem::replace(state, DdState::Cold) {
-            DdState::Loaded { edges } => edges,
+        let (edges, forbidden_pairs) = match std::mem::replace(state, DdState::Cold) {
+            DdState::Loaded {
+                edges,
+                forbidden_pairs,
+            } => (edges, forbidden_pairs),
             _ => unreachable!(),
         };
         let handle = worker::spawn_worker();
+        let rollback = |state: &mut DdState, edges, forbidden_pairs| {
+            *state = DdState::Loaded {
+                edges,
+                forbidden_pairs,
+            };
+        };
         if let Err(e) = handle.send(Command::Ingest(edges.clone())) {
-            *state = DdState::Loaded { edges };
+            rollback(state, edges, forbidden_pairs);
             return Err(SutraError::Internal(e));
         }
         match handle.recv() {
             Ok(Response::Ok) => {}
             Ok(Response::Error(e)) => {
-                *state = DdState::Loaded { edges };
+                rollback(state, edges, forbidden_pairs);
                 return Err(SutraError::Internal(e));
             }
             _ => {
-                *state = DdState::Loaded { edges };
+                rollback(state, edges, forbidden_pairs);
                 return Err(SutraError::Internal("unexpected response".into()));
+            }
+        }
+        if !forbidden_pairs.is_empty() {
+            if let Err(e) = handle.send(Command::SetForbiddenPairs(forbidden_pairs.clone())) {
+                rollback(state, edges, forbidden_pairs);
+                return Err(SutraError::Internal(e));
+            }
+            match handle.recv() {
+                Ok(Response::Ok) => {}
+                Ok(Response::Error(e)) => {
+                    rollback(state, edges, forbidden_pairs);
+                    return Err(SutraError::Internal(e));
+                }
+                _ => {
+                    rollback(state, edges, forbidden_pairs);
+                    return Err(SutraError::Internal("unexpected response".into()));
+                }
             }
         }
         *state = DdState::Warm {
             handle,
             edges,
+            forbidden_pairs,
             last_query: Instant::now(),
         };
     }

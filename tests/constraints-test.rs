@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
@@ -462,4 +464,142 @@ fn test_forbidden_deps_invalid_glob_errors() {
         msg.contains("invalid glob"),
         "error should identify the problem: {msg}"
     );
+}
+
+// --- Maintained view tests (set_forbidden_pairs + query_violations) ---
+
+#[test]
+fn test_violations_matching_edge() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+    let violations = engine.query_violations().unwrap();
+    assert_eq!(violations, vec![(1, 2)]);
+}
+
+#[test]
+fn test_violations_no_match() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(3, 4)]).unwrap();
+    let violations = engine.query_violations().unwrap();
+    assert!(violations.is_empty());
+}
+
+#[test]
+fn test_violations_remove_edge_clears() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(1, 2)]);
+
+    engine
+        .update(DdDelta {
+            added_edges: vec![],
+            removed_edges: vec![(1, 2)],
+        })
+        .unwrap();
+    assert!(engine.query_violations().unwrap().is_empty());
+}
+
+#[test]
+fn test_violations_change_forbidden_pairs() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (3, 4)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(1, 2)]);
+
+    engine.set_forbidden_pairs(vec![(3, 4)]).unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(3, 4)]);
+}
+
+#[test]
+fn test_violations_survive_eviction_and_rewarm() {
+    let engine = DdEngine::new(Duration::from_millis(1));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(1, 2)]);
+
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(engine.evict_if_idle());
+    assert!(!engine.is_warm());
+
+    let violations = engine.query_violations().unwrap();
+    assert!(engine.is_warm());
+    assert_eq!(violations, vec![(1, 2)]);
+}
+
+#[test]
+fn test_violations_set_before_warm() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3)],
+        })
+        .unwrap();
+    assert!(!engine.is_warm());
+
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+    assert!(!engine.is_warm());
+
+    let violations = engine.query_violations().unwrap();
+    assert!(engine.is_warm());
+    assert_eq!(violations, vec![(1, 2)]);
+}
+
+#[test]
+fn test_violations_add_edge_creates_violation() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(3, 4)]).unwrap();
+    assert!(engine.query_violations().unwrap().is_empty());
+
+    engine
+        .update(DdDelta {
+            added_edges: vec![(3, 4)],
+            removed_edges: vec![],
+        })
+        .unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(3, 4)]);
+}
+
+#[test]
+fn test_cycles_and_blast_radius_unchanged_with_forbidden_pairs() {
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(1, 2), (2, 3), (3, 1)],
+        })
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2)]).unwrap();
+
+    let cycles = engine.query_cycles().unwrap();
+    assert_eq!(cycles.len(), 1);
+    assert_eq!(cycles[0].file_ids, vec![1, 2, 3]);
+
+    assert_eq!(engine.query_blast_radius(3).unwrap(), 2);
 }

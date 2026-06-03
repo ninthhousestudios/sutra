@@ -177,6 +177,7 @@ pub fn build_findings(
     };
 
     if let Some(engine) = dd {
+        #[allow(deprecated)]
         for v in engine.query_forbidden_deps(&rules.constraints.forbidden_deps, &path_map)? {
             let from_path = path_map.get(&v.from_id).cloned().unwrap_or_default();
             let to_path = path_map.get(&v.to_id).cloned().unwrap_or_default();
