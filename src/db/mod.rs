@@ -5,10 +5,12 @@
 //! model, correct for one server with short-lived transactions.
 
 mod components;
+mod constraints;
 mod conventions;
 mod graph;
 mod migrations;
 
+pub use constraints::ConstraintWaiverRow;
 pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
@@ -55,6 +57,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "convention_waivers", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "convention_snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "convention_templates", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "constraint_waivers", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------

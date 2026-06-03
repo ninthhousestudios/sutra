@@ -753,8 +753,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 22,
-        "fresh DB should register all 22 existing migrations"
+        count, 23,
+        "fresh DB should register all 23 existing migrations"
     );
 }
 
@@ -768,7 +768,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 22, "reopen should not duplicate migration rows");
+    assert_eq!(count, 23, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -1142,4 +1142,140 @@ fn waiver_survives_reindex() {
 
     let orphans = db.reconcile_orphaned_waivers().unwrap();
     assert_eq!(orphans.len(), 1, "waiver is orphaned after reindex clears conventions");
+}
+
+// --- Constraint waiver tests ---
+
+#[test]
+fn constraint_waiver_crud() {
+    let (_dir, db) = setup_db();
+
+    let id = db
+        .create_constraint_waiver("abc12345", Some("no-tool-daemon"), "src/tools/review.rs", None, "legacy code", "josh")
+        .unwrap();
+    assert!(id > 0);
+
+    let waivers = db.get_constraint_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].constraint_id, "abc12345");
+    assert_eq!(waivers[0].constraint_name.as_deref(), Some("no-tool-daemon"));
+    assert_eq!(waivers[0].file_path, "src/tools/review.rs");
+    assert!(waivers[0].symbol_qualified_name.is_none());
+    assert_eq!(waivers[0].rationale, "legacy code");
+    assert_eq!(waivers[0].waived_by, "josh");
+
+    let filtered = db.get_constraint_waivers(Some("abc12345")).unwrap();
+    assert_eq!(filtered.len(), 1);
+    let empty = db.get_constraint_waivers(Some("nonexistent")).unwrap();
+    assert!(empty.is_empty());
+
+    let updated = db.update_constraint_waiver(id, "approved exception").unwrap();
+    assert!(updated);
+    let waivers = db.get_constraint_waivers(None).unwrap();
+    assert_eq!(waivers[0].rationale, "approved exception");
+
+    let deleted = db.delete_constraint_waiver(id).unwrap();
+    assert!(deleted);
+    assert!(db.get_constraint_waivers(None).unwrap().is_empty());
+
+    let not_found = db.delete_constraint_waiver(id).unwrap();
+    assert!(!not_found);
+}
+
+#[test]
+fn constraint_waiver_upsert_on_conflict() {
+    let (_dir, db) = setup_db();
+
+    db.create_constraint_waiver("abc", None, "src/a.rs", None, "first reason", "alice")
+        .unwrap();
+    db.create_constraint_waiver("abc", Some("named"), "src/a.rs", None, "updated reason", "bob")
+        .unwrap();
+
+    let waivers = db.get_constraint_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1);
+    assert_eq!(waivers[0].rationale, "updated reason");
+    assert_eq!(waivers[0].waived_by, "bob");
+    assert_eq!(waivers[0].constraint_name.as_deref(), Some("named"));
+}
+
+#[test]
+fn constraint_waiver_file_scoping() {
+    let (_dir, db) = setup_db();
+
+    db.create_constraint_waiver("abc", None, "src/a.rs", None, "waiver a", "josh")
+        .unwrap();
+    db.create_constraint_waiver("abc", None, "src/b.rs", None, "waiver b", "josh")
+        .unwrap();
+    db.create_constraint_waiver("def", None, "src/a.rs", None, "waiver def", "josh")
+        .unwrap();
+
+    let for_a = db.get_constraint_waivers_for_file("src/a.rs").unwrap();
+    assert_eq!(for_a.len(), 2);
+
+    let for_b = db.get_constraint_waivers_for_file("src/b.rs").unwrap();
+    assert_eq!(for_b.len(), 1);
+    assert_eq!(for_b[0].constraint_id, "abc");
+
+    let for_c = db.get_constraint_waivers_for_file("src/c.rs").unwrap();
+    assert!(for_c.is_empty());
+}
+
+#[test]
+fn constraint_waiver_symbol_scoping() {
+    let (_dir, db) = setup_db();
+
+    db.create_constraint_waiver("abc", None, "src/a.rs", None, "file-level", "josh")
+        .unwrap();
+    db.create_constraint_waiver("abc", None, "src/a.rs", Some("Foo::bar"), "symbol-level", "josh")
+        .unwrap();
+
+    let waivers = db.get_constraint_waivers(Some("abc")).unwrap();
+    assert_eq!(waivers.len(), 2);
+
+    // Two NULL-symbol waivers for different constraints are distinct
+    db.create_constraint_waiver("def", None, "src/a.rs", None, "different constraint", "josh")
+        .unwrap();
+    let all = db.get_constraint_waivers(None).unwrap();
+    assert_eq!(all.len(), 3);
+}
+
+#[test]
+fn constraint_waiver_survives_reindex() {
+    let (_dir, db) = setup_db();
+
+    db.create_constraint_waiver("abc", Some("no-cycles"), "src/a.rs", None, "legacy", "josh")
+        .unwrap();
+
+    db.reindex().unwrap();
+
+    let waivers = db.get_constraint_waivers(None).unwrap();
+    assert_eq!(waivers.len(), 1, "constraint waiver should survive reindex");
+    assert_eq!(waivers[0].constraint_id, "abc");
+    assert_eq!(waivers[0].rationale, "legacy");
+}
+
+#[test]
+fn constraint_waiver_orphan_detection() {
+    let (_dir, db) = setup_db();
+
+    db.create_constraint_waiver("abc", None, "src/a.rs", None, "active waiver", "josh")
+        .unwrap();
+    db.create_constraint_waiver("def", None, "src/b.rs", None, "orphan waiver", "josh")
+        .unwrap();
+    db.create_constraint_waiver("ghi", None, "src/c.rs", None, "another orphan", "josh")
+        .unwrap();
+
+    let orphans = db.reconcile_orphaned_constraint_waivers(&["abc"]).unwrap();
+    assert_eq!(orphans.len(), 2);
+    let orphan_ids: Vec<&str> = orphans.iter().map(|w| w.constraint_id.as_str()).collect();
+    assert!(orphan_ids.contains(&"def"));
+    assert!(orphan_ids.contains(&"ghi"));
+
+    // All active → no orphans
+    let orphans = db.reconcile_orphaned_constraint_waivers(&["abc", "def", "ghi"]).unwrap();
+    assert!(orphans.is_empty());
+
+    // No active → all orphans
+    let orphans = db.reconcile_orphaned_constraint_waivers(&[]).unwrap();
+    assert_eq!(orphans.len(), 3);
 }

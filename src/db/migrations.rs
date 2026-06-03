@@ -116,6 +116,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0022_convention_templates.sql"),
         true,
     ),
+    (
+        "0023_constraint_waivers",
+        include_str!("../../migrations/0023_constraint_waivers.sql"),
+        false,
+    ),
 ];
 
 impl Db {
