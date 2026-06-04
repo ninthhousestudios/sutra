@@ -128,8 +128,12 @@ fn handle_violations(
     }
 
     let ephemeral;
-    let engine: &DdEngine = if let Some(e) = dd_engine.filter(|e| !e.is_invalidated()) {
-        if !e.is_loaded() {
+    let engine: &DdEngine = if let Some(e) = dd_engine {
+        if e.is_invalidated() {
+            e.reload(DdFacts {
+                import_edges: edges.clone(),
+            });
+        } else if !e.is_loaded() {
             e.ingest(DdFacts {
                 import_edges: edges.clone(),
             })?;

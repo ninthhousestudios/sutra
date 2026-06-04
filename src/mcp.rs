@@ -835,6 +835,7 @@ impl SutraServer {
 
         let db = self.get_db(&ws_id)?;
         let config = Arc::clone(&self.config);
+        let dd_engines = Arc::clone(&self.dd_engines);
         let ws_id_bg = ws_id.clone();
         let entry_bg = entry.clone();
         tokio::spawn(async move {
@@ -847,6 +848,9 @@ impl SutraServer {
             .await;
             match result {
                 Ok(Ok(snap)) => {
+                    if let Some(engine) = dd_engines.lock().get(&ws_id_bg) {
+                        engine.invalidate();
+                    }
                     tracing::info!(
                         "add_root parse complete for {}: {}/{} files changed, {} symbols in {}ms",
                         ws_id_bg,

@@ -64,6 +64,15 @@ impl DdEngine {
         }
     }
 
+    pub fn reload(&self, facts: DdFacts) {
+        let mut state = self.state.lock().unwrap();
+        *state = DdState::Loaded {
+            edges: facts.import_edges,
+            forbidden_pairs: Vec::new(),
+        };
+        self.invalidated.store(false, Ordering::Release);
+    }
+
     pub fn update(&self, delta: DdDelta) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         match &mut *state {

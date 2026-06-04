@@ -169,7 +169,11 @@ fn compute_violations(
         return Some(Vec::new());
     }
 
-    if !dd.is_loaded() {
+    if dd.is_invalidated() {
+        dd.reload(DdFacts {
+            import_edges: edges,
+        });
+    } else if !dd.is_loaded() {
         dd.ingest(DdFacts {
             import_edges: edges,
         })

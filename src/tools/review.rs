@@ -195,8 +195,12 @@ pub fn build_findings(
     let ephemeral;
     let edges = db.import_edges()?;
     let dd: Option<&DdEngine> = if !edges.is_empty() {
-        if let Some(engine) = shared_dd.filter(|e| !e.is_invalidated()) {
-            if !engine.is_loaded() {
+        if let Some(engine) = shared_dd {
+            if engine.is_invalidated() {
+                engine.reload(DdFacts {
+                    import_edges: edges.clone(),
+                });
+            } else if !engine.is_loaded() {
                 engine.ingest(DdFacts {
                     import_edges: edges.clone(),
                 })?;
