@@ -1,7 +1,12 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use glob::{MatchOptions, Pattern};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
+
+use crate::rules::{self, Constraint, ConstraintKind, Severity};
 
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
@@ -276,6 +281,232 @@ pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<Str
 }
 
 // ---------------------------------------------------------------------------
+// Constraint checking (lightweight, per-edit)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ConstraintFinding {
+    pub constraint_id: String,
+    pub name: Option<String>,
+    pub kind: String,
+    pub severity: Severity,
+    pub from_path: String,
+    pub to_path: String,
+    pub detail: String,
+    pub waived: bool,
+}
+
+pub fn check_file_constraints(
+    conn: &Connection,
+    project_root: &Path,
+    file_id: i64,
+) -> Vec<ConstraintFinding> {
+    let inner = || -> Result<Vec<ConstraintFinding>, Box<dyn std::error::Error>> {
+        let rules = rules::load_rules(project_root)?;
+        let all_constraints = rules.all_constraints()?;
+        if all_constraints.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
+            matches!(
+                c.kind,
+                ConstraintKind::ForbiddenDep { .. } | ConstraintKind::Boundary { .. }
+            )
+        });
+        if !has_forbidden_or_boundary {
+            return Ok(Vec::new());
+        }
+
+        // Gather import edges involving this file
+        let mut edges: Vec<(i64, i64)> = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, resolved_file_id FROM imports \
+             WHERE (file_id = ?1 OR resolved_file_id = ?1) \
+             AND resolved_file_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        for row in rows {
+            edges.push(row?);
+        }
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build path map for referenced file IDs
+        let mut needed_ids: Vec<i64> = edges
+            .iter()
+            .flat_map(|(a, b)| [*a, *b])
+            .collect();
+        needed_ids.sort_unstable();
+        needed_ids.dedup();
+
+        let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let path_map: HashMap<i64, String> = stmt
+            .query_map(
+                rusqlite::params_from_iter(needed_ids.iter()),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Build component maps (for boundary constraints)
+        let (file_to_component, comp_name_to_id) = build_component_maps(conn)?;
+
+        // Check waivers relevant to this file
+        let waivers: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT constraint_id, file_path FROM constraint_waivers",
+            )?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let match_opts = MatchOptions {
+            require_literal_separator: true,
+            ..MatchOptions::default()
+        };
+
+        let mut findings = Vec::new();
+        for (from_id, to_id) in &edges {
+            let from = match path_map.get(from_id) {
+                Some(p) => p,
+                None => continue,
+            };
+            let to = match path_map.get(to_id) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            for c in &all_constraints {
+                let matches = match &c.kind {
+                    ConstraintKind::ForbiddenDep {
+                        from: pat_from,
+                        to: pat_to,
+                    } => {
+                        Pattern::new(pat_from)
+                            .ok()
+                            .is_some_and(|fp| fp.matches_with(from, match_opts))
+                            && Pattern::new(pat_to)
+                                .ok()
+                                .is_some_and(|tp| tp.matches_with(to, match_opts))
+                    }
+                    ConstraintKind::Boundary {
+                        from_component,
+                        to_component,
+                    } => {
+                        let from_cid = file_to_component.get(from.as_str());
+                        let to_cid = file_to_component.get(to.as_str());
+                        let from_match = from_cid.is_some_and(|c| {
+                            c == from_component
+                                || comp_name_to_id
+                                    .get(from_component.as_str())
+                                    .is_some_and(|id| id == c)
+                        });
+                        let to_match = to_cid.is_some_and(|c| {
+                            c == to_component
+                                || comp_name_to_id
+                                    .get(to_component.as_str())
+                                    .is_some_and(|id| id == c)
+                        });
+                        from_match && to_match
+                    }
+                    _ => false,
+                };
+
+                if matches {
+                    let waived = waivers.iter().any(|(wc_id, wf_path)| {
+                        wc_id == &c.id && (wf_path == from || wf_path == to)
+                    });
+
+                    findings.push(ConstraintFinding {
+                        constraint_id: c.id.clone(),
+                        name: c.name.clone(),
+                        kind: c.kind.kind_tag().to_string(),
+                        severity: c.severity,
+                        from_path: from.clone(),
+                        to_path: to.clone(),
+                        detail: format_constraint_detail(c, from, to),
+                        waived,
+                    });
+                }
+            }
+        }
+
+        Ok(findings)
+    };
+
+    inner().unwrap_or_default()
+}
+
+fn build_component_maps(
+    conn: &Connection,
+) -> Result<(HashMap<String, String>, HashMap<String, String>), Box<dyn std::error::Error>> {
+    let mut file_to_component: HashMap<String, String> = HashMap::new();
+    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, name, json) = row?;
+        comp_name_to_id.insert(name, id.clone());
+        if let Some(s) = json {
+            if let Ok(paths) = serde_json::from_str::<Vec<String>>(&s) {
+                for path in paths {
+                    file_to_component.insert(path, id.clone());
+                }
+            }
+        }
+    }
+
+    Ok((file_to_component, comp_name_to_id))
+}
+
+fn format_constraint_detail(c: &Constraint, from: &str, to: &str) -> String {
+    match &c.kind {
+        ConstraintKind::ForbiddenDep {
+            from: rf,
+            to: rt,
+        } => format!("forbidden: {from} -> {to} (rule: {rf} -> {rt})"),
+        ConstraintKind::Boundary {
+            from_component,
+            to_component,
+        } => format!("boundary: {from} -> {to} ({from_component} -> {to_component})"),
+        _ => format!("{}: {from} -> {to}", c.kind.kind_tag()),
+    }
+}
+
+pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
+    let mut reason = String::from(
+        "STOP: blocking constraint violation(s) detected. ",
+    );
+    for (i, f) in findings.iter().enumerate() {
+        if i > 0 {
+            reason.push_str(" | ");
+        }
+        if let Some(name) = &f.name {
+            reason.push_str(&format!("[{}] {}", name, f.detail));
+        } else {
+            reason.push_str(&f.detail);
+        }
+    }
+    reason.push_str(". Run `sutra_review` for full details.");
+    reason
+}
+
+// ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
 
@@ -457,5 +688,216 @@ mod tests {
             content: None,
         };
         assert!(is_additive_edit(&input));
+    }
+
+    fn make_finding(severity: Severity, waived: bool) -> ConstraintFinding {
+        ConstraintFinding {
+            constraint_id: "abc12345".into(),
+            name: Some("no-tools-daemon".into()),
+            kind: "forbidden_dep".into(),
+            severity,
+            from_path: "src/tools/foo.rs".into(),
+            to_path: "src/daemon.rs".into(),
+            detail: "forbidden: src/tools/foo.rs -> src/daemon.rs (rule: src/tools/* -> src/daemon.rs)".into(),
+            waived,
+        }
+    }
+
+    #[test]
+    fn blocking_unwaived_produces_deny() {
+        let findings = vec![make_finding(Severity::Blocking, false)];
+        let blocking: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        let reason = format_constraint_deny(&blocking);
+        assert!(reason.contains("STOP"));
+        assert!(reason.contains("no-tools-daemon"));
+    }
+
+    #[test]
+    fn advisory_does_not_block() {
+        let findings = vec![make_finding(Severity::Advisory, false)];
+        let blocking: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .collect();
+        assert!(blocking.is_empty());
+    }
+
+    #[test]
+    fn informational_does_not_block() {
+        let findings = vec![make_finding(Severity::Informational, false)];
+        let blocking: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .collect();
+        assert!(blocking.is_empty());
+    }
+
+    #[test]
+    fn waived_blocking_does_not_block() {
+        let findings = vec![make_finding(Severity::Blocking, true)];
+        let blocking: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .collect();
+        assert!(blocking.is_empty());
+    }
+
+    #[test]
+    fn mixed_severities_only_blocking_blocks() {
+        let findings = vec![
+            make_finding(Severity::Blocking, false),
+            make_finding(Severity::Advisory, false),
+            make_finding(Severity::Informational, false),
+            make_finding(Severity::Blocking, true), // waived
+        ];
+        let blocking: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        let advisory: Vec<_> = findings
+            .iter()
+            .filter(|f| !f.waived && f.severity != Severity::Blocking)
+            .collect();
+        assert_eq!(advisory.len(), 2);
+    }
+
+    #[test]
+    fn check_file_constraints_empty_without_rules() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let findings = check_file_constraints(&conn, dir.path(), 1);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn check_file_constraints_finds_violation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             INSERT INTO files VALUES (1, 'src/tools/review.rs');
+             INSERT INTO files VALUES (2, 'src/daemon.rs');
+             INSERT INTO imports VALUES (1, 2);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+severity = "blocking"
+name = "no-tools-daemon"
+"#,
+        )
+        .unwrap();
+
+        let findings = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Blocking);
+        assert!(!findings[0].waived);
+        assert_eq!(findings[0].name.as_deref(), Some("no-tools-daemon"));
+    }
+
+    #[test]
+    fn check_file_constraints_respects_waivers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             INSERT INTO files VALUES (1, 'src/tools/review.rs');
+             INSERT INTO files VALUES (2, 'src/daemon.rs');
+             INSERT INTO imports VALUES (1, 2);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+severity = "blocking"
+name = "no-tools-daemon"
+"#,
+        )
+        .unwrap();
+
+        // First, get the constraint ID by running without waivers
+        let findings = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(findings.len(), 1);
+        let constraint_id = findings[0].constraint_id.clone();
+
+        // Now add waiver
+        conn.execute(
+            "INSERT INTO constraint_waivers VALUES (?1, 'src/tools/review.rs')",
+            params![constraint_id],
+        )
+        .unwrap();
+
+        let findings = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].waived);
+    }
+
+    #[test]
+    fn check_file_constraints_advisory_severity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             INSERT INTO files VALUES (1, 'src/config.rs');
+             INSERT INTO files VALUES (2, 'src/db/mod.rs');
+             INSERT INTO imports VALUES (2, 1);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/db/*"
+to = "src/config.rs"
+severity = "advisory"
+name = "db-config-coupling"
+"#,
+        )
+        .unwrap();
+
+        // Query from file_id=1 (config.rs) — should find the incoming edge from db/mod.rs
+        let findings = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Advisory);
     }
 }
