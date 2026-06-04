@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-03 (5d-3: DD forbidden pairs maintained view)
+Last updated: 2026-06-04 (5d-6: review integration — violations + diffing + waivers)
 
 ## Module layout
 
@@ -26,8 +26,10 @@ src/rules.rs        — TOML parsing for .sutra/rules.toml.
                       Functions: parse_rules, load_rules, Rules::all_constraints.
 
 src/tools/
-  review.rs         — build_findings calls query_forbidden_deps (deprecated,
-                      migration to query_violations is sutra/74)
+  review.rs         — build_findings uses ConstraintResolver +
+                      set_forbidden_pairs + query_violations maintained view.
+                      Enriched ConstraintViolation with constraint metadata.
+                      Constraint waiver partition + DdDelta violation diffing.
 ```
 
 ## Key types
@@ -62,10 +64,20 @@ edges, forbidden_pairs, last_query }`. Transitions:
 `DdFacts { import_edges: Vec<(i64, i64)> }` — initial edge set.
 `DdDelta { added_edges, removed_edges }` — incremental update.
 
-### ConstraintViolation (mod.rs)
-Legacy type from ad-hoc path: `{ from_id, to_id, rule_from, rule_to }`.
-The maintained view returns raw `Vec<(i64, i64)>` instead — richer violation
-output with constraint metadata is sutra/74's scope.
+### ConstraintViolation (review.rs)
+Enriched review-level type: `{ constraint_id, constraint_name, constraint_kind,
+severity, provenance, from_path, to_path, component_context, detail }`.
+Built by matching maintained view violations `Vec<(i64, i64)>` back to
+constraints via glob/component re-check. Detail string tagged `[introduced]`
+for violations caused by changed files' imports (DdDelta round-trip).
+
+### WaivedConstraintViolation (review.rs)
+Same fields as ConstraintViolation plus `rationale` and `waived_by`. Partitioned
+from violations using constraint_waivers DB table (parallel to convention waivers).
+
+### ConstraintViolation (mod.rs, legacy)
+Legacy type from deprecated ad-hoc path: `{ from_id, to_id, rule_from, rule_to }`.
+Only used by deprecated `query_forbidden_deps`. No callers in current code.
 
 ## DD worker internals (worker.rs)
 
@@ -143,7 +155,7 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 | sutra/71 | DD forbidden pairs maintained view | needs-review | 69 | src/constraints/{worker,engine}.rs |
 | sutra/72 | boundary resolver | ready | 70, 71 | src/constraints/resolver.rs (new) |
 | sutra/73 | constraint waivers (DB) | ready | 70 | src/db/constraints.rs (new), migrations |
-| sutra/74 | review integration | ready | 71, 73 | src/tools/review.rs |
+| sutra/74 | review integration | done | 71, 73 | src/tools/review.rs |
 | sutra/75 | orient constraint section | ready | 70, 73 | src/tools/orient.rs |
 | sutra/76 | guard severity filtering | ready | 74 | src/bin/guard.rs |
 | sutra/77 | MCP constraint tools | ready | 71, 73 | src/tools/constraints.rs (new) |
@@ -160,6 +172,6 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 - Unit tests: `#[cfg(test)]` in `src/rules.rs` (22 tests — parsing, identity, defaults, errors)
 - Integration tests: `tests/constraints-test.rs` (27 tests — cycles, blast radius,
   forbidden deps ad-hoc, maintained violations, eviction/rewarm)
-- Review integration: `tests/review-test.rs` (uses deprecated `query_forbidden_deps`)
+- Review integration: `tests/review-test.rs` (maintained view, waiver partition, delta labels)
 - Test engine setup: `DdEngine::new(Duration::from_secs(1800))`, no DB needed
 - Test DB setup (for future waivers): `Db::open_unchecked("test", dir.path())` with tempdir
