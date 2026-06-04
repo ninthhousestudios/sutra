@@ -1,4 +1,5 @@
 pub mod codebook;
+pub mod duplicates;
 pub mod encoder;
 pub mod hrr;
 
@@ -83,4 +84,16 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
     }
 
     Ok(symbols.len())
+}
+
+pub fn compute_pattern_families(db: &Db) -> Result<usize> {
+    let vectors = db.load_all_strip_vectors()?;
+    if vectors.is_empty() {
+        return Ok(0);
+    }
+
+    let families = duplicates::find_pattern_families(&vectors, 0.85, 3);
+    let count = families.len();
+    db.replace_pattern_families(&families)?;
+    Ok(count)
 }

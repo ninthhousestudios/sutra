@@ -14,6 +14,7 @@ mod similarity;
 
 pub use constraints::ConstraintWaiverRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
+pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow};
 pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
@@ -67,6 +68,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "health_waivers", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "hrr_codebook", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "hrr_vectors", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "pattern_families", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "pattern_family_members", partition: TablePartition::Ephemeral, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------

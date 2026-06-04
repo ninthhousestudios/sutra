@@ -6,6 +6,26 @@ use super::Db;
 use crate::error::Result;
 use crate::similarity::hrr::HrrVec;
 
+pub struct PatternFamily {
+    pub member_symbol_ids: Vec<i64>,
+    pub avg_similarity: f64,
+}
+
+pub struct PatternFamilyMember {
+    pub symbol_id: i64,
+    pub qualified_name: String,
+    pub file_path: String,
+    pub start_line: i64,
+    pub end_line: i64,
+}
+
+pub struct PatternFamilyRow {
+    pub family_id: i64,
+    pub member_count: i64,
+    pub avg_similarity: f64,
+    pub members: Vec<PatternFamilyMember>,
+}
+
 pub struct HrrSymbolRow {
     pub symbol_id: i64,
     pub file_path: String,
@@ -78,5 +98,93 @@ impl Db {
             stmt.execute(params![key, blob])?;
         }
         Ok(entries.len())
+    }
+
+    pub fn load_all_strip_vectors(&self) -> Result<Vec<(i64, HrrVec)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = 'strip'")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((id, HrrVec::from_bytes(&blob)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn replace_pattern_families(&self, families: &[PatternFamily]) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM pattern_family_members", [])?;
+        conn.execute("DELETE FROM pattern_families", [])?;
+
+        let mut fam_stmt = conn.prepare(
+            "INSERT INTO pattern_families (member_count, avg_similarity) VALUES (?1, ?2)",
+        )?;
+        let mut mem_stmt = conn.prepare(
+            "INSERT INTO pattern_family_members (family_id, symbol_id) VALUES (?1, ?2)",
+        )?;
+
+        for family in families {
+            fam_stmt.execute(params![
+                family.member_symbol_ids.len() as i64,
+                family.avg_similarity,
+            ])?;
+            let family_id = conn.last_insert_rowid();
+            for &sym_id in &family.member_symbol_ids {
+                mem_stmt.execute(params![family_id, sym_id])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn pattern_family_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pattern_families", [], |r| r.get(0))?;
+        Ok(count)
+    }
+
+    pub fn query_pattern_families(&self) -> Result<Vec<PatternFamilyRow>> {
+        let conn = self.conn.lock();
+        let mut fam_stmt =
+            conn.prepare("SELECT id, member_count, avg_similarity FROM pattern_families ORDER BY member_count DESC")?;
+        let mut mem_stmt = conn.prepare(
+            "SELECT m.symbol_id, s.qualified_name, f.path, s.start_line, s.end_line
+             FROM pattern_family_members m
+             JOIN symbols s ON m.symbol_id = s.id
+             JOIN files f ON s.file_id = f.id
+             WHERE m.family_id = ?1
+             ORDER BY f.path, s.start_line",
+        )?;
+
+        let mut result = Vec::new();
+        let mut rows = fam_stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let family_id: i64 = row.get(0)?;
+            let member_count: i64 = row.get(1)?;
+            let avg_similarity: f64 = row.get(2)?;
+
+            let members = mem_stmt
+                .query_map(params![family_id], |r| {
+                    Ok(PatternFamilyMember {
+                        symbol_id: r.get(0)?,
+                        qualified_name: r.get(1)?,
+                        file_path: r.get(2)?,
+                        start_line: r.get(3)?,
+                        end_line: r.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            result.push(PatternFamilyRow {
+                family_id,
+                member_count,
+                avg_similarity,
+                members,
+            });
+        }
+        Ok(result)
     }
 }
