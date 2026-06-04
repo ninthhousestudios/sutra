@@ -74,7 +74,7 @@ fn boundary_resolution_with_membership() {
 
     setup_component(&db, "core", &core_ids);
     setup_component(&db, "tools", &tool_ids);
-    db.upsert_clustering_meta(0, 4, "h1", 0).unwrap();
+    db.upsert_clustering_meta(0, 4, "h1", 0, 0).unwrap();
 
     let constraint = make_constraint(ConstraintKind::Boundary {
         from_component: "tools".into(),
@@ -101,7 +101,7 @@ fn cache_hit_on_unchanged_membership() {
 
     setup_component(&db, "alpha", &ids[..1]);
     setup_component(&db, "beta", &ids[1..]);
-    db.upsert_clustering_meta(0, 2, "h1", 0).unwrap();
+    db.upsert_clustering_meta(0, 2, "h1", 0, 0).unwrap();
 
     let constraint = make_constraint(ConstraintKind::Boundary {
         from_component: "alpha".into(),
@@ -123,7 +123,7 @@ fn cache_miss_on_membership_change() {
 
     setup_component(&db, "alpha", &ids[..1]);
     setup_component(&db, "beta", &ids[1..2]);
-    db.upsert_clustering_meta(0, 3, "h1", 0).unwrap();
+    db.upsert_clustering_meta(0, 3, "h1", 0, 0).unwrap();
 
     let constraint = make_constraint(ConstraintKind::Boundary {
         from_component: "alpha".into(),
@@ -136,7 +136,7 @@ fn cache_miss_on_membership_change() {
 
     // Simulate membership change: add third file to beta, update clustering_meta
     db.batch_insert_membership(&[("comp-beta".into(), ids[2])]).unwrap();
-    db.upsert_clustering_meta(0, 3, "h2", 0).unwrap();
+    db.upsert_clustering_meta(0, 3, "h2", 0, 0).unwrap();
 
     let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
     assert_eq!(second.len(), 2);
@@ -205,7 +205,7 @@ fn mixed_boundary_and_forbidden_dep() {
 
     setup_component(&db, "core", &[core_id]);
     setup_component(&db, "tools", &[tool_id]);
-    db.upsert_clustering_meta(0, 3, "h1", 0).unwrap();
+    db.upsert_clustering_meta(0, 3, "h1", 0, 0).unwrap();
 
     let constraints = vec![
         make_constraint(ConstraintKind::Boundary {

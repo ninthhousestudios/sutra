@@ -131,6 +131,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0025_commit_tables.sql"),
         true,
     ),
+    (
+        "0026_clustering_commit_timestamp",
+        include_str!("../../migrations/0026_clustering_commit_timestamp.sql"),
+        false,
+    ),
 ];
 
 impl Db {

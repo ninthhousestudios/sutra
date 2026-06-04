@@ -131,4 +131,29 @@ impl Db {
         let conn = self.conn.lock();
         Ok(conn.query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))?)
     }
+
+    pub fn newest_commit_at(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(committed_at), 0) FROM commits",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn static_file_edges(&self) -> Result<Vec<(i64, i64)>> {
+        use std::collections::{HashMap, HashSet};
+        let sym_file: HashMap<i64, i64> =
+            self.all_symbol_file_map()?.into_iter().collect();
+        let refs = self.all_resolved_refs()?;
+        let mut edges = HashSet::new();
+        for (src_file, target_sym) in refs {
+            if let Some(&target_file) = sym_file.get(&target_sym) {
+                if src_file != target_file {
+                    edges.insert((src_file.min(target_file), src_file.max(target_file)));
+                }
+            }
+        }
+        Ok(edges.into_iter().collect())
+    }
 }

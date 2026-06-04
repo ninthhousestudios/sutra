@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::components;
 use crate::db::Db;
 use crate::constraints::{
     self, ConstraintResolver, DdDelta, DdEngine, DdFacts,
@@ -770,12 +771,83 @@ fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel 
         .unwrap_or(FreshnessLevel::StaleIndex)
 }
 
+fn behavioral_coupling(
+    db: &Db,
+    workspace_root: &Path,
+    changed_paths: &[String],
+) -> Vec<serde_json::Value> {
+    let config = match components::load_config(workspace_root) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let threshold = config.cochange_threshold.unwrap_or(0.5);
+
+    let mut changed_ids: HashMap<i64, &str> = HashMap::new();
+    for p in changed_paths {
+        if let Ok(Some(f)) = db.file_by_path(p) {
+            changed_ids.insert(f.id, p.as_str());
+        }
+    }
+    if changed_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let cochange_pairs = match db.cochange_pairs_above_threshold(threshold) {
+        Ok(pairs) => pairs,
+        Err(_) => return Vec::new(),
+    };
+
+    let all_files: HashMap<i64, String> = db
+        .all_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| (f.id, f.path))
+        .collect();
+
+    let static_edges: HashSet<(i64, i64)> = db
+        .static_file_edges()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
+        .into_iter()
+        .filter_map(|(fa, fb, jaccard, shared)| {
+            let (changed_id, partner_id) = if changed_ids.contains_key(&fa) && !changed_ids.contains_key(&fb) {
+                (fa, fb)
+            } else if changed_ids.contains_key(&fb) && !changed_ids.contains_key(&fa) {
+                (fb, fa)
+            } else {
+                return None;
+            };
+            if static_edges.contains(&(changed_id.min(partner_id), changed_id.max(partner_id))) {
+                return None;
+            }
+            let changed_path = changed_ids.get(&changed_id)?;
+            let partner_path = all_files.get(&partner_id)?;
+            if components::is_test_file(changed_path) != components::is_test_file(partner_path) {
+                return None;
+            }
+            Some((jaccard, json!({
+                "changed_file": changed_path,
+                "partner": partner_path,
+                "jaccard": jaccard,
+                "shared_commits": shared,
+            })))
+        })
+        .collect();
+
+    entries.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    entries.into_iter().map(|(_, v)| v).collect()
+}
+
 fn build_recommended_reads(
     db: &Db,
     workspace_root: &Path,
     findings: &ReviewFindings,
     affected_files: &[(String, i64)],
     changed_files: &[serde_json::Value],
+    behavioral_partners: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
     let mut violation_sites: Vec<(String, i64, f64)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -803,20 +875,37 @@ fn build_recommended_reads(
             .then_with(|| a.0.cmp(&b.0))
     });
 
-    let mut reads: Vec<(String, i64, bool)> = Vec::new();
+    let mut reads: Vec<(String, i64, bool, bool)> = Vec::new();
     for (path, blast, _) in &violation_sites {
-        reads.push((path.clone(), *blast, true));
+        reads.push((path.clone(), *blast, true, false));
+    }
+    for bp in behavioral_partners {
+        if let Some(partner) = bp["partner"].as_str() {
+            if seen.insert(partner.to_string()) {
+                let blast = db
+                    .file_by_path(partner)
+                    .ok()
+                    .flatten()
+                    .map(|f| f.blast_radius)
+                    .unwrap_or(0);
+                reads.push((partner.to_string(), blast, false, true));
+            }
+        }
     }
     for (path, blast) in affected_files {
         if !seen.contains(path) {
-            reads.push((path.clone(), *blast, false));
+            reads.push((path.clone(), *blast, false, false));
         }
     }
     reads.truncate(MAX_READS);
 
-    reads.iter().map(|(path, blast, is_violation)| {
+    reads.iter().map(|(path, blast, is_violation, is_behavioral)| {
         let fl = file_freshness(db, workspace_root, path);
-        json!({ "path": path, "blast_radius": blast, "violation_site": is_violation, "_freshness": fl })
+        let mut entry = json!({ "path": path, "blast_radius": blast, "violation_site": is_violation, "_freshness": fl });
+        if *is_behavioral {
+            entry["behavioral_partner"] = json!(true);
+        }
+        entry
     }).collect()
 }
 
@@ -1017,15 +1106,17 @@ pub fn compute(
         },
     ]);
 
+    let behavioral = behavioral_coupling(db, workspace_root, changed_paths);
     let recommended_reads = build_recommended_reads(
         db,
         workspace_root,
         findings,
         &affected_files,
         &stats.changed_files,
+        &behavioral,
     );
 
-    Ok(json!({
+    let mut result = json!({
         "changed_files": stats.changed_files,
         "changed_symbols": stats.changed_symbols,
         "affected_files": affected_files_out,
@@ -1053,6 +1144,10 @@ pub fn compute(
         "waived_violations": waived_violations_out,
         "drift_alerts": drift_alerts_out,
         "recommended_reads": recommended_reads,
-    }))
+    });
+    if !behavioral.is_empty() {
+        result["behavioral_coupling"] = json!(behavioral);
+    }
+    Ok(result)
 }
 

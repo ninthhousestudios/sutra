@@ -11,7 +11,7 @@ use crate::rules::{Constraint, ConstraintKind};
 
 struct ResolvedCache {
     pairs: Vec<(i64, i64)>,
-    membership_generation: Option<(i64, i64, String, i64)>,
+    membership_generation: Option<(i64, i64, String, i64, i64)>,
     input_hash: u64,
 }
 

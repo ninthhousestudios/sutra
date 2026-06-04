@@ -132,7 +132,7 @@ fn apply_boundary_hints(
 // Co-change edges
 // ---------------------------------------------------------------------------
 
-fn is_test_file(path: &str) -> bool {
+pub(crate) fn is_test_file(path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').collect();
     segments
         .iter()
@@ -698,10 +698,11 @@ fn is_clustering_stale(
     current_edge_count: usize,
     current_file_count: i64,
     current_commit_file_count: i64,
+    current_newest_commit_at: i64,
     threshold: f64,
     config_hash: &str,
 ) -> Result<bool> {
-    let Some((stored_edge_count, stored_file_count, stored_hash, stored_cf_count)) =
+    let Some((stored_edge_count, stored_file_count, stored_hash, stored_cf_count, stored_newest)) =
         db.clustering_meta()?
     else {
         return Ok(true);
@@ -712,6 +713,10 @@ fn is_clustering_stale(
     }
 
     if current_file_count != stored_file_count {
+        return Ok(true);
+    }
+
+    if current_newest_commit_at != stored_newest {
         return Ok(true);
     }
 
@@ -781,6 +786,7 @@ pub fn discover_components(
     let file_count = files.len() as i64;
     let cfg_hash = clustering_config_hash(boundary_multipliers, &config);
     let commit_file_count = db.commit_file_count()?;
+    let newest_commit_at = db.newest_commit_at()?;
 
     if has_existing && has_membership {
         let current_edge_count = edge_count(files, db)?;
@@ -789,6 +795,7 @@ pub fn discover_components(
             current_edge_count,
             file_count,
             commit_file_count,
+            newest_commit_at,
             threshold,
             &cfg_hash,
         )? {
@@ -808,7 +815,7 @@ pub fn discover_components(
         create_fresh_components(db, &clusters, &file_map)?
     };
 
-    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash, commit_file_count)?;
+    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash, commit_file_count, newest_commit_at)?;
     Ok(count)
 }
 

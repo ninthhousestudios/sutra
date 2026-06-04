@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::components;
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
 use crate::conventions;
 use crate::db::Db;
@@ -304,6 +305,57 @@ fn constraints_for_component<'a>(
         .collect()
 }
 
+fn hidden_coupling_for_component(
+    db: &Db,
+    component_id: &str,
+    threshold: f64,
+    path_map: &HashMap<i64, String>,
+) -> Vec<serde_json::Value> {
+    let file_ids: HashSet<i64> = match db.component_file_ids(component_id) {
+        Ok(ids) => ids.into_iter().collect(),
+        Err(_) => return Vec::new(),
+    };
+    if file_ids.len() < 2 {
+        return Vec::new();
+    }
+
+    let cochange_pairs = match db.cochange_pairs_above_threshold(threshold) {
+        Ok(pairs) => pairs,
+        Err(_) => return Vec::new(),
+    };
+
+    let static_edges: HashSet<(i64, i64)> = db
+        .static_file_edges()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(a, b)| file_ids.contains(a) && file_ids.contains(b))
+        .collect();
+
+    let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
+        .into_iter()
+        .filter(|(fa, fb, _, _)| file_ids.contains(fa) && file_ids.contains(fb))
+        .filter(|(fa, fb, _, _)| !static_edges.contains(&((*fa).min(*fb), (*fa).max(*fb))))
+        .filter(|(fa, fb, _, _)| {
+            let pa = path_map.get(fa).map(|s| s.as_str()).unwrap_or("");
+            let pb = path_map.get(fb).map(|s| s.as_str()).unwrap_or("");
+            components::is_test_file(pa) == components::is_test_file(pb)
+        })
+        .map(|(fa, fb, jaccard, shared)| {
+            let file_a = path_map.get(&fa).cloned().unwrap_or_default();
+            let file_b = path_map.get(&fb).cloned().unwrap_or_default();
+            (jaccard, json!({
+                "file_a": file_a,
+                "file_b": file_b,
+                "jaccard": jaccard,
+                "shared_commits": shared,
+            }))
+        })
+        .collect();
+
+    entries.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    entries.into_iter().map(|(_, v)| v).collect()
+}
+
 fn constraint_detail(c: &Constraint) -> String {
     match &c.kind {
         ConstraintKind::ForbiddenDep { from, to } => format!("{from} -> {to}"),
@@ -332,6 +384,9 @@ pub fn handle(
             "hint": "use sutra_components to list available components",
         }));
     }
+
+    let components_config = components::load_config(workspace_root)?;
+    let cochange_threshold = components_config.cochange_threshold.unwrap_or(0.5);
 
     let all_conventions = db.all_conventions_merged()?;
     let all_proposals = db.pending_proposals()?;
@@ -587,6 +642,11 @@ pub fn handle(
             }
 
             section["constraints"] = constraints_section;
+        }
+
+        let hidden = hidden_coupling_for_component(db, &comp.id, cochange_threshold, &path_map);
+        if !hidden.is_empty() {
+            section["hidden_coupling"] = json!(hidden);
         }
 
         orientation_sections.push(section);
@@ -1043,5 +1103,89 @@ to = "src/banned.rs"
         assert!(section["sketch_mode_note"].as_str().is_some());
         let active = section["constraints"]["active"].as_array().unwrap();
         assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn hidden_coupling_surfaces_cochange_without_import() {
+        let (db, dir) = setup_db();
+
+        let id_a = db.upsert_file("src/a.rs", "rs", "aaa", 50, true).unwrap();
+        let id_b = db.upsert_file("src/b.rs", "rs", "bbb", 50, true).unwrap();
+        let id_c = db.upsert_file("src/c.rs", "rs", "ccc", 50, true).unwrap();
+
+        let paths_json = serde_json::to_string(&["src/a.rs", "src/b.rs", "src/c.rs"]).unwrap();
+        let components = vec![("comp-1".into(), "mycomp".into(), paths_json)];
+        let membership = vec![
+            ("comp-1".into(), id_a),
+            ("comp-1".into(), id_b),
+            ("comp-1".into(), id_c),
+        ];
+        db.batch_create_components(&components, &membership).unwrap();
+
+        // a and b co-change in all 3 commits, c only in 1
+        let commits = vec![
+            crate::db::CommitRow { hash: "h1".into(), committed_at: 1, author: "x".into() },
+            crate::db::CommitRow { hash: "h2".into(), committed_at: 2, author: "x".into() },
+            crate::db::CommitRow { hash: "h3".into(), committed_at: 3, author: "x".into() },
+        ];
+        let pairs = vec![
+            ("h1".into(), id_a), ("h1".into(), id_b), ("h1".into(), id_c),
+            ("h2".into(), id_a), ("h2".into(), id_b),
+            ("h3".into(), id_a), ("h3".into(), id_b),
+        ];
+        db.replace_commit_files(&commits, &pairs).unwrap();
+
+        // a imports c — that pair should be excluded
+        db.insert_import(id_a, "src/c.rs", Some(id_c), 1).unwrap();
+
+        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let section = &result["orientation"][0];
+        let coupling = section["hidden_coupling"].as_array().unwrap();
+
+        // a-b: jaccard = 3/3 = 1.0, no import edge → included
+        assert_eq!(coupling.len(), 1);
+        assert_eq!(coupling[0]["file_a"], "src/a.rs");
+        assert_eq!(coupling[0]["file_b"], "src/b.rs");
+        assert_eq!(coupling[0]["jaccard"], 1.0);
+        assert_eq!(coupling[0]["shared_commits"], 3);
+    }
+
+    #[test]
+    fn hidden_coupling_excludes_test_production_pairs() {
+        let (db, dir) = setup_db();
+
+        let id_src = db.upsert_file("src/lib.rs", "rs", "aaa", 50, true).unwrap();
+        let id_test = db.upsert_file("tests/lib_test.rs", "rs", "bbb", 50, true).unwrap();
+
+        let paths_json = serde_json::to_string(&["src/lib.rs", "tests/lib_test.rs"]).unwrap();
+        let components = vec![("comp-1".into(), "mycomp".into(), paths_json)];
+        let membership = vec![
+            ("comp-1".into(), id_src),
+            ("comp-1".into(), id_test),
+        ];
+        db.batch_create_components(&components, &membership).unwrap();
+
+        let commits = vec![
+            crate::db::CommitRow { hash: "h1".into(), committed_at: 1, author: "x".into() },
+            crate::db::CommitRow { hash: "h2".into(), committed_at: 2, author: "x".into() },
+        ];
+        let pairs = vec![
+            ("h1".into(), id_src), ("h1".into(), id_test),
+            ("h2".into(), id_src), ("h2".into(), id_test),
+        ];
+        db.replace_commit_files(&commits, &pairs).unwrap();
+
+        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let section = &result["orientation"][0];
+        assert!(section.get("hidden_coupling").is_none());
+    }
+
+    #[test]
+    fn hidden_coupling_absent_when_no_cochange() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+
+        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        assert!(result["orientation"][0].get("hidden_coupling").is_none());
     }
 }
