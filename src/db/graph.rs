@@ -156,4 +156,57 @@ impl Db {
         }
         Ok(edges.into_iter().collect())
     }
+
+    pub fn file_cochange_partners(&self) -> Result<Vec<(i64, i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cf1.file_id,
+                    COUNT(DISTINCT cf2.file_id) AS partner_count,
+                    fc.commit_count
+             FROM commit_files cf1
+             JOIN commit_files cf2
+               ON cf1.commit_hash = cf2.commit_hash AND cf1.file_id != cf2.file_id
+             JOIN (SELECT file_id, COUNT(*) AS commit_count
+                   FROM commit_files GROUP BY file_id) fc
+               ON fc.file_id = cf1.file_id
+             GROUP BY cf1.file_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn file_commit_sizes(&self, max_width: i64) -> Result<Vec<(i64, i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "WITH commit_size AS (
+                 SELECT commit_hash, COUNT(*) AS file_count
+                 FROM commit_files GROUP BY commit_hash
+                 HAVING file_count <= ?1
+             )
+             SELECT cf.file_id, c.committed_at, cs.file_count
+             FROM commit_files cf
+             JOIN commits c ON cf.commit_hash = c.hash
+             JOIN commit_size cs ON cs.commit_hash = cf.commit_hash",
+        )?;
+        let rows = stmt.query_map([max_width], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn file_author_commits(&self) -> Result<Vec<(i64, String, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cf.file_id, c.author, COUNT(*) AS commit_count
+             FROM commit_files cf
+             JOIN commits c ON cf.commit_hash = c.hash
+             GROUP BY cf.file_id, c.author",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }

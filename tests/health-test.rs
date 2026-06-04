@@ -110,11 +110,11 @@ fn nested_complexity_ignores_null_nesting() {
 
 #[test]
 fn findings_stored_and_queryable() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
     seed_fn(&db, fid, "lib::complex", "complex", Some(7));
 
-    let findings = compute_all_health_findings(&db).unwrap();
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
     assert_eq!(findings.len(), 1);
     db.replace_health_findings(&findings).unwrap();
 
@@ -138,11 +138,11 @@ fn findings_stored_and_queryable() {
 
 #[test]
 fn replace_findings_is_idempotent() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
     seed_fn(&db, fid, "lib::deep", "deep", Some(5));
 
-    let findings = compute_all_health_findings(&db).unwrap();
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
     db.replace_health_findings(&findings).unwrap();
     db.replace_health_findings(&findings).unwrap();
 
@@ -154,11 +154,11 @@ fn replace_findings_is_idempotent() {
 
 #[test]
 fn waiver_excludes_finding_from_active() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
     let fid = seed_file(&db, "src/waived.rs");
     seed_fn(&db, fid, "waived::deep", "deep", Some(8));
 
-    let findings = compute_all_health_findings(&db).unwrap();
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
     db.replace_health_findings(&findings).unwrap();
 
     db.create_health_waiver(
@@ -179,11 +179,11 @@ fn waiver_excludes_finding_from_active() {
 
 #[test]
 fn waiver_does_not_affect_different_biomarker() {
-    let (_dir, db) = setup_db();
+    let (dir, db) = setup_db();
     let fid = seed_file(&db, "src/mixed.rs");
     seed_fn(&db, fid, "mixed::deep", "deep", Some(5));
 
-    let findings = compute_all_health_findings(&db).unwrap();
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
     db.replace_health_findings(&findings).unwrap();
 
     db.create_health_waiver(

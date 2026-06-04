@@ -601,7 +601,7 @@ fn post_parse_sequence(
             info!(alias_count, "synced vocabulary aliases");
         }
 
-        let findings = crate::health::compute_all_health_findings(db)?;
+        let findings = crate::health::compute_all_health_findings(db, workspace_root)?;
         if !findings.is_empty() {
             info!(count = findings.len(), "computed health findings");
         }
