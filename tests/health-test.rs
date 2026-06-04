@@ -1,6 +1,7 @@
-use sutra::db::{Db, InsertSymbolParams};
+use sutra::db::{Db, HealthFindingRow, InsertSymbolParams};
 use sutra::health::{
-    compute_all_health_findings, compute_nested_complexity, BiomarkerKind, HealthSeverity,
+    compute_all_health_findings, compute_nested_complexity, score_component, score_file,
+    BiomarkerKind, HealthSeverity,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -232,4 +233,115 @@ fn waiver_crud() {
     db.delete_health_waiver(id).unwrap();
     let waivers = db.get_health_waivers().unwrap();
     assert!(waivers.is_empty());
+}
+
+// --- Scoring ---
+
+fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {
+    HealthFindingRow {
+        id,
+        file_id,
+        symbol_id: None,
+        biomarker_kind: biomarker.to_string(),
+        severity: severity.to_string(),
+        confidence: 1.0,
+        provenance: "computed".to_string(),
+        metric_value: 5.0,
+        threshold: 4.0,
+        detail: String::new(),
+    }
+}
+
+#[test]
+fn scoring_no_findings_yields_perfect_score() {
+    let result = score_file(&[]);
+    assert_eq!(result.score, 10.0);
+    assert!(result.deductions.is_empty());
+}
+
+#[test]
+fn scoring_single_advisory_finding() {
+    let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
+    let result = score_file(&findings);
+    // advisory weight 1.0 × biomarker weight 1.34 = 1.34 deduction
+    assert!((result.score - 8.66).abs() < 0.01);
+    assert_eq!(result.deductions.len(), 1);
+    assert!((result.deductions[0].raw_deduction - 1.34).abs() < 0.01);
+    assert!((result.deductions[0].scaled_deduction - 1.34).abs() < 0.01);
+}
+
+#[test]
+fn scoring_informational_deducts_less() {
+    let findings = [make_finding(1, 1, "dead_code_ratio", "informational")];
+    let result = score_file(&findings);
+    // informational weight 0.5 × biomarker weight 0.80 = 0.40 deduction
+    assert!((result.score - 9.60).abs() < 0.01);
+}
+
+#[test]
+fn scoring_category_cap_with_proportional_scaling() {
+    // Three advisory nested_complexity findings: 3 × 1.34 = 4.02,
+    // exceeds structural cap of 2.5. Scale factor = 2.5/4.02.
+    let findings = [
+        make_finding(1, 1, "nested_complexity", "advisory"),
+        make_finding(2, 1, "nested_complexity", "advisory"),
+        make_finding(3, 1, "nested_complexity", "advisory"),
+    ];
+    let result = score_file(&findings);
+    // Total structural deduction capped at 2.5 → score = 7.5
+    assert!((result.score - 7.5).abs() < 0.01);
+    // All three scaled deductions should be equal and sum to 2.5
+    let total: f64 = result.deductions.iter().map(|d| d.scaled_deduction).sum();
+    assert!((total - 2.5).abs() < 0.01);
+    let first = result.deductions[0].scaled_deduction;
+    for d in &result.deductions {
+        assert!((d.scaled_deduction - first).abs() < 0.001);
+    }
+}
+
+#[test]
+fn scoring_all_categories_maxed_yields_minimum() {
+    // Overload every category past its cap; sum of caps = 11.5 > 9.0
+    let findings = [
+        // organizational cap 3.5: co_change_scatter ×3 = 5.40 → capped
+        make_finding(1, 1, "co_change_scatter", "advisory"),
+        make_finding(2, 1, "co_change_scatter", "advisory"),
+        make_finding(3, 1, "co_change_scatter", "advisory"),
+        // structural cap 2.5: nested_complexity ×3 = 4.02 → capped
+        make_finding(4, 1, "nested_complexity", "advisory"),
+        make_finding(5, 1, "nested_complexity", "advisory"),
+        make_finding(6, 1, "nested_complexity", "advisory"),
+        // coupling cap 2.0: hidden_coupling ×3 = 3.00 → capped
+        make_finding(7, 1, "hidden_coupling", "advisory"),
+        make_finding(8, 1, "hidden_coupling", "advisory"),
+        make_finding(9, 1, "hidden_coupling", "advisory"),
+        // freshness cap 1.5: code_age_volatility ×3 = 3.30 → capped
+        make_finding(10, 1, "code_age_volatility", "advisory"),
+        make_finding(11, 1, "code_age_volatility", "advisory"),
+        make_finding(12, 1, "code_age_volatility", "advisory"),
+        // coverage cap 2.0: dead_code_ratio ×6 info = 6×0.40 = 2.40 → capped
+        make_finding(13, 1, "dead_code_ratio", "informational"),
+        make_finding(14, 1, "dead_code_ratio", "informational"),
+        make_finding(15, 1, "dead_code_ratio", "informational"),
+        make_finding(16, 1, "dead_code_ratio", "informational"),
+        make_finding(17, 1, "dead_code_ratio", "informational"),
+        make_finding(18, 1, "dead_code_ratio", "informational"),
+    ];
+    let result = score_file(&findings);
+    assert!((result.score - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn scoring_component_nloc_weighted() {
+    // file A: score 8.0, 300 lines; file B: score 6.0, 100 lines
+    // weighted avg = (8.0×300 + 6.0×100) / 400 = 3000/400 = 7.5
+    let scores = [(8.0, 300_i64), (6.0, 100)];
+    let result = score_component(&scores);
+    assert!((result - 7.5).abs() < 0.01);
+}
+
+#[test]
+fn scoring_component_empty_is_perfect() {
+    let result = score_component(&[]);
+    assert_eq!(result, 10.0);
 }

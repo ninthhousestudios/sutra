@@ -14,6 +14,14 @@ impl HealthSeverity {
             Self::Informational => "informational",
         }
     }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "advisory" => Some(Self::Advisory),
+            "informational" => Some(Self::Informational),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +69,25 @@ impl BiomarkerKind {
             | Self::ComponentInstability
             | Self::HrrShapeChange => HealthSeverity::Informational,
             _ => HealthSeverity::Advisory,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "nested_complexity" => Some(Self::NestedComplexity),
+            "co_change_scatter" => Some(Self::CoChangeScatter),
+            "change_entropy" => Some(Self::ChangeEntropy),
+            "ownership_risk" => Some(Self::OwnershipRisk),
+            "function_hotspot" => Some(Self::FunctionHotspot),
+            "hidden_coupling" => Some(Self::HiddenCoupling),
+            "blast_radius_churn" => Some(Self::BlastRadiusChurn),
+            "dead_code_ratio" => Some(Self::DeadCodeRatio),
+            "code_age_volatility" => Some(Self::CodeAgeVolatility),
+            "coverage_gradient" => Some(Self::CoverageGradient),
+            "convention_drift" => Some(Self::ConventionDrift),
+            "component_instability" => Some(Self::ComponentInstability),
+            "hrr_shape_change" => Some(Self::HrrShapeChange),
+            _ => None,
         }
     }
 }
