@@ -25,6 +25,16 @@ pub enum ConstraintKind {
     NoCycles,
 }
 
+impl Severity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Blocking => "blocking",
+            Self::Advisory => "advisory",
+            Self::Informational => "informational",
+        }
+    }
+}
+
 impl ConstraintKind {
     fn default_severity(&self) -> Severity {
         match self {

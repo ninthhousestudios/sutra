@@ -86,7 +86,7 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 "id": c.id,
                 "kind": c.kind.kind_tag(),
                 "kind_detail": kind_detail,
-                "severity": format!("{:?}", c.severity).to_lowercase(),
+                "severity": c.severity.as_str(),
                 "name": c.name,
                 "provenance": c.provenance,
                 "scope": c.scope,
@@ -174,7 +174,7 @@ fn handle_violations(
                     constraint_id: c.id.clone(),
                     constraint_name: c.name.clone(),
                     constraint_kind: c.kind.kind_tag().to_string(),
-                    severity: format!("{:?}", c.severity).to_lowercase(),
+                    severity: c.severity.as_str().to_string(),
                     provenance: c.provenance.clone(),
                     from_path,
                     to_path,
@@ -202,7 +202,7 @@ fn handle_violations(
             constraint_name: no_cycles_constraint.and_then(|c| c.name.clone()),
             constraint_kind: "no_cycles".into(),
             severity: no_cycles_constraint
-                .map(|c| format!("{:?}", c.severity).to_lowercase())
+                .map(|c| c.severity.as_str().to_string())
                 .unwrap_or_else(|| "blocking".into()),
             provenance: no_cycles_constraint.and_then(|c| c.provenance.clone()),
             from_path: cycle_paths.first().cloned().unwrap_or_default(),

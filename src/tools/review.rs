@@ -227,7 +227,11 @@ pub fn build_findings(
             let current_violations = engine.query_violations()?;
             constraint_violations_total = current_violations.len();
 
-            // Compute delta: temporarily remove edges from changed files
+            // Compute delta: temporarily remove outgoing edges from changed
+            // files to identify which violations are [introduced] by the diff.
+            // Only outgoing edges are removed — incoming edges to changed files
+            // are controlled by their source, so boundary violations caused by
+            // component membership changes won't be labeled [introduced].
             let changed_edges: Vec<(i64, i64)> = edges
                 .iter()
                 .filter(|(src, _)| changed_ids.contains(src))
@@ -240,12 +244,13 @@ pub fn build_findings(
                         added_edges: vec![],
                         removed_edges: changed_edges.clone(),
                     })?;
-                    let baseline = engine.query_violations()?.into_iter().collect();
+                    let baseline_result = engine.query_violations();
+                    // Re-add edges before propagating any query error
                     engine.update(DdDelta {
                         added_edges: changed_edges,
                         removed_edges: vec![],
                     })?;
-                    baseline
+                    baseline_result?.into_iter().collect()
                 } else {
                     current_violations.iter().copied().collect()
                 };
@@ -268,7 +273,7 @@ pub fn build_findings(
                         constraint_id: c.id.clone(),
                         constraint_name: c.name.clone(),
                         constraint_kind: c.kind.kind_tag().to_string(),
-                        severity: format!("{:?}", c.severity).to_lowercase(),
+                        severity: c.severity.as_str().to_string(),
                         provenance: c.provenance.clone(),
                         from_path: from_path.clone(),
                         to_path: to_path.clone(),
@@ -303,7 +308,7 @@ pub fn build_findings(
                         constraint_name: no_cycles_constraint.and_then(|c| c.name.clone()),
                         constraint_kind: "no_cycles".into(),
                         severity: no_cycles_constraint
-                            .map(|c| format!("{:?}", c.severity).to_lowercase())
+                            .map(|c| c.severity.as_str().to_string())
                             .unwrap_or_else(|| "blocking".into()),
                         provenance: no_cycles_constraint.and_then(|c| c.provenance.clone()),
                         from_path: cycle_paths.first().cloned().unwrap_or_default(),

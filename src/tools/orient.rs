@@ -201,7 +201,7 @@ fn compute_violations(
             result.push(OrientViolation {
                 constraint_id: c.id.clone(),
                 constraint_name: c.name.clone(),
-                severity: format!("{:?}", c.severity).to_lowercase(),
+                severity: c.severity.as_str().to_string(),
                 from_path,
                 to_path,
                 detail,
@@ -225,7 +225,7 @@ fn compute_violations(
                     .unwrap_or_else(|| "builtin:cycles".into()),
                 constraint_name: no_cycles.and_then(|c| c.name.clone()),
                 severity: no_cycles
-                    .map(|c| format!("{:?}", c.severity).to_lowercase())
+                    .map(|c| c.severity.as_str().to_string())
                     .unwrap_or_else(|| "blocking".into()),
                 from_path: cycle_paths.first().cloned().unwrap_or_default(),
                 to_path: cycle_paths.last().cloned().unwrap_or_default(),
@@ -519,7 +519,7 @@ pub fn handle(
                     let mut entry = json!({
                         "constraint_id": c.id,
                         "kind": c.kind.kind_tag(),
-                        "severity": format!("{:?}", c.severity).to_lowercase(),
+                        "severity": c.severity.as_str(),
                         "detail": constraint_detail(c),
                     });
                     if let Some(name) = &c.name {

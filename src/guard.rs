@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use glob::{MatchOptions, Pattern};
 use rusqlite::{Connection, params};
 use serde::Deserialize;
 
-use crate::rules::{self, Constraint, ConstraintKind, Severity};
+use crate::constraints;
+use crate::rules::{self, ConstraintKind, Severity};
 
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
@@ -355,7 +355,9 @@ pub fn check_file_constraints(
         // Build component maps (for boundary constraints)
         let (file_to_component, comp_name_to_id) = build_component_maps(conn)?;
 
-        // Check waivers relevant to this file
+        // Load waivers scoped to paths involved in edges
+        let relevant_paths: std::collections::HashSet<&str> =
+            path_map.values().map(|p| p.as_str()).collect();
         let waivers: Vec<(String, String)> = conn
             .prepare(
                 "SELECT constraint_id, file_path FROM constraint_waivers",
@@ -364,12 +366,8 @@ pub fn check_file_constraints(
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .filter_map(|r| r.ok())
+            .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
             .collect();
-
-        let match_opts = MatchOptions {
-            require_literal_separator: true,
-            ..MatchOptions::default()
-        };
 
         let mut findings = Vec::new();
         for (from_id, to_id) in &edges {
@@ -382,58 +380,23 @@ pub fn check_file_constraints(
                 None => continue,
             };
 
-            for c in &all_constraints {
-                let matches = match &c.kind {
-                    ConstraintKind::ForbiddenDep {
-                        from: pat_from,
-                        to: pat_to,
-                    } => {
-                        Pattern::new(pat_from)
-                            .ok()
-                            .is_some_and(|fp| fp.matches_with(from, match_opts))
-                            && Pattern::new(pat_to)
-                                .ok()
-                                .is_some_and(|tp| tp.matches_with(to, match_opts))
-                    }
-                    ConstraintKind::Boundary {
-                        from_component,
-                        to_component,
-                    } => {
-                        let from_cid = file_to_component.get(from.as_str());
-                        let to_cid = file_to_component.get(to.as_str());
-                        let from_match = from_cid.is_some_and(|c| {
-                            c == from_component
-                                || comp_name_to_id
-                                    .get(from_component.as_str())
-                                    .is_some_and(|id| id == c)
-                        });
-                        let to_match = to_cid.is_some_and(|c| {
-                            c == to_component
-                                || comp_name_to_id
-                                    .get(to_component.as_str())
-                                    .is_some_and(|id| id == c)
-                        });
-                        from_match && to_match
-                    }
-                    _ => false,
-                };
+            if let Some(c) = constraints::find_matching_constraint(
+                &all_constraints, from, to, &file_to_component, &comp_name_to_id,
+            ) {
+                let waived = waivers.iter().any(|(wc_id, wf_path)| {
+                    wc_id == &c.id && (wf_path == from || wf_path == to)
+                });
 
-                if matches {
-                    let waived = waivers.iter().any(|(wc_id, wf_path)| {
-                        wc_id == &c.id && (wf_path == from || wf_path == to)
-                    });
-
-                    findings.push(ConstraintFinding {
-                        constraint_id: c.id.clone(),
-                        name: c.name.clone(),
-                        kind: c.kind.kind_tag().to_string(),
-                        severity: c.severity,
-                        from_path: from.clone(),
-                        to_path: to.clone(),
-                        detail: format_constraint_detail(c, from, to),
-                        waived,
-                    });
-                }
+                findings.push(ConstraintFinding {
+                    constraint_id: c.id.clone(),
+                    name: c.name.clone(),
+                    kind: c.kind.kind_tag().to_string(),
+                    severity: c.severity,
+                    from_path: from.clone(),
+                    to_path: to.clone(),
+                    detail: constraints::format_violation_detail(c, from, to, false),
+                    waived,
+                });
             }
         }
 
@@ -472,20 +435,6 @@ fn build_component_maps(
     }
 
     Ok((file_to_component, comp_name_to_id))
-}
-
-fn format_constraint_detail(c: &Constraint, from: &str, to: &str) -> String {
-    match &c.kind {
-        ConstraintKind::ForbiddenDep {
-            from: rf,
-            to: rt,
-        } => format!("forbidden: {from} -> {to} (rule: {rf} -> {rt})"),
-        ConstraintKind::Boundary {
-            from_component,
-            to_component,
-        } => format!("boundary: {from} -> {to} ({from_component} -> {to_component})"),
-        _ => format!("{}: {from} -> {to}", c.kind.kind_tag()),
-    }
 }
 
 pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
