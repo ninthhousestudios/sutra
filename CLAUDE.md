@@ -8,6 +8,7 @@ This workspace is indexed by sutra (MCP code intelligence). For code exploration
 
 For convention system work, read `docs/conventions-map.md` first — it's a compressed architecture reference that replaces broad exploration.
 For constraint system work, read `docs/constraints-map.md` first — same idea, covers DD engine, rules parsing, TOML format, and remaining task graph.
+For health/similarity system work, read `docs/health-map.md` first — covers the finding model, biomarker tiers, waiver mechanism, pipeline integration, and scoring design.
 
 ## Agent skills
 
