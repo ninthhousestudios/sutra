@@ -4,16 +4,22 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-04 (5e-1: health finding model + first biomarker)
+Last updated: 2026-06-04 (5e-2: health scoring with category capping)
 
 ## Module layout
 
 ```
 src/health/
-  mod.rs            — re-exports from findings
-  findings.rs       — HealthFinding, BiomarkerKind (13 variants),
-                      HealthSeverity (Advisory, Informational — never Blocking),
-                      compute_nested_complexity, compute_all_health_findings
+  mod.rs            — re-exports from findings and scoring
+  findings.rs       — HealthFinding, BiomarkerKind (13 variants + from_str),
+                      HealthSeverity (Advisory, Informational — never Blocking,
+                      + from_str), compute_nested_complexity,
+                      compute_all_health_findings
+  scoring.rs        — HealthCategory (5 variants), category caps, biomarker
+                      weights (repowise calibrated), severity weights,
+                      score_file (category capping + proportional scaling),
+                      score_component (NLOC-weighted average),
+                      FileHealthScore, FindingDeduction
 
 src/parser/
   complexity.rs     — cyclomatic, cognitive, max_nesting_depth (all take
@@ -38,6 +44,16 @@ src/db/
                       InsertSymbolParams.max_nesting field.
   migrations.rs     — 0027 (ephemeral), 0028 (durable)
 
+src/tools/
+  file_health.rs    — MCP tool: queries findings with waiver status, scores
+                      via scoring::score_file, builds per-file + per-component
+                      JSON. Legacy compute_file_scores still present for
+                      pipeline.rs (removed when sutra/91 lands).
+
+src/db/
+  components.rs     — component_members_with_line_count() added for
+                      NLOC-weighted component health scoring.
+
 src/pipeline.rs     — post_parse_sequence tail: compute_all_health_findings
                       + replace_health_findings (runs after component discovery
                       and alias sync, before record_snapshot)
@@ -58,8 +74,10 @@ Stubs for future: `CoChangeScatter`, `ChangeEntropy`, `OwnershipRisk`,
 `CodeAgeVolatility`, `CoverageGradient`, `ConventionDrift`,
 `ComponentInstability`, `HrrShapeChange`.
 
-`as_str()` returns snake_case DB representation. `default_severity()` maps
-tier 1/2 → Advisory, tier 3 + sutra-specific → Informational.
+`as_str()` returns snake_case DB representation. `from_str()` roundtrips.
+`default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
+Informational. `category()` returns HealthCategory. `default_weight()`
+returns repowise-calibrated weight (or moderate/uncalibrated default).
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the
@@ -145,18 +163,41 @@ using `file_ids_needing_resolution`.
 | 3 | Informational | dead_code_ratio, code_age_volatility, coverage_gradient | repowise weak |
 | Sutra | Informational | convention_drift, component_instability, hrr_shape_change | uncalibrated |
 
-### Health scoring (sutra/85, not yet implemented)
-Category capping: base 10.0, deductions per finding, capped per category:
-organizational -3.5, structural -2.5, coupling -2.0, freshness -1.5,
-coverage -2.0. Proportional scaling within category. Clamp [1.0, 10.0].
-Replaces the current `compute_file_scores` in `tools/file_health.rs`.
+### Health scoring (sutra/85, implemented)
+
+`health/scoring.rs`: base 10.0, deductions per finding
+(`severity.weight() × biomarker.default_weight()`), capped per category:
+
+| Category | Cap | Biomarkers |
+|---|---|---|
+| organizational | -3.5 | co_change_scatter, change_entropy, ownership_risk |
+| structural | -2.5 | nested_complexity, function_hotspot, blast_radius_churn |
+| coupling | -2.0 | hidden_coupling, component_instability |
+| freshness | -1.5 | code_age_volatility, hrr_shape_change |
+| coverage | -2.0 | dead_code_ratio, coverage_gradient, convention_drift |
+
+Severity weights: Advisory = 1.0, Informational = 0.5.
+Proportional scaling within category when sum exceeds cap.
+Component scores: NLOC-weighted average of member file scores.
+Final clamp [1.0, 10.0].
+
+Calibrated biomarker weights (from repowise T0-protocol corpus):
+co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,
+nested_complexity 1.34, function_hotspot 1.16, code_age_volatility 1.10.
+Non-repowise defaults: hidden_coupling 1.00, blast_radius_churn 1.00,
+dead_code_ratio 0.80, coverage_gradient 0.80. Uncalibrated: convention_drift
+0.50, component_instability 0.50, hrr_shape_change 0.50.
+
+The `file_health` MCP tool now returns findings + derived scores (1.0–10.0
+scale). Legacy `compute_file_scores` (0–100 scale) remains for
+`pipeline.rs::compute_snapshot_aggregates` until sutra/91 rewires it.
 
 ### Remaining arc tasks
 
 | Task | Title | Status | Key concern |
 |---|---|---|---|
 | sutra/84 | health finding model + first biomarker | done | this doc |
-| sutra/85 | health scoring with category capping | ready-for-agent | tools/file_health.rs rewrite |
+| sutra/85 | health scoring with category capping | done | scoring.rs + tool rewrite |
 | sutra/86 | git-organizational biomarkers | ready-for-agent | commit_files + commits tables |
 | sutra/87 | review-1: health foundation | ready-for-human | review gate |
 | sutra/93 | semantic diff for review | ready-for-agent | HRR vectors |
@@ -164,7 +205,8 @@ Replaces the current `compute_file_scores` in `tools/file_health.rs`.
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
-- Integration tests: `tests/health-test.rs` (10 tests — model, threshold,
-  DB round-trip, waiver CRUD, waiver exclusion)
+- Integration tests: `tests/health-test.rs` (17 tests — model, threshold,
+  DB round-trip, waiver CRUD, waiver exclusion, scoring: proportional scaling,
+  category cap enforcement, component aggregation, edge cases)
 - Test DB setup: `Db::open_unchecked("test", dir.path())` with tempdir
 - Seed helper: `seed_fn(db, file_id, qn, sn, max_nesting)` in health-test.rs
