@@ -313,6 +313,27 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn component_members_with_line_count(&self) -> Result<Vec<(String, i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cm.component_id, cm.file_id, f.line_count
+             FROM component_membership cm
+             JOIN files f ON f.id = cm.file_id
+             JOIN components c ON c.id = cm.component_id
+             WHERE c.dissolved_at IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     // -----------------------------------------------------------------------
     // Vocabulary aliases
     // -----------------------------------------------------------------------
