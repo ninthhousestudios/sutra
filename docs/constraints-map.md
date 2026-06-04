@@ -4,18 +4,24 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-04 (5d-6: review integration — violations + diffing + waivers)
+Last updated: 2026-06-04 (5d-7: orient constraint section)
 
 ## Module layout
 
 ```
 src/constraints/
-  mod.rs            — re-exports DdEngine; public types: Cycle, DdFacts,
-                      DdDelta, ConstraintViolation
+  mod.rs            — re-exports DdEngine, ConstraintResolver; public types:
+                      Cycle, DdFacts, DdDelta, ConstraintViolation (legacy).
+                      Shared helpers: find_matching_constraint,
+                      build_component_context, format_violation_detail.
   engine.rs         — DdEngine (Cold/Loaded/Warm state machine), public API:
                       ingest, update, set_forbidden_pairs, query_violations,
                       query_cycles, query_blast_radius[_all], evict_if_idle.
-                      query_forbidden_deps (deprecated, ad-hoc glob path).
+                      query_forbidden_deps (deprecated, no callers).
+  resolver.rs       — ConstraintResolver: resolves Constraint rules to
+                      forbidden (i64, i64) pairs. Handles ForbiddenDep (glob)
+                      + Boundary (component membership). Caches by input hash
+                      + clustering generation.
   worker.rs         — timely/DD worker thread, Command/Response enums,
                       WorkerHandle, spawn_worker, run_worker (dataflow +
                       command loop), Kosaraju SCC
@@ -25,11 +31,21 @@ src/rules.rs        — TOML parsing for .sutra/rules.toml.
                       Rules, Constraints, ForbiddenDep, ConventionsConfig.
                       Functions: parse_rules, load_rules, Rules::all_constraints.
 
+src/db/
+  constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table.
+                      get_constraint_waivers, get_constraint_waivers_for_file,
+                      create/update/delete, reconcile_orphaned_constraint_waivers.
+
 src/tools/
   review.rs         — build_findings uses ConstraintResolver +
                       set_forbidden_pairs + query_violations maintained view.
                       Enriched ConstraintViolation with constraint metadata.
                       Constraint waiver partition + DdDelta violation diffing.
+  orient.rs         — handle() includes constraints section per component.
+                      constraints_for_component: scope matching (path prefix,
+                      glob, boundary, max_fan_in, no_cycles).
+                      compute_violations: DD engine ingestion + violation query.
+                      Filters violations + constraint waivers to component files.
 ```
 
 ## Key types
@@ -59,6 +75,18 @@ edges, forbidden_pairs, last_query }`. Transitions:
 - `ensure_warm()`: Loaded → Warm (spawns worker, sends edges + forbidden pairs)
 - `evict_if_idle()`: Warm → Loaded (preserves edges + forbidden pairs)
 - Drop: → Cold (shuts down worker)
+
+### ConstraintResolver (resolver.rs)
+Resolves `Vec<Constraint>` to `Vec<(i64, i64)>` forbidden pairs. For
+ForbiddenDep: glob-matches paths in the path_map. For Boundary: looks up
+component membership via DB. Caches result keyed by `(input_hash,
+clustering_generation)` — invalidate on component recompute. Used by
+build_findings before calling `set_forbidden_pairs`.
+
+### ConstraintWaiverRow (db/constraints.rs)
+`{ id, constraint_id, constraint_name, file_path, symbol_qualified_name,
+rationale, waived_by, created_at, updated_at }`. Waiver lookup in review:
+match on `constraint_id` + `file_path` (either from_path or to_path).
 
 ### DdFacts / DdDelta (mod.rs)
 `DdFacts { import_edges: Vec<(i64, i64)> }` — initial edge set.
@@ -150,16 +178,18 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 
 | Task | Title | Status | Depends on | Key files |
 |---|---|---|---|---|
-| sutra/69 | rename dd/ → constraints/ | needs-review | — | src/constraints/, lib.rs, config.rs |
-| sutra/70 | constraint types + rules parsing | needs-review | 69 | src/rules.rs |
-| sutra/71 | DD forbidden pairs maintained view | needs-review | 69 | src/constraints/{worker,engine}.rs |
-| sutra/72 | boundary resolver | ready | 70, 71 | src/constraints/resolver.rs (new) |
-| sutra/73 | constraint waivers (DB) | ready | 70 | src/db/constraints.rs (new), migrations |
-| sutra/74 | review integration | done | 71, 73 | src/tools/review.rs |
-| sutra/75 | orient constraint section | ready | 70, 73 | src/tools/orient.rs |
-| sutra/76 | guard severity filtering | ready | 74 | src/bin/guard.rs |
-| sutra/77 | MCP constraint tools | ready | 71, 73 | src/tools/constraints.rs (new) |
-| sutra/78-80 | review gates (HITL) | ready-for-human | various | — |
+| sutra/69 | rename dd/ → constraints/ | done | — | src/constraints/, lib.rs, config.rs |
+| sutra/70 | constraint types + rules parsing | done | 69 | src/rules.rs |
+| sutra/71 | DD forbidden pairs maintained view | done | 69 | src/constraints/{worker,engine}.rs |
+| sutra/72 | boundary resolver | done | 70, 71 | src/constraints/resolver.rs |
+| sutra/73 | constraint waivers (DB) | done | 70 | src/db/constraints.rs, migrations |
+| sutra/74 | review integration | needs-review | 71, 73 | src/tools/review.rs |
+| sutra/75 | orient constraint section | done | 70, 73 | src/tools/orient.rs |
+| sutra/76 | guard severity filtering | ready-for-agent | 74 | src/bin/guard.rs |
+| sutra/77 | MCP constraint tools | ready-for-agent | 71, 73 | src/tools/constraints.rs (new) |
+| sutra/78 | review-1: foundation | done | 69-71 | — |
+| sutra/79 | review-2: resolver + waivers | ready-for-human | 72, 73 | — |
+| sutra/80 | review-3: integration | ready-for-human | 74-77 | — |
 
 ## Design docs
 
@@ -172,6 +202,9 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 - Unit tests: `#[cfg(test)]` in `src/rules.rs` (22 tests — parsing, identity, defaults, errors)
 - Integration tests: `tests/constraints-test.rs` (27 tests — cycles, blast radius,
   forbidden deps ad-hoc, maintained violations, eviction/rewarm)
-- Review integration: `tests/review-test.rs` (maintained view, waiver partition, delta labels)
+- Review integration: `tests/review-test.rs` (22 tests — maintained view, waiver partition,
+  delta labels, enriched violation fields, compute serialization)
+- Orient constraints: `#[cfg(test)]` in `src/tools/orient.rs` (8 constraint tests — scope
+  matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
 - Test engine setup: `DdEngine::new(Duration::from_secs(1800))`, no DB needed
-- Test DB setup (for future waivers): `Db::open_unchecked("test", dir.path())` with tempdir
+- Test DB setup (waivers): `Db::open_unchecked("test", dir.path())` with tempdir
