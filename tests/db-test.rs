@@ -53,6 +53,7 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str, kind: &str) -> i64 {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -150,6 +151,7 @@ fn test_insert_and_lookup_symbol() {
             docstring: Some("docs"),
             cyclomatic: None,
             cognitive: None,
+            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })
@@ -328,6 +330,7 @@ fn test_find_enclosing_symbol_exact() {
             docstring: None,
             cyclomatic: None,
             cognitive: None,
+            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })
@@ -358,6 +361,7 @@ fn test_find_enclosing_symbol_nested() {
             docstring: None,
             cyclomatic: None,
             cognitive: None,
+            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })
@@ -379,6 +383,7 @@ fn test_find_enclosing_symbol_nested() {
             docstring: None,
             cyclomatic: None,
             cognitive: None,
+            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })
@@ -411,6 +416,7 @@ fn test_find_enclosing_symbol_outside() {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })

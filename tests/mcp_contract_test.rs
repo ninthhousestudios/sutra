@@ -30,6 +30,7 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -73,6 +74,7 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -574,6 +576,7 @@ fn test_winnow_rank_by_complexity() {
         docstring: None,
         cyclomatic: Some(15),
         cognitive: Some(25),
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -613,6 +616,7 @@ fn test_refs_context_kind_filter() {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })

@@ -23,6 +23,7 @@ fn make_symbol(
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     }

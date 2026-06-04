@@ -8,9 +8,11 @@ mod components;
 mod constraints;
 mod conventions;
 mod graph;
+mod health;
 mod migrations;
 
 pub use constraints::ConstraintWaiverRow;
+pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
@@ -60,6 +62,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "constraint_waivers", partition: TablePartition::Durable, is_virtual: false },
     TableMeta { name: "commits", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "commit_files", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "health_findings", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "health_waivers", partition: TablePartition::Durable, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -99,6 +103,7 @@ pub struct SymbolRow {
     pub pagerank: Option<f64>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
+    pub max_nesting: Option<i64>,
     pub flags: i64,
     pub language_attrs: Option<String>,
 }
@@ -119,6 +124,7 @@ pub struct InsertSymbolParams<'a> {
     pub docstring: Option<&'a str>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
+    pub max_nesting: Option<i64>,
     pub flags: i64,
     pub language_attrs: Option<&'a str>,
 }
@@ -431,9 +437,9 @@ impl Db {
                 file_id, qualified_name, short_name, kind,
                 signature, signature_hash, visibility,
                 start_line, start_col, end_line, end_col,
-                parent_symbol_id, docstring, cyclomatic, cognitive, flags,
+                parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
                 language_attrs
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 p.file_id,
                 p.qualified_name,
@@ -450,6 +456,7 @@ impl Db {
                 p.docstring,
                 p.cyclomatic,
                 p.cognitive,
+                p.max_nesting,
                 p.flags,
                 p.language_attrs,
             ],
@@ -473,7 +480,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, flags, language_attrs
+                    cyclomatic, cognitive, max_nesting, flags, language_attrs
              FROM symbols WHERE id = ?1",
             params![id],
             map_symbol_row,
@@ -492,7 +499,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, flags, language_attrs
+                    cyclomatic, cognitive, max_nesting, flags, language_attrs
              FROM symbols WHERE qualified_name = ?1",
             params![name],
             map_symbol_row,
@@ -534,7 +541,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, flags, language_attrs
+                            cyclomatic, cognitive, max_nesting, flags, language_attrs
                      FROM symbols
                      WHERE short_name = ?1 AND kind = ?2
                      LIMIT ?3",
@@ -544,7 +551,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, flags, language_attrs
+                            cyclomatic, cognitive, max_nesting, flags, language_attrs
                      FROM symbols
                      WHERE short_name = ?1
                      LIMIT ?2",
@@ -592,7 +599,7 @@ impl Db {
                             signature, signature_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, flags, language_attrs
+                            cyclomatic, cognitive, max_nesting, flags, language_attrs
                      FROM symbols WHERE id = ?1",
                     params![sid],
                     map_symbol_row,
@@ -617,7 +624,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, flags, language_attrs
+                    cyclomatic, cognitive, max_nesting, flags, language_attrs
              FROM symbols
              WHERE file_id = ?1
              ORDER BY start_line",
@@ -634,7 +641,7 @@ impl Db {
                     signature, signature_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, flags, language_attrs
+                    cyclomatic, cognitive, max_nesting, flags, language_attrs
              FROM symbols ORDER BY file_id, start_line",
         )?;
         let rows: rusqlite::Result<Vec<SymbolRow>> =
@@ -1086,8 +1093,9 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
         pagerank: row.get(14)?,
         cyclomatic: row.get(15)?,
         cognitive: row.get(16)?,
-        flags: row.get(17)?,
-        language_attrs: row.get(18)?,
+        max_nesting: row.get(17)?,
+        flags: row.get(18)?,
+        language_attrs: row.get(19)?,
     })
 }
 

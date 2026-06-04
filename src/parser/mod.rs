@@ -32,6 +32,7 @@ pub struct ExtractedSymbol {
     pub docstring: Option<String>,
     pub cyclomatic: Option<u32>,
     pub cognitive: Option<u32>,
+    pub max_nesting: Option<u32>,
     pub flags: u32,
     pub language_attrs: Option<String>,
 }

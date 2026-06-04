@@ -376,17 +376,18 @@ fn extract_symbol(
     let (signature, signature_hash) = extract_signature(node, src, kind);
     let language_attrs = extract_language_attrs(node, src, kind);
 
-    let (cyclomatic, cognitive) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+    let (cyclomatic, cognitive, max_nesting) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
         if let Some(body) = node.child_by_field_name("body") {
             (
                 Some(complexity::cyclomatic(body, src, "rust")),
                 Some(complexity::cognitive(body, src, "rust")),
+                Some(complexity::max_nesting_depth(body, src, "rust")),
             )
         } else {
-            (Some(1), Some(0))
+            (Some(1), Some(0), Some(0))
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     Some(ExtractedSymbol {
@@ -404,6 +405,7 @@ fn extract_symbol(
         docstring,
         cyclomatic,
         cognitive,
+        max_nesting,
         flags: 0,
         language_attrs,
     })
@@ -436,6 +438,7 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
         docstring,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs,
     })

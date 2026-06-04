@@ -112,6 +112,7 @@ fn insert_symbols_dfs(
             docstring: sym.docstring.as_deref(),
             cyclomatic: sym.cyclomatic.map(|v| v as i64),
             cognitive: sym.cognitive.map(|v| v as i64),
+            max_nesting: sym.max_nesting.map(|v| v as i64),
             flags: sym.flags as i64,
             language_attrs: sym.language_attrs.as_deref(),
         })?;
@@ -267,6 +268,7 @@ fn resolve_file_refs(
             docstring: s.docstring.clone(),
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),
+            max_nesting: s.max_nesting.map(|v| v as u32),
             flags: 0,
             language_attrs: None,
         })
@@ -598,6 +600,12 @@ fn post_parse_sequence(
         if alias_count > 0 {
             info!(alias_count, "synced vocabulary aliases");
         }
+
+        let findings = crate::health::compute_all_health_findings(db)?;
+        if !findings.is_empty() {
+            info!(count = findings.len(), "computed health findings");
+        }
+        db.replace_health_findings(&findings)?;
     }
 
     Ok((unresolved_count, skipped_count))

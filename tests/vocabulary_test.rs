@@ -27,6 +27,7 @@ fn insert_symbol(db: &Db, file_id: i64, qualified: &str, short: &str, kind: &str
         docstring: None,
         cyclomatic: None,
         cognitive: None,
+        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })

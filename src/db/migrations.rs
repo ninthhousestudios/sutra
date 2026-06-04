@@ -136,6 +136,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0026_clustering_commit_timestamp.sql"),
         false,
     ),
+    (
+        "0027_health_findings",
+        include_str!("../../migrations/0027_health_findings.sql"),
+        true,
+    ),
+    (
+        "0028_health_waivers",
+        include_str!("../../migrations/0028_health_waivers.sql"),
+        false,
+    ),
 ];
 
 impl Db {

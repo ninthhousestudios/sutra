@@ -9,6 +9,7 @@ pub mod freshness;
 pub mod git;
 pub mod graph;
 pub mod guard;
+pub mod health;
 pub mod mcp;
 pub mod parser;
 pub mod pipeline;
