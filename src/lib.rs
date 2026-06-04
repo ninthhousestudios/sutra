@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod resolver;
 pub mod rest;
 pub mod rules;
+pub mod similarity;
 pub mod tools;
 pub mod vocabulary;
 pub mod workspace;

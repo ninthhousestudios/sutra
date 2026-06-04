@@ -146,6 +146,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0028_health_waivers.sql"),
         false,
     ),
+    (
+        "0029_hrr_codebook",
+        include_str!("../../migrations/0029_hrr_codebook.sql"),
+        false,
+    ),
+    (
+        "0030_hrr_vectors",
+        include_str!("../../migrations/0030_hrr_vectors.sql"),
+        true,
+    ),
 ];
 
 impl Db {

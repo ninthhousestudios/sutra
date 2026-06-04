@@ -10,6 +10,7 @@ mod conventions;
 mod graph;
 mod health;
 mod migrations;
+mod similarity;
 
 pub use constraints::ConstraintWaiverRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
@@ -64,6 +65,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "commit_files", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "health_findings", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "health_waivers", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "hrr_codebook", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "hrr_vectors", partition: TablePartition::Ephemeral, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
