@@ -795,6 +795,154 @@ forbidden_deps = [
 }
 
 #[test]
+fn waived_constraint_violations_appear_in_output() {
+    let (dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let findings = review::ReviewFindings {
+        constraint_violations: vec![],
+        waived_constraint_violations: vec![review::WaivedConstraintViolation {
+            constraint_id: "abc12345".into(),
+            constraint_name: Some("no-core-internal".into()),
+            constraint_kind: "forbidden_dep".into(),
+            severity: "blocking".into(),
+            provenance: None,
+            from_path: "src/core.rs".into(),
+            to_path: "src/internal.rs".into(),
+            component_context: None,
+            detail: "forbidden: src/core.rs -> src/internal.rs".into(),
+            rationale: "legacy coupling".into(),
+            waived_by: "josh".into(),
+        }],
+        constraint_violations_total: 1,
+        convention_violations: vec![],
+        convention_matches: vec![],
+        waived_violations: vec![],
+        drift_alerts: vec![],
+    };
+
+    let result =
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+
+    let cv = result["constraint_violations"].as_array().unwrap();
+    assert!(cv.is_empty(), "waived constraint violations should not appear as regular violations");
+
+    let wcv = result["waived_constraint_violations"].as_array().unwrap();
+    assert_eq!(wcv.len(), 1);
+    assert_eq!(wcv[0]["constraint_id"], "abc12345");
+    assert_eq!(wcv[0]["waived"], true);
+    assert_eq!(wcv[0]["rationale"], "legacy coupling");
+    assert_eq!(wcv[0]["waived_by"], "josh");
+    assert_eq!(wcv[0]["kind"], "forbidden_dep");
+}
+
+#[test]
+fn build_findings_constraint_delta_labels_introduced() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[constraints]
+forbidden_deps = [
+  { from = "src/ui/*", to = "src/db/*" },
+]
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true).unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true).unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h3", 50, true).unwrap();
+
+    let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
+    let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
+    let f_lib = db.file_by_path("src/lib.rs").unwrap().unwrap();
+
+    db.insert_symbol(&sym(f_view.id, "view::render", "render", None, 1, 10, Some(2))).unwrap();
+    db.insert_symbol(&sym(f_query.id, "query::fetch", "fetch", None, 1, 10, Some(2))).unwrap();
+    db.insert_symbol(&sym(f_lib.id, "lib::init", "init", None, 1, 10, Some(2))).unwrap();
+
+    // view.rs imports query.rs (forbidden), lib.rs imports query.rs (not forbidden)
+    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
+    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
+
+    // Only view.rs is changed — its forbidden import should be detected as introduced
+    let changed = vec!["src/ui/view.rs".to_string()];
+    let registry = default_registry();
+    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+
+    assert!(!findings.constraint_violations.is_empty());
+    let v = &findings.constraint_violations[0];
+    assert_eq!(v.constraint_kind, "forbidden_dep");
+    assert!(v.detail.contains("[introduced]"));
+
+    // Total should count ALL violations, not just those touching changed files
+    assert!(findings.constraint_violations_total >= 1);
+}
+
+#[test]
+fn build_findings_partitions_constraint_waivers() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[constraints]
+forbidden_deps = [
+  { from = "src/ui/*", to = "src/db/*" },
+]
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true).unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true).unwrap();
+
+    let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
+    let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
+
+    db.insert_symbol(&sym(f_view.id, "view::render", "render", None, 1, 10, Some(2))).unwrap();
+    db.insert_symbol(&sym(f_query.id, "query::fetch", "fetch", None, 1, 10, Some(2))).unwrap();
+
+    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
+
+    // Create a constraint waiver for this specific violation
+    let constraints = sutra::rules::load_rules(dir.path()).unwrap().all_constraints().unwrap();
+    let constraint_id = &constraints[0].id;
+    db.create_constraint_waiver(
+        constraint_id,
+        None,
+        "src/ui/view.rs",
+        None,
+        "legacy coupling, will be removed in next sprint",
+        "josh",
+    )
+    .unwrap();
+
+    let changed = vec!["src/ui/view.rs".to_string()];
+    let registry = default_registry();
+    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+
+    assert!(
+        findings.constraint_violations.is_empty(),
+        "waived violations should not appear in constraint_violations"
+    );
+    assert_eq!(findings.waived_constraint_violations.len(), 1);
+    let w = &findings.waived_constraint_violations[0];
+    assert_eq!(w.constraint_id, *constraint_id);
+    assert_eq!(w.rationale, "legacy coupling, will be removed in next sprint");
+    assert_eq!(w.waived_by, "josh");
+    assert_eq!(w.from_path, "src/ui/view.rs");
+}
+
+#[test]
 fn build_findings_persists_conventions_to_db() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
