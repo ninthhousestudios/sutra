@@ -356,16 +356,19 @@ impl SutraServer {
     #[tool(
         description = "Convention-aware orientation for a component or file scope. \
         Returns preferred conventions with signature templates, deprecated/forbidden \
-        warnings, drift alerts, active waivers, and pending lifecycle proposals. \
+        warnings, drift alerts, active waivers, pending lifecycle proposals, \
+        and active constraints (with violations and constraint waivers). \
         Scope can be a component name, component ID, or file path."
     )]
     pub async fn sutra_orient(
         &self,
         Parameters(args): Parameters<tools::orient::OrientArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
+        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::orient::handle(&db, &args.scope).map_err(sutra_to_rmcp)?;
+        let dd = self.get_dd_engine(&args.workspace);
+        let result =
+            tools::orient::handle(&db, &args.scope, &ws.root, Some(&dd)).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

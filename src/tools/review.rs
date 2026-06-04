@@ -7,15 +7,16 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
-use crate::constraints::{ConstraintResolver, DdDelta, DdEngine, DdFacts};
+use crate::constraints::{
+    self, ConstraintResolver, DdDelta, DdEngine, DdFacts,
+};
 use crate::error::Result;
 use crate::conventions::{self, FcaEngine};
 use crate::parser::adapter::LanguageRegistry;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
-use crate::rules::{self, Constraint, ConstraintKind};
+use crate::rules::{self, ConstraintKind};
 use crate::tools::scoring::{self, ChurnMap, Signal};
-use glob::{MatchOptions, Pattern};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -256,7 +257,7 @@ pub fn build_findings(
                     continue;
                 }
                 let is_introduced = !baseline_set.contains(&(from_id, to_id));
-                if let Some(c) = find_matching_constraint(
+                if let Some(c) = constraints::find_matching_constraint(
                     &all_constraints,
                     &from_path,
                     &to_path,
@@ -271,13 +272,13 @@ pub fn build_findings(
                         provenance: c.provenance.clone(),
                         from_path: from_path.clone(),
                         to_path: to_path.clone(),
-                        component_context: build_component_context(
+                        component_context: constraints::build_component_context(
                             &c.kind,
                             &file_to_component,
                             &from_path,
                             &to_path,
                         ),
-                        detail: format_violation_detail(c, &from_path, &to_path, is_introduced),
+                        detail: constraints::format_violation_detail(c, &from_path, &to_path, is_introduced),
                     });
                 }
             }
@@ -985,88 +986,3 @@ pub fn compute(
     }))
 }
 
-fn find_matching_constraint<'a>(
-    constraints: &'a [Constraint],
-    from_path: &str,
-    to_path: &str,
-    file_to_component: &HashMap<String, String>,
-    comp_name_to_id: &HashMap<String, String>,
-) -> Option<&'a Constraint> {
-    let opts = MatchOptions {
-        require_literal_separator: true,
-        ..MatchOptions::default()
-    };
-    constraints.iter().find(|c| match &c.kind {
-        ConstraintKind::ForbiddenDep { from, to } => {
-            Pattern::new(from)
-                .ok()
-                .map_or(false, |fp| fp.matches_with(from_path, opts))
-                && Pattern::new(to)
-                    .ok()
-                    .map_or(false, |tp| tp.matches_with(to_path, opts))
-        }
-        ConstraintKind::Boundary {
-            from_component,
-            to_component,
-        } => {
-            let from_cid = file_to_component.get(from_path);
-            let to_cid = file_to_component.get(to_path);
-            let from_match = from_cid.map_or(false, |c| {
-                c == from_component
-                    || comp_name_to_id
-                        .get(from_component.as_str())
-                        .map_or(false, |id| id == c)
-            });
-            let to_match = to_cid.map_or(false, |c| {
-                c == to_component
-                    || comp_name_to_id
-                        .get(to_component.as_str())
-                        .map_or(false, |id| id == c)
-            });
-            from_match && to_match
-        }
-        _ => false,
-    })
-}
-
-fn build_component_context(
-    kind: &ConstraintKind,
-    file_to_component: &HashMap<String, String>,
-    from_path: &str,
-    to_path: &str,
-) -> Option<String> {
-    match kind {
-        ConstraintKind::Boundary {
-            from_component,
-            to_component,
-        } => Some(format!("{from_component} -> {to_component}")),
-        _ => {
-            let from_c = file_to_component.get(from_path);
-            let to_c = file_to_component.get(to_path);
-            match (from_c, to_c) {
-                (Some(f), Some(t)) if f != t => Some(format!("{f} -> {t}")),
-                _ => None,
-            }
-        }
-    }
-}
-
-fn format_violation_detail(
-    c: &Constraint,
-    from: &str,
-    to: &str,
-    is_introduced: bool,
-) -> String {
-    let delta = if is_introduced { " [introduced]" } else { "" };
-    match &c.kind {
-        ConstraintKind::ForbiddenDep {
-            from: rf,
-            to: rt,
-        } => format!("forbidden: {from} -> {to} (rule: {rf} -> {rt}){delta}"),
-        ConstraintKind::Boundary {
-            from_component,
-            to_component,
-        } => format!("boundary: {from} -> {to} ({from_component} -> {to_component}){delta}"),
-        _ => format!("{}: {from} -> {to}{delta}", c.kind.kind_tag()),
-    }
-}
