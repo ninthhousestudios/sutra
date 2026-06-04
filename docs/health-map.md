@@ -4,17 +4,22 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-04 (5e-2: health scoring with category capping)
+Last updated: 2026-06-04 (5e-3: git-organizational biomarkers)
 
 ## Module layout
 
 ```
 src/health/
-  mod.rs            — re-exports from findings and scoring
+  mod.rs            — re-exports from findings, git_metrics, and scoring
   findings.rs       — HealthFinding, BiomarkerKind (13 variants + from_str),
                       HealthSeverity (Advisory, Informational — never Blocking,
                       + from_str), compute_nested_complexity,
-                      compute_all_health_findings
+                      compute_all_health_findings(db, workspace_root)
+  git_metrics.rs    — git-organizational biomarkers consuming commits +
+                      commit_files tables. compute_co_change_scatter,
+                      compute_change_entropy, compute_ownership_risk,
+                      compute_hidden_coupling. OwnersConfig + load_owners_config
+                      for .sutra/owners.toml alias mapping.
   scoring.rs        — HealthCategory (5 variants), category caps, biomarker
                       weights (repowise calibrated), severity weights,
                       score_file (category capping + proportional scaling),
@@ -34,6 +39,12 @@ src/parser/
   dart.rs           — same pattern for Dart
 
 src/db/
+  graph.rs          — Db methods for git-organizational queries:
+                      file_cochange_partners (file_id, partner_count, commit_count),
+                      file_commit_sizes(max_width) → (file_id, committed_at, file_count),
+                      file_author_commits → (file_id, author, commit_count).
+                      Also: cochange_pairs_above_threshold, static_file_edges
+                      (both used by hidden_coupling).
   health.rs         — HealthFindingRow, HealthWaiverRow, NestingExceedRow.
                       Db methods: symbols_exceeding_nesting, replace_health_findings,
                       get_health_findings (optional file_id + biomarker_kind filters),
@@ -124,9 +135,12 @@ parse_workspace / parse_changed_files
         └── insert_symbols_dfs writes max_nesting to symbols table
   └── post_parse_sequence
         └── ... ref resolution, graph rollups, git co-change, components ...
-        └── compute_all_health_findings(db)  ← NEW
+        └── compute_all_health_findings(db, workspace_root)
               └── compute_nested_complexity: query symbols WHERE max_nesting > 4
-              └── (future biomarkers append here)
+              └── compute_co_change_scatter: file_cochange_partners query
+              └── compute_change_entropy: file_commit_sizes + decay weighting
+              └── compute_ownership_risk: file_author_commits + owners.toml aliases
+              └── compute_hidden_coupling: cochange_pairs - static_file_edges
         └── replace_health_findings(findings) — DELETE + INSERT all
   └── record_snapshot (unchanged — health score still uses old model)
 ```
@@ -146,6 +160,38 @@ using `file_ids_needing_resolution`.
   - Rust: if, while, for, loop increment nesting; match does not; closures do
   - Dart: if, while, for, do increment; switch does not; function expressions do
   - Else-if chains are flat (no extra nesting per chained if)
+
+## git-organizational biomarkers (git_metrics.rs)
+
+All consume `commits` + `commit_files` tables populated by pipeline.
+No separate `git log` subprocess. File-level (symbol_id: None).
+
+### co_change_scatter (weight 1.80, Advisory)
+- Fires when: distinct co-change partners >= 8 AND commit count >= 3
+- DB query: `file_cochange_partners()` — self-join on commit_files
+- Metric: partner count. Threshold: 8.
+
+### change_entropy (weight 1.51, Advisory)
+- Hassan's History Complexity Metric (ICSE 2009)
+- Per commit touching file: contribution = (1/F) × log2(F) × decay
+- Decay: half-life 180 days, reference time = newest commit in DB
+- Commits wider than 30 files excluded (noise filter)
+- Single-file commits contribute zero (log2(1) = 0)
+- Threshold: 2.0 (placeholder — needs repowise calibration)
+
+### ownership_risk (weight 1.38, Advisory)
+- Fires when: top owner share < 40% OR 3+ minor contributors (< 5% each)
+- DB query: `file_author_commits()` — GROUP BY file_id, author
+- `.sutra/owners.toml` alias mapping: `[aliases]` section maps
+  agent emails to canonical human emails. Without file, each author
+  is treated as distinct (conservative default).
+- Metric: top owner share (if top trigger) or minor count (if minor trigger)
+
+### hidden_coupling (weight 1.00, escalating severity)
+- Reuses `cochange_pairs_above_threshold(0.50)` minus `static_file_edges()`
+- 50-65% Jaccard → Informational, >= 65% → Advisory
+- Emits two findings per pair (one per file)
+- Static edges: resolved refs + imports between files
 
 ## PRD and arc context
 
@@ -198,15 +244,16 @@ scale). Legacy `compute_file_scores` (0–100 scale) remains for
 |---|---|---|---|
 | sutra/84 | health finding model + first biomarker | done | this doc |
 | sutra/85 | health scoring with category capping | done | scoring.rs + tool rewrite |
-| sutra/86 | git-organizational biomarkers | ready-for-agent | commit_files + commits tables |
+| sutra/86 | git-organizational biomarkers | done | git_metrics.rs, db/graph.rs queries |
 | sutra/87 | review-1: health foundation | ready-for-human | review gate |
 | sutra/93 | semantic diff for review | ready-for-agent | HRR vectors |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
-- Integration tests: `tests/health-test.rs` (17 tests — model, threshold,
-  DB round-trip, waiver CRUD, waiver exclusion, scoring: proportional scaling,
-  category cap enforcement, component aggregation, edge cases)
+- Integration tests: `tests/health-test.rs` (29 tests — model, threshold,
+  DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
+  biomarkers: scatter, entropy, ownership, coupling, alias merging)
 - Test DB setup: `Db::open_unchecked("test", dir.path())` with tempdir
-- Seed helper: `seed_fn(db, file_id, qn, sn, max_nesting)` in health-test.rs
+- Seed helpers: `seed_fn(db, file_id, qn, sn, max_nesting)`,
+  `seed_commits(db, commits, pairs)` in health-test.rs
