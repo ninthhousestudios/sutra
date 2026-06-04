@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-04 (5d-8: guard severity filtering)
+Last updated: 2026-06-04 (5d-9: MCP constraint tools)
 
 ## Module layout
 
@@ -46,6 +46,12 @@ src/tools/
                       glob, boundary, max_fan_in, no_cycles).
                       compute_violations: DD engine ingestion + violation query.
                       Filters violations + constraint waivers to component files.
+  constraints.rs    — MCP tool: sutra_constraints. Actions: list (all
+                      constraints with metadata + waiver counts), violations
+                      (DD maintained view — forbidden_dep, boundary, no_cycles;
+                      excludes max_fan_in), waive (create constraint waiver),
+                      unwaive (revoke waiver). Thin translation over library
+                      API + DB CRUD, following conventions.rs pattern.
 
 src/guard.rs        — Lightweight per-edit constraint check.
                       check_file_constraints: queries imports table + rules TOML
@@ -206,7 +212,7 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 | sutra/74 | review integration | needs-review | 71, 73 | src/tools/review.rs |
 | sutra/75 | orient constraint section | done | 70, 73 | src/tools/orient.rs |
 | sutra/76 | guard severity filtering | done | 74 | src/guard.rs, src/bin/guard.rs |
-| sutra/77 | MCP constraint tools | ready-for-agent | 71, 73 | src/tools/constraints.rs (new) |
+| sutra/77 | MCP constraint tools | needs-review | 71, 73 | src/tools/constraints.rs |
 | sutra/78 | review-1: foundation | done | 69-71 | — |
 | sutra/79 | review-2: resolver + waivers | ready-for-human | 72, 73 | — |
 | sutra/80 | review-3: integration | ready-for-human | 74-77 | — |

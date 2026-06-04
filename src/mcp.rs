@@ -392,6 +392,27 @@ impl SutraServer {
     }
 
     #[tool(
+        description = "Manage architectural constraints and their violations. \
+        Actions: list (all constraints with kind, severity, name, provenance, scope, waiver count), \
+        violations (current constraint violations from DD maintained view — covers forbidden_dep, \
+        boundary, and no_cycles; does not include max_fan_in), \
+        waive (constraint_id, file_path, rationale, waived_by; optional constraint_name, \
+        symbol_qualified_name), \
+        unwaive (waiver_id)."
+    )]
+    pub async fn sutra_constraints(
+        &self,
+        Parameters(args): Parameters<tools::constraints::ConstraintsArgs>,
+    ) -> Result<String, ErrorData> {
+        let ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let dd = self.get_dd_engine(&args.workspace);
+        let result = tools::constraints::handle(&db, &ws.root, Some(&dd), &args)
+            .map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
         description = "Resolve a vocabulary term to code locations. Searches aliases \
         (from .sutra/aliases.toml), component names, and semantic anchor names. \
         Returns matches in priority order with orphan detection."

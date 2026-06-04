@@ -1,6 +1,7 @@
 pub mod calls;
 pub mod cochange;
 pub mod components;
+pub mod constraints;
 pub mod conventions;
 pub mod dead;
 pub mod deps;
