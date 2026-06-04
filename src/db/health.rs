@@ -230,11 +230,15 @@ impl Db {
             .into_iter()
             .map(|f| {
                 let file_path = self.file_path_by_id(f.file_id);
+                let symbol_name = f.symbol_id.and_then(|sid| self.symbol_qualified_name(sid).ok());
                 let is_waived = if let Ok(ref path) = file_path {
                     waivers.iter().any(|w| {
                         w.biomarker_kind == f.biomarker_kind
                             && w.file_path == *path
-                            && w.symbol_qualified_name.is_none()
+                            && match &w.symbol_qualified_name {
+                                None => true,
+                                Some(wname) => symbol_name.as_deref() == Some(wname.as_str()),
+                            }
                     })
                 } else {
                     false
@@ -243,6 +247,16 @@ impl Db {
             })
             .collect();
         Ok(results)
+    }
+
+    fn symbol_qualified_name(&self, symbol_id: i64) -> Result<String> {
+        let conn = self.conn.lock();
+        let name: String = conn.query_row(
+            "SELECT qualified_name FROM symbols WHERE id = ?1",
+            params![symbol_id],
+            |row| row.get(0),
+        )?;
+        Ok(name)
     }
 
     fn file_path_by_id(&self, file_id: i64) -> Result<String> {

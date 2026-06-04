@@ -162,13 +162,10 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT cf1.file_id,
                     COUNT(DISTINCT cf2.file_id) AS partner_count,
-                    fc.commit_count
+                    COUNT(DISTINCT cf1.commit_hash) AS cochange_commit_count
              FROM commit_files cf1
              JOIN commit_files cf2
                ON cf1.commit_hash = cf2.commit_hash AND cf1.file_id != cf2.file_id
-             JOIN (SELECT file_id, COUNT(*) AS commit_count
-                   FROM commit_files GROUP BY file_id) fc
-               ON fc.file_id = cf1.file_id
              GROUP BY cf1.file_id",
         )?;
         let rows = stmt.query_map([], |row| {

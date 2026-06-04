@@ -203,6 +203,55 @@ fn waiver_does_not_affect_different_biomarker() {
 }
 
 #[test]
+fn waiver_symbol_scoped_matches_correct_symbol() {
+    let (dir, db) = setup_db();
+    let fid = seed_file(&db, "src/multi.rs");
+    let _s1 = seed_fn(&db, fid, "multi::deep_one", "deep_one", Some(6));
+    let _s2 = seed_fn(&db, fid, "multi::deep_two", "deep_two", Some(7));
+
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
+    db.replace_health_findings(&findings).unwrap();
+
+    // Waive only deep_one, not deep_two
+    db.create_health_waiver(
+        "nested_complexity",
+        "src/multi.rs",
+        Some("multi::deep_one"),
+        "known pattern",
+        "josh",
+    )
+    .unwrap();
+
+    let results = db.get_health_findings_with_waiver_status().unwrap();
+    assert_eq!(results.len(), 2, "both findings should still exist");
+    let waived_count = results.iter().filter(|(_, w)| *w).count();
+    let unwaived_count = results.iter().filter(|(_, w)| !*w).count();
+    assert_eq!(waived_count, 1, "only the matching symbol should be waived");
+    assert_eq!(unwaived_count, 1, "the other symbol should remain active");
+}
+
+#[test]
+fn waiver_file_level_covers_all_symbols() {
+    let (dir, db) = setup_db();
+    let fid = seed_file(&db, "src/blanket.rs");
+    seed_fn(&db, fid, "blanket::a", "a", Some(6));
+    seed_fn(&db, fid, "blanket::b", "b", Some(7));
+
+    let findings = compute_all_health_findings(&db, dir.path()).unwrap();
+    db.replace_health_findings(&findings).unwrap();
+
+    // File-level waiver (no symbol) should cover all findings in the file
+    db.create_health_waiver("nested_complexity", "src/blanket.rs", None, "blanket waive", "josh")
+        .unwrap();
+
+    let results = db.get_health_findings_with_waiver_status().unwrap();
+    assert!(
+        results.iter().all(|(_, w)| *w),
+        "file-level waiver should cover all symbols"
+    );
+}
+
+#[test]
 fn waiver_crud() {
     let (_dir, db) = setup_db();
 
@@ -417,6 +466,50 @@ fn co_change_scatter_requires_minimum_commits() {
     let findings = compute_co_change_scatter(&db).unwrap();
     let hub_findings: Vec<_> = findings.iter().filter(|f| f.file_id == hub).collect();
     assert!(hub_findings.is_empty(), "only 2 commits, should not fire");
+}
+
+#[test]
+fn co_change_scatter_solo_commits_dont_inflate_guard() {
+    let (_dir, db) = setup_db();
+    let hub = seed_file(&db, "src/hub.rs");
+    let mut partners = Vec::new();
+    for i in 0..10 {
+        partners.push(seed_file(&db, &format!("src/s_{i}.rs")));
+    }
+
+    let now = 1_700_000_000i64;
+    // 4 solo commits (hub only — no co-change partners)
+    let mut commits = Vec::new();
+    let mut pairs = Vec::new();
+    for i in 0..4 {
+        let hash = format!("solo_{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: now + i * 86400,
+            author: "a@b".into(),
+        });
+        pairs.push((hash, hub));
+    }
+    // 1 broad commit touching hub + all 10 partners
+    commits.push(CommitRow {
+        hash: "broad".into(),
+        committed_at: now + 5 * 86400,
+        author: "a@b".into(),
+    });
+    pairs.push(("broad".into(), hub));
+    for &pid in &partners {
+        pairs.push(("broad".into(), pid));
+    }
+
+    seed_commits(&db, &commits, &pairs);
+
+    // hub has 10 partners but only 1 co-change commit — guard should reject
+    let findings = compute_co_change_scatter(&db).unwrap();
+    let hub_findings: Vec<_> = findings.iter().filter(|f| f.file_id == hub).collect();
+    assert!(
+        hub_findings.is_empty(),
+        "solo commits should not inflate the co-change commit guard"
+    );
 }
 
 #[test]
