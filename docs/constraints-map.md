@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-04 (5d-7: orient constraint section)
+Last updated: 2026-06-04 (5d-8: guard severity filtering)
 
 ## Module layout
 
@@ -46,6 +46,20 @@ src/tools/
                       glob, boundary, max_fan_in, no_cycles).
                       compute_violations: DD engine ingestion + violation query.
                       Filters violations + constraint waivers to component files.
+
+src/guard.rs        — Lightweight per-edit constraint check.
+                      check_file_constraints: queries imports table + rules TOML
+                      directly from read-only SQLite connection. Matches edges
+                      against ForbiddenDep/Boundary constraints, checks waivers.
+                      ConstraintFinding type with severity + waived flag.
+                      format_constraint_deny for deny-reason formatting.
+
+src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
+                      PreToolUse path: lightweight check, blocking → deny,
+                      advisory/informational → stderr, waived → silent.
+                      --check-constraints mode: full build_findings with
+                      ephemeral DdEngine, structured JSON output, exit code 1
+                      if blocking violations exist. Supports --staged flag.
 ```
 
 ## Key types
@@ -102,6 +116,12 @@ for violations caused by changed files' imports (DdDelta round-trip).
 ### WaivedConstraintViolation (review.rs)
 Same fields as ConstraintViolation plus `rationale` and `waived_by`. Partitioned
 from violations using constraint_waivers DB table (parallel to convention waivers).
+
+### ConstraintFinding (guard.rs)
+Lightweight per-edit type: `{ constraint_id, name, kind, severity: Severity,
+from_path, to_path, detail, waived: bool }`. Produced by `check_file_constraints`
+which queries the imports table directly (no DD engine). Used in PreToolUse hook
+to block on Blocking severity.
 
 ### ConstraintViolation (mod.rs, legacy)
 Legacy type from deprecated ad-hoc path: `{ from_id, to_id, rule_from, rule_to }`.
@@ -185,7 +205,7 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 | sutra/73 | constraint waivers (DB) | done | 70 | src/db/constraints.rs, migrations |
 | sutra/74 | review integration | needs-review | 71, 73 | src/tools/review.rs |
 | sutra/75 | orient constraint section | done | 70, 73 | src/tools/orient.rs |
-| sutra/76 | guard severity filtering | ready-for-agent | 74 | src/bin/guard.rs |
+| sutra/76 | guard severity filtering | done | 74 | src/guard.rs, src/bin/guard.rs |
 | sutra/77 | MCP constraint tools | ready-for-agent | 71, 73 | src/tools/constraints.rs (new) |
 | sutra/78 | review-1: foundation | done | 69-71 | — |
 | sutra/79 | review-2: resolver + waivers | ready-for-human | 72, 73 | — |
@@ -206,5 +226,7 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   delta labels, enriched violation fields, compute serialization)
 - Orient constraints: `#[cfg(test)]` in `src/tools/orient.rs` (8 constraint tests — scope
   matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
+- Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (9 new tests — severity
+  filtering, waiver bypass, lightweight check with in-memory SQLite, advisory passthrough)
 - Test engine setup: `DdEngine::new(Duration::from_secs(1800))`, no DB needed
 - Test DB setup (waivers): `Db::open_unchecked("test", dir.path())` with tempdir
