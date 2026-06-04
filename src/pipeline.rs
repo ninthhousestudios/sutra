@@ -611,6 +611,11 @@ fn post_parse_sequence(
         if hrr_count > 0 {
             info!(count = hrr_count, "computed HRR vectors");
         }
+
+        let family_count = crate::similarity::compute_pattern_families(db)?;
+        if family_count > 0 {
+            info!(count = family_count, "detected pattern families");
+        }
     }
 
     Ok((unresolved_count, skipped_count))
@@ -635,6 +640,7 @@ fn record_snapshot(
         dead_symbol_count: aggregates.dead_symbol_count,
         hotspot_count: aggregates.hotspot_count,
         health_score: aggregates.health_score,
+        pattern_family_count: aggregates.pattern_family_count,
     })?;
     Ok(())
 }
@@ -684,6 +690,7 @@ struct SnapshotAggregates {
     dead_symbol_count: i64,
     hotspot_count: i64,
     health_score: i64,
+    pattern_family_count: i64,
 }
 
 fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
@@ -727,11 +734,14 @@ fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
         (health_sum / files.len() as f64) as i64
     };
 
+    let pattern_family_count = db.pattern_family_count()?;
+
     Ok(SnapshotAggregates {
         total_complexity,
         dead_symbol_count,
         hotspot_count,
         health_score,
+        pattern_family_count,
     })
 }
 

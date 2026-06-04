@@ -214,6 +214,7 @@ pub struct SnapshotParams {
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
     pub health_score: i64,
+    pub pattern_family_count: i64,
 }
 
 #[derive(Debug)]
@@ -995,8 +996,9 @@ impl Db {
             "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
                                     refs_extracted, parse_errors, duration_ms,
                                     total_complexity, dead_symbol_count,
-                                    hotspot_count, health_score)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                    hotspot_count, health_score,
+                                    pattern_family_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 now,
                 p.files_parsed,
@@ -1008,6 +1010,7 @@ impl Db {
                 p.dead_symbol_count,
                 p.hotspot_count,
                 p.health_score,
+                p.pattern_family_count,
             ],
         )?;
         Ok(conn.last_insert_rowid())

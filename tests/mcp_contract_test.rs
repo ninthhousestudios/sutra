@@ -45,6 +45,7 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         dead_symbol_count: 0,
         hotspot_count: 0,
         health_score: 0,
+        ..Default::default()
     })
     .unwrap();
 
@@ -89,6 +90,7 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         dead_symbol_count: 0,
         hotspot_count: 0,
         health_score: 0,
+        ..Default::default()
     })
     .unwrap();
 

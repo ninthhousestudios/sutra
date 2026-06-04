@@ -156,6 +156,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0030_hrr_vectors.sql"),
         true,
     ),
+    (
+        "0031_pattern_families",
+        include_str!("../../migrations/0031_pattern_families.sql"),
+        true,
+    ),
+    (
+        "0032_snapshot_family_count",
+        include_str!("../../migrations/0032_snapshot_family_count.sql"),
+        true,
+    ),
 ];
 
 impl Db {

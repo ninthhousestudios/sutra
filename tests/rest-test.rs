@@ -60,6 +60,7 @@ async fn status_returns_workspace_list() {
         dead_symbol_count: 0,
         hotspot_count: 0,
         health_score: 0,
+        ..Default::default()
     })
     .unwrap();
 
