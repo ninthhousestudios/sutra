@@ -545,6 +545,38 @@ fn post_parse_sequence(
             Some(file_ids_needing_resolution),
         )?;
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency)?;
+
+        let cochange_window = components::load_config(workspace_root)?
+            .cochange_window_days
+            .unwrap_or(90);
+        let commit_file_data = crate::git::git_commit_files(workspace_root, cochange_window)
+            .unwrap_or_default();
+        if !commit_file_data.is_empty() {
+            let path_to_id: std::collections::HashMap<&str, i64> =
+                files.iter().map(|f| (f.path.as_str(), f.id)).collect();
+            let mut seen_hashes: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            let mut commit_rows = Vec::new();
+            for cf in &commit_file_data {
+                if seen_hashes.insert(cf.hash.as_str()) {
+                    commit_rows.push(crate::db::CommitRow {
+                        hash: cf.hash.clone(),
+                        committed_at: cf.timestamp,
+                        author: cf.author.clone(),
+                    });
+                }
+            }
+            let db_pairs: Vec<(String, i64)> = commit_file_data
+                .iter()
+                .filter_map(|cf| {
+                    path_to_id
+                        .get(cf.path.as_str())
+                        .map(|&id| (cf.hash.clone(), id))
+                })
+                .collect();
+            db.replace_commit_files(&commit_rows, &db_pairs)?;
+        }
+
         let component_count = components::discover_components(db, &files, workspace_root, boundary_multipliers)?;
         if component_count > 0 {
             info!(component_count, "discovered components");

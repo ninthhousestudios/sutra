@@ -25,7 +25,17 @@ pub struct ComponentsConfig {
     pub resolution: Option<f64>,
     #[serde(default)]
     pub staleness_threshold: Option<f64>,
+    #[serde(default)]
+    pub cochange_threshold: Option<f64>,
+    #[serde(default)]
+    pub cochange_weight: Option<f64>,
+    #[serde(default)]
+    pub cochange_window_days: Option<u32>,
 }
+
+const DEFAULT_COCHANGE_THRESHOLD: f64 = 0.5;
+const DEFAULT_COCHANGE_WEIGHT: f64 = 5.0;
+const DEFAULT_COCHANGE_WINDOW_DAYS: u32 = 90;
 
 pub fn load_config(root: &Path) -> Result<ComponentsConfig> {
     let path = root.join(".sutra/components.toml");
@@ -116,6 +126,69 @@ fn apply_boundary_hints(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Co-change edges
+// ---------------------------------------------------------------------------
+
+fn is_test_file(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    segments
+        .iter()
+        .any(|s| matches!(*s, "test" | "tests" | "spec" | "__tests__"))
+        || path.contains("_test.")
+        || path.contains(".test.")
+        || path.contains("_spec.")
+        || path.contains(".spec.")
+        || segments
+            .last()
+            .map_or(false, |s| s.starts_with("test_"))
+}
+
+fn add_cochange_edges(
+    adj: &mut WeightedAdj,
+    db: &Db,
+    files: &[FileRow],
+    config: &ComponentsConfig,
+) -> Result<usize> {
+    let threshold = config.cochange_threshold.unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
+    let weight_scale = config.cochange_weight.unwrap_or(DEFAULT_COCHANGE_WEIGHT);
+
+    let pairs = db.cochange_pairs_above_threshold(threshold)?;
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+
+    let id_to_path: HashMap<i64, &str> =
+        files.iter().map(|f| (f.id, f.path.as_str())).collect();
+
+    let static_edges: HashSet<(i64, i64)> = adj
+        .iter()
+        .flat_map(|(&a, neighbors)| {
+            neighbors
+                .iter()
+                .map(move |&(b, _)| (a.min(b), a.max(b)))
+        })
+        .collect();
+
+    let mut added = 0;
+    for (fa, fb, jaccard, _shared) in pairs {
+        let (lo, hi) = (fa.min(fb), fa.max(fb));
+        if static_edges.contains(&(lo, hi)) {
+            continue;
+        }
+        if let (Some(pa), Some(pb)) = (id_to_path.get(&fa), id_to_path.get(&fb)) {
+            if is_test_file(pa) != is_test_file(pb) {
+                continue;
+            }
+        }
+        let w = weight_scale * jaccard;
+        adj.entry(fa).or_default().push((fb, w));
+        adj.entry(fb).or_default().push((fa, w));
+        added += 1;
+    }
+    Ok(added)
 }
 
 // ---------------------------------------------------------------------------
@@ -601,11 +674,11 @@ fn edge_count(files: &[FileRow], db: &Db) -> Result<usize> {
 
 fn clustering_config_hash(
     boundary_multipliers: &HashMap<String, f64>,
-    resolution: Option<f64>,
+    config: &ComponentsConfig,
 ) -> String {
     use std::fmt::Write;
     let mut buf = String::new();
-    if let Some(r) = resolution {
+    if let Some(r) = config.resolution {
         write!(buf, "r={r};").unwrap();
     }
     let mut keys: Vec<_> = boundary_multipliers.keys().collect();
@@ -613,6 +686,10 @@ fn clustering_config_hash(
     for k in keys {
         write!(buf, "{k}={};", boundary_multipliers[k]).unwrap();
     }
+    let ct = config.cochange_threshold.unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
+    let cw = config.cochange_weight.unwrap_or(DEFAULT_COCHANGE_WEIGHT);
+    let cwd = config.cochange_window_days.unwrap_or(DEFAULT_COCHANGE_WINDOW_DAYS);
+    write!(buf, "ct={ct};cw={cw};cwd={cwd};").unwrap();
     buf
 }
 
@@ -620,10 +697,13 @@ fn is_clustering_stale(
     db: &Db,
     current_edge_count: usize,
     current_file_count: i64,
+    current_commit_file_count: i64,
     threshold: f64,
     config_hash: &str,
 ) -> Result<bool> {
-    let Some((stored_edge_count, stored_file_count, stored_hash)) = db.clustering_meta()? else {
+    let Some((stored_edge_count, stored_file_count, stored_hash, stored_cf_count)) =
+        db.clustering_meta()?
+    else {
         return Ok(true);
     };
 
@@ -639,9 +719,23 @@ fn is_clustering_stale(
         return Ok(current_edge_count > 0);
     }
 
-    let delta = (current_edge_count as f64 - stored_edge_count as f64).abs();
-    let ratio = delta / stored_edge_count as f64;
-    Ok(ratio > threshold)
+    let edge_delta = (current_edge_count as f64 - stored_edge_count as f64).abs();
+    let edge_ratio = edge_delta / stored_edge_count as f64;
+    if edge_ratio > threshold {
+        return Ok(true);
+    }
+
+    if stored_cf_count > 0 {
+        let cf_delta = (current_commit_file_count as f64 - stored_cf_count as f64).abs();
+        let cf_ratio = cf_delta / stored_cf_count as f64;
+        if cf_ratio > threshold {
+            return Ok(true);
+        }
+    } else if current_commit_file_count > 0 {
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn run_clustering<'a>(
@@ -651,11 +745,13 @@ fn run_clustering<'a>(
     boundary_multipliers: &HashMap<String, f64>,
 ) -> Result<Option<(Vec<Vec<i64>>, HashMap<i64, &'a FileRow>, usize)>> {
     let (mut adj, edge_count) = build_weighted_adjacency(files, db)?;
+
+    apply_boundary_hints(&mut adj, files, boundary_multipliers);
+    add_cochange_edges(&mut adj, db, files, config)?;
+
     if !adj.values().any(|nbrs| !nbrs.is_empty()) {
         return Ok(None);
     }
-
-    apply_boundary_hints(&mut adj, files, boundary_multipliers);
 
     let result = if let Some(gamma) = config.resolution {
         louvain(&adj, gamma)
@@ -683,16 +779,26 @@ pub fn discover_components(
     let has_existing = db.component_count()? > 0;
     let has_membership = db.membership_count()? > 0;
     let file_count = files.len() as i64;
-    let cfg_hash = clustering_config_hash(boundary_multipliers, config.resolution);
+    let cfg_hash = clustering_config_hash(boundary_multipliers, &config);
+    let commit_file_count = db.commit_file_count()?;
 
     if has_existing && has_membership {
         let current_edge_count = edge_count(files, db)?;
-        if !is_clustering_stale(db, current_edge_count, file_count, threshold, &cfg_hash)? {
+        if !is_clustering_stale(
+            db,
+            current_edge_count,
+            file_count,
+            commit_file_count,
+            threshold,
+            &cfg_hash,
+        )? {
             return Ok(0);
         }
     }
 
-    let Some((clusters, file_map, edge_count)) = run_clustering(db, files, &config, boundary_multipliers)? else {
+    let Some((clusters, file_map, edge_count)) =
+        run_clustering(db, files, &config, boundary_multipliers)?
+    else {
         return Ok(0);
     };
 
@@ -702,7 +808,7 @@ pub fn discover_components(
         create_fresh_components(db, &clusters, &file_map)?
     };
 
-    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash)?;
+    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash, commit_file_count)?;
     Ok(count)
 }
 
@@ -1137,5 +1243,46 @@ mod tests {
         let syms = vec![make_symbol(1, "foo", "function")];
         let refs: Vec<&SymbolRow> = syms.iter().collect();
         assert_eq!(concept_density(&refs, 0), 0.0);
+    }
+
+    #[test]
+    fn test_is_test_file_directory_patterns() {
+        assert!(is_test_file("tests/foo.rs"));
+        assert!(is_test_file("src/test/helpers.rs"));
+        assert!(is_test_file("spec/models/user_spec.rb"));
+        assert!(is_test_file("src/__tests__/App.test.js"));
+    }
+
+    #[test]
+    fn test_is_test_file_name_patterns() {
+        assert!(is_test_file("src/foo_test.rs"));
+        assert!(is_test_file("src/foo.test.ts"));
+        assert!(is_test_file("src/foo_spec.rb"));
+        assert!(is_test_file("src/foo.spec.ts"));
+        assert!(is_test_file("test_helpers.py"));
+    }
+
+    #[test]
+    fn test_is_test_file_non_test() {
+        assert!(!is_test_file("src/main.rs"));
+        assert!(!is_test_file("src/db/mod.rs"));
+        assert!(!is_test_file("src/testing_utils.rs"));
+        assert!(!is_test_file("src/attestation.rs"));
+    }
+
+    #[test]
+    fn test_parse_config_cochange_fields() {
+        let c = parse_config("cochange_threshold = 0.3\ncochange_weight = 8.0\ncochange_window_days = 180").unwrap();
+        assert_eq!(c.cochange_threshold, Some(0.3));
+        assert_eq!(c.cochange_weight, Some(8.0));
+        assert_eq!(c.cochange_window_days, Some(180));
+    }
+
+    #[test]
+    fn test_parse_config_cochange_defaults() {
+        let c = parse_config("").unwrap();
+        assert!(c.cochange_threshold.is_none());
+        assert!(c.cochange_weight.is_none());
+        assert!(c.cochange_window_days.is_none());
     }
 }

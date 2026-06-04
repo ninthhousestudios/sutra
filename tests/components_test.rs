@@ -768,7 +768,7 @@ fn test_staleness_detects_edge_change_above_threshold() {
 
     let files = db.all_files().unwrap();
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    let (stored_edges, _stored_files, _) = db.clustering_meta().unwrap().unwrap();
+    let (stored_edges, _stored_files, _, _) = db.clustering_meta().unwrap().unwrap();
 
     // Add cross-cluster edges exceeding 10% of stored_edges
     assert!(stored_edges > 0, "precondition: should have edges after clustering");
@@ -789,7 +789,7 @@ fn test_staleness_detects_edge_change_above_threshold() {
     let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
     assert!(count > 0, "should recluster when edge count changed by >10%");
 
-    let (new_edges, _, _) = db.clustering_meta().unwrap().unwrap();
+    let (new_edges, _, _, _) = db.clustering_meta().unwrap().unwrap();
     assert!(
         new_edges > stored_edges,
         "new edge count ({new_edges}) should exceed stored ({stored_edges})"
@@ -848,7 +848,7 @@ fn test_staleness_ignores_edge_change_below_threshold() {
 
     let files = db.all_files().unwrap();
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    let (stored_edges, _, _) = db.clustering_meta().unwrap().unwrap();
+    let (stored_edges, _, _, _) = db.clustering_meta().unwrap().unwrap();
     // 10 files * 9 neighbors / 2 = 45 undirected edges per cluster, 90 total
     assert!(stored_edges >= 80, "should have many edges, got {stored_edges}");
 
@@ -923,7 +923,7 @@ fn test_first_run_records_metadata() {
 
     let meta = db.clustering_meta().unwrap();
     assert!(meta.is_some(), "metadata should be recorded after first clustering");
-    let (edge_count, file_count, _) = meta.unwrap();
+    let (edge_count, file_count, _, _) = meta.unwrap();
     assert_eq!(file_count, 2);
     assert!(edge_count > 0);
 }

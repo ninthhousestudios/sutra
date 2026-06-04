@@ -177,26 +177,28 @@ impl Db {
         edge_count: i64,
         file_count: i64,
         config_hash: &str,
+        commit_file_count: i64,
     ) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO component_clustering_meta (id, edge_count, file_count, clustered_at, config_hash)
-             VALUES (1, ?1, ?2, datetime('now'), ?3)
+            "INSERT INTO component_clustering_meta (id, edge_count, file_count, clustered_at, config_hash, commit_file_count)
+             VALUES (1, ?1, ?2, datetime('now'), ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
                 edge_count = excluded.edge_count,
                 file_count = excluded.file_count,
                 clustered_at = excluded.clustered_at,
-                config_hash = excluded.config_hash",
-            params![edge_count, file_count, config_hash],
+                config_hash = excluded.config_hash,
+                commit_file_count = excluded.commit_file_count",
+            params![edge_count, file_count, config_hash, commit_file_count],
         )?;
         Ok(())
     }
 
-    pub fn clustering_meta(&self) -> Result<Option<(i64, i64, String)>> {
+    pub fn clustering_meta(&self) -> Result<Option<(i64, i64, String, i64)>> {
         let conn = self.conn.lock();
         match conn.query_row(
-            "SELECT edge_count, file_count, config_hash FROM component_clustering_meta WHERE id = 1",
+            "SELECT edge_count, file_count, config_hash, commit_file_count FROM component_clustering_meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ) {
             Ok(tuple) => Ok(Some(tuple)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

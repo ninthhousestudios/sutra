@@ -4,6 +4,13 @@ use std::process::Command;
 
 use crate::error::{Result, SutraError};
 
+pub struct CommitFile {
+    pub hash: String,
+    pub timestamp: i64,
+    pub author: String,
+    pub path: String,
+}
+
 pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .arg("-C")
@@ -166,6 +173,62 @@ pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Return all (commit_hash, timestamp, author, file_path) tuples from git
+/// history within the given window. One entry per file per commit.
+pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<CommitFile>> {
+    let since = format!("{window_days} days ago");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "log",
+            "--format=COMMIT_SEP %H %at %ae",
+            "--name-only",
+            "--no-renames",
+            "--since",
+        ])
+        .arg(&since)
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git log: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    let mut current_hash = String::new();
+    let mut current_ts: i64 = 0;
+    let mut current_author = String::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("COMMIT_SEP ") {
+            let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+            if parts.len() == 3 {
+                current_hash = parts[0].to_string();
+                current_ts = parts[1].parse().unwrap_or(0);
+                current_author = parts[2].to_string();
+            }
+            continue;
+        }
+        if !current_hash.is_empty() {
+            results.push(CommitFile {
+                hash: current_hash.clone(),
+                timestamp: current_ts,
+                author: current_author.clone(),
+                path: line.to_string(),
+            });
+        }
+    }
+
+    Ok(results)
 }
 
 /// Count how many commits touched each file in the given time window.

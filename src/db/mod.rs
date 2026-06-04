@@ -58,6 +58,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "convention_snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "convention_templates", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "constraint_waivers", partition: TablePartition::Durable, is_virtual: false },
+    TableMeta { name: "commits", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "commit_files", partition: TablePartition::Ephemeral, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,6 +183,12 @@ pub struct SnapshotRow {
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
     pub health_score: i64,
+}
+
+pub struct CommitRow {
+    pub hash: String,
+    pub committed_at: i64,
+    pub author: String,
 }
 
 #[derive(Default)]
