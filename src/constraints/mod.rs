@@ -50,10 +50,10 @@ pub fn find_matching_constraint<'a>(
         ConstraintKind::ForbiddenDep { from, to } => {
             Pattern::new(from)
                 .ok()
-                .map_or(false, |fp| fp.matches_with(from_path, opts))
+                .is_some_and(|fp| fp.matches_with(from_path, opts))
                 && Pattern::new(to)
                     .ok()
-                    .map_or(false, |tp| tp.matches_with(to_path, opts))
+                    .is_some_and(|tp| tp.matches_with(to_path, opts))
         }
         ConstraintKind::Boundary {
             from_component,
@@ -61,17 +61,17 @@ pub fn find_matching_constraint<'a>(
         } => {
             let from_cid = file_to_component.get(from_path);
             let to_cid = file_to_component.get(to_path);
-            let from_match = from_cid.map_or(false, |c| {
+            let from_match = from_cid.is_some_and(|c| {
                 c == from_component
                     || comp_name_to_id
                         .get(from_component.as_str())
-                        .map_or(false, |id| id == c)
+                        .is_some_and(|id| id == c)
             });
-            let to_match = to_cid.map_or(false, |c| {
+            let to_match = to_cid.is_some_and(|c| {
                 c == to_component
                     || comp_name_to_id
                         .get(to_component.as_str())
-                        .map_or(false, |id| id == c)
+                        .is_some_and(|id| id == c)
             });
             from_match && to_match
         }

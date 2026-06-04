@@ -44,22 +44,22 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
         }
     }
 
-    if let Ok(Some(alias)) = db.find_alias(scope) {
-        if alias.target_kind == "component" {
-            let lifecycle = db.component_lifecycle_state(&alias.target_ref).unwrap_or_else(|_| "stable".into());
-            let files = components
-                .iter()
-                .find(|(id, _, _)| id == &alias.target_ref)
-                .map(|(_, _, p)| p.clone())
-                .unwrap_or_default();
-            results.push(ResolvedComponent {
-                id: alias.target_ref.clone(),
-                name: alias.term,
-                lifecycle_state: lifecycle,
-                files,
-            });
-            return Ok(results);
-        }
+    if let Ok(Some(alias)) = db.find_alias(scope)
+        && alias.target_kind == "component"
+    {
+        let lifecycle = db.component_lifecycle_state(&alias.target_ref).unwrap_or_else(|_| "stable".into());
+        let files = components
+            .iter()
+            .find(|(id, _, _)| id == &alias.target_ref)
+            .map(|(_, _, p)| p.clone())
+            .unwrap_or_default();
+        results.push(ResolvedComponent {
+            id: alias.target_ref.clone(),
+            name: alias.term,
+            lifecycle_state: lifecycle,
+            files,
+        });
+        return Ok(results);
     }
 
     for (comp_id, comp_name, paths) in &components {
@@ -272,10 +272,10 @@ fn constraints_for_component<'a>(
                     component_files.iter().any(|f| {
                         from_pat
                             .as_ref()
-                            .map_or(false, |p| p.matches_with(f, opts))
+                            .is_some_and(|p| p.matches_with(f, opts))
                             || to_pat
                                 .as_ref()
-                                .map_or(false, |p| p.matches_with(f, opts))
+                                .is_some_and(|p| p.matches_with(f, opts))
                     })
                 }
                 ConstraintKind::Boundary {
@@ -286,10 +286,10 @@ fn constraints_for_component<'a>(
                         || to_component == component_id
                         || comp_name_to_id
                             .get(from_component.as_str())
-                            .map_or(false, |id| id == component_id)
+                            .is_some_and(|id| id == component_id)
                         || comp_name_to_id
                             .get(to_component.as_str())
-                            .map_or(false, |id| id == component_id)
+                            .is_some_and(|id| id == component_id)
                 }
                 ConstraintKind::MaxFanIn { target, .. } => {
                     component_files.iter().any(|f| f == target)
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn resolve_scope_by_name() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         insert_component(&db, "comp-1", "conventions", &["src/conventions/engine.rs"]);
 
         let results = resolve_scope(&db, "conventions").unwrap();
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn resolve_scope_by_name_case_insensitive() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         insert_component(&db, "comp-1", "Conventions", &["src/conventions/engine.rs"]);
 
         let results = resolve_scope(&db, "conventions").unwrap();
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn resolve_scope_by_file() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         insert_component(&db, "comp-1", "conventions", &["src/conventions/engine.rs"]);
 
         let results = resolve_scope(&db, "src/conventions/engine.rs").unwrap();
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn resolve_scope_not_found() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         let results = resolve_scope(&db, "nonexistent").unwrap();
         assert!(results.is_empty());
     }
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn drift_from_snapshots_triggers_alert() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
         let dist_low = r#"{"kind:function": 0.8, "has_doc": 0.3}"#;
@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn drift_no_alert_when_stable() {
-        let (db, dir) = setup_db();
+        let (db, _dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
         let dist = r#"{"kind:function": 0.8}"#;
@@ -821,5 +821,223 @@ mod tests {
         let proposals = orientation["pending_proposals"].as_array().unwrap();
         assert_eq!(proposals.len(), 1);
         assert_eq!(proposals[0]["convention_id"], "conv-1");
+    }
+
+    fn write_rules(dir: &tempfile::TempDir, content: &str) {
+        let sutra_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&sutra_dir).unwrap();
+        std::fs::write(sutra_dir.join("rules.toml"), content).unwrap();
+    }
+
+    #[test]
+    fn constraints_in_scope_by_path_prefix() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs", "src/tools/orient.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+scope = "src/tools/"
+name = "no-tool-daemon"
+provenance = "docs/adr-001"
+"#,
+        );
+
+        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let section = &result["orientation"][0]["constraints"];
+        assert!(!section.is_null());
+        let active = section["active"].as_array().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0]["kind"], "forbidden_dep");
+        assert_eq!(active[0]["severity"], "blocking");
+        assert_eq!(active[0]["name"], "no-tool-daemon");
+        assert_eq!(active[0]["provenance"], "docs/adr-001");
+        assert_eq!(active[0]["scope"], "src/tools/");
+        assert_eq!(active[0]["detail"], "src/tools/* -> src/daemon.rs");
+    }
+
+    #[test]
+    fn constraints_in_scope_by_boundary() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-db", "db", &["src/db/mod.rs"]);
+        insert_component(&db, "comp-http", "http", &["src/http/mod.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "boundary"
+from_component = "db"
+to_component = "http"
+"#,
+        );
+
+        let result = handle(&db, "db", dir.path(), None).unwrap();
+        let section = &result["orientation"][0]["constraints"];
+        let active = section["active"].as_array().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0]["kind"], "boundary");
+        assert_eq!(active[0]["detail"], "db -> http");
+    }
+
+    #[test]
+    fn constraints_in_scope_by_glob() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/config.rs"
+"#,
+        );
+
+        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let active = result["orientation"][0]["constraints"]["active"]
+            .as_array()
+            .unwrap();
+        assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn constraint_out_of_scope_excluded() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/db/*"
+to = "src/http/*"
+scope = "src/db/"
+"#,
+        );
+
+        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        assert!(result["orientation"][0]["constraints"].is_null());
+    }
+
+    #[test]
+    fn constraint_waivers_shown() {
+        let (db, dir) = setup_db();
+        insert_component(
+            &db,
+            "comp-1",
+            "tools",
+            &["src/tools/review.rs", "src/tools/orient.rs"],
+        );
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+name = "no-tool-daemon"
+"#,
+        );
+
+        let constraints = rules::load_rules(dir.path()).unwrap().all_constraints().unwrap();
+        let constraint_id = &constraints[0].id;
+
+        db.create_constraint_waiver(
+            constraint_id,
+            Some("no-tool-daemon"),
+            "src/tools/review.rs",
+            None,
+            "temporary during migration",
+            "josh",
+        )
+        .unwrap();
+
+        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let section = &result["orientation"][0]["constraints"];
+        let waivers = section["waivers"].as_array().unwrap();
+        assert_eq!(waivers.len(), 1);
+        assert_eq!(waivers[0]["constraint_id"], constraint_id.as_str());
+        assert_eq!(waivers[0]["rationale"], "temporary during migration");
+        assert_eq!(waivers[0]["waived_by"], "josh");
+    }
+
+    #[test]
+    fn no_constraints_section_absent() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+
+        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        assert!(result["orientation"][0]["constraints"].is_null());
+    }
+
+    #[test]
+    fn constraints_with_violations() {
+        let (db, dir) = setup_db();
+        insert_component(
+            &db,
+            "comp-1",
+            "tools",
+            &["src/tools/review.rs", "src/tools/orient.rs"],
+        );
+
+        let review_id = db
+            .upsert_file("src/tools/review.rs", "rs", "abc123", 100, true)
+            .unwrap();
+        db.upsert_file("src/tools/orient.rs", "rs", "def456", 80, true)
+            .unwrap();
+        let daemon_id = db
+            .upsert_file("src/daemon.rs", "rs", "ghi789", 50, true)
+            .unwrap();
+
+        db.insert_import(review_id, "src/daemon.rs", Some(daemon_id), 1)
+            .unwrap();
+
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+name = "no-tool-daemon"
+"#,
+        );
+
+        let engine = DdEngine::new(std::time::Duration::from_secs(60));
+        let result = handle(&db, "tools", dir.path(), Some(&engine)).unwrap();
+        let section = &result["orientation"][0]["constraints"];
+        let violations = section["violations"].as_array().unwrap();
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0]["from_path"], "src/tools/review.rs");
+        assert_eq!(violations[0]["to_path"], "src/daemon.rs");
+        assert!(violations[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("forbidden"));
+    }
+
+    #[test]
+    fn sketch_mode_constraints_still_shown() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+        db.set_component_lifecycle("comp-1", "sketch").unwrap();
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/*"
+to = "src/banned.rs"
+"#,
+        );
+
+        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let section = &result["orientation"][0];
+        assert!(section["sketch_mode_note"].as_str().is_some());
+        let active = section["constraints"]["active"].as_array().unwrap();
+        assert_eq!(active.len(), 1);
     }
 }
