@@ -289,6 +289,8 @@ fn risk_score_clamped_to_one() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 0,
         convention_violations: (0..10)
             .map(|i| review::ConventionViolation {
                 symbol: format!("extreme_{i}::danger"),
@@ -344,18 +346,30 @@ fn constraint_violations_appear_in_output() {
     let findings = review::ReviewFindings {
         constraint_violations: vec![
             review::ConstraintViolation {
-                kind: "forbidden_dep".into(),
+                constraint_id: "abc12345".into(),
+                constraint_name: Some("no-core-internal".into()),
+                constraint_kind: "forbidden_dep".into(),
+                severity: "blocking".into(),
+                provenance: Some("docs/adr-001".into()),
                 from_path: "src/core.rs".into(),
                 to_path: "src/internal.rs".into(),
+                component_context: None,
                 detail: "forbidden: src/core.rs -> src/internal.rs".into(),
             },
             review::ConstraintViolation {
-                kind: "cycle".into(),
+                constraint_id: "builtin:cycles".into(),
+                constraint_name: None,
+                constraint_kind: "no_cycles".into(),
+                severity: "blocking".into(),
+                provenance: None,
                 from_path: "src/core.rs".into(),
                 to_path: "src/helper.rs".into(),
+                component_context: None,
                 detail: "import cycle: src/core.rs -> src/helper.rs -> src/core.rs".into(),
             },
         ],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 2,
         convention_violations: vec![],
         convention_matches: vec![],
         waived_violations: vec![],
@@ -368,9 +382,14 @@ fn constraint_violations_appear_in_output() {
     let cv = result["constraint_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 2);
     assert_eq!(cv[0]["kind"], "forbidden_dep");
+    assert_eq!(cv[0]["constraint_id"], "abc12345");
+    assert_eq!(cv[0]["constraint_name"], "no-core-internal");
+    assert_eq!(cv[0]["severity"], "blocking");
+    assert_eq!(cv[0]["provenance"], "docs/adr-001");
     assert_eq!(cv[0]["from"], "src/core.rs");
     assert_eq!(cv[0]["to"], "src/internal.rs");
-    assert_eq!(cv[1]["kind"], "cycle");
+    assert_eq!(cv[1]["kind"], "no_cycles");
+    assert_eq!(result["constraint_violations_total"].as_u64().unwrap(), 2);
 }
 
 #[test]
@@ -380,6 +399,8 @@ fn convention_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 0,
         convention_violations: vec![review::ConventionViolation {
             symbol: "core::process".into(),
             file: "src/core.rs".into(),
@@ -418,6 +439,8 @@ fn waived_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 0,
         convention_violations: vec![],
         convention_matches: vec![],
         waived_violations: vec![review::WaivedViolation {
@@ -463,11 +486,18 @@ fn violations_are_structurally_distinct() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![review::ConstraintViolation {
-            kind: "forbidden_dep".into(),
+            constraint_id: "abc12345".into(),
+            constraint_name: None,
+            constraint_kind: "forbidden_dep".into(),
+            severity: "blocking".into(),
+            provenance: None,
             from_path: "src/core.rs".into(),
             to_path: "src/internal.rs".into(),
+            component_context: None,
             detail: "forbidden dep".into(),
         }],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 1,
         convention_violations: vec![review::ConventionViolation {
             symbol: "core::process".into(),
             file: "src/core.rs".into(),
@@ -486,9 +516,11 @@ fn violations_are_structurally_distinct() {
     let result =
         review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
-    // Constraint violations have kind/from/to/detail
+    // Constraint violations have enriched fields
     let cv = &result["constraint_violations"].as_array().unwrap()[0];
     assert!(cv["kind"].is_string());
+    assert!(cv["constraint_id"].is_string());
+    assert!(cv["severity"].is_string());
     assert!(cv["from"].is_string());
     assert!(cv["to"].is_string());
     assert!(cv["detail"].is_string());
@@ -502,7 +534,7 @@ fn violations_are_structurally_distinct() {
     assert!(fv["antecedent"].is_array());
     assert!(fv["consequent"].is_array());
     assert!(fv["missing"].is_array());
-    assert!(fv.get("kind").is_none());
+    assert!(fv.get("constraint_id").is_none());
 }
 
 #[test]
@@ -522,6 +554,8 @@ fn convention_violations_increase_risk_score() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 0,
         convention_violations: vec![
             review::ConventionViolation {
                 symbol: "core::process".into(),
@@ -614,6 +648,8 @@ fn recommended_reads_ranks_violation_sites_first() {
     // Consumer_3 has a convention violation — should rank first in reads
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        waived_constraint_violations: vec![],
+        constraint_violations_total: 0,
         convention_violations: vec![review::ConventionViolation {
             symbol: "consumer_3::use_hub".into(),
             file: "src/consumer_3.rs".into(),
@@ -732,17 +768,17 @@ forbidden_deps = [
     let registry = default_registry();
     let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
 
-    // DD should find the forbidden dep
+    // DD should find the forbidden dep via maintained view
     assert!(
         !findings.constraint_violations.is_empty(),
         "should detect forbidden dep from src/ui/view.rs -> src/db/query.rs"
     );
-    assert_eq!(findings.constraint_violations[0].kind, "forbidden_dep");
-    assert!(
-        findings.constraint_violations[0]
-            .detail
-            .contains("src/ui/view.rs")
-    );
+    let cv = &findings.constraint_violations[0];
+    assert_eq!(cv.constraint_kind, "forbidden_dep");
+    assert!(!cv.constraint_id.is_empty());
+    assert_eq!(cv.severity, "blocking");
+    assert!(cv.detail.contains("src/ui/view.rs"));
+    assert!(findings.constraint_violations_total >= 1);
 
     // FCA: view::render is pub+function but lacks docs — if convention was established,
     // it should appear as a violation. The convention requires 3+ support at 0.9 confidence,

@@ -7,14 +7,15 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
-use crate::constraints::{DdEngine, DdFacts};
+use crate::constraints::{ConstraintResolver, DdDelta, DdEngine, DdFacts};
 use crate::error::Result;
 use crate::conventions::{self, FcaEngine};
 use crate::parser::adapter::LanguageRegistry;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
-use crate::rules;
+use crate::rules::{self, Constraint, ConstraintKind};
 use crate::tools::scoring::{self, ChurnMap, Signal};
+use glob::{MatchOptions, Pattern};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -35,10 +36,30 @@ const W_CONVENTIONS: f64 = 0.20;
 
 #[derive(Clone)]
 pub struct ConstraintViolation {
-    pub kind: String,
+    pub constraint_id: String,
+    pub constraint_name: Option<String>,
+    pub constraint_kind: String,
+    pub severity: String,
+    pub provenance: Option<String>,
     pub from_path: String,
     pub to_path: String,
+    pub component_context: Option<String>,
     pub detail: String,
+}
+
+#[derive(Clone)]
+pub struct WaivedConstraintViolation {
+    pub constraint_id: String,
+    pub constraint_name: Option<String>,
+    pub constraint_kind: String,
+    pub severity: String,
+    pub provenance: Option<String>,
+    pub from_path: String,
+    pub to_path: String,
+    pub component_context: Option<String>,
+    pub detail: String,
+    pub rationale: String,
+    pub waived_by: String,
 }
 
 #[derive(Clone)]
@@ -81,6 +102,8 @@ pub struct WaivedViolation {
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintViolation>,
+    pub waived_constraint_violations: Vec<WaivedConstraintViolation>,
+    pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
     pub convention_matches: Vec<ConventionMatchFinding>,
     pub waived_violations: Vec<WaivedViolation>,
@@ -152,8 +175,21 @@ pub fn build_findings(
     let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
 
-    // DD: forbidden deps + cycles involving changed files
+    // File-to-component mapping (used for both constraint and convention processing)
+    let comp_with_paths = db.active_components_with_paths()?;
+    let mut file_to_component: HashMap<String, String> = HashMap::new();
+    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+    for (comp_id, name, paths) in &comp_with_paths {
+        comp_name_to_id.insert(name.clone(), comp_id.clone());
+        for path in paths {
+            file_to_component.insert(path.clone(), comp_id.clone());
+        }
+    }
+
+    // DD: constraint violations via maintained view + cycle detection
+    let all_constraints = rules.all_constraints()?;
     let mut constraint_violations = Vec::new();
+    let mut constraint_violations_total: usize = 0;
 
     let ephemeral;
     let edges = db.import_edges()?;
@@ -161,14 +197,14 @@ pub fn build_findings(
         if let Some(engine) = shared_dd.filter(|e| !e.is_invalidated()) {
             if !engine.is_loaded() {
                 engine.ingest(DdFacts {
-                    import_edges: edges,
+                    import_edges: edges.clone(),
                 })?;
             }
             Some(engine)
         } else {
             ephemeral = DdEngine::new(Duration::from_secs(60));
             ephemeral.ingest(DdFacts {
-                import_edges: edges,
+                import_edges: edges.clone(),
             })?;
             Some(&ephemeral)
         }
@@ -176,28 +212,80 @@ pub fn build_findings(
         None
     };
 
+    let changed_ids: std::collections::HashSet<i64> = changed_paths
+        .iter()
+        .filter_map(|p| id_map.get(p.as_str()).copied())
+        .collect();
+
     if let Some(engine) = dd {
-        #[allow(deprecated)]
-        for v in engine.query_forbidden_deps(&rules.constraints.forbidden_deps, &path_map)? {
-            let from_path = path_map.get(&v.from_id).cloned().unwrap_or_default();
-            let to_path = path_map.get(&v.to_id).cloned().unwrap_or_default();
-            if changed_paths.contains(&from_path) || changed_paths.contains(&to_path) {
-                constraint_violations.push(ConstraintViolation {
-                    kind: "forbidden_dep".into(),
-                    from_path: from_path.clone(),
-                    to_path: to_path.clone(),
-                    detail: format!(
-                        "forbidden: {} -> {} (rule: {} -> {})",
-                        from_path, to_path, v.rule_from, v.rule_to
-                    ),
-                });
+        let mut resolver = ConstraintResolver::new();
+        let pairs = resolver.resolve(&all_constraints, db, &path_map)?;
+
+        if !pairs.is_empty() {
+            engine.set_forbidden_pairs(pairs)?;
+            let current_violations = engine.query_violations()?;
+            constraint_violations_total = current_violations.len();
+
+            // Compute delta: temporarily remove edges from changed files
+            let changed_edges: Vec<(i64, i64)> = edges
+                .iter()
+                .filter(|(src, _)| changed_ids.contains(src))
+                .copied()
+                .collect();
+
+            let baseline_set: std::collections::HashSet<(i64, i64)> =
+                if !changed_edges.is_empty() {
+                    engine.update(DdDelta {
+                        added_edges: vec![],
+                        removed_edges: changed_edges.clone(),
+                    })?;
+                    let baseline = engine.query_violations()?.into_iter().collect();
+                    engine.update(DdDelta {
+                        added_edges: changed_edges,
+                        removed_edges: vec![],
+                    })?;
+                    baseline
+                } else {
+                    current_violations.iter().copied().collect()
+                };
+
+            for &(from_id, to_id) in &current_violations {
+                let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
+                let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
+                if !changed_ids.contains(&from_id) && !changed_ids.contains(&to_id) {
+                    continue;
+                }
+                let is_introduced = !baseline_set.contains(&(from_id, to_id));
+                if let Some(c) = find_matching_constraint(
+                    &all_constraints,
+                    &from_path,
+                    &to_path,
+                    &file_to_component,
+                    &comp_name_to_id,
+                ) {
+                    constraint_violations.push(ConstraintViolation {
+                        constraint_id: c.id.clone(),
+                        constraint_name: c.name.clone(),
+                        constraint_kind: c.kind.kind_tag().to_string(),
+                        severity: format!("{:?}", c.severity).to_lowercase(),
+                        provenance: c.provenance.clone(),
+                        from_path: from_path.clone(),
+                        to_path: to_path.clone(),
+                        component_context: build_component_context(
+                            &c.kind,
+                            &file_to_component,
+                            &from_path,
+                            &to_path,
+                        ),
+                        detail: format_violation_detail(c, &from_path, &to_path, is_introduced),
+                    });
+                }
             }
         }
 
-        let changed_ids: std::collections::HashSet<i64> = changed_paths
+        let no_cycles_constraint = all_constraints
             .iter()
-            .filter_map(|p| id_map.get(p.as_str()).copied())
-            .collect();
+            .find(|c| matches!(c.kind, ConstraintKind::NoCycles));
 
         if !changed_ids.is_empty() {
             for cycle in engine.query_cycles()? {
@@ -208,15 +296,53 @@ pub fn build_findings(
                         .filter_map(|id| path_map.get(id).cloned())
                         .collect();
                     constraint_violations.push(ConstraintViolation {
-                        kind: "cycle".into(),
+                        constraint_id: no_cycles_constraint
+                            .map(|c| c.id.clone())
+                            .unwrap_or_else(|| "builtin:cycles".into()),
+                        constraint_name: no_cycles_constraint.and_then(|c| c.name.clone()),
+                        constraint_kind: "no_cycles".into(),
+                        severity: no_cycles_constraint
+                            .map(|c| format!("{:?}", c.severity).to_lowercase())
+                            .unwrap_or_else(|| "blocking".into()),
+                        provenance: no_cycles_constraint.and_then(|c| c.provenance.clone()),
                         from_path: cycle_paths.first().cloned().unwrap_or_default(),
                         to_path: cycle_paths.last().cloned().unwrap_or_default(),
+                        component_context: None,
                         detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
                     });
                 }
             }
         }
     }
+
+    // Constraint waiver partition (parallel to convention waiver partition below)
+    let constraint_waivers = db.get_constraint_waivers(None)?;
+    let mut waived_constraint_violations = Vec::new();
+    let mut unwaived_constraints = Vec::new();
+    for v in constraint_violations {
+        let waiver = constraint_waivers.iter().find(|w| {
+            w.constraint_id == v.constraint_id
+                && (w.file_path == v.from_path || w.file_path == v.to_path)
+        });
+        if let Some(w) = waiver {
+            waived_constraint_violations.push(WaivedConstraintViolation {
+                constraint_id: v.constraint_id,
+                constraint_name: v.constraint_name,
+                constraint_kind: v.constraint_kind,
+                severity: v.severity,
+                provenance: v.provenance,
+                from_path: v.from_path,
+                to_path: v.to_path,
+                component_context: v.component_context,
+                detail: v.detail,
+                rationale: w.rationale.clone(),
+                waived_by: w.waived_by.clone(),
+            });
+        } else {
+            unwaived_constraints.push(v);
+        }
+    }
+    let constraint_violations = unwaived_constraints;
 
     // FCA: convention violations on changed symbols
     let mut convention_violations = Vec::new();
@@ -286,14 +412,6 @@ pub fn build_findings(
     }
 
     if !all_sym_attrs.is_empty() {
-        let comp_with_paths = db.active_components_with_paths()?;
-        let mut file_to_component: HashMap<String, String> = HashMap::new();
-        for (comp_id, _name, paths) in &comp_with_paths {
-            for path in paths {
-                file_to_component.insert(path.clone(), comp_id.clone());
-            }
-        }
-
         for sa in &mut all_sym_attrs {
             sa.component_id = file_to_component.get(&sa.file).cloned();
         }
@@ -476,6 +594,8 @@ pub fn build_findings(
 
     Ok(ReviewFindings {
         constraint_violations,
+        waived_constraint_violations,
+        constraint_violations_total,
         convention_violations: unwaived,
         convention_matches,
         waived_violations,
@@ -669,6 +789,8 @@ pub fn compute(
             },
             "recommended_reads": [],
             "constraint_violations": [],
+            "constraint_violations_total": 0,
+            "waived_constraint_violations": [],
             "convention_violations": [],
             "convention_matches": [],
             "waived_violations": [],
@@ -699,9 +821,38 @@ pub fn compute(
     let constraint_violations_out: Vec<_> = findings
         .constraint_violations
         .iter()
-        .map(
-            |v| json!({ "kind": v.kind, "from": v.from_path, "to": v.to_path, "detail": v.detail }),
-        )
+        .map(|v| {
+            json!({
+                "constraint_id": v.constraint_id,
+                "constraint_name": v.constraint_name,
+                "kind": v.constraint_kind,
+                "severity": v.severity,
+                "provenance": v.provenance,
+                "from": v.from_path,
+                "to": v.to_path,
+                "component_context": v.component_context,
+                "detail": v.detail,
+            })
+        })
+        .collect();
+    let waived_constraint_violations_out: Vec<_> = findings
+        .waived_constraint_violations
+        .iter()
+        .map(|v| {
+            json!({
+                "constraint_id": v.constraint_id,
+                "constraint_name": v.constraint_name,
+                "kind": v.constraint_kind,
+                "severity": v.severity,
+                "from": v.from_path,
+                "to": v.to_path,
+                "component_context": v.component_context,
+                "detail": v.detail,
+                "waived": true,
+                "rationale": v.rationale,
+                "waived_by": v.waived_by,
+            })
+        })
         .collect();
     let convention_violations_out: Vec<_> = findings
         .convention_violations
@@ -824,10 +975,98 @@ pub fn compute(
             "convention_violations": scoring::round3(convention_score),
         },
         "constraint_violations": constraint_violations_out,
+        "constraint_violations_total": findings.constraint_violations_total,
+        "waived_constraint_violations": waived_constraint_violations_out,
         "convention_violations": convention_violations_out,
         "convention_matches": convention_matches_out,
         "waived_violations": waived_violations_out,
         "drift_alerts": drift_alerts_out,
         "recommended_reads": recommended_reads,
     }))
+}
+
+fn find_matching_constraint<'a>(
+    constraints: &'a [Constraint],
+    from_path: &str,
+    to_path: &str,
+    file_to_component: &HashMap<String, String>,
+    comp_name_to_id: &HashMap<String, String>,
+) -> Option<&'a Constraint> {
+    let opts = MatchOptions {
+        require_literal_separator: true,
+        ..MatchOptions::default()
+    };
+    constraints.iter().find(|c| match &c.kind {
+        ConstraintKind::ForbiddenDep { from, to } => {
+            Pattern::new(from)
+                .ok()
+                .map_or(false, |fp| fp.matches_with(from_path, opts))
+                && Pattern::new(to)
+                    .ok()
+                    .map_or(false, |tp| tp.matches_with(to_path, opts))
+        }
+        ConstraintKind::Boundary {
+            from_component,
+            to_component,
+        } => {
+            let from_cid = file_to_component.get(from_path);
+            let to_cid = file_to_component.get(to_path);
+            let from_match = from_cid.map_or(false, |c| {
+                c == from_component
+                    || comp_name_to_id
+                        .get(from_component.as_str())
+                        .map_or(false, |id| id == c)
+            });
+            let to_match = to_cid.map_or(false, |c| {
+                c == to_component
+                    || comp_name_to_id
+                        .get(to_component.as_str())
+                        .map_or(false, |id| id == c)
+            });
+            from_match && to_match
+        }
+        _ => false,
+    })
+}
+
+fn build_component_context(
+    kind: &ConstraintKind,
+    file_to_component: &HashMap<String, String>,
+    from_path: &str,
+    to_path: &str,
+) -> Option<String> {
+    match kind {
+        ConstraintKind::Boundary {
+            from_component,
+            to_component,
+        } => Some(format!("{from_component} -> {to_component}")),
+        _ => {
+            let from_c = file_to_component.get(from_path);
+            let to_c = file_to_component.get(to_path);
+            match (from_c, to_c) {
+                (Some(f), Some(t)) if f != t => Some(format!("{f} -> {t}")),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn format_violation_detail(
+    c: &Constraint,
+    from: &str,
+    to: &str,
+    is_introduced: bool,
+) -> String {
+    let delta = if is_introduced { " [introduced]" } else { "" };
+    match &c.kind {
+        ConstraintKind::ForbiddenDep {
+            from: rf,
+            to: rt,
+        } => format!("forbidden: {from} -> {to} (rule: {rf} -> {rt}){delta}"),
+        ConstraintKind::Boundary {
+            from_component,
+            to_component,
+        } => format!("boundary: {from} -> {to} ({from_component} -> {to_component}){delta}"),
+        _ => format!("{}: {from} -> {to}{delta}", c.kind.kind_tag()),
+    }
 }

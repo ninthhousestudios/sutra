@@ -35,7 +35,7 @@ impl ConstraintKind {
         }
     }
 
-    fn kind_tag(&self) -> &'static str {
+    pub fn kind_tag(&self) -> &'static str {
         match self {
             Self::ForbiddenDep { .. } => "forbidden_dep",
             Self::Boundary { .. } => "boundary",
