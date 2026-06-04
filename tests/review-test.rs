@@ -289,6 +289,7 @@ fn risk_score_clamped_to_one() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
         convention_violations: (0..10)
@@ -368,6 +369,7 @@ fn constraint_violations_appear_in_output() {
                 detail: "import cycle: src/core.rs -> src/helper.rs -> src/core.rs".into(),
             },
         ],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 2,
         convention_violations: vec![],
@@ -399,6 +401,7 @@ fn convention_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
         convention_violations: vec![review::ConventionViolation {
@@ -439,6 +442,7 @@ fn waived_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
         convention_violations: vec![],
@@ -496,6 +500,7 @@ fn violations_are_structurally_distinct() {
             component_context: None,
             detail: "forbidden dep".into(),
         }],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 1,
         convention_violations: vec![review::ConventionViolation {
@@ -554,6 +559,7 @@ fn convention_violations_increase_risk_score() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
         convention_violations: vec![
@@ -648,6 +654,7 @@ fn recommended_reads_ranks_violation_sites_first() {
     // Consumer_3 has a convention violation — should rank first in reads
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
         convention_violations: vec![review::ConventionViolation {
@@ -801,6 +808,7 @@ fn waived_constraint_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
+        resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![review::WaivedConstraintViolation {
             constraint_id: "abc12345".into(),
             constraint_name: Some("no-core-internal".into()),

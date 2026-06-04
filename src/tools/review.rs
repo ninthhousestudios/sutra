@@ -103,6 +103,7 @@ pub struct WaivedViolation {
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintViolation>,
+    pub resolved_constraint_violations: Vec<ConstraintViolation>,
     pub waived_constraint_violations: Vec<WaivedConstraintViolation>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
@@ -190,6 +191,7 @@ pub fn build_findings(
     // DD: constraint violations via maintained view + cycle detection
     let all_constraints = rules.all_constraints()?;
     let mut constraint_violations = Vec::new();
+    let mut resolved_constraint_violations = Vec::new();
     let mut constraint_violations_total: usize = 0;
 
     let ephemeral;
@@ -259,6 +261,9 @@ pub fn build_findings(
                     current_violations.iter().copied().collect()
                 };
 
+            let current_set: std::collections::HashSet<(i64, i64)> =
+                current_violations.iter().copied().collect();
+
             for &(from_id, to_id) in &current_violations {
                 let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
                 let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
@@ -288,6 +293,41 @@ pub fn build_findings(
                             &to_path,
                         ),
                         detail: constraints::format_violation_detail(c, &from_path, &to_path, is_introduced),
+                    });
+                }
+            }
+
+            for &(from_id, to_id) in &baseline_set {
+                if current_set.contains(&(from_id, to_id)) {
+                    continue;
+                }
+                if !changed_ids.contains(&from_id) && !changed_ids.contains(&to_id) {
+                    continue;
+                }
+                let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
+                let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
+                if let Some(c) = constraints::find_matching_constraint(
+                    &all_constraints,
+                    &from_path,
+                    &to_path,
+                    &file_to_component,
+                    &comp_name_to_id,
+                ) {
+                    resolved_constraint_violations.push(ConstraintViolation {
+                        constraint_id: c.id.clone(),
+                        constraint_name: c.name.clone(),
+                        constraint_kind: c.kind.kind_tag().to_string(),
+                        severity: c.severity.as_str().to_string(),
+                        provenance: c.provenance.clone(),
+                        from_path: from_path.clone(),
+                        to_path: to_path.clone(),
+                        component_context: constraints::build_component_context(
+                            &c.kind,
+                            &file_to_component,
+                            &from_path,
+                            &to_path,
+                        ),
+                        detail: constraints::format_violation_detail(c, &from_path, &to_path, false),
                     });
                 }
             }
@@ -605,6 +645,7 @@ pub fn build_findings(
 
     Ok(ReviewFindings {
         constraint_violations,
+        resolved_constraint_violations,
         waived_constraint_violations,
         constraint_violations_total,
         convention_violations: unwaived,
@@ -800,6 +841,7 @@ pub fn compute(
             },
             "recommended_reads": [],
             "constraint_violations": [],
+            "resolved_constraint_violations": [],
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
             "convention_violations": [],
@@ -831,6 +873,23 @@ pub fn compute(
 
     let constraint_violations_out: Vec<_> = findings
         .constraint_violations
+        .iter()
+        .map(|v| {
+            json!({
+                "constraint_id": v.constraint_id,
+                "constraint_name": v.constraint_name,
+                "kind": v.constraint_kind,
+                "severity": v.severity,
+                "provenance": v.provenance,
+                "from": v.from_path,
+                "to": v.to_path,
+                "component_context": v.component_context,
+                "detail": v.detail,
+            })
+        })
+        .collect();
+    let resolved_constraint_violations_out: Vec<_> = findings
+        .resolved_constraint_violations
         .iter()
         .map(|v| {
             json!({
@@ -986,6 +1045,7 @@ pub fn compute(
             "convention_violations": scoring::round3(convention_score),
         },
         "constraint_violations": constraint_violations_out,
+        "resolved_constraint_violations": resolved_constraint_violations_out,
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
         "convention_violations": convention_violations_out,
