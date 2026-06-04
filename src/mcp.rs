@@ -67,6 +67,7 @@ use crate::tools::cochange::CochangeArgs;
 use crate::tools::components::ComponentsArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
+use crate::tools::duplicates::DuplicatesArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
 use crate::tools::file_health::FileHealthArgs;
 use crate::tools::find::FindArgs;
@@ -810,6 +811,23 @@ impl SutraServer {
             limit: args.limit,
         };
         let result = tools::winnow::handle(&db, &ws.root, &filter).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
+        description = "Near-duplicate function detection via structural similarity of HRR strip \
+        vectors. Returns pattern families — groups of 3+ functions with near-identical AST \
+        structure. Configurable similarity threshold (default 0.85) and minimum group size \
+        (default 3)."
+    )]
+    pub async fn sutra_duplicates(
+        &self,
+        Parameters(args): Parameters<DuplicatesArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result =
+            tools::duplicates::handle(&db, args.threshold, args.min_group).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

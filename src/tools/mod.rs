@@ -5,6 +5,7 @@ pub mod constraints;
 pub mod conventions;
 pub mod dead;
 pub mod deps;
+pub mod duplicates;
 pub mod diff_impact;
 pub mod file_health;
 pub mod find;

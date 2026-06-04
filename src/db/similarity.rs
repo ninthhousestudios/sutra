@@ -11,6 +11,14 @@ pub struct PatternFamily {
     pub avg_similarity: f64,
 }
 
+pub struct SymbolSummary {
+    pub id: i64,
+    pub qualified_name: String,
+    pub file_path: String,
+    pub start_line: i64,
+    pub end_line: i64,
+}
+
 pub struct PatternFamilyMember {
     pub symbol_id: i64,
     pub qualified_name: String,
@@ -186,5 +194,34 @@ impl Db {
             });
         }
         Ok(result)
+    }
+
+    pub fn symbols_by_ids(&self, ids: &[i64]) -> Result<Vec<SymbolSummary>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT s.id, s.qualified_name, f.path, s.start_line, s.end_line
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok(SymbolSummary {
+                    id: row.get(0)?,
+                    qualified_name: row.get(1)?,
+                    file_path: row.get(2)?,
+                    start_line: row.get(3)?,
+                    end_line: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }
