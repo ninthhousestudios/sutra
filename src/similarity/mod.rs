@@ -54,9 +54,10 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
 
         for &idx in indices {
             let sym = &symbols[idx];
+            // DB stores 1-indexed lines; tree-sitter Points are 0-indexed
             let start =
-                tree_sitter::Point::new(sym.start_line as usize, sym.start_col as usize);
-            let end = tree_sitter::Point::new(sym.end_line as usize, sym.end_col as usize);
+                tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
+            let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);
             if let Some(node) = tree.root_node().descendant_for_point_range(start, end) {
                 let strip =
                     encoder::encode_subtree(&node, source.as_bytes(), &mut cb, false);
