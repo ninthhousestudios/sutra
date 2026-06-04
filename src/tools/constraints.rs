@@ -219,7 +219,8 @@ fn handle_violations(
     for v in violation_list {
         let waiver = waivers.iter().find(|w| {
             w.constraint_id == v.constraint_id
-                && (w.file_path == v.from_path || w.file_path == v.to_path)
+                && w.file_path == v.from_path
+                && w.symbol_qualified_name.is_none()
         });
         if let Some(w) = waiver {
             waived.push(json!({

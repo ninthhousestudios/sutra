@@ -328,7 +328,8 @@ pub fn build_findings(
     for v in constraint_violations {
         let waiver = constraint_waivers.iter().find(|w| {
             w.constraint_id == v.constraint_id
-                && (w.file_path == v.from_path || w.file_path == v.to_path)
+                && w.file_path == v.from_path
+                && w.symbol_qualified_name.is_none()
         });
         if let Some(w) = waiver {
             waived_constraint_violations.push(WaivedConstraintViolation {
