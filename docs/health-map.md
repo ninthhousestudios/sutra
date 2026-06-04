@@ -177,7 +177,7 @@ No separate `git log` subprocess. File-level (symbol_id: None).
 - Decay: half-life 180 days, reference time = newest commit in DB
 - Commits wider than 30 files excluded (noise filter)
 - Single-file commits contribute zero (log2(1) = 0)
-- Threshold: 2.0 (placeholder — needs repowise calibration)
+- Threshold: 3.0 (P90 across manas + redox-kernel corpora)
 
 ### ownership_risk (weight 1.38, Advisory)
 - Fires when: top owner share < 40% OR 3+ minor contributors (< 5% each)

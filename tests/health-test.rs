@@ -447,7 +447,7 @@ fn change_entropy_computation() {
     let f1_findings: Vec<_> = findings.iter().filter(|f| f.file_id == f1).collect();
     assert_eq!(f1_findings.len(), 1);
     assert_eq!(f1_findings[0].biomarker_kind, BiomarkerKind::ChangeEntropy);
-    assert!(f1_findings[0].metric_value > 2.0);
+    assert!(f1_findings[0].metric_value > 3.0);
     assert!(f1_findings[0].detail.contains("change entropy"));
 }
 
@@ -492,7 +492,7 @@ fn change_entropy_below_threshold() {
     let f1 = seed_file(&db, "src/calm.rs");
     let f2 = seed_file(&db, "src/calm2.rs");
 
-    // 2 commits with F=2: each contributes ~0.5 → sum ≈ 1.0, below threshold 2.0
+    // 2 commits with F=2: each contributes ~0.5 → sum ≈ 1.0, below threshold 3.0
     let commits = vec![
         CommitRow { hash: "c1".into(), committed_at: 1_700_000_000, author: "a@b".into() },
         CommitRow { hash: "c2".into(), committed_at: 1_700_000_000, author: "a@b".into() },
@@ -505,7 +505,7 @@ fn change_entropy_below_threshold() {
 
     let findings = compute_change_entropy(&db).unwrap();
     let f1_findings: Vec<_> = findings.iter().filter(|f| f.file_id == f1).collect();
-    assert!(f1_findings.is_empty(), "entropy ~1.0 is below threshold 2.0");
+    assert!(f1_findings.is_empty(), "entropy ~1.0 is below threshold 3.0");
 }
 
 #[test]

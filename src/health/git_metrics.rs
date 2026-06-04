@@ -10,7 +10,7 @@ use super::{BiomarkerKind, HealthFinding, HealthSeverity};
 
 const SCATTER_PARTNER_THRESHOLD: i64 = 8;
 const SCATTER_COMMIT_THRESHOLD: i64 = 3;
-const ENTROPY_THRESHOLD: f64 = 2.0;
+const ENTROPY_THRESHOLD: f64 = 3.0;
 const ENTROPY_HALF_LIFE_DAYS: f64 = 180.0;
 const MAX_COMMIT_WIDTH: i64 = 30;
 const OWNERSHIP_TOP_THRESHOLD: f64 = 0.40;
