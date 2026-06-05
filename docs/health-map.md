@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-05 (5e-5: structural similarity search)
+Last updated: 2026-06-05 (5e-7: health snapshots + per-file history)
 
 ## Module layout
 
@@ -76,8 +76,11 @@ src/similarity/
 src/tools/
   file_health.rs    — MCP tool: queries findings with waiver status, scores
                       via scoring::score_file, builds per-file + per-component
-                      JSON. Legacy compute_file_scores still present for
-                      pipeline.rs (removed when sutra/91 lands).
+                      JSON.
+  trend.rs          — MCP tool: sutra_trend. Comparison mode diffs two
+                      snapshots with per-file deltas (improved/degraded),
+                      per-component deltas, category breakdown. History
+                      mode returns per-file score time series.
   similar.rs        — MCP tool: sutra_similar(symbol, mode, limit, threshold).
                       Resolves symbol → HRR vector, linear scan cosine
                       similarity, returns ranked matches with file locations.
@@ -94,7 +97,10 @@ src/db/
 
 src/pipeline.rs     — post_parse_sequence tail: compute_all_health_findings
                       + replace_health_findings (runs after component discovery
-                      and alias sync, before record_snapshot)
+                      and alias sync, before record_snapshot).
+                      record_snapshot calls compute_snapshot_health which
+                      scores all files via scoring::score_file and aggregates
+                      to components, storing per-file and per-component data.
 ```
 
 ## Key types
@@ -138,6 +144,8 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | health_findings | Ephemeral | 0027 | Computed findings, rebuilt each parse |
 | health_waivers | Durable | 0028 | User-authored waivers, survive reindex |
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
+| health_snapshot_files | Ephemeral | 0033 | Per-file health scores at each snapshot |
+| health_snapshot_components | Ephemeral | 0033 | Per-component aggregated scores at each snapshot |
 
 Migration 0027 is `ephemeral_only: true` — on reindex, symbols table is
 dropped and recreated by 0001, then 0027 re-runs the ALTER TABLE.
@@ -169,7 +177,13 @@ parse_workspace / parse_changed_files
               └── compute_ownership_risk: file_author_commits + owners.toml aliases
               └── compute_hidden_coupling: cochange_pairs - static_file_edges
         └── replace_health_findings(findings) — DELETE + INSERT all
-  └── record_snapshot (unchanged — health score still uses old model)
+  └── record_snapshot
+        └── compute_snapshot_health: scores all files via scoring::score_file
+              (1.0–10.0 scale, category-capped), aggregates to components
+              via scoring::score_component (NLOC-weighted)
+        └── insert_snapshot (aggregate metrics + f64 health_score)
+        └── insert_snapshot_files (per-file scores + category_scores JSON)
+        └── insert_snapshot_components (per-component NLOC-weighted scores)
 ```
 
 Incrementality: `replace_health_findings` does a full replace each parse.
@@ -261,9 +275,9 @@ Non-repowise defaults: hidden_coupling 1.00, blast_radius_churn 1.00,
 dead_code_ratio 0.80, coverage_gradient 0.80. Uncalibrated: convention_drift
 0.50, component_instability 0.50, hrr_shape_change 0.50.
 
-The `file_health` MCP tool now returns findings + derived scores (1.0–10.0
-scale). Legacy `compute_file_scores` (0–100 scale) remains for
-`pipeline.rs::compute_snapshot_aggregates` until sutra/91 rewires it.
+The `file_health` MCP tool returns findings + derived scores (1.0–10.0
+scale). The pipeline snapshot system also uses `scoring::score_file` —
+legacy `compute_file_scores` (0–100 scale) has been removed.
 
 ### Remaining arc tasks
 
@@ -272,19 +286,22 @@ scale). Legacy `compute_file_scores` (0–100 scale) remains for
 | sutra/84 | health finding model + first biomarker | done | this doc |
 | sutra/85 | health scoring with category capping | done | scoring.rs + tool rewrite |
 | sutra/86 | git-organizational biomarkers | done | git_metrics.rs, db/graph.rs queries |
-| sutra/87 | review-1: health foundation | ready-for-human | review gate |
+| sutra/87 | review-1: health foundation | done | review gate |
 | sutra/88 | HRR encoder | done | similarity/hrr.rs, encoder.rs, codebook.rs |
 | sutra/89 | structural similarity search | done | similarity/search.rs, tools/similar.rs |
 | sutra/90 | pattern families + duplicates | done | similarity/duplicates.rs, tools/duplicates.rs |
+| sutra/91 | health snapshots + per-file history | done | pipeline.rs, trend.rs, db/mod.rs |
 | sutra/93 | semantic diff for review | ready-for-agent | HRR vectors |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
-- Integration tests: `tests/health-test.rs` (29 tests — model, threshold,
+- Integration tests: `tests/health-test.rs` (35 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
-  biomarkers: scatter, entropy, ownership, coupling, alias merging)
+  biomarkers: scatter, entropy, ownership, coupling, alias merging,
+  snapshot per-file/per-component storage, file health history,
+  trend comparison with file deltas, trend history mode)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,
   similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
