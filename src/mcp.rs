@@ -81,6 +81,7 @@ use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
 use crate::tools::resolve::ResolveArgs;
+use crate::tools::similar::SimilarArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
@@ -828,6 +829,29 @@ impl SutraServer {
         let db = self.get_db(&args.workspace)?;
         let result =
             tools::duplicates::handle(&db, args.threshold, args.min_group).map_err(sutra_to_rmcp)?;
+        self.wrap_response(&db, result)
+    }
+
+    #[tool(
+        description = "Find structurally similar functions using HRR vector similarity. \
+            Mode 'strip' (default) finds functions with the same AST shape regardless of \
+            identifier names — useful for finding copy-paste variants. Mode 'embed' finds \
+            functions similar in both structure and naming."
+    )]
+    pub async fn sutra_similar(
+        &self,
+        Parameters(args): Parameters<SimilarArgs>,
+    ) -> Result<String, ErrorData> {
+        let _ws = self.resolve_workspace(&args.workspace)?;
+        let db = self.get_db(&args.workspace)?;
+        let result = tools::similar::handle(
+            &db,
+            &args.symbol,
+            args.mode.as_deref(),
+            args.limit,
+            args.threshold,
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

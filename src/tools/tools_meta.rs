@@ -43,7 +43,8 @@ pub fn handle(
                     "enabled": true,
                     "tools": ["sutra_health", "sutra_map", "sutra_outline", "sutra_find",
                               "sutra_grep", "sutra_read", "sutra_impact", "sutra_deps",
-                              "sutra_parse", "sutra_tools", "sutra_components", "sutra_orient"],
+                              "sutra_parse", "sutra_tools", "sutra_components", "sutra_orient",
+                              "sutra_similar"],
                 },
                 "analysis": {
                     "enabled": analysis_on,
