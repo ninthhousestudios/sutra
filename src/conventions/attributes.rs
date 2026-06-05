@@ -64,6 +64,7 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
     }
 
     let naming = if sym.short_name.len() > 1
+        && sym.short_name.contains('_')
         && sym.short_name.chars().all(|c| c.is_uppercase() || c == '_')
     {
         "naming:SCREAMING"

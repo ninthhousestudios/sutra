@@ -102,7 +102,7 @@ impl FcaEngine {
         min_confidence: f64,
         component_id: Option<&str>,
     ) -> Vec<Convention> {
-        let hash = Self::hash_matrix(symbols);
+        let hash = Self::hash_matrix(symbols, min_support, min_confidence);
         if self.last_matrix_hash == Some(hash) {
             return self.conventions.clone();
         }
@@ -273,7 +273,11 @@ impl FcaEngine {
 
     const MAX_ATTRS: usize = 100;
 
-    fn hash_matrix(symbols: &[SymbolAttrs]) -> blake3::Hash {
+    fn hash_matrix(
+        symbols: &[SymbolAttrs],
+        min_support: usize,
+        min_confidence: f64,
+    ) -> blake3::Hash {
         let mut sorted: Vec<(&str, Vec<&str>)> = symbols
             .iter()
             .map(|s| {
@@ -285,6 +289,8 @@ impl FcaEngine {
         sorted.sort_unstable_by_key(|(name, _)| *name);
 
         let mut hasher = blake3::Hasher::new();
+        hasher.update(&min_support.to_le_bytes());
+        hasher.update(&min_confidence.to_le_bytes());
         for (name, attrs) in &sorted {
             hasher.update(name.as_bytes());
             hasher.update(b"\0");

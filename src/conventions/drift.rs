@@ -5,7 +5,7 @@ use crate::error::Result;
 
 use super::engine::SymbolAttrs;
 
-pub const DRIFT_THRESHOLD: f64 = 0.15;
+pub const DRIFT_THRESHOLD: f64 = 0.3;
 pub const DRIFT_WINDOW: usize = 3;
 
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub fn shannon_entropy(distribution: &HashMap<String, f64>) -> f64 {
     let mut h = 0.0;
     for &p in distribution.values() {
         if p > 0.0 && p < 1.0 {
-            h -= p * p.log2();
+            h -= p * p.log2() + (1.0 - p) * (1.0 - p).log2();
         }
     }
     h
@@ -180,7 +180,8 @@ mod tests {
             ("d".into(), 0.25),
         ]
         .into();
-        assert!((shannon_entropy(&dist) - 2.0).abs() < 1e-10);
+        let h_025 = -0.25_f64 * 0.25_f64.log2() - 0.75_f64 * 0.75_f64.log2();
+        assert!((shannon_entropy(&dist) - 4.0 * h_025).abs() < 1e-10);
     }
 
     #[test]
@@ -197,7 +198,7 @@ mod tests {
     #[test]
     fn entropy_binary_equal_split() {
         let dist: HashMap<String, f64> = [("a".into(), 0.5), ("b".into(), 0.5)].into();
-        assert!((shannon_entropy(&dist) - 1.0).abs() < 1e-10);
+        assert!((shannon_entropy(&dist) - 2.0).abs() < 1e-10);
     }
 
     // ── Distribution computation ────────────────────────────────────────

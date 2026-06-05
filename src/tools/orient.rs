@@ -927,15 +927,15 @@ mod tests {
         let dist_mid = r#"{"kind:function": 0.7, "has_doc": 0.4}"#;
         let dist_high = r#"{"kind:function": 0.6, "has_doc": 0.5}"#;
 
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_low, "h1", None, None).unwrap();
-        db.insert_convention_snapshot("comp-1", 1.1, 10, dist_mid, "h2", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 0.8, 10, dist_low, "h1", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_mid, "h2", None, None).unwrap();
         db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3", None, None).unwrap();
 
         let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
         assert!(alert.is_some());
         let alert = alert.unwrap();
         assert_eq!(alert["component_id"], "comp-1");
-        assert!(alert["delta"].as_f64().unwrap() > 0.15);
+        assert!(alert["delta"].as_f64().unwrap() > 0.3);
     }
 
     #[test]
