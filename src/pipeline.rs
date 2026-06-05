@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{Db, InsertSymbolParams, SnapshotParams};
+use crate::db::{Db, InsertSymbolParams, SnapshotComponentRow, SnapshotFileRow, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
@@ -629,19 +629,21 @@ fn record_snapshot(
     parse_errors: i64,
     duration_ms: i64,
 ) -> Result<()> {
-    let aggregates = compute_snapshot_aggregates(db)?;
-    db.insert_snapshot(&SnapshotParams {
+    let health = compute_snapshot_health(db)?;
+    let snapshot_id = db.insert_snapshot(&SnapshotParams {
         files_parsed,
         symbols_extracted,
         refs_extracted,
         parse_errors,
         duration_ms,
-        total_complexity: aggregates.total_complexity,
-        dead_symbol_count: aggregates.dead_symbol_count,
-        hotspot_count: aggregates.hotspot_count,
-        health_score: aggregates.health_score,
-        pattern_family_count: aggregates.pattern_family_count,
+        total_complexity: health.total_complexity,
+        dead_symbol_count: health.dead_symbol_count,
+        hotspot_count: health.hotspot_count,
+        health_score: health.health_score,
+        pattern_family_count: health.pattern_family_count,
     })?;
+    db.insert_snapshot_files(snapshot_id, &health.file_scores)?;
+    db.insert_snapshot_components(snapshot_id, &health.component_scores)?;
     Ok(())
 }
 
@@ -685,20 +687,22 @@ fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path:
     result
 }
 
-struct SnapshotAggregates {
+struct SnapshotHealthData {
     total_complexity: i64,
     dead_symbol_count: i64,
     hotspot_count: i64,
-    health_score: i64,
+    health_score: f64,
     pattern_family_count: i64,
+    file_scores: Vec<SnapshotFileRow>,
+    component_scores: Vec<SnapshotComponentRow>,
 }
 
-fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
-    use crate::tools::file_health::compute_file_scores;
+fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
+    use crate::db::HealthFindingRow;
+    use crate::health::scoring;
 
     let files = db.all_files()?;
     let complexity = db.complexity_by_file()?;
-    let dead_ratios = db.dead_symbol_ratio_by_file()?;
 
     let total_complexity: i64 = complexity
         .values()
@@ -708,40 +712,100 @@ fn compute_snapshot_aggregates(db: &Db) -> Result<SnapshotAggregates> {
     let dead_symbols = db.find_dead_symbols(false, None)?;
     let dead_symbol_count = dead_symbols.len() as i64;
 
-    let max_pr = files
-        .iter()
-        .filter_map(|f| f.pagerank)
-        .fold(0.0_f64, f64::max)
-        .max(0.001);
-
     let mut hotspot_count: i64 = 0;
-    let mut health_sum: f64 = 0.0;
-
     for f in &files {
-        let (max_cog, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
-        let dead_ratio = dead_ratios.get(&f.id).copied().unwrap_or(0.0);
-        let scores = compute_file_scores(f, max_cog, avg_cog, dead_ratio, max_pr);
-        health_sum += scores.overall_health;
-
+        let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
         if f.blast_radius >= 5 && avg_cog >= 5.0 {
             hotspot_count += 1;
         }
     }
 
+    let all_with_waivers = db.get_health_findings_with_waiver_status()?;
+    let active: Vec<HealthFindingRow> = all_with_waivers
+        .into_iter()
+        .filter(|(_, waived)| !waived)
+        .map(|(f, _)| f)
+        .collect();
+
+    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
+    for f in active {
+        findings_by_file.entry(f.file_id).or_default().push(f);
+    }
+
+    let mut file_scores = Vec::new();
+    let mut health_sum = 0.0;
+
+    for f in &files {
+        let findings = findings_by_file
+            .get(&f.id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let result = scoring::score_file(findings);
+
+        let mut cat_totals: HashMap<&str, f64> = HashMap::new();
+        for d in &result.deductions {
+            *cat_totals.entry(d.category.as_str()).or_default() += d.scaled_deduction;
+        }
+        let cat_json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
+
+        file_scores.push(SnapshotFileRow {
+            file_id: f.id,
+            file_path: f.path.clone(),
+            score: result.score,
+            category_scores: cat_json,
+        });
+        health_sum += result.score;
+    }
+
     let health_score = if files.is_empty() {
-        100
+        10.0
     } else {
-        (health_sum / files.len() as f64) as i64
+        health_sum / files.len() as f64
     };
+
+    let components = db.all_components()?;
+    let memberships = db.component_members_with_line_count()?;
+    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    for (comp_id, file_id, lc) in &memberships {
+        comp_files
+            .entry(comp_id.as_str())
+            .or_default()
+            .push((*file_id, *lc));
+    }
+
+    let file_score_map: HashMap<i64, f64> =
+        file_scores.iter().map(|fs| (fs.file_id, fs.score)).collect();
+
+    let mut component_scores = Vec::new();
+    for comp in &components {
+        let Some(members) = comp_files.get(comp.id.as_str()) else {
+            continue;
+        };
+        let pairs: Vec<(f64, i64)> = members
+            .iter()
+            .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&10.0), lc))
+            .collect();
+        let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();
+        let comp_score = scoring::score_component(&pairs);
+        component_scores.push(SnapshotComponentRow {
+            component_id: comp.id.clone(),
+            component_name: comp.name.clone(),
+            score: comp_score,
+            member_count: members.len() as i64,
+            total_nloc,
+        });
+    }
 
     let pattern_family_count = db.pattern_family_count()?;
 
-    Ok(SnapshotAggregates {
+    Ok(SnapshotHealthData {
         total_complexity,
         dead_symbol_count,
         hotspot_count,
         health_score,
         pattern_family_count,
+        file_scores,
+        component_scores,
     })
 }
 

@@ -22,51 +22,6 @@ pub struct FileHealthArgs {
     pub mode: Option<String>,
 }
 
-// Legacy scoring — still used by pipeline.rs::compute_snapshot_aggregates.
-// Replaced by health::scoring for the MCP tool; will be removed when sutra/91
-// (health snapshots) lands and rewires the pipeline.
-
-pub struct FileScores {
-    pub complexity_health: f64,
-    pub dead_health: f64,
-    pub coupling_health: f64,
-    pub overall_health: f64,
-    pub avg_cognitive: f64,
-    pub max_cognitive: i64,
-    pub dead_ratio: f64,
-}
-
-pub fn compute_file_scores(
-    f: &FileRow,
-    max_cognitive: i64,
-    avg_cognitive: f64,
-    dead_ratio: f64,
-    max_pagerank: f64,
-) -> FileScores {
-    let complexity_health =
-        (100.0 - (avg_cognitive * 4.0).min(60.0) - (max_cognitive as f64 * 0.5).min(40.0)).max(0.0);
-
-    let dead_health = (100.0 - dead_ratio * 100.0).max(0.0);
-
-    let pr_norm = f.pagerank.unwrap_or(0.0) / max_pagerank;
-    let blast_scaled = (f.blast_radius as f64 * 1.5).min(40.0);
-    let fan_in_scaled = (f.fan_in_files as f64 * 1.0).min(30.0);
-    let pr_scaled = (pr_norm * 30.0).min(30.0);
-    let coupling_health = (100.0 - blast_scaled - fan_in_scaled - pr_scaled).max(0.0);
-
-    let overall_health = 0.45 * complexity_health + 0.30 * dead_health + 0.25 * coupling_health;
-
-    FileScores {
-        complexity_health,
-        dead_health,
-        coupling_health,
-        overall_health,
-        avg_cognitive,
-        max_cognitive,
-        dead_ratio,
-    }
-}
-
 pub fn handle(
     db: &Db,
     path: Option<&str>,

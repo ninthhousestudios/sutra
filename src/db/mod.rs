@@ -70,6 +70,8 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta { name: "hrr_vectors", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "pattern_families", partition: TablePartition::Ephemeral, is_virtual: false },
     TableMeta { name: "pattern_family_members", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "health_snapshot_files", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta { name: "health_snapshot_components", partition: TablePartition::Ephemeral, is_virtual: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -194,7 +196,8 @@ pub struct SnapshotRow {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub health_score: i64,
+    pub health_score: f64,
+    pub pattern_family_count: i64,
 }
 
 pub struct CommitRow {
@@ -213,8 +216,25 @@ pub struct SnapshotParams {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub health_score: i64,
+    pub health_score: f64,
     pub pattern_family_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotFileRow {
+    pub file_id: i64,
+    pub file_path: String,
+    pub score: f64,
+    pub category_scores: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotComponentRow {
+    pub component_id: String,
+    pub component_name: String,
+    pub score: f64,
+    pub member_count: i64,
+    pub total_nloc: i64,
 }
 
 #[derive(Debug)]
@@ -1036,7 +1056,7 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score
+                    hotspot_count, health_score, pattern_family_count
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -1052,13 +1072,127 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score
+                    hotspot_count, health_score, pattern_family_count
              FROM snapshots WHERE timestamp >= ?1 AND timestamp <= ?2
              ORDER BY timestamp ASC",
         )?;
         let rows = stmt
             .query_map(params![from, to], map_snapshot_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    // -----------------------------------------------------------------------
+    // health snapshot details
+    // -----------------------------------------------------------------------
+
+    pub fn insert_snapshot_files(
+        &self,
+        snapshot_id: i64,
+        files: &[SnapshotFileRow],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "INSERT INTO health_snapshot_files
+             (snapshot_id, file_id, file_path, score, category_scores)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for f in files {
+            stmt.execute(params![
+                snapshot_id,
+                f.file_id,
+                f.file_path,
+                f.score,
+                f.category_scores
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn insert_snapshot_components(
+        &self,
+        snapshot_id: i64,
+        components: &[SnapshotComponentRow],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "INSERT INTO health_snapshot_components
+             (snapshot_id, component_id, component_name, score, member_count, total_nloc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for c in components {
+            stmt.execute(params![
+                snapshot_id,
+                c.component_id,
+                c.component_name,
+                c.score,
+                c.member_count,
+                c.total_nloc
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, file_path, score, category_scores
+             FROM health_snapshot_files WHERE snapshot_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![snapshot_id], |row| {
+                Ok(SnapshotFileRow {
+                    file_id: row.get(0)?,
+                    file_path: row.get(1)?,
+                    score: row.get(2)?,
+                    category_scores: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn snapshot_component_scores(
+        &self,
+        snapshot_id: i64,
+    ) -> Result<Vec<SnapshotComponentRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT component_id, component_name, score, member_count, total_nloc
+             FROM health_snapshot_components WHERE snapshot_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![snapshot_id], |row| {
+                Ok(SnapshotComponentRow {
+                    component_id: row.get(0)?,
+                    component_name: row.get(1)?,
+                    score: row.get(2)?,
+                    member_count: row.get(3)?,
+                    total_nloc: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn file_health_history(
+        &self,
+        file_path: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f64, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.timestamp, hsf.score, hsf.category_scores
+             FROM health_snapshot_files hsf
+             JOIN snapshots s ON s.id = hsf.snapshot_id
+             WHERE hsf.file_path = ?1
+             ORDER BY s.timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![file_path, limit as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 }
@@ -1143,5 +1277,6 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         dead_symbol_count: row.get(8)?,
         hotspot_count: row.get(9)?,
         health_score: row.get(10)?,
+        pattern_family_count: row.get(11)?,
     })
 }

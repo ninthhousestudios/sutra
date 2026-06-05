@@ -770,9 +770,10 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Compare two parse snapshots and return per-metric deltas. \
-        Useful for CI gates and pre/post-refactor checks. \
-        Defaults to comparing the two most recent snapshots."
+        description = "Compare two parse snapshots with per-file and per-component health deltas, \
+        or query a single file's health history over time. \
+        Defaults to comparing the two most recent snapshots. \
+        Set 'path' to get a per-file time series instead of a comparison."
     )]
     pub async fn sutra_trend(
         &self,
@@ -780,8 +781,7 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::trend::handle(&db, args.from.as_deref(), args.to.as_deref())
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::trend::handle(&db, &args).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
