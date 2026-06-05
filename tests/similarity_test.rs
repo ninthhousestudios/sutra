@@ -254,3 +254,107 @@ fn methods_also_get_vectors() {
     let vecs = load_vectors(&f.db);
     assert_eq!(vecs.len(), 4, "expected 4 vectors (2 methods × 2 modes)");
 }
+
+// ---------------------------------------------------------------------------
+// sutra_similar tool tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn similar_search_strip_mode() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "pub fn alpha(x: i32, y: i32) -> i32 { x + y }\n",
+            "pub fn beta(a: i32, b: i32) -> i32 { a + b }\n",
+            "pub fn gamma(x: i32) -> i32 { if x > 0 { x * 2 } else { x - 1 } }\n",
+        ),
+    )]);
+    parse(&f);
+
+    let result = sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0))
+        .unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(!matches.is_empty(), "should find at least one similar function");
+
+    // beta has identical structure to alpha in strip mode — should be top match
+    let top = &matches[0];
+    assert_eq!(top["symbol"].as_str().unwrap(), "beta");
+    let sim = top["similarity"].as_f64().unwrap();
+    assert!(
+        (sim - 1.0).abs() < 0.01,
+        "identical structure should have sim ~1.0, got {sim}"
+    );
+}
+
+#[test]
+fn similar_search_embed_mode_lower_than_strip() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "pub fn alpha(x: i32, y: i32) -> i32 { x + y }\n",
+            "pub fn beta(a: i32, b: i32) -> i32 { a + b }\n",
+        ),
+    )]);
+    parse(&f);
+
+    let strip_result =
+        sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0)).unwrap();
+    let embed_result =
+        sutra::tools::similar::handle(&f.db, "alpha", Some("embed"), Some(10), Some(0.0)).unwrap();
+
+    let strip_sim = strip_result["matches"][0]["similarity"].as_f64().unwrap();
+    let embed_sim = embed_result["matches"][0]["similarity"].as_f64().unwrap();
+
+    assert!(
+        embed_sim < strip_sim,
+        "embed similarity should be lower than strip when names differ: \
+         embed={embed_sim:.4} strip={strip_sim:.4}"
+    );
+}
+
+#[test]
+fn similar_search_excludes_self() {
+    let f = setup(&[(
+        "src/lib.rs",
+        "pub fn only_one(x: i32) -> i32 { x + 1 }\n",
+    )]);
+    parse(&f);
+
+    let result =
+        sutra::tools::similar::handle(&f.db, "only_one", Some("strip"), Some(10), Some(0.0))
+            .unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(
+        matches.is_empty(),
+        "single function should have no matches (self excluded)"
+    );
+}
+
+#[test]
+fn similar_search_unknown_symbol() {
+    let f = setup(&[("src/lib.rs", "pub fn exists() {}\n")]);
+    parse(&f);
+
+    let result =
+        sutra::tools::similar::handle(&f.db, "does_not_exist", Some("strip"), None, None).unwrap();
+    assert!(
+        result.get("diagnostic").is_some(),
+        "unknown symbol should return a diagnostic"
+    );
+}
+
+#[test]
+fn similar_search_non_function_symbol() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!("pub struct MyStruct { pub x: i32 }\n", "pub fn helper() {}\n"),
+    )]);
+    parse(&f);
+
+    let result =
+        sutra::tools::similar::handle(&f.db, "MyStruct", Some("strip"), None, None).unwrap();
+    assert!(
+        result.get("diagnostic").is_some(),
+        "struct symbol should return a diagnostic about function-only search"
+    );
+}
