@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-05 (5e-7: health snapshots + per-file history)
+Last updated: 2026-06-05 (5e-9: review integration — health delta + on-demand biomarkers)
 
 ## Module layout
 
@@ -20,6 +20,13 @@ src/health/
                       compute_change_entropy, compute_ownership_risk,
                       compute_hidden_coupling. OwnersConfig + load_owners_config
                       for .sutra/owners.toml alias mapping.
+  ondemand.rs       — On-demand biomarkers computed at review time via git
+                      blame (too expensive for parse-time pipeline).
+                      BlameCache (in-memory per-review dedup),
+                      compute_ondemand_findings (function_hotspot +
+                      code_age_volatility), compute_health_delta (per-file
+                      score comparison vs latest snapshot with attribution).
+                      FunctionBlameStats, HealthDelta, HealthDeltaEntry.
   scoring.rs        — HealthCategory (5 variants), category caps, biomarker
                       weights (repowise calibrated), severity weights,
                       score_file (category capping + proportional scaling),
@@ -120,11 +127,12 @@ Core finding struct all biomarkers produce. Fields: `file_id: i64`,
 `metric_value: f64`, `threshold: f64`, `detail: String`.
 
 ### BiomarkerKind (health/findings.rs)
-Enum with 13 variants. Currently implemented: `NestedComplexity`.
-Stubs for future: `CoChangeScatter`, `ChangeEntropy`, `OwnershipRisk`,
-`FunctionHotspot`, `HiddenCoupling`, `BlastRadiusChurn`, `DeadCodeRatio`,
-`CodeAgeVolatility`, `CoverageGradient`, `ConventionDrift`,
-`ComponentInstability`, `HrrShapeChange`.
+Enum with 13 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
+`ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`. On-demand (review-time
+via git blame): `FunctionHotspot`, `CodeAgeVolatility`. Shape-diff
+(review-time): `HrrShapeChange`. Stubs for future: `BlastRadiusChurn`,
+`DeadCodeRatio`, `CoverageGradient`, `ConventionDrift`,
+`ComponentInstability`.
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
@@ -242,6 +250,33 @@ No separate `git log` subprocess. File-level (symbol_id: None).
 - Emits two findings per pair (one per file)
 - Static edges: resolved refs + imports between files
 
+## On-demand biomarkers (health/ondemand.rs)
+
+Computed at review time via `git blame --porcelain` — too expensive for
+parse-time pipeline. BlameCache deduplicates blame calls per file within
+a single review invocation.
+
+### function_hotspot (weight 1.16, Advisory)
+- Per-function distinct commit count from blame line ranges
+- Fires when: distinct_commits >= p80 across changed files' functions
+  (floor at 5) AND (cyclomatic >= 10 OR max_nesting >= 3)
+- Symbol-level (symbol_id set)
+- Provenance: `on-demand:blame`
+
+### code_age_volatility (weight 1.10, Informational)
+- Median line age per function from blame timestamps
+- Fires when: median_line_age >= 365d AND distinct_commits_in_last_30d >= 2
+- Symbol-level
+- Provenance: `on-demand:blame`
+
+### Health delta (review integration)
+- `compute_health_delta(db, changed_paths, ondemand_findings)` compares
+  current per-file scores (stored findings + on-demand) vs latest snapshot
+- Degraded files include `driving_findings` showing which on-demand
+  biomarkers contributed to the decline
+- Review output ordering: constraint_violations → convention_violations →
+  health_findings → hrr_shape_changes → health_delta
+
 ## PRD and arc context
 
 - PRD: yojana task `sutra/83` (health metrics + similarity system)
@@ -299,17 +334,20 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 | sutra/89 | structural similarity search | done | similarity/search.rs, tools/similar.rs |
 | sutra/90 | pattern families + duplicates | done | similarity/duplicates.rs, tools/duplicates.rs |
 | sutra/91 | health snapshots + per-file history | done | pipeline.rs, trend.rs, db/mod.rs |
-| sutra/93 | semantic diff for review | ready-for-agent | HRR vectors |
+| sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
+| sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
-- Integration tests: `tests/health-test.rs` (35 tests — model, threshold,
+- Integration tests: `tests/health-test.rs` (45 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
   snapshot per-file/per-component storage, file health history,
-  trend comparison with file deltas, trend history mode)
+  trend comparison with file deltas, trend history mode, blame parsing,
+  HealthFinding::to_row, health delta: degradation, improvement,
+  no-snapshot fallback, on-demand finding attribution)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,
   similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
