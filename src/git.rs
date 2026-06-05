@@ -16,6 +16,7 @@ pub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {
     let mut current_commit = String::new();
     let mut current_time: i64 = 0;
     let mut current_line: usize = 0;
+    let mut time_cache: HashMap<String, i64> = HashMap::new();
 
     for line in input.lines() {
         if line.starts_with('\t') {
@@ -26,6 +27,7 @@ pub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {
             });
         } else if let Some(ts) = line.strip_prefix("author-time ") {
             current_time = ts.trim().parse().unwrap_or(0);
+            time_cache.insert(current_commit.clone(), current_time);
         } else {
             let bytes = line.as_bytes();
             if bytes.len() > 40
@@ -33,6 +35,9 @@ pub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {
                 && bytes[..40].iter().all(|b| b.is_ascii_hexdigit())
             {
                 current_commit = line[..40].to_string();
+                if let Some(&cached) = time_cache.get(&current_commit) {
+                    current_time = cached;
+                }
                 let parts: Vec<&str> = line[41..].split_whitespace().collect();
                 if parts.len() >= 2 {
                     current_line = parts[1].parse().unwrap_or(0);

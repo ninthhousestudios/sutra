@@ -122,14 +122,14 @@ pub fn handle(
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
-    let (changed_paths, base_revision) = match mode {
-        "staged" => (git::git_diff_staged(workspace_root)?, "HEAD".to_string()),
-        "unstaged" => (git::git_diff_unstaged(workspace_root)?, "HEAD".to_string()),
+    let (changed_paths, base_revision, head_revision) = match mode {
+        "staged" => (git::git_diff_staged(workspace_root)?, "HEAD".to_string(), Some(String::new())),
+        "unstaged" => (git::git_diff_unstaged(workspace_root)?, "HEAD".to_string(), None),
         "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
             let paths = git::git_diff_files(workspace_root, &base, "HEAD")?;
-            (paths, base)
+            (paths, base, Some("HEAD".to_string()))
         }
         spec => {
             let (base, head) = if let Some((a, b)) = spec.split_once("..") {
@@ -138,7 +138,7 @@ pub fn handle(
                 (format!("{spec}~1"), spec.to_string())
             };
             let paths = git::git_diff_files(workspace_root, &base, &head)?;
-            (paths, base)
+            (paths, base, Some(head))
         }
     };
 
@@ -159,6 +159,7 @@ pub fn handle(
         workspace_root,
         &changed_paths,
         &base_revision,
+        head_revision.as_deref(),
         &registry,
         &crate::similarity::diff::ShapeChangeConfig::default(),
     );
@@ -609,14 +610,6 @@ pub fn build_findings(
         let hrr_coherence =
             crate::health::drift::compute_hrr_coherence(db).unwrap_or_default();
 
-        drift_alerts = conventions::drift::record_and_detect_drift(
-            db,
-            &comp_symbol_groups,
-            &fca_conformance,
-            &hrr_coherence,
-        )
-        .unwrap_or_default();
-
         convention_drift_findings = crate::health::drift::detect_convention_drift(
             db,
             &fca_conformance,
@@ -624,6 +617,14 @@ pub fn build_findings(
             &comp_symbol_groups,
             &file_to_component,
             &id_map,
+        )
+        .unwrap_or_default();
+
+        drift_alerts = conventions::drift::record_and_detect_drift(
+            db,
+            &comp_symbol_groups,
+            &fca_conformance,
+            &hrr_coherence,
         )
         .unwrap_or_default();
 

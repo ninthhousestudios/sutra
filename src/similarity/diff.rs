@@ -132,6 +132,7 @@ pub fn detect_shape_changes(
     workspace_root: &Path,
     changed_paths: &[String],
     base_revision: &str,
+    head_revision: Option<&str>,
     registry: &LanguageRegistry,
     config: &ShapeChangeConfig,
 ) -> Vec<ShapeChange> {
@@ -172,10 +173,15 @@ pub fn detect_shape_changes(
             }
         };
 
-        let full_path = workspace_root.join(path);
-        let new_source = match std::fs::read_to_string(&full_path) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let new_source = match head_revision {
+            Some(rev) => match git::git_file_content_at(workspace_root, rev, path) {
+                Ok(Some(s)) => s,
+                Ok(None) | Err(_) => continue,
+            },
+            None => match std::fs::read_to_string(workspace_root.join(path)) {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
         };
 
         let grammar = adapter.grammar();

@@ -1178,6 +1178,47 @@ filename src/main.rs
 }
 
 #[test]
+fn test_parse_blame_porcelain_interleaved_repeat() {
+    // Commit A appears, then B, then A again without metadata.
+    // The parser must use A's cached timestamp, not B's.
+    let input = "\
+aabbccdd11223344556677889900aabbccddeeff 1 1 1
+author Alice
+author-mail <alice@dev>
+author-time 1700000000
+author-tz +0000
+committer Alice
+committer-mail <alice@dev>
+committer-time 1700000000
+committer-tz +0000
+summary first
+filename src/main.rs
+\tline one
+ff00112233445566778899aabbccddeeff001122 2 2 1
+author Bob
+author-mail <bob@dev>
+author-time 1700100000
+author-tz +0000
+committer Bob
+committer-mail <bob@dev>
+committer-time 1700100000
+committer-tz +0000
+summary second
+filename src/main.rs
+\tline two
+aabbccdd11223344556677889900aabbccddeeff 3 3
+\tline three
+";
+    let lines = parse_blame_porcelain(input);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].author_time, 1700000000);
+    assert_eq!(lines[1].author_time, 1700100000);
+    // Line 3 is commit A again — must have A's timestamp, not B's
+    assert_eq!(lines[2].commit, "aabbccdd11223344556677889900aabbccddeeff");
+    assert_eq!(lines[2].author_time, 1700000000);
+}
+
+#[test]
 fn test_parse_blame_porcelain_empty() {
     let lines = parse_blame_porcelain("");
     assert!(lines.is_empty());
