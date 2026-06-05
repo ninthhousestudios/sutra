@@ -358,3 +358,29 @@ fn similar_search_non_function_symbol() {
         "struct symbol should return a diagnostic about function-only search"
     );
 }
+
+#[test]
+fn operator_discrimination() {
+    let f = setup(&[(
+        "src/lib.rs",
+        concat!(
+            "pub fn add(x: i32, y: i32) -> i32 { x + y }\n",
+            "pub fn sub(x: i32, y: i32) -> i32 { x - y }\n",
+            "pub fn mul(x: i32, y: i32) -> i32 { x * y }\n",
+        ),
+    )]);
+    parse(&f);
+
+    let _vecs = load_vectors(&f.db);
+    // Use sutra_similar to find matches for "add" — sub and mul should not be ~1.0
+    let result = sutra::tools::similar::handle(&f.db, "add", Some("strip"), Some(10), Some(0.0))
+        .unwrap();
+    let matches = result["matches"].as_array().unwrap();
+    assert!(!matches.is_empty(), "should find matches for add");
+
+    let top_sim = matches[0]["similarity"].as_f64().unwrap();
+    assert!(
+        top_sim < 0.99,
+        "functions differing only by operator should not be near-identical in strip mode, sim={top_sim:.4}"
+    );
+}

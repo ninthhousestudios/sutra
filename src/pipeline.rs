@@ -630,20 +630,22 @@ fn record_snapshot(
     duration_ms: i64,
 ) -> Result<()> {
     let health = compute_snapshot_health(db)?;
-    let snapshot_id = db.insert_snapshot(&SnapshotParams {
-        files_parsed,
-        symbols_extracted,
-        refs_extracted,
-        parse_errors,
-        duration_ms,
-        total_complexity: health.total_complexity,
-        dead_symbol_count: health.dead_symbol_count,
-        hotspot_count: health.hotspot_count,
-        health_score: health.health_score,
-        pattern_family_count: health.pattern_family_count,
-    })?;
-    db.insert_snapshot_files(snapshot_id, &health.file_scores)?;
-    db.insert_snapshot_components(snapshot_id, &health.component_scores)?;
+    db.insert_snapshot_atomic(
+        &SnapshotParams {
+            files_parsed,
+            symbols_extracted,
+            refs_extracted,
+            parse_errors,
+            duration_ms,
+            total_complexity: health.total_complexity,
+            dead_symbol_count: health.dead_symbol_count,
+            hotspot_count: health.hotspot_count,
+            health_score: health.health_score,
+            pattern_family_count: health.pattern_family_count,
+        },
+        &health.file_scores,
+        &health.component_scores,
+    )?;
     Ok(())
 }
 

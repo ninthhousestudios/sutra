@@ -51,15 +51,13 @@ pub fn find_pattern_families(
         return Vec::new();
     }
 
+    // Phase 1: find connected components via union-find (candidate groups)
     let mut uf = UnionFind::new(n);
-    let mut pairwise_sims: Vec<(usize, usize, f64)> = Vec::new();
-
     for i in 0..n {
         for j in (i + 1)..n {
             let sim = vectors[i].1.cosine_similarity(&vectors[j].1);
             if sim >= threshold {
                 uf.union(i, j);
-                pairwise_sims.push((i, j, sim));
             }
         }
     }
@@ -70,29 +68,70 @@ pub fn find_pattern_families(
         groups.entry(root).or_default().push(i);
     }
 
-    let mut families: Vec<PatternFamily> = groups
-        .into_values()
-        .filter(|members| members.len() >= min_group)
-        .map(|members| {
-            let mut sim_sum = 0.0;
-            let mut sim_count = 0u64;
-            for &(a, b, sim) in &pairwise_sims {
-                if members.contains(&a) && members.contains(&b) {
-                    sim_sum += sim;
-                    sim_count += 1;
+    // Phase 2: complete-link pruning — remove members until all pairs pass
+    let mut families = Vec::new();
+    for (_root, mut members) in groups {
+        if members.len() < min_group {
+            continue;
+        }
+
+        loop {
+            let mut worst_idx = None;
+            let mut worst_min = f64::MAX;
+            let mut all_pass = true;
+
+            for (mi, &a) in members.iter().enumerate() {
+                let mut min_sim = f64::MAX;
+                for &b in &members {
+                    if a == b {
+                        continue;
+                    }
+                    let sim = vectors[a].1.cosine_similarity(&vectors[b].1);
+                    min_sim = min_sim.min(sim);
+                }
+                if min_sim < threshold {
+                    all_pass = false;
+                    if min_sim < worst_min {
+                        worst_min = min_sim;
+                        worst_idx = Some(mi);
+                    }
                 }
             }
-            let avg_similarity = if sim_count > 0 {
-                sim_sum / sim_count as f64
+
+            if all_pass {
+                break;
+            }
+            if let Some(idx) = worst_idx {
+                members.swap_remove(idx);
+            }
+            if members.len() < min_group {
+                break;
+            }
+        }
+
+        if members.len() < min_group {
+            continue;
+        }
+
+        let mut sim_sum = 0.0;
+        let mut pair_count = 0u64;
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let sim = vectors[members[i]].1.cosine_similarity(&vectors[members[j]].1);
+                sim_sum += sim;
+                pair_count += 1;
+            }
+        }
+
+        families.push(PatternFamily {
+            member_symbol_ids: members.iter().map(|&i| vectors[i].0).collect(),
+            avg_similarity: if pair_count > 0 {
+                sim_sum / pair_count as f64
             } else {
                 0.0
-            };
-            PatternFamily {
-                member_symbol_ids: members.iter().map(|&i| vectors[i].0).collect(),
-                avg_similarity,
-            }
-        })
-        .collect();
+            },
+        });
+    }
 
     families.sort_by(|a, b| b.member_symbol_ids.len().cmp(&a.member_symbol_ids.len()));
     families
@@ -150,6 +189,41 @@ mod tests {
         let families = find_pattern_families(&vectors, 0.85, 2);
         assert_eq!(families.len(), 1);
         assert_eq!(families[0].member_symbol_ids.len(), 2);
+    }
+
+    #[test]
+    fn transitive_chain_pruned() {
+        // A≈B and B≈C but A≉C — single-link would group all three, complete-link should not.
+        // Use three random vectors and pick a threshold that creates the chain property.
+        let a = make_vec(100);
+        let b = make_vec(200);
+        let c = make_vec(300);
+
+        let mut sims = [
+            (a.cosine_similarity(&b), "A-B"),
+            (b.cosine_similarity(&c), "B-C"),
+            (a.cosine_similarity(&c), "A-C"),
+        ];
+        sims.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+
+        // threshold between the weakest pair and the second-weakest
+        let threshold = (sims[0].0 + sims[1].0) / 2.0;
+        assert!(
+            sims[0].0 < threshold && sims[1].0 >= threshold,
+            "need a gap between weakest and second-weakest pair"
+        );
+
+        let vectors = vec![(1, a), (2, b), (3, c)];
+        let families = find_pattern_families(&vectors, threshold, 3);
+        assert!(
+            families.is_empty(),
+            "transitive chain should not form a family of 3 \
+             (weakest pair {}={:.4} < threshold={:.4}), got {} families",
+            sims[0].1,
+            sims[0].0,
+            threshold,
+            families.len()
+        );
     }
 
     #[test]

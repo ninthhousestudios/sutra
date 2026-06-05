@@ -1036,6 +1036,83 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Insert snapshot + file/component details atomically in one transaction.
+    pub fn insert_snapshot_atomic(
+        &self,
+        p: &SnapshotParams,
+        files: &[SnapshotFileRow],
+        components: &[SnapshotComponentRow],
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock();
+        conn.execute_batch("BEGIN")?;
+
+        let result = (|| -> Result<i64> {
+            conn.execute(
+                "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
+                                        refs_extracted, parse_errors, duration_ms,
+                                        total_complexity, dead_symbol_count,
+                                        hotspot_count, health_score,
+                                        pattern_family_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    now,
+                    p.files_parsed,
+                    p.symbols_extracted,
+                    p.refs_extracted,
+                    p.parse_errors,
+                    p.duration_ms,
+                    p.total_complexity,
+                    p.dead_symbol_count,
+                    p.hotspot_count,
+                    p.health_score,
+                    p.pattern_family_count,
+                ],
+            )?;
+            let snapshot_id = conn.last_insert_rowid();
+
+            let mut file_stmt = conn.prepare(
+                "INSERT INTO health_snapshot_files
+                 (snapshot_id, file_id, file_path, score, category_scores)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for f in files {
+                file_stmt.execute(params![
+                    snapshot_id, f.file_id, f.file_path, f.score, f.category_scores
+                ])?;
+            }
+
+            let mut comp_stmt = conn.prepare(
+                "INSERT INTO health_snapshot_components
+                 (snapshot_id, component_id, component_name, score, member_count, total_nloc)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for c in components {
+                comp_stmt.execute(params![
+                    snapshot_id,
+                    c.component_id,
+                    c.component_name,
+                    c.score,
+                    c.member_count,
+                    c.total_nloc
+                ])?;
+            }
+
+            Ok(snapshot_id)
+        })();
+
+        match result {
+            Ok(id) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     /// Return the timestamp of the most recent snapshot, or `None` if no
     /// snapshot has been recorded yet.
     pub fn last_parse_time(&self) -> Result<Option<String>> {

@@ -3,6 +3,10 @@ use super::hrr::{self, HrrVec};
 
 const MAX_DEPTH: usize = 20;
 
+fn is_operator(kind: &str) -> bool {
+    !kind.is_empty() && kind.chars().all(|c| "+-*/%=!<>&|^~?".contains(c))
+}
+
 pub fn encode_subtree(
     node: &tree_sitter::Node,
     source: &[u8],
@@ -38,6 +42,11 @@ fn encode_recursive(
     for i in 0..node.child_count() {
         let child = node.child(i).unwrap();
         if !child.is_named() {
+            if is_operator(child.kind()) {
+                let op_vec = codebook.get_or_create(child.kind());
+                child_vecs.push(op_vec.permute(pos + 1));
+                pos += 1;
+            }
             continue;
         }
         let child_enc = encode_recursive(&child, source, codebook, depth - 1, embed_idents);
