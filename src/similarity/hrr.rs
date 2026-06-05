@@ -158,6 +158,10 @@ impl HrrVec {
         dot / (na * nb)
     }
 
+    pub fn dot_product(&self, other: &Self) -> f64 {
+        self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum()
+    }
+
     pub fn norm(&self) -> f64 {
         self.data.iter().map(|x| x * x).sum::<f64>().sqrt()
     }
@@ -169,6 +173,16 @@ impl HrrVec {
         }
         Self {
             data: self.data.iter().map(|x| x / n).collect(),
+        }
+    }
+
+    pub fn normalize_in_place(&mut self) {
+        let n = self.norm();
+        if n < 1e-15 {
+            return;
+        }
+        for x in &mut self.data {
+            *x /= n;
         }
     }
 

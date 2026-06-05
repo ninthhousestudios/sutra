@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::PatternFamily;
-use crate::similarity::hrr::HrrVec;
+use crate::similarity::hrr::{HrrVec, Rng};
+
+// ---------------------------------------------------------------------------
+// Union-Find
+// ---------------------------------------------------------------------------
 
 struct UnionFind {
     parent: Vec<usize>,
@@ -41,6 +45,104 @@ impl UnionFind {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SimHash LSH — random hyperplane hashing for cosine similarity
+// ---------------------------------------------------------------------------
+
+const LSH_K: usize = 6;
+const LSH_L: usize = 12;
+const LSH_SEED: u64 = 0xDEAD_BEEF_CAFE_1234;
+const BRUTE_FORCE_THRESHOLD: usize = 50;
+
+struct SimHashIndex {
+    tables: Vec<HashMap<u64, Vec<usize>>>,
+    hyperplanes: Vec<Vec<Vec<f64>>>,
+}
+
+impl SimHashIndex {
+    fn new(dim: usize) -> Self {
+        let mut rng = Rng::new(LSH_SEED);
+        let hyperplanes: Vec<Vec<Vec<f64>>> = (0..LSH_L)
+            .map(|_| {
+                (0..LSH_K)
+                    .map(|_| (0..dim).map(|_| rng.next_gaussian()).collect())
+                    .collect()
+            })
+            .collect();
+        Self {
+            tables: (0..LSH_L).map(|_| HashMap::new()).collect(),
+            hyperplanes,
+        }
+    }
+
+    fn hash_vector(&self, vec: &[f64], table_idx: usize) -> u64 {
+        let mut hash = 0u64;
+        for (bit, plane) in self.hyperplanes[table_idx].iter().enumerate() {
+            let dot: f64 = vec.iter().zip(plane).map(|(a, b)| a * b).sum();
+            if dot >= 0.0 {
+                hash |= 1 << bit;
+            }
+        }
+        hash
+    }
+
+    fn insert(&mut self, idx: usize, vec: &[f64]) {
+        for t in 0..self.tables.len() {
+            let h = self.hash_vector(vec, t);
+            self.tables[t].entry(h).or_default().push(idx);
+        }
+    }
+
+    fn candidate_pairs(&self) -> HashSet<(usize, usize)> {
+        let mut pairs = HashSet::new();
+        for table in &self.tables {
+            for bucket in table.values() {
+                if bucket.len() < 2 {
+                    continue;
+                }
+                for i in 0..bucket.len() {
+                    for j in (i + 1)..bucket.len() {
+                        let (a, b) = if bucket[i] < bucket[j] {
+                            (bucket[i], bucket[j])
+                        } else {
+                            (bucket[j], bucket[i])
+                        };
+                        pairs.insert((a, b));
+                    }
+                }
+            }
+        }
+        pairs
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Similarity cache — canonical key ordering, reused across all phases
+// ---------------------------------------------------------------------------
+
+struct SimCache {
+    cache: HashMap<(usize, usize), f64>,
+}
+
+impl SimCache {
+    fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+        }
+    }
+
+    fn get_or_compute(&mut self, i: usize, j: usize, vecs: &[(i64, HrrVec)]) -> f64 {
+        let key = if i < j { (i, j) } else { (j, i) };
+        *self.cache.entry(key).or_insert_with(|| {
+            vecs[key.0].1.dot_product(&vecs[key.1].1)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 pub fn find_pattern_families(
     vectors: &[(i64, HrrVec)],
     threshold: f64,
@@ -51,11 +153,32 @@ pub fn find_pattern_families(
         return Vec::new();
     }
 
-    // Phase 1: find connected components via union-find (candidate groups)
+    let normalized: Vec<(i64, HrrVec)> = vectors
+        .iter()
+        .map(|(id, v)| (*id, v.normalize()))
+        .collect();
+
+    let mut cache = SimCache::new();
     let mut uf = UnionFind::new(n);
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let sim = vectors[i].1.cosine_similarity(&vectors[j].1);
+
+    // Phase 1: candidate generation + union-find
+    if n <= BRUTE_FORCE_THRESHOLD {
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cache.get_or_compute(i, j, &normalized);
+                if sim >= threshold {
+                    uf.union(i, j);
+                }
+            }
+        }
+    } else {
+        let dim = normalized[0].1.data.len();
+        let mut index = SimHashIndex::new(dim);
+        for (i, (_, v)) in normalized.iter().enumerate() {
+            index.insert(i, &v.data);
+        }
+        for (i, j) in index.candidate_pairs() {
+            let sim = cache.get_or_compute(i, j, &normalized);
             if sim >= threshold {
                 uf.union(i, j);
             }
@@ -86,7 +209,7 @@ pub fn find_pattern_families(
                     if a == b {
                         continue;
                     }
-                    let sim = vectors[a].1.cosine_similarity(&vectors[b].1);
+                    let sim = cache.get_or_compute(a, b, &normalized);
                     min_sim = min_sim.min(sim);
                 }
                 if min_sim < threshold {
@@ -113,18 +236,18 @@ pub fn find_pattern_families(
             continue;
         }
 
+        // Phase 3: avg similarity for surviving family
         let mut sim_sum = 0.0;
         let mut pair_count = 0u64;
         for i in 0..members.len() {
             for j in (i + 1)..members.len() {
-                let sim = vectors[members[i]].1.cosine_similarity(&vectors[members[j]].1);
-                sim_sum += sim;
+                sim_sum += cache.get_or_compute(members[i], members[j], &normalized);
                 pair_count += 1;
             }
         }
 
         families.push(PatternFamily {
-            member_symbol_ids: members.iter().map(|&i| vectors[i].0).collect(),
+            member_symbol_ids: members.iter().map(|&i| normalized[i].0).collect(),
             avg_similarity: if pair_count > 0 {
                 sim_sum / pair_count as f64
             } else {
@@ -194,7 +317,6 @@ mod tests {
     #[test]
     fn transitive_chain_pruned() {
         // A≈B and B≈C but A≉C — single-link would group all three, complete-link should not.
-        // Use three random vectors and pick a threshold that creates the chain property.
         let a = make_vec(100);
         let b = make_vec(200);
         let c = make_vec(300);

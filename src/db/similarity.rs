@@ -152,27 +152,38 @@ impl Db {
 
     pub fn replace_pattern_families(&self, families: &[PatternFamily]) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM pattern_family_members", [])?;
-        conn.execute("DELETE FROM pattern_families", [])?;
+        conn.execute_batch("BEGIN")?;
 
-        let mut fam_stmt = conn.prepare(
-            "INSERT INTO pattern_families (member_count, avg_similarity) VALUES (?1, ?2)",
-        )?;
-        let mut mem_stmt = conn.prepare(
-            "INSERT INTO pattern_family_members (family_id, symbol_id) VALUES (?1, ?2)",
-        )?;
+        let result = (|| {
+            conn.execute("DELETE FROM pattern_family_members", [])?;
+            conn.execute("DELETE FROM pattern_families", [])?;
 
-        for family in families {
-            fam_stmt.execute(params![
-                family.member_symbol_ids.len() as i64,
-                family.avg_similarity,
-            ])?;
-            let family_id = conn.last_insert_rowid();
-            for &sym_id in &family.member_symbol_ids {
-                mem_stmt.execute(params![family_id, sym_id])?;
+            let mut fam_stmt = conn.prepare(
+                "INSERT INTO pattern_families (member_count, avg_similarity) VALUES (?1, ?2)",
+            )?;
+            let mut mem_stmt = conn.prepare(
+                "INSERT INTO pattern_family_members (family_id, symbol_id) VALUES (?1, ?2)",
+            )?;
+
+            for family in families {
+                fam_stmt.execute(params![
+                    family.member_symbol_ids.len() as i64,
+                    family.avg_similarity,
+                ])?;
+                let family_id = conn.last_insert_rowid();
+                for &sym_id in &family.member_symbol_ids {
+                    mem_stmt.execute(params![family_id, sym_id])?;
+                }
             }
+            Ok(())
+        })();
+
+        if result.is_ok() {
+            conn.execute_batch("COMMIT")?;
+        } else {
+            let _ = conn.execute_batch("ROLLBACK");
         }
-        Ok(())
+        result
     }
 
     pub fn pattern_family_count(&self) -> Result<i64> {
