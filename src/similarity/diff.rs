@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use tracing::debug;
+
 use crate::db::Db;
 use crate::git;
 use crate::health::findings::{BiomarkerKind, HealthFinding};
@@ -140,20 +142,34 @@ pub fn detect_shape_changes(
     for path in changed_paths {
         let ext = match Path::new(path).extension().and_then(|e| e.to_str()) {
             Some(e) => e,
-            None => continue,
+            None => {
+                debug!(path, "shape_diff: skip — no extension");
+                continue;
+            }
         };
         let adapter = match registry.adapter_for_extension(ext) {
             Some(a) => a,
-            None => continue,
+            None => {
+                debug!(path, ext, "shape_diff: skip — no adapter");
+                continue;
+            }
         };
         let fn_kinds = fn_kinds_for_language(adapter.language_id());
         if fn_kinds.is_empty() {
+            debug!(path, lang = adapter.language_id(), "shape_diff: skip — no fn_kinds");
             continue;
         }
 
         let old_source = match git::git_file_content_at(workspace_root, base_revision, path) {
             Ok(Some(s)) => s,
-            _ => continue,
+            Ok(None) => {
+                debug!(path, "shape_diff: skip — new file");
+                continue;
+            }
+            Err(e) => {
+                debug!(path, err = %e, "shape_diff: skip — git error");
+                continue;
+            }
         };
 
         let full_path = workspace_root.join(path);
@@ -179,6 +195,7 @@ pub fn detect_shape_changes(
 
         let old_fns = extract_functions(&old_tree, old_source.as_bytes(), fn_kinds);
         let new_fns = extract_functions(&new_tree, new_source.as_bytes(), fn_kinds);
+        debug!(path, old_fn_count = old_fns.len(), new_fn_count = new_fns.len(), "shape_diff: parsed");
 
         let old_map: HashMap<&str, &FnNode> =
             old_fns.iter().map(|f| (f.name.as_str(), f)).collect();
@@ -214,6 +231,13 @@ pub fn detect_shape_changes(
             let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
             let text_delta = text_delta_ratio(&old_fn.source, &new_fn.source);
             let quadrant = classify(text_delta, hrr_delta, config);
+            debug!(
+                path, symbol = new_fn.name,
+                hrr_delta = format!("{hrr_delta:.3}"),
+                text_delta = format!("{text_delta:.3}"),
+                quadrant = quadrant.as_str(),
+                "shape_diff: function compared"
+            );
 
             let symbol_id = file_id.and_then(|fid| {
                 db.find_symbols_by_file(fid)
@@ -328,6 +352,154 @@ mod tests {
     #[test]
     fn test_text_delta_empty() {
         assert_eq!(text_delta_ratio("", ""), 0.0);
+    }
+
+    #[test]
+    fn test_extract_functions_rust() {
+        let source = r#"
+fn foo(x: i32) -> i32 {
+    x + 1
+}
+
+fn bar() {
+    println!("hello");
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let fns = extract_functions(&tree, source.as_bytes(), RUST_FN_KINDS);
+        let mut names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["bar", "foo"]);
+    }
+
+    #[test]
+    fn test_hrr_delta_detects_structural_change() {
+        let old_source = r#"
+fn example(x: i32) -> i32 {
+    if x > 0 {
+        x + 1
+    } else {
+        0
+    }
+}
+"#;
+        let new_source = r#"
+fn example(x: i32) -> i32 {
+    match x > 0 {
+        true => x + 1,
+        false => 0,
+    }
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let old_tree = parser.parse(old_source, None).unwrap();
+        let new_tree = parser.parse(new_source, None).unwrap();
+
+        let old_fns = extract_functions(&old_tree, old_source.as_bytes(), RUST_FN_KINDS);
+        let new_fns = extract_functions(&new_tree, new_source.as_bytes(), RUST_FN_KINDS);
+        assert_eq!(old_fns.len(), 1);
+        assert_eq!(new_fns.len(), 1);
+        assert_eq!(old_fns[0].name, "example");
+
+        let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+        let old_vec = encode_fn_node(
+            &old_tree,
+            old_fns[0].ts_node_start,
+            old_fns[0].ts_node_end,
+            old_source.as_bytes(),
+            &mut cb,
+        )
+        .unwrap();
+        let new_vec = encode_fn_node(
+            &new_tree,
+            new_fns[0].ts_node_start,
+            new_fns[0].ts_node_end,
+            new_source.as_bytes(),
+            &mut cb,
+        )
+        .unwrap();
+
+        let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+        let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+
+        // Structural change (if→match) should produce measurable HRR delta
+        assert!(hrr_delta > 0.0, "HRR delta should be > 0, got {hrr_delta}");
+        // Text change is moderate
+        eprintln!("hrr_delta={hrr_delta:.3}, text_delta={text_delta:.3}");
+    }
+
+    #[test]
+    fn test_subtle_structural_detection() {
+        // 15-line function; change 1 line from simple expression to
+        // deeply nested block — text_delta should be low, hrr_delta high
+        let old = r#"
+fn process(data: &[i32]) -> i32 {
+    let mut total = 0;
+    let mut count = 0;
+    let base = 10;
+    let factor = 2;
+    let offset = 5;
+    let limit = 100;
+    let step = 1;
+    total += base * factor;
+    total += offset;
+    count += step;
+    if count > limit { total = limit; }
+    total
+}
+"#;
+        let new = r#"
+fn process(data: &[i32]) -> i32 {
+    let mut total = 0;
+    let mut count = 0;
+    let base = 10;
+    let factor = 2;
+    let offset = 5;
+    let limit = 100;
+    let step = 1;
+    total += base * factor;
+    total += offset;
+    count += step;
+    if count > limit { for i in data { if *i > 0 { total += *i; } } }
+    total
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let old_tree = parser.parse(old, None).unwrap();
+        let new_tree = parser.parse(new, None).unwrap();
+
+        let old_fns = extract_functions(&old_tree, old.as_bytes(), RUST_FN_KINDS);
+        let new_fns = extract_functions(&new_tree, new.as_bytes(), RUST_FN_KINDS);
+        assert_eq!(old_fns.len(), 1);
+        assert_eq!(new_fns.len(), 1);
+
+        let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+        let old_vec = encode_fn_node(
+            &old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end,
+            old.as_bytes(), &mut cb,
+        ).unwrap();
+        let new_vec = encode_fn_node(
+            &new_tree, new_fns[0].ts_node_start, new_fns[0].ts_node_end,
+            new.as_bytes(), &mut cb,
+        ).unwrap();
+
+        let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+        let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+        let config = ShapeChangeConfig::default();
+        let quadrant = classify(text_delta, hrr_delta, &config);
+
+        eprintln!("subtle test: hrr_delta={hrr_delta:.3}, text_delta={text_delta:.3}, quadrant={:?}", quadrant);
+        // 1 line changed out of 15 → text_delta should be ~0.07
+        assert!(text_delta <= config.text_delta_threshold,
+            "text_delta {text_delta:.3} should be ≤ {}", config.text_delta_threshold);
     }
 
     #[test]
