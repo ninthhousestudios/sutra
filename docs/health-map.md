@@ -4,13 +4,18 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-05 (5e-9: review integration — health delta + on-demand biomarkers)
+Last updated: 2026-06-05 (5e-10: convention drift detection)
 
 ## Module layout
 
 ```
 src/health/
   mod.rs            — re-exports from findings, git_metrics, and scoring
+  drift.rs          — Convention drift detection via FCA conformance +
+                      HRR coherence. compute_fca_conformance,
+                      compute_hrr_coherence, detect_convention_drift.
+                      Constants: FCA_DRIFT_THRESHOLD (0.10),
+                      HRR_DRIFT_THRESHOLD (0.10), MIN_COHERENCE_SYMBOLS (3).
   findings.rs       — HealthFinding, BiomarkerKind (13 variants + from_str),
                       HealthSeverity (Advisory, Informational — never Blocking,
                       + from_str), compute_nested_complexity,
@@ -130,9 +135,9 @@ Core finding struct all biomarkers produce. Fields: `file_id: i64`,
 Enum with 13 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
 `ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`. On-demand (review-time
 via git blame): `FunctionHotspot`, `CodeAgeVolatility`. Shape-diff
-(review-time): `HrrShapeChange`. Stubs for future: `BlastRadiusChurn`,
-`DeadCodeRatio`, `CoverageGradient`, `ConventionDrift`,
-`ComponentInstability`.
+(review-time): `HrrShapeChange`. Convention drift (review-time):
+`ConventionDrift`. Stubs for future: `BlastRadiusChurn`,
+`DeadCodeRatio`, `CoverageGradient`, `ComponentInstability`.
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
@@ -162,6 +167,7 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
 | health_snapshot_files | Ephemeral | 0033 | Per-file health scores at each snapshot |
 | health_snapshot_components | Ephemeral | 0033 | Per-component aggregated scores at each snapshot |
+| convention_snapshots (fca_conformance, hrr_coherence cols) | Ephemeral | 0034 | Per-component drift metrics for time-series trending |
 
 Migration 0027 is `ephemeral_only: true` — on reindex, symbols table is
 dropped and recreated by 0001, then 0027 re-runs the ALTER TABLE.
@@ -275,7 +281,46 @@ a single review invocation.
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
 - Review output ordering: constraint_violations → convention_violations →
-  health_findings → hrr_shape_changes → health_delta
+  health_findings → hrr_shape_changes → convention_drift → health_delta
+
+## Convention drift biomarker (health/drift.rs)
+
+Two independent detection paths, both producing `convention_drift`
+HealthFindings at review time. Computed in `build_findings` alongside
+existing entropy-based drift detection.
+
+### FCA conformance (weight 0.50, Informational)
+- Per-component fraction of symbols conforming to discovered conventions
+- `compute_fca_conformance(conventions, components)` → HashMap<comp_id, f64>
+- For each convention: count symbols matching antecedent, count those
+  also satisfying consequent. conformance = conforming / matched.
+- Global conventions checked against all components; component-scoped
+  conventions checked against their own component only.
+- Stored in `convention_snapshots.fca_conformance` (nullable REAL)
+- Finding emitted when conformance drops > `FCA_DRIFT_THRESHOLD` (0.10)
+  across `DRIFT_WINDOW` (3) monotonically non-increasing snapshots
+- Provenance: `review:fca_conformance`
+
+### HRR coherence (weight 0.50, Informational)
+- Per-component average pairwise cosine similarity of strip vectors
+- `compute_hrr_coherence(db)` → HashMap<comp_id, f64>
+- Loads strip vectors via `db.strip_vectors_by_component()` (4-table join:
+  hrr_vectors → symbols → component_membership → components)
+- Skips components with < 3 function symbols
+- Stored in `convention_snapshots.hrr_coherence` (nullable REAL)
+- Finding emitted when coherence drops > `HRR_DRIFT_THRESHOLD` (0.10)
+  across `DRIFT_WINDOW` (3) monotonically non-increasing snapshots
+- Provenance: `review:hrr_coherence`
+
+### Pipeline integration
+- Both metrics computed in `build_findings` (review.rs) after FCA rebuild
+  and before convention persistence
+- Metrics passed to `record_and_detect_drift` which stores them in
+  `convention_snapshots` alongside entropy data
+- `detect_convention_drift` compares current metrics against recent
+  snapshots and emits HealthFindings
+- Findings added to `ReviewFindings.convention_drift_findings` and
+  rendered as `"convention_drift"` in review JSON output
 
 ## PRD and arc context
 
@@ -336,18 +381,21 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 | sutra/91 | health snapshots + per-file history | done | pipeline.rs, trend.rs, db/mod.rs |
 | sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
 | sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
+| sutra/95 | convention drift detection | done | health/drift.rs, db/conventions.rs, review.rs |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
-- Integration tests: `tests/health-test.rs` (45 tests — model, threshold,
+- Integration tests: `tests/health-test.rs` (56 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
   snapshot per-file/per-component storage, file health history,
   trend comparison with file deltas, trend history mode, blame parsing,
   HealthFinding::to_row, health delta: degradation, improvement,
-  no-snapshot fallback, on-demand finding attribution)
+  no-snapshot fallback, on-demand finding attribution,
+  convention drift: FCA conformance, HRR coherence, drop detection,
+  threshold gating, independent paths, snapshot metric storage)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,
   similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
