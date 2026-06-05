@@ -9,8 +9,9 @@ use serde_json::json;
 use crate::components;
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
 use crate::conventions;
-use crate::db::Db;
+use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
+use crate::health::{findings::BiomarkerKind, instability, scoring};
 use crate::rules::{self, Constraint, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -370,6 +371,10 @@ fn constraint_detail(c: &Constraint) -> String {
     }
 }
 
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 pub fn handle(
     db: &Db,
     scope: &str,
@@ -423,6 +428,30 @@ pub fn handle(
     } else {
         None
     };
+
+    // Health findings (load once, filter waived)
+    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
+    if let Ok(all_findings_with_waivers) = db.get_health_findings_with_waiver_status() {
+        for (finding, waived) in all_findings_with_waivers {
+            if !waived {
+                findings_by_file
+                    .entry(finding.file_id)
+                    .or_default()
+                    .push(finding);
+            }
+        }
+    }
+
+    let memberships = db.component_members_with_line_count().unwrap_or_default();
+    let mut comp_file_line_counts: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    for (comp_id, file_id, line_count) in &memberships {
+        comp_file_line_counts
+            .entry(comp_id.as_str())
+            .or_default()
+            .push((*file_id, *line_count));
+    }
+
+    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
 
     let mut orientation_sections = Vec::new();
 
@@ -647,6 +676,74 @@ pub fn handle(
         let hidden = hidden_coupling_for_component(db, &comp.id, cochange_threshold, &path_map);
         if !hidden.is_empty() {
             section["hidden_coupling"] = json!(hidden);
+        }
+
+        // Health section
+        let mut health_section = json!({});
+        let mut has_health = false;
+
+        if let Some(members) = comp_file_line_counts.get(comp.id.as_str()) {
+            let mut file_scores: Vec<(f64, i64)> = Vec::new();
+            let mut comp_findings: Vec<&HealthFindingRow> = Vec::new();
+
+            for &(file_id, line_count) in members {
+                let file_findings: Vec<HealthFindingRow> = findings_by_file
+                    .get(&file_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let score = scoring::score_file(&file_findings).score;
+                file_scores.push((score, line_count));
+                if let Some(refs) = findings_by_file.get(&file_id) {
+                    comp_findings.extend(refs);
+                }
+            }
+
+            let comp_score = scoring::score_component(&file_scores);
+            health_section["health_score"] = json!(round2(comp_score));
+            has_health = true;
+
+            if !comp_findings.is_empty() {
+                comp_findings.sort_by(|a, b| {
+                    a.severity.cmp(&b.severity).then_with(|| {
+                        let wa = BiomarkerKind::from_str(&a.biomarker_kind)
+                            .map(|k| k.default_weight())
+                            .unwrap_or(0.0);
+                        let wb = BiomarkerKind::from_str(&b.biomarker_kind)
+                            .map(|k| k.default_weight())
+                            .unwrap_or(0.0);
+                        wb.partial_cmp(&wa).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                });
+                let top: Vec<_> = comp_findings
+                    .iter()
+                    .take(5)
+                    .map(|f| {
+                        let mut entry = json!({
+                            "biomarker": f.biomarker_kind,
+                            "severity": f.severity,
+                            "detail": f.detail,
+                        });
+                        if let Some(path) = path_map.get(&f.file_id) {
+                            entry["file"] = json!(path);
+                        }
+                        entry
+                    })
+                    .collect();
+                health_section["top_findings"] = json!(top);
+            }
+        }
+
+        if let Some(inst) = instability_map.get(&comp.id) {
+            health_section["component_instability"] = json!({
+                "ce": inst.ce,
+                "ca": inst.ca,
+                "instability": round2(inst.instability),
+            });
+            has_health = true;
+        }
+
+        if has_health {
+            section["health"] = health_section;
         }
 
         orientation_sections.push(section);

@@ -6,8 +6,9 @@ use sutra::git::parse_blame_porcelain;
 use sutra::health::findings::HealthFinding;
 use sutra::health::{
     compute_all_health_findings, compute_change_entropy, compute_co_change_scatter,
-    compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk, score_component,
-    score_file, BiomarkerKind, HealthSeverity,
+    compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk,
+    instability::compute_component_instability, score_component, score_file, BiomarkerKind,
+    HealthSeverity,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -1638,4 +1639,217 @@ fn convention_snapshot_null_drift_metrics() {
     assert_eq!(snaps.len(), 1);
     assert!(snaps[0].fca_conformance.is_none());
     assert!(snaps[0].hrr_coherence.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Component instability (Martin's Ce/(Ca+Ce))
+// ---------------------------------------------------------------------------
+
+#[test]
+fn component_instability_basic() {
+    let (_dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/alpha/a.rs");
+    let fb = seed_file(&db, "src/beta/b.rs");
+    let fc = seed_file(&db, "src/alpha/c.rs");
+
+    db.insert_component("alpha", "Alpha").unwrap();
+    db.insert_component("beta", "Beta").unwrap();
+    db.batch_insert_membership(&[
+        ("alpha".into(), fa),
+        ("alpha".into(), fc),
+        ("beta".into(), fb),
+    ])
+    .unwrap();
+
+    // alpha imports beta (2 edges out), beta imports alpha (1 edge out)
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1).unwrap();
+    db.insert_import(fc, "src/beta/b.rs", Some(fb), 1).unwrap();
+    db.insert_import(fb, "src/alpha/a.rs", Some(fa), 1).unwrap();
+
+    let result = compute_component_instability(&db).unwrap();
+
+    // Alpha: Ce=2 (a→b, c→b), Ca=1 (b→a). I = 2/3
+    let alpha = result.get("alpha").unwrap();
+    assert_eq!(alpha.ce, 2);
+    assert_eq!(alpha.ca, 1);
+    assert!((alpha.instability - 2.0 / 3.0).abs() < 1e-9);
+
+    // Beta: Ce=1 (b→a), Ca=2 (a→b, c→b). I = 1/3
+    let beta = result.get("beta").unwrap();
+    assert_eq!(beta.ce, 1);
+    assert_eq!(beta.ca, 2);
+    assert!((beta.instability - 1.0 / 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn component_instability_isolated() {
+    let (_dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/solo/a.rs");
+    let fb = seed_file(&db, "src/solo/b.rs");
+
+    db.insert_component("solo", "Solo").unwrap();
+    db.batch_insert_membership(&[("solo".into(), fa), ("solo".into(), fb)])
+        .unwrap();
+
+    // Internal edge only — same component
+    db.insert_import(fa, "src/solo/b.rs", Some(fb), 1).unwrap();
+
+    let result = compute_component_instability(&db).unwrap();
+    let solo = result.get("solo").unwrap();
+    assert_eq!(solo.ce, 0);
+    assert_eq!(solo.ca, 0);
+    assert!((solo.instability - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn component_instability_fully_efferent() {
+    let (_dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/leaf/a.rs");
+    let fb = seed_file(&db, "src/core/b.rs");
+
+    db.insert_component("leaf", "Leaf").unwrap();
+    db.insert_component("core", "Core").unwrap();
+    db.batch_insert_membership(&[("leaf".into(), fa), ("core".into(), fb)])
+        .unwrap();
+
+    // leaf → core only
+    db.insert_import(fa, "src/core/b.rs", Some(fb), 1).unwrap();
+
+    let result = compute_component_instability(&db).unwrap();
+
+    let leaf = result.get("leaf").unwrap();
+    assert_eq!(leaf.ce, 1);
+    assert_eq!(leaf.ca, 0);
+    assert!((leaf.instability - 1.0).abs() < 1e-9);
+
+    let core = result.get("core").unwrap();
+    assert_eq!(core.ce, 0);
+    assert_eq!(core.ca, 1);
+    assert!((core.instability - 0.0).abs() < 1e-9);
+}
+
+// ---------------------------------------------------------------------------
+// Orient health section
+// ---------------------------------------------------------------------------
+
+#[test]
+fn orient_includes_health_section() {
+    let (dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/tools/orient.rs");
+    seed_fn(&db, fa, "orient::handle", "handle", Some(6));
+
+    db.insert_component("comp1", "Tools").unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fa)])
+        .unwrap();
+
+    // Generate health findings (nesting > 4 threshold)
+    let findings = compute_nested_complexity(&db).unwrap();
+    assert!(!findings.is_empty());
+    db.replace_health_findings(&findings).unwrap();
+
+    let result = sutra::tools::orient::handle(&db, "Tools", dir.path(), None).unwrap();
+    let orientation = result["orientation"].as_array().unwrap();
+    assert_eq!(orientation.len(), 1);
+
+    let section = &orientation[0];
+    assert!(section.get("health").is_some(), "health section should be present");
+
+    let health = &section["health"];
+    assert!(health["health_score"].as_f64().is_some());
+    assert!(health["top_findings"].as_array().unwrap().len() > 0);
+
+    let finding = &health["top_findings"][0];
+    assert_eq!(finding["biomarker"].as_str().unwrap(), "nested_complexity");
+    assert_eq!(finding["severity"].as_str().unwrap(), "advisory");
+}
+
+#[test]
+fn orient_health_absent_when_clean() {
+    let (dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/clean.rs");
+    seed_fn(&db, fa, "clean::foo", "foo", Some(1));
+
+    db.insert_component("comp1", "Clean").unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fa)])
+        .unwrap();
+
+    let result = sutra::tools::orient::handle(&db, "Clean", dir.path(), None).unwrap();
+    let section = &result["orientation"][0];
+
+    // Health section present but with perfect score and no findings
+    let health = &section["health"];
+    assert!((health["health_score"].as_f64().unwrap() - 10.0).abs() < 0.01);
+    assert!(
+        health.get("top_findings").is_none()
+            || health["top_findings"].as_array().map(|a| a.is_empty()).unwrap_or(true)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// File health: component filter + instability
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_health_component_filter() {
+    let (_dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/alpha/a.rs");
+    let fb = seed_file(&db, "src/beta/b.rs");
+
+    seed_fn(&db, fa, "alpha::deep", "deep", Some(6));
+    seed_fn(&db, fb, "beta::deep", "deep", Some(7));
+
+    db.insert_component("alpha", "Alpha").unwrap();
+    db.insert_component("beta", "Beta").unwrap();
+    db.batch_insert_membership(&[("alpha".into(), fa), ("beta".into(), fb)])
+        .unwrap();
+
+    let findings = compute_nested_complexity(&db).unwrap();
+    db.replace_health_findings(&findings).unwrap();
+
+    // Without filter: both files
+    let all = sutra::tools::file_health::handle(&db, None, None, None, None).unwrap();
+    assert_eq!(all["total_files"].as_u64().unwrap(), 2);
+
+    // With component filter: only Alpha's file
+    let filtered =
+        sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha")).unwrap();
+    assert_eq!(filtered["total_files"].as_u64().unwrap(), 1);
+    assert_eq!(
+        filtered["files"][0]["path"].as_str().unwrap(),
+        "src/alpha/a.rs"
+    );
+}
+
+#[test]
+fn file_health_component_instability() {
+    let (_dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/alpha/a.rs");
+    let fb = seed_file(&db, "src/beta/b.rs");
+
+    db.insert_component("alpha", "Alpha").unwrap();
+    db.insert_component("beta", "Beta").unwrap();
+    db.batch_insert_membership(&[("alpha".into(), fa), ("beta".into(), fb)])
+        .unwrap();
+
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1).unwrap();
+
+    let result = sutra::tools::file_health::handle(&db, None, None, Some("all"), None).unwrap();
+    let components = result["components"].as_array().unwrap();
+    assert!(!components.is_empty());
+
+    let alpha = components
+        .iter()
+        .find(|c| c["name"].as_str().unwrap() == "Alpha")
+        .unwrap();
+    let inst = &alpha["instability"];
+    assert_eq!(inst["ce"].as_u64().unwrap(), 1);
+    assert_eq!(inst["ca"].as_u64().unwrap(), 0);
+    assert!((inst["value"].as_f64().unwrap() - 1.0).abs() < 1e-9);
 }

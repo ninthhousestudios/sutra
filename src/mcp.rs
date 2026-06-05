@@ -746,10 +746,11 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Per-file health report with three axes: complexity_health, dead_health, \
-        coupling_health (each 0-100), plus an overall health_score. Default mode='actionable' \
-        filters out foundational files (high coupling but low complexity and no dead code). \
-        Use mode='all' to include everything. Worst files first. Requires analysis tier."
+        description = "Per-file and per-component health report. Returns derived health scores \
+        (1.0-10.0), active findings with full detail, category deductions, and component \
+        instability (Martin's Ce/(Ca+Ce)). Filter by file path or component name. \
+        Default mode='actionable' shows only files with findings; mode='all' includes everything. \
+        Worst files first. Requires analysis tier."
     )]
     pub async fn sutra_file_health(
         &self,
@@ -763,6 +764,7 @@ impl SutraServer {
             args.path.as_deref(),
             args.limit,
             args.mode.as_deref(),
+            args.component.as_deref(),
             Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
