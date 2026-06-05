@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-05 (5e-10: convention drift detection)
+Last updated: 2026-06-05 (5e-11: orient + health MCP tools)
 
 ## Module layout
 
@@ -20,6 +20,13 @@ src/health/
                       HealthSeverity (Advisory, Informational — never Blocking,
                       + from_str), compute_nested_complexity,
                       compute_all_health_findings(db, workspace_root)
+  instability.rs    — Component instability (Martin's Ce/(Ca+Ce)).
+                      ComponentInstability{ce, ca, instability},
+                      compute_component_instability(db). Uses import_edges
+                      + component_members_with_line_count to partition
+                      directed import edges into efferent/afferent per
+                      component. Surfaced in orient health section and
+                      sutra_file_health component scores.
   git_metrics.rs    — git-organizational biomarkers consuming commits +
                       commit_files tables. compute_co_change_scatter,
                       compute_change_entropy, compute_ownership_risk,
@@ -94,9 +101,15 @@ src/similarity/
                       compute_pattern_families.
 
 src/tools/
+  orient.rs         — sutra_orient: health section injected per component.
+                      Shows health_score (NLOC-weighted), top 5 findings
+                      (sorted by severity then weight), and component
+                      instability (Ce/Ca/I). Loads findings once before
+                      component loop, computes instability once.
   file_health.rs    — MCP tool: queries findings with waiver status, scores
                       via scoring::score_file, builds per-file + per-component
-                      JSON.
+                      JSON. Accepts optional `component` filter (by name).
+                      Component scores include instability metrics.
   trend.rs          — MCP tool: sutra_trend. Comparison mode diffs two
                       snapshots with per-file deltas (improved/degraded),
                       per-component deltas, category breakdown. History
@@ -136,8 +149,10 @@ Enum with 13 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
 `ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`. On-demand (review-time
 via git blame): `FunctionHotspot`, `CodeAgeVolatility`. Shape-diff
 (review-time): `HrrShapeChange`. Convention drift (review-time):
-`ConventionDrift`. Stubs for future: `BlastRadiusChurn`,
-`DeadCodeRatio`, `CoverageGradient`, `ComponentInstability`.
+`ConventionDrift`. Component instability: `ComponentInstability`
+(computed via `health/instability.rs`, surfaced as component-level metric
+in orient + sutra_file_health, not as a per-file HealthFinding).
+Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`, `CoverageGradient`.
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
@@ -382,12 +397,13 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 | sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
 | sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
 | sutra/95 | convention drift detection | done | health/drift.rs, db/conventions.rs, review.rs |
+| sutra/96 | orient + health MCP tools | done | health/instability.rs, tools/orient.rs, tools/file_health.rs |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
-- Integration tests: `tests/health-test.rs` (56 tests — model, threshold,
+- Integration tests: `tests/health-test.rs` (63 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
   snapshot per-file/per-component storage, file health history,
@@ -395,7 +411,10 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
   HealthFinding::to_row, health delta: degradation, improvement,
   no-snapshot fallback, on-demand finding attribution,
   convention drift: FCA conformance, HRR coherence, drop detection,
-  threshold gating, independent paths, snapshot metric storage)
+  threshold gating, independent paths, snapshot metric storage,
+  component instability: basic, isolated, fully-efferent,
+  orient health section: present with findings, absent when clean,
+  file health: component filter, component instability in scores)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,
   similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
