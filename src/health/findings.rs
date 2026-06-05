@@ -107,6 +107,23 @@ pub struct HealthFinding {
     pub detail: String,
 }
 
+impl HealthFinding {
+    pub fn to_row(&self, id: i64) -> crate::db::HealthFindingRow {
+        crate::db::HealthFindingRow {
+            id,
+            file_id: self.file_id,
+            symbol_id: self.symbol_id,
+            biomarker_kind: self.biomarker_kind.as_str().to_string(),
+            severity: self.severity.as_str().to_string(),
+            confidence: self.confidence,
+            provenance: self.provenance.clone(),
+            metric_value: self.metric_value,
+            threshold: self.threshold,
+            detail: self.detail.clone(),
+        }
+    }
+}
+
 const NESTING_THRESHOLD: i64 = 4;
 
 pub fn compute_nested_complexity(db: &Db) -> Result<Vec<HealthFinding>> {

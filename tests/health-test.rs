@@ -2,6 +2,8 @@ use sutra::db::{
     CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotComponentRow, SnapshotFileRow,
     SnapshotParams,
 };
+use sutra::git::parse_blame_porcelain;
+use sutra::health::findings::HealthFinding;
 use sutra::health::{
     compute_all_health_findings, compute_change_entropy, compute_co_change_scatter,
     compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk, score_component,
@@ -1124,4 +1126,232 @@ fn test_trend_file_history_mode() {
     assert_eq!(snapshots.len(), 2);
     assert!((snapshots[0]["health_score"].as_f64().unwrap() - 9.5).abs() < 0.01);
     assert!((snapshots[1]["health_score"].as_f64().unwrap() - 7.0).abs() < 0.01);
+}
+
+// --- Blame parsing ---
+
+#[test]
+fn test_parse_blame_porcelain_basic() {
+    let input = "\
+aabbccdd11223344556677889900aabbccddeeff 1 1 2
+author Alice
+author-mail <alice@dev>
+author-time 1700000000
+author-tz +0000
+committer Alice
+committer-mail <alice@dev>
+committer-time 1700000000
+committer-tz +0000
+summary initial commit
+filename src/main.rs
+\tfn main() {
+aabbccdd11223344556677889900aabbccddeeff 2 2
+\t    println!(\"hello\");
+ff00112233445566778899aabbccddeeff001122 3 3 1
+author Bob
+author-mail <bob@dev>
+author-time 1700100000
+author-tz +0000
+committer Bob
+committer-mail <bob@dev>
+committer-time 1700100000
+committer-tz +0000
+summary add closing brace
+filename src/main.rs
+\t}
+";
+    let lines = parse_blame_porcelain(input);
+    assert_eq!(lines.len(), 3);
+
+    assert_eq!(lines[0].commit, "aabbccdd11223344556677889900aabbccddeeff");
+    assert_eq!(lines[0].author_time, 1700000000);
+    assert_eq!(lines[0].line_no, 1);
+
+    assert_eq!(lines[1].commit, "aabbccdd11223344556677889900aabbccddeeff");
+    assert_eq!(lines[1].author_time, 1700000000);
+    assert_eq!(lines[1].line_no, 2);
+
+    assert_eq!(lines[2].commit, "ff00112233445566778899aabbccddeeff001122");
+    assert_eq!(lines[2].author_time, 1700100000);
+    assert_eq!(lines[2].line_no, 3);
+}
+
+#[test]
+fn test_parse_blame_porcelain_empty() {
+    let lines = parse_blame_porcelain("");
+    assert!(lines.is_empty());
+}
+
+// --- HealthFinding::to_row ---
+
+#[test]
+fn test_health_finding_to_row() {
+    let finding = HealthFinding {
+        file_id: 42,
+        symbol_id: Some(7),
+        biomarker_kind: BiomarkerKind::FunctionHotspot,
+        severity: HealthSeverity::Advisory,
+        confidence: 1.0,
+        provenance: "on-demand:blame".into(),
+        metric_value: 15.0,
+        threshold: 8.0,
+        detail: "test detail".into(),
+    };
+    let row = finding.to_row(-1);
+    assert_eq!(row.id, -1);
+    assert_eq!(row.file_id, 42);
+    assert_eq!(row.symbol_id, Some(7));
+    assert_eq!(row.biomarker_kind, "function_hotspot");
+    assert_eq!(row.severity, "advisory");
+    assert_eq!(row.metric_value, 15.0);
+}
+
+// --- Health delta ---
+
+#[test]
+fn test_health_delta_degradation() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/hotfile.rs");
+    seed_fn(&db, fid, "hotfile::process", "process", Some(5));
+
+    // Snapshot with good score
+    let snap_id = insert_snapshot(&db, 9.0);
+    db.insert_snapshot_files(
+        snap_id,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/hotfile.rs".into(),
+            score: 9.0,
+            category_scores: "{}".into(),
+        }],
+    )
+    .unwrap();
+
+    // Add a finding that degrades the score
+    db.replace_health_findings(&[HealthFinding {
+        file_id: fid,
+        symbol_id: None,
+        biomarker_kind: BiomarkerKind::NestedComplexity,
+        severity: HealthSeverity::Advisory,
+        confidence: 1.0,
+        provenance: "computed".into(),
+        metric_value: 6.0,
+        threshold: 4.0,
+        detail: "deep nesting".into(),
+    }])
+    .unwrap();
+
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/hotfile.rs".to_string()],
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(delta.degraded.len(), 1);
+    assert!(delta.improved.is_empty());
+    let entry = &delta.degraded[0];
+    assert_eq!(entry.path, "src/hotfile.rs");
+    assert!((entry.previous_score - 9.0).abs() < 0.01);
+    assert!(entry.current_score < 9.0);
+    assert!(entry.delta < 0.0);
+}
+
+#[test]
+fn test_health_delta_improvement() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/cleaned.rs");
+    seed_fn(&db, fid, "cleaned::run", "run", Some(2));
+
+    // Snapshot with poor score
+    let snap_id = insert_snapshot(&db, 6.0);
+    db.insert_snapshot_files(
+        snap_id,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/cleaned.rs".into(),
+            score: 6.0,
+            category_scores: r#"{"structural":2.0}"#.into(),
+        }],
+    )
+    .unwrap();
+
+    // No findings → current score = 10.0 (base)
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/cleaned.rs".to_string()],
+        &[],
+    )
+    .unwrap();
+
+    assert!(delta.degraded.is_empty());
+    assert_eq!(delta.improved.len(), 1);
+    let entry = &delta.improved[0];
+    assert_eq!(entry.path, "src/cleaned.rs");
+    assert!(entry.delta > 0.0);
+}
+
+#[test]
+fn test_health_delta_no_snapshot_uses_base_10() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/new.rs");
+    seed_fn(&db, fid, "new::init", "init", Some(2));
+
+    // No snapshot exists → previous defaults to 10.0
+    // No findings → current = 10.0 → no delta
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/new.rs".to_string()],
+        &[],
+    )
+    .unwrap();
+
+    assert!(delta.degraded.is_empty());
+    assert!(delta.improved.is_empty());
+}
+
+#[test]
+fn test_health_delta_with_ondemand_findings() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/volatile.rs");
+    seed_fn(&db, fid, "volatile::handle", "handle", Some(2));
+
+    // Snapshot with good score
+    let snap_id = insert_snapshot(&db, 9.5);
+    db.insert_snapshot_files(
+        snap_id,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/volatile.rs".into(),
+            score: 9.5,
+            category_scores: "{}".into(),
+        }],
+    )
+    .unwrap();
+
+    // On-demand finding
+    let ondemand = vec![HealthFinding {
+        file_id: fid,
+        symbol_id: Some(1),
+        biomarker_kind: BiomarkerKind::FunctionHotspot,
+        severity: HealthSeverity::Advisory,
+        confidence: 1.0,
+        provenance: "on-demand:blame".into(),
+        metric_value: 12.0,
+        threshold: 5.0,
+        detail: "volatile::handle: 12 distinct commits".into(),
+    }];
+
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/volatile.rs".to_string()],
+        &ondemand,
+    )
+    .unwrap();
+
+    assert_eq!(delta.degraded.len(), 1);
+    let entry = &delta.degraded[0];
+    assert!(entry.delta < 0.0);
+    assert!(!entry.driving_findings.is_empty());
+    assert_eq!(entry.driving_findings[0].biomarker_kind, "function_hotspot");
 }

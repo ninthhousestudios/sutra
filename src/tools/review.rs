@@ -162,6 +162,12 @@ pub fn handle(
         &crate::similarity::diff::ShapeChangeConfig::default(),
     );
 
+    let ondemand_findings =
+        crate::health::ondemand::compute_ondemand_findings(db, workspace_root, &changed_paths);
+
+    let health_delta =
+        crate::health::ondemand::compute_health_delta(db, &changed_paths, &ondemand_findings).ok();
+
     let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
@@ -173,6 +179,25 @@ pub fn handle(
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
         }
+
+        if !ondemand_findings.is_empty() {
+            let health_out: Vec<_> = ondemand_findings
+                .iter()
+                .map(|f| {
+                    json!({
+                        "biomarker": f.biomarker_kind.as_str(),
+                        "severity": f.severity.as_str(),
+                        "file_id": f.file_id,
+                        "symbol_id": f.symbol_id,
+                        "metric_value": scoring::round3(f.metric_value),
+                        "threshold": scoring::round3(f.threshold),
+                        "detail": f.detail,
+                    })
+                })
+                .collect();
+            obj.insert("health_findings".into(), json!(health_out));
+        }
+
         let shape_out: Vec<_> = shape_changes
             .iter()
             .filter(|c| c.quadrant == crate::similarity::diff::DiffQuadrant::SubtleStructural)
@@ -192,6 +217,53 @@ pub fn handle(
             .collect();
         if !shape_out.is_empty() {
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
+        }
+
+        if let Some(delta) = health_delta {
+            let degraded_out: Vec<_> = delta
+                .degraded
+                .iter()
+                .map(|e| {
+                    let drivers: Vec<_> = e
+                        .driving_findings
+                        .iter()
+                        .map(|f| {
+                            json!({
+                                "biomarker": f.biomarker_kind,
+                                "detail": f.detail,
+                            })
+                        })
+                        .collect();
+                    json!({
+                        "path": e.path,
+                        "from": scoring::round3(e.previous_score),
+                        "to": scoring::round3(e.current_score),
+                        "delta": scoring::round3(e.delta),
+                        "driving_findings": drivers,
+                    })
+                })
+                .collect();
+            let improved_out: Vec<_> = delta
+                .improved
+                .iter()
+                .map(|e| {
+                    json!({
+                        "path": e.path,
+                        "from": scoring::round3(e.previous_score),
+                        "to": scoring::round3(e.current_score),
+                        "delta": scoring::round3(e.delta),
+                    })
+                })
+                .collect();
+            if !degraded_out.is_empty() || !improved_out.is_empty() {
+                obj.insert(
+                    "health_delta".into(),
+                    json!({
+                        "degraded": degraded_out,
+                        "improved": improved_out,
+                    }),
+                );
+            }
         }
     }
     Ok(result)

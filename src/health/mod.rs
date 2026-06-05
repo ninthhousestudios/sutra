@@ -1,5 +1,6 @@
 pub mod findings;
 pub mod git_metrics;
+pub mod ondemand;
 pub mod scoring;
 
 pub use findings::*;

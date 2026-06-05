@@ -4,6 +4,66 @@ use std::process::Command;
 
 use crate::error::{Result, SutraError};
 
+#[derive(Debug, Clone)]
+pub struct BlameLine {
+    pub commit: String,
+    pub author_time: i64,
+    pub line_no: usize,
+}
+
+pub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {
+    let mut results = Vec::new();
+    let mut current_commit = String::new();
+    let mut current_time: i64 = 0;
+    let mut current_line: usize = 0;
+
+    for line in input.lines() {
+        if line.starts_with('\t') {
+            results.push(BlameLine {
+                commit: current_commit.clone(),
+                author_time: current_time,
+                line_no: current_line,
+            });
+        } else if let Some(ts) = line.strip_prefix("author-time ") {
+            current_time = ts.trim().parse().unwrap_or(0);
+        } else {
+            let bytes = line.as_bytes();
+            if bytes.len() > 40
+                && bytes[40] == b' '
+                && bytes[..40].iter().all(|b| b.is_ascii_hexdigit())
+            {
+                current_commit = line[..40].to_string();
+                let parts: Vec<&str> = line[41..].split_whitespace().collect();
+                if parts.len() >= 2 {
+                    current_line = parts[1].parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    results
+}
+
+pub fn git_blame_porcelain(workspace_root: &Path, path: &str) -> Result<Vec<BlameLine>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["blame", "--porcelain", path])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git blame failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no such path") || stderr.contains("bad revision") {
+            return Ok(vec![]);
+        }
+        return Err(SutraError::Internal(format!("git blame: {stderr}")));
+    }
+
+    let text = String::from_utf8(output.stdout)
+        .map_err(|e| SutraError::Internal(format!("git blame: non-UTF8: {e}")))?;
+    Ok(parse_blame_porcelain(&text))
+}
+
 pub struct CommitFile {
     pub hash: String,
     pub timestamp: i64,
