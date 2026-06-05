@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-04 (5e-3: git-organizational biomarkers)
+Last updated: 2026-06-05 (5e-5: structural similarity search)
 
 ## Module layout
 
@@ -55,13 +55,40 @@ src/db/
                       InsertSymbolParams.max_nesting field.
   migrations.rs     — 0027 (ephemeral), 0028 (durable)
 
+src/similarity/
+  hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
+                      convolution, Rng (deterministic xoshiro256++).
+                      Key methods: cosine_similarity, bind/unbind,
+                      bundle, permute, to_bytes/from_bytes.
+  codebook.rs       — Codebook: maps AST node-kind strings to random
+                      HrrVec. Persists to hrr_codebook table (durable).
+  encoder.rs        — encode_subtree(node, source, codebook, embed_idents).
+                      embed_idents=false → strip mode (structure only),
+                      embed_idents=true → embed mode (structure + names).
+  duplicates.rs     — find_pattern_families: union-find clustering over
+                      strip vectors. Used by sutra_duplicates tool.
+  search.rs         — find_similar: cosine-similarity ranked search.
+                      SimilarityMatch{symbol_id, score}. Self-exclusion,
+                      threshold filtering, limit truncation.
+  mod.rs            — compute_hrr_vectors (pipeline entry),
+                      compute_pattern_families.
+
 src/tools/
   file_health.rs    — MCP tool: queries findings with waiver status, scores
                       via scoring::score_file, builds per-file + per-component
                       JSON. Legacy compute_file_scores still present for
                       pipeline.rs (removed when sutra/91 lands).
+  similar.rs        — MCP tool: sutra_similar(symbol, mode, limit, threshold).
+                      Resolves symbol → HRR vector, linear scan cosine
+                      similarity, returns ranked matches with file locations.
 
 src/db/
+  similarity.rs     — HrrSymbolRow, SymbolSummary, PatternFamily types.
+                      Db methods: function_symbols_for_hrr, replace_hrr_vectors,
+                      load_hrr_codebook, save_hrr_codebook_entries,
+                      load_all_strip_vectors, load_hrr_vector (single),
+                      load_all_vectors_by_mode, replace_pattern_families,
+                      query_pattern_families, symbols_by_ids.
   components.rs     — component_members_with_line_count() added for
                       NLOC-weighted component health scoring.
 
@@ -246,14 +273,21 @@ scale). Legacy `compute_file_scores` (0–100 scale) remains for
 | sutra/85 | health scoring with category capping | done | scoring.rs + tool rewrite |
 | sutra/86 | git-organizational biomarkers | done | git_metrics.rs, db/graph.rs queries |
 | sutra/87 | review-1: health foundation | ready-for-human | review gate |
+| sutra/88 | HRR encoder | done | similarity/hrr.rs, encoder.rs, codebook.rs |
+| sutra/89 | structural similarity search | done | similarity/search.rs, tools/similar.rs |
+| sutra/90 | pattern families + duplicates | done | similarity/duplicates.rs, tools/duplicates.rs |
 | sutra/93 | semantic diff for review | ready-for-agent | HRR vectors |
 
 ## Test locations
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
+- Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
 - Integration tests: `tests/health-test.rs` (29 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging)
+- Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
+  strip/embed modes, determinism, discrimination, pattern families,
+  similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
 - Test DB setup: `Db::open_unchecked("test", dir.path())` with tempdir
 - Seed helpers: `seed_fn(db, file_id, qn, sn, max_nesting)`,
   `seed_commits(db, commits, pairs)` in health-test.rs
