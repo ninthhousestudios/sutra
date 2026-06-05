@@ -65,6 +65,14 @@ src/similarity/
   encoder.rs        — encode_subtree(node, source, codebook, embed_idents).
                       embed_idents=false → strip mode (structure only),
                       embed_idents=true → embed mode (structure + names).
+  diff.rs           — Semantic diff: four-quadrant classification of
+                      text-Δ vs HRR-Δ per function. detect_shape_changes
+                      re-parses old source from git, encodes strip vectors,
+                      compares against current. ShapeChangeConfig thresholds
+                      (text_delta: 0.15, hrr_delta: 0.40). Produces
+                      HealthFinding with BiomarkerKind::HrrShapeChange for
+                      SubtleStructural quadrant. Integrated into sutra_review
+                      as "hrr_shape_changes" output section.
   duplicates.rs     — find_pattern_families: union-find clustering over
                       strip vectors. Used by sutra_duplicates tool.
   search.rs         — find_similar: cosine-similarity ranked search.

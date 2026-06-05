@@ -257,3 +257,28 @@ pub fn git_churn(workspace_root: &Path, window_days: u32) -> Result<HashMap<Stri
     }
     Ok(counts)
 }
+
+pub fn git_file_content_at(
+    workspace_root: &Path,
+    revision: &str,
+    path: &str,
+) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["show", &format!("{revision}:{path}")])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git show failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not exist") || stderr.contains("bad revision") {
+            return Ok(None);
+        }
+        return Err(SutraError::Internal(format!("git show: {stderr}")));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .map_err(|e| SutraError::Internal(format!("git show: non-UTF8 content: {e}")))
+}

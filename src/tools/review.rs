@@ -121,13 +121,14 @@ pub fn handle(
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
-    let changed_paths = match mode {
-        "staged" => git::git_diff_staged(workspace_root)?,
-        "unstaged" => git::git_diff_unstaged(workspace_root)?,
+    let (changed_paths, base_revision) = match mode {
+        "staged" => (git::git_diff_staged(workspace_root)?, "HEAD".to_string()),
+        "unstaged" => (git::git_diff_unstaged(workspace_root)?, "HEAD".to_string()),
         "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
-            git::git_diff_files(workspace_root, &base, "HEAD")?
+            let paths = git::git_diff_files(workspace_root, &base, "HEAD")?;
+            (paths, base)
         }
         spec => {
             let (base, head) = if let Some((a, b)) = spec.split_once("..") {
@@ -135,7 +136,8 @@ pub fn handle(
             } else {
                 (format!("{spec}~1"), spec.to_string())
             };
-            git::git_diff_files(workspace_root, &base, &head)?
+            let paths = git::git_diff_files(workspace_root, &base, &head)?;
+            (paths, base)
         }
     };
 
@@ -151,6 +153,15 @@ pub fn handle(
             Err(e) => (ReviewFindings::default(), Some(e.to_string())),
         };
 
+    let shape_changes = crate::similarity::diff::detect_shape_changes(
+        db,
+        workspace_root,
+        &changed_paths,
+        &base_revision,
+        &registry,
+        &crate::similarity::diff::ShapeChangeConfig::default(),
+    );
+
     let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
@@ -161,6 +172,26 @@ pub fn handle(
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
+        }
+        let shape_out: Vec<_> = shape_changes
+            .iter()
+            .filter(|c| c.quadrant == crate::similarity::diff::DiffQuadrant::SubtleStructural)
+            .map(|c| {
+                json!({
+                    "file": c.file_path,
+                    "symbol": c.symbol_name,
+                    "text_delta": scoring::round3(c.text_delta),
+                    "hrr_delta": scoring::round3(c.hrr_delta),
+                    "quadrant": c.quadrant.as_str(),
+                    "detail": format!(
+                        "{}: text changed {:.0}% but structural shape changed {:.0}%",
+                        c.symbol_name, c.text_delta * 100.0, c.hrr_delta * 100.0,
+                    ),
+                })
+            })
+            .collect();
+        if !shape_out.is_empty() {
+            obj.insert("hrr_shape_changes".into(), json!(shape_out));
         }
     }
     Ok(result)

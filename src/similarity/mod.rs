@@ -1,4 +1,5 @@
 pub mod codebook;
+pub mod diff;
 pub mod search;
 pub mod duplicates;
 pub mod encoder;
