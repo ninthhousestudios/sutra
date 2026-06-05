@@ -21,7 +21,7 @@ impl Default for ShapeChangeConfig {
     fn default() -> Self {
         Self {
             text_delta_threshold: 0.15,
-            hrr_delta_threshold: 0.40,
+            hrr_delta_threshold: 0.15,
         }
     }
 }
@@ -228,12 +228,16 @@ pub fn detect_shape_changes(
                 _ => continue,
             };
 
-            let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let hrr_delta_raw = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let n_children = fn_body_child_count(&old_tree, old_fn.ts_node_start, old_fn.ts_node_end);
+            let hrr_delta = hrr_delta_raw * n_children as f64;
             let text_delta = text_delta_ratio(&old_fn.source, &new_fn.source);
             let quadrant = classify(text_delta, hrr_delta, config);
             debug!(
                 path, symbol = new_fn.name,
-                hrr_delta = format!("{hrr_delta:.3}"),
+                hrr_delta_raw = format!("{hrr_delta_raw:.3}"),
+                hrr_delta_norm = format!("{hrr_delta:.3}"),
+                n_children,
                 text_delta = format!("{text_delta:.3}"),
                 quadrant = quadrant.as_str(),
                 "shape_diff: function compared"
@@ -276,6 +280,28 @@ fn encode_fn_node(
     Some(encoder::encode_subtree(&node, source, cb, false))
 }
 
+fn fn_body_child_count(
+    tree: &tree_sitter::Tree,
+    start: tree_sitter::Point,
+    end: tree_sitter::Point,
+) -> usize {
+    let node = match tree.root_node().descendant_for_point_range(start, end) {
+        Some(n) => n,
+        None => return 1,
+    };
+    let block = (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .find(|c| c.kind() == "block" || c.kind() == "function_body");
+    match block {
+        Some(b) => (0..b.child_count())
+            .filter_map(|i| b.child(i))
+            .filter(|c| c.is_named())
+            .count()
+            .max(1),
+        None => 1,
+    }
+}
+
 pub fn shape_changes_to_findings(changes: &[ShapeChange]) -> Vec<HealthFinding> {
     changes
         .iter()
@@ -288,7 +314,7 @@ pub fn shape_changes_to_findings(changes: &[ShapeChange]) -> Vec<HealthFinding> 
             confidence: 1.0 - c.text_delta,
             provenance: "hrr_semantic_diff".into(),
             metric_value: c.hrr_delta,
-            threshold: 0.40,
+            threshold: 0.15,
             detail: format!(
                 "{}: text changed {:.0}% but structural shape changed {:.0}%",
                 c.symbol_name,
@@ -317,11 +343,11 @@ mod tests {
     fn test_quadrant_boundaries() {
         let config = ShapeChangeConfig::default();
 
-        // Exactly at thresholds: text_delta=0.15 is "small", hrr_delta=0.40 is "large"
-        assert_eq!(classify(0.15, 0.39, &config), DiffQuadrant::Trivial);
-        assert_eq!(classify(0.15, 0.40, &config), DiffQuadrant::SubtleStructural);
-        assert_eq!(classify(0.16, 0.40, &config), DiffQuadrant::MajorRewrite);
-        assert_eq!(classify(0.16, 0.39, &config), DiffQuadrant::SafeRefactoring);
+        // Exactly at thresholds: text_delta=0.15 is "small", hrr_delta=0.15 is "large"
+        assert_eq!(classify(0.15, 0.14, &config), DiffQuadrant::Trivial);
+        assert_eq!(classify(0.15, 0.15, &config), DiffQuadrant::SubtleStructural);
+        assert_eq!(classify(0.16, 0.15, &config), DiffQuadrant::MajorRewrite);
+        assert_eq!(classify(0.16, 0.14, &config), DiffQuadrant::SafeRefactoring);
     }
 
     #[test]
@@ -491,15 +517,18 @@ fn process(data: &[i32]) -> i32 {
             new.as_bytes(), &mut cb,
         ).unwrap();
 
-        let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+        let hrr_delta_raw = 1.0 - old_vec.cosine_similarity(&new_vec);
+        let n_children = count_body_children(&old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end);
+        let hrr_delta = hrr_delta_raw * n_children as f64;
         let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
         let config = ShapeChangeConfig::default();
         let quadrant = classify(text_delta, hrr_delta, &config);
 
-        eprintln!("subtle test: hrr_delta={hrr_delta:.3}, text_delta={text_delta:.3}, quadrant={:?}", quadrant);
-        // 1 line changed out of 15 → text_delta should be ~0.07
+        eprintln!("subtle test: hrr_raw={hrr_delta_raw:.3}, hrr_norm={hrr_delta:.3}, n={n_children}, text_delta={text_delta:.3}, quadrant={:?}", quadrant);
         assert!(text_delta <= config.text_delta_threshold,
             "text_delta {text_delta:.3} should be ≤ {}", config.text_delta_threshold);
+        assert_eq!(quadrant, DiffQuadrant::SubtleStructural,
+            "with size normalization, nested-block change should reach SubtleStructural");
     }
 
     #[test]
@@ -529,5 +558,406 @@ fn process(data: &[i32]) -> i32 {
         assert_eq!(findings[0].file_id, 10);
         assert_eq!(findings[0].biomarker_kind, BiomarkerKind::HrrShapeChange);
         assert!((findings[0].metric_value - 0.70).abs() < 1e-9);
+    }
+
+    /// Generate a function with `n` statements; returns (old_source, new_source)
+    /// where old has a simple assignment and new has a nested for+if block in its place.
+    fn make_fn_pair(num_statements: usize) -> (String, String) {
+        assert!(num_statements >= 4);
+        let mut old_lines = vec!["fn process(data: &[i32]) -> i32 {".to_string()];
+        let mut new_lines = old_lines.clone();
+
+        old_lines.push("    let mut total = 0;".into());
+        new_lines.push("    let mut total = 0;".into());
+
+        for i in 0..(num_statements - 3) {
+            let line = format!("    let v{i} = {i};");
+            old_lines.push(line.clone());
+            new_lines.push(line);
+        }
+
+        old_lines.push("    total += 1;".into());
+        new_lines.push("    for i in data { if *i > 0 { total += *i; } }".into());
+
+        old_lines.push("    total".into());
+        new_lines.push("    total".into());
+
+        old_lines.push("}".into());
+        new_lines.push("}".into());
+
+        (old_lines.join("\n"), new_lines.join("\n"))
+    }
+
+    fn count_body_children(tree: &tree_sitter::Tree, fn_node_start: tree_sitter::Point, fn_node_end: tree_sitter::Point) -> usize {
+        let node = tree
+            .root_node()
+            .descendant_for_point_range(fn_node_start, fn_node_end)
+            .unwrap();
+        let block = (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .find(|c| c.kind() == "block")
+            .unwrap();
+        (0..block.child_count())
+            .filter_map(|i| block.child(i))
+            .filter(|c| c.is_named())
+            .count()
+    }
+
+    #[test]
+    fn test_hrr_delta_normalization_candidates() {
+        let sizes = [4, 7, 10, 15, 25, 40];
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+
+        eprintln!("\n=== HRR delta vs function size — single structural change (assignment → for+if) ===\n");
+        eprintln!(
+            "{:<6} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10}",
+            "stmts", "hrr_raw", "text_d", "n_kids",
+            "*sqrt(n)", "*n", "*ln(n)"
+        );
+        eprintln!("{}", "-".repeat(66));
+
+        let mut raw_deltas = Vec::new();
+
+        for &size in &sizes {
+            let (old_src, new_src) = make_fn_pair(size);
+
+            let old_tree = parser.parse(&old_src, None).unwrap();
+            let new_tree = parser.parse(&new_src, None).unwrap();
+
+            let old_fns = extract_functions(&old_tree, old_src.as_bytes(), RUST_FN_KINDS);
+            let new_fns = extract_functions(&new_tree, new_src.as_bytes(), RUST_FN_KINDS);
+            assert_eq!(old_fns.len(), 1, "size={size}");
+            assert_eq!(new_fns.len(), 1, "size={size}");
+
+            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let old_vec = encode_fn_node(
+                &old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end,
+                old_src.as_bytes(), &mut cb,
+            ).unwrap();
+            let new_vec = encode_fn_node(
+                &new_tree, new_fns[0].ts_node_start, new_fns[0].ts_node_end,
+                new_src.as_bytes(), &mut cb,
+            ).unwrap();
+
+            let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+            let n = count_body_children(&old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end) as f64;
+
+            raw_deltas.push((size, hrr_delta, text_delta, n));
+
+            eprintln!(
+                "{:<6} {:<8.4} {:<8.4} {:<8} {:<10.4} {:<10.4} {:<10.4}",
+                size,
+                hrr_delta,
+                text_delta,
+                n as usize,
+                hrr_delta * n.sqrt(),
+                hrr_delta * n,
+                hrr_delta * n.ln(),
+            );
+        }
+
+        // Compute coefficient of variation for each normalization to find most consistent
+        for (label, norm_fn) in [
+            ("raw", (|d: f64, _n: f64| d) as fn(f64, f64) -> f64),
+            ("*sqrt(n)", |d, n| d * n.sqrt()),
+            ("*n", |d, n| d * n),
+            ("*ln(n)", |d, n| d * n.ln()),
+        ] {
+            let vals: Vec<f64> = raw_deltas.iter()
+                .map(|&(_, d, _, n)| norm_fn(d, n))
+                .collect();
+            let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+            let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+            let cv = variance.sqrt() / mean;
+            eprintln!("  {label:<10} mean={mean:.4}  CV={cv:.4}  (lower CV = more consistent)");
+        }
+
+        // Also test a second change type: if→match
+        eprintln!("\n=== HRR delta vs function size — if→match structural change ===\n");
+        eprintln!(
+            "{:<6} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10}",
+            "stmts", "hrr_raw", "text_d", "n_kids",
+            "*sqrt(n)", "*n", "*ln(n)"
+        );
+        eprintln!("{}", "-".repeat(66));
+
+        let mut raw_deltas2 = Vec::new();
+
+        for &size in &sizes {
+            let (old_src, new_src) = make_fn_pair_if_to_match(size);
+
+            let old_tree = parser.parse(&old_src, None).unwrap();
+            let new_tree = parser.parse(&new_src, None).unwrap();
+
+            let old_fns = extract_functions(&old_tree, old_src.as_bytes(), RUST_FN_KINDS);
+            let new_fns = extract_functions(&new_tree, new_src.as_bytes(), RUST_FN_KINDS);
+            assert_eq!(old_fns.len(), 1, "if→match size={size}");
+            assert_eq!(new_fns.len(), 1, "if→match size={size}");
+
+            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let old_vec = encode_fn_node(
+                &old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end,
+                old_src.as_bytes(), &mut cb,
+            ).unwrap();
+            let new_vec = encode_fn_node(
+                &new_tree, new_fns[0].ts_node_start, new_fns[0].ts_node_end,
+                new_src.as_bytes(), &mut cb,
+            ).unwrap();
+
+            let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+            let n = count_body_children(&old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end) as f64;
+
+            raw_deltas2.push((size, hrr_delta, text_delta, n));
+
+            eprintln!(
+                "{:<6} {:<8.4} {:<8.4} {:<8} {:<10.4} {:<10.4} {:<10.4}",
+                size,
+                hrr_delta,
+                text_delta,
+                n as usize,
+                hrr_delta * n.sqrt(),
+                hrr_delta * n,
+                hrr_delta * n.ln(),
+            );
+        }
+
+        for (label, norm_fn) in [
+            ("raw", (|d: f64, _n: f64| d) as fn(f64, f64) -> f64),
+            ("*sqrt(n)", |d, n| d * n.sqrt()),
+            ("*n", |d, n| d * n),
+            ("*ln(n)", |d, n| d * n.ln()),
+        ] {
+            let vals: Vec<f64> = raw_deltas2.iter()
+                .map(|&(_, d, _, n)| norm_fn(d, n))
+                .collect();
+            let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+            let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+            let cv = variance.sqrt() / mean;
+            eprintln!("  {label:<10} mean={mean:.4}  CV={cv:.4}  (lower CV = more consistent)");
+        }
+
+        // Trivial changes: value-only edit (1 → 42), no structural change
+        eprintln!("\n=== HRR delta vs function size — trivial change (value edit, same structure) ===\n");
+        eprintln!(
+            "{:<6} {:<8} {:<8} {:<8} {:<10} {:<10} {:<10}",
+            "stmts", "hrr_raw", "text_d", "n_kids",
+            "*sqrt(n)", "*n", "*ln(n)"
+        );
+        eprintln!("{}", "-".repeat(66));
+
+        let mut raw_deltas_trivial = Vec::new();
+
+        for &size in &sizes {
+            let (old_src, new_src) = make_fn_pair_rename(size);
+
+            let old_tree = parser.parse(&old_src, None).unwrap();
+            let new_tree = parser.parse(&new_src, None).unwrap();
+
+            let old_fns = extract_functions(&old_tree, old_src.as_bytes(), RUST_FN_KINDS);
+            let new_fns = extract_functions(&new_tree, new_src.as_bytes(), RUST_FN_KINDS);
+            assert_eq!(old_fns.len(), 1, "trivial size={size}");
+            assert_eq!(new_fns.len(), 1, "trivial size={size}");
+
+            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let old_vec = encode_fn_node(
+                &old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end,
+                old_src.as_bytes(), &mut cb,
+            ).unwrap();
+            let new_vec = encode_fn_node(
+                &new_tree, new_fns[0].ts_node_start, new_fns[0].ts_node_end,
+                new_src.as_bytes(), &mut cb,
+            ).unwrap();
+
+            let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+            let n = count_body_children(&old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end) as f64;
+
+            raw_deltas_trivial.push((size, hrr_delta, text_delta, n));
+
+            eprintln!(
+                "{:<6} {:<8.4} {:<8.4} {:<8} {:<10.4} {:<10.4} {:<10.4}",
+                size,
+                hrr_delta,
+                text_delta,
+                n as usize,
+                hrr_delta * n.sqrt(),
+                hrr_delta * n,
+                hrr_delta * n.ln(),
+            );
+        }
+
+        for (label, norm_fn) in [
+            ("raw", (|d: f64, _n: f64| d) as fn(f64, f64) -> f64),
+            ("*sqrt(n)", |d, n| d * n.sqrt()),
+            ("*n", |d, n| d * n),
+            ("*ln(n)", |d, n| d * n.ln()),
+        ] {
+            let vals: Vec<f64> = raw_deltas_trivial.iter()
+                .map(|&(_, d, _, n)| norm_fn(d, n))
+                .collect();
+            let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+            let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+            let cv = variance.sqrt() / mean;
+            eprintln!("  {label:<10} mean={mean:.4}  CV={cv:.4}");
+        }
+
+        // Minor structural: add one let statement (should be low-signal)
+        eprintln!("\n=== HRR delta vs function size — minor structural (add one let binding) ===\n");
+        eprintln!(
+            "{:<6} {:<8} {:<8} {:<8} {:<10}",
+            "stmts", "hrr_raw", "text_d", "n_kids", "*n"
+        );
+        eprintln!("{}", "-".repeat(48));
+
+        let mut raw_deltas_minor = Vec::new();
+
+        for &size in &sizes {
+            let (old_src, new_src) = make_fn_pair_add_let(size);
+
+            let old_tree = parser.parse(&old_src, None).unwrap();
+            let new_tree = parser.parse(&new_src, None).unwrap();
+
+            let old_fns = extract_functions(&old_tree, old_src.as_bytes(), RUST_FN_KINDS);
+            let new_fns = extract_functions(&new_tree, new_src.as_bytes(), RUST_FN_KINDS);
+
+            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let old_vec = encode_fn_node(
+                &old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end,
+                old_src.as_bytes(), &mut cb,
+            ).unwrap();
+            let new_vec = encode_fn_node(
+                &new_tree, new_fns[0].ts_node_start, new_fns[0].ts_node_end,
+                new_src.as_bytes(), &mut cb,
+            ).unwrap();
+
+            let hrr_delta = 1.0 - old_vec.cosine_similarity(&new_vec);
+            let text_delta = text_delta_ratio(&old_fns[0].source, &new_fns[0].source);
+            let n = count_body_children(&old_tree, old_fns[0].ts_node_start, old_fns[0].ts_node_end) as f64;
+
+            raw_deltas_minor.push((size, hrr_delta, text_delta, n));
+
+            eprintln!(
+                "{:<6} {:<8.4} {:<8.4} {:<8} {:<10.4}",
+                size, hrr_delta, text_delta, n as usize, hrr_delta * n,
+            );
+        }
+
+        let minor_mean = raw_deltas_minor.iter().map(|&(_, d, _, n)| d * n).sum::<f64>() / raw_deltas_minor.len() as f64;
+        let minor_cv = {
+            let vals: Vec<f64> = raw_deltas_minor.iter().map(|&(_, d, _, n)| d * n).collect();
+            let var = vals.iter().map(|v| (v - minor_mean).powi(2)).sum::<f64>() / vals.len() as f64;
+            var.sqrt() / minor_mean
+        };
+        eprintln!("  *n         mean={minor_mean:.4}  CV={minor_cv:.4}");
+
+        // Separation check
+        let structural_mean = raw_deltas.iter().map(|&(_, d, _, n)| d * n).sum::<f64>() / raw_deltas.len() as f64;
+        let structural2_mean = raw_deltas2.iter().map(|&(_, d, _, n)| d * n).sum::<f64>() / raw_deltas2.len() as f64;
+        eprintln!("\n=== Separation summary (using *n normalization) ===");
+        eprintln!("  for+if structural: {structural_mean:.4}");
+        eprintln!("  if→match struct:   {structural2_mean:.4}");
+        eprintln!("  add-let minor:     {minor_mean:.4}");
+        eprintln!("  value-only trivial: ~0.0000");
+        eprintln!("  ---");
+        eprintln!("  structural / minor ratio: {:.1}x", structural_mean / minor_mean.max(1e-9));
+
+        // Sanity: raw HRR delta should decrease as function size grows
+        for pair in raw_deltas.windows(2) {
+            assert!(
+                pair[0].1 >= pair[1].1,
+                "raw hrr_delta should decrease with size: {}={:.4} vs {}={:.4}",
+                pair[0].0, pair[0].1, pair[1].0, pair[1].1
+            );
+        }
+    }
+
+    /// Trivial change: rename a variable (no structural change)
+    fn make_fn_pair_rename(num_statements: usize) -> (String, String) {
+        assert!(num_statements >= 4);
+        let mut old_lines = vec!["fn process(data: &[i32]) -> i32 {".to_string()];
+        let mut new_lines = old_lines.clone();
+
+        old_lines.push("    let mut total = 0;".into());
+        new_lines.push("    let mut total = 0;".into());
+
+        for i in 0..(num_statements - 3) {
+            let line = format!("    let v{i} = {i};");
+            old_lines.push(line.clone());
+            new_lines.push(line);
+        }
+
+        // Rename: total → result (same structure)
+        old_lines.push("    total += 1;".into());
+        new_lines.push("    total += 42;".into());
+
+        old_lines.push("    total".into());
+        new_lines.push("    total".into());
+
+        old_lines.push("}".into());
+        new_lines.push("}".into());
+
+        (old_lines.join("\n"), new_lines.join("\n"))
+    }
+
+    /// Minor structural change: add one extra let statement
+    fn make_fn_pair_add_let(num_statements: usize) -> (String, String) {
+        assert!(num_statements >= 4);
+        let mut old_lines = vec!["fn process(data: &[i32]) -> i32 {".to_string()];
+        let mut new_lines = old_lines.clone();
+
+        old_lines.push("    let mut total = 0;".into());
+        new_lines.push("    let mut total = 0;".into());
+
+        for i in 0..(num_statements - 3) {
+            let line = format!("    let v{i} = {i};");
+            old_lines.push(line.clone());
+            new_lines.push(line);
+        }
+
+        old_lines.push("    total += 1;".into());
+        // Add an extra let + keep the assignment
+        new_lines.push("    let extra = 99;".into());
+        new_lines.push("    total += extra;".into());
+
+        old_lines.push("    total".into());
+        new_lines.push("    total".into());
+
+        old_lines.push("}".into());
+        new_lines.push("}".into());
+
+        (old_lines.join("\n"), new_lines.join("\n"))
+    }
+
+    fn make_fn_pair_if_to_match(num_statements: usize) -> (String, String) {
+        assert!(num_statements >= 4);
+        let mut old_lines = vec!["fn process(data: &[i32]) -> i32 {".to_string()];
+        let mut new_lines = old_lines.clone();
+
+        old_lines.push("    let mut total = 0;".into());
+        new_lines.push("    let mut total = 0;".into());
+
+        for i in 0..(num_statements - 3) {
+            let line = format!("    let v{i} = {i};");
+            old_lines.push(line.clone());
+            new_lines.push(line);
+        }
+
+        // if→match: same semantic, different structure
+        old_lines.push("    if total > 0 { total += 1; } else { total -= 1; }".into());
+        new_lines.push("    match total > 0 { true => { total += 1; } false => { total -= 1; } }".into());
+
+        old_lines.push("    total".into());
+        new_lines.push("    total".into());
+
+        old_lines.push("}".into());
+        new_lines.push("}".into());
+
+        (old_lines.join("\n"), new_lines.join("\n"))
     }
 }
