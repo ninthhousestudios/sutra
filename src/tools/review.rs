@@ -111,6 +111,7 @@ pub struct ReviewFindings {
     pub convention_matches: Vec<ConventionMatchFinding>,
     pub waived_violations: Vec<WaivedViolation>,
     pub drift_alerts: Vec<conventions::drift::DriftAlert>,
+    pub convention_drift_findings: Vec<crate::health::HealthFinding>,
 }
 
 pub fn handle(
@@ -503,6 +504,7 @@ pub fn build_findings(
     let mut convention_violations = Vec::new();
     let mut convention_matches = Vec::new();
     let mut drift_alerts = Vec::new();
+    let mut convention_drift_findings: Vec<crate::health::HealthFinding> = Vec::new();
 
     let mut all_sym_attrs = Vec::new();
     let mut sig_info_map: HashMap<String, conventions::templates::SymbolSignatureInfo> =
@@ -602,9 +604,28 @@ pub fn build_findings(
             comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_symbols));
         }
 
-        drift_alerts =
-            conventions::drift::record_and_detect_drift(db, &comp_symbol_groups)
-                .unwrap_or_default();
+        let fca_conformance =
+            crate::health::drift::compute_fca_conformance(&all_convs, &comp_symbol_groups);
+        let hrr_coherence =
+            crate::health::drift::compute_hrr_coherence(db).unwrap_or_default();
+
+        drift_alerts = conventions::drift::record_and_detect_drift(
+            db,
+            &comp_symbol_groups,
+            &fca_conformance,
+            &hrr_coherence,
+        )
+        .unwrap_or_default();
+
+        convention_drift_findings = crate::health::drift::detect_convention_drift(
+            db,
+            &fca_conformance,
+            &hrr_coherence,
+            &comp_symbol_groups,
+            &file_to_component,
+            &id_map,
+        )
+        .unwrap_or_default();
 
         for c in &all_convs {
             let _ = db.upsert_convention(
@@ -756,6 +777,7 @@ pub fn build_findings(
         convention_matches,
         waived_violations,
         drift_alerts,
+        convention_drift_findings,
     })
 }
 
@@ -1040,6 +1062,7 @@ pub fn compute(
             "convention_matches": [],
             "waived_violations": [],
             "drift_alerts": [],
+            "convention_drift": [],
         }));
     }
 
@@ -1177,6 +1200,21 @@ pub fn compute(
             })
         })
         .collect();
+    let convention_drift_out: Vec<_> = findings
+        .convention_drift_findings
+        .iter()
+        .map(|f| {
+            json!({
+                "biomarker": f.biomarker_kind.as_str(),
+                "severity": f.severity.as_str(),
+                "file_id": f.file_id,
+                "metric_value": scoring::round3(f.metric_value),
+                "threshold": scoring::round3(f.threshold),
+                "provenance": &f.provenance,
+                "detail": &f.detail,
+            })
+        })
+        .collect();
 
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(stats.total_blast as f64, scoring::BLAST_NORM);
@@ -1246,6 +1284,7 @@ pub fn compute(
         "convention_matches": convention_matches_out,
         "waived_violations": waived_violations_out,
         "drift_alerts": drift_alerts_out,
+        "convention_drift": convention_drift_out,
         "recommended_reads": recommended_reads,
     });
     if !behavioral.is_empty() {

@@ -263,4 +263,27 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    pub fn strip_vectors_by_component(&self) -> Result<Vec<(String, i64, Vec<u8>)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT cm.component_id, hv.symbol_id, hv.vector
+             FROM hrr_vectors hv
+             JOIN symbols s ON s.id = hv.symbol_id
+             JOIN component_membership cm ON cm.file_id = s.file_id
+             JOIN components c ON c.id = cm.component_id
+             WHERE hv.mode = 'strip' AND c.dissolved_at IS NULL
+             ORDER BY cm.component_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
 }

@@ -308,6 +308,7 @@ fn risk_score_clamped_to_one() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result = review::compute(&db, dir.path(), &paths, &churn, &findings).unwrap();
@@ -377,6 +378,7 @@ fn constraint_violations_appear_in_output() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result =
@@ -418,6 +420,7 @@ fn convention_violations_appear_in_output() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result =
@@ -460,6 +463,7 @@ fn waived_violations_appear_in_output() {
             rationale: "intentional omission".into(),
         }],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result =
@@ -517,6 +521,7 @@ fn violations_are_structurally_distinct() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result =
@@ -598,6 +603,7 @@ fn convention_violations_increase_risk_score() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result_with =
@@ -671,6 +677,7 @@ fn recommended_reads_ranks_violation_sites_first() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let changed = vec!["src/hub.rs".to_string()];
@@ -829,6 +836,7 @@ fn waived_constraint_violations_appear_in_output() {
         convention_matches: vec![],
         waived_violations: vec![],
         drift_alerts: vec![],
+        ..Default::default()
     };
 
     let result =

@@ -830,9 +830,9 @@ mod tests {
         let dist_mid = r#"{"kind:function": 0.7, "has_doc": 0.4}"#;
         let dist_high = r#"{"kind:function": 0.6, "has_doc": 0.5}"#;
 
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_low, "h1").unwrap();
-        db.insert_convention_snapshot("comp-1", 1.1, 10, dist_mid, "h2").unwrap();
-        db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3").unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_low, "h1", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.1, 10, dist_mid, "h2", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3", None, None).unwrap();
 
         let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
         assert!(alert.is_some());
@@ -847,9 +847,9 @@ mod tests {
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
         let dist = r#"{"kind:function": 0.8}"#;
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h1").unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h2").unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h3").unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h1", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h2", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h3", None, None).unwrap();
 
         let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
         assert!(alert.is_none());

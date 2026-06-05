@@ -134,6 +134,8 @@ fn detect_drift(
 pub fn record_and_detect_drift(
     db: &Db,
     components: &[(String, String, Vec<SymbolAttrs>)],
+    fca_conformance: &HashMap<String, f64>,
+    hrr_coherence: &HashMap<String, f64>,
 ) -> Result<Vec<DriftAlert>> {
     let mut alerts = Vec::new();
     for (comp_id, comp_name, symbols) in components {
@@ -156,6 +158,8 @@ pub fn record_and_detect_drift(
             symbols.len() as i64,
             &dist_json,
             &dist_hash,
+            fca_conformance.get(comp_id).copied(),
+            hrr_coherence.get(comp_id).copied(),
         )?;
     }
     Ok(alerts)
@@ -281,9 +285,9 @@ mod tests {
 
         let dist = r#"{"a":0.8,"b":0.2}"#;
         let hash = blake3::hash(dist.as_bytes()).to_hex().to_string();
-        db.insert_convention_snapshot("comp1", 0.72, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 0.72, 10, dist, &hash, None, None)
             .unwrap();
-        db.insert_convention_snapshot("comp1", 0.72, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 0.72, 10, dist, &hash, None, None)
             .unwrap();
 
         let current_dist: HashMap<String, f64> =
@@ -301,9 +305,9 @@ mod tests {
         let dist2 = r#"{"a":0.8,"b":0.2}"#;
         let h1 = blake3::hash(dist1.as_bytes()).to_hex().to_string();
         let h2 = blake3::hash(dist2.as_bytes()).to_hex().to_string();
-        db.insert_convention_snapshot("comp1", 0.47, 10, dist1, &h1)
+        db.insert_convention_snapshot("comp1", 0.47, 10, dist1, &h1, None, None)
             .unwrap();
-        db.insert_convention_snapshot("comp1", 0.55, 10, dist2, &h2)
+        db.insert_convention_snapshot("comp1", 0.55, 10, dist2, &h2, None, None)
             .unwrap();
 
         let current_dist: HashMap<String, f64> =
@@ -324,9 +328,9 @@ mod tests {
 
         let dist = r#"{"a":0.5,"b":0.5}"#;
         let hash = blake3::hash(dist.as_bytes()).to_hex().to_string();
-        db.insert_convention_snapshot("comp1", 1.0, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 1.0, 10, dist, &hash, None, None)
             .unwrap();
-        db.insert_convention_snapshot("comp1", 0.9, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 0.9, 10, dist, &hash, None, None)
             .unwrap();
 
         let current_dist: HashMap<String, f64> =
@@ -345,9 +349,9 @@ mod tests {
         let dist = r#"{"a":0.5,"b":0.5}"#;
         let hash = blake3::hash(dist.as_bytes()).to_hex().to_string();
         // oldest=0.5, middle=0.4 (dip), current=0.8 → net increase but not monotonic
-        db.insert_convention_snapshot("comp1", 0.5, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 0.5, 10, dist, &hash, None, None)
             .unwrap();
-        db.insert_convention_snapshot("comp1", 0.4, 10, dist, &hash)
+        db.insert_convention_snapshot("comp1", 0.4, 10, dist, &hash, None, None)
             .unwrap();
 
         let current_dist: HashMap<String, f64> =
@@ -369,7 +373,7 @@ mod tests {
             component_id: Some("comp1".into()),
         }];
         let components = vec![("comp1".to_string(), "TestComp".to_string(), symbols)];
-        let alerts = record_and_detect_drift(&db, &components).unwrap();
+        let alerts = record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
         assert!(alerts.is_empty());
 
         let snaps = db.recent_convention_snapshots("comp1", 10).unwrap();
@@ -396,7 +400,7 @@ mod tests {
             },
         ];
         let components = vec![("comp1".to_string(), "TestComp".to_string(), symbols)];
-        let _alerts = record_and_detect_drift(&db, &components).unwrap();
+        let _alerts = record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
 
         let snaps = db.recent_convention_snapshots("comp1", 10).unwrap();
         assert_eq!(snaps.len(), 1);

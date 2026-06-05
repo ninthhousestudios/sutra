@@ -83,6 +83,8 @@ pub struct ConventionSnapshotRow {
     pub symbol_count: i64,
     pub attribute_distribution: String,
     pub attribute_distribution_hash: String,
+    pub fca_conformance: Option<f64>,
+    pub hrr_coherence: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -574,18 +576,23 @@ impl Db {
         symbol_count: i64,
         attribute_distribution: &str,
         attribute_distribution_hash: &str,
+        fca_conformance: Option<f64>,
+        hrr_coherence: Option<f64>,
     ) -> Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO convention_snapshots
-             (component_id, entropy, symbol_count, attribute_distribution, attribute_distribution_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (component_id, entropy, symbol_count, attribute_distribution, attribute_distribution_hash,
+              fca_conformance, hrr_coherence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 component_id,
                 entropy,
                 symbol_count,
                 attribute_distribution,
-                attribute_distribution_hash
+                attribute_distribution_hash,
+                fca_conformance,
+                hrr_coherence,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -599,7 +606,8 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, component_id, snapshot_ts, entropy, symbol_count,
-                    attribute_distribution, attribute_distribution_hash
+                    attribute_distribution, attribute_distribution_hash,
+                    fca_conformance, hrr_coherence
              FROM convention_snapshots
              WHERE component_id = ?1
              ORDER BY snapshot_ts DESC, id DESC
@@ -615,6 +623,8 @@ impl Db {
                     symbol_count: row.get(4)?,
                     attribute_distribution: row.get(5)?,
                     attribute_distribution_hash: row.get(6)?,
+                    fca_conformance: row.get(7)?,
+                    hrr_coherence: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

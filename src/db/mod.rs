@@ -15,7 +15,7 @@ mod similarity;
 pub use constraints::ConstraintWaiverRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
-pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionStateRow, ConventionWithState};
+pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionSnapshotRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
 
