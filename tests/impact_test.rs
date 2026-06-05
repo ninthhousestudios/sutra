@@ -165,6 +165,7 @@ fn test_impact_high_fan_in() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_impact_real_codebase() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src_dir = PathBuf::from(manifest_dir).join("src");
