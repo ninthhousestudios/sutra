@@ -1,4 +1,5 @@
 pub mod codebook;
+pub mod search;
 pub mod duplicates;
 pub mod encoder;
 pub mod hrr;

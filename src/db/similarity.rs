@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 use super::Db;
 use crate::error::Result;
@@ -114,6 +115,33 @@ impl Db {
             conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = 'strip'")?;
         let rows = stmt
             .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((id, HrrVec::from_bytes(&blob)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn load_hrr_vector(&self, symbol_id: i64, mode: &str) -> Result<Option<HrrVec>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT vector FROM hrr_vectors WHERE symbol_id = ?1 AND mode = ?2")?;
+        let result = stmt
+            .query_row(params![symbol_id, mode], |row| {
+                let blob: Vec<u8> = row.get(0)?;
+                Ok(HrrVec::from_bytes(&blob))
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    pub fn load_all_vectors_by_mode(&self, mode: &str) -> Result<Vec<(i64, HrrVec)>> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1")?;
+        let rows = stmt
+            .query_map(params![mode], |row| {
                 let id: i64 = row.get(0)?;
                 let blob: Vec<u8> = row.get(1)?;
                 Ok((id, HrrVec::from_bytes(&blob)))
