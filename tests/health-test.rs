@@ -1,4 +1,7 @@
-use sutra::db::{CommitRow, Db, HealthFindingRow, InsertSymbolParams};
+use sutra::db::{
+    CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotComponentRow, SnapshotFileRow,
+    SnapshotParams,
+};
 use sutra::health::{
     compute_all_health_findings, compute_change_entropy, compute_co_change_scatter,
     compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk, score_component,
@@ -847,4 +850,278 @@ fn hidden_coupling_severity_escalation() {
     let high_finding = findings.iter().find(|f| f.file_id == f_high).unwrap();
     assert_eq!(low_finding.severity, HealthSeverity::Informational);
     assert_eq!(high_finding.severity, HealthSeverity::Advisory);
+}
+
+// --- Snapshot storage ---
+
+fn insert_snapshot(db: &Db, health_score: f64) -> i64 {
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 10,
+        symbols_extracted: 50,
+        refs_extracted: 30,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 20,
+        dead_symbol_count: 2,
+        hotspot_count: 1,
+        health_score,
+        pattern_family_count: 3,
+    })
+    .unwrap()
+}
+
+#[test]
+fn test_snapshot_stores_per_file_health() {
+    let (_dir, db) = setup_db();
+    let snap_id = insert_snapshot(&db, 8.5);
+
+    let files = vec![
+        SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/foo.rs".into(),
+            score: 9.2,
+            category_scores: r#"{"structural":0.8}"#.into(),
+        },
+        SnapshotFileRow {
+            file_id: 2,
+            file_path: "src/bar.rs".into(),
+            score: 6.1,
+            category_scores: r#"{"organizational":2.5,"structural":1.4}"#.into(),
+        },
+    ];
+    db.insert_snapshot_files(snap_id, &files).unwrap();
+
+    let loaded = db.snapshot_file_scores(snap_id).unwrap();
+    assert_eq!(loaded.len(), 2);
+
+    let foo = loaded.iter().find(|f| f.file_path == "src/foo.rs").unwrap();
+    assert!((foo.score - 9.2).abs() < 0.01);
+    assert!(foo.category_scores.contains("structural"));
+
+    let bar = loaded.iter().find(|f| f.file_path == "src/bar.rs").unwrap();
+    assert!((bar.score - 6.1).abs() < 0.01);
+    assert!(bar.category_scores.contains("organizational"));
+}
+
+#[test]
+fn test_snapshot_stores_per_component_health() {
+    let (_dir, db) = setup_db();
+    let snap_id = insert_snapshot(&db, 7.8);
+
+    let comps = vec![
+        SnapshotComponentRow {
+            component_id: "comp_a".into(),
+            component_name: "auth".into(),
+            score: 8.3,
+            member_count: 5,
+            total_nloc: 1200,
+        },
+        SnapshotComponentRow {
+            component_id: "comp_b".into(),
+            component_name: "db".into(),
+            score: 6.9,
+            member_count: 3,
+            total_nloc: 800,
+        },
+    ];
+    db.insert_snapshot_components(snap_id, &comps).unwrap();
+
+    let loaded = db.snapshot_component_scores(snap_id).unwrap();
+    assert_eq!(loaded.len(), 2);
+
+    let auth = loaded.iter().find(|c| c.component_id == "comp_a").unwrap();
+    assert!((auth.score - 8.3).abs() < 0.01);
+    assert_eq!(auth.member_count, 5);
+    assert_eq!(auth.total_nloc, 1200);
+
+    let db_comp = loaded.iter().find(|c| c.component_id == "comp_b").unwrap();
+    assert!((db_comp.score - 6.9).abs() < 0.01);
+}
+
+#[test]
+fn test_file_health_history() {
+    let (_dir, db) = setup_db();
+
+    let snap1 = insert_snapshot(&db, 7.0);
+    db.insert_snapshot_files(
+        snap1,
+        &[SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/main.rs".into(),
+            score: 7.5,
+            category_scores: r#"{"structural":1.0}"#.into(),
+        }],
+    )
+    .unwrap();
+
+    let snap2 = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        snap2,
+        &[SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/main.rs".into(),
+            score: 8.2,
+            category_scores: r#"{"structural":0.5}"#.into(),
+        }],
+    )
+    .unwrap();
+
+    let snap3 = insert_snapshot(&db, 9.0);
+    db.insert_snapshot_files(
+        snap3,
+        &[SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/main.rs".into(),
+            score: 9.1,
+            category_scores: "{}".into(),
+        }],
+    )
+    .unwrap();
+
+    let history = db.file_health_history("src/main.rs", 10).unwrap();
+    assert_eq!(history.len(), 3);
+    // Newest first
+    assert!((history[0].1 - 9.1).abs() < 0.01);
+    assert!((history[1].1 - 8.2).abs() < 0.01);
+    assert!((history[2].1 - 7.5).abs() < 0.01);
+
+    // Limit works
+    let limited = db.file_health_history("src/main.rs", 2).unwrap();
+    assert_eq!(limited.len(), 2);
+
+    // Non-existent file returns empty
+    let empty = db.file_health_history("src/nope.rs", 10).unwrap();
+    assert!(empty.is_empty());
+}
+
+#[test]
+fn test_snapshot_pattern_family_count_roundtrip() {
+    let (_dir, db) = setup_db();
+    insert_snapshot(&db, 8.0);
+
+    let snaps = db.latest_snapshots(1).unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].pattern_family_count, 3);
+    assert!((snaps[0].health_score - 8.0).abs() < 0.01);
+}
+
+#[test]
+fn test_trend_comparison_with_file_deltas() {
+    let (_dir, db) = setup_db();
+
+    let snap1 = insert_snapshot(&db, 7.0);
+    db.insert_snapshot_files(
+        snap1,
+        &[
+            SnapshotFileRow {
+                file_id: 1,
+                file_path: "src/a.rs".into(),
+                score: 8.0,
+                category_scores: r#"{"structural":1.0}"#.into(),
+            },
+            SnapshotFileRow {
+                file_id: 2,
+                file_path: "src/b.rs".into(),
+                score: 6.0,
+                category_scores: r#"{"organizational":2.0}"#.into(),
+            },
+        ],
+    )
+    .unwrap();
+
+    let snap2 = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        snap2,
+        &[
+            SnapshotFileRow {
+                file_id: 1,
+                file_path: "src/a.rs".into(),
+                score: 9.0,
+                category_scores: r#"{"structural":0.5}"#.into(),
+            },
+            SnapshotFileRow {
+                file_id: 2,
+                file_path: "src/b.rs".into(),
+                score: 5.0,
+                category_scores: r#"{"organizational":3.0}"#.into(),
+            },
+        ],
+    )
+    .unwrap();
+
+    let args = sutra::tools::trend::TrendArgs {
+        workspace: String::new(),
+        from: None,
+        to: None,
+        path: None,
+        limit: None,
+    };
+    let result = sutra::tools::trend::handle(&db, &args).unwrap();
+
+    // Aggregate health delta
+    let deltas = &result["deltas"];
+    assert!((deltas["health_score"].as_f64().unwrap() - 1.0).abs() < 0.01);
+    assert_eq!(deltas["pattern_family_count"].as_i64().unwrap(), 0);
+
+    // Per-file deltas
+    let improved = result["files"]["improved"].as_array().unwrap();
+    assert_eq!(improved.len(), 1);
+    assert_eq!(improved[0]["path"].as_str().unwrap(), "src/a.rs");
+    assert!((improved[0]["delta"].as_f64().unwrap() - 1.0).abs() < 0.01);
+
+    let degraded = result["files"]["degraded"].as_array().unwrap();
+    assert_eq!(degraded.len(), 1);
+    assert_eq!(degraded[0]["path"].as_str().unwrap(), "src/b.rs");
+    assert!((degraded[0]["delta"].as_f64().unwrap() - (-1.0)).abs() < 0.01);
+
+    // Category deltas
+    let cats = &result["categories"];
+    let structural = &cats["structural"];
+    assert!((structural["from"].as_f64().unwrap() - 1.0).abs() < 0.01);
+    assert!((structural["to"].as_f64().unwrap() - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn test_trend_file_history_mode() {
+    let (_dir, db) = setup_db();
+
+    let snap1 = insert_snapshot(&db, 7.0);
+    db.insert_snapshot_files(
+        snap1,
+        &[SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/x.rs".into(),
+            score: 7.0,
+            category_scores: "{}".into(),
+        }],
+    )
+    .unwrap();
+
+    let snap2 = insert_snapshot(&db, 9.0);
+    db.insert_snapshot_files(
+        snap2,
+        &[SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/x.rs".into(),
+            score: 9.5,
+            category_scores: "{}".into(),
+        }],
+    )
+    .unwrap();
+
+    let args = sutra::tools::trend::TrendArgs {
+        workspace: String::new(),
+        from: None,
+        to: None,
+        path: Some("src/x.rs".into()),
+        limit: None,
+    };
+    let result = sutra::tools::trend::handle(&db, &args).unwrap();
+
+    assert_eq!(result["mode"].as_str().unwrap(), "history");
+    assert_eq!(result["path"].as_str().unwrap(), "src/x.rs");
+    let snapshots = result["snapshots"].as_array().unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert!((snapshots[0]["health_score"].as_f64().unwrap() - 9.5).abs() < 0.01);
+    assert!((snapshots[1]["health_score"].as_f64().unwrap() - 7.0).abs() < 0.01);
 }

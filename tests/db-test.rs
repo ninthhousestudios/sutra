@@ -542,7 +542,7 @@ fn test_insert_snapshot_and_last_parse_time() {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0,
+        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -562,7 +562,7 @@ fn test_snapshot_with_aggregates() {
         total_complexity: 42,
         dead_symbol_count: 5,
         hotspot_count: 3,
-        health_score: 78,
+        health_score: 78.0,
         ..Default::default()
     })
     .unwrap();
@@ -575,7 +575,7 @@ fn test_snapshot_with_aggregates() {
     assert_eq!(s.total_complexity, 42);
     assert_eq!(s.dead_symbol_count, 5);
     assert_eq!(s.hotspot_count, 3);
-    assert_eq!(s.health_score, 78);
+    assert!((s.health_score - 78.0).abs() < 0.01);
 }
 
 #[test]
@@ -590,7 +590,7 @@ fn test_latest_snapshots_ordering() {
         total_complexity: 10,
         dead_symbol_count: 1,
         hotspot_count: 0,
-        health_score: 90,
+        health_score: 90.0,
         ..Default::default()
     })
     .unwrap();
@@ -604,7 +604,7 @@ fn test_latest_snapshots_ordering() {
         total_complexity: 20,
         dead_symbol_count: 3,
         hotspot_count: 2,
-        health_score: 75,
+        health_score: 75.0,
         ..Default::default()
     })
     .unwrap();
@@ -627,7 +627,7 @@ fn test_snapshots_between() {
         total_complexity: 10,
         dead_symbol_count: 1,
         hotspot_count: 0,
-        health_score: 90,
+        health_score: 90.0,
         ..Default::default()
     })
     .unwrap();
@@ -641,7 +641,7 @@ fn test_snapshots_between() {
         total_complexity: 20,
         dead_symbol_count: 3,
         hotspot_count: 2,
-        health_score: 75,
+        health_score: 75.0,
         ..Default::default()
     })
     .unwrap();
@@ -664,7 +664,7 @@ fn test_trend_default_from_to() {
         total_complexity: 10,
         dead_symbol_count: 1,
         hotspot_count: 0,
-        health_score: 90,
+        health_score: 90.0,
         ..Default::default()
     })
     .unwrap();
@@ -678,19 +678,21 @@ fn test_trend_default_from_to() {
         total_complexity: 25,
         dead_symbol_count: 4,
         hotspot_count: 2,
-        health_score: 75,
+        health_score: 75.0,
         ..Default::default()
     })
     .unwrap();
 
-    let result = sutra::tools::trend::handle(&db, None, None).unwrap();
+    let result = sutra::tools::trend::handle(&db, &sutra::tools::trend::TrendArgs {
+        workspace: String::new(), from: None, to: None, path: None, limit: None,
+    }).unwrap();
     let deltas = &result["deltas"];
     assert_eq!(deltas["files_parsed"], 10);
     assert_eq!(deltas["symbols_extracted"], 30);
     assert_eq!(deltas["total_complexity"], 15);
     assert_eq!(deltas["dead_symbol_count"], 3);
     assert_eq!(deltas["hotspot_count"], 2);
-    assert_eq!(deltas["health_score"], -15);
+    assert!((deltas["health_score"].as_f64().unwrap() - (-15.0)).abs() < 0.01);
 }
 
 #[test]
@@ -705,11 +707,13 @@ fn test_trend_insufficient_snapshots() {
         total_complexity: 10,
         dead_symbol_count: 1,
         hotspot_count: 0,
-        health_score: 90,
+        health_score: 90.0,
         ..Default::default()
     })
     .unwrap();
-    let result = sutra::tools::trend::handle(&db, None, None);
+    let result = sutra::tools::trend::handle(&db, &sutra::tools::trend::TrendArgs {
+        workspace: String::new(), from: None, to: None, path: None, limit: None,
+    });
     assert!(result.is_err());
 }
 
@@ -725,7 +729,7 @@ fn test_pre_existing_snapshots_have_zero_aggregates() {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0,
+        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -733,7 +737,7 @@ fn test_pre_existing_snapshots_have_zero_aggregates() {
     assert_eq!(snaps[0].total_complexity, 0);
     assert_eq!(snaps[0].dead_symbol_count, 0);
     assert_eq!(snaps[0].hotspot_count, 0);
-    assert_eq!(snaps[0].health_score, 0);
+    assert!((snaps[0].health_score - 0.0).abs() < 0.01);
 }
 
 #[test]
@@ -769,8 +773,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 32,
-        "fresh DB should register all 32 existing migrations"
+        count, 33,
+        "fresh DB should register all 33 existing migrations"
     );
 }
 
@@ -784,7 +788,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 32, "reopen should not duplicate migration rows");
+    assert_eq!(count, 33, "reopen should not duplicate migration rows");
 }
 
 #[test]
