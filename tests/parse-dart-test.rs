@@ -200,3 +200,22 @@ class MyClass {
     let setter = flat.iter().find(|s| s.short_name == "value");
     assert!(setter.is_some(), "static setter should be indexed");
 }
+
+#[test]
+fn test_parse_dart_named_constructor() {
+    let src = r#"
+class Cache {
+    Cache._();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/cache.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let flat = flatten_symbols(&result.symbols);
+    let constructor = flat.iter().find(|s| s.kind == SymbolKind::Method);
+    assert!(constructor.is_some(), "named constructor should be indexed");
+
+    let attrs: serde_json::Value =
+        serde_json::from_str(constructor.unwrap().language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["is_constructor"], true, "should be marked is_constructor");
+}

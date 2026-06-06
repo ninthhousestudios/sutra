@@ -114,6 +114,14 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
+            "constructor_signature" => {
+                if let Some(mut sym) =
+                    extract_method_symbol(child, child, src, name_context, SymbolKind::Method)
+                {
+                    sym.language_attrs = extract_language_attrs(child, Some(child), src, SymbolKind::Method);
+                    symbols.push(sym);
+                }
+            }
             "type_alias" => {
                 if let Some(sym) = extract_type_alias(child, src, name_context) {
                     symbols.push(sym);
@@ -178,18 +186,14 @@ fn extract_method_symbol(
     name_context: &[String],
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
-    // method_signature wraps one of: function_signature, getter_signature, setter_signature.
+    // method_signature wraps one of: function_signature, getter_signature, setter_signature,
+    // factory_constructor_signature, or constructor_signature.
     // It may also have leading keyword children like "static" — skip those.
     let inner = if sig_node.kind() == "method_signature" {
         let mut c = sig_node.walk();
         sig_node
             .children(&mut c)
-            .find(|n| {
-                matches!(
-                    n.kind(),
-                    "function_signature" | "getter_signature" | "setter_signature"
-                )
-            })
+            .find(|n| is_dart_signature_node(n.kind()))
             .unwrap_or(sig_node)
     } else {
         sig_node
@@ -265,7 +269,9 @@ fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind:
             if let Some(sig) = sig_node {
                 let sig_inner = if sig.kind() == "method_signature" {
                     let mut c = sig.walk();
-                    sig.children(&mut c).next().unwrap_or(sig)
+                    sig.children(&mut c)
+                        .find(|n| is_dart_signature_node(n.kind()))
+                        .unwrap_or(sig)
                 } else {
                     sig
                 };
@@ -349,6 +355,17 @@ fn build_qualified_name(context: &[String], name: &str) -> String {
     } else {
         format!("{}::{}", context.join("::"), name)
     }
+}
+
+fn is_dart_signature_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_signature"
+            | "getter_signature"
+            | "setter_signature"
+            | "factory_constructor_signature"
+            | "constructor_signature"
+    )
 }
 
 /// Dart visibility: names starting with `_` are private, everything else is public.
