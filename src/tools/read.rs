@@ -92,19 +92,23 @@ pub fn handle(
     let source = std::fs::read_to_string(&abs_path)?;
     let lines: Vec<&str> = source.lines().collect();
 
-    let start = (sym.start_line as usize)
-        .saturating_sub(1)
-        .saturating_sub(context_lines);
-    let end = std::cmp::min(
-        (sym.end_line as usize).saturating_sub(1) + context_lines + 1,
-        lines.len(),
-    );
+    let sym_start = (sym.start_line as usize).saturating_sub(1);
+    let sym_end = std::cmp::min(sym.end_line as usize, lines.len());
+    let sym_lines = sym_end - sym_start;
 
-    let total_lines = end - start;
-    let truncated = total_lines > line_cap;
-    let display_end = if truncated { start + line_cap } else { end };
+    let (start, end, truncated) = if sym_lines >= line_cap {
+        (sym_start, sym_start + line_cap, true)
+    } else {
+        let context_budget = line_cap.saturating_sub(sym_lines);
+        let pre = std::cmp::min(context_lines, context_budget / 2);
+        let post = std::cmp::min(context_lines, context_budget - pre);
+        let s = sym_start.saturating_sub(pre);
+        let e = std::cmp::min(sym_end + post, lines.len());
+        (s, e, false)
+    };
+    let total_lines = sym_lines + 2 * context_lines;
 
-    let numbered: Vec<_> = lines[start..display_end]
+    let numbered: Vec<_> = lines[start..end]
         .iter()
         .enumerate()
         .map(|(i, line)| format!("{:>5} {}", start + i + 1, line))
@@ -114,7 +118,7 @@ pub fn handle(
         "symbol": sym.qualified_name,
         "file": file.path,
         "start_line": start + 1,
-        "end_line": display_end,
+        "end_line": end,
         "content": numbered.join("\n"),
         "kind": sym.kind,
         "signature": sym.signature,

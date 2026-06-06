@@ -1003,25 +1003,7 @@ impl ServerHandler for SutraServer {
 // Response serialization
 // ---------------------------------------------------------------------------
 
-fn strip_nulls(val: &mut serde_json::Value) {
-    match val {
-        serde_json::Value::Object(map) => {
-            map.retain(|_, v| !v.is_null());
-            for v in map.values_mut() {
-                strip_nulls(v);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                strip_nulls(v);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn to_compact_json(mut val: serde_json::Value) -> Result<String, ErrorData> {
-    strip_nulls(&mut val);
+fn to_compact_json(val: serde_json::Value) -> Result<String, ErrorData> {
     serde_json::to_string(&val).map_err(json_to_rmcp)
 }
 
