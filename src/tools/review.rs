@@ -16,7 +16,7 @@ use crate::conventions::{self, FcaEngine};
 use crate::parser::adapter::LanguageRegistry;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
-use crate::rules::{self, ConstraintKind};
+use crate::rules::{self, match_no_cycles_constraint};
 use crate::tools::scoring::{self, ChurnMap, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -439,10 +439,6 @@ pub fn build_findings(
             }
         }
 
-        let no_cycles_constraint = all_constraints
-            .iter()
-            .find(|c| matches!(c.kind, ConstraintKind::NoCycles));
-
         if !changed_ids.is_empty() {
             for cycle in engine.query_cycles()? {
                 if cycle.file_ids.iter().any(|id| changed_ids.contains(id)) {
@@ -451,16 +447,17 @@ pub fn build_findings(
                         .iter()
                         .filter_map(|id| path_map.get(id).cloned())
                         .collect();
+                    let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
                     constraint_violations.push(ConstraintViolation {
-                        constraint_id: no_cycles_constraint
+                        constraint_id: matched
                             .map(|c| c.id.clone())
                             .unwrap_or_else(|| "builtin:cycles".into()),
-                        constraint_name: no_cycles_constraint.and_then(|c| c.name.clone()),
+                        constraint_name: matched.and_then(|c| c.name.clone()),
                         constraint_kind: "no_cycles".into(),
-                        severity: no_cycles_constraint
+                        severity: matched
                             .map(|c| c.severity.as_str().to_string())
                             .unwrap_or_else(|| "blocking".into()),
-                        provenance: no_cycles_constraint.and_then(|c| c.provenance.clone()),
+                        provenance: matched.and_then(|c| c.provenance.clone()),
                         from_path: cycle_paths.first().cloned().unwrap_or_default(),
                         to_path: cycle_paths.last().cloned().unwrap_or_default(),
                         component_context: None,

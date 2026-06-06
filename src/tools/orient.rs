@@ -12,7 +12,7 @@ use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, instability, scoring};
-use crate::rules::{self, Constraint, ConstraintKind};
+use crate::rules::{self, match_no_cycles_constraint, Constraint, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OrientArgs {
@@ -215,9 +215,6 @@ fn compute_violations(
         }
     }
 
-    let no_cycles = all_constraints
-        .iter()
-        .find(|c| matches!(c.kind, ConstraintKind::NoCycles));
     if let Ok(cycles) = dd.query_cycles() {
         for cycle in cycles {
             let cycle_paths: Vec<String> = cycle
@@ -225,12 +222,13 @@ fn compute_violations(
                 .iter()
                 .filter_map(|id| path_map.get(id).cloned())
                 .collect();
+            let matched = match_no_cycles_constraint(all_constraints, &cycle_paths);
             result.push(OrientViolation {
-                constraint_id: no_cycles
+                constraint_id: matched
                     .map(|c| c.id.clone())
                     .unwrap_or_else(|| "builtin:cycles".into()),
-                constraint_name: no_cycles.and_then(|c| c.name.clone()),
-                severity: no_cycles
+                constraint_name: matched.and_then(|c| c.name.clone()),
+                severity: matched
                     .map(|c| c.severity.as_str().to_string())
                     .unwrap_or_else(|| "blocking".into()),
                 from_path: cycle_paths.first().cloned().unwrap_or_default(),

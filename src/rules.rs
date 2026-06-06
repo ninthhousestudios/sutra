@@ -265,6 +265,26 @@ pub fn load_rules(root: &Path) -> Result<Rules> {
     parse_rules(&content)
 }
 
+/// Match a cycle (given as resolved paths) to the best-fitting `NoCycles` constraint.
+///
+/// - Unscoped (`scope: None`) matches all cycles.
+/// - Scoped matches only if every path in the cycle starts with the scope prefix.
+/// - When multiple constraints match, the longest (most specific) scope wins.
+/// - Returns `None` when no `NoCycles` constraint covers this cycle.
+pub fn match_no_cycles_constraint<'a>(
+    constraints: &'a [Constraint],
+    cycle_paths: &[String],
+) -> Option<&'a Constraint> {
+    constraints
+        .iter()
+        .filter(|c| matches!(c.kind, ConstraintKind::NoCycles))
+        .filter(|c| match &c.scope {
+            None => true,
+            Some(scope) => cycle_paths.iter().all(|p| p.starts_with(scope.as_str())),
+        })
+        .max_by_key(|c| c.scope.as_ref().map_or(0, |s| s.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
