@@ -66,9 +66,14 @@ impl DdEngine {
 
     pub fn reload(&self, facts: DdFacts) {
         let mut state = self.state.lock().unwrap();
+        let prev_pairs = match &*state {
+            DdState::Loaded { forbidden_pairs, .. }
+            | DdState::Warm { forbidden_pairs, .. } => forbidden_pairs.clone(),
+            DdState::Cold => Vec::new(),
+        };
         *state = DdState::Loaded {
             edges: facts.import_edges,
-            forbidden_pairs: Vec::new(),
+            forbidden_pairs: prev_pairs,
         };
         self.invalidated.store(false, Ordering::Release);
     }
