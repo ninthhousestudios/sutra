@@ -1014,6 +1014,23 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Check whether any Dart imports lack a resolved_file_id.
+    pub fn has_unresolved_dart_imports(&self) -> Result<bool> {
+        let conn = self.conn.lock();
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM imports i
+                JOIN files f ON f.id = i.file_id
+                WHERE i.resolved_file_id IS NULL
+                AND f.language = 'dart'
+                AND i.imported_path NOT LIKE 'dart:%'
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
     /// Return all unresolved Dart imports (package: and relative .dart paths).
     pub fn unresolved_dart_imports(&self) -> Result<Vec<(i64, i64, String)>> {
         let conn = self.conn.lock();

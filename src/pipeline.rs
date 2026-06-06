@@ -398,6 +398,7 @@ pub fn parse_workspace(
             && deleted_symbol_ids.is_empty()
             && pruned == 0
             && has_previous_snapshot(db)?
+            && !db.has_unresolved_dart_imports()?
         {
             return Ok(PostParseResult::NoChanges);
         }
@@ -529,6 +530,7 @@ pub fn parse_changed_files(
             && parse_errors == 0
             && deleted_symbol_ids.is_empty()
             && has_previous_snapshot(db)?
+            && !db.has_unresolved_dart_imports()?
         {
             return Ok(PostParseResult::NoChanges);
         }
