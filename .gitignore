@@ -4,6 +4,9 @@
 # Build output
 target/
 
-# Sutra ack files (guard protocol)
-.sutra/
+# Sutra workspace data (DBs, ack files) — but track config
+.sutra/*/
+.sutra/acks/
+!.sutra/rules.toml
+!.sutra/owners.toml
 .codex

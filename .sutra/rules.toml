@@ -1,0 +1,265 @@
+# .sutra/rules.toml — Architectural constraints for sutra
+#
+# Severity levels:
+#   blocking      — guard denies edits that introduce these
+#   advisory      — warning in review, agent proceeds
+#   informational — tracked in review output, silent otherwise
+#
+# Constraint identity = blake3(kind_tag, kind-specific params, scope).
+# Name and provenance are human labels, not identity.
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Guard isolation
+# ═══════════════════════════════════════════════════════════════════
+# The guard binary runs as a Claude Code PreToolUse hook on every edit.
+# It must stay lightweight: read-only SQLite queries + rules TOML parsing.
+# No FCA engine, no HRR vectors, no health scoring, no pipeline.
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/conventions/*"
+name = "guard-no-conventions"
+provenance = "docs/adr/0001-sketch-mode-conventions-only.md"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/similarity/*"
+name = "guard-no-similarity"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/health/*"
+name = "guard-no-health"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/pipeline.rs"
+name = "guard-no-pipeline"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/tools/*"
+name = "guard-no-tools"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/bin/guard.rs"
+to = "src/conventions/*"
+name = "guard-bin-no-conventions"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/bin/guard.rs"
+to = "src/similarity/*"
+name = "guard-bin-no-similarity"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/bin/guard.rs"
+to = "src/health/*"
+name = "guard-bin-no-health"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DD worker purity
+# ═══════════════════════════════════════════════════════════════════
+# The timely/DD worker thread is pure computation over crossbeam channels.
+# No database access, no tool handlers, no convention engine.
+# ADR-0002: ephemeral data is recomputable; the worker needs no persistence.
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/worker.rs"
+to = "src/db/*"
+name = "worker-no-db"
+provenance = "docs/adr/0002-ephemeral-durable-partition.md"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/worker.rs"
+to = "src/tools/*"
+name = "worker-no-tools"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/worker.rs"
+to = "src/conventions/*"
+name = "worker-no-conventions"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/worker.rs"
+to = "src/similarity/*"
+name = "worker-no-similarity"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Layer boundaries — upward deps only
+# ═══════════════════════════════════════════════════════════════════
+# Data layer (db/) must not import presentation (tools/).
+# Parser (L0) must not import tools.
+# Constraint engine must not import convention engine and vice versa
+# (they are independent L2/L3 systems joined only at the pipeline/tool level).
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/db/*"
+to = "src/tools/*"
+name = "db-no-tools"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/parser/*"
+to = "src/tools/*"
+name = "parser-no-tools"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/engine.rs"
+to = "src/conventions/*"
+name = "dd-engine-no-conventions"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/conventions/*"
+to = "src/constraints/*"
+name = "conventions-no-constraints"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tool handler independence
+# ═══════════════════════════════════════════════════════════════════
+# Tool handlers are self-contained MCP endpoints. They depend on library
+# code but not on each other. No cycles allowed within src/tools/.
+
+[[constraint]]
+kind = "no_cycles"
+scope = "src/tools/"
+name = "no-tool-cycles"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Known cross-layer coupling (advisory)
+# ═══════════════════════════════════════════════════════════════════
+# These document existing architectural debt. Not blocking because they
+# exist for pragmatic reasons, but agents should not deepen them.
+
+# parser::adapter imports conventions::SymbolAttrs for attribute extraction.
+# conventions::attributes imports parser::adapter::LanguageRegistry.
+# Resolving requires extracting a shared symbol_attrs trait/module.
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/parser/*"
+to = "src/conventions/*"
+name = "parser-conventions-coupling"
+provenance = "docs/adr/0003-layered-adapter-traits.md"
+severity = "advisory"
+
+# similarity::diff imports health::findings::BiomarkerKind.
+# Creates a logical cycle: health → similarity (for HRR) and
+# similarity → health (for finding types).
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/similarity/*"
+to = "src/health/*"
+name = "similarity-health-coupling"
+severity = "advisory"
+
+# similarity::mod imports parser::adapter::default_registry.
+# Math/embedding layer should not depend on parser infrastructure.
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/similarity/*"
+to = "src/parser/*"
+name = "similarity-parser-coupling"
+severity = "advisory"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Cycle prevention
+# ═══════════════════════════════════════════════════════════════════
+# No import cycles within the constraint subsystem.
+# The core module layout should stay acyclic.
+
+[[constraint]]
+kind = "no_cycles"
+scope = "src/constraints/"
+name = "no-constraint-cycles"
+severity = "blocking"
+
+[[constraint]]
+kind = "no_cycles"
+scope = "src/conventions/"
+name = "no-convention-cycles"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Fan-in limits
+# ═══════════════════════════════════════════════════════════════════
+# Infrastructure types (error.rs, freshness.rs) naturally have high fan-in.
+# These limits flag domain modules that are becoming god objects.
+
+[[constraint]]
+kind = "max_fan_in"
+target = "src/rules.rs"
+threshold = 15
+name = "rules-fan-in"
+severity = "advisory"
+
+[[constraint]]
+kind = "max_fan_in"
+target = "src/pipeline.rs"
+threshold = 20
+name = "pipeline-fan-in"
+severity = "advisory"
+
+[[constraint]]
+kind = "max_fan_in"
+target = "src/components.rs"
+threshold = 15
+name = "components-fan-in"
+severity = "advisory"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Convention management
+# ═══════════════════════════════════════════════════════════════════
+
+[conventions]
+# Suppress tautological conventions during review.
+# These say "symbols in directory X are in directory X" — true by
+# definition for component-scoped conventions, not actionable.
+suppress = [
+  "d5f032a52923809f",  # kind:method (db) → in:src/db
+  "923a40e28a24084e",  # is_method (db) → in:src/db
+  "7a1ed95921b81adc",  # takes_self_ref (db) → in:src/db
+  "c220ab1eeb7aea44",  # complexity:zero (db) → in:src/db
+  "51d0fc43620f4a8f",  # has_doc (db) → in:src/db
+  "76168c42c3aeabf2",  # in:tests → kind:function
+  "344f1e9a9fd3fa1c",  # vis:private (tests) → in:tests
+  "5d8ff8a92d255bd6",  # vis:private (tests) → naming:snake_case
+]
