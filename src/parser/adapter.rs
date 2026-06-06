@@ -231,8 +231,56 @@ impl LanguageAdapter for DartAdapter {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::dart::parse(ctx)
     }
+    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
+        Some(self)
+    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
+    }
+}
+
+const DART_EFFECT_PATTERNS: &[EffectPattern] = &[
+    EffectPattern {
+        attr_name: "effect:fs",
+        callee_prefixes: &["dart:io::File", "dart:io::Directory", "dart:io::FileSystem"],
+    },
+    EffectPattern {
+        attr_name: "effect:net",
+        callee_prefixes: &["http::", "dio::", "dart:io::HttpClient", "dart:io::Socket"],
+    },
+    EffectPattern {
+        attr_name: "effect:db",
+        callee_prefixes: &["sqflite::", "drift::", "isar::", "hive::"],
+    },
+];
+
+impl FcaAttributeSource for DartAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        let mut sa = extract_cross_language_attrs(sym, file_path)?;
+        if let Some(ref la_json) = sym.language_attrs {
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
+                Ok(map) => {
+                    for (key, val) in &map {
+                        if val.as_bool() == Some(true) {
+                            sa.attributes.push(key.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        symbol = %sym.qualified_name,
+                        file = %file_path,
+                        error = %e,
+                        "malformed language_attrs JSON, skipping language-specific attributes"
+                    );
+                }
+            }
+        }
+        Some(sa)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        DART_EFFECT_PATTERNS
     }
 }
 
@@ -320,7 +368,7 @@ mod tests {
         assert!(rust.as_fca_source().is_some());
 
         let dart = DartAdapter;
-        assert!(dart.as_fca_source().is_none());
+        assert!(dart.as_fca_source().is_some());
 
         let test = TestAdapter;
         assert!(test.as_fca_source().is_none());
@@ -386,9 +434,15 @@ mod tests {
     }
 
     #[test]
-    fn graceful_degradation_no_fca_source() {
+    fn dart_fca_source_extracts_language_attrs() {
         let dart = DartAdapter;
-        assert!(dart.as_fca_source().is_none());
+        let fca = dart.as_fca_source().unwrap();
+        let mut sym = make_test_symbol_row("function", Some("public"), Some("Future<void> fetch()"), None);
+        sym.language_attrs = Some(r#"{"is_async":true,"returns_future":true}"#.into());
+        let attrs = fca.extract_attributes(&sym, "lib/api.dart").unwrap();
+        assert!(attrs.attributes.contains(&"is_async".to_string()));
+        assert!(attrs.attributes.contains(&"returns_future".to_string()));
+        assert!(attrs.attributes.contains(&"kind:function".to_string()));
     }
 
     #[test]
@@ -467,8 +521,14 @@ mod tests {
     }
 
     #[test]
-    fn dart_adapter_has_no_effect_patterns() {
+    fn dart_adapter_has_effect_patterns() {
         let dart = DartAdapter;
-        assert!(dart.as_fca_source().is_none());
+        let source = dart.as_fca_source().unwrap();
+        let patterns = source.effect_patterns();
+        assert!(!patterns.is_empty());
+        let names: Vec<_> = patterns.iter().map(|p| p.attr_name).collect();
+        assert!(names.contains(&"effect:fs"));
+        assert!(names.contains(&"effect:net"));
+        assert!(names.contains(&"effect:db"));
     }
 }

@@ -4,6 +4,7 @@ use crate::parser::{
     complexity,
 };
 use crate::parser::adapter::ParseContext;
+use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_TEST};
 use tree_sitter::{Node, TreeCursor};
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
@@ -11,7 +12,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let parsed_ok = !root.has_error();
     let src = ctx.source;
 
-    let symbols = collect_symbols(root, src, &[]);
+    let symbols = collect_symbols(root, src, &[], ctx.file_path);
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
@@ -40,6 +41,7 @@ fn collect_symbols(
     node: Node,
     src: &[u8],
     name_context: &[String],
+    file_path: &str,
 ) -> Vec<ExtractedSymbol> {
     let mut symbols = Vec::new();
     let mut cursor = node.walk();
@@ -49,11 +51,12 @@ fn collect_symbols(
                 if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
                 {
                     sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Class);
+                    sym.flags |= extract_flags(child, src, file_path);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        sym.children = collect_symbols(body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx, file_path);
                     }
                     symbols.push(sym);
                 }
@@ -63,11 +66,12 @@ fn collect_symbols(
                 if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
                 {
                     sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Mixin);
+                    sym.flags |= extract_flags(child, src, file_path);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        sym.children = collect_symbols(body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx, file_path);
                     }
                     symbols.push(sym);
                 }
@@ -77,19 +81,21 @@ fn collect_symbols(
                 if let Some(mut sym) =
                     extract_named_symbol(child, src, name_context, SymbolKind::Extension)
                 {
+                    sym.flags |= extract_flags(child, src, file_path);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        sym.children = collect_symbols(body, src, &ctx);
+                        sym.children = collect_symbols(body, src, &ctx, file_path);
                     }
                     symbols.push(sym);
                 }
                 continue;
             }
             "enum_declaration" => {
-                if let Some(sym) = extract_named_symbol(child, src, name_context, SymbolKind::Enum)
+                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Enum)
                 {
+                    sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
             }
@@ -102,6 +108,7 @@ fn collect_symbols(
                 };
                 if let Some(mut sym) = extract_fn_symbol(sig_node, child, src, name_context, kind) {
                     sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, kind);
+                    sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
             }
@@ -111,6 +118,7 @@ fn collect_symbols(
                     extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
                 {
                     sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, SymbolKind::Method);
+                    sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
             }
@@ -119,16 +127,18 @@ fn collect_symbols(
                     extract_method_symbol(child, child, src, name_context, SymbolKind::Method)
                 {
                     sym.language_attrs = extract_language_attrs(child, Some(child), src, SymbolKind::Method);
+                    sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
             }
             "type_alias" => {
-                if let Some(sym) = extract_type_alias(child, src, name_context) {
+                if let Some(mut sym) = extract_type_alias(child, src, name_context) {
+                    sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
             }
             _ => {
-                symbols.extend(collect_symbols(child, src, name_context));
+                symbols.extend(collect_symbols(child, src, name_context, file_path));
             }
         }
     }
@@ -237,7 +247,7 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
     )
 }
 
-fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind: SymbolKind) -> Option<String> {
+fn extract_language_attrs(node: Node, sig_node: Option<Node>, src: &[u8], kind: SymbolKind) -> Option<String> {
     let mut attrs = serde_json::Map::new();
 
     let has_keyword = |n: Node, kw: &str| -> bool {
@@ -282,9 +292,26 @@ fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind:
                 if sig_inner.kind() == "constructor_signature" {
                     attrs.insert("is_constructor".into(), true.into());
                 }
+                if sig_inner.kind() == "getter_signature" {
+                    attrs.insert("is_getter".into(), true.into());
+                }
+                if sig_inner.kind() == "setter_signature" {
+                    attrs.insert("is_setter".into(), true.into());
+                }
 
                 if has_keyword(sig, "static") || has_keyword(node, "static") {
                     attrs.insert("is_static".into(), true.into());
+                }
+
+                if let Some(ret_type) = sig_inner
+                    .child_by_field_name("return_type")
+                    .or_else(|| sig_inner.child_by_field_name("type"))
+                {
+                    if let Ok(type_text) = ret_type.utf8_text(src) {
+                        if type_text.starts_with("Future") || type_text.starts_with("FutureOr") {
+                            attrs.insert("returns_future".into(), true.into());
+                        }
+                    }
                 }
             }
 
@@ -297,7 +324,53 @@ fn extract_language_attrs(node: Node, sig_node: Option<Node>, _src: &[u8], kind:
         _ => {}
     }
 
+    if has_annotation(node, src, "override") {
+        attrs.insert("has_override".into(), true.into());
+    }
+
     Some(serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()))
+}
+
+fn has_annotation(node: Node, src: &[u8], name: &str) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|c| {
+        c.kind() == "annotation"
+            && c.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())
+                .is_some_and(|text| text == name)
+    })
+}
+
+fn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {
+    let mut flags = 0u32;
+
+    if has_annotation(node, src, "isTest")
+        || has_annotation(node, src, "isTestGroup")
+        || has_annotation(node, src, "Test")
+    {
+        flags |= FLAG_TEST;
+    }
+
+    if file_path.ends_with("_test.dart") || file_path.starts_with("test/") {
+        flags |= FLAG_CFG_TEST;
+    }
+
+    if has_annotation(node, src, "override") {
+        flags |= FLAG_FFI_ENTRY;
+    }
+
+    let mut anno_cursor = node.walk();
+    for child in node.children(&mut anno_cursor) {
+        if child.kind() == "annotation" {
+            if let Ok(text) = child.utf8_text(src) {
+                if text.contains("vm:entry-point") {
+                    flags |= FLAG_FFI_ENTRY;
+                }
+            }
+        }
+    }
+
+    flags
 }
 
 fn build_symbol(

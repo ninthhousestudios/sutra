@@ -234,3 +234,147 @@ class Cache {
         serde_json::from_str(constructor.unwrap().language_attrs.as_deref().unwrap()).unwrap();
     assert_eq!(attrs["is_constructor"], true, "should be marked is_constructor");
 }
+
+#[test]
+fn test_language_attrs_getter_setter() {
+    let src = r#"
+class Config {
+    String get name => 'test';
+    set name(String v) {}
+    void normalMethod() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/config.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let methods: Vec<_> = flat
+        .iter()
+        .filter(|s| s.short_name == "name")
+        .collect();
+    assert_eq!(methods.len(), 2, "should have getter and setter");
+
+    let getter = methods.iter().find(|s| {
+        let a: serde_json::Value = serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
+        a["is_getter"] == true
+    });
+    assert!(getter.is_some(), "should detect getter_signature as is_getter");
+
+    let setter = methods.iter().find(|s| {
+        let a: serde_json::Value = serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
+        a["is_setter"] == true
+    });
+    assert!(setter.is_some(), "should detect setter_signature as is_setter");
+}
+
+#[test]
+fn test_language_attrs_has_override() {
+    let src = r#"
+class MyWidget {
+    @override
+    void build() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/widget.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let build = flat.iter().find(|s| s.short_name == "build").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(build.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["has_override"], true, "@override should set has_override");
+}
+
+#[test]
+fn test_language_attrs_returns_future() {
+    let src = r#"
+class Api {
+    Future<String> fetchData() async { return ''; }
+    FutureOr<int> compute() { return 42; }
+    void sync() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/api.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let fetch = flat.iter().find(|s| s.short_name == "fetchData").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(fetch.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_future"], true, "Future return should set returns_future");
+
+    let compute = flat.iter().find(|s| s.short_name == "compute").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(compute.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["returns_future"], true, "FutureOr return should set returns_future");
+
+    let sync = flat.iter().find(|s| s.short_name == "sync").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(sync.language_attrs.as_deref().unwrap()).unwrap();
+    assert!(attrs.get("returns_future").is_none() || attrs["returns_future"] != true,
+        "void return should not set returns_future");
+}
+
+#[test]
+fn test_flags_test_annotation() {
+    let src = r#"
+@isTest
+void myTestHelper() {}
+
+void normalFunction() {}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/helpers.dart").unwrap();
+
+    let test_fn = result.symbols.iter().find(|s| s.short_name == "myTestHelper").unwrap();
+    assert_ne!(test_fn.flags & 0x01, 0, "@isTest should set FLAG_TEST");
+
+    let normal_fn = result.symbols.iter().find(|s| s.short_name == "normalFunction").unwrap();
+    assert_eq!(normal_fn.flags & 0x01, 0, "unannotated function should not have FLAG_TEST");
+}
+
+#[test]
+fn test_flags_test_file_path() {
+    let src = "void helper() {}";
+    let result = parser::parse_file(src, "dart", "test/widget_test.dart").unwrap();
+    assert_ne!(result.symbols[0].flags & 0x02, 0, "test file should set FLAG_CFG_TEST");
+}
+
+#[test]
+fn test_flags_test_file_suffix() {
+    let src = "void helper() {}";
+    let result = parser::parse_file(src, "dart", "lib/foo_test.dart").unwrap();
+    assert_ne!(result.symbols[0].flags & 0x02, 0, "_test.dart suffix should set FLAG_CFG_TEST");
+}
+
+#[test]
+fn test_flags_non_test_file() {
+    let src = "void helper() {}";
+    let result = parser::parse_file(src, "dart", "lib/utils.dart").unwrap();
+    assert_eq!(result.symbols[0].flags & 0x02, 0, "non-test file should not have FLAG_CFG_TEST");
+}
+
+#[test]
+fn test_flags_override() {
+    let src = r#"
+class MyWidget {
+    @override
+    void build() {}
+    void normalMethod() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/widget.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let build = flat.iter().find(|s| s.short_name == "build").unwrap();
+    assert_ne!(build.flags & 0x04, 0, "@override should set FLAG_FFI_ENTRY");
+
+    let normal = flat.iter().find(|s| s.short_name == "normalMethod").unwrap();
+    assert_eq!(normal.flags & 0x04, 0, "non-override should not have FLAG_FFI_ENTRY");
+}
+
+#[test]
+fn test_flags_pragma_entry_point() {
+    let src = r#"
+@pragma('vm:entry-point')
+void entryPoint() {}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/entry.dart").unwrap();
+    assert_ne!(result.symbols[0].flags & 0x04, 0, "@pragma('vm:entry-point') should set FLAG_FFI_ENTRY");
+}

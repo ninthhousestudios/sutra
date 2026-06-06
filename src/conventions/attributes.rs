@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_without_fca_source_falls_back_to_cross_language() {
+    fn dispatch_dart_fca_source_includes_cross_language_attrs() {
         use crate::parser::adapter::default_registry;
         let registry = default_registry();
         let sym = make_symbol("function", Some("pub"), Some("fn foo()"), None, Some(0), 0);
