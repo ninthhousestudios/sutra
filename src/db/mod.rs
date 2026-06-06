@@ -449,6 +449,13 @@ impl Db {
                 conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
             }
 
+            // Clear resolved_file_id on imports that target this file,
+            // so the FK on resolved_file_id doesn't block the delete.
+            conn.execute(
+                "UPDATE imports SET resolved_file_id = NULL WHERE resolved_file_id = ?1",
+                params![file_id],
+            )?;
+
             // Delete the file; FK cascades handle symbols and refs.
             conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
         }
