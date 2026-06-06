@@ -17,11 +17,8 @@ cargo install --path .
 ## Quick start
 
 ```bash
-# Start the MCP server (stdio for agent integration)
+# Start the MCP server (stdio, one per client)
 sutra serve --stdio
-
-# Or as an HTTP daemon (shared across clients, with auto-reparse)
-sutra serve
 ```
 
 Workspaces are registered automatically when an agent calls `sutra_status` with a path, or explicitly:
@@ -37,7 +34,7 @@ sutra parse myproject
 
 Tree-sitter parses your codebase into a SQLite index of files, symbols (functions, types, traits, modules), and relationships (calls, imports, contains, implements). This is the ground truth that everything else builds on.
 
-Every response includes a **freshness envelope** (`as_of`, `is_stale`, `scheduler_alive`) so callers always know how current the data is.
+Every response includes a **freshness envelope** (`as_of`, `is_stale`) so callers always know how current the data is.
 
 ### 2. Architectural components (Layer 1)
 
@@ -285,11 +282,8 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 |----------|---------|-------------|
 | `SUTRA_DB_DIR` | `~/.sutra/` | Database directory |
 | `SUTRA_WORKSPACES` | `~/.sutra/workspaces.toml` | Workspace registry |
-| `SUTRA_LISTEN_ADDR` | `127.0.0.1:3201` | HTTP listen address |
 | `SUTRA_PARSE_PARALLELISM` | CPU count | Max parallel parse workers |
 | `SUTRA_STALE_THRESHOLD_SEC` | `600` | Seconds before an index snapshot is marked stale |
-| `SUTRA_WATCH_POLL_SEC` | `2` | How often the daemon polls smriti for FS events |
-| `SUTRA_WATCH_DEBOUNCE_SEC` | `3` | Quiescent window before flushing debounced events |
 | `SUTRA_PARSE_TIMEOUT_SEC` | `60` | Max wall-clock for a single workspace reparse |
 | `SUTRA_LOG_LEVEL` | `info` | Tracing filter when `RUST_LOG` is unset |
 
@@ -313,16 +307,6 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 | **HRR vectors** (1024-dim) | Structural similarity — FFT-based circular convolution encodes AST subtrees into fixed-size vectors. Strip mode removes identifiers for pure structural matching; embed mode preserves them |
 | **Graph metrics** | Health scoring — fan-in, fan-out, instability, PageRank importance, cognitive/cyclomatic complexity from AST, churn and co-change from git history |
 
-### Daemon (HTTP mode)
-
-`sutra serve` runs three concurrent loops:
-
-- **Scheduler** — periodically visits each workspace, dispatches a reparse for any that exceed the stale threshold. Each reparse runs as a detached task with a timeout.
-- **Smriti watcher** — polls the [smriti](https://github.com/ninthhousestudios/manas) filesystem event log, fans events out per workspace, and after a debounce window calls incremental parse (deleted files cascade-pruned, changed files re-parsed, resolution and rollups recomputed).
-- **MCP/HTTP server** — serves tool calls against the snapshot the other two loops maintain.
-
-A per-workspace mutex prevents concurrent parses. Workspace registration rejects overlapping roots.
-
 ### Parse pipeline
 
 ```
@@ -345,42 +329,34 @@ Every tool response includes:
 
 - `as_of` — timestamp of the latest snapshot
 - `is_stale` — whether the snapshot exceeds the stale threshold
-- `scheduler_last_tick_age_sec` — seconds since the scheduler last ticked (null in stdio mode)
-- `scheduler_alive` — true iff the scheduler ticked recently
 
 ## Architecture
 
 ```
-                       ┌───────────────────────────┐
-                       │  smriti FS event log       │
-                       └────────────┬───────────────┘
-                                    │ poll + debounce
-                                    ▼
-workspace files ──┐         ┌─────────────────┐
-                  ├───► tree-sitter → symbols, refs, imports
-  scheduler tick ─┘         └────────┬────────┘
-                                     ▼
-                          ┌──────────────────────┐
-                          │ ref resolution       │
-                          │ graph rollups        │
-                          │ component membership │
-                          └────────┬─────────────┘
-                                   ▼
-              ┌────────────────────┼────────────────────┐
-              ▼                    ▼                     ▼
-    FCA conventions        DD constraints         HRR vectors
-    (lifecycle, drift,     (forbidden deps,       (similarity,
-     templates)             boundaries, cycles)    duplicates)
-              │                    │                     │
-              └────────────────────┼─────────────────────┘
-                                   ▼
-                          health findings + scoring
-                                   │
-                                   ▼
-                          SQLite snapshots (WAL)
-                                   │
-                                   ▼
-                          MCP server → 28 tools with freshness envelopes
+workspace files ───► tree-sitter → symbols, refs, imports
+                          │
+                          ▼
+                ┌──────────────────────┐
+                │ ref resolution       │
+                │ graph rollups        │
+                │ component membership │
+                └────────┬─────────────┘
+                         ▼
+    ┌────────────────────┼────────────────────┐
+    ▼                    ▼                     ▼
+FCA conventions    DD constraints         HRR vectors
+(lifecycle, drift, (forbidden deps,       (similarity,
+ templates)         boundaries, cycles)    duplicates)
+    │                    │                     │
+    └────────────────────┼─────────────────────┘
+                         ▼
+                health findings + scoring
+                         │
+                         ▼
+                SQLite snapshots (WAL)
+                         │
+                         ▼
+                MCP server (stdio) → 28 tools with freshness envelopes
 ```
 
 ## Vision
