@@ -178,10 +178,19 @@ fn extract_method_symbol(
     name_context: &[String],
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
-    // method_signature wraps one of: function_signature, getter_signature, setter_signature
+    // method_signature wraps one of: function_signature, getter_signature, setter_signature.
+    // It may also have leading keyword children like "static" — skip those.
     let inner = if sig_node.kind() == "method_signature" {
         let mut c = sig_node.walk();
-        sig_node.children(&mut c).next().unwrap_or(sig_node)
+        sig_node
+            .children(&mut c)
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    "function_signature" | "getter_signature" | "setter_signature"
+                )
+            })
+            .unwrap_or(sig_node)
     } else {
         sig_node
     };

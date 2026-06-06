@@ -172,3 +172,31 @@ class Streamer {
     let sync_method = flat.iter().find(|s| s.short_name == "sync_method").unwrap();
     assert_eq!(sync_method.language_attrs.as_deref(), Some("{}"), "sync method should have empty attrs");
 }
+
+#[test]
+fn test_parse_dart_static_methods() {
+    let src = r#"
+class MyClass {
+  static void doStuff(int x) {}
+  void normalMethod() {}
+  static String get name => 'MyClass';
+  static set value(int v) {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/my_class.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let flat = flatten_symbols(&result.symbols);
+
+    let do_stuff = flat.iter().find(|s| s.short_name == "doStuff");
+    assert!(do_stuff.is_some(), "static method doStuff should be indexed");
+
+    let normal = flat.iter().find(|s| s.short_name == "normalMethod");
+    assert!(normal.is_some(), "normal method should still be indexed");
+
+    let getter = flat.iter().find(|s| s.short_name == "name");
+    assert!(getter.is_some(), "static getter should be indexed");
+
+    let setter = flat.iter().find(|s| s.short_name == "value");
+    assert!(setter.is_some(), "static setter should be indexed");
+}
