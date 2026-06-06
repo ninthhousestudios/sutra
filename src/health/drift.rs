@@ -91,12 +91,15 @@ pub fn detect_convention_drift(
     file_to_component: &HashMap<String, String>,
     id_map: &HashMap<&str, i64>,
 ) -> Result<Vec<HealthFinding>> {
-    let comp_to_file: HashMap<&str, i64> = file_to_component
-        .iter()
-        .filter_map(|(path, comp_id)| {
-            id_map.get(path.as_str()).map(|&fid| (comp_id.as_str(), fid))
-        })
-        .collect();
+    let mut comp_to_file: HashMap<&str, i64> = HashMap::new();
+    for (path, comp_id) in file_to_component {
+        if let Some(&fid) = id_map.get(path.as_str()) {
+            comp_to_file
+                .entry(comp_id.as_str())
+                .and_modify(|existing| *existing = (*existing).min(fid))
+                .or_insert(fid);
+        }
+    }
 
     let mut findings = Vec::new();
     for (comp_id, comp_name, _symbols) in components {
