@@ -615,6 +615,11 @@ fn post_parse_sequence(
         skipped_count += skipped;
     }
 
+    let dart_resolved = crate::dart_packages::resolve_dart_imports(db, workspace_root)?;
+    if dart_resolved > 0 {
+        info!(count = dart_resolved, "resolved Dart import edges");
+    }
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let adjacency = graph::build_file_adjacency(&files, db)?;

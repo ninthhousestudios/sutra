@@ -1,5 +1,6 @@
 pub mod components;
 pub mod config;
+pub mod dart_packages;
 pub mod db;
 pub mod constraints;
 pub mod diagnostics;

@@ -1007,6 +1007,35 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Return all unresolved Dart imports (package: and relative .dart paths).
+    pub fn unresolved_dart_imports(&self) -> Result<Vec<(i64, i64, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT i.id, i.file_id, i.imported_path FROM imports i
+             JOIN files f ON f.id = i.file_id
+             WHERE i.resolved_file_id IS NULL
+             AND f.language = 'dart'",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Set resolved_file_id on an import row.
+    pub fn update_import_resolved_file_id(
+        &self,
+        import_id: i64,
+        resolved_file_id: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE imports SET resolved_file_id = ?1 WHERE id = ?2",
+            params![resolved_file_id, import_id],
+        )?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // snapshots
     // -----------------------------------------------------------------------
