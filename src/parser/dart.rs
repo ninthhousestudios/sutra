@@ -112,14 +112,40 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
-            "method_declaration" => {
+            "method_declaration"
+            | "getter_declaration"
+            | "setter_declaration" => {
                 let sig_node = child.child_by_field_name("signature").unwrap_or(child);
+                let kind = if name_context.is_empty() {
+                    SymbolKind::Function
+                } else {
+                    SymbolKind::Method
+                };
                 if let Some(mut sym) =
-                    extract_method_symbol(sig_node, child, src, name_context, SymbolKind::Method)
+                    extract_method_symbol(sig_node, child, src, name_context, kind)
                 {
-                    sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, SymbolKind::Method);
+                    sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, kind);
                     sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
+                }
+            }
+            // External declarations in class bodies: `declaration` wraps
+            // [external?, getter_signature | setter_signature | function_signature]
+            "declaration" => {
+                let mut c = child.walk();
+                if let Some(sig) = child.children(&mut c).find(|n| is_dart_signature_node(n.kind())) {
+                    let kind = if name_context.is_empty() {
+                        SymbolKind::Function
+                    } else {
+                        SymbolKind::Method
+                    };
+                    if let Some(mut sym) =
+                        extract_method_symbol(sig, child, src, name_context, kind)
+                    {
+                        sym.language_attrs = extract_language_attrs(child, Some(sig), src, kind);
+                        sym.flags |= extract_flags(child, src, file_path);
+                        symbols.push(sym);
+                    }
                 }
             }
             "constructor_signature" => {

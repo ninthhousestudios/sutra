@@ -378,3 +378,43 @@ void entryPoint() {}
     let result = parser::parse_file(src, "dart", "lib/entry.dart").unwrap();
     assert_ne!(result.symbols[0].flags & 0x04, 0, "@pragma('vm:entry-point') should set FLAG_FFI_ENTRY");
 }
+
+
+#[test]
+fn test_top_level_getter() {
+    let src = r#"
+String get appName => 'MyApp';
+"#;
+    let result = parser::parse_file(src, "dart", "lib/config.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let getter = flat.iter().find(|s| {
+        s.short_name == "appName"
+            && s.language_attrs.as_deref()
+                .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
+                .is_some_and(|v| v["is_getter"] == true)
+    });
+    assert!(getter.is_some(), "top-level getter should be indexed with is_getter");
+    assert_eq!(getter.unwrap().kind, SymbolKind::Function, "top-level getter should be Function");
+}
+
+#[test]
+fn test_external_getter_in_class() {
+    let src = r#"
+class NativeBinding {
+    external String get name;
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/native.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let getter = flat.iter().find(|s| {
+        s.short_name == "name"
+            && s.language_attrs.as_deref()
+                .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
+                .is_some_and(|v| v["is_getter"] == true)
+    });
+    assert!(getter.is_some(), "external getter should be indexed with is_getter");
+    assert_eq!(getter.unwrap().kind, SymbolKind::Method, "class getter should be Method");
+}
+
