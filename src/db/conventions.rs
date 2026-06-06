@@ -407,7 +407,13 @@ impl Db {
                  waived_at = datetime('now')",
             params![convention_id, symbol_qualified_name, component_id, rationale, waived_by],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id: i64 = conn.query_row(
+            "SELECT id FROM convention_waivers
+             WHERE convention_id = ?1 AND symbol_qualified_name = ?2 AND component_id = ?3",
+            params![convention_id, symbol_qualified_name, component_id],
+            |row| row.get(0),
+        )?;
+        Ok(id)
     }
 
     pub fn list_waivers(
