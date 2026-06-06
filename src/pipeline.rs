@@ -622,6 +622,11 @@ fn post_parse_sequence(
         info!(count = dart_resolved, "resolved Dart import edges");
     }
 
+    let rust_resolved = crate::rust_imports::resolve_rust_imports(db, workspace_root)?;
+    if rust_resolved > 0 {
+        info!(count = rust_resolved, "resolved Rust import edges");
+    }
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let adjacency = graph::build_file_adjacency(&files, db)?;
