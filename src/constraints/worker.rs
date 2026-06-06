@@ -138,7 +138,9 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                     if *diff > 0 {
                         map.insert(*dst, *count);
                     } else if *diff < 0 {
-                        map.remove(dst);
+                        if map.get(dst) == Some(count) {
+                            map.remove(dst);
+                        }
                     }
                 })
                 .probe_with(&mut probe);
