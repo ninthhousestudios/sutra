@@ -203,7 +203,7 @@ pub fn handle_with_freshness(
         "mode": mode,
     });
 
-    if path.is_none() {
+    if path.is_none() && component.is_none() {
         if let Ok(components) = build_component_scores(db, &findings_by_file) {
             result["components"] = json!(components);
             result["total_components"] = json!(components.len());

@@ -1853,11 +1853,12 @@ fn file_health_component_filter() {
     let findings = compute_nested_complexity(&db).unwrap();
     db.replace_health_findings(&findings).unwrap();
 
-    // Without filter: both files
+    // Without filter: both files + component summary
     let all = sutra::tools::file_health::handle(&db, None, None, None, None).unwrap();
     assert_eq!(all["total_files"].as_u64().unwrap(), 2);
+    assert!(all.get("components").is_some(), "unfiltered should include component scores");
 
-    // With component filter: only Alpha's file
+    // With component filter: only Alpha's file, no component summary
     let filtered =
         sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha")).unwrap();
     assert_eq!(filtered["total_files"].as_u64().unwrap(), 1);
@@ -1865,6 +1866,7 @@ fn file_health_component_filter() {
         filtered["files"][0]["path"].as_str().unwrap(),
         "src/alpha/a.rs"
     );
+    assert!(filtered.get("components").is_none(), "component-filtered view should omit component summary");
 }
 
 #[test]
