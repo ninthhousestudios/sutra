@@ -274,7 +274,7 @@ impl SutraServer {
                 }
             }
         }
-        serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+        to_compact_json(result)
     }
 }
 
@@ -297,7 +297,7 @@ impl SutraServer {
             &self.parse_coord,
         )
         .map_err(sutra_to_rmcp)?;
-        serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+        to_compact_json(result)
     }
 
     #[tool(description = "Agent-oriented help and recipes for sutra workflows. \
@@ -308,7 +308,7 @@ impl SutraServer {
         Parameters(args): Parameters<HelpArgs>,
     ) -> Result<String, ErrorData> {
         let result = tools::help::handle(args.topic.as_deref()).map_err(sutra_to_rmcp)?;
-        serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+        to_compact_json(result)
     }
 
     #[tool(description = "Project file skeleton ranked by importance. \
@@ -562,7 +562,7 @@ impl SutraServer {
             args.disable.as_deref(),
             args.list.unwrap_or(false),
         );
-        serde_json::to_string_pretty(&result).map_err(json_to_rmcp)
+        to_compact_json(result)
     }
 
     #[tool(description = "All usages of a symbol across the codebase. \
@@ -869,12 +869,11 @@ impl SutraServer {
 
         let lock = self.parse_coord.lock_for(&ws_id);
         let Ok(guard) = lock.clone().try_lock_owned() else {
-            return serde_json::to_string_pretty(&serde_json::json!({
+            return to_compact_json(serde_json::json!({
                 "workspace": ws_id,
                 "root": entry.root.display().to_string(),
                 "status": "parse already in progress",
-            }))
-            .map_err(json_to_rmcp);
+            }));
         };
 
         let db = self.get_db(&ws_id)?;
@@ -918,13 +917,12 @@ impl SutraServer {
         } else {
             "registered, parsing"
         };
-        serde_json::to_string_pretty(&serde_json::json!({
+        to_compact_json(serde_json::json!({
             "workspace": ws_id,
             "root": entry.root.display().to_string(),
             "languages": entry.languages,
             "status": status,
         }))
-        .map_err(json_to_rmcp)
     }
 
     #[tool(description = "Register a workspace and return its status. \
@@ -969,7 +967,7 @@ impl SutraServer {
         if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
             val["parsing_in_progress"] = serde_json::Value::Bool(true);
         }
-        serde_json::to_string_pretty(&val).map_err(json_to_rmcp)
+        to_compact_json(val)
     }
 }
 
@@ -992,6 +990,32 @@ impl ServerHandler for SutraServer {
              All responses include as_of timestamp and is_stale indicator.",
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Response serialization
+// ---------------------------------------------------------------------------
+
+fn strip_nulls(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            map.retain(|_, v| !v.is_null());
+            for v in map.values_mut() {
+                strip_nulls(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                strip_nulls(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn to_compact_json(mut val: serde_json::Value) -> Result<String, ErrorData> {
+    strip_nulls(&mut val);
+    serde_json::to_string(&val).map_err(json_to_rmcp)
 }
 
 // ---------------------------------------------------------------------------
