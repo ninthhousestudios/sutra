@@ -1253,3 +1253,37 @@ fn build_findings_surfaces_error_on_bad_rules() {
         "malformed rules.toml should return Err, not empty findings"
     );
 }
+
+#[test]
+fn build_findings_cycle_violations_counted_in_total() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(rules_dir.join("rules.toml"), "[constraints]\n").unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "ha", 50, true).unwrap();
+    db.upsert_file("src/b.rs", "rust", "hb", 50, true).unwrap();
+
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+
+    // a -> b -> a (cycle)
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1).unwrap();
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1).unwrap();
+
+    let changed = vec!["src/a.rs".to_string()];
+    let registry = default_registry();
+    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+
+    assert!(
+        findings.constraint_violations.iter().any(|v| v.constraint_kind == "no_cycles"),
+        "should detect the import cycle"
+    );
+    assert_eq!(
+        findings.constraint_violations_total,
+        findings.constraint_violations.len(),
+        "total should equal the number of violations (including cycles)"
+    );
+}

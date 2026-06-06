@@ -337,8 +337,6 @@ pub fn build_findings(
         if !pairs.is_empty() {
             engine.set_forbidden_pairs(pairs)?;
             let current_violations = engine.query_violations()?;
-            constraint_violations_total = current_violations.len();
-
             // Compute delta: temporarily remove outgoing edges from changed
             // files to identify which violations are [introduced] by the diff.
             // Only outgoing edges are removed — incoming edges to changed files
@@ -466,6 +464,8 @@ pub fn build_findings(
                 }
             }
         }
+
+        constraint_violations_total = constraint_violations.len();
     }
 
     // Constraint waiver partition (parallel to convention waiver partition below)
