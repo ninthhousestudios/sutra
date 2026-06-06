@@ -73,13 +73,17 @@ impl Db {
 
     pub fn replace_hrr_vectors(&self, vectors: &[(i64, &str, &[u8])]) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM hrr_vectors", [])?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)",
-        )?;
-        for &(sym_id, mode, blob) in vectors {
-            stmt.execute(params![sym_id, mode, blob])?;
+        let tx = conn.unchecked_transaction()?;
+        {
+            conn.execute("DELETE FROM hrr_vectors", [])?;
+            let mut stmt = conn.prepare(
+                "INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)",
+            )?;
+            for &(sym_id, mode, blob) in vectors {
+                stmt.execute(params![sym_id, mode, blob])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
