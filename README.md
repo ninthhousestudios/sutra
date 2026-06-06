@@ -53,6 +53,44 @@ Agents are oriented with preferred conventions and warned about deprecated ones.
 
 **Convention drift detection** tracks entropy across snapshots — if each agent session introduces slightly different patterns, sutra alerts before the codebase diverges.
 
+#### Convention management
+
+Conventions are discovered automatically by FCA, but you control them two ways:
+
+**File-based suppression and exemption** — in `.sutra/rules.toml` (the same file that holds constraints):
+
+```toml
+[conventions]
+suppress = ["a1b4c2d1"]  # completely silence this convention during review
+
+[[conventions.exempt]]
+convention = "e5f6g7h8"
+symbols = ["InternalError", "src/foo.rs::DebugHelper"]  # per-symbol exemptions
+```
+
+- `suppress` — list of convention IDs to ignore entirely during `sutra_review` checks
+- `exempt` — per-convention, per-symbol exemptions. Bare names match across all files; file-qualified names (e.g. `src/foo.rs::DebugHelper`) scope to a specific file
+
+These are check-time silencing only — they don't change the convention's lifecycle state in the database.
+
+**Lifecycle management via MCP** — the `sutra_conventions` tool controls the full lifecycle:
+
+```
+sutra_conventions(action="list")
+→ all conventions with lifecycle state + pending proposals
+
+sutra_conventions(action="set_lifecycle", convention_id="<id>", lifecycle_state="preferred", reason="team consensus")
+→ manually promote/demote (descriptive → preferred → deprecated → forbidden)
+
+sutra_conventions(action="accept", proposal_id=<id>)
+→ accept an auto-generated lifecycle proposal
+
+sutra_conventions(action="waive", convention_id="<id>", symbol="src/foo.rs::process", rationale="...", waived_by="josh")
+→ grant a tracked exception (shows in review output as waived_violations)
+```
+
+Waivers differ from `rules.toml` exemptions: waivers are database-stored with rationale and attribution, and appear as `waived_violations` in review output. File-based exemptions silence findings with no audit trail.
+
 ### 4. Constraint enforcement (Layer 3)
 
 Constraints are explicit architectural rules authored in `.sutra/rules.toml`:
