@@ -180,6 +180,7 @@ pub fn handle(
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
+            obj.insert("risk_score".into(), json!(null));
         }
 
         if !ondemand_findings.is_empty() {

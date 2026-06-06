@@ -1287,3 +1287,20 @@ fn build_findings_cycle_violations_counted_in_total() {
         "total should equal the number of violations (including cycles)"
     );
 }
+
+#[test]
+fn degraded_findings_nullify_risk_score() {
+    let (dir, db) = setup_db_with_files();
+    let changed = vec!["src/core.rs".to_string()];
+
+    let mut result =
+        review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
+    assert!(result["risk_score"].as_f64().is_some(), "normal review has numeric risk_score");
+
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("findings_degraded".into(), serde_json::json!(true));
+        obj.insert("findings_error".into(), serde_json::json!("bad rules"));
+        obj.insert("risk_score".into(), serde_json::json!(null));
+    }
+    assert!(result["risk_score"].is_null(), "degraded review should have null risk_score");
+}
