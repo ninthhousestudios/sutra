@@ -98,26 +98,30 @@ impl Db {
         findings: &[crate::health::HealthFinding],
     ) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM health_findings", [])?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO health_findings
-             (file_id, symbol_id, biomarker_kind, severity, confidence, provenance,
-              metric_value, threshold, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?;
-        for f in findings {
-            stmt.execute(params![
-                f.file_id,
-                f.symbol_id,
-                f.biomarker_kind.as_str(),
-                f.severity.as_str(),
-                f.confidence,
-                f.provenance,
-                f.metric_value,
-                f.threshold,
-                f.detail,
-            ])?;
+        let tx = conn.unchecked_transaction()?;
+        {
+            conn.execute("DELETE FROM health_findings", [])?;
+            let mut stmt = conn.prepare(
+                "INSERT INTO health_findings
+                 (file_id, symbol_id, biomarker_kind, severity, confidence, provenance,
+                  metric_value, threshold, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for f in findings {
+                stmt.execute(params![
+                    f.file_id,
+                    f.symbol_id,
+                    f.biomarker_kind.as_str(),
+                    f.severity.as_str(),
+                    f.confidence,
+                    f.provenance,
+                    f.metric_value,
+                    f.threshold,
+                    f.detail,
+                ])?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
