@@ -44,6 +44,21 @@ fn test_parse_dart_enum() {
 }
 
 #[test]
+fn test_dart_symbols_without_specific_attrs_store_empty_attrs() {
+    let src = "typedef IntMapper = int Function(int value);";
+    let result = parser::parse_file(src, "dart", "lib/types.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let alias = result
+        .symbols
+        .iter()
+        .find(|s| s.kind == SymbolKind::TypeAlias)
+        .expect("type alias should be indexed");
+    assert_eq!(alias.short_name, "IntMapper");
+    assert_eq!(alias.language_attrs.as_deref(), Some("{}"));
+}
+
+#[test]
 fn test_parse_dart_imports() {
     let src = r#"
 import 'package:flutter/material.dart';

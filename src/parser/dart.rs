@@ -345,7 +345,7 @@ fn build_symbol(
         cognitive,
         max_nesting,
         flags: 0,
-        language_attrs: None,
+        language_attrs: Some("{}".into()),
     })
 }
 

@@ -88,6 +88,14 @@ struct FileParseResult {
     deleted_symbol_ids: Vec<i64>,
 }
 
+enum PostParseResult {
+    Full {
+        unresolved_count: i64,
+        skipped_count: i64,
+    },
+    NoChanges,
+}
+
 fn insert_symbols_dfs(
     db: &Db,
     file_id: i64,
@@ -368,7 +376,7 @@ pub fn parse_workspace(
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
     let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
-    let inner = (|| -> Result<(i64, i64)> {
+    let inner = (|| -> Result<PostParseResult> {
         for file_path in &source_files {
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
@@ -384,7 +392,21 @@ pub fn parse_workspace(
                 }
             }
         }
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())
+
+        if files_parsed == 0
+            && parse_errors == 0
+            && deleted_symbol_ids.is_empty()
+            && pruned == 0
+            && has_previous_snapshot(db)?
+        {
+            return Ok(PostParseResult::NoChanges);
+        }
+
+        let (unresolved_count, skipped_count) = post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())?;
+        Ok(PostParseResult::Full {
+            unresolved_count,
+            skipped_count,
+        })
     })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -392,18 +414,40 @@ pub fn parse_workspace(
         Ok(_) => parse_errors,
         Err(_) => parse_errors.max(1),
     };
-    if let Err(e) = record_snapshot(
-        db,
-        files_parsed,
-        symbols_extracted,
-        refs_extracted,
-        recorded_errors,
-        duration_ms,
-    ) {
-        warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
+    match &inner {
+        Ok(PostParseResult::NoChanges) => {
+            if let Err(e) = record_unchanged_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record unchanged snapshot after parse: {e}");
+            }
+        }
+        _ => {
+            if let Err(e) = record_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
+            }
+        }
     }
 
-    let (unresolved_count, skipped_count) = inner?;
+    let (unresolved_count, skipped_count) = match inner? {
+        PostParseResult::Full {
+            unresolved_count,
+            skipped_count,
+        } => (unresolved_count, skipped_count),
+        PostParseResult::NoChanges => (0, 0),
+    };
 
     Ok(ParseSnapshot {
         files_walked: source_files.len() as i64,
@@ -441,7 +485,7 @@ pub fn parse_changed_files(
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
     let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
-    let inner = (|| -> Result<(i64, i64)> {
+    let inner = (|| -> Result<PostParseResult> {
         for del_path in deleted {
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
@@ -481,7 +525,19 @@ pub fn parse_changed_files(
             }
         }
 
-        post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())
+        if files_parsed == 0
+            && parse_errors == 0
+            && deleted_symbol_ids.is_empty()
+            && has_previous_snapshot(db)?
+        {
+            return Ok(PostParseResult::NoChanges);
+        }
+
+        let (unresolved_count, skipped_count) = post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())?;
+        Ok(PostParseResult::Full {
+            unresolved_count,
+            skipped_count,
+        })
     })();
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -489,18 +545,40 @@ pub fn parse_changed_files(
         Ok(_) => parse_errors,
         Err(_) => parse_errors.max(1),
     };
-    if let Err(e) = record_snapshot(
-        db,
-        files_parsed,
-        symbols_extracted,
-        refs_extracted,
-        recorded_errors,
-        duration_ms,
-    ) {
-        warn!(workspace = %workspace.id, "failed to record snapshot after incremental parse: {e}");
+    match &inner {
+        Ok(PostParseResult::NoChanges) => {
+            if let Err(e) = record_unchanged_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record unchanged snapshot after incremental parse: {e}");
+            }
+        }
+        _ => {
+            if let Err(e) = record_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record snapshot after incremental parse: {e}");
+            }
+        }
     }
 
-    let (unresolved_count, skipped_count) = inner?;
+    let (unresolved_count, skipped_count) = match inner? {
+        PostParseResult::Full {
+            unresolved_count,
+            skipped_count,
+        } => (unresolved_count, skipped_count),
+        PostParseResult::NoChanges => (0, 0),
+    };
 
     Ok(ParseSnapshot {
         files_walked: changed.len() as i64,
@@ -645,6 +723,50 @@ fn record_snapshot(
         },
         &health.file_scores,
         &health.component_scores,
+    )?;
+    Ok(())
+}
+
+fn has_previous_snapshot(db: &Db) -> Result<bool> {
+    Ok(!db.latest_snapshots(1)?.is_empty())
+}
+
+fn record_unchanged_snapshot(
+    db: &Db,
+    files_parsed: i64,
+    symbols_extracted: i64,
+    refs_extracted: i64,
+    parse_errors: i64,
+    duration_ms: i64,
+) -> Result<()> {
+    let Some(previous) = db.latest_snapshots(1)?.into_iter().next() else {
+        return record_snapshot(
+            db,
+            files_parsed,
+            symbols_extracted,
+            refs_extracted,
+            parse_errors,
+            duration_ms,
+        );
+    };
+
+    let file_scores = db.snapshot_file_scores(previous.id)?;
+    let component_scores = db.snapshot_component_scores(previous.id)?;
+    db.insert_snapshot_atomic(
+        &SnapshotParams {
+            files_parsed,
+            symbols_extracted,
+            refs_extracted,
+            parse_errors,
+            duration_ms,
+            total_complexity: previous.total_complexity,
+            dead_symbol_count: previous.dead_symbol_count,
+            hotspot_count: previous.hotspot_count,
+            health_score: previous.health_score,
+            pattern_family_count: previous.pattern_family_count,
+        },
+        &file_scores,
+        &component_scores,
     )?;
     Ok(())
 }

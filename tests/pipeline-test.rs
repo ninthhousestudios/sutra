@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
-use sutra::db::Db;
+use sutra::db::{Db, SnapshotParams};
 use sutra::parser::{RefContextKind, SymbolKind};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline::{self, parse_changed_files};
@@ -244,6 +244,43 @@ async fn test_parse_snapshot_stored() {
     .unwrap();
 
     assert!(db.last_parse_time().unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_unchanged_parse_copies_previous_snapshot_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn hello() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("unchanged-fast-snapshot", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        total_complexity: 12_345,
+        dead_symbol_count: 234,
+        hotspot_count: 56,
+        health_score: 7.25,
+        pattern_family_count: 8,
+        ..SnapshotParams::default()
+    })
+    .unwrap();
+
+    let snap = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    assert_eq!(snap.files_parsed, 0);
+
+    let latest = db.latest_snapshots(1).unwrap().pop().unwrap();
+    assert_eq!(latest.files_parsed, 0);
+    assert_eq!(latest.total_complexity, 12_345);
+    assert_eq!(latest.dead_symbol_count, 234);
+    assert_eq!(latest.hotspot_count, 56);
+    assert_eq!(latest.health_score, 7.25);
+    assert_eq!(latest.pattern_family_count, 8);
 }
 
 // --- incremental parse_changed_files tests ---
