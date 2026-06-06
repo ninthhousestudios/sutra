@@ -14,6 +14,8 @@ pub struct FindArgs {
     pub kind: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
+    #[serde(default)]
+    pub detail: Option<bool>,
 }
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
@@ -23,8 +25,9 @@ pub fn handle(
     name: &str,
     kind: Option<&str>,
     limit: Option<i64>,
+    detail: bool,
 ) -> Result<serde_json::Value> {
-    handle_with_freshness(db, name, kind, limit, None)
+    handle_with_freshness(db, name, kind, limit, detail, None)
 }
 
 pub fn handle_with_freshness(
@@ -32,6 +35,7 @@ pub fn handle_with_freshness(
     name: &str,
     kind: Option<&str>,
     limit: Option<i64>,
+    detail: bool,
     workspace_root: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(10);
@@ -44,16 +48,18 @@ pub fn handle_with_freshness(
             let file_path = db.file_by_id(s.file_id).ok().flatten();
             let file_str = file_path.as_ref().map(|f| f.path.as_str());
             let mut entry = json!({
-                "id": s.id,
                 "qualified_name": s.qualified_name,
-                "short_name": s.short_name,
                 "kind": s.kind,
                 "file": file_str,
                 "start_line": s.start_line,
                 "end_line": s.end_line,
-                "signature": s.signature,
-                "visibility": s.visibility,
             });
+            if detail {
+                entry["id"] = json!(s.id);
+                entry["short_name"] = json!(s.short_name);
+                entry["signature"] = json!(s.signature);
+                entry["visibility"] = json!(s.visibility);
+            }
             if let (Some(root), Some(fp)) = (workspace_root, &file_path) {
                 let status = freshness::check_file(root, &fp.path, &fp.last_parsed);
                 counts.record(status);

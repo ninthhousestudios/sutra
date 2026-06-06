@@ -143,7 +143,7 @@ fn test_outline_contract() {
 #[test]
 fn test_find_contract() {
     let (_dir, db) = setup_test_db();
-    let result = find::handle(&db, "main", None, None).unwrap();
+    let result = find::handle(&db, "main", None, None, false).unwrap();
 
     let matches = result["matches"]
         .as_array()
@@ -158,7 +158,7 @@ fn test_find_contract() {
 #[test]
 fn test_grep_contract() {
     let (_dir, db) = setup_test_db();
-    let result = grep::handle(&db, "main", None, None).unwrap();
+    let result = grep::handle(&db, "main", None, None, false).unwrap();
 
     let matches = result["matches"]
         .as_array()
@@ -231,7 +231,7 @@ fn test_tools_meta_contract() {
 #[test]
 fn test_find_not_found() {
     let (_dir, db) = setup_test_db();
-    let result = find::handle(&db, "nonexistent_symbol_xyz", None, None).unwrap();
+    let result = find::handle(&db, "nonexistent_symbol_xyz", None, None, false).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(
@@ -292,7 +292,7 @@ fn test_map_freshness_per_entry() {
 #[test]
 fn test_find_freshness_and_confidence() {
     let (dir, db) = setup_test_db_with_root();
-    let result = find::handle_with_freshness(&db, "main", None, None, Some(dir.path())).unwrap();
+    let result = find::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
@@ -328,7 +328,7 @@ fn test_find_freshness_and_confidence() {
 #[test]
 fn test_grep_freshness_and_confidence() {
     let (dir, db) = setup_test_db_with_root();
-    let result = grep::handle_with_freshness(&db, "main", None, None, Some(dir.path())).unwrap();
+    let result = grep::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
@@ -347,7 +347,7 @@ fn test_grep_freshness_and_confidence() {
 #[test]
 fn test_find_exact_match_confidence_is_1() {
     let (dir, db) = setup_test_db_with_root();
-    let result = find::handle_with_freshness(&db, "main", None, None, Some(dir.path())).unwrap();
+    let result = find::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
     let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();
     assert_eq!(
         score, 1.0,
@@ -362,7 +362,7 @@ fn test_find_exact_match_confidence_is_1() {
 #[test]
 fn test_find_fts_match_confidence_below_1() {
     let (dir, db) = setup_test_db_with_root();
-    let result = find::handle_with_freshness(&db, "mai", None, None, Some(dir.path())).unwrap();
+    let result = find::handle_with_freshness(&db, "mai", None, None, false, Some(dir.path())).unwrap();
     let matches = result["matches"].as_array().unwrap();
     if !matches.is_empty() {
         let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();

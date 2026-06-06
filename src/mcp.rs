@@ -431,7 +431,8 @@ impl SutraServer {
 
     #[tool(
         description = "Jump to a symbol definition by name. Three-tier search: \
-        exact short_name, exact qualified_name, then FTS5 fuzzy."
+        exact short_name, exact qualified_name, then FTS5 fuzzy. \
+        Returns compact results by default; pass detail=true for signatures and visibility."
     )]
     pub async fn sutra_find(
         &self,
@@ -444,6 +445,7 @@ impl SutraServer {
             &args.name,
             args.kind.as_deref(),
             args.limit,
+            args.detail.unwrap_or(false),
             Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
@@ -451,7 +453,8 @@ impl SutraServer {
     }
 
     #[tool(description = "Search indexed symbols by name pattern. \
-        FTS5-backed search across symbol names, signatures, and docstrings.")]
+        FTS5-backed search across symbol names, signatures, and docstrings. \
+        Returns compact results by default; pass detail=true for signatures and docstrings.")]
     pub async fn sutra_grep(
         &self,
         Parameters(args): Parameters<GrepArgs>,
@@ -463,6 +466,7 @@ impl SutraServer {
             &args.pattern,
             args.kind.as_deref(),
             args.limit,
+            args.detail.unwrap_or(false),
             Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;

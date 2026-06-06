@@ -178,7 +178,7 @@ fn test_find_no_match_returns_diagnostic() {
     let fid = seed_file(&db, "src/lib.rs");
     seed_symbol(&db, fid, "RealThing", "RealThing", "struct");
 
-    let result = find::handle(&db, "nonexistent", None, None).unwrap();
+    let result = find::handle(&db, "nonexistent", None, None, false).unwrap();
     assert_eq!(result["total"], 0);
     assert_eq!(result["diagnostic"]["kind"], "no_such_symbol");
     assert_eq!(result["diagnostic"]["queried_name"], "nonexistent");

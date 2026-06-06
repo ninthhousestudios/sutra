@@ -63,7 +63,7 @@ async fn test_register_parse_query_cycle() {
     let files = map_result["files"].as_array().unwrap();
     assert!(!files.is_empty(), "map should return files");
 
-    let find_result = find::handle(&db, "hello", None, None).unwrap();
+    let find_result = find::handle(&db, "hello", None, None, false).unwrap();
     let matches = find_result["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "find should locate 'hello'");
 
