@@ -2,9 +2,11 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — per-workspace structural index via tree-sitter, served as an MCP server.
+Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-sutra parses your codebase into a SQLite index of symbols, references, imports, and file-level dependency graphs, then exposes that index through 14 MCP tools that AI coding agents can call.
+Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, and tracks codebase health with empirically calibrated biomarkers. It exposes all of this through 28 MCP tools that AI coding agents (and humans) can call.
+
+The core loop: **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
 
 ## Install
 
@@ -15,44 +17,216 @@ cargo install --path .
 ## Quick start
 
 ```bash
-# Register a workspace
-sutra workspaces add myproject /path/to/project rust
-
-# Parse it
-sutra parse myproject
-
 # Start the MCP server (stdio for agent integration)
 sutra serve --stdio
 
-# Or as an HTTP daemon (default, shared across clients)
+# Or as an HTTP daemon (shared across clients, with auto-reparse)
 sutra serve
 ```
+
+Workspaces are registered automatically when an agent calls `sutra_status` with a path, or explicitly:
+
+```bash
+sutra workspaces add myproject /path/to/project rust
+sutra parse myproject
+```
+
+## What sutra does
+
+### 1. Structural index (Layer 0)
+
+Tree-sitter parses your codebase into a SQLite index of files, symbols (functions, types, traits, modules), and relationships (calls, imports, contains, implements). This is the ground truth that everything else builds on.
+
+Every response includes a **freshness envelope** (`as_of`, `is_stale`, `scheduler_alive`) so callers always know how current the data is.
+
+### 2. Architectural components (Layer 1)
+
+Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They're the unit of orientation, convention scoping, and health scoring.
+
+### 3. Convention detection (Layer 2)
+
+Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." Conventions have a lifecycle:
+
+- **descriptive** — this pattern is common (auto-detected default)
+- **preferred** — this pattern should continue (human-promoted)
+- **deprecated** — this pattern exists but should fade
+- **forbidden** — do not copy this pattern
+
+Agents are oriented with preferred conventions and warned about deprecated ones. Sutra generates **structural templates** from conventions (e.g. `pub async fn $NAME(&self, $PARAMS) -> Result<$T>`) so agents can write code that fits.
+
+**Convention drift detection** tracks entropy across snapshots — if each agent session introduces slightly different patterns, sutra alerts before the codebase diverges.
+
+### 4. Constraint enforcement (Layer 3)
+
+Constraints are explicit architectural rules authored in `.sutra/rules.toml`:
+
+```toml
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+name = "tools-must-not-import-daemon"
+
+[[constraint]]
+kind = "boundary"
+from_component = "db"
+to_component = "http"
+
+[[constraint]]
+kind = "no_cycles"
+scope = "src/core/"
+
+[[constraint]]
+kind = "max_fan_in"
+target = "src/config.rs"
+threshold = 10
+severity = "advisory"
+```
+
+Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes.
+
+Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time.
+
+Constraints and conventions both support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area.
+
+### 5. Health metrics (Layer 4)
+
+Per-file and per-component health scores (1.0–10.0 scale) derived from empirically calibrated biomarkers:
+
+| Biomarker | What it detects | Source |
+|---|---|---|
+| `co_change_scatter` | Files that change with many unrelated files | git history |
+| `change_entropy` | Historically volatile files (Hassan's HCM) | git history |
+| `ownership_risk` | Diffuse ownership (no clear owner, many minor contributors) | git history |
+| `nested_complexity` | Deeply nested control flow (> 4 levels) | AST |
+| `function_hotspot` | High-churn + high-complexity functions | git blame (on-demand) |
+| `code_age_volatility` | Old code being frequently touched | git blame (on-demand) |
+| `hidden_coupling` | Files that co-change but have no static dependency | git + import graph |
+| `convention_drift` | Component diverging from its own conventions | FCA + HRR vectors |
+| `hrr_shape_change` | Subtle structural changes hidden in small text diffs | HRR vectors |
+| `component_instability` | Martin's instability metric (Ce/(Ca+Ce)) | import graph |
+
+Scores use category-capped deductions so no single dimension can dominate. Component scores are NLOC-weighted averages of member files. Health waivers let you acknowledge known issues without suppressing the signal.
+
+### 6. Structural similarity (Layer 6)
+
+Holographic Reduced Representations (HRR) encode each function's AST into a 1024-dimensional vector. Two modes:
+
+- **strip** — structure only, identifiers removed. Finds copy-paste variants regardless of naming.
+- **embed** — structure + identifiers. Finds semantically similar code.
+
+This powers duplicate detection (pattern families of 3+ structurally identical functions) and semantic diff in review (classifying changes as safe-refactor vs. subtle-behavioral-change based on HRR delta vs. text delta).
 
 ## MCP tools
 
 ### Core (always available)
 
-| Tool | Description |
-|------|-------------|
+| Tool | Purpose |
+|---|---|
+| `sutra_status` | Register a workspace and check freshness |
 | `sutra_health` | Per-workspace file/symbol counts, parse errors, staleness |
-| `sutra_map` | Project file skeleton ranked by importance |
-| `sutra_outline` | File symbol table of contents |
+| `sutra_map` | Project file skeleton ranked by importance (symbol count + fan-in + blast radius) |
+| `sutra_outline` | File symbol table of contents — all symbols with kinds, line ranges, signatures |
 | `sutra_find` | Jump to a symbol definition by name (exact + FTS5 fuzzy) |
-| `sutra_grep` | Search indexed symbols by name pattern |
-| `sutra_read` | Read a symbol's source code with line numbers |
-| `sutra_impact` | Blast radius analysis (direct callers, BFS depth-3, risk level) |
-| `sutra_deps` | File-level import dependency graph |
+| `sutra_grep` | Search indexed symbols by name pattern (FTS5-backed) |
+| `sutra_read` | Read a symbol's source code with line numbers and context |
+| `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
+| `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
+| `sutra_orient` | Convention-aware orientation for a component or file — preferred conventions with templates, deprecated/forbidden warnings, drift alerts, active constraints and violations, health scores, waivers |
+| `sutra_components` | List discovered architectural components and member files |
+| `sutra_conventions` | Manage convention lifecycle (list, promote, deprecate, waive) and review proposals |
+| `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
 | `sutra_parse` | Trigger a workspace reparse |
 | `sutra_tools` | Enable/disable tool tiers |
+| `sutra_help` | Agent-oriented help and workflow recipes |
 
 ### Analysis (enable via `sutra_tools`)
 
-| Tool | Description |
-|------|-------------|
-| `sutra_refs` | All usages of a symbol across the codebase |
-| `sutra_calls` | Call hierarchy (callers/callees, BFS to depth) |
-| `sutra_diff_impact` | Blast radius of a git diff |
-| `sutra_cochange` | Files that historically change together |
+| Tool | Purpose |
+|---|---|
+| `sutra_refs` | All usages of a symbol across the codebase, grouped by file. Optional `context_kind` filter (call, construction, type_use) |
+| `sutra_calls` | Call hierarchy — callers or callees, BFS to configurable depth |
+| `sutra_diff_impact` | Blast radius of a git diff — changed files, affected symbols, their callers |
+| `sutra_cochange` | Files that historically change together with a given file |
+| `sutra_pr_risk` | Composite PR risk score (0.0–1.0) combining blast radius, complexity, churn, and volume |
+| `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
+| `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
+| `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
+| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, convention violations/matches, health findings, HRR shape changes, convention drift, health delta, and ranks recommended reads |
+| `sutra_file_health` | Per-file and per-component health report with scores, active findings, category deductions, and component instability |
+| `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
+| `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
+| `sutra_duplicates` | Near-duplicate function detection via HRR strip vector clustering into pattern families |
+| `sutra_similar` | Find structurally similar functions — strip mode (AST shape) or embed mode (structure + naming) |
+| `sutra_trend` | Health trend — compare two snapshots with per-file/per-component deltas, or query a file's score history over time |
+
+## Common workflows
+
+### Orient before editing
+
+```
+Agent: sutra_orient(scope="src/tools/review.rs")
+→ preferred conventions with signature templates
+→ deprecated patterns to avoid
+→ active constraints and any current violations
+→ health score and top findings
+→ pending lifecycle proposals
+```
+
+### Review a branch
+
+```
+Agent: sutra_review(diff="branch")
+→ risk score (0.0–1.0) with per-signal breakdown
+→ constraint violations (blocking/advisory)
+→ convention violations and matches (deprecated/forbidden)
+→ health findings and health delta vs. last snapshot
+→ HRR shape changes (subtle structural shifts)
+→ convention drift alerts
+→ recommended files to inspect manually
+```
+
+### Investigate a symbol
+
+```
+sutra_find(name="parse_rules")     → definition location
+sutra_impact(symbol="parse_rules") → blast radius and risk level
+sutra_calls(symbol="parse_rules")  → who calls it, what it calls
+sutra_refs(symbol="parse_rules")   → every usage site
+sutra_provenance(symbol="parse_rules") → git history with commit types
+sutra_trace(symbol="parse_rules")  → call chains from entry points
+```
+
+### Find code quality issues
+
+```
+sutra_file_health()                → worst files with findings and scores
+sutra_hotspots()                   → riskiest files (churn × blast radius × complexity)
+sutra_dead()                       → unreferenced symbols and files
+sutra_duplicates()                 → near-duplicate function families
+sutra_trend()                      → health changes between snapshots
+```
+
+## Guard (real-time constraint enforcement)
+
+`sutra-guard` is a separate binary that runs as a Claude Code `PreToolUse` hook. When an agent is about to edit a file, the guard checks the file's import edges against constraint rules:
+
+- **blocking** violations → edit denied with explanation
+- **advisory/informational** → warning on stderr, edit proceeds
+- **waived** → silent pass
+
+Configure in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Edit|Write",
+      "command": "sutra-guard"
+    }]
+  }
+}
+```
 
 ## MCP configuration
 
@@ -101,9 +275,11 @@ sutra serve
 - **Rust** — full support (functions, structs, enums, traits, impls, methods, modules, consts, macros)
 - **Dart** — full support (classes, methods, functions, enums, mixins, extensions, type aliases)
 
+The core model is language-agnostic. Per-language adapters handle parsing and attribute extraction; the schema (files, symbols, edges) is uniform. Adding a language requires a tree-sitter grammar and an adapter that maps AST nodes to sutra's symbol kinds.
+
 ## Configuration
 
-Environment variables:
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -113,51 +289,111 @@ Environment variables:
 | `SUTRA_PARSE_PARALLELISM` | CPU count | Max parallel parse workers |
 | `SUTRA_STALE_THRESHOLD_SEC` | `600` | Seconds before an index snapshot is marked stale |
 | `SUTRA_WATCH_POLL_SEC` | `2` | How often the daemon polls smriti for FS events |
-| `SUTRA_WATCH_DEBOUNCE_SEC` | `3` | Quiescent window before flushing a workspace's debounced events |
-| `SUTRA_PARSE_TIMEOUT_SEC` | `60` | Max wall-clock for a single workspace reparse before it is aborted |
+| `SUTRA_WATCH_DEBOUNCE_SEC` | `3` | Quiescent window before flushing debounced events |
+| `SUTRA_PARSE_TIMEOUT_SEC` | `60` | Max wall-clock for a single workspace reparse |
 | `SUTRA_LOG_LEVEL` | `info` | Tracing filter when `RUST_LOG` is unset |
 
-## Daemon (HTTP mode)
+### Project configuration (`.sutra/`)
 
-`sutra serve` (HTTP) runs three concurrent loops on the same tokio runtime:
+| File | Purpose |
+|------|---------|
+| `rules.toml` | Architectural constraints (forbidden deps, boundaries, cycle rules, fan-in limits) |
+| `owners.toml` | Author alias mapping for ownership risk biomarker (maps agent emails to canonical human) |
 
-- **Scheduler** — every `STALE_THRESHOLD_SEC / 2` it visits each registered workspace, checks the latest snapshot's age, and dispatches a reparse for any that exceed the threshold. Each reparse runs as a detached task wrapped in `PARSE_TIMEOUT_SEC`, so one slow or hung workspace cannot stall ticks for the rest of the fleet.
-- **Smriti watcher** — polls the [smriti](https://github.com/ninthhousestudios/manas) FS-event log every `WATCH_POLL_SEC`, fans events out per workspace, and after `WATCH_DEBOUNCE_SEC` of quiet calls `parse_changed_files` to do an incremental update (deleted files cascade-pruned; changed files re-parsed; resolution and rollups recomputed).
+## How it works
+
+### Computational substrates
+
+| Substrate | What it powers |
+|---|---|
+| **Tree-sitter** | Parsing — extracts symbols, references, imports from source code |
+| **SQLite (WAL)** | Persistence — relational storage for all layers, snapshot history |
+| **Differential dataflow** (timely) | Constraint enforcement — maintained views over the import graph for cycle detection, forbidden deps, and blast radius. Incremental: feed it edge deltas, all views update automatically |
+| **Formal Concept Analysis** (FCA) | Convention detection — discovers implications in the symbol-attribute matrix, validated by support/confidence thresholds. Per-component adaptive thresholds |
+| **HRR vectors** (1024-dim) | Structural similarity — FFT-based circular convolution encodes AST subtrees into fixed-size vectors. Strip mode removes identifiers for pure structural matching; embed mode preserves them |
+| **Graph metrics** | Health scoring — fan-in, fan-out, instability, PageRank importance, cognitive/cyclomatic complexity from AST, churn and co-change from git history |
+
+### Daemon (HTTP mode)
+
+`sutra serve` runs three concurrent loops:
+
+- **Scheduler** — periodically visits each workspace, dispatches a reparse for any that exceed the stale threshold. Each reparse runs as a detached task with a timeout.
+- **Smriti watcher** — polls the [smriti](https://github.com/ninthhousestudios/manas) filesystem event log, fans events out per workspace, and after a debounce window calls incremental parse (deleted files cascade-pruned, changed files re-parsed, resolution and rollups recomputed).
 - **MCP/HTTP server** — serves tool calls against the snapshot the other two loops maintain.
 
-A per-workspace `tokio::Mutex` guards the index db: the scheduler `try_lock`s and skips this tick if a parse is already in flight; the watcher `.await`s the lock so its buffered events are never dropped. Two parses never run concurrently against the same db.
+A per-workspace mutex prevents concurrent parses. Workspace registration rejects overlapping roots.
 
-**Workspace registration** rejects roots that overlap an existing workspace in either direction (ancestor or descendant). This prevents the smriti event fan-out from routing the same file change to two workspaces and racing their reparses against each other.
+### Parse pipeline
+
+```
+file changed
+  → tree-sitter re-parse (Layer 0 delta)
+  → ref resolution (local, module, import edges)
+  → graph rollups (fan_in, blast_radius)
+  → git co-change computation
+  → component membership update
+  → FCA convention rebuild + lifecycle proposals
+  → template generation
+  → health finding computation
+  → HRR vector encoding
+  → snapshot recording (per-file + per-component health scores)
+```
+
+### Freshness
+
+Every tool response includes:
+
+- `as_of` — timestamp of the latest snapshot
+- `is_stale` — whether the snapshot exceeds the stale threshold
+- `scheduler_last_tick_age_sec` — seconds since the scheduler last ticked (null in stdio mode)
+- `scheduler_alive` — true iff the scheduler ticked recently
 
 ## Architecture
 
 ```
                        ┌───────────────────────────┐
-                       │  smriti FS event log      │
-                       └────────────┬──────────────┘
+                       │  smriti FS event log       │
+                       └────────────┬───────────────┘
                                     │ poll + debounce
                                     ▼
 workspace files ──┐         ┌─────────────────┐
-                  ├───►  tree-sitter ──> symbols, refs, imports
+                  ├───► tree-sitter → symbols, refs, imports
   scheduler tick ─┘         └────────┬────────┘
                                      ▼
-                          resolver ──> resolved refs (local + module + direct imports)
-                                     │
-                                     ▼
-                          SQLite (WAL) ──> fan_in, blast_radius rollups, snapshots
-                                     │
-                                     ▼
-                          MCP server ──> 14 tools with freshness envelopes
+                          ┌──────────────────────┐
+                          │ ref resolution       │
+                          │ graph rollups        │
+                          │ component membership │
+                          └────────┬─────────────┘
+                                   ▼
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                     ▼
+    FCA conventions        DD constraints         HRR vectors
+    (lifecycle, drift,     (forbidden deps,       (similarity,
+     templates)             boundaries, cycles)    duplicates)
+              │                    │                     │
+              └────────────────────┼─────────────────────┘
+                                   ▼
+                          health findings + scoring
+                                   │
+                                   ▼
+                          SQLite snapshots (WAL)
+                                   │
+                                   ▼
+                          MCP server → 28 tools with freshness envelopes
 ```
 
-Every tool response includes a freshness envelope:
+## Vision
 
-- `as_of` — timestamp of the latest snapshot for this workspace
-- `is_stale` — whether `as_of` exceeds `STALE_THRESHOLD_SEC`
-- `scheduler_last_tick_age_sec` — seconds since the scheduler last ticked (`null` in stdio mode)
-- `scheduler_alive` — `true` iff the scheduler ticked within `2 × STALE_THRESHOLD_SEC`
+Sutra's mission is to help human-AI teams produce *coherent* software, not just functional software. The full vision is documented in `docs/sutra-vision.md` and organized as layers:
 
-The last two distinguish "this workspace is quietly old" from "the scheduler itself has wedged" — they answer different questions and you usually want both.
-
-Unresolved references are reported honestly — the v0.1 resolver handles ~60-70% of references (local bindings, module-level items, direct imports).
-
+| Layer | Domain | Status |
+|---|---|---|
+| 0 | Structural facts (tree-sitter → symbols, refs, imports) | Implemented |
+| 1 | Architecture (components, hierarchy, boundaries) | Implemented (directory-based clustering; graph clustering planned) |
+| 2 | Conventions (FCA detection, lifecycle, templates, drift) | Implemented |
+| 3 | Constraints (DD enforcement, guard, waivers) | Implemented |
+| 4 | Health (biomarkers, scoring, snapshots, trends) | Implemented |
+| 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases, orient; HRR fuzzy matching planned) |
+| 6 | Similarity (HRR vectors, duplicates, semantic diff) | Implemented |
+| 7 | Verification (property tests, model checking, mutation testing) | Deferred |
