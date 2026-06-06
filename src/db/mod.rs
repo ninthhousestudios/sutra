@@ -434,22 +434,25 @@ impl Db {
     /// FTS5 rows must be deleted manually first.
     pub fn delete_file_cascade(&self, file_id: i64) -> Result<()> {
         let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            // Manual FTS5 sync: delete every symbol FTS row for this file.
+            let symbol_ids: Vec<i64> = {
+                let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
+                let ids: rusqlite::Result<Vec<i64>> = stmt
+                    .query_map(params![file_id], |row| row.get(0))?
+                    .collect();
+                ids?
+            };
 
-        // Manual FTS5 sync: delete every symbol FTS row for this file.
-        let symbol_ids: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
-            let ids: rusqlite::Result<Vec<i64>> = stmt
-                .query_map(params![file_id], |row| row.get(0))?
-                .collect();
-            ids?
-        };
+            for sid in &symbol_ids {
+                conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
+            }
 
-        for sid in &symbol_ids {
-            conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
+            // Delete the file; FK cascades handle symbols and refs.
+            conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
         }
-
-        // Delete the file; FK cascades handle symbols and refs.
-        conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+        tx.commit()?;
         Ok(())
     }
 
