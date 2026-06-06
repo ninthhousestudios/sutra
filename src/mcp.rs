@@ -471,7 +471,8 @@ impl SutraServer {
 
     #[tool(
         description = "Read a symbol's source code from disk with line numbers. \
-        Includes context lines around the symbol. Returns stale warning if file was deleted."
+        Includes context lines around the symbol. Returns stale warning if file was deleted. \
+        Default 500-line cap; use full=true or limit=N to override."
     )]
     pub async fn sutra_read(
         &self,
@@ -480,8 +481,10 @@ impl SutraServer {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let is_stale = self.freshness(&db)["is_stale"].as_bool() == Some(true);
-        let result = tools::read::handle(&db, &ws.root, &args.symbol, args.context_lines, is_stale)
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::read::handle(
+            &db, &ws.root, &args.symbol, args.context_lines,
+            args.limit, args.full.unwrap_or(false), is_stale,
+        ).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

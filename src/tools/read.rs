@@ -12,17 +12,26 @@ pub struct ReadArgs {
     pub symbol: String,
     #[serde(default)]
     pub context_lines: Option<usize>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 use crate::error::{Result, SutraError};
+
+const DEFAULT_LINE_CAP: usize = 500;
 
 pub fn handle(
     db: &Db,
     workspace_root: &Path,
     symbol: &str,
     context_lines: Option<usize>,
+    limit: Option<usize>,
+    full: bool,
     is_stale: bool,
 ) -> Result<serde_json::Value> {
     let context_lines = context_lines.unwrap_or(5);
+    let line_cap = if full { usize::MAX } else { limit.unwrap_or(DEFAULT_LINE_CAP) };
 
     let sym = db
         .resolve_symbol(symbol, None)?
@@ -91,19 +100,32 @@ pub fn handle(
         lines.len(),
     );
 
-    let numbered: Vec<_> = lines[start..end]
+    let total_lines = end - start;
+    let truncated = total_lines > line_cap;
+    let display_end = if truncated { start + line_cap } else { end };
+
+    let numbered: Vec<_> = lines[start..display_end]
         .iter()
         .enumerate()
         .map(|(i, line)| format!("{:>5} {}", start + i + 1, line))
         .collect();
 
-    Ok(json!({
+    let mut result = json!({
         "symbol": sym.qualified_name,
         "file": file.path,
         "start_line": start + 1,
-        "end_line": end,
+        "end_line": display_end,
         "content": numbered.join("\n"),
         "kind": sym.kind,
         "signature": sym.signature,
-    }))
+    });
+    if truncated {
+        result["truncated"] = json!(true);
+        result["total_lines"] = json!(total_lines);
+        result["hint"] = json!(format!(
+            "Truncated at {} lines ({} total). Call with full=true or limit={} to see more.",
+            line_cap, total_lines, total_lines
+        ));
+    }
+    Ok(result)
 }
