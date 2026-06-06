@@ -50,14 +50,14 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
         && alias.target_kind == "component"
     {
         let lifecycle = db.component_lifecycle_state(&alias.target_ref).unwrap_or_else(|_| "stable".into());
-        let files = components
+        let (canon_name, files) = components
             .iter()
             .find(|(id, _, _)| id == &alias.target_ref)
-            .map(|(_, _, p)| p.clone())
-            .unwrap_or_default();
+            .map(|(_, name, p)| (name.clone(), p.clone()))
+            .unwrap_or_else(|| (alias.term.clone(), vec![]));
         results.push(ResolvedComponent {
             id: alias.target_ref.clone(),
-            name: alias.term,
+            name: canon_name,
             lifecycle_state: lifecycle,
             files,
         });
@@ -805,6 +805,25 @@ mod tests {
         let results = resolve_scope(&db, "src/conventions/engine.rs").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "comp-1");
+    }
+
+    #[test]
+    fn resolve_scope_by_alias_uses_canonical_name() {
+        let (db, _dir) = setup_db();
+        insert_component(&db, "comp-1", "authentication", &["src/auth/mod.rs"]);
+        db.replace_all_aliases(&[(
+            "a1".into(),
+            "auth".into(),
+            "component".into(),
+            "comp-1".into(),
+        )])
+        .unwrap();
+
+        let results = resolve_scope(&db, "auth").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "comp-1");
+        assert_eq!(results[0].name, "authentication");
+        assert_eq!(results[0].files, vec!["src/auth/mod.rs"]);
     }
 
     #[test]
