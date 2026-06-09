@@ -5,10 +5,10 @@ use sutra::db::{
 use sutra::git::parse_blame_porcelain;
 use sutra::health::findings::HealthFinding;
 use sutra::health::{
-    compute_all_health_findings, compute_change_entropy, compute_co_change_scatter,
-    compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk,
-    instability::compute_component_instability, score_component, score_file, BiomarkerKind,
-    HealthSeverity,
+    BiomarkerKind, HealthSeverity, compute_all_health_findings, compute_change_entropy,
+    compute_co_change_scatter, compute_hidden_coupling, compute_nested_complexity,
+    compute_ownership_risk, instability::compute_component_instability, score_component,
+    score_file,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -49,7 +49,10 @@ fn seed_fn(db: &Db, file_id: i64, qn: &str, sn: &str, max_nesting: Option<i64>) 
 
 #[test]
 fn biomarker_kind_as_str_roundtrip() {
-    assert_eq!(BiomarkerKind::NestedComplexity.as_str(), "nested_complexity");
+    assert_eq!(
+        BiomarkerKind::NestedComplexity.as_str(),
+        "nested_complexity"
+    );
     assert_eq!(BiomarkerKind::CoChangeScatter.as_str(), "co_change_scatter");
     assert_eq!(BiomarkerKind::HrrShapeChange.as_str(), "hrr_shape_change");
 }
@@ -80,7 +83,10 @@ fn nested_complexity_skips_shallow_functions() {
     seed_fn(&db, fid, "shallow::bar", "bar", Some(4));
 
     let findings = compute_nested_complexity(&db).unwrap();
-    assert!(findings.is_empty(), "nesting <= 4 should not produce findings");
+    assert!(
+        findings.is_empty(),
+        "nesting <= 4 should not produce findings"
+    );
 }
 
 #[test]
@@ -139,7 +145,9 @@ fn findings_stored_and_queryable() {
         .unwrap();
     assert_eq!(by_kind.len(), 1);
 
-    let empty = db.get_health_findings(None, Some("co_change_scatter")).unwrap();
+    let empty = db
+        .get_health_findings(None, Some("co_change_scatter"))
+        .unwrap();
     assert!(empty.is_empty());
 }
 
@@ -205,7 +213,10 @@ fn waiver_does_not_affect_different_biomarker() {
     let results = db.get_health_findings_with_waiver_status().unwrap();
     assert_eq!(results.len(), 1);
     let (_finding, is_waived) = &results[0];
-    assert!(!is_waived, "waiver for different biomarker should not match");
+    assert!(
+        !is_waived,
+        "waiver for different biomarker should not match"
+    );
 }
 
 #[test]
@@ -247,8 +258,14 @@ fn waiver_file_level_covers_all_symbols() {
     db.replace_health_findings(&findings).unwrap();
 
     // File-level waiver (no symbol) should cover all findings in the file
-    db.create_health_waiver("nested_complexity", "src/blanket.rs", None, "blanket waive", "josh")
-        .unwrap();
+    db.create_health_waiver(
+        "nested_complexity",
+        "src/blanket.rs",
+        None,
+        "blanket waive",
+        "josh",
+    )
+    .unwrap();
 
     let results = db.get_health_findings_with_waiver_status().unwrap();
     assert!(
@@ -440,7 +457,10 @@ fn co_change_scatter_fires_at_threshold() {
     let findings = compute_co_change_scatter(&db).unwrap();
     let hub_findings: Vec<_> = findings.iter().filter(|f| f.file_id == hub).collect();
     assert_eq!(hub_findings.len(), 1);
-    assert_eq!(hub_findings[0].biomarker_kind, BiomarkerKind::CoChangeScatter);
+    assert_eq!(
+        hub_findings[0].biomarker_kind,
+        BiomarkerKind::CoChangeScatter
+    );
     assert!(hub_findings[0].metric_value >= 8.0);
     assert!(hub_findings[0].detail.contains("co-change partners"));
 
@@ -458,8 +478,16 @@ fn co_change_scatter_requires_minimum_commits() {
     }
     // Only 2 commits — below the threshold of 3
     let commits = vec![
-        CommitRow { hash: "c1".into(), committed_at: 1_700_000_000, author: "a@b".into() },
-        CommitRow { hash: "c2".into(), committed_at: 1_700_086_400, author: "a@b".into() },
+        CommitRow {
+            hash: "c1".into(),
+            committed_at: 1_700_000_000,
+            author: "a@b".into(),
+        },
+        CommitRow {
+            hash: "c2".into(),
+            committed_at: 1_700_086_400,
+            author: "a@b".into(),
+        },
     ];
     let mut pairs = Vec::new();
     for (i, &pid) in partners.iter().enumerate() {
@@ -582,7 +610,10 @@ fn change_entropy_excludes_wide_commits() {
 
     let findings = compute_change_entropy(&db).unwrap();
     let f1_findings: Vec<_> = findings.iter().filter(|f| f.file_id == f1).collect();
-    assert!(f1_findings.is_empty(), "wide commit excluded, single-file has zero entropy");
+    assert!(
+        f1_findings.is_empty(),
+        "wide commit excluded, single-file has zero entropy"
+    );
 }
 
 #[test]
@@ -593,18 +624,31 @@ fn change_entropy_below_threshold() {
 
     // 2 commits with F=2: each contributes ~0.5 → sum ≈ 1.0, below threshold 3.0
     let commits = vec![
-        CommitRow { hash: "c1".into(), committed_at: 1_700_000_000, author: "a@b".into() },
-        CommitRow { hash: "c2".into(), committed_at: 1_700_000_000, author: "a@b".into() },
+        CommitRow {
+            hash: "c1".into(),
+            committed_at: 1_700_000_000,
+            author: "a@b".into(),
+        },
+        CommitRow {
+            hash: "c2".into(),
+            committed_at: 1_700_000_000,
+            author: "a@b".into(),
+        },
     ];
     let pairs = vec![
-        ("c1".into(), f1), ("c1".into(), f2),
-        ("c2".into(), f1), ("c2".into(), f2),
+        ("c1".into(), f1),
+        ("c1".into(), f2),
+        ("c2".into(), f1),
+        ("c2".into(), f2),
     ];
     seed_commits(&db, &commits, &pairs);
 
     let findings = compute_change_entropy(&db).unwrap();
     let f1_findings: Vec<_> = findings.iter().filter(|f| f.file_id == f1).collect();
-    assert!(f1_findings.is_empty(), "entropy ~1.0 is below threshold 3.0");
+    assert!(
+        f1_findings.is_empty(),
+        "entropy ~1.0 is below threshold 3.0"
+    );
 }
 
 #[test]
@@ -614,26 +658,106 @@ fn ownership_risk_top_owner_below_40() {
 
     // 3 authors with roughly equal commits: 35%, 35%, 30%
     let commits = vec![
-        CommitRow { hash: "a1".into(), committed_at: 1_700_000_000, author: "alice@dev".into() },
-        CommitRow { hash: "a2".into(), committed_at: 1_700_000_001, author: "alice@dev".into() },
-        CommitRow { hash: "a3".into(), committed_at: 1_700_000_002, author: "alice@dev".into() },
-        CommitRow { hash: "a4".into(), committed_at: 1_700_000_003, author: "alice@dev".into() },
-        CommitRow { hash: "a5".into(), committed_at: 1_700_000_004, author: "alice@dev".into() },
-        CommitRow { hash: "a6".into(), committed_at: 1_700_000_005, author: "alice@dev".into() },
-        CommitRow { hash: "a7".into(), committed_at: 1_700_000_006, author: "alice@dev".into() },
-        CommitRow { hash: "b1".into(), committed_at: 1_700_000_007, author: "bob@dev".into() },
-        CommitRow { hash: "b2".into(), committed_at: 1_700_000_008, author: "bob@dev".into() },
-        CommitRow { hash: "b3".into(), committed_at: 1_700_000_009, author: "bob@dev".into() },
-        CommitRow { hash: "b4".into(), committed_at: 1_700_000_010, author: "bob@dev".into() },
-        CommitRow { hash: "b5".into(), committed_at: 1_700_000_011, author: "bob@dev".into() },
-        CommitRow { hash: "b6".into(), committed_at: 1_700_000_012, author: "bob@dev".into() },
-        CommitRow { hash: "b7".into(), committed_at: 1_700_000_013, author: "bob@dev".into() },
-        CommitRow { hash: "c1".into(), committed_at: 1_700_000_014, author: "carol@dev".into() },
-        CommitRow { hash: "c2".into(), committed_at: 1_700_000_015, author: "carol@dev".into() },
-        CommitRow { hash: "c3".into(), committed_at: 1_700_000_016, author: "carol@dev".into() },
-        CommitRow { hash: "c4".into(), committed_at: 1_700_000_017, author: "carol@dev".into() },
-        CommitRow { hash: "c5".into(), committed_at: 1_700_000_018, author: "carol@dev".into() },
-        CommitRow { hash: "c6".into(), committed_at: 1_700_000_019, author: "carol@dev".into() },
+        CommitRow {
+            hash: "a1".into(),
+            committed_at: 1_700_000_000,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a2".into(),
+            committed_at: 1_700_000_001,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a3".into(),
+            committed_at: 1_700_000_002,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a4".into(),
+            committed_at: 1_700_000_003,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a5".into(),
+            committed_at: 1_700_000_004,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a6".into(),
+            committed_at: 1_700_000_005,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "a7".into(),
+            committed_at: 1_700_000_006,
+            author: "alice@dev".into(),
+        },
+        CommitRow {
+            hash: "b1".into(),
+            committed_at: 1_700_000_007,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b2".into(),
+            committed_at: 1_700_000_008,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b3".into(),
+            committed_at: 1_700_000_009,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b4".into(),
+            committed_at: 1_700_000_010,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b5".into(),
+            committed_at: 1_700_000_011,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b6".into(),
+            committed_at: 1_700_000_012,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "b7".into(),
+            committed_at: 1_700_000_013,
+            author: "bob@dev".into(),
+        },
+        CommitRow {
+            hash: "c1".into(),
+            committed_at: 1_700_000_014,
+            author: "carol@dev".into(),
+        },
+        CommitRow {
+            hash: "c2".into(),
+            committed_at: 1_700_000_015,
+            author: "carol@dev".into(),
+        },
+        CommitRow {
+            hash: "c3".into(),
+            committed_at: 1_700_000_016,
+            author: "carol@dev".into(),
+        },
+        CommitRow {
+            hash: "c4".into(),
+            committed_at: 1_700_000_017,
+            author: "carol@dev".into(),
+        },
+        CommitRow {
+            hash: "c5".into(),
+            committed_at: 1_700_000_018,
+            author: "carol@dev".into(),
+        },
+        CommitRow {
+            hash: "c6".into(),
+            committed_at: 1_700_000_019,
+            author: "carol@dev".into(),
+        },
     ];
     let pairs: Vec<(String, i64)> = commits.iter().map(|c| (c.hash.clone(), fid)).collect();
     seed_commits(&db, &commits, &pairs);
@@ -656,12 +780,20 @@ fn ownership_risk_minor_contributors() {
     let mut pairs = Vec::new();
     for i in 0..80 {
         let hash = format!("major_{i:03}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "major@dev".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "major@dev".into(),
+        });
         pairs.push((hash, fid));
     }
     for (j, minor) in ["m1@dev", "m2@dev", "m3@dev", "m4@dev"].iter().enumerate() {
         let hash = format!("minor_{j}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_100_000 + j as i64, author: minor.to_string() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_100_000 + j as i64,
+            author: minor.to_string(),
+        });
         pairs.push((hash, fid));
     }
     seed_commits(&db, &commits, &pairs);
@@ -690,17 +822,29 @@ fn ownership_risk_with_alias_merging() {
     let mut pairs = Vec::new();
     for i in 0..5 {
         let hash = format!("bot_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "bot@ci".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "bot@ci".into(),
+        });
         pairs.push((hash, fid));
     }
     for i in 0..5 {
         let hash = format!("alice_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_100 + i, author: "alice@dev".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_100 + i,
+            author: "alice@dev".into(),
+        });
         pairs.push((hash, fid));
     }
     for i in 0..10 {
         let hash = format!("bob_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_200 + i, author: "bob@dev".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_200 + i,
+            author: "bob@dev".into(),
+        });
         pairs.push((hash, fid));
     }
     seed_commits(&db, &commits, &pairs);
@@ -708,7 +852,10 @@ fn ownership_risk_with_alias_merging() {
     let findings = compute_ownership_risk(&db, dir.path()).unwrap();
     // After aliasing: alice@dev = 10, bob@dev = 10 → 50% each, top owner = 50% >= 40%
     // Only 2 authors, no minor contributors → no finding should fire
-    assert!(findings.is_empty(), "aliased authors merge; 50/50 split is healthy");
+    assert!(
+        findings.is_empty(),
+        "aliased authors merge; 50/50 split is healthy"
+    );
 }
 
 #[test]
@@ -722,17 +869,29 @@ fn ownership_risk_no_alias_file_conservative() {
     let mut pairs = Vec::new();
     for i in 0..5 {
         let hash = format!("bot_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "bot@ci".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "bot@ci".into(),
+        });
         pairs.push((hash, fid));
     }
     for i in 0..5 {
         let hash = format!("alice_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_100 + i, author: "alice@dev".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_100 + i,
+            author: "alice@dev".into(),
+        });
         pairs.push((hash, fid));
     }
     for i in 0..5 {
         let hash = format!("bob_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_200 + i, author: "bob@dev".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_200 + i,
+            author: "bob@dev".into(),
+        });
         pairs.push((hash, fid));
     }
     seed_commits(&db, &commits, &pairs);
@@ -753,7 +912,11 @@ fn hidden_coupling_fires_without_static_edge() {
     let mut pairs = Vec::new();
     for i in 0..10 {
         let hash = format!("hc_{i:02}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash.clone(), fa));
         pairs.push((hash, fb));
     }
@@ -778,16 +941,19 @@ fn hidden_coupling_suppressed_by_static_edge() {
 
     // Create a static ref from fa to a symbol in fb
     let sym_id = seed_fn(&db, fb, "imported::helper", "helper", None);
-    db.insert_ref(
-        fa, Some(sym_id), Some("helper"), 5, 0, "use",
-    ).unwrap();
+    db.insert_ref(fa, Some(sym_id), Some("helper"), 5, 0, "use")
+        .unwrap();
 
     // High co-change
     let mut commits = Vec::new();
     let mut pairs = Vec::new();
     for i in 0..10 {
         let hash = format!("sr_{i:02}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash.clone(), fa));
         pairs.push((hash, fb));
     }
@@ -798,7 +964,10 @@ fn hidden_coupling_suppressed_by_static_edge() {
         .iter()
         .filter(|f| f.file_id == fa || f.file_id == fb)
         .collect();
-    assert!(relevant.is_empty(), "static edge suppresses hidden coupling");
+    assert!(
+        relevant.is_empty(),
+        "static edge suppresses hidden coupling"
+    );
 }
 
 #[test]
@@ -815,35 +984,59 @@ fn hidden_coupling_severity_escalation() {
     // jaccard = 6 / (6+3+2) = 6/11 ≈ 0.545 → Informational
     for i in 0..6 {
         let hash = format!("sl_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_000_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_000_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash.clone(), f_low));
         pairs.push((hash, f_low_partner));
     }
     for i in 0..3 {
         let hash = format!("ol_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_100_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_100_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash, f_low));
     }
     for i in 0..2 {
         let hash = format!("olp_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_100_100 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_100_100 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash, f_low_partner));
     }
     // f_high + f_high_partner: 10 shared, 2 only-high, 1 only-partner
     // jaccard = 10 / (10+2+1) = 10/13 ≈ 0.769 → Advisory
     for i in 0..10 {
         let hash = format!("sh_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_200_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_200_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash.clone(), f_high));
         pairs.push((hash, f_high_partner));
     }
     for i in 0..2 {
         let hash = format!("oh_{i}");
-        commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_300_000 + i, author: "dev@x".into() });
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: 1_700_300_000 + i,
+            author: "dev@x".into(),
+        });
         pairs.push((hash, f_high));
     }
     let hash = "ohp_0".to_string();
-    commits.push(CommitRow { hash: hash.clone(), committed_at: 1_700_300_100, author: "dev@x".into() });
+    commits.push(CommitRow {
+        hash: hash.clone(),
+        committed_at: 1_700_300_100,
+        author: "dev@x".into(),
+    });
     pairs.push((hash, f_high_partner));
 
     seed_commits(&db, &commits, &pairs);
@@ -1283,12 +1476,9 @@ fn test_health_delta_degradation() {
     }])
     .unwrap();
 
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/hotfile.rs".to_string()],
-        &[],
-    )
-    .unwrap();
+    let delta =
+        sutra::health::ondemand::compute_health_delta(&db, &["src/hotfile.rs".to_string()], &[])
+            .unwrap();
 
     assert_eq!(delta.degraded.len(), 1);
     assert!(delta.improved.is_empty());
@@ -1319,12 +1509,9 @@ fn test_health_delta_improvement() {
     .unwrap();
 
     // No findings → current score = 10.0 (base)
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/cleaned.rs".to_string()],
-        &[],
-    )
-    .unwrap();
+    let delta =
+        sutra::health::ondemand::compute_health_delta(&db, &["src/cleaned.rs".to_string()], &[])
+            .unwrap();
 
     assert!(delta.degraded.is_empty());
     assert_eq!(delta.improved.len(), 1);
@@ -1341,12 +1528,9 @@ fn test_health_delta_no_snapshot_uses_base_10() {
 
     // No snapshot exists → previous defaults to 10.0
     // No findings → current = 10.0 → no delta
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/new.rs".to_string()],
-        &[],
-    )
-    .unwrap();
+    let delta =
+        sutra::health::ondemand::compute_health_delta(&db, &["src/new.rs".to_string()], &[])
+            .unwrap();
 
     assert!(delta.degraded.is_empty());
     assert!(delta.improved.is_empty());
@@ -1414,14 +1598,32 @@ fn fca_conformance_basic() {
         component_id: None,
     }];
     let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "f.rs".into(), attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()], component_id: Some("c1".into()) },
-        SymbolAttrs { name: "b".into(), file: "f.rs".into(), attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()], component_id: Some("c1".into()) },
-        SymbolAttrs { name: "c".into(), file: "f.rs".into(), attributes: vec!["kind:function".into(), "vis:pub".into()], component_id: Some("c1".into()) },
+        SymbolAttrs {
+            name: "a".into(),
+            file: "f.rs".into(),
+            attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()],
+            component_id: Some("c1".into()),
+        },
+        SymbolAttrs {
+            name: "b".into(),
+            file: "f.rs".into(),
+            attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()],
+            component_id: Some("c1".into()),
+        },
+        SymbolAttrs {
+            name: "c".into(),
+            file: "f.rs".into(),
+            attributes: vec!["kind:function".into(), "vis:pub".into()],
+            component_id: Some("c1".into()),
+        },
     ];
     let components = vec![("c1".into(), "comp1".into(), syms)];
     let result = compute_fca_conformance(&convs, &components);
     let conf = result.get("c1").unwrap();
-    assert!((conf - 2.0 / 3.0).abs() < 1e-9, "expected ~0.667, got {conf}");
+    assert!(
+        (conf - 2.0 / 3.0).abs() < 1e-9,
+        "expected ~0.667, got {conf}"
+    );
 }
 
 #[test]
@@ -1437,9 +1639,12 @@ fn fca_conformance_no_antecedent_matches() {
         confidence: 1.0,
         component_id: None,
     }];
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "f.rs".into(), attributes: vec!["kind:function".into()], component_id: Some("c1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "f.rs".into(),
+        attributes: vec!["kind:function".into()],
+        component_id: Some("c1".into()),
+    }];
     let components = vec![("c1".into(), "comp1".into(), syms)];
     let result = compute_fca_conformance(&convs, &components);
     assert!(result.get("c1").is_none());
@@ -1452,9 +1657,8 @@ fn hrr_coherence_identical_vectors() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[
-        ("comp1".into(), fid),
-    ]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let s1 = seed_fn(&db, fid, "a::f1", "f1", None);
     let s2 = seed_fn(&db, fid, "a::f2", "f2", None);
@@ -1471,7 +1675,10 @@ fn hrr_coherence_identical_vectors() {
 
     let result = compute_hrr_coherence(&db).unwrap();
     let coh = result.get("comp1").unwrap();
-    assert!((coh - 1.0).abs() < 1e-6, "identical vectors should have coherence ~1.0, got {coh}");
+    assert!(
+        (coh - 1.0).abs() < 1e-6,
+        "identical vectors should have coherence ~1.0, got {coh}"
+    );
 }
 
 #[test]
@@ -1481,7 +1688,8 @@ fn hrr_coherence_too_few_symbols() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let s1 = seed_fn(&db, fid, "a::f1", "f1", None);
     let s2 = seed_fn(&db, fid, "a::f2", "f2", None);
@@ -1495,41 +1703,58 @@ fn hrr_coherence_too_few_symbols() {
     db.replace_hrr_vectors(&vectors).unwrap();
 
     let result = compute_hrr_coherence(&db).unwrap();
-    assert!(result.get("comp1").is_none(), "< 3 symbols should be skipped");
+    assert!(
+        result.get("comp1").is_none(),
+        "< 3 symbols should be skipped"
+    );
 }
 
 #[test]
 fn drift_detection_fca_drop_fires() {
     use std::collections::HashMap;
     use sutra::conventions::SymbolAttrs;
-    use sutra::health::drift::{detect_convention_drift, FCA_DRIFT_THRESHOLD};
+    use sutra::health::drift::{FCA_DRIFT_THRESHOLD, detect_convention_drift};
 
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     // Seed 2 prior snapshots with high conformance
     let dist = r#"{"a":0.5}"#;
     let hash = "h";
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, hash, Some(0.95), None).unwrap();
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, hash, Some(0.90), None).unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, hash, Some(0.95), None)
+        .unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, hash, Some(0.90), None)
+        .unwrap();
 
     // Current conformance drops to 0.75 (delta 0.20 > threshold 0.10)
     let mut conformance = HashMap::new();
     conformance.insert("comp1".to_string(), 0.75);
     let coherence = HashMap::new();
 
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "src/a.rs".into(), attributes: vec![], component_id: Some("comp1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "src/a.rs".into(),
+        attributes: vec![],
+        component_id: Some("comp1".into()),
+    }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
 
     let mut file_to_comp = HashMap::new();
     file_to_comp.insert("src/a.rs".to_string(), "comp1".to_string());
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
-    let findings = detect_convention_drift(&db, &conformance, &coherence, &components, &file_to_comp, &id_map).unwrap();
+    let findings = detect_convention_drift(
+        &db,
+        &conformance,
+        &coherence,
+        &components,
+        &file_to_comp,
+        &id_map,
+    )
+    .unwrap();
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].biomarker_kind, BiomarkerKind::ConventionDrift);
     assert_eq!(findings[0].provenance, "review:fca_conformance");
@@ -1546,24 +1771,38 @@ fn drift_detection_below_threshold_no_finding() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let dist = r#"{"a":0.5}"#;
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.90), Some(0.80)).unwrap();
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.88), Some(0.78)).unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.90), Some(0.80))
+        .unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.88), Some(0.78))
+        .unwrap();
 
     // Small drop: 0.90 → 0.85 = 0.05 < 0.10 threshold
     let conformance: HashMap<String, f64> = [("comp1".into(), 0.85)].into();
     let coherence: HashMap<String, f64> = [("comp1".into(), 0.75)].into();
 
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "src/a.rs".into(), attributes: vec![], component_id: Some("comp1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "src/a.rs".into(),
+        attributes: vec![],
+        component_id: Some("comp1".into()),
+    }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
     let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
-    let findings = detect_convention_drift(&db, &conformance, &coherence, &components, &file_to_comp, &id_map).unwrap();
+    let findings = detect_convention_drift(
+        &db,
+        &conformance,
+        &coherence,
+        &components,
+        &file_to_comp,
+        &id_map,
+    )
+    .unwrap();
     assert!(findings.is_empty(), "drop below threshold should not fire");
 }
 
@@ -1576,19 +1815,31 @@ fn drift_detection_no_history_no_finding() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let conformance: HashMap<String, f64> = [("comp1".into(), 0.50)].into();
     let coherence: HashMap<String, f64> = [("comp1".into(), 0.40)].into();
 
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "src/a.rs".into(), attributes: vec![], component_id: Some("comp1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "src/a.rs".into(),
+        attributes: vec![],
+        component_id: Some("comp1".into()),
+    }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
     let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
-    let findings = detect_convention_drift(&db, &conformance, &coherence, &components, &file_to_comp, &id_map).unwrap();
+    let findings = detect_convention_drift(
+        &db,
+        &conformance,
+        &coherence,
+        &components,
+        &file_to_comp,
+        &id_map,
+    )
+    .unwrap();
     assert!(findings.is_empty(), "no prior snapshots should not fire");
 }
 
@@ -1601,25 +1852,39 @@ fn drift_detection_both_paths_independent() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let dist = r#"{"a":0.5}"#;
     // FCA drops: 0.95 → 0.90 → current 0.75 (fires)
     // HRR stable: 0.80 → 0.80 → current 0.78 (does not fire, delta 0.02)
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.95), Some(0.80)).unwrap();
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.90), Some(0.80)).unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.95), Some(0.80))
+        .unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", Some(0.90), Some(0.80))
+        .unwrap();
 
     let conformance: HashMap<String, f64> = [("comp1".into(), 0.75)].into();
     let coherence: HashMap<String, f64> = [("comp1".into(), 0.78)].into();
 
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "src/a.rs".into(), attributes: vec![], component_id: Some("comp1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "src/a.rs".into(),
+        attributes: vec![],
+        component_id: Some("comp1".into()),
+    }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
     let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
-    let findings = detect_convention_drift(&db, &conformance, &coherence, &components, &file_to_comp, &id_map).unwrap();
+    let findings = detect_convention_drift(
+        &db,
+        &conformance,
+        &coherence,
+        &components,
+        &file_to_comp,
+        &id_map,
+    )
+    .unwrap();
     assert_eq!(findings.len(), 1, "only FCA should fire");
     assert_eq!(findings[0].provenance, "review:fca_conformance");
 }
@@ -1633,24 +1898,38 @@ fn drift_detection_hrr_drop_fires() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/a.rs");
     db.insert_component("comp1", "TestComp").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fid)]).unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fid)])
+        .unwrap();
 
     let dist = r#"{"a":0.5}"#;
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", None, Some(0.85)).unwrap();
-    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", None, Some(0.80)).unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", None, Some(0.85))
+        .unwrap();
+    db.insert_convention_snapshot("comp1", 1.0, 10, dist, "h", None, Some(0.80))
+        .unwrap();
 
     // HRR drops from 0.85 → 0.80 → 0.65 (delta 0.20 > 0.10)
     let conformance = HashMap::new();
     let coherence: HashMap<String, f64> = [("comp1".into(), 0.65)].into();
 
-    let syms = vec![
-        SymbolAttrs { name: "a".into(), file: "src/a.rs".into(), attributes: vec![], component_id: Some("comp1".into()) },
-    ];
+    let syms = vec![SymbolAttrs {
+        name: "a".into(),
+        file: "src/a.rs".into(),
+        attributes: vec![],
+        component_id: Some("comp1".into()),
+    }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
     let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
-    let findings = detect_convention_drift(&db, &conformance, &coherence, &components, &file_to_comp, &id_map).unwrap();
+    let findings = detect_convention_drift(
+        &db,
+        &conformance,
+        &coherence,
+        &components,
+        &file_to_comp,
+        &id_map,
+    )
+    .unwrap();
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].provenance, "review:hrr_coherence");
     assert!(findings[0].detail.contains("structural coherence"));
@@ -1661,7 +1940,8 @@ fn convention_snapshot_stores_drift_metrics() {
     let (_dir, db) = setup_db();
     db.insert_component("comp1", "TestComp").unwrap();
 
-    db.insert_convention_snapshot("comp1", 1.5, 10, "{}", "h", Some(0.92), Some(0.78)).unwrap();
+    db.insert_convention_snapshot("comp1", 1.5, 10, "{}", "h", Some(0.92), Some(0.78))
+        .unwrap();
 
     let snaps = db.recent_convention_snapshots("comp1", 1).unwrap();
     assert_eq!(snaps.len(), 1);
@@ -1674,7 +1954,8 @@ fn convention_snapshot_null_drift_metrics() {
     let (_dir, db) = setup_db();
     db.insert_component("comp1", "TestComp").unwrap();
 
-    db.insert_convention_snapshot("comp1", 1.5, 10, "{}", "h", None, None).unwrap();
+    db.insert_convention_snapshot("comp1", 1.5, 10, "{}", "h", None, None)
+        .unwrap();
 
     let snaps = db.recent_convention_snapshots("comp1", 1).unwrap();
     assert_eq!(snaps.len(), 1);
@@ -1784,8 +2065,7 @@ fn orient_includes_health_section() {
     seed_fn(&db, fa, "orient::handle", "handle", Some(6));
 
     db.insert_component("comp1", "Tools").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fa)])
-        .unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fa)]).unwrap();
 
     // Generate health findings (nesting > 4 threshold)
     let findings = compute_nested_complexity(&db).unwrap();
@@ -1797,7 +2077,10 @@ fn orient_includes_health_section() {
     assert_eq!(orientation.len(), 1);
 
     let section = &orientation[0];
-    assert!(section.get("health").is_some(), "health section should be present");
+    assert!(
+        section.get("health").is_some(),
+        "health section should be present"
+    );
 
     let health = &section["health"];
     assert!(health["health_score"].as_f64().is_some());
@@ -1816,8 +2099,7 @@ fn orient_health_absent_when_clean() {
     seed_fn(&db, fa, "clean::foo", "foo", Some(1));
 
     db.insert_component("comp1", "Clean").unwrap();
-    db.batch_insert_membership(&[("comp1".into(), fa)])
-        .unwrap();
+    db.batch_insert_membership(&[("comp1".into(), fa)]).unwrap();
 
     let result = sutra::tools::orient::handle(&db, "Clean", dir.path(), None).unwrap();
     let section = &result["orientation"][0];
@@ -1827,7 +2109,10 @@ fn orient_health_absent_when_clean() {
     assert!((health["health_score"].as_f64().unwrap() - 10.0).abs() < 0.01);
     assert!(
         health.get("top_findings").is_none()
-            || health["top_findings"].as_array().map(|a| a.is_empty()).unwrap_or(true)
+            || health["top_findings"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(true)
     );
 }
 
@@ -1856,17 +2141,22 @@ fn file_health_component_filter() {
     // Without filter: both files + component summary
     let all = sutra::tools::file_health::handle(&db, None, None, None, None).unwrap();
     assert_eq!(all["total_files"].as_u64().unwrap(), 2);
-    assert!(all.get("components").is_some(), "unfiltered should include component scores");
+    assert!(
+        all.get("components").is_some(),
+        "unfiltered should include component scores"
+    );
 
     // With component filter: only Alpha's file, no component summary
-    let filtered =
-        sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha")).unwrap();
+    let filtered = sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha")).unwrap();
     assert_eq!(filtered["total_files"].as_u64().unwrap(), 1);
     assert_eq!(
         filtered["files"][0]["path"].as_str().unwrap(),
         "src/alpha/a.rs"
     );
-    assert!(filtered.get("components").is_none(), "component-filtered view should omit component summary");
+    assert!(
+        filtered.get("components").is_none(),
+        "component-filtered view should omit component summary"
+    );
 }
 
 #[test]

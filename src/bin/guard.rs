@@ -145,8 +145,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Constraint check runs regardless of additive-edit status
-    let constraint_findings =
-        guard::check_file_constraints(&conn, &project_root, file_id);
+    let constraint_findings = guard::check_file_constraints(&conn, &project_root, file_id);
 
     let blocking: Vec<_> = constraint_findings
         .iter()
@@ -166,9 +165,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if !blocking.is_empty() {
         let reason = guard::format_constraint_deny(&blocking);
-        if let Some(json) =
-            guard::render_stdout(&guard::GuardDecision::Deny { reason }, hook.hook_event_name.as_deref())
-        {
+        if let Some(json) = guard::render_stdout(
+            &guard::GuardDecision::Deny { reason },
+            hook.hook_event_name.as_deref(),
+        ) {
             println!("{json}");
         }
         return Ok(());

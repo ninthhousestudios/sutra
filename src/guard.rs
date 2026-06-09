@@ -334,10 +334,7 @@ pub fn check_file_constraints(
         }
 
         // Build path map for referenced file IDs
-        let mut needed_ids: Vec<i64> = edges
-            .iter()
-            .flat_map(|(a, b)| [*a, *b])
-            .collect();
+        let mut needed_ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
         needed_ids.sort_unstable();
         needed_ids.dedup();
 
@@ -345,10 +342,9 @@ pub fn check_file_constraints(
         let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
         let mut stmt = conn.prepare(&sql)?;
         let path_map: HashMap<i64, String> = stmt
-            .query_map(
-                rusqlite::params_from_iter(needed_ids.iter()),
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )?
+            .query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -359,9 +355,7 @@ pub fn check_file_constraints(
         let relevant_paths: std::collections::HashSet<&str> =
             path_map.values().map(|p| p.as_str()).collect();
         let waivers: Vec<(String, String)> = conn
-            .prepare(
-                "SELECT constraint_id, file_path FROM constraint_waivers",
-            )?
+            .prepare("SELECT constraint_id, file_path FROM constraint_waivers")?
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
@@ -381,11 +375,15 @@ pub fn check_file_constraints(
             };
 
             if let Some(c) = constraints::find_matching_constraint(
-                &all_constraints, from, to, &file_to_component, &comp_name_to_id,
+                &all_constraints,
+                from,
+                to,
+                &file_to_component,
+                &comp_name_to_id,
             ) {
-                let waived = waivers.iter().any(|(wc_id, wf_path)| {
-                    wc_id == &c.id && (wf_path == from || wf_path == to)
-                });
+                let waived = waivers
+                    .iter()
+                    .any(|(wc_id, wf_path)| wc_id == &c.id && (wf_path == from || wf_path == to));
 
                 findings.push(ConstraintFinding {
                     constraint_id: c.id.clone(),
@@ -412,9 +410,8 @@ fn build_component_maps(
     let mut file_to_component: HashMap<String, String> = HashMap::new();
     let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -438,9 +435,7 @@ fn build_component_maps(
 }
 
 pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
-    let mut reason = String::from(
-        "STOP: blocking constraint violation(s) detected. ",
-    );
+    let mut reason = String::from("STOP: blocking constraint violation(s) detected. ");
     for (i, f) in findings.iter().enumerate() {
         if i > 0 {
             reason.push_str(" | ");
@@ -647,7 +642,9 @@ mod tests {
             severity,
             from_path: "src/tools/foo.rs".into(),
             to_path: "src/daemon.rs".into(),
-            detail: "forbidden: src/tools/foo.rs -> src/daemon.rs (rule: src/tools/* -> src/daemon.rs)".into(),
+            detail:
+                "forbidden: src/tools/foo.rs -> src/daemon.rs (rule: src/tools/* -> src/daemon.rs)"
+                    .into(),
             waived,
         }
     }

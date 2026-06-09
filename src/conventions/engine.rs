@@ -113,8 +113,7 @@ impl FcaEngine {
         self.conventions = impls
             .into_iter()
             .map(|imp| {
-                let id =
-                    Convention::compute_id(&imp.antecedent, &imp.consequent, component_id);
+                let id = Convention::compute_id(&imp.antecedent, &imp.consequent, component_id);
                 Convention {
                     id,
                     antecedent: imp.antecedent,
@@ -378,15 +377,18 @@ mod tests {
 
     #[test]
     fn stable_hash_order_independent() {
-        let id1 = Convention::compute_id(&["a".into(), "b".into()], &["c".into(), "d".into()], None);
-        let id2 = Convention::compute_id(&["b".into(), "a".into()], &["d".into(), "c".into()], None);
+        let id1 =
+            Convention::compute_id(&["a".into(), "b".into()], &["c".into(), "d".into()], None);
+        let id2 =
+            Convention::compute_id(&["b".into(), "a".into()], &["d".into(), "c".into()], None);
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn stable_hash_different_for_different_implications() {
         let id1 = Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None);
-        let id2 = Convention::compute_id(&["kind:struct".into()], &["naming:CamelCase".into()], None);
+        let id2 =
+            Convention::compute_id(&["kind:struct".into()], &["naming:CamelCase".into()], None);
         assert_ne!(id1, id2);
     }
 
@@ -437,7 +439,7 @@ mod tests {
             name: "new_struct".into(),
             file: "new.rs".into(),
             attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
-        component_id: None,
+            component_id: None,
         });
         engine.rebuild(&symbols);
         assert_ne!(engine.last_matrix_hash, hash_before);
@@ -454,7 +456,7 @@ mod tests {
             name: "fn_extra".into(),
             file: "src/test.rs".into(),
             attributes: vec!["kind:function".into()],
-        component_id: None,
+            component_id: None,
         };
         let after = engine.update_incremental(&[extra], &[]);
 
@@ -499,7 +501,7 @@ mod tests {
             name: "fn_0".into(),
             file: "src/test.rs".into(),
             attributes: vec!["kind:function".into(), "has_sig".into()],
-        component_id: None,
+            component_id: None,
         };
         let second = engine.update_incremental(&[extra.clone()], &[]);
         let third = engine.update_incremental(&[extra], &[]);
@@ -584,7 +586,7 @@ mod tests {
                 name: format!("fn_{i}"),
                 file: format!("src/funcs/{i}.rs"),
                 attributes: attrs,
-            component_id: None,
+                component_id: None,
             });
         }
 
@@ -606,7 +608,7 @@ mod tests {
                 name: format!("method_{i}"),
                 file: format!("src/methods/{i}.rs"),
                 attributes: attrs,
-            component_id: None,
+                component_id: None,
             });
         }
 
@@ -624,7 +626,7 @@ mod tests {
                 name: format!("Struct{i}"),
                 file: format!("src/types/{i}.rs"),
                 attributes: attrs,
-            component_id: None,
+                component_id: None,
             });
         }
 
@@ -638,7 +640,7 @@ mod tests {
                     "naming:CamelCase".into(),
                     "vis:pub".into(),
                 ],
-            component_id: None,
+                component_id: None,
             });
         }
 
@@ -657,7 +659,7 @@ mod tests {
                 name: format!("fn_{i}"),
                 file: format!("src/test_{i}.rs"),
                 attributes: attrs,
-            component_id: None,
+                component_id: None,
             });
         }
         // 5 structs with naming:CamelCase
@@ -666,7 +668,7 @@ mod tests {
                 name: format!("Struct{i}"),
                 file: format!("src/structs/{i}.rs"),
                 attributes: vec!["kind:struct".into(), "naming:CamelCase".into()],
-            component_id: None,
+                component_id: None,
             });
         }
         symbols
@@ -689,7 +691,7 @@ mod tests {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -716,7 +718,7 @@ mod tests {
             name: "good_symbol".into(),
             file: "src/good.rs".into(),
             attributes: attrs,
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -736,7 +738,7 @@ mod tests {
             name: "unrelated".into(),
             file: "src/other.rs".into(),
             attributes: vec!["some_random_attr".into()],
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig::default();
@@ -753,7 +755,7 @@ mod tests {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -777,7 +779,7 @@ mod tests {
             name: "ExemptedSymbol".into(),
             file: "src/exempt.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -815,7 +817,7 @@ mod tests {
             name: "PartialExempt".into(),
             file: "src/partial.rs".into(),
             attributes: attrs,
-        component_id: None,
+            component_id: None,
         }];
 
         let config = ConventionsConfig {
@@ -842,13 +844,13 @@ mod tests {
             name: "process".into(),
             file: "src/foo.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         };
 
         let config = ConventionsConfig {
@@ -888,13 +890,13 @@ mod tests {
             name: "process".into(),
             file: "src/foo.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
             attributes: conv.antecedent.clone(),
-        component_id: None,
+            component_id: None,
         };
 
         let config = ConventionsConfig {
@@ -976,13 +978,21 @@ mod tests {
         assert_eq!(min_support, 5);
 
         let mut engine = FcaEngine::new();
-        let convs = engine.rebuild_with_params(&symbols, min_support, MIN_CONFIDENCE, Some("comp-x"));
+        let convs =
+            engine.rebuild_with_params(&symbols, min_support, MIN_CONFIDENCE, Some("comp-x"));
         let has_fn_doc = convs.iter().any(|c| {
             c.antecedent.contains(&"kind:function".to_string())
                 && c.consequent.contains(&"has_doc".to_string())
         });
-        assert!(has_fn_doc, "component FCA should discover kind:function → has_doc");
-        assert!(convs.iter().all(|c| c.component_id.as_deref() == Some("comp-x")));
+        assert!(
+            has_fn_doc,
+            "component FCA should discover kind:function → has_doc"
+        );
+        assert!(
+            convs
+                .iter()
+                .all(|c| c.component_id.as_deref() == Some("comp-x"))
+        );
     }
 
     #[test]
@@ -998,11 +1008,7 @@ mod tests {
     #[test]
     fn dedup_removes_subsumed_component_conventions() {
         let global = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:function".into()],
-                &["has_sig".into()],
-                None,
-            ),
+            id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
             antecedent: vec!["kind:function".into()],
             consequent: vec!["has_sig".into()],
             support: 10,
@@ -1010,11 +1016,7 @@ mod tests {
             component_id: None,
         }];
         let comp = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:function".into()],
-                &["has_sig".into()],
-                Some("c1"),
-            ),
+            id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], Some("c1")),
             antecedent: vec!["kind:function".into()],
             consequent: vec!["has_sig".into()],
             support: 3,
@@ -1022,17 +1024,16 @@ mod tests {
             component_id: Some("c1".into()),
         }];
         let result = deduplicate_component_conventions(comp, &global);
-        assert!(result.is_empty(), "component convention subsumed by global should be dropped");
+        assert!(
+            result.is_empty(),
+            "component convention subsumed by global should be dropped"
+        );
     }
 
     #[test]
     fn dedup_keeps_non_subsumed_component_conventions() {
         let global = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:function".into()],
-                &["has_sig".into()],
-                None,
-            ),
+            id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
             antecedent: vec!["kind:function".into()],
             consequent: vec!["has_sig".into()],
             support: 10,
@@ -1040,11 +1041,7 @@ mod tests {
             component_id: None,
         }];
         let comp = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:struct".into()],
-                &["has_doc".into()],
-                Some("c1"),
-            ),
+            id: Convention::compute_id(&["kind:struct".into()], &["has_doc".into()], Some("c1")),
             antecedent: vec!["kind:struct".into()],
             consequent: vec!["has_doc".into()],
             support: 5,
@@ -1052,17 +1049,17 @@ mod tests {
             component_id: Some("c1".into()),
         }];
         let result = deduplicate_component_conventions(comp, &global);
-        assert_eq!(result.len(), 1, "different implication should survive dedup");
+        assert_eq!(
+            result.len(),
+            1,
+            "different implication should survive dedup"
+        );
     }
 
     #[test]
     fn dedup_keeps_higher_confidence_component_convention() {
         let global = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:function".into()],
-                &["has_sig".into()],
-                None,
-            ),
+            id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
             antecedent: vec!["kind:function".into()],
             consequent: vec!["has_sig".into()],
             support: 10,
@@ -1070,11 +1067,7 @@ mod tests {
             component_id: None,
         }];
         let comp = vec![Convention {
-            id: Convention::compute_id(
-                &["kind:function".into()],
-                &["has_sig".into()],
-                Some("c1"),
-            ),
+            id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], Some("c1")),
             antecedent: vec!["kind:function".into()],
             consequent: vec!["has_sig".into()],
             support: 5,
@@ -1127,9 +1120,18 @@ mod tests {
         };
         let violations = engine.check(&[sym_in_a], &ConventionsConfig::default());
 
-        let conv_ids: Vec<&str> = violations.iter().map(|v| v.convention_id.as_str()).collect();
-        assert!(conv_ids.contains(&"global-1"), "should violate global convention");
-        assert!(conv_ids.contains(&"comp-a-1"), "should violate own component convention");
+        let conv_ids: Vec<&str> = violations
+            .iter()
+            .map(|v| v.convention_id.as_str())
+            .collect();
+        assert!(
+            conv_ids.contains(&"global-1"),
+            "should violate global convention"
+        );
+        assert!(
+            conv_ids.contains(&"comp-a-1"),
+            "should violate own component convention"
+        );
         assert!(
             !conv_ids.contains(&"comp-b-1"),
             "should NOT violate other component's convention"
@@ -1172,17 +1174,17 @@ mod tests {
 
     #[test]
     fn compute_id_differs_by_component_scope() {
-        let global_id = Convention::compute_id(
-            &["kind:function".into()],
-            &["has_sig".into()],
-            None,
-        );
+        let global_id =
+            Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None);
         let comp_id = Convention::compute_id(
             &["kind:function".into()],
             &["has_sig".into()],
             Some("comp-1"),
         );
-        assert_ne!(global_id, comp_id, "same implication in different scopes should have different IDs");
+        assert_ne!(
+            global_id, comp_id,
+            "same implication in different scopes should have different IDs"
+        );
     }
 
     #[test]
@@ -1315,7 +1317,8 @@ mod tests {
         };
 
         let deprecated: HashSet<String> = ["dep-comp".into()].into();
-        let matches = engine.check_inverse(&[sym_in_comp, sym_other_comp], &deprecated, &HashSet::new());
+        let matches =
+            engine.check_inverse(&[sym_in_comp, sym_other_comp], &deprecated, &HashSet::new());
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].symbol, "old_process");

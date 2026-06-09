@@ -30,9 +30,7 @@ impl Codebook {
 
     pub fn into_new_entries(self) -> Vec<(String, Vec<u8>)> {
         let Self {
-            entries,
-            new_keys,
-            ..
+            entries, new_keys, ..
         } = self;
         new_keys
             .into_iter()

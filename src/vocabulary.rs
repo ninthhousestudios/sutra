@@ -109,7 +109,12 @@ pub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>> {
         } else {
             None
         };
-        let locations = lookup_locations(db, &alias.target_kind, &alias.target_ref, component_id.as_deref())?;
+        let locations = lookup_locations(
+            db,
+            &alias.target_kind,
+            &alias.target_ref,
+            component_id.as_deref(),
+        )?;
         matches.push(ResolveMatch {
             source: "alias".into(),
             target_kind: alias.target_kind,
@@ -162,16 +167,20 @@ pub fn resolve_to_json(db: &Db, query: &str) -> Result<serde_json::Value> {
     let (orphans, valid): (Vec<_>, Vec<_>) = matches.into_iter().partition(|m| m.orphan);
 
     let format = |m: &ResolveMatch| {
-        let locs: Vec<_> = m.locations.iter().map(|l| {
-            let mut loc = json!({"path": l.path});
-            if let Some(sl) = l.start_line {
-                loc["start_line"] = json!(sl);
-            }
-            if let Some(el) = l.end_line {
-                loc["end_line"] = json!(el);
-            }
-            loc
-        }).collect();
+        let locs: Vec<_> = m
+            .locations
+            .iter()
+            .map(|l| {
+                let mut loc = json!({"path": l.path});
+                if let Some(sl) = l.start_line {
+                    loc["start_line"] = json!(sl);
+                }
+                if let Some(el) = l.end_line {
+                    loc["end_line"] = json!(el);
+                }
+                loc
+            })
+            .collect();
         json!({
             "source": m.source,
             "target_kind": m.target_kind,
@@ -204,7 +213,11 @@ fn lookup_locations(
                 let paths = db.component_file_paths(cid)?;
                 Ok(paths
                     .into_iter()
-                    .map(|p| CodeLocation { path: p, start_line: None, end_line: None })
+                    .map(|p| CodeLocation {
+                        path: p,
+                        start_line: None,
+                        end_line: None,
+                    })
                     .collect())
             } else {
                 Ok(vec![])
@@ -237,7 +250,9 @@ fn check_orphan(db: &Db, target_kind: &str, target_ref: &str) -> Result<bool> {
     match target_kind {
         "component" => {
             let components = db.all_components()?;
-            Ok(!components.iter().any(|c| c.name == target_ref || c.id == target_ref))
+            Ok(!components
+                .iter()
+                .any(|c| c.name == target_ref || c.id == target_ref))
         }
         "file" => {
             let files = db.all_files()?;

@@ -12,7 +12,7 @@ use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, instability, scoring};
-use crate::rules::{self, match_no_cycles_constraint, Constraint, ConstraintKind};
+use crate::rules::{self, Constraint, ConstraintKind, match_no_cycles_constraint};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OrientArgs {
@@ -35,7 +35,9 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
 
     for (comp_id, comp_name, paths) in &components {
         if comp_name.to_lowercase() == scope_lower || comp_id == scope {
-            let lifecycle = db.component_lifecycle_state(comp_id).unwrap_or_else(|_| "stable".into());
+            let lifecycle = db
+                .component_lifecycle_state(comp_id)
+                .unwrap_or_else(|_| "stable".into());
             results.push(ResolvedComponent {
                 id: comp_id.clone(),
                 name: comp_name.clone(),
@@ -49,7 +51,9 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
     if let Ok(Some(alias)) = db.find_alias(scope)
         && alias.target_kind == "component"
     {
-        let lifecycle = db.component_lifecycle_state(&alias.target_ref).unwrap_or_else(|_| "stable".into());
+        let lifecycle = db
+            .component_lifecycle_state(&alias.target_ref)
+            .unwrap_or_else(|_| "stable".into());
         let (canon_name, files) = components
             .iter()
             .find(|(id, _, _)| id == &alias.target_ref)
@@ -66,7 +70,9 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
 
     for (comp_id, comp_name, paths) in &components {
         if paths.iter().any(|p| p == scope) {
-            let lifecycle = db.component_lifecycle_state(comp_id).unwrap_or_else(|_| "stable".into());
+            let lifecycle = db
+                .component_lifecycle_state(comp_id)
+                .unwrap_or_else(|_| "stable".into());
             results.push(ResolvedComponent {
                 id: comp_id.clone(),
                 name: comp_name.clone(),
@@ -84,7 +90,9 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
     };
     for (comp_id, comp_name, paths) in &components {
         if paths.iter().any(|p| p.starts_with(&scope_prefix)) {
-            let lifecycle = db.component_lifecycle_state(comp_id).unwrap_or_else(|_| "stable".into());
+            let lifecycle = db
+                .component_lifecycle_state(comp_id)
+                .unwrap_or_else(|_| "stable".into());
             results.push(ResolvedComponent {
                 id: comp_id.clone(),
                 name: comp_name.clone(),
@@ -102,7 +110,9 @@ fn check_drift_from_snapshots(
     component_id: &str,
     component_name: &str,
 ) -> Option<serde_json::Value> {
-    let snapshots = db.recent_convention_snapshots(component_id, conventions::DRIFT_WINDOW).ok()?;
+    let snapshots = db
+        .recent_convention_snapshots(component_id, conventions::DRIFT_WINDOW)
+        .ok()?;
     if snapshots.len() < conventions::DRIFT_WINDOW {
         return None;
     }
@@ -202,8 +212,7 @@ fn compute_violations(
             file_to_component,
             comp_name_to_id,
         ) {
-            let detail =
-                constraints::format_violation_detail(c, &from_path, &to_path, false);
+            let detail = constraints::format_violation_detail(c, &from_path, &to_path, false);
             result.push(OrientViolation {
                 constraint_id: c.id.clone(),
                 constraint_name: c.name.clone(),
@@ -274,12 +283,8 @@ fn constraints_for_component<'a>(
                     let from_pat = Pattern::new(from).ok();
                     let to_pat = Pattern::new(to).ok();
                     component_files.iter().any(|f| {
-                        from_pat
-                            .as_ref()
-                            .is_some_and(|p| p.matches_with(f, opts))
-                            || to_pat
-                                .as_ref()
-                                .is_some_and(|p| p.matches_with(f, opts))
+                        from_pat.as_ref().is_some_and(|p| p.matches_with(f, opts))
+                            || to_pat.as_ref().is_some_and(|p| p.matches_with(f, opts))
                     })
                 }
                 ConstraintKind::Boundary {
@@ -342,12 +347,15 @@ fn hidden_coupling_for_component(
         .map(|(fa, fb, jaccard, shared)| {
             let file_a = path_map.get(&fa).cloned().unwrap_or_default();
             let file_b = path_map.get(&fb).cloned().unwrap_or_default();
-            (jaccard, json!({
-                "file_a": file_a,
-                "file_b": file_b,
-                "jaccard": jaccard,
-                "shared_commits": shared,
-            }))
+            (
+                jaccard,
+                json!({
+                    "file_a": file_a,
+                    "file_b": file_b,
+                    "jaccard": jaccard,
+                    "shared_commits": shared,
+                }),
+            )
         })
         .collect();
 
@@ -458,9 +466,7 @@ pub fn handle(
 
         let in_scope: Vec<_> = all_conventions
             .iter()
-            .filter(|c| {
-                c.component_id.as_deref() == Some(&comp.id) || c.component_id.is_none()
-            })
+            .filter(|c| c.component_id.as_deref() == Some(&comp.id) || c.component_id.is_none())
             .collect();
 
         let conv_ids: Vec<&str> = in_scope.iter().map(|c| c.id.as_str()).collect();
@@ -557,42 +563,42 @@ pub fn handle(
             section["drift_alert"] = drift_alert;
         }
         if !in_scope_waivers.is_empty() {
-            section["active_waivers"] = json!(in_scope_waivers
-                .iter()
-                .map(|w| {
-                    json!({
-                        "waiver_id": w.id,
-                        "convention_id": w.convention_id,
-                        "symbol": w.symbol_qualified_name,
-                        "rationale": w.rationale,
-                        "waived_by": w.waived_by,
-                        "waived_at": w.waived_at,
+            section["active_waivers"] = json!(
+                in_scope_waivers
+                    .iter()
+                    .map(|w| {
+                        json!({
+                            "waiver_id": w.id,
+                            "convention_id": w.convention_id,
+                            "symbol": w.symbol_qualified_name,
+                            "rationale": w.rationale,
+                            "waived_by": w.waived_by,
+                            "waived_at": w.waived_at,
+                        })
                     })
-                })
-                .collect::<Vec<_>>());
+                    .collect::<Vec<_>>()
+            );
         }
         if !in_scope_proposals.is_empty() {
-            section["pending_proposals"] = json!(in_scope_proposals
-                .iter()
-                .map(|p| {
-                    json!({
-                        "proposal_id": p.id,
-                        "convention_id": p.convention_id,
-                        "proposed_transition": p.proposed_transition,
-                        "signal_rationale": p.signal_rationale,
-                        "created_at": p.created_at,
+            section["pending_proposals"] = json!(
+                in_scope_proposals
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "proposal_id": p.id,
+                            "convention_id": p.convention_id,
+                            "proposed_transition": p.proposed_transition,
+                            "signal_rationale": p.signal_rationale,
+                            "created_at": p.created_at,
+                        })
                     })
-                })
-                .collect::<Vec<_>>());
+                    .collect::<Vec<_>>()
+            );
         }
 
         // Constraint section
-        let in_scope_constraints = constraints_for_component(
-            &all_constraints,
-            &comp.files,
-            &comp.id,
-            &comp_name_to_id,
-        );
+        let in_scope_constraints =
+            constraints_for_component(&all_constraints, &comp.files, &comp.id, &comp_name_to_id);
 
         if !in_scope_constraints.is_empty() {
             let constraint_ids: HashSet<&str> =
@@ -685,10 +691,8 @@ pub fn handle(
             let mut comp_findings: Vec<&HealthFindingRow> = Vec::new();
 
             for &(file_id, line_count) in members {
-                let file_findings: Vec<HealthFindingRow> = findings_by_file
-                    .get(&file_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let file_findings: Vec<HealthFindingRow> =
+                    findings_by_file.get(&file_id).cloned().unwrap_or_default();
                 let score = scoring::score_file(&file_findings).score;
                 file_scores.push((score, line_count));
                 if let Some(refs) = findings_by_file.get(&file_id) {
@@ -766,14 +770,20 @@ mod tests {
 
     fn insert_component(db: &Db, id: &str, name: &str, files: &[&str]) {
         let paths_json = serde_json::to_string(&files).unwrap();
-        let components: Vec<(String, String, String)> =
-            vec![(id.into(), name.into(), paths_json)];
+        let components: Vec<(String, String, String)> = vec![(id.into(), name.into(), paths_json)];
         db.batch_create_components(&components, &[]).unwrap();
     }
 
     fn insert_convention(db: &Db, id: &str, component_id: Option<&str>) {
-        db.upsert_convention(id, "kind:function", "has_return_type", 5, 0.95, component_id)
-            .unwrap();
+        db.upsert_convention(
+            id,
+            "kind:function",
+            "has_return_type",
+            5,
+            0.95,
+            component_id,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -837,7 +847,12 @@ mod tests {
     fn handle_no_component_returns_error() {
         let (db, dir) = setup_db();
         let result = handle(&db, "nonexistent", dir.path(), None).unwrap();
-        assert!(result["error"].as_str().unwrap().contains("no component found"));
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap()
+                .contains("no component found")
+        );
     }
 
     #[test]
@@ -858,14 +873,19 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None).unwrap();
-        db.upsert_convention_template("conv-1", "pub fn $NAME(&self) -> Result<$T>", &[]).unwrap();
+        db.set_convention_lifecycle("conv-1", "preferred", None)
+            .unwrap();
+        db.upsert_convention_template("conv-1", "pub fn $NAME(&self) -> Result<$T>", &[])
+            .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
         let preferred = &orientation["preferred"]["conventions"];
         assert_eq!(preferred.as_array().unwrap().len(), 1);
-        assert_eq!(preferred[0]["template"], "pub fn $NAME(&self) -> Result<$T>");
+        assert_eq!(
+            preferred[0]["template"],
+            "pub fn $NAME(&self) -> Result<$T>"
+        );
         assert_eq!(preferred[0]["scope"], "component");
     }
 
@@ -874,7 +894,8 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "global-1", None);
-        db.set_convention_lifecycle("global-1", "preferred", None).unwrap();
+        db.set_convention_lifecycle("global-1", "preferred", None)
+            .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
@@ -887,11 +908,18 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "deprecated", None).unwrap();
+        db.set_convention_lifecycle("conv-1", "deprecated", None)
+            .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
-        assert!(orientation["warnings"]["conventions"].as_array().unwrap().len() == 1);
+        assert!(
+            orientation["warnings"]["conventions"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
         assert!(orientation.get("preferred").is_none());
     }
 
@@ -900,11 +928,18 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "forbidden", None).unwrap();
+        db.set_convention_lifecycle("conv-1", "forbidden", None)
+            .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
-        assert!(orientation["anti_patterns"]["conventions"].as_array().unwrap().len() == 1);
+        assert!(
+            orientation["anti_patterns"]["conventions"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
     }
 
     #[test]
@@ -916,7 +951,12 @@ mod tests {
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
         let patterns = &orientation["observed_patterns"];
-        assert!(patterns["guidance"].as_str().unwrap().contains("informational only"));
+        assert!(
+            patterns["guidance"]
+                .as_str()
+                .unwrap()
+                .contains("informational only")
+        );
         assert_eq!(patterns["conventions"].as_array().unwrap().len(), 1);
     }
 
@@ -925,13 +965,20 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None).unwrap();
+        db.set_convention_lifecycle("conv-1", "preferred", None)
+            .unwrap();
         db.set_component_lifecycle("comp-1", "sketch").unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
         assert!(orientation.get("preferred").is_none());
-        assert!(orientation["observed_patterns"]["conventions"].as_array().unwrap().len() == 1);
+        assert!(
+            orientation["observed_patterns"]["conventions"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
         assert!(orientation["sketch_mode_note"].as_str().is_some());
     }
 
@@ -944,9 +991,12 @@ mod tests {
         let dist_mid = r#"{"kind:function": 0.7, "has_doc": 0.4}"#;
         let dist_high = r#"{"kind:function": 0.6, "has_doc": 0.5}"#;
 
-        db.insert_convention_snapshot("comp-1", 0.8, 10, dist_low, "h1", None, None).unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_mid, "h2", None, None).unwrap();
-        db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 0.8, 10, dist_low, "h1", None, None)
+            .unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_mid, "h2", None, None)
+            .unwrap();
+        db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3", None, None)
+            .unwrap();
 
         let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
         assert!(alert.is_some());
@@ -961,9 +1011,12 @@ mod tests {
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
         let dist = r#"{"kind:function": 0.8}"#;
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h1", None, None).unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h2", None, None).unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h3", None, None).unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h1", None, None)
+            .unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h2", None, None)
+            .unwrap();
+        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h3", None, None)
+            .unwrap();
 
         let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
         assert!(alert.is_none());
@@ -974,9 +1027,16 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None).unwrap();
-        db.create_waiver("conv-1", "my_func", "comp-1", "intentional deviation", "josh")
+        db.set_convention_lifecycle("conv-1", "preferred", None)
             .unwrap();
+        db.create_waiver(
+            "conv-1",
+            "my_func",
+            "comp-1",
+            "intentional deviation",
+            "josh",
+        )
+        .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
@@ -991,8 +1051,13 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.create_proposal("conv-1", "descriptive -> preferred", "stable high support", "promote")
-            .unwrap();
+        db.create_proposal(
+            "conv-1",
+            "descriptive -> preferred",
+            "stable high support",
+            "promote",
+        )
+        .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None).unwrap();
         let orientation = &result["orientation"][0];
@@ -1010,7 +1075,12 @@ mod tests {
     #[test]
     fn constraints_in_scope_by_path_prefix() {
         let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs", "src/tools/orient.rs"]);
+        insert_component(
+            &db,
+            "comp-1",
+            "tools",
+            &["src/tools/review.rs", "src/tools/orient.rs"],
+        );
         write_rules(
             &dir,
             r#"
@@ -1120,7 +1190,10 @@ name = "no-tool-daemon"
 "#,
         );
 
-        let constraints = rules::load_rules(dir.path()).unwrap().all_constraints().unwrap();
+        let constraints = rules::load_rules(dir.path())
+            .unwrap()
+            .all_constraints()
+            .unwrap();
         let constraint_id = &constraints[0].id;
 
         db.create_constraint_waiver(
@@ -1191,10 +1264,12 @@ name = "no-tool-daemon"
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0]["from_path"], "src/tools/review.rs");
         assert_eq!(violations[0]["to_path"], "src/daemon.rs");
-        assert!(violations[0]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("forbidden"));
+        assert!(
+            violations[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("forbidden")
+        );
     }
 
     #[test]
@@ -1234,18 +1309,35 @@ to = "src/banned.rs"
             ("comp-1".into(), id_b),
             ("comp-1".into(), id_c),
         ];
-        db.batch_create_components(&components, &membership).unwrap();
+        db.batch_create_components(&components, &membership)
+            .unwrap();
 
         // a and b co-change in all 3 commits, c only in 1
         let commits = vec![
-            crate::db::CommitRow { hash: "h1".into(), committed_at: 1, author: "x".into() },
-            crate::db::CommitRow { hash: "h2".into(), committed_at: 2, author: "x".into() },
-            crate::db::CommitRow { hash: "h3".into(), committed_at: 3, author: "x".into() },
+            crate::db::CommitRow {
+                hash: "h1".into(),
+                committed_at: 1,
+                author: "x".into(),
+            },
+            crate::db::CommitRow {
+                hash: "h2".into(),
+                committed_at: 2,
+                author: "x".into(),
+            },
+            crate::db::CommitRow {
+                hash: "h3".into(),
+                committed_at: 3,
+                author: "x".into(),
+            },
         ];
         let pairs = vec![
-            ("h1".into(), id_a), ("h1".into(), id_b), ("h1".into(), id_c),
-            ("h2".into(), id_a), ("h2".into(), id_b),
-            ("h3".into(), id_a), ("h3".into(), id_b),
+            ("h1".into(), id_a),
+            ("h1".into(), id_b),
+            ("h1".into(), id_c),
+            ("h2".into(), id_a),
+            ("h2".into(), id_b),
+            ("h3".into(), id_a),
+            ("h3".into(), id_b),
         ];
         db.replace_commit_files(&commits, &pairs).unwrap();
 
@@ -1269,23 +1361,33 @@ to = "src/banned.rs"
         let (db, dir) = setup_db();
 
         let id_src = db.upsert_file("src/lib.rs", "rs", "aaa", 50, true).unwrap();
-        let id_test = db.upsert_file("tests/lib_test.rs", "rs", "bbb", 50, true).unwrap();
+        let id_test = db
+            .upsert_file("tests/lib_test.rs", "rs", "bbb", 50, true)
+            .unwrap();
 
         let paths_json = serde_json::to_string(&["src/lib.rs", "tests/lib_test.rs"]).unwrap();
         let components = vec![("comp-1".into(), "mycomp".into(), paths_json)];
-        let membership = vec![
-            ("comp-1".into(), id_src),
-            ("comp-1".into(), id_test),
-        ];
-        db.batch_create_components(&components, &membership).unwrap();
+        let membership = vec![("comp-1".into(), id_src), ("comp-1".into(), id_test)];
+        db.batch_create_components(&components, &membership)
+            .unwrap();
 
         let commits = vec![
-            crate::db::CommitRow { hash: "h1".into(), committed_at: 1, author: "x".into() },
-            crate::db::CommitRow { hash: "h2".into(), committed_at: 2, author: "x".into() },
+            crate::db::CommitRow {
+                hash: "h1".into(),
+                committed_at: 1,
+                author: "x".into(),
+            },
+            crate::db::CommitRow {
+                hash: "h2".into(),
+                committed_at: 2,
+                author: "x".into(),
+            },
         ];
         let pairs = vec![
-            ("h1".into(), id_src), ("h1".into(), id_test),
-            ("h2".into(), id_src), ("h2".into(), id_test),
+            ("h1".into(), id_src),
+            ("h1".into(), id_test),
+            ("h2".into(), id_src),
+            ("h2".into(), id_test),
         ];
         db.replace_commit_files(&commits, &pairs).unwrap();
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use rusqlite::params;
 use rusqlite::OptionalExtension;
+use rusqlite::params;
 
 use super::Db;
 use crate::error::Result;
@@ -76,9 +76,8 @@ impl Db {
         let tx = conn.unchecked_transaction()?;
         {
             conn.execute("DELETE FROM hrr_vectors", [])?;
-            let mut stmt = conn.prepare(
-                "INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)",
-            )?;
+            let mut stmt = conn
+                .prepare("INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)")?;
             for &(sym_id, mode, blob) in vectors {
                 stmt.execute(params![sym_id, mode, blob])?;
             }
@@ -142,8 +141,7 @@ impl Db {
 
     pub fn load_all_vectors_by_mode(&self, mode: &str) -> Result<Vec<(i64, HrrVec)>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1")?;
+        let mut stmt = conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1")?;
         let rows = stmt
             .query_map(params![mode], |row| {
                 let id: i64 = row.get(0)?;

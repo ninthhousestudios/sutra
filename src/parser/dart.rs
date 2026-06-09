@@ -1,10 +1,10 @@
 use crate::error::Result;
+use crate::parser::adapter::ParseContext;
+use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_TEST};
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity,
 };
-use crate::parser::adapter::ParseContext;
-use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_TEST};
 use tree_sitter::{Node, TreeCursor};
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
@@ -48,9 +48,11 @@ fn collect_symbols(
     for child in node.children(&mut cursor) {
         match child.kind() {
             "class_declaration" => {
-                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Class)
+                if let Some(mut sym) =
+                    extract_named_symbol(child, src, name_context, SymbolKind::Class)
                 {
-                    sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Class);
+                    sym.language_attrs =
+                        extract_language_attrs(child, None, src, SymbolKind::Class);
                     sym.flags |= extract_flags(child, src, file_path);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
@@ -63,9 +65,11 @@ fn collect_symbols(
                 continue;
             }
             "mixin_declaration" => {
-                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
+                if let Some(mut sym) =
+                    extract_named_symbol(child, src, name_context, SymbolKind::Mixin)
                 {
-                    sym.language_attrs = extract_language_attrs(child, None, src, SymbolKind::Mixin);
+                    sym.language_attrs =
+                        extract_language_attrs(child, None, src, SymbolKind::Mixin);
                     sym.flags |= extract_flags(child, src, file_path);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
@@ -93,7 +97,8 @@ fn collect_symbols(
                 continue;
             }
             "enum_declaration" => {
-                if let Some(mut sym) = extract_named_symbol(child, src, name_context, SymbolKind::Enum)
+                if let Some(mut sym) =
+                    extract_named_symbol(child, src, name_context, SymbolKind::Enum)
                 {
                     sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
@@ -112,9 +117,7 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
-            "method_declaration"
-            | "getter_declaration"
-            | "setter_declaration" => {
+            "method_declaration" | "getter_declaration" | "setter_declaration" => {
                 let sig_node = child.child_by_field_name("signature").unwrap_or(child);
                 let kind = if name_context.is_empty() {
                     SymbolKind::Function
@@ -133,7 +136,10 @@ fn collect_symbols(
             // [external?, getter_signature | setter_signature | function_signature]
             "declaration" => {
                 let mut c = child.walk();
-                if let Some(sig) = child.children(&mut c).find(|n| is_dart_signature_node(n.kind())) {
+                if let Some(sig) = child
+                    .children(&mut c)
+                    .find(|n| is_dart_signature_node(n.kind()))
+                {
                     let kind = if name_context.is_empty() {
                         SymbolKind::Function
                     } else {
@@ -152,7 +158,8 @@ fn collect_symbols(
                 if let Some(mut sym) =
                     extract_method_symbol(child, child, src, name_context, SymbolKind::Method)
                 {
-                    sym.language_attrs = extract_language_attrs(child, Some(child), src, SymbolKind::Method);
+                    sym.language_attrs =
+                        extract_language_attrs(child, Some(child), src, SymbolKind::Method);
                     sym.flags |= extract_flags(child, src, file_path);
                     symbols.push(sym);
                 }
@@ -273,7 +280,12 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
     )
 }
 
-fn extract_language_attrs(node: Node, sig_node: Option<Node>, src: &[u8], kind: SymbolKind) -> Option<String> {
+fn extract_language_attrs(
+    node: Node,
+    sig_node: Option<Node>,
+    src: &[u8],
+    kind: SymbolKind,
+) -> Option<String> {
     let mut attrs = serde_json::Map::new();
 
     let has_keyword = |n: Node, kw: &str| -> bool {
@@ -413,19 +425,20 @@ fn build_symbol(
     let visibility = dart_visibility(&short_name);
     let docstring = extract_docstring(node, src);
 
-    let (cyclomatic, cognitive, max_nesting) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
-        if let Some(body) = node.child_by_field_name("body") {
-            (
-                Some(complexity::cyclomatic(body, src, "dart")),
-                Some(complexity::cognitive(body, src, "dart")),
-                Some(complexity::max_nesting_depth(body, src, "dart")),
-            )
+    let (cyclomatic, cognitive, max_nesting) =
+        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+            if let Some(body) = node.child_by_field_name("body") {
+                (
+                    Some(complexity::cyclomatic(body, src, "dart")),
+                    Some(complexity::cognitive(body, src, "dart")),
+                    Some(complexity::max_nesting_depth(body, src, "dart")),
+                )
+            } else {
+                (Some(1), Some(0), Some(0))
+            }
         } else {
-            (Some(1), Some(0), Some(0))
-        }
-    } else {
-        (None, None, None)
-    };
+            (None, None, None)
+        };
 
     Some(ExtractedSymbol {
         qualified_name,

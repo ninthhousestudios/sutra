@@ -97,21 +97,23 @@ fn handle_list(db: &Db) -> Result<serde_json::Value> {
 }
 
 fn handle_accept(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
-    let proposal_id = args.proposal_id.ok_or_else(|| {
-        SutraError::Internal("accept requires proposal_id".into())
-    })?;
+    let proposal_id = args
+        .proposal_id
+        .ok_or_else(|| SutraError::Internal("accept requires proposal_id".into()))?;
 
-    let proposal = db.get_proposal(proposal_id)?.ok_or_else(|| {
-        SutraError::Internal(format!("proposal {proposal_id} not found"))
-    })?;
+    let proposal = db
+        .get_proposal(proposal_id)?
+        .ok_or_else(|| SutraError::Internal(format!("proposal {proposal_id} not found")))?;
 
     if proposal.status != "pending" {
         return Err(SutraError::Internal(format!(
-            "proposal {proposal_id} is already {}", proposal.status
+            "proposal {proposal_id} is already {}",
+            proposal.status
         )));
     }
 
-    let target_state = proposal.proposed_transition
+    let target_state = proposal
+        .proposed_transition
         .split('\u{2192}')
         .last()
         .unwrap_or("preferred");
@@ -140,17 +142,18 @@ fn handle_accept(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
 }
 
 fn handle_dismiss(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
-    let proposal_id = args.proposal_id.ok_or_else(|| {
-        SutraError::Internal("dismiss requires proposal_id".into())
-    })?;
+    let proposal_id = args
+        .proposal_id
+        .ok_or_else(|| SutraError::Internal("dismiss requires proposal_id".into()))?;
 
-    let proposal = db.get_proposal(proposal_id)?.ok_or_else(|| {
-        SutraError::Internal(format!("proposal {proposal_id} not found"))
-    })?;
+    let proposal = db
+        .get_proposal(proposal_id)?
+        .ok_or_else(|| SutraError::Internal(format!("proposal {proposal_id} not found")))?;
 
     if proposal.status != "pending" {
         return Err(SutraError::Internal(format!(
-            "proposal {proposal_id} is already {}", proposal.status
+            "proposal {proposal_id} is already {}",
+            proposal.status
         )));
     }
 
@@ -163,13 +166,15 @@ fn handle_dismiss(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> 
 }
 
 fn handle_set_lifecycle(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
-    let convention_id = args.convention_id.as_ref().ok_or_else(|| {
-        SutraError::Internal("set_lifecycle requires convention_id".into())
-    })?;
+    let convention_id = args
+        .convention_id
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("set_lifecycle requires convention_id".into()))?;
 
-    let state = args.lifecycle_state.as_ref().ok_or_else(|| {
-        SutraError::Internal("set_lifecycle requires lifecycle_state".into())
-    })?;
+    let state = args
+        .lifecycle_state
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("set_lifecycle requires lifecycle_state".into()))?;
 
     if !VALID_STATES.contains(&state.as_str()) {
         return Err(SutraError::Internal(format!(
@@ -187,18 +192,22 @@ fn handle_set_lifecycle(db: &Db, args: &ConventionsArgs) -> Result<serde_json::V
 }
 
 fn handle_waive(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
-    let convention_id = args.convention_id.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires convention_id".into())
-    })?;
-    let symbol = args.symbol.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires symbol".into())
-    })?;
-    let rationale = args.rationale.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires rationale".into())
-    })?;
-    let waived_by = args.waived_by.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires waived_by".into())
-    })?;
+    let convention_id = args
+        .convention_id
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires convention_id".into()))?;
+    let symbol = args
+        .symbol
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires symbol".into()))?;
+    let rationale = args
+        .rationale
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires rationale".into()))?;
+    let waived_by = args
+        .waived_by
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires waived_by".into()))?;
     let component_id = args.component_id.as_deref().unwrap_or("");
 
     let id = db.create_waiver(convention_id, symbol, component_id, rationale, waived_by)?;
@@ -235,9 +244,9 @@ fn handle_list_waivers(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Va
 }
 
 fn handle_revoke_waiver(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
-    let waiver_id = args.waiver_id.ok_or_else(|| {
-        SutraError::Internal("revoke_waiver requires waiver_id".into())
-    })?;
+    let waiver_id = args
+        .waiver_id
+        .ok_or_else(|| SutraError::Internal("revoke_waiver requires waiver_id".into()))?;
 
     let revoked = db.revoke_waiver(waiver_id)?;
 

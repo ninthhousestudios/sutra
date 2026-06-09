@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
 use crate::db::Db;
 use crate::error::{Result, SutraError};
-use crate::rules::{self, match_no_cycles_constraint, ConstraintKind};
+use crate::rules::{self, ConstraintKind, match_no_cycles_constraint};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConstraintsArgs {
@@ -172,8 +172,7 @@ fn handle_violations(
                     &from_path,
                     &to_path,
                 );
-                let detail =
-                    constraints::format_violation_detail(c, &from_path, &to_path, false);
+                let detail = constraints::format_violation_detail(c, &from_path, &to_path, false);
                 violation_list.push(ViolationEntry {
                     constraint_id: c.id.clone(),
                     constraint_name: c.name.clone(),
@@ -271,18 +270,22 @@ struct ViolationEntry {
 }
 
 fn handle_waive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let constraint_id = args.constraint_id.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires constraint_id".into())
-    })?;
-    let file_path = args.file_path.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires file_path".into())
-    })?;
-    let rationale = args.rationale.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires rationale".into())
-    })?;
-    let waived_by = args.waived_by.as_ref().ok_or_else(|| {
-        SutraError::Internal("waive requires waived_by".into())
-    })?;
+    let constraint_id = args
+        .constraint_id
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires constraint_id".into()))?;
+    let file_path = args
+        .file_path
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires file_path".into()))?;
+    let rationale = args
+        .rationale
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires rationale".into()))?;
+    let waived_by = args
+        .waived_by
+        .as_ref()
+        .ok_or_else(|| SutraError::Internal("waive requires waived_by".into()))?;
 
     let id = db.create_constraint_waiver(
         constraint_id,
@@ -301,9 +304,9 @@ fn handle_waive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
 }
 
 fn handle_unwaive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let waiver_id = args.waiver_id.ok_or_else(|| {
-        SutraError::Internal("unwaive requires waiver_id".into())
-    })?;
+    let waiver_id = args
+        .waiver_id
+        .ok_or_else(|| SutraError::Internal("unwaive requires waiver_id".into()))?;
 
     let deleted = db.delete_constraint_waiver(waiver_id)?;
 

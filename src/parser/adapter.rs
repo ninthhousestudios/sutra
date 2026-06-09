@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use tree_sitter::{Language, Parser, Tree};
 
+use crate::conventions::{EffectPattern, SymbolAttrs, extract_cross_language_attrs};
 use crate::db::SymbolRow;
 use crate::error::{Result, SutraError};
-use crate::conventions::{extract_cross_language_attrs, EffectPattern, SymbolAttrs};
 
 use super::ParseResult;
 
@@ -37,17 +37,19 @@ impl ParserPool {
         let lang_id = adapter.language_id().to_string();
         if !self.parsers.contains_key(&lang_id) {
             let mut p = Parser::new();
-            p.set_language(&adapter.grammar())
-                .map_err(|e| SutraError::Parse(format!("failed to set language for {}: {e}", lang_id)))?;
-            #[allow(deprecated)] // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
+            p.set_language(&adapter.grammar()).map_err(|e| {
+                SutraError::Parse(format!("failed to set language for {}: {e}", lang_id))
+            })?;
+            #[allow(deprecated)]
+            // tree-sitter 0.25 prefers progress_callback; migrate when 0.26 drops the old API
             p.set_timeout_micros(self.timeout_micros);
             self.parsers.insert(lang_id.clone(), p);
         }
         let parser = self.parsers.get_mut(&lang_id).unwrap();
 
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| SutraError::Parse("tree-sitter parse timed out or returned no tree".into()))?;
+        let tree = parser.parse(source, None).ok_or_else(|| {
+            SutraError::Parse("tree-sitter parse timed out or returned no tree".into())
+        })?;
 
         let ctx = ParseContext {
             source: source.as_bytes(),
@@ -122,7 +124,9 @@ impl LanguageRegistry {
     }
 
     pub fn adapter_for_extension(&self, ext: &str) -> Option<&dyn LanguageAdapter> {
-        self.ext_map.get(ext).map(|&idx| self.adapters[idx].as_ref())
+        self.ext_map
+            .get(ext)
+            .map(|&idx| self.adapters[idx].as_ref())
     }
 
     pub fn adapter_for_language(&self, lang: &str) -> Option<&dyn LanguageAdapter> {
@@ -143,7 +147,12 @@ impl LanguageRegistry {
     pub fn boundary_multipliers(&self) -> HashMap<String, f64> {
         self.adapters
             .iter()
-            .map(|a| (a.language_id().to_string(), a.module_boundary_hints().multiplier()))
+            .map(|a| {
+                (
+                    a.language_id().to_string(),
+                    a.module_boundary_hints().multiplier(),
+                )
+            })
             .collect()
     }
 }
@@ -437,7 +446,12 @@ mod tests {
     fn dart_fca_source_extracts_language_attrs() {
         let dart = DartAdapter;
         let fca = dart.as_fca_source().unwrap();
-        let mut sym = make_test_symbol_row("function", Some("public"), Some("Future<void> fetch()"), None);
+        let mut sym = make_test_symbol_row(
+            "function",
+            Some("public"),
+            Some("Future<void> fetch()"),
+            None,
+        );
         sym.language_attrs = Some(r#"{"is_async":true,"returns_future":true}"#.into());
         let attrs = fca.extract_attributes(&sym, "lib/api.dart").unwrap();
         assert!(attrs.attributes.contains(&"is_async".to_string()));
@@ -495,7 +509,10 @@ mod tests {
     #[test]
     fn module_boundary_hints_dart_moderate() {
         let dart = DartAdapter;
-        assert_eq!(dart.module_boundary_hints(), ModuleBoundaryStrength::Moderate);
+        assert_eq!(
+            dart.module_boundary_hints(),
+            ModuleBoundaryStrength::Moderate
+        );
         assert_eq!(ModuleBoundaryStrength::Moderate.multiplier(), 1.5);
     }
 

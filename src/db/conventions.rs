@@ -189,10 +189,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_convention_state(
-        &self,
-        convention_id: &str,
-    ) -> Result<Option<ConventionStateRow>> {
+    pub fn get_convention_state(&self, convention_id: &str) -> Result<Option<ConventionStateRow>> {
         let conn = self.conn.lock();
         let row = conn
             .query_row(
@@ -294,7 +291,12 @@ impl Db {
             "INSERT INTO convention_proposals
              (convention_id, proposed_transition, signal_rationale, signal_direction)
              VALUES (?1, ?2, ?3, ?4)",
-            params![convention_id, proposed_transition, signal_rationale, signal_direction],
+            params![
+                convention_id,
+                proposed_transition,
+                signal_rationale,
+                signal_direction
+            ],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -405,7 +407,13 @@ impl Db {
                  rationale = ?4,
                  waived_by = ?5,
                  waived_at = datetime('now')",
-            params![convention_id, symbol_qualified_name, component_id, rationale, waived_by],
+            params![
+                convention_id,
+                symbol_qualified_name,
+                component_id,
+                rationale,
+                waived_by
+            ],
         )?;
         let id: i64 = conn.query_row(
             "SELECT id FROM convention_waivers
@@ -416,10 +424,7 @@ impl Db {
         Ok(id)
     }
 
-    pub fn list_waivers(
-        &self,
-        convention_id: Option<&str>,
-    ) -> Result<Vec<ConventionWaiverRow>> {
+    pub fn list_waivers(&self, convention_id: Option<&str>) -> Result<Vec<ConventionWaiverRow>> {
         let conn = self.conn.lock();
         let map_row = |row: &rusqlite::Row| {
             Ok(ConventionWaiverRow {
@@ -518,22 +523,16 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn tracked_convention_ids_absent_from(
-        &self,
-        current_ids: &[&str],
-    ) -> Result<Vec<String>> {
+    pub fn tracked_convention_ids_absent_from(&self, current_ids: &[&str]) -> Result<Vec<String>> {
         let conn = self.conn.lock();
         if current_ids.is_empty() {
-            let mut stmt = conn.prepare(
-                "SELECT convention_id FROM convention_state",
-            )?;
+            let mut stmt = conn.prepare("SELECT convention_id FROM convention_state")?;
             let ids = stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             return Ok(ids);
         }
-        let placeholders: Vec<String> =
-            (1..=current_ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=current_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT convention_id FROM convention_state WHERE convention_id NOT IN ({})",
             placeholders.join(", ")
@@ -666,15 +665,19 @@ impl Db {
         if convention_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = (1..=convention_ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=convention_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect();
         let sql = format!(
             "SELECT convention_id, template_text, exemplar_symbols, generated_at
              FROM convention_templates WHERE convention_id IN ({})",
             placeholders.join(", ")
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            convention_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = convention_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt
             .query_map(params.as_slice(), |row| {
                 let exemplars_json: String = row.get(2)?;
@@ -697,14 +700,17 @@ impl Db {
             let count = conn.execute("DELETE FROM convention_templates", [])?;
             return Ok(count);
         }
-        let placeholders: Vec<String> =
-            (1..=live_convention_ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=live_convention_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect();
         let sql = format!(
             "DELETE FROM convention_templates WHERE convention_id NOT IN ({})",
             placeholders.join(", ")
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            live_convention_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = live_convention_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let count = conn.execute(&sql, params.as_slice())?;
         Ok(count)
     }

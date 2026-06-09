@@ -475,23 +475,45 @@ fn plain() {}
 "#;
     let result = parse_file(src, "rust", "test.rs").unwrap();
 
-    let fetch = result.symbols.iter().find(|s| s.short_name == "fetch").unwrap();
+    let fetch = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "fetch")
+        .unwrap();
     let attrs: serde_json::Value = serde_json::from_str(
-        fetch.language_attrs.as_deref().expect("fetch should have language_attrs"),
+        fetch
+            .language_attrs
+            .as_deref()
+            .expect("fetch should have language_attrs"),
     )
     .unwrap();
     assert_eq!(attrs["is_async"], true);
     assert_eq!(attrs["returns_result"], true);
 
-    let danger = result.symbols.iter().find(|s| s.short_name == "danger").unwrap();
+    let danger = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "danger")
+        .unwrap();
     let attrs: serde_json::Value = serde_json::from_str(
-        danger.language_attrs.as_deref().expect("danger should have language_attrs"),
+        danger
+            .language_attrs
+            .as_deref()
+            .expect("danger should have language_attrs"),
     )
     .unwrap();
     assert_eq!(attrs["is_unsafe"], true);
 
-    let plain = result.symbols.iter().find(|s| s.short_name == "plain").unwrap();
-    assert_eq!(plain.language_attrs.as_deref(), Some("{}"), "plain fn should have empty language_attrs");
+    let plain = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "plain")
+        .unwrap();
+    assert_eq!(
+        plain.language_attrs.as_deref(),
+        Some("{}"),
+        "plain fn should have empty language_attrs"
+    );
 }
 
 #[test]
@@ -532,12 +554,20 @@ fn no_lt() {}
 "#;
     let result = parse_file(src, "rust", "test.rs").unwrap();
 
-    let borrowed = result.symbols.iter().find(|s| s.short_name == "Borrowed").unwrap();
+    let borrowed = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "Borrowed")
+        .unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(borrowed.language_attrs.as_deref().unwrap()).unwrap();
     assert_eq!(attrs["has_lifetime_params"], true);
 
-    let no_lt = result.symbols.iter().find(|s| s.short_name == "no_lt").unwrap();
+    let no_lt = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "no_lt")
+        .unwrap();
     assert_eq!(no_lt.language_attrs.as_deref(), Some("{}"));
 }
 
@@ -551,7 +581,11 @@ fn get_scoped_result() -> anyhow::Result<()> {}
 "#;
     let result = parse_file(src, "rust", "test.rs").unwrap();
 
-    let query_result = result.symbols.iter().find(|s| s.short_name == "get_query_result").unwrap();
+    let query_result = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "get_query_result")
+        .unwrap();
     assert_eq!(
         query_result.language_attrs.as_deref(),
         Some("{}"),
@@ -559,7 +593,11 @@ fn get_scoped_result() -> anyhow::Result<()> {}
         query_result.language_attrs,
     );
 
-    let optional_config = result.symbols.iter().find(|s| s.short_name == "get_optional_config").unwrap();
+    let optional_config = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "get_optional_config")
+        .unwrap();
     assert_eq!(
         optional_config.language_attrs.as_deref(),
         Some("{}"),
@@ -567,12 +605,20 @@ fn get_scoped_result() -> anyhow::Result<()> {}
         optional_config.language_attrs,
     );
 
-    let real_result = result.symbols.iter().find(|s| s.short_name == "get_real_result").unwrap();
+    let real_result = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "get_real_result")
+        .unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(real_result.language_attrs.as_deref().unwrap()).unwrap();
     assert_eq!(attrs["returns_result"], true);
 
-    let scoped_result = result.symbols.iter().find(|s| s.short_name == "get_scoped_result").unwrap();
+    let scoped_result = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "get_scoped_result")
+        .unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(scoped_result.language_attrs.as_deref().unwrap()).unwrap();
     assert_eq!(attrs["returns_result"], true);
@@ -604,7 +650,11 @@ impl Foo {
     let other_fn = flat.iter().find(|s| s.short_name == "other").unwrap();
     assert!(
         other_fn.language_attrs.is_none()
-            || !other_fn.language_attrs.as_deref().unwrap_or("").contains("returns_self"),
+            || !other_fn
+                .language_attrs
+                .as_deref()
+                .unwrap_or("")
+                .contains("returns_self"),
         "-> Foo should not trigger returns_self: {:?}",
         other_fn.language_attrs,
     );

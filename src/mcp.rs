@@ -13,8 +13,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::db::Db;
 use crate::constraints::DdEngine;
+use crate::db::Db;
 use crate::error::SutraError;
 use crate::guard;
 use crate::pipeline::ParseCoordinator;
@@ -67,8 +67,8 @@ use crate::tools::cochange::CochangeArgs;
 use crate::tools::components::ComponentsArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
-use crate::tools::duplicates::DuplicatesArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
+use crate::tools::duplicates::DuplicatesArgs;
 use crate::tools::file_health::FileHealthArgs;
 use crate::tools::find::FindArgs;
 use crate::tools::grep::GrepArgs;
@@ -81,8 +81,8 @@ use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
 use crate::tools::resolve::ResolveArgs;
-use crate::tools::similar::SimilarArgs;
 use crate::tools::review::ReviewArgs;
+use crate::tools::similar::SimilarArgs;
 use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
 use crate::tools::trend::TrendArgs;
@@ -344,7 +344,9 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "List discovered architectural components. Compact mode (default) returns name, file_count, top 3 anchors, and concept_density. Pass compact=false for full detail with UUIDs, complete file lists, and anchor rationale.")]
+    #[tool(
+        description = "List discovered architectural components. Compact mode (default) returns name, file_count, top 3 anchors, and concept_density. Pass compact=false for full detail with UUIDs, complete file lists, and anchor rationale."
+    )]
     pub async fn sutra_components(
         &self,
         Parameters(args): Parameters<ComponentsArgs>,
@@ -410,8 +412,8 @@ impl SutraServer {
         let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
-        let result = tools::constraints::handle(&db, &ws.root, Some(&dd), &args)
-            .map_err(sutra_to_rmcp)?;
+        let result =
+            tools::constraints::handle(&db, &ws.root, Some(&dd), &args).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -487,9 +489,15 @@ impl SutraServer {
         let db = self.get_db(&args.workspace)?;
         let is_stale = self.freshness(&db)["is_stale"].as_bool() == Some(true);
         let result = tools::read::handle(
-            &db, &ws.root, &args.symbol, args.context_lines,
-            args.limit, args.full.unwrap_or(false), is_stale,
-        ).map_err(sutra_to_rmcp)?;
+            &db,
+            &ws.root,
+            &args.symbol,
+            args.context_lines,
+            args.limit,
+            args.full.unwrap_or(false),
+            is_stale,
+        )
+        .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 
@@ -837,8 +845,8 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::duplicates::handle(&db, args.threshold, args.min_group).map_err(sutra_to_rmcp)?;
+        let result = tools::duplicates::handle(&db, args.threshold, args.min_group)
+            .map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

@@ -53,11 +53,7 @@ pub fn find_diverging_attributes(
     old: &HashMap<String, f64>,
     new: &HashMap<String, f64>,
 ) -> Vec<DivergingAttribute> {
-    let all_keys: HashSet<&str> = old
-        .keys()
-        .chain(new.keys())
-        .map(|k| k.as_str())
-        .collect();
+    let all_keys: HashSet<&str> = old.keys().chain(new.keys()).map(|k| k.as_str()).collect();
 
     let mut result: Vec<DivergingAttribute> = all_keys
         .into_iter()
@@ -233,18 +229,10 @@ mod tests {
 
     #[test]
     fn diverging_identifies_attrs_moving_toward_half() {
-        let old: HashMap<String, f64> = [
-            ("a".into(), 0.9),
-            ("b".into(), 0.1),
-            ("c".into(), 0.5),
-        ]
-        .into();
-        let new: HashMap<String, f64> = [
-            ("a".into(), 0.7),
-            ("b".into(), 0.3),
-            ("c".into(), 0.5),
-        ]
-        .into();
+        let old: HashMap<String, f64> =
+            [("a".into(), 0.9), ("b".into(), 0.1), ("c".into(), 0.5)].into();
+        let new: HashMap<String, f64> =
+            [("a".into(), 0.7), ("b".into(), 0.3), ("c".into(), 0.5)].into();
         let diverging = find_diverging_attributes(&old, &new);
         let names: Vec<&str> = diverging.iter().map(|d| d.attribute.as_str()).collect();
         assert!(names.contains(&"a"));
@@ -291,8 +279,7 @@ mod tests {
         db.insert_convention_snapshot("comp1", 0.72, 10, dist, &hash, None, None)
             .unwrap();
 
-        let current_dist: HashMap<String, f64> =
-            [("a".into(), 0.8), ("b".into(), 0.2)].into();
+        let current_dist: HashMap<String, f64> = [("a".into(), 0.8), ("b".into(), 0.2)].into();
         let result = detect_drift(&db, "comp1", "TestComp", &current_dist, 0.72).unwrap();
         assert!(result.is_none());
     }
@@ -311,8 +298,7 @@ mod tests {
         db.insert_convention_snapshot("comp1", 0.55, 10, dist2, &h2, None, None)
             .unwrap();
 
-        let current_dist: HashMap<String, f64> =
-            [("a".into(), 0.65), ("b".into(), 0.35)].into();
+        let current_dist: HashMap<String, f64> = [("a".into(), 0.65), ("b".into(), 0.35)].into();
         let current_entropy = shannon_entropy(&current_dist);
         let result =
             detect_drift(&db, "comp1", "TestComp", &current_dist, current_entropy).unwrap();
@@ -334,8 +320,7 @@ mod tests {
         db.insert_convention_snapshot("comp1", 0.9, 10, dist, &hash, None, None)
             .unwrap();
 
-        let current_dist: HashMap<String, f64> =
-            [("a".into(), 0.8), ("b".into(), 0.2)].into();
+        let current_dist: HashMap<String, f64> = [("a".into(), 0.8), ("b".into(), 0.2)].into();
         let current_entropy = shannon_entropy(&current_dist);
         let result =
             detect_drift(&db, "comp1", "TestComp", &current_dist, current_entropy).unwrap();
@@ -355,8 +340,7 @@ mod tests {
         db.insert_convention_snapshot("comp1", 0.4, 10, dist, &hash, None, None)
             .unwrap();
 
-        let current_dist: HashMap<String, f64> =
-            [("a".into(), 0.6), ("b".into(), 0.4)].into();
+        let current_dist: HashMap<String, f64> = [("a".into(), 0.6), ("b".into(), 0.4)].into();
         let result = detect_drift(&db, "comp1", "TestComp", &current_dist, 0.8).unwrap();
         assert!(result.is_none());
     }
@@ -374,7 +358,8 @@ mod tests {
             component_id: Some("comp1".into()),
         }];
         let components = vec![("comp1".to_string(), "TestComp".to_string(), symbols)];
-        let alerts = record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
+        let alerts =
+            record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
         assert!(alerts.is_empty());
 
         let snaps = db.recent_convention_snapshots("comp1", 10).unwrap();
@@ -401,7 +386,8 @@ mod tests {
             },
         ];
         let components = vec![("comp1".to_string(), "TestComp".to_string(), symbols)];
-        let _alerts = record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
+        let _alerts =
+            record_and_detect_drift(&db, &components, &HashMap::new(), &HashMap::new()).unwrap();
 
         let snaps = db.recent_convention_snapshots("comp1", 10).unwrap();
         assert_eq!(snaps.len(), 1);

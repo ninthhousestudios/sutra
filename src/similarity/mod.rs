@@ -1,9 +1,9 @@
 pub mod codebook;
 pub mod diff;
-pub mod search;
 pub mod duplicates;
 pub mod encoder;
 pub mod hrr;
+pub mod search;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -62,12 +62,10 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
                 tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
             let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);
             if let Some(node) = tree.root_node().descendant_for_point_range(start, end) {
-                let strip =
-                    encoder::encode_subtree(&node, source.as_bytes(), &mut cb, false);
+                let strip = encoder::encode_subtree(&node, source.as_bytes(), &mut cb, false);
                 vectors.push((sym.symbol_id, "strip".into(), strip.to_bytes()));
 
-                let embed =
-                    encoder::encode_subtree(&node, source.as_bytes(), &mut cb, true);
+                let embed = encoder::encode_subtree(&node, source.as_bytes(), &mut cb, true);
                 vectors.push((sym.symbol_id, "embed".into(), embed.to_bytes()));
             }
         }

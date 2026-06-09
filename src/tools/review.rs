@@ -7,15 +7,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::components;
-use crate::db::Db;
-use crate::constraints::{
-    self, ConstraintResolver, DdDelta, DdEngine, DdFacts,
-};
-use crate::error::Result;
+use crate::constraints::{self, ConstraintResolver, DdDelta, DdEngine, DdFacts};
 use crate::conventions::{self, FcaEngine};
-use crate::parser::adapter::LanguageRegistry;
+use crate::db::Db;
+use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
+use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{self, match_no_cycles_constraint};
 use crate::tools::scoring::{self, ChurnMap, Signal};
 
@@ -123,8 +121,16 @@ pub fn handle(
     let mode = diff_mode.unwrap_or("branch");
 
     let (changed_paths, base_revision, head_revision) = match mode {
-        "staged" => (git::git_diff_staged(workspace_root)?, "HEAD".to_string(), Some(String::new())),
-        "unstaged" => (git::git_diff_unstaged(workspace_root)?, "HEAD".to_string(), None),
+        "staged" => (
+            git::git_diff_staged(workspace_root)?,
+            "HEAD".to_string(),
+            Some(String::new()),
+        ),
+        "unstaged" => (
+            git::git_diff_unstaged(workspace_root)?,
+            "HEAD".to_string(),
+            None,
+        ),
         "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
@@ -349,22 +355,21 @@ pub fn build_findings(
                 .copied()
                 .collect();
 
-            let baseline_set: std::collections::HashSet<(i64, i64)> =
-                if !changed_edges.is_empty() {
-                    engine.update(DdDelta {
-                        added_edges: vec![],
-                        removed_edges: changed_edges.clone(),
-                    })?;
-                    let baseline_result = engine.query_violations();
-                    // Re-add edges before propagating any query error
-                    engine.update(DdDelta {
-                        added_edges: changed_edges,
-                        removed_edges: vec![],
-                    })?;
-                    baseline_result?.into_iter().collect()
-                } else {
-                    current_violations.iter().copied().collect()
-                };
+            let baseline_set: std::collections::HashSet<(i64, i64)> = if !changed_edges.is_empty() {
+                engine.update(DdDelta {
+                    added_edges: vec![],
+                    removed_edges: changed_edges.clone(),
+                })?;
+                let baseline_result = engine.query_violations();
+                // Re-add edges before propagating any query error
+                engine.update(DdDelta {
+                    added_edges: changed_edges,
+                    removed_edges: vec![],
+                })?;
+                baseline_result?.into_iter().collect()
+            } else {
+                current_violations.iter().copied().collect()
+            };
 
             let current_set: std::collections::HashSet<(i64, i64)> =
                 current_violations.iter().copied().collect();
@@ -397,7 +402,12 @@ pub fn build_findings(
                             &from_path,
                             &to_path,
                         ),
-                        detail: constraints::format_violation_detail(c, &from_path, &to_path, is_introduced),
+                        detail: constraints::format_violation_detail(
+                            c,
+                            &from_path,
+                            &to_path,
+                            is_introduced,
+                        ),
                     });
                 }
             }
@@ -432,7 +442,9 @@ pub fn build_findings(
                             &from_path,
                             &to_path,
                         ),
-                        detail: constraints::format_violation_detail(c, &from_path, &to_path, false),
+                        detail: constraints::format_violation_detail(
+                            c, &from_path, &to_path, false,
+                        ),
                     });
                 }
             }
@@ -521,16 +533,21 @@ pub fn build_findings(
         for id in &target_ids {
             if !callee_cache.contains_key(id) {
                 if let Some(sym) = db.symbol_by_id(*id)? {
-                    callee_cache.insert(*id, conventions::ResolvedCallee {
-                        qualified_name: sym.qualified_name,
-                        signature: sym.signature,
-                    });
+                    callee_cache.insert(
+                        *id,
+                        conventions::ResolvedCallee {
+                            qualified_name: sym.qualified_name,
+                            signature: sym.signature,
+                        },
+                    );
                 }
             }
         }
 
         for s in &syms {
-            if let Some(mut attrs) = conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {
+            if let Some(mut attrs) =
+                conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry)
+            {
                 if let Some(adapter) = registry.adapter_for_language(&f.language) {
                     if let Some(fca_source) = adapter.as_fca_source() {
                         let call_refs: Vec<_> = refs
@@ -545,10 +562,12 @@ pub fn build_findings(
                             &mut attrs,
                             s,
                             &call_refs,
-                            &|id| callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
-                                qualified_name: c.qualified_name.clone(),
-                                signature: c.signature.clone(),
-                            }),
+                            &|id| {
+                                callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
+                                    qualified_name: c.qualified_name.clone(),
+                                    signature: c.signature.clone(),
+                                })
+                            },
                             fca_source.effect_patterns(),
                         );
                     }
@@ -605,8 +624,7 @@ pub fn build_findings(
 
         let fca_conformance =
             crate::health::drift::compute_fca_conformance(&all_convs, &comp_symbol_groups);
-        let hrr_coherence =
-            crate::health::drift::compute_hrr_coherence(db).unwrap_or_default();
+        let hrr_coherence = crate::health::drift::compute_hrr_coherence(db).unwrap_or_default();
 
         convention_drift_findings = crate::health::drift::detect_convention_drift(
             db,
@@ -640,9 +658,8 @@ pub fn build_findings(
 
         let snapshot_id = uuid::Uuid::new_v4().to_string();
         for c in &all_convs {
-            let _ = db.record_convention_history(
-                &c.id, c.support as i64, c.confidence, &snapshot_id,
-            );
+            let _ =
+                db.record_convention_history(&c.id, c.support as i64, c.confidence, &snapshot_id);
         }
         if let Ok(absent) = db.tracked_convention_ids_absent_from(&current_ids) {
             for cid in &absent {
@@ -657,7 +674,10 @@ pub fn build_findings(
         let _ = db.delete_stale_conventions(&current_ids);
 
         if let Err(e) = conventions::templates::generate_templates_for_conventions(
-            &all_convs, &all_sym_attrs, &sig_info_map, db,
+            &all_convs,
+            &all_sym_attrs,
+            &sig_info_map,
+            db,
         ) {
             tracing::warn!("template generation failed: {e}");
         }
@@ -703,15 +723,20 @@ pub fn build_findings(
         }
 
         let merged = db.all_conventions_merged()?;
-        let deprecated_ids: std::collections::HashSet<String> = merged.iter()
+        let deprecated_ids: std::collections::HashSet<String> = merged
+            .iter()
             .filter(|c| c.lifecycle_state.as_deref() == Some("deprecated"))
-            .map(|c| c.id.clone()).collect();
-        let forbidden_ids: std::collections::HashSet<String> = merged.iter()
+            .map(|c| c.id.clone())
+            .collect();
+        let forbidden_ids: std::collections::HashSet<String> = merged
+            .iter()
             .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
-            .map(|c| c.id.clone()).collect();
+            .map(|c| c.id.clone())
+            .collect();
 
         if !deprecated_ids.is_empty() || !forbidden_ids.is_empty() {
-            for m in check_engine.check_inverse(&changed_sym_attrs, &deprecated_ids, &forbidden_ids) {
+            for m in check_engine.check_inverse(&changed_sym_attrs, &deprecated_ids, &forbidden_ids)
+            {
                 convention_matches.push(ConventionMatchFinding {
                     symbol: m.symbol,
                     file: m.file,
@@ -729,7 +754,11 @@ pub fn build_findings(
     let waivers = db.waivers_for_check()?;
     let sym_component: HashMap<(&str, &str), &str> = all_sym_attrs
         .iter()
-        .filter_map(|s| s.component_id.as_deref().map(|c| ((s.file.as_str(), s.name.as_str()), c)))
+        .filter_map(|s| {
+            s.component_id
+                .as_deref()
+                .map(|c| ((s.file.as_str(), s.name.as_str()), c))
+        })
         .collect();
     let mut waived_violations = Vec::new();
     let mut unwaived = Vec::new();
@@ -937,13 +966,14 @@ fn behavioral_coupling(
     let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
         .into_iter()
         .filter_map(|(fa, fb, jaccard, shared)| {
-            let (changed_id, partner_id) = if changed_ids.contains_key(&fa) && !changed_ids.contains_key(&fb) {
-                (fa, fb)
-            } else if changed_ids.contains_key(&fb) && !changed_ids.contains_key(&fa) {
-                (fb, fa)
-            } else {
-                return None;
-            };
+            let (changed_id, partner_id) =
+                if changed_ids.contains_key(&fa) && !changed_ids.contains_key(&fb) {
+                    (fa, fb)
+                } else if changed_ids.contains_key(&fb) && !changed_ids.contains_key(&fa) {
+                    (fb, fa)
+                } else {
+                    return None;
+                };
             if static_edges.contains(&(changed_id.min(partner_id), changed_id.max(partner_id))) {
                 return None;
             }
@@ -952,12 +982,15 @@ fn behavioral_coupling(
             if components::is_test_file(changed_path) != components::is_test_file(partner_path) {
                 return None;
             }
-            Some((jaccard, json!({
-                "changed_file": changed_path,
-                "partner": partner_path,
-                "jaccard": jaccard,
-                "shared_commits": shared,
-            })))
+            Some((
+                jaccard,
+                json!({
+                    "changed_file": changed_path,
+                    "partner": partner_path,
+                    "jaccard": jaccard,
+                    "shared_commits": shared,
+                }),
+            ))
         })
         .collect();
 
@@ -1153,7 +1186,11 @@ pub fn compute(
         .convention_matches
         .iter()
         .map(|m| {
-            let severity = if m.lifecycle_state == "forbidden" { "warning" } else { "advisory" };
+            let severity = if m.lifecycle_state == "forbidden" {
+                "warning"
+            } else {
+                "advisory"
+            };
             json!({
                 "symbol": m.symbol, "file": m.file, "convention_id": m.convention_id,
                 "antecedent": m.antecedent, "consequent": m.consequent,
@@ -1291,4 +1328,3 @@ pub fn compute(
     }
     Ok(result)
 }
-

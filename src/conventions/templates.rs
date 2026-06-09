@@ -52,7 +52,11 @@ fn decompose_signature(
     let rest = rest.trim();
     let return_type = if let Some(ret) = rest.strip_prefix("->") {
         let ret = ret.trim();
-        if ret.is_empty() { None } else { Some(ret.to_string()) }
+        if ret.is_empty() {
+            None
+        } else {
+            Some(ret.to_string())
+        }
     } else {
         None
     };
@@ -87,7 +91,11 @@ fn extract_balanced(s: &str, open: char, close: char) -> Option<(Option<String>,
             depth -= 1;
             if depth == 0 {
                 let inner = &s[open.len_utf8()..i];
-                let inner = if inner.is_empty() { None } else { Some(inner.to_string()) };
+                let inner = if inner.is_empty() {
+                    None
+                } else {
+                    Some(inner.to_string())
+                };
                 return Some((inner, &s[i + close.len_utf8()..]));
             }
         }
@@ -134,8 +142,14 @@ fn parse_modifier_flags(language_attrs: Option<&str>) -> (bool, bool) {
     let Ok(map) = serde_json::from_str::<HashMap<String, serde_json::Value>>(json_str) else {
         return (false, false);
     };
-    let is_async = map.get("is_async").and_then(|v| v.as_bool()).unwrap_or(false);
-    let is_unsafe = map.get("is_unsafe").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_async = map
+        .get("is_async")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let is_unsafe = map
+        .get("is_unsafe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     (is_async, is_unsafe)
 }
 
@@ -154,7 +168,10 @@ fn select_exemplars(
     let mut candidates: Vec<(&str, usize, i64, usize)> = Vec::new();
 
     for (idx, sa) in sym_attrs.iter().enumerate() {
-        if !required.iter().all(|r| sa.attributes.iter().any(|a| a == r)) {
+        if !required
+            .iter()
+            .all(|r| sa.attributes.iter().any(|a| a == r))
+        {
             continue;
         }
         if let Some(ref comp_id) = convention.component_id {
@@ -204,7 +221,9 @@ fn generate_template(exemplars: &[SignatureElements]) -> String {
 
     let mut parts = Vec::new();
 
-    let all_same_vis = exemplars.windows(2).all(|w| w[0].visibility == w[1].visibility);
+    let all_same_vis = exemplars
+        .windows(2)
+        .all(|w| w[0].visibility == w[1].visibility);
     if all_same_vis {
         if let Some(ref vis) = exemplars[0].visibility {
             parts.push(vis.clone());
@@ -270,10 +289,7 @@ fn build_params_template(exemplars: &[SignatureElements]) -> String {
         .collect();
 
     let all_have_self = has_self.iter().all(|s| s.is_some());
-    let same_self = all_have_self
-        && has_self
-            .windows(2)
-            .all(|w| w[0] == w[1]);
+    let same_self = all_have_self && has_self.windows(2).all(|w| w[0] == w[1]);
 
     if same_self {
         let self_param = has_self[0].unwrap();
@@ -302,10 +318,7 @@ fn build_params_template(exemplars: &[SignatureElements]) -> String {
 }
 
 fn build_return_template(exemplars: &[SignatureElements]) -> String {
-    let returns: Vec<Option<&str>> = exemplars
-        .iter()
-        .map(|e| e.return_type.as_deref())
-        .collect();
+    let returns: Vec<Option<&str>> = exemplars.iter().map(|e| e.return_type.as_deref()).collect();
 
     if returns.iter().all(|r| r.is_none()) {
         return String::new();
@@ -326,11 +339,10 @@ fn build_return_template(exemplars: &[SignatureElements]) -> String {
 fn detect_common_wrapper(returns: &[Option<&str>]) -> Option<&'static str> {
     let wrappers = ["Result", "Option", "Vec", "Box"];
     for w in &wrappers {
-        if returns.iter().all(|r| {
-            r.map_or(false, |r| {
-                r.starts_with(w) && r[w.len()..].starts_with('<')
-            })
-        }) {
+        if returns
+            .iter()
+            .all(|r| r.map_or(false, |r| r.starts_with(w) && r[w.len()..].starts_with('<')))
+        {
             return Some(w);
         }
     }
@@ -467,24 +479,27 @@ mod tests {
                 name: "high_coverage".into(),
                 file: "a.rs".into(),
                 attributes: vec![
-                    "kind:function".into(), "vis:pub".into(), "has_doc".into(),
-                    "returns_result".into(), "is_async".into(),
+                    "kind:function".into(),
+                    "vis:pub".into(),
+                    "has_doc".into(),
+                    "returns_result".into(),
+                    "is_async".into(),
                 ],
                 component_id: None,
             },
             SymbolAttrs {
                 name: "low_coverage".into(),
                 file: "b.rs".into(),
-                attributes: vec![
-                    "kind:function".into(), "vis:pub".into(), "has_doc".into(),
-                ],
+                attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()],
                 component_id: None,
             },
             SymbolAttrs {
                 name: "med_coverage".into(),
                 file: "c.rs".into(),
                 attributes: vec![
-                    "kind:function".into(), "vis:pub".into(), "has_doc".into(),
+                    "kind:function".into(),
+                    "vis:pub".into(),
+                    "has_doc".into(),
                     "returns_result".into(),
                 ],
                 component_id: None,

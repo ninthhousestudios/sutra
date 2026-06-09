@@ -69,10 +69,9 @@ pub fn detect_signals(db: &Db) -> Result<Vec<Signal>> {
 
         match lifecycle {
             "descriptive" => {
-                if recent
-                    .iter()
-                    .all(|h| h.support >= MIN_PROMOTE_SUPPORT && h.confidence >= MIN_PROMOTE_CONFIDENCE)
-                {
+                if recent.iter().all(|h| {
+                    h.support >= MIN_PROMOTE_SUPPORT && h.confidence >= MIN_PROMOTE_CONFIDENCE
+                }) {
                     signals.push(Signal::PromoteToPreferred {
                         convention_id: conv.id.clone(),
                         rationale: format!(
@@ -129,12 +128,7 @@ pub fn generate_proposals(db: &Db, signals: Vec<Signal>) -> Result<Vec<i64>> {
             continue;
         }
 
-        let id = db.create_proposal(
-            conv_id,
-            signal.transition(),
-            signal.rationale(),
-            direction,
-        )?;
+        let id = db.create_proposal(conv_id, signal.transition(), signal.rationale(), direction)?;
         created.push(id);
     }
     Ok(created)
@@ -202,7 +196,9 @@ mod tests {
 
         let signals = detect_signals(&db).unwrap();
         assert_eq!(signals.len(), 1);
-        assert!(matches!(&signals[0], Signal::PromoteToPreferred { convention_id, .. } if convention_id == "conv-1"));
+        assert!(
+            matches!(&signals[0], Signal::PromoteToPreferred { convention_id, .. } if convention_id == "conv-1")
+        );
     }
 
     #[test]
@@ -249,7 +245,9 @@ mod tests {
 
         let signals = detect_signals(&db).unwrap();
         assert_eq!(signals.len(), 1);
-        assert!(matches!(&signals[0], Signal::Deprecate { convention_id, .. } if convention_id == "conv-1"));
+        assert!(
+            matches!(&signals[0], Signal::Deprecate { convention_id, .. } if convention_id == "conv-1")
+        );
     }
 
     #[test]
@@ -274,7 +272,9 @@ mod tests {
 
         let signals = detect_signals(&db).unwrap();
         assert_eq!(signals.len(), 1);
-        assert!(matches!(&signals[0], Signal::ProposeDelete { convention_id, .. } if convention_id == "conv-1"));
+        assert!(
+            matches!(&signals[0], Signal::ProposeDelete { convention_id, .. } if convention_id == "conv-1")
+        );
     }
 
     #[test]
@@ -359,16 +359,28 @@ mod tests {
     fn dedup_by_snapshot_takes_first_per_snapshot() {
         let entries = vec![
             ConventionHistoryRow {
-                id: 1, convention_id: "c".into(), support: 5, confidence: 0.9,
-                snapshot_id: "s1".into(), recorded_at: "2026-01-03".into(),
+                id: 1,
+                convention_id: "c".into(),
+                support: 5,
+                confidence: 0.9,
+                snapshot_id: "s1".into(),
+                recorded_at: "2026-01-03".into(),
             },
             ConventionHistoryRow {
-                id: 2, convention_id: "c".into(), support: 3, confidence: 0.8,
-                snapshot_id: "s1".into(), recorded_at: "2026-01-03".into(),
+                id: 2,
+                convention_id: "c".into(),
+                support: 3,
+                confidence: 0.8,
+                snapshot_id: "s1".into(),
+                recorded_at: "2026-01-03".into(),
             },
             ConventionHistoryRow {
-                id: 3, convention_id: "c".into(), support: 4, confidence: 0.85,
-                snapshot_id: "s2".into(), recorded_at: "2026-01-02".into(),
+                id: 3,
+                convention_id: "c".into(),
+                support: 4,
+                confidence: 0.85,
+                snapshot_id: "s2".into(),
+                recorded_at: "2026-01-02".into(),
             },
         ];
 
@@ -381,8 +393,12 @@ mod tests {
     #[test]
     fn is_declining_detects_strictly_decreasing() {
         let make = |support| ConventionHistoryRow {
-            id: 0, convention_id: "c".into(), support, confidence: 0.9,
-            snapshot_id: "s".into(), recorded_at: "".into(),
+            id: 0,
+            convention_id: "c".into(),
+            support,
+            confidence: 0.9,
+            snapshot_id: "s".into(),
+            recorded_at: "".into(),
         };
         let h1 = make(2);
         let h2 = make(4);

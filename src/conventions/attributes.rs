@@ -131,10 +131,12 @@ pub fn enrich_with_effects(
         .collect();
 
     for pattern in patterns {
-        if resolved
-            .iter()
-            .any(|c| pattern.callee_prefixes.iter().any(|p| c.qualified_name.starts_with(p)))
-        {
+        if resolved.iter().any(|c| {
+            pattern
+                .callee_prefixes
+                .iter()
+                .any(|p| c.qualified_name.starts_with(p))
+        }) {
             sym_attrs.attributes.push(pattern.attr_name.to_string());
         }
     }
@@ -299,7 +301,14 @@ mod tests {
 
     #[test]
     fn effect_enrichment_matches_callee_prefix() {
-        let sym = make_symbol("function", Some("pub"), Some("fn read_file()"), None, Some(1), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn read_file()"),
+            None,
+            Some(1),
+            0,
+        );
         let mut attrs = extract_cross_language_attrs(&sym, "src/io.rs").unwrap();
         let r = make_ref(Some(100), 5);
         let patterns = [EffectPattern {
@@ -310,7 +319,14 @@ mod tests {
             &mut attrs,
             &sym,
             &[&r],
-            &|id| (id == 100).then(|| resolve_with("std::fs::read_to_string", Some("fn read_to_string(path: impl AsRef<Path>) -> Result<String>"))),
+            &|id| {
+                (id == 100).then(|| {
+                    resolve_with(
+                        "std::fs::read_to_string",
+                        Some("fn read_to_string(path: impl AsRef<Path>) -> Result<String>"),
+                    )
+                })
+            },
             &patterns,
         );
         assert!(attrs.attributes.contains(&"effect:fs".to_string()));
@@ -318,7 +334,14 @@ mod tests {
 
     #[test]
     fn effect_enrichment_no_match_no_attrs() {
-        let sym = make_symbol("function", Some("pub"), Some("fn compute()"), None, Some(1), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn compute()"),
+            None,
+            Some(1),
+            0,
+        );
         let mut attrs = extract_cross_language_attrs(&sym, "src/math.rs").unwrap();
         let r = make_ref(Some(200), 5);
         let patterns = [EffectPattern {
@@ -337,7 +360,14 @@ mod tests {
 
     #[test]
     fn effect_enrichment_multiple_patterns() {
-        let sym = make_symbol("function", Some("pub"), Some("fn sync_data()"), None, Some(1), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn sync_data()"),
+            None,
+            Some(1),
+            0,
+        );
         let mut attrs = extract_cross_language_attrs(&sym, "src/sync.rs").unwrap();
         let r1 = make_ref(Some(10), 3);
         let r2 = make_ref(Some(20), 7);
@@ -356,8 +386,16 @@ mod tests {
             &sym,
             &[&r1, &r2],
             &|id| match id {
-                10 => Some(resolve_with("std::fs::write", Some("fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()>"))),
-                20 => Some(resolve_with("reqwest::Client::get", Some("fn get(&self, url: impl IntoUrl) -> RequestBuilder"))),
+                10 => Some(resolve_with(
+                    "std::fs::write",
+                    Some(
+                        "fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()>",
+                    ),
+                )),
+                20 => Some(resolve_with(
+                    "reqwest::Client::get",
+                    Some("fn get(&self, url: impl IntoUrl) -> RequestBuilder"),
+                )),
                 _ => None,
             },
             &patterns,
@@ -368,32 +406,65 @@ mod tests {
 
     #[test]
     fn effect_unsafe_transitive_from_callee_signature() {
-        let sym = make_symbol("function", Some("pub"), Some("fn safe_wrapper()"), None, Some(1), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn safe_wrapper()"),
+            None,
+            Some(1),
+            0,
+        );
         let mut attrs = extract_cross_language_attrs(&sym, "src/ffi.rs").unwrap();
         let r = make_ref(Some(50), 5);
         enrich_with_effects(
             &mut attrs,
             &sym,
             &[&r],
-            &|id| (id == 50).then(|| resolve_with("libc::malloc", Some("unsafe fn malloc(size: usize) -> *mut c_void"))),
+            &|id| {
+                (id == 50).then(|| {
+                    resolve_with(
+                        "libc::malloc",
+                        Some("unsafe fn malloc(size: usize) -> *mut c_void"),
+                    )
+                })
+            },
             &[],
         );
-        assert!(attrs.attributes.contains(&"effect:unsafe_transitive".to_string()));
+        assert!(
+            attrs
+                .attributes
+                .contains(&"effect:unsafe_transitive".to_string())
+        );
     }
 
     #[test]
     fn effect_no_unsafe_transitive_for_safe_callee() {
-        let sym = make_symbol("function", Some("pub"), Some("fn do_stuff()"), None, Some(1), 0);
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn do_stuff()"),
+            None,
+            Some(1),
+            0,
+        );
         let mut attrs = extract_cross_language_attrs(&sym, "src/lib.rs").unwrap();
         let r = make_ref(Some(60), 5);
         enrich_with_effects(
             &mut attrs,
             &sym,
             &[&r],
-            &|id| (id == 60).then(|| resolve_with("std::vec::Vec::push", Some("fn push(&mut self, value: T)"))),
+            &|id| {
+                (id == 60).then(|| {
+                    resolve_with("std::vec::Vec::push", Some("fn push(&mut self, value: T)"))
+                })
+            },
             &[],
         );
-        assert!(!attrs.attributes.contains(&"effect:unsafe_transitive".to_string()));
+        assert!(
+            !attrs
+                .attributes
+                .contains(&"effect:unsafe_transitive".to_string())
+        );
     }
 
     #[test]

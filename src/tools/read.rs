@@ -31,7 +31,11 @@ pub fn handle(
     is_stale: bool,
 ) -> Result<serde_json::Value> {
     let context_lines = context_lines.unwrap_or(5);
-    let line_cap = if full { usize::MAX } else { limit.unwrap_or(DEFAULT_LINE_CAP) };
+    let line_cap = if full {
+        usize::MAX
+    } else {
+        limit.unwrap_or(DEFAULT_LINE_CAP)
+    };
 
     let sym = db
         .resolve_symbol(symbol, None)?

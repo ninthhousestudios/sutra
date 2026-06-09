@@ -37,7 +37,12 @@ pub fn handle(db: &Db, compact: bool) -> Result<serde_json::Value> {
         if compact {
             let top_anchors: Vec<&str> = all_anchors
                 .get(&c.id)
-                .map(|a| a.iter().take(3).map(|row| row.symbol_name.as_str()).collect())
+                .map(|a| {
+                    a.iter()
+                        .take(3)
+                        .map(|row| row.symbol_name.as_str())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             items.push(json!({

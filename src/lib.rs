@@ -1,11 +1,11 @@
 pub mod components;
 pub mod config;
+pub mod constraints;
+pub mod conventions;
 pub mod dart_packages;
 pub mod db;
-pub mod constraints;
 pub mod diagnostics;
 pub mod error;
-pub mod conventions;
 pub mod freshness;
 pub mod git;
 pub mod graph;

@@ -79,7 +79,6 @@ const SKIP_DIRS: &[&str] = &[
     ".claude",
 ];
 
-
 struct FileParseResult {
     file_id: i64,
     symbols_extracted: i64,
@@ -174,9 +173,7 @@ fn parse_single_file(
 
     let existing = db.file_by_path(&rel_path)?;
     if let Some(ref ex) = existing {
-        if ex.content_hash == content_hash
-            && !db.file_has_null_language_attrs(ex.id)?
-        {
+        if ex.content_hash == content_hash && !db.file_has_null_language_attrs(ex.id)? {
             return Ok(None);
         }
     }
@@ -381,7 +378,9 @@ pub fn parse_workspace(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry, &mut pool)? {
+            if let Some(result) =
+                parse_single_file(db, file_path, &workspace.root, registry, &mut pool)?
+            {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
@@ -403,7 +402,13 @@ pub fn parse_workspace(
             return Ok(PostParseResult::NoChanges);
         }
 
-        let (unresolved_count, skipped_count) = post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())?;
+        let (unresolved_count, skipped_count) = post_parse_sequence(
+            db,
+            &deleted_symbol_ids,
+            &mut file_ids_needing_resolution,
+            &workspace.root,
+            &registry.boundary_multipliers(),
+        )?;
         Ok(PostParseResult::Full {
             unresolved_count,
             skipped_count,
@@ -514,7 +519,9 @@ pub fn parse_changed_files(
             if !allowed_ext.contains(ext) {
                 continue;
             }
-            if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry, &mut pool)? {
+            if let Some(result) =
+                parse_single_file(db, file_path, &workspace.root, registry, &mut pool)?
+            {
                 parse_errors += result.parse_errors;
                 deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
@@ -535,7 +542,13 @@ pub fn parse_changed_files(
             return Ok(PostParseResult::NoChanges);
         }
 
-        let (unresolved_count, skipped_count) = post_parse_sequence(db, &deleted_symbol_ids, &mut file_ids_needing_resolution, &workspace.root, &registry.boundary_multipliers())?;
+        let (unresolved_count, skipped_count) = post_parse_sequence(
+            db,
+            &deleted_symbol_ids,
+            &mut file_ids_needing_resolution,
+            &workspace.root,
+            &registry.boundary_multipliers(),
+        )?;
         Ok(PostParseResult::Full {
             unresolved_count,
             skipped_count,
@@ -676,11 +689,11 @@ fn post_parse_sequence(
             }
         }
 
-        let component_count = components::discover_components(db, &files, workspace_root, boundary_multipliers)?;
+        let component_count =
+            components::discover_components(db, &files, workspace_root, boundary_multipliers)?;
         if component_count > 0 {
             info!(component_count, "discovered components");
-            let anchor_count =
-                components::compute_semantic_anchors(db, workspace_root)?;
+            let anchor_count = components::compute_semantic_anchors(db, workspace_root)?;
             if anchor_count > 0 {
                 info!(anchor_count, "computed semantic anchors");
             }
@@ -909,8 +922,10 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
             .push((*file_id, *lc));
     }
 
-    let file_score_map: HashMap<i64, f64> =
-        file_scores.iter().map(|fs| (fs.file_id, fs.score)).collect();
+    let file_score_map: HashMap<i64, f64> = file_scores
+        .iter()
+        .map(|fs| (fs.file_id, fs.score))
+        .collect();
 
     let mut component_scores = Vec::new();
     for comp in &components {

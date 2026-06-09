@@ -28,7 +28,11 @@ pub fn find_similar(
         })
         .collect();
 
-    matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    matches.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     matches.truncate(limit);
     matches
 }
@@ -76,9 +80,7 @@ mod tests {
     #[test]
     fn limit_truncation() {
         let query = make_vec(1);
-        let candidates: Vec<(i64, HrrVec)> = (10..20)
-            .map(|i| (i, query.normalize()))
-            .collect();
+        let candidates: Vec<(i64, HrrVec)> = (10..20).map(|i| (i, query.normalize())).collect();
         let results = find_similar(1, &query, &candidates, 3, 0.0);
         assert_eq!(results.len(), 3);
     }

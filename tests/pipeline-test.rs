@@ -3,8 +3,8 @@ use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
 use sutra::db::{Db, SnapshotParams};
-use sutra::parser::{RefContextKind, SymbolKind};
 use sutra::parser::adapter::default_registry;
+use sutra::parser::{RefContextKind, SymbolKind};
 use sutra::pipeline::{self, parse_changed_files};
 use sutra::workspace::WorkspaceEntry;
 
@@ -313,7 +313,16 @@ async fn test_changed_single_file() {
     // Incremental parse with only the changed file
     let cancel = AtomicBool::new(false);
     let registry = default_registry();
-    let snap = parse_changed_files(&ws, &db, &config, &[src.join("lib.rs")], &[], &cancel, &registry).unwrap();
+    let snap = parse_changed_files(
+        &ws,
+        &db,
+        &config,
+        &[src.join("lib.rs")],
+        &[],
+        &cancel,
+        &registry,
+    )
+    .unwrap();
 
     assert_eq!(snap.files_parsed, 1);
     assert!(snap.symbols_extracted >= 2);
@@ -354,7 +363,16 @@ async fn test_deleted_file_with_cascade() {
     // Incremental parse: lib.rs deleted
     let cancel = AtomicBool::new(false);
     let registry = default_registry();
-    let snap = parse_changed_files(&ws, &db, &config, &[], &[src.join("lib.rs")], &cancel, &registry).unwrap();
+    let snap = parse_changed_files(
+        &ws,
+        &db,
+        &config,
+        &[],
+        &[src.join("lib.rs")],
+        &cancel,
+        &registry,
+    )
+    .unwrap();
 
     // lib.rs should be gone from DB
     assert!(db.file_by_path("src/lib.rs").unwrap().is_none());
@@ -474,12 +492,20 @@ async fn test_incremental_skips_unlisted_language() {
     std::fs::write(src.join("app.dart"), "void main() {}\n").unwrap();
 
     let snap = parse_changed_files(
-        &ws, &db, &config,
-        &[src.join("app.dart")], &[],
-        &cancel, &registry,
-    ).unwrap();
+        &ws,
+        &db,
+        &config,
+        &[src.join("app.dart")],
+        &[],
+        &cancel,
+        &registry,
+    )
+    .unwrap();
 
-    assert_eq!(snap.files_parsed, 0, "dart file should be skipped in rust-only workspace");
+    assert_eq!(
+        snap.files_parsed, 0,
+        "dart file should be skipped in rust-only workspace"
+    );
     assert!(db.file_by_path("src/app.dart").unwrap().is_none());
 }
 
@@ -510,13 +536,25 @@ async fn test_parent_symbol_id_round_trip() {
     let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
     let symbols = db.find_symbols_by_file(file.id).unwrap();
 
-    let impl_sym = symbols.iter().find(|s| s.kind == "impl").expect("should have impl");
-    let struct_sym = symbols.iter().find(|s| s.kind == "struct").expect("should have struct");
+    let impl_sym = symbols
+        .iter()
+        .find(|s| s.kind == "impl")
+        .expect("should have impl");
+    let struct_sym = symbols
+        .iter()
+        .find(|s| s.kind == "struct")
+        .expect("should have struct");
 
     // Struct is top-level — no parent
-    assert!(struct_sym.parent_symbol_id.is_none(), "struct should have no parent");
+    assert!(
+        struct_sym.parent_symbol_id.is_none(),
+        "struct should have no parent"
+    );
     // Impl is top-level — no parent
-    assert!(impl_sym.parent_symbol_id.is_none(), "impl should have no parent");
+    assert!(
+        impl_sym.parent_symbol_id.is_none(),
+        "impl should have no parent"
+    );
 
     // Methods should have impl as parent
     let methods: Vec<_> = symbols.iter().filter(|s| s.kind == "method").collect();
@@ -558,9 +596,18 @@ async fn test_nested_parent_symbol_id_chain() {
     let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
     let symbols = db.find_symbols_by_file(file.id).unwrap();
 
-    let module = symbols.iter().find(|s| s.kind == "module").expect("should have module");
-    let impl_sym = symbols.iter().find(|s| s.kind == "impl").expect("should have impl");
-    let method = symbols.iter().find(|s| s.kind == "method").expect("should have method");
+    let module = symbols
+        .iter()
+        .find(|s| s.kind == "module")
+        .expect("should have module");
+    let impl_sym = symbols
+        .iter()
+        .find(|s| s.kind == "impl")
+        .expect("should have impl");
+    let method = symbols
+        .iter()
+        .find(|s| s.kind == "method")
+        .expect("should have method");
 
     // module is top-level
     assert!(module.parent_symbol_id.is_none());
@@ -587,7 +634,11 @@ struct Borrowed<'a> { data: &'a str }
     .unwrap();
 
     let db_dir = tempfile::tempdir().unwrap();
-    let ws = WorkspaceEntry { id: "test".into(), root: dir.path().to_path_buf(), languages: vec!["rust".into()] };
+    let ws = WorkspaceEntry {
+        id: "test".into(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["rust".into()],
+    };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked("test", db_dir.path()).unwrap();
     let cancel = AtomicBool::new(false);
@@ -597,25 +648,53 @@ struct Borrowed<'a> { data: &'a str }
     let file = db.file_by_path("src/lib.rs").unwrap().unwrap();
     let symbols = db.find_symbols_by_file(file.id).unwrap();
 
-    let fetch = symbols.iter().find(|s| s.short_name == "fetch").expect("fetch");
-    let attrs: serde_json::Value =
-        serde_json::from_str(fetch.language_attrs.as_deref().expect("fetch should have attrs"))
-            .unwrap();
+    let fetch = symbols
+        .iter()
+        .find(|s| s.short_name == "fetch")
+        .expect("fetch");
+    let attrs: serde_json::Value = serde_json::from_str(
+        fetch
+            .language_attrs
+            .as_deref()
+            .expect("fetch should have attrs"),
+    )
+    .unwrap();
     assert_eq!(attrs["is_async"], true);
     assert_eq!(attrs["returns_result"], true);
 
-    let danger = symbols.iter().find(|s| s.short_name == "danger").expect("danger");
-    let attrs: serde_json::Value =
-        serde_json::from_str(danger.language_attrs.as_deref().expect("danger should have attrs"))
-            .unwrap();
+    let danger = symbols
+        .iter()
+        .find(|s| s.short_name == "danger")
+        .expect("danger");
+    let attrs: serde_json::Value = serde_json::from_str(
+        danger
+            .language_attrs
+            .as_deref()
+            .expect("danger should have attrs"),
+    )
+    .unwrap();
     assert_eq!(attrs["is_unsafe"], true);
 
-    let plain = symbols.iter().find(|s| s.short_name == "plain").expect("plain");
-    assert_eq!(plain.language_attrs.as_deref(), Some("{}"), "plain fn should have empty attrs");
+    let plain = symbols
+        .iter()
+        .find(|s| s.short_name == "plain")
+        .expect("plain");
+    assert_eq!(
+        plain.language_attrs.as_deref(),
+        Some("{}"),
+        "plain fn should have empty attrs"
+    );
 
-    let borrowed = symbols.iter().find(|s| s.short_name == "Borrowed").expect("Borrowed");
-    let attrs: serde_json::Value =
-        serde_json::from_str(borrowed.language_attrs.as_deref().expect("Borrowed should have attrs"))
-            .unwrap();
+    let borrowed = symbols
+        .iter()
+        .find(|s| s.short_name == "Borrowed")
+        .expect("Borrowed");
+    let attrs: serde_json::Value = serde_json::from_str(
+        borrowed
+            .language_attrs
+            .as_deref()
+            .expect("Borrowed should have attrs"),
+    )
+    .unwrap();
     assert_eq!(attrs["has_lifetime_params"], true);
 }

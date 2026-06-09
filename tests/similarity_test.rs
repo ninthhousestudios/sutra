@@ -83,8 +83,10 @@ fn load_vectors(db: &Db) -> Vec<(i64, String, HrrVec)> {
 
 fn codebook_count(db: &Db) -> usize {
     let conn = db.conn_for_test();
-    conn.query_row("SELECT COUNT(*) FROM hrr_codebook", [], |row| row.get::<_, i64>(0))
-        .unwrap() as usize
+    conn.query_row("SELECT COUNT(*) FROM hrr_codebook", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap() as usize
 }
 
 fn get_vec<'a>(vecs: &'a [(i64, String, HrrVec)], sym_id: i64, mode: &str) -> &'a HrrVec {
@@ -100,7 +102,10 @@ fn get_vec<'a>(vecs: &'a [(i64, String, HrrVec)], sym_id: i64, mode: &str) -> &'
 
 #[test]
 fn hrr_vectors_produced_for_functions() {
-    let f = setup(&[("src/lib.rs", "pub fn hello() -> i32 { 42 }\npub fn world() -> i32 { 0 }\n")]);
+    let f = setup(&[(
+        "src/lib.rs",
+        "pub fn hello() -> i32 { 42 }\npub fn world() -> i32 { 0 }\n",
+    )]);
     parse(&f);
 
     let vecs = load_vectors(&f.db);
@@ -133,7 +138,11 @@ fn determinism_same_tree_same_vector() {
     assert_eq!(vecs1.len(), vecs2.len());
     for (a, b) in vecs1.iter().zip(vecs2.iter()) {
         assert_eq!(a.1, b.1, "mode mismatch");
-        assert_eq!(a.2.data, b.2.data, "vectors differ after reparse for mode={}", a.1);
+        assert_eq!(
+            a.2.data, b.2.data,
+            "vectors differ after reparse for mode={}",
+            a.1
+        );
     }
 }
 
@@ -271,10 +280,13 @@ fn similar_search_strip_mode() {
     )]);
     parse(&f);
 
-    let result = sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0))
-        .unwrap();
+    let result =
+        sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0)).unwrap();
     let matches = result["matches"].as_array().unwrap();
-    assert!(!matches.is_empty(), "should find at least one similar function");
+    assert!(
+        !matches.is_empty(),
+        "should find at least one similar function"
+    );
 
     // beta has identical structure to alpha in strip mode — should be top match
     let top = &matches[0];
@@ -314,10 +326,7 @@ fn similar_search_embed_mode_lower_than_strip() {
 
 #[test]
 fn similar_search_excludes_self() {
-    let f = setup(&[(
-        "src/lib.rs",
-        "pub fn only_one(x: i32) -> i32 { x + 1 }\n",
-    )]);
+    let f = setup(&[("src/lib.rs", "pub fn only_one(x: i32) -> i32 { x + 1 }\n")]);
     parse(&f);
 
     let result =
@@ -347,7 +356,10 @@ fn similar_search_unknown_symbol() {
 fn similar_search_non_function_symbol() {
     let f = setup(&[(
         "src/lib.rs",
-        concat!("pub struct MyStruct { pub x: i32 }\n", "pub fn helper() {}\n"),
+        concat!(
+            "pub struct MyStruct { pub x: i32 }\n",
+            "pub fn helper() {}\n"
+        ),
     )]);
     parse(&f);
 
@@ -373,8 +385,8 @@ fn operator_discrimination() {
 
     let _vecs = load_vectors(&f.db);
     // Use sutra_similar to find matches for "add" — sub and mul should not be ~1.0
-    let result = sutra::tools::similar::handle(&f.db, "add", Some("strip"), Some(10), Some(0.0))
-        .unwrap();
+    let result =
+        sutra::tools::similar::handle(&f.db, "add", Some("strip"), Some(10), Some(0.0)).unwrap();
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "should find matches for add");
 

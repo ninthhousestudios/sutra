@@ -1,9 +1,9 @@
 use crate::error::Result;
+use crate::parser::adapter::ParseContext;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity,
 };
-use crate::parser::adapter::ParseContext;
 use tree_sitter::{Node, TreeCursor};
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
@@ -376,19 +376,20 @@ fn extract_symbol(
     let (signature, signature_hash) = extract_signature(node, src, kind);
     let language_attrs = extract_language_attrs(node, src, kind);
 
-    let (cyclomatic, cognitive, max_nesting) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
-        if let Some(body) = node.child_by_field_name("body") {
-            (
-                Some(complexity::cyclomatic(body, src, "rust")),
-                Some(complexity::cognitive(body, src, "rust")),
-                Some(complexity::max_nesting_depth(body, src, "rust")),
-            )
+    let (cyclomatic, cognitive, max_nesting) =
+        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+            if let Some(body) = node.child_by_field_name("body") {
+                (
+                    Some(complexity::cyclomatic(body, src, "rust")),
+                    Some(complexity::cognitive(body, src, "rust")),
+                    Some(complexity::max_nesting_depth(body, src, "rust")),
+                )
+            } else {
+                (Some(1), Some(0), Some(0))
+            }
         } else {
-            (Some(1), Some(0), Some(0))
-        }
-    } else {
-        (None, None, None)
-    };
+            (None, None, None)
+        };
 
     Some(ExtractedSymbol {
         qualified_name,
@@ -876,10 +877,7 @@ mod tests {
             .unwrap();
         assert_eq!(module.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
         let flat = crate::parser::flatten_symbols(&result.symbols);
-        let helper = flat
-            .iter()
-            .find(|s| s.short_name == "helper")
-            .unwrap();
+        let helper = flat.iter().find(|s| s.short_name == "helper").unwrap();
         assert_eq!(helper.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
     }
 

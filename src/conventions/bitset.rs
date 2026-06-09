@@ -44,7 +44,10 @@ impl BitSet {
     }
 
     pub fn intersect(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.len, other.len, "BitSet::intersect on different lengths");
+        debug_assert_eq!(
+            self.len, other.len,
+            "BitSet::intersect on different lengths"
+        );
         let mut r = self.clone();
         for (w, o) in r.words.iter_mut().zip(&other.words) {
             *w &= *o;
@@ -53,7 +56,10 @@ impl BitSet {
     }
 
     pub fn is_subset_of(&self, other: &Self) -> bool {
-        debug_assert_eq!(self.len, other.len, "BitSet::is_subset_of on different lengths");
+        debug_assert_eq!(
+            self.len, other.len,
+            "BitSet::is_subset_of on different lengths"
+        );
         self.words
             .iter()
             .zip(&other.words)

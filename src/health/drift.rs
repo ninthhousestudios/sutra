@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::conventions::{Convention, SymbolAttrs, DRIFT_WINDOW};
+use crate::conventions::{Convention, DRIFT_WINDOW, SymbolAttrs};
 use crate::db::Db;
 use crate::error::Result;
 use crate::similarity::hrr::HrrVec;
@@ -28,18 +28,12 @@ pub fn compute_fca_conformance(
             }
 
             for sym in symbols {
-                let has_antecedent = conv
-                    .antecedent
-                    .iter()
-                    .all(|a| sym.attributes.contains(a));
+                let has_antecedent = conv.antecedent.iter().all(|a| sym.attributes.contains(a));
                 if !has_antecedent {
                     continue;
                 }
                 total_matched += 1;
-                let missing = conv
-                    .consequent
-                    .iter()
-                    .any(|c| !sym.attributes.contains(c));
+                let missing = conv.consequent.iter().any(|c| !sym.attributes.contains(c));
                 if !missing {
                     total_conforming += 1;
                 }
@@ -47,7 +41,10 @@ pub fn compute_fca_conformance(
         }
 
         if total_matched > 0 {
-            result.insert(comp_id.clone(), total_conforming as f64 / total_matched as f64);
+            result.insert(
+                comp_id.clone(),
+                total_conforming as f64 / total_matched as f64,
+            );
         }
     }
     result
@@ -187,9 +184,7 @@ fn check_metric_drop(
         provenance: format!("review:{provenance_suffix}"),
         metric_value: delta,
         threshold,
-        detail: format!(
-            "{comp_name}: {label} dropped from {oldest:.2} to {current:.2}"
-        ),
+        detail: format!("{comp_name}: {label} dropped from {oldest:.2} to {current:.2}"),
     })
 }
 
@@ -225,22 +220,38 @@ mod tests {
     fn fca_conformance_basic() {
         let convs = vec![make_conv(&["kind:function", "vis:pub"], &["has_doc"], None)];
         let syms = vec![
-            make_sym("a", "f.rs", &["kind:function", "vis:pub", "has_doc"], Some("c1")),
-            make_sym("b", "f.rs", &["kind:function", "vis:pub", "has_doc"], Some("c1")),
+            make_sym(
+                "a",
+                "f.rs",
+                &["kind:function", "vis:pub", "has_doc"],
+                Some("c1"),
+            ),
+            make_sym(
+                "b",
+                "f.rs",
+                &["kind:function", "vis:pub", "has_doc"],
+                Some("c1"),
+            ),
             make_sym("c", "f.rs", &["kind:function", "vis:pub"], Some("c1")), // missing has_doc
         ];
         let components = vec![("c1".into(), "comp1".into(), syms)];
         let result = compute_fca_conformance(&convs, &components);
         let conf = result.get("c1").unwrap();
-        assert!((conf - 2.0 / 3.0).abs() < 1e-9, "expected ~0.667, got {conf}");
+        assert!(
+            (conf - 2.0 / 3.0).abs() < 1e-9,
+            "expected ~0.667, got {conf}"
+        );
     }
 
     #[test]
     fn fca_conformance_no_matches() {
         let convs = vec![make_conv(&["kind:struct"], &["has_doc"], None)];
-        let syms = vec![
-            make_sym("a", "f.rs", &["kind:function", "vis:pub"], Some("c1")),
-        ];
+        let syms = vec![make_sym(
+            "a",
+            "f.rs",
+            &["kind:function", "vis:pub"],
+            Some("c1"),
+        )];
         let components = vec![("c1".into(), "comp1".into(), syms)];
         let result = compute_fca_conformance(&convs, &components);
         assert!(result.get("c1").is_none());
@@ -256,9 +267,12 @@ mod tests {
             make_sym("a", "a.rs", &["kind:function", "has_doc"], Some("c1")),
             make_sym("b", "a.rs", &["kind:function"], Some("c1")), // missing has_doc
         ];
-        let syms_c2 = vec![
-            make_sym("x", "x.rs", &["kind:function", "vis:pub"], Some("c2")),
-        ];
+        let syms_c2 = vec![make_sym(
+            "x",
+            "x.rs",
+            &["kind:function", "vis:pub"],
+            Some("c2"),
+        )];
         let components = vec![
             ("c1".into(), "comp1".into(), syms_c1),
             ("c2".into(), "comp2".into(), syms_c2),

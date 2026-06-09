@@ -26,14 +26,12 @@ impl BlameCache {
         }
     }
 
-    pub fn get_or_compute(
-        &mut self,
-        workspace_root: &Path,
-        path: &str,
-    ) -> Result<&[BlameLine]> {
+    pub fn get_or_compute(&mut self, workspace_root: &Path, path: &str) -> Result<&[BlameLine]> {
         if !self.cache.contains_key(path) {
-            self.cache
-                .insert(path.to_string(), git::git_blame_porcelain(workspace_root, path)?);
+            self.cache.insert(
+                path.to_string(),
+                git::git_blame_porcelain(workspace_root, path)?,
+            );
         }
         Ok(self.cache.get(path).unwrap())
     }
@@ -243,11 +241,7 @@ pub fn compute_health_delta(
             continue;
         }
 
-        let driving = if delta < 0.0 {
-            ondemand_rows
-        } else {
-            vec![]
-        };
+        let driving = if delta < 0.0 { ondemand_rows } else { vec![] };
 
         let entry = HealthDeltaEntry {
             path: path.clone(),
@@ -264,8 +258,16 @@ pub fn compute_health_delta(
         }
     }
 
-    degraded.sort_by(|a, b| a.delta.partial_cmp(&b.delta).unwrap_or(std::cmp::Ordering::Equal));
-    improved.sort_by(|a, b| b.delta.partial_cmp(&a.delta).unwrap_or(std::cmp::Ordering::Equal));
+    degraded.sort_by(|a, b| {
+        a.delta
+            .partial_cmp(&b.delta)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    improved.sort_by(|a, b| {
+        b.delta
+            .partial_cmp(&a.delta)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(HealthDelta { degraded, improved })
 }

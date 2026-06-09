@@ -160,8 +160,10 @@ impl Db {
              WHERE constraint_id NOT IN ({placeholders}) ORDER BY created_at DESC"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            active_ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = active_ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt
             .query_map(params.as_slice(), map_waiver_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;

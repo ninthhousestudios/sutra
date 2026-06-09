@@ -34,7 +34,11 @@ pub fn load_owners_config(workspace_root: &Path) -> OwnersConfig {
 }
 
 fn file_path_map(db: &Db) -> Result<HashMap<i64, String>> {
-    Ok(db.all_files()?.into_iter().map(|f| (f.id, f.path)).collect())
+    Ok(db
+        .all_files()?
+        .into_iter()
+        .map(|f| (f.id, f.path))
+        .collect())
 }
 
 pub fn compute_co_change_scatter(db: &Db) -> Result<Vec<HealthFinding>> {

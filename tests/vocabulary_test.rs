@@ -48,9 +48,15 @@ fn pin_resolution(dir: &std::path::Path) {
 }
 
 fn setup_component(db: &Db, dir: &std::path::Path) {
-    let a1 = db.upsert_file("src/auth/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/auth/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/auth/a3.rs", "rust", "h3", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/auth/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/auth/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/auth/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
 
     let sa1 = insert_symbol(db, a1, "auth_login", "auth_login", "function");
     let sa2 = insert_symbol(db, a2, "auth_verify", "auth_verify", "function");
@@ -271,7 +277,10 @@ fn test_orphan_detected_for_missing_file() {
 
     let matches = vocabulary::resolve(&db, "missing").unwrap();
     assert_eq!(matches.len(), 1);
-    assert!(matches[0].orphan, "file alias to non-indexed path should be orphan");
+    assert!(
+        matches[0].orphan,
+        "file alias to non-indexed path should be orphan"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +333,11 @@ fn test_resolve_component_includes_file_locations() {
         !comp_match.locations.is_empty(),
         "component match should include file locations"
     );
-    let paths: Vec<&str> = comp_match.locations.iter().map(|l| l.path.as_str()).collect();
+    let paths: Vec<&str> = comp_match
+        .locations
+        .iter()
+        .map(|l| l.path.as_str())
+        .collect();
     assert!(paths.contains(&"src/auth/a1.rs"));
     assert!(paths.contains(&"src/auth/a2.rs"));
     assert!(paths.contains(&"src/auth/a3.rs"));
@@ -346,8 +359,14 @@ fn test_resolve_anchor_includes_symbol_location() {
     );
     let loc = &anchor.locations[0];
     assert_eq!(loc.path, "src/auth/a1.rs");
-    assert!(loc.start_line.is_some(), "symbol location should have start_line");
-    assert!(loc.end_line.is_some(), "symbol location should have end_line");
+    assert!(
+        loc.start_line.is_some(),
+        "symbol location should have start_line"
+    );
+    assert!(
+        loc.end_line.is_some(),
+        "symbol location should have end_line"
+    );
 }
 
 #[test]
@@ -404,7 +423,10 @@ fn test_sync_rejects_duplicate_term_across_sections() {
     .unwrap();
 
     let result = vocabulary::sync_aliases(&db, dir.path());
-    assert!(result.is_err(), "duplicate term across sections should error");
+    assert!(
+        result.is_err(),
+        "duplicate term across sections should error"
+    );
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("duplicate alias term 'auth'"),

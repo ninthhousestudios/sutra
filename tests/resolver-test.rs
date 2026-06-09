@@ -109,7 +109,9 @@ fn cache_hit_on_unchanged_membership() {
     });
 
     let mut resolver = ConstraintResolver::new();
-    let first = resolver.resolve(&[constraint.clone()], &db, &path_map).unwrap();
+    let first = resolver
+        .resolve(&[constraint.clone()], &db, &path_map)
+        .unwrap();
     let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
     assert_eq!(first, second);
 }
@@ -131,11 +133,14 @@ fn cache_miss_on_membership_change() {
     });
 
     let mut resolver = ConstraintResolver::new();
-    let first = resolver.resolve(&[constraint.clone()], &db, &path_map).unwrap();
+    let first = resolver
+        .resolve(&[constraint.clone()], &db, &path_map)
+        .unwrap();
     assert_eq!(first.len(), 1);
 
     // Simulate membership change: add third file to beta, update clustering_meta
-    db.batch_insert_membership(&[("comp-beta".into(), ids[2])]).unwrap();
+    db.batch_insert_membership(&[("comp-beta".into(), ids[2])])
+        .unwrap();
     db.upsert_clustering_meta(0, 3, "h2", 0, 0).unwrap();
 
     let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
@@ -147,7 +152,11 @@ fn forbidden_dep_passes_through() {
     let (db, _dir) = setup_db();
     let path_map = setup_files(
         &db,
-        &["src/tools/review.rs", "src/tools/orient.rs", "src/daemon.rs"],
+        &[
+            "src/tools/review.rs",
+            "src/tools/orient.rs",
+            "src/daemon.rs",
+        ],
     );
 
     let constraint = make_constraint(ConstraintKind::ForbiddenDep {
@@ -178,14 +187,7 @@ fn forbidden_dep_passes_through() {
 #[test]
 fn mixed_boundary_and_forbidden_dep() {
     let (db, _dir) = setup_db();
-    let path_map = setup_files(
-        &db,
-        &[
-            "src/core/a.rs",
-            "src/tools/x.rs",
-            "src/daemon.rs",
-        ],
-    );
+    let path_map = setup_files(&db, &["src/core/a.rs", "src/tools/x.rs", "src/daemon.rs"]);
 
     let core_id = *path_map
         .iter()
@@ -256,26 +258,39 @@ fn cache_miss_on_constraint_change() {
     let (db, _dir) = setup_db();
     let path_map = setup_files(
         &db,
-        &["src/tools/review.rs", "src/tools/orient.rs", "src/daemon.rs"],
+        &[
+            "src/tools/review.rs",
+            "src/tools/orient.rs",
+            "src/daemon.rs",
+        ],
     );
 
-    let c1 = make_constraint_with_id("rule0001", ConstraintKind::ForbiddenDep {
-        from: "src/tools/*".into(),
-        to: "src/daemon.rs".into(),
-    });
+    let c1 = make_constraint_with_id(
+        "rule0001",
+        ConstraintKind::ForbiddenDep {
+            from: "src/tools/*".into(),
+            to: "src/daemon.rs".into(),
+        },
+    );
 
     let mut resolver = ConstraintResolver::new();
     let first = resolver.resolve(&[c1], &db, &path_map).unwrap();
     assert_eq!(first.len(), 2);
 
     // Different constraint (different ID, different globs) — must re-resolve
-    let c2 = make_constraint_with_id("rule0002", ConstraintKind::ForbiddenDep {
-        from: "src/daemon.rs".into(),
-        to: "src/tools/*".into(),
-    });
+    let c2 = make_constraint_with_id(
+        "rule0002",
+        ConstraintKind::ForbiddenDep {
+            from: "src/daemon.rs".into(),
+            to: "src/tools/*".into(),
+        },
+    );
     let second = resolver.resolve(&[c2], &db, &path_map).unwrap();
     assert_eq!(second.len(), 2);
-    assert_ne!(first, second, "different constraints must produce different pairs");
+    assert_ne!(
+        first, second,
+        "different constraints must produce different pairs"
+    );
 }
 
 #[test]
@@ -289,13 +304,21 @@ fn cache_miss_on_path_map_change() {
     });
 
     let mut resolver = ConstraintResolver::new();
-    let first = resolver.resolve(&[constraint.clone()], &db, &path_map).unwrap();
+    let first = resolver
+        .resolve(&[constraint.clone()], &db, &path_map)
+        .unwrap();
     assert_eq!(first.len(), 1);
 
     // Add a new file matching the glob — must re-resolve
-    let new_id = db.upsert_file("src/tools/orient.rs", "rust", "hash2", 30, true).unwrap();
+    let new_id = db
+        .upsert_file("src/tools/orient.rs", "rust", "hash2", 30, true)
+        .unwrap();
     path_map.insert(new_id, "src/tools/orient.rs".to_string());
 
     let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
-    assert_eq!(second.len(), 2, "added file should produce an additional pair");
+    assert_eq!(
+        second.len(),
+        2,
+        "added file should produce an additional pair"
+    );
 }

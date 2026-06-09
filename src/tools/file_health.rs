@@ -60,7 +60,9 @@ pub fn handle_with_freshness(
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
         let comp_name_lower = comp_name.to_lowercase();
         let comps = db.active_components_with_paths()?;
-        let matched = comps.iter().find(|(_, name, _)| name.to_lowercase() == comp_name_lower);
+        let matched = comps
+            .iter()
+            .find(|(_, name, _)| name.to_lowercase() == comp_name_lower);
         match matched {
             Some((comp_id, _, _)) => {
                 let ids = db.component_file_ids(comp_id)?;

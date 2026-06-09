@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sutra::db::{Db, InsertSymbolParams, SnapshotParams, TablePartition, TABLE_REGISTRY};
+use sutra::db::{Db, InsertSymbolParams, SnapshotParams, TABLE_REGISTRY, TablePartition};
 use sutra::workspace::WorkspaceEntry;
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -683,9 +683,17 @@ fn test_trend_default_from_to() {
     })
     .unwrap();
 
-    let result = sutra::tools::trend::handle(&db, &sutra::tools::trend::TrendArgs {
-        workspace: String::new(), from: None, to: None, path: None, limit: None,
-    }).unwrap();
+    let result = sutra::tools::trend::handle(
+        &db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
     let deltas = &result["deltas"];
     assert_eq!(deltas["files_parsed"], 10);
     assert_eq!(deltas["symbols_extracted"], 30);
@@ -711,9 +719,16 @@ fn test_trend_insufficient_snapshots() {
         ..Default::default()
     })
     .unwrap();
-    let result = sutra::tools::trend::handle(&db, &sutra::tools::trend::TrendArgs {
-        workspace: String::new(), from: None, to: None, path: None, limit: None,
-    });
+    let result = sutra::tools::trend::handle(
+        &db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    );
     assert!(result.is_err());
 }
 
@@ -867,8 +882,10 @@ fn test_set_convention_lifecycle() {
 #[test]
 fn test_all_conventions_merged() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
+        .unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
+        .unwrap();
     db.set_convention_lifecycle("aaa", "deprecated", Some("outdated"))
         .unwrap();
 
@@ -911,7 +928,10 @@ fn test_reindex_preserves_durable_state() {
     assert!(!dropped.contains(&"convention_state"));
 
     let conventions = db.all_conventions().unwrap();
-    assert!(conventions.is_empty(), "ephemeral conventions should be gone");
+    assert!(
+        conventions.is_empty(),
+        "ephemeral conventions should be gone"
+    );
 
     let ov = db.get_convention_state("conv1").unwrap().unwrap();
     assert_eq!(ov.lifecycle_state, "preferred");
@@ -930,9 +950,12 @@ fn test_reindex_preserves_durable_state() {
 #[test]
 fn convention_delete_stale() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
-    db.upsert_convention("ccc", "e", "f", 30, 0.99, None).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
+        .unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
+        .unwrap();
+    db.upsert_convention("ccc", "e", "f", 30, 0.99, None)
+        .unwrap();
     let deleted = db.delete_stale_conventions(&["aaa", "ccc"]).unwrap();
     assert_eq!(deleted, 1);
     let rows = db.all_conventions().unwrap();
@@ -945,10 +968,14 @@ fn convention_delete_stale() {
 #[test]
 fn convention_delete_stale_preserves_stateful() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
-    db.upsert_convention("ccc", "e", "f", 30, 0.99, None).unwrap();
-    db.set_convention_lifecycle("bbb", "deprecated", Some("test")).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
+        .unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
+        .unwrap();
+    db.upsert_convention("ccc", "e", "f", 30, 0.99, None)
+        .unwrap();
+    db.set_convention_lifecycle("bbb", "deprecated", Some("test"))
+        .unwrap();
 
     // bbb is not in current_ids but has convention_state → should survive
     let deleted = db.delete_stale_conventions(&["aaa"]).unwrap();
@@ -956,21 +983,29 @@ fn convention_delete_stale_preserves_stateful() {
     let rows = db.all_conventions().unwrap();
     let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     assert!(ids.contains(&"aaa"));
-    assert!(ids.contains(&"bbb"), "stateful convention should survive deletion");
+    assert!(
+        ids.contains(&"bbb"),
+        "stateful convention should survive deletion"
+    );
     assert!(!ids.contains(&"ccc"));
 }
 
 #[test]
 fn tracked_absent_conventions_identified() {
     let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None).unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None).unwrap();
-    db.set_convention_lifecycle("bbb", "deprecated", Some("test")).unwrap();
+    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
+        .unwrap();
+    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
+        .unwrap();
+    db.set_convention_lifecycle("bbb", "deprecated", Some("test"))
+        .unwrap();
 
     let absent = db.tracked_convention_ids_absent_from(&["aaa"]).unwrap();
     assert_eq!(absent, vec!["bbb"]);
 
-    let absent = db.tracked_convention_ids_absent_from(&["aaa", "bbb"]).unwrap();
+    let absent = db
+        .tracked_convention_ids_absent_from(&["aaa", "bbb"])
+        .unwrap();
     assert!(absent.is_empty());
 }
 
@@ -1015,9 +1050,15 @@ fn test_reindex_drops_ephemeral_tables() {
     assert!(dropped.contains(&"conventions"));
 
     let files = db.all_files().unwrap();
-    assert!(files.is_empty(), "ephemeral files table should be empty after reindex");
+    assert!(
+        files.is_empty(),
+        "ephemeral files table should be empty after reindex"
+    );
     let conventions = db.all_conventions().unwrap();
-    assert!(conventions.is_empty(), "ephemeral conventions table should be empty after reindex");
+    assert!(
+        conventions.is_empty(),
+        "ephemeral conventions table should be empty after reindex"
+    );
 
     let file_id = seed_file(&db, "src/lib.rs");
     assert!(file_id > 0, "should be able to insert after reindex");
@@ -1112,20 +1153,28 @@ fn waiver_orphan_detection() {
     db.upsert_convention("orphan_conv", "a", "b", 10, 0.9, None)
         .unwrap();
     let orphans = db.reconcile_orphaned_waivers().unwrap();
-    assert_eq!(orphans.len(), 1, "waiver with nonexistent symbol should be orphaned");
+    assert_eq!(
+        orphans.len(),
+        1,
+        "waiver with nonexistent symbol should be orphaned"
+    );
 
     // Add a matching symbol → no longer orphaned
     let file_id = seed_file(&db, "src/lib.rs");
     seed_symbol(&db, file_id, "some_sym", "some_sym", "function");
     let orphans = db.reconcile_orphaned_waivers().unwrap();
-    assert!(orphans.is_empty(), "waiver with existing symbol should not be orphaned");
+    assert!(
+        orphans.is_empty(),
+        "waiver with existing symbol should not be orphaned"
+    );
 }
 
 #[test]
 fn waiver_orphan_detection_file_qualified() {
     let (_dir, db) = setup_db();
 
-    db.upsert_convention("conv1", "a", "b", 10, 0.9, None).unwrap();
+    db.upsert_convention("conv1", "a", "b", 10, 0.9, None)
+        .unwrap();
     let file_id = seed_file(&db, "src/foo.rs");
     seed_symbol(&db, file_id, "process", "process", "function");
 
@@ -1133,7 +1182,10 @@ fn waiver_orphan_detection_file_qualified() {
     db.create_waiver("conv1", "src/foo.rs::process", "", "file scoped", "josh")
         .unwrap();
     let orphans = db.reconcile_orphaned_waivers().unwrap();
-    assert!(orphans.is_empty(), "file-qualified waiver with matching file+symbol should not be orphaned");
+    assert!(
+        orphans.is_empty(),
+        "file-qualified waiver with matching file+symbol should not be orphaned"
+    );
 
     // File-qualified waiver with wrong file → orphaned
     db.create_waiver("conv1", "src/bar.rs::process", "", "wrong file", "josh")
@@ -1161,7 +1213,11 @@ fn waiver_survives_reindex() {
     assert_eq!(waivers[0].rationale, "intentional");
 
     let orphans = db.reconcile_orphaned_waivers().unwrap();
-    assert_eq!(orphans.len(), 1, "waiver is orphaned after reindex clears conventions");
+    assert_eq!(
+        orphans.len(),
+        1,
+        "waiver is orphaned after reindex clears conventions"
+    );
 }
 
 // --- Constraint waiver tests ---
@@ -1171,14 +1227,24 @@ fn constraint_waiver_crud() {
     let (_dir, db) = setup_db();
 
     let id = db
-        .create_constraint_waiver("abc12345", Some("no-tool-daemon"), "src/tools/review.rs", None, "legacy code", "josh")
+        .create_constraint_waiver(
+            "abc12345",
+            Some("no-tool-daemon"),
+            "src/tools/review.rs",
+            None,
+            "legacy code",
+            "josh",
+        )
         .unwrap();
     assert!(id > 0);
 
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers.len(), 1);
     assert_eq!(waivers[0].constraint_id, "abc12345");
-    assert_eq!(waivers[0].constraint_name.as_deref(), Some("no-tool-daemon"));
+    assert_eq!(
+        waivers[0].constraint_name.as_deref(),
+        Some("no-tool-daemon")
+    );
     assert_eq!(waivers[0].file_path, "src/tools/review.rs");
     assert!(waivers[0].symbol_qualified_name.is_none());
     assert_eq!(waivers[0].rationale, "legacy code");
@@ -1189,7 +1255,9 @@ fn constraint_waiver_crud() {
     let empty = db.get_constraint_waivers(Some("nonexistent")).unwrap();
     assert!(empty.is_empty());
 
-    let updated = db.update_constraint_waiver(id, "approved exception").unwrap();
+    let updated = db
+        .update_constraint_waiver(id, "approved exception")
+        .unwrap();
     assert!(updated);
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers[0].rationale, "approved exception");
@@ -1210,10 +1278,20 @@ fn constraint_waiver_upsert_on_conflict() {
         .create_constraint_waiver("abc", None, "src/a.rs", None, "first reason", "alice")
         .unwrap();
     let second_id = db
-        .create_constraint_waiver("abc", Some("named"), "src/a.rs", None, "updated reason", "bob")
+        .create_constraint_waiver(
+            "abc",
+            Some("named"),
+            "src/a.rs",
+            None,
+            "updated reason",
+            "bob",
+        )
         .unwrap();
 
-    assert_eq!(first_id, second_id, "upsert must return the existing row's id");
+    assert_eq!(
+        first_id, second_id,
+        "upsert must return the existing row's id"
+    );
 
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers.len(), 1);
@@ -1251,15 +1329,29 @@ fn constraint_waiver_symbol_scoping() {
 
     db.create_constraint_waiver("abc", None, "src/a.rs", None, "file-level", "josh")
         .unwrap();
-    db.create_constraint_waiver("abc", None, "src/a.rs", Some("Foo::bar"), "symbol-level", "josh")
-        .unwrap();
+    db.create_constraint_waiver(
+        "abc",
+        None,
+        "src/a.rs",
+        Some("Foo::bar"),
+        "symbol-level",
+        "josh",
+    )
+    .unwrap();
 
     let waivers = db.get_constraint_waivers(Some("abc")).unwrap();
     assert_eq!(waivers.len(), 2);
 
     // Two NULL-symbol waivers for different constraints are distinct
-    db.create_constraint_waiver("def", None, "src/a.rs", None, "different constraint", "josh")
-        .unwrap();
+    db.create_constraint_waiver(
+        "def",
+        None,
+        "src/a.rs",
+        None,
+        "different constraint",
+        "josh",
+    )
+    .unwrap();
     let all = db.get_constraint_waivers(None).unwrap();
     assert_eq!(all.len(), 3);
 }
@@ -1297,7 +1389,9 @@ fn constraint_waiver_orphan_detection() {
     assert!(orphan_ids.contains(&"ghi"));
 
     // All active → no orphans
-    let orphans = db.reconcile_orphaned_constraint_waivers(&["abc", "def", "ghi"]).unwrap();
+    let orphans = db
+        .reconcile_orphaned_constraint_waivers(&["abc", "def", "ghi"])
+        .unwrap();
     assert!(orphans.is_empty());
 
     // No active → all orphans

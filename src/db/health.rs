@@ -52,8 +52,7 @@ fn map_finding_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HealthFindingRow
     })
 }
 
-const FINDING_SELECT_COLS: &str =
-    "id, file_id, symbol_id, biomarker_kind, severity, confidence, provenance, \
+const FINDING_SELECT_COLS: &str = "id, file_id, symbol_id, biomarker_kind, severity, confidence, provenance, \
      metric_value, threshold, detail";
 
 fn map_waiver_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HealthWaiverRow> {
@@ -69,8 +68,7 @@ fn map_waiver_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HealthWaiverRow> 
     })
 }
 
-const WAIVER_SELECT_COLS: &str =
-    "id, biomarker_kind, file_path, symbol_qualified_name, rationale, waived_by, \
+const WAIVER_SELECT_COLS: &str = "id, biomarker_kind, file_path, symbol_qualified_name, rationale, waived_by, \
      created_at, updated_at";
 
 impl Db {
@@ -93,10 +91,7 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn replace_health_findings(
-        &self,
-        findings: &[crate::health::HealthFinding],
-    ) -> Result<()> {
+    pub fn replace_health_findings(&self, findings: &[crate::health::HealthFinding]) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         {
@@ -141,9 +136,7 @@ impl Db {
                 true,
             ),
             (true, false) => (
-                format!(
-                    "SELECT {FINDING_SELECT_COLS} FROM health_findings WHERE file_id = ?1"
-                ),
+                format!("SELECT {FINDING_SELECT_COLS} FROM health_findings WHERE file_id = ?1"),
                 true,
                 false,
             ),
@@ -163,7 +156,10 @@ impl Db {
         let mut stmt = conn.prepare(&sql)?;
         let rows = match (needs_file, needs_kind) {
             (true, true) => stmt
-                .query_map(params![file_id.unwrap(), biomarker_kind.unwrap()], map_finding_row)?
+                .query_map(
+                    params![file_id.unwrap(), biomarker_kind.unwrap()],
+                    map_finding_row,
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
             (true, false) => stmt
                 .query_map(params![file_id.unwrap()], map_finding_row)?
@@ -180,8 +176,7 @@ impl Db {
 
     pub fn get_health_waivers(&self) -> Result<Vec<HealthWaiverRow>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare(&format!("SELECT {WAIVER_SELECT_COLS} FROM health_waivers"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {WAIVER_SELECT_COLS} FROM health_waivers"))?;
         let rows = stmt
             .query_map([], map_waiver_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -206,7 +201,13 @@ impl Db {
                  rationale = ?4,
                  waived_by = ?5,
                  updated_at = datetime('now')",
-            params![biomarker_kind, file_path, symbol_qualified_name, rationale, waived_by],
+            params![
+                biomarker_kind,
+                file_path,
+                symbol_qualified_name,
+                rationale,
+                waived_by
+            ],
         )?;
         let id: i64 = conn.query_row(
             "SELECT id FROM health_waivers
@@ -220,13 +221,14 @@ impl Db {
 
     pub fn delete_health_waiver(&self, waiver_id: i64) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM health_waivers WHERE id = ?1", params![waiver_id])?;
+        conn.execute(
+            "DELETE FROM health_waivers WHERE id = ?1",
+            params![waiver_id],
+        )?;
         Ok(())
     }
 
-    pub fn get_health_findings_with_waiver_status(
-        &self,
-    ) -> Result<Vec<(HealthFindingRow, bool)>> {
+    pub fn get_health_findings_with_waiver_status(&self) -> Result<Vec<(HealthFindingRow, bool)>> {
         let findings = self.get_health_findings(None, None)?;
         let waivers = self.get_health_waivers()?;
 
@@ -234,7 +236,9 @@ impl Db {
             .into_iter()
             .map(|f| {
                 let file_path = self.file_path_by_id(f.file_id);
-                let symbol_name = f.symbol_id.and_then(|sid| self.symbol_qualified_name(sid).ok());
+                let symbol_name = f
+                    .symbol_id
+                    .and_then(|sid| self.symbol_qualified_name(sid).ok());
                 let is_waived = if let Ok(ref path) = file_path {
                     waivers.iter().any(|w| {
                         w.biomarker_kind == f.biomarker_kind

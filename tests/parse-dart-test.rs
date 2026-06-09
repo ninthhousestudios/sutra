@@ -1,4 +1,4 @@
-use sutra::parser::{self, flatten_symbols, SymbolKind};
+use sutra::parser::{self, SymbolKind, flatten_symbols};
 
 #[test]
 fn test_parse_dart_class() {
@@ -123,14 +123,30 @@ class Dog extends Animal {
 "#;
     let result = parser::parse_file(src, "dart", "lib/animals.dart").unwrap();
 
-    let animal = result.symbols.iter().find(|s| s.short_name == "Animal").unwrap();
-    let attrs: serde_json::Value =
-        serde_json::from_str(animal.language_attrs.as_deref().expect("abstract class should have attrs"))
-            .unwrap();
+    let animal = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "Animal")
+        .unwrap();
+    let attrs: serde_json::Value = serde_json::from_str(
+        animal
+            .language_attrs
+            .as_deref()
+            .expect("abstract class should have attrs"),
+    )
+    .unwrap();
     assert_eq!(attrs["is_abstract"], true);
 
-    let dog = result.symbols.iter().find(|s| s.short_name == "Dog").unwrap();
-    assert_eq!(dog.language_attrs.as_deref(), Some("{}"), "non-abstract class should have empty attrs");
+    let dog = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "Dog")
+        .unwrap();
+    assert_eq!(
+        dog.language_attrs.as_deref(),
+        Some("{}"),
+        "non-abstract class should have empty attrs"
+    );
 }
 
 #[test]
@@ -153,7 +169,10 @@ class Cache {
                 .is_some_and(|v| v["is_factory"] == true)
         })
         .collect();
-    assert!(!factory_methods.is_empty(), "should detect factory constructor");
+    assert!(
+        !factory_methods.is_empty(),
+        "should detect factory constructor"
+    );
 }
 
 #[test]
@@ -173,19 +192,37 @@ class Streamer {
     let flat = flatten_symbols(&result.symbols);
 
     let generate = flat.iter().find(|s| s.short_name == "generate").unwrap();
-    let attrs: serde_json::Value =
-        serde_json::from_str(generate.language_attrs.as_deref().expect("async* method should have attrs"))
-            .unwrap();
-    assert_eq!(attrs["is_async"], true, "async* method should be marked is_async");
+    let attrs: serde_json::Value = serde_json::from_str(
+        generate
+            .language_attrs
+            .as_deref()
+            .expect("async* method should have attrs"),
+    )
+    .unwrap();
+    assert_eq!(
+        attrs["is_async"], true,
+        "async* method should be marked is_async"
+    );
 
     let do_stuff = flat.iter().find(|s| s.short_name == "doStuff").unwrap();
-    let attrs: serde_json::Value =
-        serde_json::from_str(do_stuff.language_attrs.as_deref().expect("async method should have attrs"))
-            .unwrap();
-    assert_eq!(attrs["is_async"], true, "async method should be marked is_async");
+    let attrs: serde_json::Value = serde_json::from_str(
+        do_stuff
+            .language_attrs
+            .as_deref()
+            .expect("async method should have attrs"),
+    )
+    .unwrap();
+    assert_eq!(
+        attrs["is_async"], true,
+        "async method should be marked is_async"
+    );
 
     let sync_method = flat.iter().find(|s| s.short_name == "sync_method").unwrap();
-    assert_eq!(sync_method.language_attrs.as_deref(), Some("{}"), "sync method should have empty attrs");
+    assert_eq!(
+        sync_method.language_attrs.as_deref(),
+        Some("{}"),
+        "sync method should have empty attrs"
+    );
 }
 
 #[test]
@@ -204,7 +241,10 @@ class MyClass {
     let flat = flatten_symbols(&result.symbols);
 
     let do_stuff = flat.iter().find(|s| s.short_name == "doStuff");
-    assert!(do_stuff.is_some(), "static method doStuff should be indexed");
+    assert!(
+        do_stuff.is_some(),
+        "static method doStuff should be indexed"
+    );
 
     let normal = flat.iter().find(|s| s.short_name == "normalMethod");
     assert!(normal.is_some(), "normal method should still be indexed");
@@ -232,7 +272,10 @@ class Cache {
 
     let attrs: serde_json::Value =
         serde_json::from_str(constructor.unwrap().language_attrs.as_deref().unwrap()).unwrap();
-    assert_eq!(attrs["is_constructor"], true, "should be marked is_constructor");
+    assert_eq!(
+        attrs["is_constructor"], true,
+        "should be marked is_constructor"
+    );
 }
 
 #[test]
@@ -247,23 +290,28 @@ class Config {
     let result = parser::parse_file(src, "dart", "lib/config.dart").unwrap();
     let flat = flatten_symbols(&result.symbols);
 
-    let methods: Vec<_> = flat
-        .iter()
-        .filter(|s| s.short_name == "name")
-        .collect();
+    let methods: Vec<_> = flat.iter().filter(|s| s.short_name == "name").collect();
     assert_eq!(methods.len(), 2, "should have getter and setter");
 
     let getter = methods.iter().find(|s| {
-        let a: serde_json::Value = serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
+        let a: serde_json::Value =
+            serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
         a["is_getter"] == true
     });
-    assert!(getter.is_some(), "should detect getter_signature as is_getter");
+    assert!(
+        getter.is_some(),
+        "should detect getter_signature as is_getter"
+    );
 
     let setter = methods.iter().find(|s| {
-        let a: serde_json::Value = serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
+        let a: serde_json::Value =
+            serde_json::from_str(s.language_attrs.as_deref().unwrap()).unwrap();
         a["is_setter"] == true
     });
-    assert!(setter.is_some(), "should detect setter_signature as is_setter");
+    assert!(
+        setter.is_some(),
+        "should detect setter_signature as is_setter"
+    );
 }
 
 #[test]
@@ -280,7 +328,10 @@ class MyWidget {
     let build = flat.iter().find(|s| s.short_name == "build").unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(build.language_attrs.as_deref().unwrap()).unwrap();
-    assert_eq!(attrs["has_override"], true, "@override should set has_override");
+    assert_eq!(
+        attrs["has_override"], true,
+        "@override should set has_override"
+    );
 }
 
 #[test]
@@ -298,18 +349,26 @@ class Api {
     let fetch = flat.iter().find(|s| s.short_name == "fetchData").unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(fetch.language_attrs.as_deref().unwrap()).unwrap();
-    assert_eq!(attrs["returns_future"], true, "Future return should set returns_future");
+    assert_eq!(
+        attrs["returns_future"], true,
+        "Future return should set returns_future"
+    );
 
     let compute = flat.iter().find(|s| s.short_name == "compute").unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(compute.language_attrs.as_deref().unwrap()).unwrap();
-    assert_eq!(attrs["returns_future"], true, "FutureOr return should set returns_future");
+    assert_eq!(
+        attrs["returns_future"], true,
+        "FutureOr return should set returns_future"
+    );
 
     let sync = flat.iter().find(|s| s.short_name == "sync").unwrap();
     let attrs: serde_json::Value =
         serde_json::from_str(sync.language_attrs.as_deref().unwrap()).unwrap();
-    assert!(attrs.get("returns_future").is_none() || attrs["returns_future"] != true,
-        "void return should not set returns_future");
+    assert!(
+        attrs.get("returns_future").is_none() || attrs["returns_future"] != true,
+        "void return should not set returns_future"
+    );
 }
 
 #[test]
@@ -322,32 +381,56 @@ void normalFunction() {}
 "#;
     let result = parser::parse_file(src, "dart", "lib/helpers.dart").unwrap();
 
-    let test_fn = result.symbols.iter().find(|s| s.short_name == "myTestHelper").unwrap();
+    let test_fn = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "myTestHelper")
+        .unwrap();
     assert_ne!(test_fn.flags & 0x01, 0, "@isTest should set FLAG_TEST");
 
-    let normal_fn = result.symbols.iter().find(|s| s.short_name == "normalFunction").unwrap();
-    assert_eq!(normal_fn.flags & 0x01, 0, "unannotated function should not have FLAG_TEST");
+    let normal_fn = result
+        .symbols
+        .iter()
+        .find(|s| s.short_name == "normalFunction")
+        .unwrap();
+    assert_eq!(
+        normal_fn.flags & 0x01,
+        0,
+        "unannotated function should not have FLAG_TEST"
+    );
 }
 
 #[test]
 fn test_flags_test_file_path() {
     let src = "void helper() {}";
     let result = parser::parse_file(src, "dart", "test/widget_test.dart").unwrap();
-    assert_ne!(result.symbols[0].flags & 0x02, 0, "test file should set FLAG_CFG_TEST");
+    assert_ne!(
+        result.symbols[0].flags & 0x02,
+        0,
+        "test file should set FLAG_CFG_TEST"
+    );
 }
 
 #[test]
 fn test_flags_test_file_suffix() {
     let src = "void helper() {}";
     let result = parser::parse_file(src, "dart", "lib/foo_test.dart").unwrap();
-    assert_ne!(result.symbols[0].flags & 0x02, 0, "_test.dart suffix should set FLAG_CFG_TEST");
+    assert_ne!(
+        result.symbols[0].flags & 0x02,
+        0,
+        "_test.dart suffix should set FLAG_CFG_TEST"
+    );
 }
 
 #[test]
 fn test_flags_non_test_file() {
     let src = "void helper() {}";
     let result = parser::parse_file(src, "dart", "lib/utils.dart").unwrap();
-    assert_eq!(result.symbols[0].flags & 0x02, 0, "non-test file should not have FLAG_CFG_TEST");
+    assert_eq!(
+        result.symbols[0].flags & 0x02,
+        0,
+        "non-test file should not have FLAG_CFG_TEST"
+    );
 }
 
 #[test]
@@ -365,8 +448,15 @@ class MyWidget {
     let build = flat.iter().find(|s| s.short_name == "build").unwrap();
     assert_ne!(build.flags & 0x04, 0, "@override should set FLAG_FFI_ENTRY");
 
-    let normal = flat.iter().find(|s| s.short_name == "normalMethod").unwrap();
-    assert_eq!(normal.flags & 0x04, 0, "non-override should not have FLAG_FFI_ENTRY");
+    let normal = flat
+        .iter()
+        .find(|s| s.short_name == "normalMethod")
+        .unwrap();
+    assert_eq!(
+        normal.flags & 0x04,
+        0,
+        "non-override should not have FLAG_FFI_ENTRY"
+    );
 }
 
 #[test]
@@ -376,9 +466,12 @@ fn test_flags_pragma_entry_point() {
 void entryPoint() {}
 "#;
     let result = parser::parse_file(src, "dart", "lib/entry.dart").unwrap();
-    assert_ne!(result.symbols[0].flags & 0x04, 0, "@pragma('vm:entry-point') should set FLAG_FFI_ENTRY");
+    assert_ne!(
+        result.symbols[0].flags & 0x04,
+        0,
+        "@pragma('vm:entry-point') should set FLAG_FFI_ENTRY"
+    );
 }
-
 
 #[test]
 fn test_top_level_getter() {
@@ -390,12 +483,20 @@ String get appName => 'MyApp';
 
     let getter = flat.iter().find(|s| {
         s.short_name == "appName"
-            && s.language_attrs.as_deref()
+            && s.language_attrs
+                .as_deref()
                 .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
                 .is_some_and(|v| v["is_getter"] == true)
     });
-    assert!(getter.is_some(), "top-level getter should be indexed with is_getter");
-    assert_eq!(getter.unwrap().kind, SymbolKind::Function, "top-level getter should be Function");
+    assert!(
+        getter.is_some(),
+        "top-level getter should be indexed with is_getter"
+    );
+    assert_eq!(
+        getter.unwrap().kind,
+        SymbolKind::Function,
+        "top-level getter should be Function"
+    );
 }
 
 #[test]
@@ -410,11 +511,18 @@ class NativeBinding {
 
     let getter = flat.iter().find(|s| {
         s.short_name == "name"
-            && s.language_attrs.as_deref()
+            && s.language_attrs
+                .as_deref()
                 .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
                 .is_some_and(|v| v["is_getter"] == true)
     });
-    assert!(getter.is_some(), "external getter should be indexed with is_getter");
-    assert_eq!(getter.unwrap().kind, SymbolKind::Method, "class getter should be Method");
+    assert!(
+        getter.is_some(),
+        "external getter should be indexed with is_getter"
+    );
+    assert_eq!(
+        getter.unwrap().kind,
+        SymbolKind::Method,
+        "class getter should be Method"
+    );
 }
-

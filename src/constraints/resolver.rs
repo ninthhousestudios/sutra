@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use glob::{MatchOptions, Pattern};
@@ -34,8 +34,7 @@ impl ConstraintResolver {
         let current_input_hash = compute_input_hash(constraints, path_map);
 
         if let Some(ref cache) = self.cache {
-            if cache.membership_generation == current_gen
-                && cache.input_hash == current_input_hash
+            if cache.membership_generation == current_gen && cache.input_hash == current_input_hash
             {
                 return Ok(cache.pairs.clone());
             }

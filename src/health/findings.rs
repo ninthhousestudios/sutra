@@ -152,7 +152,10 @@ pub fn compute_all_health_findings(db: &Db, workspace_root: &Path) -> Result<Vec
     let mut findings = compute_nested_complexity(db)?;
     findings.extend(super::git_metrics::compute_co_change_scatter(db)?);
     findings.extend(super::git_metrics::compute_change_entropy(db)?);
-    findings.extend(super::git_metrics::compute_ownership_risk(db, workspace_root)?);
+    findings.extend(super::git_metrics::compute_ownership_risk(
+        db,
+        workspace_root,
+    )?);
     findings.extend(super::git_metrics::compute_hidden_coupling(db)?);
     Ok(findings)
 }

@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::ResolveResult;
 use crate::db::Db;
+use crate::db::ResolveResult;
 use crate::diagnostics::{CandidateInfo, Diagnostic};
 use crate::error::{Result, SutraError};
 use crate::similarity::search;

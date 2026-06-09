@@ -133,9 +133,10 @@ impl SimCache {
 
     fn get_or_compute(&mut self, i: usize, j: usize, vecs: &[(i64, HrrVec)]) -> f64 {
         let key = if i < j { (i, j) } else { (j, i) };
-        *self.cache.entry(key).or_insert_with(|| {
-            vecs[key.0].1.dot_product(&vecs[key.1].1)
-        })
+        *self
+            .cache
+            .entry(key)
+            .or_insert_with(|| vecs[key.0].1.dot_product(&vecs[key.1].1))
     }
 }
 
@@ -153,10 +154,8 @@ pub fn find_pattern_families(
         return Vec::new();
     }
 
-    let normalized: Vec<(i64, HrrVec)> = vectors
-        .iter()
-        .map(|(id, v)| (*id, v.normalize()))
-        .collect();
+    let normalized: Vec<(i64, HrrVec)> =
+        vectors.iter().map(|(id, v)| (*id, v.normalize())).collect();
 
     let mut cache = SimCache::new();
     let mut uf = UnionFind::new(n);
@@ -282,11 +281,7 @@ mod tests {
 
     #[test]
     fn below_threshold_no_cluster() {
-        let vectors = vec![
-            (1, make_vec(1)),
-            (2, make_vec(2)),
-            (3, make_vec(3)),
-        ];
+        let vectors = vec![(1, make_vec(1)), (2, make_vec(2)), (3, make_vec(3))];
         let families = find_pattern_families(&vectors, 0.85, 3);
         assert!(families.is_empty());
     }

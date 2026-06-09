@@ -19,9 +19,18 @@ pub enum Severity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintKind {
-    ForbiddenDep { from: String, to: String },
-    Boundary { from_component: String, to_component: String },
-    MaxFanIn { target: String, threshold: u32 },
+    ForbiddenDep {
+        from: String,
+        to: String,
+    },
+    Boundary {
+        from_component: String,
+        to_component: String,
+    },
+    MaxFanIn {
+        target: String,
+        threshold: u32,
+    },
     NoCycles,
 }
 
@@ -78,7 +87,10 @@ impl Constraint {
                 hasher.update(b"\x00");
                 hasher.update(to.as_bytes());
             }
-            ConstraintKind::Boundary { from_component, to_component } => {
+            ConstraintKind::Boundary {
+                from_component,
+                to_component,
+            } => {
                 hasher.update(from_component.as_bytes());
                 hasher.update(b"\x00");
                 hasher.update(to_component.as_bytes());
@@ -123,28 +135,43 @@ impl RawConstraint {
         let kind = match self.kind.as_str() {
             "forbidden_dep" => {
                 let from = self.from.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'forbidden_dep' requires 'from' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'forbidden_dep' requires 'from' field".into(),
+                    )
                 })?;
                 let to = self.to.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'forbidden_dep' requires 'to' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'forbidden_dep' requires 'to' field".into(),
+                    )
                 })?;
                 ConstraintKind::ForbiddenDep { from, to }
             }
             "boundary" => {
                 let from_component = self.from_component.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'boundary' requires 'from_component' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'boundary' requires 'from_component' field".into(),
+                    )
                 })?;
                 let to_component = self.to_component.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'boundary' requires 'to_component' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'boundary' requires 'to_component' field".into(),
+                    )
                 })?;
-                ConstraintKind::Boundary { from_component, to_component }
+                ConstraintKind::Boundary {
+                    from_component,
+                    to_component,
+                }
             }
             "max_fan_in" => {
                 let target = self.target.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'max_fan_in' requires 'target' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'max_fan_in' requires 'target' field".into(),
+                    )
                 })?;
                 let threshold = self.threshold.ok_or_else(|| {
-                    SutraError::Internal("constraint kind 'max_fan_in' requires 'threshold' field".into())
+                    SutraError::Internal(
+                        "constraint kind 'max_fan_in' requires 'threshold' field".into(),
+                    )
                 })?;
                 ConstraintKind::MaxFanIn { target, threshold }
             }
@@ -383,10 +410,13 @@ provenance = "docs/adr-001.md"
         let rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().unwrap();
         assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].kind, ConstraintKind::ForbiddenDep {
-            from: "src/tools/*".into(),
-            to: "src/daemon.rs".into(),
-        });
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ForbiddenDep {
+                from: "src/tools/*".into(),
+                to: "src/daemon.rs".into(),
+            }
+        );
         assert_eq!(cs[0].severity, Severity::Blocking);
         assert_eq!(cs[0].name.as_deref(), Some("no-tool-daemon"));
         assert_eq!(cs[0].provenance.as_deref(), Some("docs/adr-001.md"));
@@ -405,10 +435,13 @@ severity = "advisory"
         let rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().unwrap();
         assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].kind, ConstraintKind::Boundary {
-            from_component: "db".into(),
-            to_component: "http".into(),
-        });
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::Boundary {
+                from_component: "db".into(),
+                to_component: "http".into(),
+            }
+        );
         assert_eq!(cs[0].severity, Severity::Advisory);
     }
 
@@ -423,10 +456,13 @@ threshold = 10
         let rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().unwrap();
         assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].kind, ConstraintKind::MaxFanIn {
-            target: "src/config.rs".into(),
-            threshold: 10,
-        });
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::MaxFanIn {
+                target: "src/config.rs".into(),
+                threshold: 10,
+            }
+        );
         assert_eq!(cs[0].severity, Severity::Advisory);
     }
 
@@ -457,10 +493,13 @@ forbidden_deps = [
         let rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().unwrap();
         assert_eq!(cs.len(), 2);
-        assert_eq!(cs[0].kind, ConstraintKind::ForbiddenDep {
-            from: "src/tools/*".into(),
-            to: "src/daemon.rs".into(),
-        });
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ForbiddenDep {
+                from: "src/tools/*".into(),
+                to: "src/daemon.rs".into(),
+            }
+        );
         assert_eq!(cs[0].severity, Severity::Blocking);
         assert!(cs[0].name.is_none());
         assert!(cs[0].provenance.is_none());
@@ -569,10 +608,10 @@ threshold = 5
 kind = "no_cycles"
 "#;
         let cs = parse_rules(toml).unwrap().all_constraints().unwrap();
-        assert_eq!(cs[0].severity, Severity::Blocking);   // forbidden_dep
-        assert_eq!(cs[1].severity, Severity::Blocking);   // boundary
-        assert_eq!(cs[2].severity, Severity::Advisory);    // max_fan_in
-        assert_eq!(cs[3].severity, Severity::Blocking);    // no_cycles
+        assert_eq!(cs[0].severity, Severity::Blocking); // forbidden_dep
+        assert_eq!(cs[1].severity, Severity::Blocking); // boundary
+        assert_eq!(cs[2].severity, Severity::Advisory); // max_fan_in
+        assert_eq!(cs[3].severity, Severity::Blocking); // no_cycles
     }
 
     #[test]
@@ -597,7 +636,10 @@ kind = "banana"
         let rules = parse_rules(toml).unwrap();
         let err = rules.all_constraints().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unknown constraint kind 'banana'"), "got: {msg}");
+        assert!(
+            msg.contains("unknown constraint kind 'banana'"),
+            "got: {msg}"
+        );
     }
 
     #[test]

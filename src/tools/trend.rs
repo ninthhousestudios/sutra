@@ -55,11 +55,7 @@ fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value
     }))
 }
 
-fn handle_comparison(
-    db: &Db,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> Result<serde_json::Value> {
+fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<serde_json::Value> {
     let (snap_from, snap_to) = resolve_snapshots(db, from, to)?;
 
     let deltas = json!({
@@ -95,11 +91,11 @@ fn handle_comparison(
     }))
 }
 
-fn compute_file_deltas(
-    from: &[SnapshotFileRow],
-    to: &[SnapshotFileRow],
-) -> serde_json::Value {
-    let from_map: HashMap<&str, f64> = from.iter().map(|f| (f.file_path.as_str(), f.score)).collect();
+fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serde_json::Value {
+    let from_map: HashMap<&str, f64> = from
+        .iter()
+        .map(|f| (f.file_path.as_str(), f.score))
+        .collect();
     let to_map: HashMap<&str, f64> = to.iter().map(|f| (f.file_path.as_str(), f.score)).collect();
 
     let mut improved = Vec::new();
@@ -126,12 +122,15 @@ fn compute_file_deltas(
 
     for f in from {
         if !to_map.contains_key(f.file_path.as_str()) {
-            degraded.push((-f.score, json!({
-                "path": f.file_path,
-                "from": round2(f.score),
-                "to": null,
-                "delta": "removed",
-            })));
+            degraded.push((
+                -f.score,
+                json!({
+                    "path": f.file_path,
+                    "from": round2(f.score),
+                    "to": null,
+                    "delta": "removed",
+                }),
+            ));
         }
     }
 
@@ -156,7 +155,10 @@ fn compute_component_deltas(
     let mut deltas: Vec<(f64, serde_json::Value)> = to
         .iter()
         .map(|c| {
-            let prev = from_map.get(c.component_id.as_str()).copied().unwrap_or(10.0);
+            let prev = from_map
+                .get(c.component_id.as_str())
+                .copied()
+                .unwrap_or(10.0);
             let delta = c.score - prev;
             (
                 delta,

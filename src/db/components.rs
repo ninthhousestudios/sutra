@@ -13,7 +13,11 @@ impl Db {
 
     pub fn membership_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
-        Ok(conn.query_row("SELECT COUNT(*) FROM component_membership", [], |r| r.get(0))?)
+        Ok(
+            conn.query_row("SELECT COUNT(*) FROM component_membership", [], |r| {
+                r.get(0)
+            })?,
+        )
     }
 
     pub fn insert_component(&self, id: &str, name: &str) -> Result<()> {
@@ -112,9 +116,8 @@ impl Db {
 
     pub fn active_components_with_paths(&self) -> Result<Vec<(String, String, Vec<String>)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
         let rows = stmt
             .query_map([], |row| {
                 let id: String = row.get(0)?;
@@ -126,9 +129,7 @@ impl Db {
         let mut result = Vec::new();
         for (id, name, json) in rows {
             let paths: Vec<String> = match json {
-                Some(s) if !s.is_empty() => {
-                    serde_json::from_str(&s).unwrap_or_default()
-                }
+                Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
                 _ => Vec::new(),
             };
             result.push((id, name, paths));
@@ -223,9 +224,8 @@ impl Db {
 
     pub fn component_events(&self, component_id: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT event_type, detail FROM component_events WHERE component_id = ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT event_type, detail FROM component_events WHERE component_id = ?1")?;
         let rows = stmt
             .query_map(params![component_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -275,9 +275,7 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn all_anchors_grouped(
-        &self,
-    ) -> Result<std::collections::HashMap<String, Vec<AnchorRow>>> {
+    pub fn all_anchors_grouped(&self) -> Result<std::collections::HashMap<String, Vec<AnchorRow>>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, component_id, symbol_name, score, rationale \
@@ -297,16 +295,18 @@ impl Db {
         let mut grouped: std::collections::HashMap<String, Vec<AnchorRow>> =
             std::collections::HashMap::new();
         for row in rows {
-            grouped.entry(row.component_id.clone()).or_default().push(row);
+            grouped
+                .entry(row.component_id.clone())
+                .or_default()
+                .push(row);
         }
         Ok(grouped)
     }
 
     pub fn component_file_ids(&self, component_id: &str) -> Result<Vec<i64>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT file_id FROM component_membership WHERE component_id = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT file_id FROM component_membership WHERE component_id = ?1")?;
         let rows = stmt
             .query_map(params![component_id], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
@@ -338,10 +338,7 @@ impl Db {
     // Vocabulary aliases
     // -----------------------------------------------------------------------
 
-    pub fn replace_all_aliases(
-        &self,
-        aliases: &[(String, String, String, String)],
-    ) -> Result<()> {
+    pub fn replace_all_aliases(&self, aliases: &[(String, String, String, String)]) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM aliases", [])?;
@@ -375,9 +372,8 @@ impl Db {
 
     pub fn find_alias(&self, term: &str) -> Result<Option<AliasRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, term, target_kind, target_ref FROM aliases WHERE term = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, term, target_kind, target_ref FROM aliases WHERE term = ?1")?;
         let mut rows = stmt.query_map(params![term], |r| {
             Ok(AliasRow {
                 id: r.get(0)?,

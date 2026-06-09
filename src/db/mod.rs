@@ -13,9 +13,12 @@ mod migrations;
 mod similarity;
 
 pub use constraints::ConstraintWaiverRow;
+pub use conventions::{
+    ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionSnapshotRow,
+    ConventionStateRow, ConventionWithState,
+};
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
-pub use conventions::{ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionSnapshotRow, ConventionStateRow, ConventionWithState};
 
 use std::path::Path;
 
@@ -42,36 +45,156 @@ pub struct TableMeta {
 }
 
 pub const TABLE_REGISTRY: &[TableMeta] = &[
-    TableMeta { name: "files", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "symbols", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "symbols_fts", partition: TablePartition::Ephemeral, is_virtual: true },
-    TableMeta { name: "refs", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "imports", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "conventions", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "convention_state", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "components", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "semantic_anchors", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "aliases", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "component_events", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "component_membership", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "component_clustering_meta", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "convention_history", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "convention_proposals", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "convention_waivers", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "convention_snapshots", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "convention_templates", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "constraint_waivers", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "commits", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "commit_files", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "health_findings", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "health_waivers", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "hrr_codebook", partition: TablePartition::Durable, is_virtual: false },
-    TableMeta { name: "hrr_vectors", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "pattern_families", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "pattern_family_members", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "health_snapshot_files", partition: TablePartition::Ephemeral, is_virtual: false },
-    TableMeta { name: "health_snapshot_components", partition: TablePartition::Ephemeral, is_virtual: false },
+    TableMeta {
+        name: "files",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "symbols",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "symbols_fts",
+        partition: TablePartition::Ephemeral,
+        is_virtual: true,
+    },
+    TableMeta {
+        name: "refs",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "imports",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "snapshots",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "conventions",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_state",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "components",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "semantic_anchors",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "aliases",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "component_events",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "component_membership",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "component_clustering_meta",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_history",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_proposals",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_waivers",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_snapshots",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "convention_templates",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "constraint_waivers",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "commits",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "commit_files",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_findings",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_waivers",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "hrr_codebook",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "hrr_vectors",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "pattern_families",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "pattern_family_members",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_snapshot_files",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_snapshot_components",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -681,8 +804,7 @@ impl Db {
                     cyclomatic, cognitive, max_nesting, flags, language_attrs
              FROM symbols ORDER BY file_id, start_line",
         )?;
-        let rows: rusqlite::Result<Vec<SymbolRow>> =
-            stmt.query_map([], map_symbol_row)?.collect();
+        let rows: rusqlite::Result<Vec<SymbolRow>> = stmt.query_map([], map_symbol_row)?.collect();
         let mut grouped: std::collections::HashMap<i64, Vec<SymbolRow>> =
             std::collections::HashMap::new();
         for sym in rows? {
@@ -1149,7 +1271,11 @@ impl Db {
             )?;
             for f in files {
                 file_stmt.execute(params![
-                    snapshot_id, f.file_id, f.file_path, f.score, f.category_scores
+                    snapshot_id,
+                    f.file_id,
+                    f.file_path,
+                    f.score,
+                    f.category_scores
                 ])?;
             }
 
@@ -1234,11 +1360,7 @@ impl Db {
     // health snapshot details
     // -----------------------------------------------------------------------
 
-    pub fn insert_snapshot_files(
-        &self,
-        snapshot_id: i64,
-        files: &[SnapshotFileRow],
-    ) -> Result<()> {
+    pub fn insert_snapshot_files(&self, snapshot_id: i64, files: &[SnapshotFileRow]) -> Result<()> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "INSERT INTO health_snapshot_files
@@ -1300,10 +1422,7 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn snapshot_component_scores(
-        &self,
-        snapshot_id: i64,
-    ) -> Result<Vec<SnapshotComponentRow>> {
+    pub fn snapshot_component_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotComponentRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT component_id, component_name, score, member_count, total_nloc

@@ -120,12 +120,8 @@ fn test_two_cluster_discovery() {
 fn test_first_run_gate_skips_when_components_and_membership_exist() {
     let (dir, db) = setup_db();
 
-    let a1 = db
-        .upsert_file("src/a.rs", "rust", "h1", 50, true)
-        .unwrap();
-    let a2 = db
-        .upsert_file("src/b.rs", "rust", "h2", 50, true)
-        .unwrap();
+    let a1 = db.upsert_file("src/a.rs", "rust", "h1", 50, true).unwrap();
+    let a2 = db.upsert_file("src/b.rs", "rust", "h2", 50, true).unwrap();
     let sa1 = insert_symbol(&db, a1, "fn_a");
     insert_refs(&db, a2, sa1, 5);
 
@@ -136,7 +132,10 @@ fn test_first_run_gate_skips_when_components_and_membership_exist() {
 
     // Second run should skip — both components and membership exist
     let count2 = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    assert_eq!(count2, 0, "should skip when components and membership exist");
+    assert_eq!(
+        count2, 0,
+        "should skip when components and membership exist"
+    );
 }
 
 #[test]
@@ -184,9 +183,16 @@ fn test_reconciliation_after_reindex_preserves_and_repopulates() {
     assert!(count > 0, "should reconcile after reindex");
 
     // Component IDs should be preserved
-    let reconciled_ids: std::collections::HashSet<String> =
-        db.all_components().unwrap().iter().map(|c| c.id.clone()).collect();
-    assert_eq!(original_ids, reconciled_ids, "component IDs should survive reindex");
+    let reconciled_ids: std::collections::HashSet<String> = db
+        .all_components()
+        .unwrap()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    assert_eq!(
+        original_ids, reconciled_ids,
+        "component IDs should survive reindex"
+    );
 
     // Membership should be populated again
     assert!(db.membership_count().unwrap() > 0);
@@ -279,12 +285,24 @@ fn test_sutra_components_tool() {
 // ---------------------------------------------------------------------------
 
 fn setup_two_clusters(db: &sutra::db::Db) {
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 50, true).unwrap();
-    let b1 = db.upsert_file("src/tools/b1.rs", "rust", "h4", 50, true).unwrap();
-    let b2 = db.upsert_file("src/tools/b2.rs", "rust", "h5", 50, true).unwrap();
-    let b3 = db.upsert_file("src/tools/b3.rs", "rust", "h6", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let b1 = db
+        .upsert_file("src/tools/b1.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let b2 = db
+        .upsert_file("src/tools/b2.rs", "rust", "h5", 50, true)
+        .unwrap();
+    let b3 = db
+        .upsert_file("src/tools/b3.rs", "rust", "h6", 50, true)
+        .unwrap();
 
     let sa1 = insert_symbol(&db, a1, "core_a1");
     let sa2 = insert_symbol(&db, a2, "core_a2");
@@ -339,7 +357,10 @@ fn test_reconciliation_preserves_component_identity() {
     let reconciled_ids: std::collections::HashSet<String> =
         reconciled_comps.iter().map(|c| c.id.clone()).collect();
 
-    assert_eq!(original_ids, reconciled_ids, "component IDs should be preserved");
+    assert_eq!(
+        original_ids, reconciled_ids,
+        "component IDs should be preserved"
+    );
 
     // Membership should be repopulated
     for c in &reconciled_comps {
@@ -376,9 +397,15 @@ fn test_dissolved_components_hidden_from_queries() {
 
     // Reindex and only re-insert one cluster (tools files removed)
     db.reindex().unwrap();
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
     let sa1 = insert_symbol(&db, a1, "core_a1");
     let sa2 = insert_symbol(&db, a2, "core_a2");
     let sa3 = insert_symbol(&db, a3, "core_a3");
@@ -417,12 +444,24 @@ fn test_merge_event_detected() {
     // so Louvain merges everything into 1 cluster
     db.reindex().unwrap();
 
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 50, true).unwrap();
-    let b1 = db.upsert_file("src/tools/b1.rs", "rust", "h4", 50, true).unwrap();
-    let b2 = db.upsert_file("src/tools/b2.rs", "rust", "h5", 50, true).unwrap();
-    let b3 = db.upsert_file("src/tools/b3.rs", "rust", "h6", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let b1 = db
+        .upsert_file("src/tools/b1.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let b2 = db
+        .upsert_file("src/tools/b2.rs", "rust", "h5", 50, true)
+        .unwrap();
+    let b3 = db
+        .upsert_file("src/tools/b3.rs", "rust", "h6", 50, true)
+        .unwrap();
 
     let sa1 = insert_symbol(&db, a1, "core_a1");
     let sa2 = insert_symbol(&db, a2, "core_a2");
@@ -433,12 +472,36 @@ fn test_merge_event_detected() {
 
     // Dense refs across ALL files (merged clique)
     for &(from, to_sym) in &[
-        (a1, sa2), (a1, sa3), (a1, sb1), (a1, sb2), (a1, sb3),
-        (a2, sa1), (a2, sa3), (a2, sb1), (a2, sb2), (a2, sb3),
-        (a3, sa1), (a3, sa2), (a3, sb1), (a3, sb2), (a3, sb3),
-        (b1, sa1), (b1, sa2), (b1, sa3), (b1, sb2), (b1, sb3),
-        (b2, sa1), (b2, sa2), (b2, sa3), (b2, sb1), (b2, sb3),
-        (b3, sa1), (b3, sa2), (b3, sa3), (b3, sb1), (b3, sb2),
+        (a1, sa2),
+        (a1, sa3),
+        (a1, sb1),
+        (a1, sb2),
+        (a1, sb3),
+        (a2, sa1),
+        (a2, sa3),
+        (a2, sb1),
+        (a2, sb2),
+        (a2, sb3),
+        (a3, sa1),
+        (a3, sa2),
+        (a3, sb1),
+        (a3, sb2),
+        (a3, sb3),
+        (b1, sa1),
+        (b1, sa2),
+        (b1, sa3),
+        (b1, sb2),
+        (b1, sb3),
+        (b2, sa1),
+        (b2, sa2),
+        (b2, sa3),
+        (b2, sb1),
+        (b2, sb3),
+        (b3, sa1),
+        (b3, sa2),
+        (b3, sa3),
+        (b3, sb1),
+        (b3, sb2),
     ] {
         insert_refs(&db, from, to_sym, 10);
     }
@@ -470,12 +533,24 @@ fn test_split_event_detected() {
     pin_resolution(dir.path());
 
     // Start with 1 big cluster: 6 files all cross-referenced
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 50, true).unwrap();
-    let b1 = db.upsert_file("src/tools/b1.rs", "rust", "h4", 50, true).unwrap();
-    let b2 = db.upsert_file("src/tools/b2.rs", "rust", "h5", 50, true).unwrap();
-    let b3 = db.upsert_file("src/tools/b3.rs", "rust", "h6", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let b1 = db
+        .upsert_file("src/tools/b1.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let b2 = db
+        .upsert_file("src/tools/b2.rs", "rust", "h5", 50, true)
+        .unwrap();
+    let b3 = db
+        .upsert_file("src/tools/b3.rs", "rust", "h6", 50, true)
+        .unwrap();
 
     let sa1 = insert_symbol(&db, a1, "core_a1");
     let sa2 = insert_symbol(&db, a2, "core_a2");
@@ -486,12 +561,36 @@ fn test_split_event_detected() {
 
     // Dense refs across ALL files
     for &(from, to_sym) in &[
-        (a1, sa2), (a1, sa3), (a1, sb1), (a1, sb2), (a1, sb3),
-        (a2, sa1), (a2, sa3), (a2, sb1), (a2, sb2), (a2, sb3),
-        (a3, sa1), (a3, sa2), (a3, sb1), (a3, sb2), (a3, sb3),
-        (b1, sa1), (b1, sa2), (b1, sa3), (b1, sb2), (b1, sb3),
-        (b2, sa1), (b2, sa2), (b2, sa3), (b2, sb1), (b2, sb3),
-        (b3, sa1), (b3, sa2), (b3, sa3), (b3, sb1), (b3, sb2),
+        (a1, sa2),
+        (a1, sa3),
+        (a1, sb1),
+        (a1, sb2),
+        (a1, sb3),
+        (a2, sa1),
+        (a2, sa3),
+        (a2, sb1),
+        (a2, sb2),
+        (a2, sb3),
+        (a3, sa1),
+        (a3, sa2),
+        (a3, sb1),
+        (a3, sb2),
+        (a3, sb3),
+        (b1, sa1),
+        (b1, sa2),
+        (b1, sa3),
+        (b1, sb2),
+        (b1, sb3),
+        (b2, sa1),
+        (b2, sa2),
+        (b2, sa3),
+        (b2, sb1),
+        (b2, sb3),
+        (b3, sa1),
+        (b3, sa2),
+        (b3, sa3),
+        (b3, sb1),
+        (b3, sb2),
     ] {
         insert_refs(&db, from, to_sym, 10);
     }
@@ -514,7 +613,10 @@ fn test_split_event_detected() {
     // Original component should match one cluster (>60% overlap)
     // and split event should fire because its files span 2 clusters
     let active = db.all_components().unwrap();
-    assert!(active.len() >= 2, "should have at least 2 components after split");
+    assert!(
+        active.len() >= 2,
+        "should have at least 2 components after split"
+    );
 
     // Find events on the original component (if it survived)
     let events = db.component_events(&original_id).unwrap();
@@ -525,11 +627,22 @@ fn test_split_event_detected() {
     assert!(detail["clusters"].as_u64().unwrap() >= 2);
 
     // Split events must include target component IDs
-    let targets = detail["targets"].as_array().expect("split detail should have targets array");
-    assert!(targets.len() >= 2, "split should reference at least 2 target components");
+    let targets = detail["targets"]
+        .as_array()
+        .expect("split detail should have targets array");
+    assert!(
+        targets.len() >= 2,
+        "split should reference at least 2 target components"
+    );
     for t in targets {
-        assert!(t["component_id"].is_string(), "each target should have a component_id");
-        assert!(t["files"].is_number(), "each target should have a files count");
+        assert!(
+            t["component_id"].is_string(),
+            "each target should have a component_id"
+        );
+        assert!(
+            t["files"].is_number(),
+            "each target should have a files count"
+        );
     }
 }
 
@@ -542,25 +655,37 @@ fn test_drift_event_detected() {
     let a_files: Vec<i64> = (1..=5)
         .map(|i| {
             db.upsert_file(
-                &format!("src/core/a{}.rs", i), "rust",
-                &format!("ha{}", i), 50, true,
-            ).unwrap()
+                &format!("src/core/a{}.rs", i),
+                "rust",
+                &format!("ha{}", i),
+                50,
+                true,
+            )
+            .unwrap()
         })
         .collect();
     let b_files: Vec<i64> = (1..=5)
         .map(|i| {
             db.upsert_file(
-                &format!("src/tools/b{}.rs", i), "rust",
-                &format!("hb{}", i), 50, true,
-            ).unwrap()
+                &format!("src/tools/b{}.rs", i),
+                "rust",
+                &format!("hb{}", i),
+                50,
+                true,
+            )
+            .unwrap()
         })
         .collect();
 
     // Symbols for each file
-    let a_syms: Vec<i64> = a_files.iter().enumerate()
+    let a_syms: Vec<i64> = a_files
+        .iter()
+        .enumerate()
         .map(|(i, &fid)| insert_symbol(&db, fid, &format!("core_a{}", i + 1)))
         .collect();
-    let b_syms: Vec<i64> = b_files.iter().enumerate()
+    let b_syms: Vec<i64> = b_files
+        .iter()
+        .enumerate()
         .map(|(i, &fid)| insert_symbol(&db, fid, &format!("tools_b{}", i + 1)))
         .collect();
 
@@ -589,44 +714,64 @@ fn test_drift_event_detected() {
     let a_files2: Vec<i64> = (1..=3)
         .map(|i| {
             db.upsert_file(
-                &format!("src/core/a{}.rs", i), "rust",
-                &format!("ha{}", i), 50, true,
-            ).unwrap()
+                &format!("src/core/a{}.rs", i),
+                "rust",
+                &format!("ha{}", i),
+                50,
+                true,
+            )
+            .unwrap()
         })
         .collect();
     // B gets its 5 files + 2 from A
     let b_files2: Vec<i64> = (1..=5)
         .map(|i| {
             db.upsert_file(
-                &format!("src/tools/b{}.rs", i), "rust",
-                &format!("hb{}", i), 50, true,
-            ).unwrap()
+                &format!("src/tools/b{}.rs", i),
+                "rust",
+                &format!("hb{}", i),
+                50,
+                true,
+            )
+            .unwrap()
         })
         .collect();
     let drift_files: Vec<i64> = (4..=5)
         .map(|i| {
             db.upsert_file(
-                &format!("src/core/a{}.rs", i), "rust",
-                &format!("ha{}", i), 50, true,
-            ).unwrap()
+                &format!("src/core/a{}.rs", i),
+                "rust",
+                &format!("ha{}", i),
+                50,
+                true,
+            )
+            .unwrap()
         })
         .collect();
 
     // Symbols
-    let a_syms2: Vec<i64> = a_files2.iter().enumerate()
+    let a_syms2: Vec<i64> = a_files2
+        .iter()
+        .enumerate()
         .map(|(i, &fid)| insert_symbol(&db, fid, &format!("core_a{}", i + 1)))
         .collect();
-    let b_syms2: Vec<i64> = b_files2.iter().enumerate()
+    let b_syms2: Vec<i64> = b_files2
+        .iter()
+        .enumerate()
         .map(|(i, &fid)| insert_symbol(&db, fid, &format!("tools_b{}", i + 1)))
         .collect();
-    let drift_syms: Vec<i64> = drift_files.iter().enumerate()
+    let drift_syms: Vec<i64> = drift_files
+        .iter()
+        .enumerate()
         .map(|(i, &fid)| insert_symbol(&db, fid, &format!("core_a{}", i + 4)))
         .collect();
 
     // Dense intra-cluster refs for A (3 files)
     for i in 0..3 {
         for j in 0..3 {
-            if i != j { insert_refs(&db, a_files2[i], a_syms2[j], 10); }
+            if i != j {
+                insert_refs(&db, a_files2[i], a_syms2[j], 10);
+            }
         }
     }
     // Dense intra-cluster refs for B (5 files + 2 drifted files)
@@ -634,7 +779,9 @@ fn test_drift_event_detected() {
     let all_b_syms = [b_syms2.as_slice(), drift_syms.as_slice()].concat();
     for i in 0..all_b.len() {
         for j in 0..all_b.len() {
-            if i != j { insert_refs(&db, all_b[i], all_b_syms[j], 10); }
+            if i != j {
+                insert_refs(&db, all_b[i], all_b_syms[j], 10);
+            }
         }
     }
 
@@ -644,7 +791,11 @@ fn test_drift_event_detected() {
     // Component A should have a drift event (40% of its files moved to B)
     let events = db.component_events(&comp_a_id).unwrap();
     let drift_events: Vec<_> = events.iter().filter(|(t, _)| t == "drift").collect();
-    assert_eq!(drift_events.len(), 1, "should have exactly 1 drift event on comp A");
+    assert_eq!(
+        drift_events.len(),
+        1,
+        "should have exactly 1 drift event on comp A"
+    );
 
     let detail: serde_json::Value = serde_json::from_str(&drift_events[0].1).unwrap();
     let ratio = detail["ratio"].as_f64().unwrap();
@@ -656,7 +807,12 @@ fn test_drift_event_detected() {
     for c in &active {
         let events = db.component_events(&c.id).unwrap();
         let merges: Vec<_> = events.iter().filter(|(t, _)| t == "merge").collect();
-        assert!(merges.is_empty(), "drift scenario should not emit merge events, but {} has {:?}", c.name, merges);
+        assert!(
+            merges.is_empty(),
+            "drift scenario should not emit merge events, but {} has {:?}",
+            c.name,
+            merges
+        );
     }
 }
 
@@ -666,9 +822,15 @@ fn test_unmatched_cluster_creates_new_component() {
     pin_resolution(dir.path());
 
     // Start with 1 cluster (core: a1,a2,a3)
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
     let sa1 = insert_symbol(&db, a1, "core_a1");
     let sa2 = insert_symbol(&db, a2, "core_a2");
     let sa3 = insert_symbol(&db, a3, "core_a3");
@@ -693,7 +855,11 @@ fn test_unmatched_cluster_creates_new_component() {
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
 
     let active = db.all_components().unwrap();
-    assert_eq!(active.len(), 2, "original preserved + new component created");
+    assert_eq!(
+        active.len(),
+        2,
+        "original preserved + new component created"
+    );
 
     // Original component should still exist
     assert!(
@@ -772,7 +938,10 @@ fn test_staleness_detects_edge_change_above_threshold() {
     let (stored_edges, _stored_files, _, _, _) = db.clustering_meta().unwrap().unwrap();
 
     // Add cross-cluster edges exceeding 10% of stored_edges
-    assert!(stored_edges > 0, "precondition: should have edges after clustering");
+    assert!(
+        stored_edges > 0,
+        "precondition: should have edges after clustering"
+    );
     let a1_id = db
         .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
         .unwrap();
@@ -788,7 +957,10 @@ fn test_staleness_detects_edge_change_above_threshold() {
 
     let files = db.all_files().unwrap();
     let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    assert!(count > 0, "should recluster when edge count changed by >10%");
+    assert!(
+        count > 0,
+        "should recluster when edge count changed by >10%"
+    );
 
     let (new_edges, _, _, _, _) = db.clustering_meta().unwrap().unwrap();
     assert!(
@@ -851,7 +1023,10 @@ fn test_staleness_ignores_edge_change_below_threshold() {
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
     let (stored_edges, _, _, _, _) = db.clustering_meta().unwrap().unwrap();
     // 10 files * 9 neighbors / 2 = 45 undirected edges per cluster, 90 total
-    assert!(stored_edges >= 80, "should have many edges, got {stored_edges}");
+    assert!(
+        stored_edges >= 80,
+        "should have many edges, got {stored_edges}"
+    );
 
     // Add 1 cross-cluster edge (~1% change)
     insert_refs(&db, a_files[0], b_syms[0], 1);
@@ -883,7 +1058,10 @@ fn test_staleness_threshold_override() {
 
     let files = db.all_files().unwrap();
     let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    assert_eq!(count, 0, "should skip when change is below custom 50% threshold");
+    assert_eq!(
+        count, 0,
+        "should skip when change is below custom 50% threshold"
+    );
 }
 
 #[test]
@@ -900,19 +1078,18 @@ fn test_clustering_meta_survives_reindex() {
     db.reindex().unwrap();
 
     let meta_after = db.clustering_meta().unwrap();
-    assert_eq!(meta_before, meta_after, "clustering metadata should survive reindex");
+    assert_eq!(
+        meta_before, meta_after,
+        "clustering metadata should survive reindex"
+    );
 }
 
 #[test]
 fn test_first_run_records_metadata() {
     let (dir, db) = setup_db();
 
-    let a1 = db
-        .upsert_file("src/a.rs", "rust", "h1", 50, true)
-        .unwrap();
-    let a2 = db
-        .upsert_file("src/b.rs", "rust", "h2", 50, true)
-        .unwrap();
+    let a1 = db.upsert_file("src/a.rs", "rust", "h1", 50, true).unwrap();
+    let a2 = db.upsert_file("src/b.rs", "rust", "h2", 50, true).unwrap();
     let sa1 = insert_symbol(&db, a1, "fn_a");
     insert_refs(&db, a2, sa1, 5);
 
@@ -923,7 +1100,10 @@ fn test_first_run_records_metadata() {
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
 
     let meta = db.clustering_meta().unwrap();
-    assert!(meta.is_some(), "metadata should be recorded after first clustering");
+    assert!(
+        meta.is_some(),
+        "metadata should be recorded after first clustering"
+    );
     let (edge_count, file_count, _, _, _) = meta.unwrap();
     assert_eq!(file_count, 2);
     assert!(edge_count > 0);
@@ -943,7 +1123,10 @@ fn test_semantic_anchors_computed_after_discovery() {
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
 
     let anchor_count = components::compute_semantic_anchors(&db, dir.path()).unwrap();
-    assert!(anchor_count > 0, "should compute anchors for discovered components");
+    assert!(
+        anchor_count > 0,
+        "should compute anchors for discovered components"
+    );
 
     let comps = db.all_components().unwrap();
     for c in &comps {
@@ -972,11 +1155,21 @@ fn test_anchors_prefer_high_in_degree() {
     pin_resolution(dir.path());
 
     // Single component: 5 files under src/lib/
-    let f1 = db.upsert_file("src/lib/a.rs", "rust", "h1", 50, true).unwrap();
-    let f2 = db.upsert_file("src/lib/b.rs", "rust", "h2", 50, true).unwrap();
-    let f3 = db.upsert_file("src/lib/c.rs", "rust", "h3", 50, true).unwrap();
-    let f4 = db.upsert_file("src/lib/d.rs", "rust", "h4", 50, true).unwrap();
-    let f5 = db.upsert_file("src/lib/e.rs", "rust", "h5", 50, true).unwrap();
+    let f1 = db
+        .upsert_file("src/lib/a.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let f2 = db
+        .upsert_file("src/lib/b.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let f3 = db
+        .upsert_file("src/lib/c.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let f4 = db
+        .upsert_file("src/lib/d.rs", "rust", "h4", 50, true)
+        .unwrap();
+    let f5 = db
+        .upsert_file("src/lib/e.rs", "rust", "h5", 50, true)
+        .unwrap();
 
     // "popular" symbol: called from all other files
     let popular = insert_symbol(&db, f1, "popular_fn");
@@ -1018,7 +1211,11 @@ fn test_anchors_prefer_high_in_degree() {
 fn test_anchor_count_adaptive() {
     // Unit test for the anchor_count function
     assert_eq!(components::anchor_count(5), 3, "small: min 3");
-    assert_eq!(components::anchor_count(10), 3, "10 eligible: 10/8=1 → clamp to 3");
+    assert_eq!(
+        components::anchor_count(10),
+        3,
+        "10 eligible: 10/8=1 → clamp to 3"
+    );
     assert_eq!(components::anchor_count(24), 3, "24 eligible: 24/8=3");
     assert_eq!(components::anchor_count(40), 5, "40 eligible: 40/8=5");
     assert_eq!(components::anchor_count(56), 7, "56 eligible: 56/8=7");
@@ -1030,8 +1227,12 @@ fn test_anchors_exclude_non_anchor_kinds() {
     let (dir, db) = setup_db();
     pin_resolution(dir.path());
 
-    let f1 = db.upsert_file("src/pkg/a.rs", "rust", "h1", 50, true).unwrap();
-    let f2 = db.upsert_file("src/pkg/b.rs", "rust", "h2", 50, true).unwrap();
+    let f1 = db
+        .upsert_file("src/pkg/a.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let f2 = db
+        .upsert_file("src/pkg/b.rs", "rust", "h2", 50, true)
+        .unwrap();
 
     // Anchor-eligible: function, struct
     let fn_sym = insert_symbol(&db, f1, "my_function");
@@ -1095,7 +1296,11 @@ fn test_anchors_recomputed_on_recluster() {
     let _comps = db.all_components().unwrap();
     let original_anchors: HashSet<String> = {
         let grouped = db.all_anchors_grouped().unwrap();
-        grouped.values().flatten().map(|a| a.symbol_name.clone()).collect()
+        grouped
+            .values()
+            .flatten()
+            .map(|a| a.symbol_name.clone())
+            .collect()
     };
     assert!(!original_anchors.is_empty());
 
@@ -1104,10 +1309,14 @@ fn test_anchors_recomputed_on_recluster() {
 
     // Re-insert the same clusters plus a new file with a new popular symbol
     setup_two_clusters(&db);
-    let new_file = db.upsert_file("src/core/new.rs", "rust", "hnew", 50, true).unwrap();
+    let new_file = db
+        .upsert_file("src/core/new.rs", "rust", "hnew", 50, true)
+        .unwrap();
     let new_sym = insert_symbol(&db, new_file, "new_popular_fn");
     // Make new_sym heavily referenced within core cluster
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
     insert_refs(&db, a1, new_sym, 50);
 
     let files = db.all_files().unwrap();
@@ -1118,7 +1327,11 @@ fn test_anchors_recomputed_on_recluster() {
 
     let new_anchors: HashSet<String> = {
         let grouped = db.all_anchors_grouped().unwrap();
-        grouped.values().flatten().map(|a| a.symbol_name.clone()).collect()
+        grouped
+            .values()
+            .flatten()
+            .map(|a| a.symbol_name.clone())
+            .collect()
     };
     assert!(
         new_anchors.contains("new_popular_fn"),
@@ -1136,18 +1349,30 @@ fn test_concept_density_in_tool_output() {
     pin_resolution(dir.path());
 
     // Cluster A (diverse): function + struct + enum, varied names, 30 LOC per file
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 30, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 30, true).unwrap();
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h3", 30, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 30, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 30, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 30, true)
+        .unwrap();
 
     let sa1 = insert_symbol_with_kind(&db, a1, "UserProfile", "UserProfile", "struct");
     let sa2 = insert_symbol_with_kind(&db, a2, "fetch_data", "fetch_data", "function");
     let sa3 = insert_symbol_with_kind(&db, a3, "RenderMode", "RenderMode", "enum");
 
     // Cluster B (repetitive): all functions, similar names, 30 LOC per file
-    let b1 = db.upsert_file("src/handlers/b1.rs", "rust", "h4", 30, true).unwrap();
-    let b2 = db.upsert_file("src/handlers/b2.rs", "rust", "h5", 30, true).unwrap();
-    let b3 = db.upsert_file("src/handlers/b3.rs", "rust", "h6", 30, true).unwrap();
+    let b1 = db
+        .upsert_file("src/handlers/b1.rs", "rust", "h4", 30, true)
+        .unwrap();
+    let b2 = db
+        .upsert_file("src/handlers/b2.rs", "rust", "h5", 30, true)
+        .unwrap();
+    let b3 = db
+        .upsert_file("src/handlers/b3.rs", "rust", "h6", 30, true)
+        .unwrap();
 
     let sb1 = insert_symbol_with_kind(&db, b1, "handle_create", "handle_create", "function");
     let sb2 = insert_symbol_with_kind(&db, b2, "handle_update", "handle_update", "function");
@@ -1179,7 +1404,9 @@ fn test_concept_density_in_tool_output() {
         .iter()
         .map(|c| {
             let name = c["name"].as_str().unwrap().to_string();
-            let density = c["concept_density"].as_f64().expect("concept_density should be present");
+            let density = c["concept_density"]
+                .as_f64()
+                .expect("concept_density should be present");
             assert!(density >= 0.0, "density should be non-negative");
             (name, density)
         })
@@ -1192,7 +1419,10 @@ fn test_concept_density_in_tool_output() {
     assert!(
         diverse.1 > repetitive.1,
         "diverse component ({}: {}) should have higher density than repetitive ({}: {})",
-        diverse.0, diverse.1, repetitive.0, repetitive.1,
+        diverse.0,
+        diverse.1,
+        repetitive.0,
+        repetitive.1,
     );
 }
 
@@ -1201,16 +1431,28 @@ fn test_boundary_hints_boost_co_module_edges() {
     let (dir, db) = setup_db();
 
     // Two files in the same directory (co-module)
-    let a1 = db.upsert_file("src/core/a1.rs", "rust", "h1", 50, true).unwrap();
-    let a2 = db.upsert_file("src/core/a2.rs", "rust", "h2", 50, true).unwrap();
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
 
     // Two files in different directories
-    let b1 = db.upsert_file("src/tools/b1.rs", "rust", "h3", 50, true).unwrap();
-    let b2 = db.upsert_file("src/other/b2.rs", "rust", "h4", 50, true).unwrap();
+    let b1 = db
+        .upsert_file("src/tools/b1.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let b2 = db
+        .upsert_file("src/other/b2.rs", "rust", "h4", 50, true)
+        .unwrap();
 
     // Extra files to allow clustering
-    let a3 = db.upsert_file("src/core/a3.rs", "rust", "h5", 50, true).unwrap();
-    let b3 = db.upsert_file("src/tools/b3.rs", "rust", "h6", 50, true).unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h5", 50, true)
+        .unwrap();
+    let b3 = db
+        .upsert_file("src/tools/b3.rs", "rust", "h6", 50, true)
+        .unwrap();
 
     let sa1 = insert_symbol(&db, a1, "core_fn1");
     let sa2 = insert_symbol(&db, a2, "core_fn2");

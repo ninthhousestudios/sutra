@@ -122,13 +122,9 @@ fn normalize_to_crate_segments(
 /// `src/db/mod.rs` → `["db"]`
 /// `src/lib.rs` → `[]`
 fn file_to_module_segments(file_path: &str) -> Vec<String> {
-    let stripped = file_path
-        .strip_prefix("src/")
-        .unwrap_or(file_path);
+    let stripped = file_path.strip_prefix("src/").unwrap_or(file_path);
 
-    let without_ext = stripped
-        .strip_suffix(".rs")
-        .unwrap_or(stripped);
+    let without_ext = stripped.strip_suffix(".rs").unwrap_or(stripped);
 
     let parts: Vec<&str> = without_ext.split('/').collect();
     parts
@@ -175,25 +171,20 @@ mod tests {
 
     #[test]
     fn crate_name_prefix() {
-        let segs =
-            normalize_to_crate_segments("sutra::db::Db", "tests/foo.rs", Some("sutra"));
+        let segs = normalize_to_crate_segments("sutra::db::Db", "tests/foo.rs", Some("sutra"));
         assert_eq!(segs.unwrap(), vec!["db", "Db"]);
     }
 
     #[test]
     fn super_prefix() {
-        let segs = normalize_to_crate_segments(
-            "super::scoring::Signal",
-            "src/tools/review.rs",
-            None,
-        );
+        let segs =
+            normalize_to_crate_segments("super::scoring::Signal", "src/tools/review.rs", None);
         assert_eq!(segs.unwrap(), vec!["tools", "scoring", "Signal"]);
     }
 
     #[test]
     fn super_from_mod_rs() {
-        let segs =
-            normalize_to_crate_segments("super::workspace", "src/tools/mod.rs", None);
+        let segs = normalize_to_crate_segments("super::workspace", "src/tools/mod.rs", None);
         assert_eq!(segs.unwrap(), vec!["workspace"]);
     }
 
@@ -205,18 +196,14 @@ mod tests {
 
     #[test]
     fn self_prefix() {
-        let segs =
-            normalize_to_crate_segments("self::engine", "src/constraints/mod.rs", None);
+        let segs = normalize_to_crate_segments("self::engine", "src/constraints/mod.rs", None);
         assert_eq!(segs.unwrap(), vec!["constraints", "engine"]);
     }
 
     #[test]
     fn external_crate_returns_none() {
-        let segs = normalize_to_crate_segments(
-            "std::collections::HashMap",
-            "src/tools/orient.rs",
-            None,
-        );
+        let segs =
+            normalize_to_crate_segments("std::collections::HashMap", "src/tools/orient.rs", None);
         assert!(segs.is_none());
     }
 

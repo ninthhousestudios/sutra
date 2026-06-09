@@ -229,7 +229,12 @@ impl HrrVec {
 
 impl std::fmt::Debug for HrrVec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HrrVec(dim={}, norm={:.4})", self.data.len(), self.norm())
+        write!(
+            f,
+            "HrrVec(dim={}, norm={:.4})",
+            self.data.len(),
+            self.norm()
+        )
     }
 }
 

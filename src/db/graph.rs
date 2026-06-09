@@ -143,8 +143,7 @@ impl Db {
 
     pub fn static_file_edges(&self) -> Result<Vec<(i64, i64)>> {
         use std::collections::{HashMap, HashSet};
-        let sym_file: HashMap<i64, i64> =
-            self.all_symbol_file_map()?.into_iter().collect();
+        let sym_file: HashMap<i64, i64> = self.all_symbol_file_map()?.into_iter().collect();
         let refs = self.all_resolved_refs()?;
         let mut edges = HashSet::new();
         for (src_file, target_sym) in refs {
@@ -169,9 +168,14 @@ impl Db {
              GROUP BY cf1.file_id",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn file_commit_sizes(&self, max_width: i64) -> Result<Vec<(i64, i64, i64)>> {
@@ -188,9 +192,14 @@ impl Db {
              JOIN commit_size cs ON cs.commit_hash = cf.commit_hash",
         )?;
         let rows = stmt.query_map([max_width], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn file_author_commits(&self) -> Result<Vec<(i64, String, i64)>> {
@@ -202,8 +211,13 @@ impl Db {
              GROUP BY cf.file_id, c.author",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 }

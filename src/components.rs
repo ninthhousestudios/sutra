@@ -119,9 +119,7 @@ fn apply_boundary_hints(
             let Some(file_b) = file_map.get(nbr_id) else {
                 continue;
             };
-            if file_a.language == file_b.language
-                && Path::new(&file_b.path).parent() == parent_a
-            {
+            if file_a.language == file_b.language && Path::new(&file_b.path).parent() == parent_a {
                 *weight *= multiplier;
             }
         }
@@ -141,9 +139,7 @@ pub(crate) fn is_test_file(path: &str) -> bool {
         || path.contains(".test.")
         || path.contains("_spec.")
         || path.contains(".spec.")
-        || segments
-            .last()
-            .map_or(false, |s| s.starts_with("test_"))
+        || segments.last().map_or(false, |s| s.starts_with("test_"))
 }
 
 fn add_cochange_edges(
@@ -152,7 +148,9 @@ fn add_cochange_edges(
     files: &[FileRow],
     config: &ComponentsConfig,
 ) -> Result<usize> {
-    let threshold = config.cochange_threshold.unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
+    let threshold = config
+        .cochange_threshold
+        .unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
     let weight_scale = config.cochange_weight.unwrap_or(DEFAULT_COCHANGE_WEIGHT);
 
     let pairs = db.cochange_pairs_above_threshold(threshold)?;
@@ -160,16 +158,11 @@ fn add_cochange_edges(
         return Ok(0);
     }
 
-    let id_to_path: HashMap<i64, &str> =
-        files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
 
     let static_edges: HashSet<(i64, i64)> = adj
         .iter()
-        .flat_map(|(&a, neighbors)| {
-            neighbors
-                .iter()
-                .map(move |&(b, _)| (a.min(b), a.max(b)))
-        })
+        .flat_map(|(&a, neighbors)| neighbors.iter().map(move |&(b, _)| (a.min(b), a.max(b))))
         .collect();
 
     let mut added = 0;
@@ -212,8 +205,7 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
         };
     }
 
-    let id_to_idx: HashMap<i64, usize> =
-        nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let id_to_idx: HashMap<i64, usize> = nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     let mut neighbors: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
     let mut total_weight = 0.0;
@@ -271,8 +263,8 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
                     continue;
                 }
                 let sigma_c = sigma_tot.get(&c).copied().unwrap_or(0.0);
-                let gain =
-                    (ki_in - ki_in_current) / m2 - resolution * k[i] * (sigma_c - sigma_current) / (m2 * m2);
+                let gain = (ki_in - ki_in_current) / m2
+                    - resolution * k[i] * (sigma_c - sigma_current) / (m2 * m2);
                 if gain > best_gain {
                     best_gain = gain;
                     best_comm = c;
@@ -327,7 +319,10 @@ fn auto_tune(adj: &WeightedAdj) -> LouvainResult {
     let n = adj.len();
     let candidates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-    let results: Vec<LouvainResult> = candidates.iter().map(|&gamma| louvain(adj, gamma)).collect();
+    let results: Vec<LouvainResult> = candidates
+        .iter()
+        .map(|&gamma| louvain(adj, gamma))
+        .collect();
 
     let viable: Vec<&LouvainResult> = results
         .iter()
@@ -369,10 +364,17 @@ fn auto_name(paths: &[&str]) -> String {
             .unwrap_or_else(|| "root".to_string());
     }
 
-    let parts: Vec<Vec<&str>> = paths.iter().map(|p| p.split('/').collect::<Vec<_>>()).collect();
+    let parts: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|p| p.split('/').collect::<Vec<_>>())
+        .collect();
 
     // Longest common prefix (excluding filename components)
-    let min_depth = parts.iter().map(|p| p.len().saturating_sub(1)).min().unwrap_or(0);
+    let min_depth = parts
+        .iter()
+        .map(|p| p.len().saturating_sub(1))
+        .min()
+        .unwrap_or(0);
     let mut prefix_len = 0;
     for i in 0..min_depth {
         if parts.iter().all(|p| p[i] == parts[0][i]) {
@@ -485,8 +487,7 @@ fn reconcile_components(
 
     for &(ci, ki) in &matches {
         let (id, _, _) = &existing[ci];
-        let paths_json =
-            to_json(&cluster_paths[ki].iter().collect::<Vec<_>>());
+        let paths_json = to_json(&cluster_paths[ki].iter().collect::<Vec<_>>());
         db.update_component_paths(id, &paths_json)?;
         for &fid in &clusters[ki] {
             all_membership.push((id.clone(), fid));
@@ -576,17 +577,11 @@ fn detect_events(
                 let absorbed: Vec<_> = contributors
                     .iter()
                     .filter(|(ci, _)| !matched_comps.contains(ci))
-                    .map(|(ci, _)| {
-                        json!({"id": &existing[*ci].0, "name": &existing[*ci].1})
-                    })
+                    .map(|(ci, _)| json!({"id": &existing[*ci].0, "name": &existing[*ci].1}))
                     .collect();
                 if !absorbed.is_empty() {
                     let detail = json!({ "absorbed": absorbed });
-                    db.insert_component_event(
-                        surviving_id,
-                        "merge",
-                        &detail.to_string(),
-                    )?;
+                    db.insert_component_event(surviving_id, "merge", &detail.to_string())?;
                 }
             }
         }
@@ -607,9 +602,9 @@ fn detect_events(
             let targets: Vec<_> = cluster_distribution
                 .iter()
                 .filter_map(|(&ki, &count)| {
-                    cluster_to_comp.get(&ki).map(|comp_id| {
-                        json!({"component_id": comp_id, "files": count})
-                    })
+                    cluster_to_comp
+                        .get(&ki)
+                        .map(|comp_id| json!({"component_id": comp_id, "files": count}))
                 })
                 .collect();
             if matched_comps.contains(&ci) {
@@ -686,9 +681,13 @@ fn clustering_config_hash(
     for k in keys {
         write!(buf, "{k}={};", boundary_multipliers[k]).unwrap();
     }
-    let ct = config.cochange_threshold.unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
+    let ct = config
+        .cochange_threshold
+        .unwrap_or(DEFAULT_COCHANGE_THRESHOLD);
     let cw = config.cochange_weight.unwrap_or(DEFAULT_COCHANGE_WEIGHT);
-    let cwd = config.cochange_window_days.unwrap_or(DEFAULT_COCHANGE_WINDOW_DAYS);
+    let cwd = config
+        .cochange_window_days
+        .unwrap_or(DEFAULT_COCHANGE_WINDOW_DAYS);
     write!(buf, "ct={ct};cw={cw};cwd={cwd};").unwrap();
     buf
 }
@@ -780,7 +779,9 @@ pub fn discover_components(
     }
 
     let config = load_config(workspace_root)?;
-    let threshold = config.staleness_threshold.unwrap_or(DEFAULT_STALENESS_THRESHOLD);
+    let threshold = config
+        .staleness_threshold
+        .unwrap_or(DEFAULT_STALENESS_THRESHOLD);
     let has_existing = db.component_count()? > 0;
     let has_membership = db.membership_count()? > 0;
     let file_count = files.len() as i64;
@@ -815,7 +816,13 @@ pub fn discover_components(
         create_fresh_components(db, &clusters, &file_map)?
     };
 
-    db.upsert_clustering_meta(edge_count as i64, file_count, &cfg_hash, commit_file_count, newest_commit_at)?;
+    db.upsert_clustering_meta(
+        edge_count as i64,
+        file_count,
+        &cfg_hash,
+        commit_file_count,
+        newest_commit_at,
+    )?;
     Ok(count)
 }
 
@@ -912,7 +919,8 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
     let churn_map = git::git_churn(workspace_root, 90).unwrap_or_default();
 
     let files = db.all_files()?;
-    let file_id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let file_id_to_path: HashMap<i64, &str> =
+        files.iter().map(|f| (f.id, f.path.as_str())).collect();
     let all_symbols = db.all_symbols_by_file()?;
 
     let mut component_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
@@ -961,10 +969,7 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
             .iter()
             .map(|s| intra_in_degree.get(&s.id).copied().unwrap_or(0) as f64)
             .collect();
-        let pageranks: Vec<f64> = eligible
-            .iter()
-            .map(|s| s.pagerank.unwrap_or(0.0))
-            .collect();
+        let pageranks: Vec<f64> = eligible.iter().map(|s| s.pagerank.unwrap_or(0.0)).collect();
         let stabilities: Vec<f64> = eligible
             .iter()
             .map(|s| {
@@ -1041,7 +1046,11 @@ pub fn concept_density(symbols: &[&SymbolRow], total_loc: i64) -> f64 {
     if symbols.is_empty() || total_loc <= 0 {
         return 0.0;
     }
-    let unique_kinds = symbols.iter().map(|s| s.kind.as_str()).collect::<HashSet<_>>().len();
+    let unique_kinds = symbols
+        .iter()
+        .map(|s| s.kind.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     let stem_diversity = extract_stems(symbols);
     let raw = (unique_kinds as f64 * stem_diversity as f64) / total_loc as f64;
     (raw * 10000.0).round() / 10000.0
@@ -1280,7 +1289,10 @@ mod tests {
 
     #[test]
     fn test_parse_config_cochange_fields() {
-        let c = parse_config("cochange_threshold = 0.3\ncochange_weight = 8.0\ncochange_window_days = 180").unwrap();
+        let c = parse_config(
+            "cochange_threshold = 0.3\ncochange_weight = 8.0\ncochange_window_days = 180",
+        )
+        .unwrap();
         assert_eq!(c.cochange_threshold, Some(0.3));
         assert_eq!(c.cochange_weight, Some(8.0));
         assert_eq!(c.cochange_window_days, Some(180));

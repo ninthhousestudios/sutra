@@ -41,9 +41,7 @@ impl DartPackageMap {
                     }
                     stack.push(path);
                 } else if name_str == "pubspec.yaml" {
-                    if let Some((pkg_name, lib_dir)) =
-                        extract_package_info(workspace_root, &path)
-                    {
+                    if let Some((pkg_name, lib_dir)) = extract_package_info(workspace_root, &path) {
                         packages.insert(pkg_name, lib_dir);
                     }
                 }
@@ -137,10 +135,7 @@ pub fn resolve_dart_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
 
     let pkg_map = DartPackageMap::build(workspace_root);
     if !pkg_map.packages.is_empty() {
-        info!(
-            packages = pkg_map.packages.len(),
-            "built Dart package map"
-        );
+        info!(packages = pkg_map.packages.len(), "built Dart package map");
     }
 
     let mut resolved_count = 0;
@@ -281,10 +276,7 @@ mod tests {
         .unwrap();
 
         let result = extract_package_info(dir.path(), &dir.path().join("pubspec.yaml"));
-        assert_eq!(
-            result,
-            Some(("root_pkg".to_string(), "lib/".to_string()))
-        );
+        assert_eq!(result, Some(("root_pkg".to_string(), "lib/".to_string())));
     }
 
     #[test]

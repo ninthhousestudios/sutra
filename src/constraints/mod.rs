@@ -109,10 +109,9 @@ pub fn format_violation_detail(
 ) -> String {
     let delta = if is_introduced { " [introduced]" } else { "" };
     match &c.kind {
-        ConstraintKind::ForbiddenDep {
-            from: rf,
-            to: rt,
-        } => format!("forbidden: {from} -> {to} (rule: {rf} -> {rt}){delta}"),
+        ConstraintKind::ForbiddenDep { from: rf, to: rt } => {
+            format!("forbidden: {from} -> {to} (rule: {rf} -> {rt}){delta}")
+        }
         ConstraintKind::Boundary {
             from_component,
             to_component,

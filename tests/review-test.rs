@@ -1,8 +1,8 @@
 use std::fs;
 use std::time::Duration;
 
-use sutra::db::{Db, InsertSymbolParams};
 use sutra::constraints::DdEngine;
+use sutra::db::{Db, InsertSymbolParams};
 use sutra::parser::adapter::default_registry;
 use sutra::tools::review;
 use sutra::tools::scoring::ChurnMap;
@@ -477,7 +477,10 @@ fn waived_violations_appear_in_output() {
     assert_eq!(wv[0]["convention_id"], "abc123");
 
     let cv = result["convention_violations"].as_array().unwrap();
-    assert!(cv.is_empty(), "waived violations should not appear as regular violations");
+    assert!(
+        cv.is_empty(),
+        "waived violations should not appear as regular violations"
+    );
 
     let conv_score = result["risk_breakdown"]["convention_violations"]
         .as_f64()
@@ -843,7 +846,10 @@ fn waived_constraint_violations_appear_in_output() {
         review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
-    assert!(cv.is_empty(), "waived constraint violations should not appear as regular violations");
+    assert!(
+        cv.is_empty(),
+        "waived constraint violations should not appear as regular violations"
+    );
 
     let wcv = result["waived_constraint_violations"].as_array().unwrap();
     assert_eq!(wcv.len(), 1);
@@ -872,21 +878,45 @@ forbidden_deps = [
     )
     .unwrap();
 
-    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true).unwrap();
-    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true).unwrap();
-    db.upsert_file("src/lib.rs", "rust", "h3", 50, true).unwrap();
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true)
+        .unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true)
+        .unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h3", 50, true)
+        .unwrap();
 
     let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
     let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
     let f_lib = db.file_by_path("src/lib.rs").unwrap().unwrap();
 
-    db.insert_symbol(&sym(f_view.id, "view::render", "render", None, 1, 10, Some(2))).unwrap();
-    db.insert_symbol(&sym(f_query.id, "query::fetch", "fetch", None, 1, 10, Some(2))).unwrap();
-    db.insert_symbol(&sym(f_lib.id, "lib::init", "init", None, 1, 10, Some(2))).unwrap();
+    db.insert_symbol(&sym(
+        f_view.id,
+        "view::render",
+        "render",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(
+        f_query.id,
+        "query::fetch",
+        "fetch",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(f_lib.id, "lib::init", "init", None, 1, 10, Some(2)))
+        .unwrap();
 
     // view.rs imports query.rs (forbidden), lib.rs imports query.rs (not forbidden)
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
-    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
+    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1)
+        .unwrap();
+    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1)
+        .unwrap();
 
     // Only view.rs is changed — its forbidden import should be detected as introduced
     let changed = vec!["src/ui/view.rs".to_string()];
@@ -920,19 +950,43 @@ forbidden_deps = [
     )
     .unwrap();
 
-    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true).unwrap();
-    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true).unwrap();
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true)
+        .unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true)
+        .unwrap();
 
     let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
     let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
 
-    db.insert_symbol(&sym(f_view.id, "view::render", "render", None, 1, 10, Some(2))).unwrap();
-    db.insert_symbol(&sym(f_query.id, "query::fetch", "fetch", None, 1, 10, Some(2))).unwrap();
+    db.insert_symbol(&sym(
+        f_view.id,
+        "view::render",
+        "render",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(
+        f_query.id,
+        "query::fetch",
+        "fetch",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
 
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1).unwrap();
+    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1)
+        .unwrap();
 
     // Create a constraint waiver for this specific violation
-    let constraints = sutra::rules::load_rules(dir.path()).unwrap().all_constraints().unwrap();
+    let constraints = sutra::rules::load_rules(dir.path())
+        .unwrap()
+        .all_constraints()
+        .unwrap();
     let constraint_id = &constraints[0].id;
     db.create_constraint_waiver(
         constraint_id,
@@ -955,7 +1009,10 @@ forbidden_deps = [
     assert_eq!(findings.waived_constraint_violations.len(), 1);
     let w = &findings.waived_constraint_violations[0];
     assert_eq!(w.constraint_id, *constraint_id);
-    assert_eq!(w.rationale, "legacy coupling, will be removed in next sprint");
+    assert_eq!(
+        w.rationale,
+        "legacy coupling, will be removed in next sprint"
+    );
     assert_eq!(w.waived_by, "josh");
     assert_eq!(w.from_path, "src/ui/view.rs");
 }
@@ -1005,7 +1062,13 @@ fn build_findings_persists_conventions_to_db() {
     assert!(db.all_conventions().unwrap().is_empty());
 
     let registry = default_registry();
-    let _ = review::build_findings(&db, dir.path(), &["src/f_0.rs".to_string()], None, &registry);
+    let _ = review::build_findings(
+        &db,
+        dir.path(),
+        &["src/f_0.rs".to_string()],
+        None,
+        &registry,
+    );
 
     let conventions = db.all_conventions().unwrap();
     assert!(
@@ -1061,7 +1124,8 @@ forbidden_deps = [
     // build_findings should fall back to ephemeral and still detect the violation
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings = review::build_findings(&db, dir.path(), &changed, Some(&shared), &registry).unwrap();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, Some(&shared), &registry).unwrap();
     assert!(
         !findings.constraint_violations.is_empty(),
         "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
@@ -1247,7 +1311,13 @@ fn build_findings_surfaces_error_on_bad_rules() {
     fs::write(rules_dir.join("rules.toml"), "{{invalid toml").unwrap();
 
     let registry = default_registry();
-    let result = review::build_findings(&db, dir.path(), &["src/foo.rs".to_string()], None, &registry);
+    let result = review::build_findings(
+        &db,
+        dir.path(),
+        &["src/foo.rs".to_string()],
+        None,
+        &registry,
+    );
     assert!(
         result.is_err(),
         "malformed rules.toml should return Err, not empty findings"
@@ -1278,7 +1348,10 @@ fn build_findings_cycle_violations_counted_in_total() {
     let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
 
     assert!(
-        findings.constraint_violations.iter().any(|v| v.constraint_kind == "no_cycles"),
+        findings
+            .constraint_violations
+            .iter()
+            .any(|v| v.constraint_kind == "no_cycles"),
         "should detect the import cycle"
     );
     assert_eq!(
@@ -1293,14 +1366,26 @@ fn degraded_findings_nullify_risk_score() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
-    let mut result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &no_findings()).unwrap();
-    assert!(result["risk_score"].as_f64().is_some(), "normal review has numeric risk_score");
+    let mut result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &no_findings(),
+    )
+    .unwrap();
+    assert!(
+        result["risk_score"].as_f64().is_some(),
+        "normal review has numeric risk_score"
+    );
 
     if let Some(obj) = result.as_object_mut() {
         obj.insert("findings_degraded".into(), serde_json::json!(true));
         obj.insert("findings_error".into(), serde_json::json!("bad rules"));
         obj.insert("risk_score".into(), serde_json::json!(null));
     }
-    assert!(result["risk_score"].is_null(), "degraded review should have null risk_score");
+    assert!(
+        result["risk_score"].is_null(),
+        "degraded review should have null risk_score"
+    );
 }
