@@ -143,6 +143,42 @@ Per-file and per-component health scores (1.0–10.0 scale) derived from empiric
 
 Scores use category-capped deductions so no single dimension can dominate. Component scores are NLOC-weighted averages of member files. Health waivers let you acknowledge known issues without suppressing the signal.
 
+### 5. Vocabulary mapping (Layer 5)
+
+Sutra lets you define human-readable names for code concepts so agents (and humans) can refer to them naturally. Create `.sutra/aliases.toml` in your project root:
+
+```toml
+[component]
+"being detail cards" = "being_detail"
+"auth" = "authentication"
+
+[file]
+"config" = "src/config.rs"
+"main entry" = "lib/main.dart"
+
+[symbol]
+"UP" = "UserProfile"
+"parse" = "parse_rules"
+```
+
+Three sections map terms to different target kinds:
+
+- **`[component]`** — maps a human name to a component name (as shown in `sutra_components`)
+- **`[file]`** — maps a human name to a file path
+- **`[symbol]`** — maps a human name to a symbol name
+
+Aliases are synced to the database during workspace indexing. Use `sutra_resolve` to look up any term:
+
+```
+Agent: sutra_resolve(query="being detail cards")
+→ alias match: component "being_detail"
+→ file locations for all member files
+```
+
+Resolution searches in priority order: aliases (exact match) → component names (substring) → semantic anchor names (substring). Orphan detection warns when an alias points to a dissolved component or missing file.
+
+This means you can tell an agent "find the being detail cards code" and it resolves to concrete file locations without the agent having to rediscover the mapping each time.
+
 ### 6. Structural similarity (Layer 6)
 
 Holographic Reduced Representations (HRR) encode each function's AST into a 1024-dimensional vector. Two modes:
@@ -169,6 +205,7 @@ This powers duplicate detection (pattern families of 3+ structurally identical f
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
 | `sutra_orient` | Convention-aware orientation for a component or file — preferred conventions with templates, deprecated/forbidden warnings, drift alerts, active constraints and violations, health scores, waivers |
 | `sutra_components` | List discovered architectural components and member files |
+| `sutra_resolve` | Resolve a vocabulary term (alias, component name, or anchor) to code locations |
 | `sutra_conventions` | Manage convention lifecycle (list, promote, deprecate, waive) and review proposals |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
 | `sutra_parse` | Trigger a workspace reparse |
@@ -330,6 +367,7 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 | File | Purpose |
 |------|---------|
 | `rules.toml` | Architectural constraints (forbidden deps, boundaries, cycle rules, fan-in limits) |
+| `aliases.toml` | Vocabulary aliases — human-readable names for components, files, and symbols (see [Layer 5](#5-vocabulary-mapping-layer-5)) |
 | `owners.toml` | Author alias mapping for ownership risk biomarker (maps agent emails to canonical human) |
 
 ## How it works

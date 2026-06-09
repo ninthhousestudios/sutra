@@ -344,14 +344,15 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(description = "List discovered architectural components and their member files.")]
+    #[tool(description = "List discovered architectural components. Compact mode (default) returns name, file_count, top 3 anchors, and concept_density. Pass compact=false for full detail with UUIDs, complete file lists, and anchor rationale.")]
     pub async fn sutra_components(
         &self,
         Parameters(args): Parameters<ComponentsArgs>,
     ) -> Result<String, ErrorData> {
         let _ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::components::handle(&db).map_err(sutra_to_rmcp)?;
+        let compact = args.compact.unwrap_or(true);
+        let result = tools::components::handle(&db, compact).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

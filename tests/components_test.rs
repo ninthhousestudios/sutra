@@ -260,7 +260,7 @@ fn test_sutra_components_tool() {
     let files = db.all_files().unwrap();
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
 
-    let result = sutra::tools::components::handle(&db).unwrap();
+    let result = sutra::tools::components::handle(&db, false).unwrap();
     let obj = result.as_object().unwrap();
     let total = obj["total"].as_u64().unwrap();
     assert!(total > 0, "tool should return discovered components");
@@ -398,7 +398,7 @@ fn test_dissolved_components_hidden_from_queries() {
     assert_eq!(active[0].name, "core");
 
     // MCP tool should also return only 1
-    let result = sutra::tools::components::handle(&db).unwrap();
+    let result = sutra::tools::components::handle(&db, false).unwrap();
     assert_eq!(result["total"].as_u64().unwrap(), 1);
 }
 
@@ -1069,7 +1069,7 @@ fn test_anchors_in_components_tool_output() {
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
     components::compute_semantic_anchors(&db, dir.path()).unwrap();
 
-    let result = sutra::tools::components::handle(&db).unwrap();
+    let result = sutra::tools::components::handle(&db, false).unwrap();
     let comps = result["components"].as_array().unwrap();
     for c in comps {
         let anchors = c["anchors"].as_array().unwrap();
@@ -1171,7 +1171,7 @@ fn test_concept_density_in_tool_output() {
     let files = db.all_files().unwrap();
     components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
 
-    let result = sutra::tools::components::handle(&db).unwrap();
+    let result = sutra::tools::components::handle(&db, false).unwrap();
     let comps = result["components"].as_array().unwrap();
     assert_eq!(comps.len(), 2);
 
