@@ -107,6 +107,12 @@ pub struct LanguageRegistry {
     ext_map: HashMap<String, usize>,
 }
 
+impl Default for LanguageRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageRegistry {
     pub fn new() -> Self {
         Self {

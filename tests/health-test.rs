@@ -1647,7 +1647,7 @@ fn fca_conformance_no_antecedent_matches() {
     }];
     let components = vec![("c1".into(), "comp1".into(), syms)];
     let result = compute_fca_conformance(&convs, &components);
-    assert!(result.get("c1").is_none());
+    assert!(!result.contains_key("c1"));
 }
 
 #[test]
@@ -1704,7 +1704,7 @@ fn hrr_coherence_too_few_symbols() {
 
     let result = compute_hrr_coherence(&db).unwrap();
     assert!(
-        result.get("comp1").is_none(),
+        !result.contains_key("comp1"),
         "< 3 symbols should be skipped"
     );
 }
@@ -2084,7 +2084,7 @@ fn orient_includes_health_section() {
 
     let health = &section["health"];
     assert!(health["health_score"].as_f64().is_some());
-    assert!(health["top_findings"].as_array().unwrap().len() > 0);
+    assert!(!health["top_findings"].as_array().unwrap().is_empty());
 
     let finding = &health["top_findings"][0];
     assert_eq!(finding["biomarker"].as_str().unwrap(), "nested_complexity");

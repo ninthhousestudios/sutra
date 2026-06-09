@@ -361,6 +361,7 @@ pub struct SnapshotComponentRow {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ResolveResult {
     Unique(SymbolRow),
     Ambiguous(Vec<SymbolRow>),
@@ -854,6 +855,7 @@ impl Db {
 
     /// Find symbols with zero inbound references (potential dead code).
     /// Returns (qualified_name, file_path, kind, start_line, visibility).
+    #[allow(clippy::type_complexity)]
     pub fn find_dead_symbols(
         &self,
         include_pub: bool,

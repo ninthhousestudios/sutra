@@ -68,10 +68,7 @@ pub const MIN_CONFIDENCE: f64 = 0.9;
 const MAX_COMPONENT_SUPPORT: usize = 20;
 
 pub fn component_min_support(component_size: usize) -> usize {
-    std::cmp::min(
-        MAX_COMPONENT_SUPPORT,
-        std::cmp::max(2, (component_size as f64 * 0.4).ceil() as usize),
-    )
+    ((component_size as f64 * 0.4).ceil() as usize).clamp(2, MAX_COMPONENT_SUPPORT)
 }
 
 pub struct FcaEngine {
@@ -79,6 +76,12 @@ pub struct FcaEngine {
     conventions: Vec<Convention>,
     symbol_attrs: Vec<SymbolAttrs>,
     last_matrix_hash: Option<blake3::Hash>,
+}
+
+impl Default for FcaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FcaEngine {
@@ -174,10 +177,10 @@ impl FcaEngine {
                 .collect();
 
             for sym in changed_symbols {
-                if let Some(conv_comp) = &conv.component_id {
-                    if sym.component_id.as_ref() != Some(conv_comp) {
-                        continue;
-                    }
+                if let Some(conv_comp) = &conv.component_id
+                    && sym.component_id.as_ref() != Some(conv_comp)
+                {
+                    continue;
                 }
 
                 let is_exempt = exempted.iter().any(|pat| {
@@ -242,10 +245,10 @@ impl FcaEngine {
             };
 
             for sym in changed_symbols {
-                if let Some(conv_comp) = &conv.component_id {
-                    if sym.component_id.as_ref() != Some(conv_comp) {
-                        continue;
-                    }
+                if let Some(conv_comp) = &conv.component_id
+                    && sym.component_id.as_ref() != Some(conv_comp)
+                {
+                    continue;
                 }
 
                 let attrs: HashSet<&str> = sym.attributes.iter().map(|a| a.as_str()).collect();
@@ -313,7 +316,7 @@ impl FcaEngine {
         let allowed: HashSet<&str> = if attr_freq.len() > Self::MAX_ATTRS {
             let mut by_freq: Vec<(&str, usize)> =
                 attr_freq.iter().map(|(k, &v)| (k.as_str(), v)).collect();
-            by_freq.sort_by(|a, b| b.1.cmp(&a.1));
+            by_freq.sort_by_key(|x| std::cmp::Reverse(x.1));
             by_freq.truncate(Self::MAX_ATTRS);
             by_freq.into_iter().map(|(k, _)| k).collect()
         } else {
@@ -503,7 +506,7 @@ mod tests {
             attributes: vec!["kind:function".into(), "has_sig".into()],
             component_id: None,
         };
-        let second = engine.update_incremental(&[extra.clone()], &[]);
+        let second = engine.update_incremental(std::slice::from_ref(&extra), &[]);
         let third = engine.update_incremental(&[extra], &[]);
 
         let count_fn = |convs: &[Convention]| {

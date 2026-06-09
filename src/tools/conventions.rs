@@ -115,7 +115,7 @@ fn handle_accept(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
     let target_state = proposal
         .proposed_transition
         .split('\u{2192}')
-        .last()
+        .next_back()
         .unwrap_or("preferred");
 
     if target_state == "deleted" {

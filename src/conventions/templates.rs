@@ -75,7 +75,7 @@ fn decompose_signature(
 }
 
 fn split_at_first_delimiter(s: &str) -> Option<(&str, &str)> {
-    let idx = s.find(|c: char| c == '(' || c == '<')?;
+    let idx = s.find(['(', '<'])?;
     Some((&s[..idx], &s[idx..]))
 }
 
@@ -174,13 +174,13 @@ fn select_exemplars(
         {
             continue;
         }
-        if let Some(ref comp_id) = convention.component_id {
-            if sa.component_id.as_deref() != Some(comp_id) {
-                continue;
-            }
+        if let Some(ref comp_id) = convention.component_id
+            && sa.component_id.as_deref() != Some(comp_id)
+        {
+            continue;
         }
         let info = sig_info.get(&sa.name);
-        if info.map_or(true, |i| i.signature.is_none()) {
+        if info.is_none_or(|i| i.signature.is_none()) {
             continue;
         }
         let coverage = sa.attributes.len() - required.len();
@@ -224,10 +224,8 @@ fn generate_template(exemplars: &[SignatureElements]) -> String {
     let all_same_vis = exemplars
         .windows(2)
         .all(|w| w[0].visibility == w[1].visibility);
-    if all_same_vis {
-        if let Some(ref vis) = exemplars[0].visibility {
-            parts.push(vis.clone());
-        }
+    if all_same_vis && let Some(ref vis) = exemplars[0].visibility {
+        parts.push(vis.clone());
     }
 
     if exemplars.iter().all(|e| e.is_async) {
@@ -338,15 +336,14 @@ fn build_return_template(exemplars: &[SignatureElements]) -> String {
 
 fn detect_common_wrapper(returns: &[Option<&str>]) -> Option<&'static str> {
     let wrappers = ["Result", "Option", "Vec", "Box"];
-    for w in &wrappers {
-        if returns
-            .iter()
-            .all(|r| r.map_or(false, |r| r.starts_with(w) && r[w.len()..].starts_with('<')))
-        {
-            return Some(w);
-        }
-    }
-    None
+    wrappers
+        .iter()
+        .find(|&w| {
+            returns
+                .iter()
+                .all(|r| r.is_some_and(|r| r.starts_with(w) && r[w.len()..].starts_with('<')))
+        })
+        .map(|v| v as _)
 }
 
 pub fn generate_templates_for_conventions(

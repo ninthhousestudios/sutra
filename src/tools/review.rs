@@ -531,46 +531,46 @@ pub fn build_findings(
             .collect();
         let mut callee_cache: HashMap<i64, conventions::ResolvedCallee> = HashMap::new();
         for id in &target_ids {
-            if !callee_cache.contains_key(id) {
-                if let Some(sym) = db.symbol_by_id(*id)? {
-                    callee_cache.insert(
-                        *id,
-                        conventions::ResolvedCallee {
-                            qualified_name: sym.qualified_name,
-                            signature: sym.signature,
-                        },
-                    );
-                }
+            if !callee_cache.contains_key(id)
+                && let Some(sym) = db.symbol_by_id(*id)?
+            {
+                callee_cache.insert(
+                    *id,
+                    conventions::ResolvedCallee {
+                        qualified_name: sym.qualified_name,
+                        signature: sym.signature,
+                    },
+                );
             }
         }
 
         for s in &syms {
             if let Some(mut attrs) =
-                conventions::extract_attrs_for_symbol(&s, &f.path, &f.language, registry)
+                conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
             {
-                if let Some(adapter) = registry.adapter_for_language(&f.language) {
-                    if let Some(fca_source) = adapter.as_fca_source() {
-                        let call_refs: Vec<_> = refs
-                            .iter()
-                            .filter(|r| {
-                                r.context_kind == "call"
-                                    && r.line >= s.start_line
-                                    && r.line <= s.end_line
+                if let Some(adapter) = registry.adapter_for_language(&f.language)
+                    && let Some(fca_source) = adapter.as_fca_source()
+                {
+                    let call_refs: Vec<_> = refs
+                        .iter()
+                        .filter(|r| {
+                            r.context_kind == "call"
+                                && r.line >= s.start_line
+                                && r.line <= s.end_line
+                        })
+                        .collect();
+                    conventions::enrich_with_effects(
+                        &mut attrs,
+                        s,
+                        &call_refs,
+                        &|id| {
+                            callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
+                                qualified_name: c.qualified_name.clone(),
+                                signature: c.signature.clone(),
                             })
-                            .collect();
-                        conventions::enrich_with_effects(
-                            &mut attrs,
-                            s,
-                            &call_refs,
-                            &|id| {
-                                callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
-                                    qualified_name: c.qualified_name.clone(),
-                                    signature: c.signature.clone(),
-                                })
-                            },
-                            fca_source.effect_patterns(),
-                        );
-                    }
+                        },
+                        fca_source.effect_patterns(),
+                    );
                 }
                 sig_info_map.insert(
                     s.qualified_name.clone(),
@@ -871,6 +871,7 @@ fn gather_change_stats(
     Ok(stats)
 }
 
+#[allow(clippy::type_complexity)]
 fn gather_affected(
     db: &Db,
     symbol_ids: &[i64],
@@ -907,11 +908,11 @@ fn gather_affected(
 
     files.sort_by(|a, b| a.0.cmp(&b.0));
     files.dedup_by(|a, b| a.0 == b.0);
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|x| std::cmp::Reverse(x.1));
 
     symbols.sort_by(|a, b| a.0.cmp(&b.0));
     symbols.dedup_by(|a, b| a.0 == b.0);
-    symbols.sort_by(|a, b| b.2.cmp(&a.2));
+    symbols.sort_by_key(|x| std::cmp::Reverse(x.2));
 
     Ok((files, symbols))
 }
@@ -1037,16 +1038,16 @@ fn build_recommended_reads(
         reads.push((path.clone(), *blast, true, false));
     }
     for bp in behavioral_partners {
-        if let Some(partner) = bp["partner"].as_str() {
-            if seen.insert(partner.to_string()) {
-                let blast = db
-                    .file_by_path(partner)
-                    .ok()
-                    .flatten()
-                    .map(|f| f.blast_radius)
-                    .unwrap_or(0);
-                reads.push((partner.to_string(), blast, false, true));
-            }
+        if let Some(partner) = bp["partner"].as_str()
+            && seen.insert(partner.to_string())
+        {
+            let blast = db
+                .file_by_path(partner)
+                .ok()
+                .flatten()
+                .map(|f| f.blast_radius)
+                .unwrap_or(0);
+            reads.push((partner.to_string(), blast, false, true));
         }
     }
     for (path, blast) in affected_files {

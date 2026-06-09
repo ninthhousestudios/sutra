@@ -21,10 +21,10 @@ pub fn compute_fca_conformance(
         let mut total_conforming = 0usize;
 
         for conv in conventions {
-            if let Some(ref cid) = conv.component_id {
-                if cid != comp_id {
-                    continue;
-                }
+            if let Some(ref cid) = conv.component_id
+                && cid != comp_id
+            {
+                continue;
             }
 
             for sym in symbols {
@@ -110,8 +110,8 @@ pub fn detect_convention_drift(
             continue;
         }
 
-        if let Some(&current_conf) = conformance.get(comp_id) {
-            if let Some(finding) = check_metric_drop(
+        if let Some(&current_conf) = conformance.get(comp_id)
+            && let Some(finding) = check_metric_drop(
                 &snapshots,
                 |s| s.fca_conformance,
                 current_conf,
@@ -120,13 +120,13 @@ pub fn detect_convention_drift(
                 comp_name,
                 "fca_conformance",
                 "convention conformance",
-            ) {
-                findings.push(finding);
-            }
+            )
+        {
+            findings.push(finding);
         }
 
-        if let Some(&current_coh) = coherence.get(comp_id) {
-            if let Some(finding) = check_metric_drop(
+        if let Some(&current_coh) = coherence.get(comp_id)
+            && let Some(finding) = check_metric_drop(
                 &snapshots,
                 |s| s.hrr_coherence,
                 current_coh,
@@ -135,14 +135,15 @@ pub fn detect_convention_drift(
                 comp_name,
                 "hrr_coherence",
                 "structural coherence",
-            ) {
-                findings.push(finding);
-            }
+            )
+        {
+            findings.push(finding);
         }
     }
     Ok(findings)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_metric_drop(
     snapshots: &[crate::db::ConventionSnapshotRow],
     extract: impl Fn(&crate::db::ConventionSnapshotRow) -> Option<f64>,
@@ -155,7 +156,7 @@ fn check_metric_drop(
 ) -> Option<HealthFinding> {
     let historical: Vec<f64> = snapshots[..DRIFT_WINDOW - 1]
         .iter()
-        .filter_map(|s| extract(s))
+        .filter_map(extract)
         .collect();
     if historical.len() < DRIFT_WINDOW - 1 {
         return None;
@@ -254,7 +255,7 @@ mod tests {
         )];
         let components = vec![("c1".into(), "comp1".into(), syms)];
         let result = compute_fca_conformance(&convs, &components);
-        assert!(result.get("c1").is_none());
+        assert!(!result.contains_key("c1"));
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub struct BlameCache {
     cache: HashMap<String, Vec<BlameLine>>,
 }
 
+impl Default for BlameCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BlameCache {
     pub fn new() -> Self {
         Self {

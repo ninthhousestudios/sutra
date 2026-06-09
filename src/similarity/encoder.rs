@@ -26,11 +26,12 @@ fn encode_recursive(
     let kind_vec = codebook.get_or_create(node.kind());
 
     if depth == 0 || node.child_count() == 0 {
-        if embed_idents && (node.kind() == "identifier" || node.kind() == "type_identifier") {
-            if let Ok(text) = node.utf8_text(source) {
-                let name_vec = codebook.get_or_create(&format!("id:{text}"));
-                return kind_vec.bind(&name_vec);
-            }
+        if embed_idents
+            && (node.kind() == "identifier" || node.kind() == "type_identifier")
+            && let Ok(text) = node.utf8_text(source)
+        {
+            let name_vec = codebook.get_or_create(&format!("id:{text}"));
+            return kind_vec.bind(&name_vec);
         }
         return kind_vec;
     }

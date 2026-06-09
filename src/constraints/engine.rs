@@ -104,7 +104,7 @@ impl DdEngine {
                         added: delta.added_edges.clone(),
                         removed: delta.removed_edges.clone(),
                     })
-                    .map_err(|e| SutraError::Internal(e))?;
+                    .map_err(SutraError::Internal)?;
 
                 match handle.recv() {
                     Ok(Response::Ok) => {}
@@ -132,7 +132,7 @@ impl DdEngine {
             } => {
                 handle
                     .send(Command::QueryCycles)
-                    .map_err(|e| SutraError::Internal(e))?;
+                    .map_err(SutraError::Internal)?;
 
                 match handle.recv() {
                     Ok(Response::Cycles(sccs)) => {
@@ -165,7 +165,7 @@ impl DdEngine {
             } => {
                 handle
                     .send(Command::QueryBlastRadius(node))
-                    .map_err(|e| SutraError::Internal(e))?;
+                    .map_err(SutraError::Internal)?;
 
                 match handle.recv() {
                     Ok(Response::BlastRadius(count)) => {
@@ -190,7 +190,7 @@ impl DdEngine {
             } => {
                 handle
                     .send(Command::QueryBlastRadiusAll)
-                    .map_err(|e| SutraError::Internal(e))?;
+                    .map_err(SutraError::Internal)?;
 
                 match handle.recv() {
                     Ok(Response::BlastRadiusAll(map)) => {

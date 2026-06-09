@@ -147,10 +147,10 @@ impl Db {
         let refs = self.all_resolved_refs()?;
         let mut edges = HashSet::new();
         for (src_file, target_sym) in refs {
-            if let Some(&target_file) = sym_file.get(&target_sym) {
-                if src_file != target_file {
-                    edges.insert((src_file.min(target_file), src_file.max(target_file)));
-                }
+            if let Some(&target_file) = sym_file.get(&target_sym)
+                && src_file != target_file
+            {
+                edges.insert((src_file.min(target_file), src_file.max(target_file)));
             }
         }
         Ok(edges.into_iter().collect())

@@ -129,11 +129,11 @@ fn dfs_callers(
     let (current_id, _) = stack.last().unwrap().clone();
 
     let current_sym = db.symbol_by_id(current_id)?;
-    if let Some(ref s) = current_sym {
-        if is_known_entry_point(&s.short_name, &s.kind) {
-            paths.push(stack.clone());
-            return Ok(());
-        }
+    if let Some(ref s) = current_sym
+        && is_known_entry_point(&s.short_name, &s.kind)
+    {
+        paths.push(stack.clone());
+        return Ok(());
     }
 
     let refs = db.find_refs_to_symbol(current_id)?;

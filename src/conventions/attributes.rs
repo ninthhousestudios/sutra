@@ -108,10 +108,10 @@ pub fn extract_attrs_for_symbol(
     file_language: &str,
     registry: &LanguageRegistry,
 ) -> Option<SymbolAttrs> {
-    if let Some(adapter) = registry.adapter_for_language(file_language) {
-        if let Some(fca_source) = adapter.as_fca_source() {
-            return fca_source.extract_attributes(sym, file_path);
-        }
+    if let Some(adapter) = registry.adapter_for_language(file_language)
+        && let Some(fca_source) = adapter.as_fca_source()
+    {
+        return fca_source.extract_attributes(sym, file_path);
     }
     extract_cross_language_attrs(sym, file_path)
 }
@@ -127,7 +127,7 @@ pub fn enrich_with_effects(
 
     let resolved: Vec<_> = call_refs
         .iter()
-        .filter_map(|r| r.target_symbol_id.and_then(|id| resolve_callee(id)))
+        .filter_map(|r| r.target_symbol_id.and_then(resolve_callee))
         .collect();
 
     for pattern in patterns {
@@ -142,21 +142,21 @@ pub fn enrich_with_effects(
     }
 
     for callee in &resolved {
-        if let Some(ref sig) = callee.signature {
-            if sig.contains("unsafe ") {
-                has_unsafe_callee = true;
-                break;
-            }
+        if let Some(ref sig) = callee.signature
+            && sig.contains("unsafe ")
+        {
+            has_unsafe_callee = true;
+            break;
         }
     }
     if has_unsafe_callee {
         sym_attrs.attributes.push("effect:unsafe_transitive".into());
     }
 
-    if let Some(ref sig) = sym.signature {
-        if sig.contains("&mut ") {
-            sym_attrs.attributes.push("effect:mut_state".into());
-        }
+    if let Some(ref sig) = sym.signature
+        && sig.contains("&mut ")
+    {
+        sym_attrs.attributes.push("effect:mut_state".into());
     }
 }
 

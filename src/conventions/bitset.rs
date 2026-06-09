@@ -8,7 +8,7 @@ pub struct BitSet {
 
 impl BitSet {
     pub fn new(len: usize) -> Self {
-        let nwords = (len + 63) / 64;
+        let nwords = len.div_ceil(64);
         Self {
             words: vec![0; nwords],
             len,

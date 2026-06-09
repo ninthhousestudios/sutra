@@ -304,27 +304,27 @@ fn setup_two_clusters(db: &sutra::db::Db) {
         .upsert_file("src/tools/b3.rs", "rust", "h6", 50, true)
         .unwrap();
 
-    let sa1 = insert_symbol(&db, a1, "core_a1");
-    let sa2 = insert_symbol(&db, a2, "core_a2");
-    let sa3 = insert_symbol(&db, a3, "core_a3");
-    let sb1 = insert_symbol(&db, b1, "tools_b1");
-    let sb2 = insert_symbol(&db, b2, "tools_b2");
-    let sb3 = insert_symbol(&db, b3, "tools_b3");
+    let sa1 = insert_symbol(db, a1, "core_a1");
+    let sa2 = insert_symbol(db, a2, "core_a2");
+    let sa3 = insert_symbol(db, a3, "core_a3");
+    let sb1 = insert_symbol(db, b1, "tools_b1");
+    let sb2 = insert_symbol(db, b2, "tools_b2");
+    let sb3 = insert_symbol(db, b3, "tools_b3");
 
     // Dense intra-cluster refs
-    insert_refs(&db, a1, sa2, 10);
-    insert_refs(&db, a1, sa3, 10);
-    insert_refs(&db, a2, sa1, 10);
-    insert_refs(&db, a2, sa3, 10);
-    insert_refs(&db, a3, sa1, 10);
-    insert_refs(&db, a3, sa2, 10);
+    insert_refs(db, a1, sa2, 10);
+    insert_refs(db, a1, sa3, 10);
+    insert_refs(db, a2, sa1, 10);
+    insert_refs(db, a2, sa3, 10);
+    insert_refs(db, a3, sa1, 10);
+    insert_refs(db, a3, sa2, 10);
 
-    insert_refs(&db, b1, sb2, 10);
-    insert_refs(&db, b1, sb3, 10);
-    insert_refs(&db, b2, sb1, 10);
-    insert_refs(&db, b2, sb3, 10);
-    insert_refs(&db, b3, sb1, 10);
-    insert_refs(&db, b3, sb2, 10);
+    insert_refs(db, b1, sb2, 10);
+    insert_refs(db, b1, sb3, 10);
+    insert_refs(db, b2, sb1, 10);
+    insert_refs(db, b2, sb3, 10);
+    insert_refs(db, b3, sb1, 10);
+    insert_refs(db, b3, sb2, 10);
 }
 
 #[test]
@@ -767,20 +767,20 @@ fn test_drift_event_detected() {
         .collect();
 
     // Dense intra-cluster refs for A (3 files)
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, &a_file) in a_files2.iter().enumerate().take(3) {
+        for (j, &a_sym) in a_syms2.iter().enumerate().take(3) {
             if i != j {
-                insert_refs(&db, a_files2[i], a_syms2[j], 10);
+                insert_refs(&db, a_file, a_sym, 10);
             }
         }
     }
     // Dense intra-cluster refs for B (5 files + 2 drifted files)
     let all_b = [b_files2.as_slice(), drift_files.as_slice()].concat();
     let all_b_syms = [b_syms2.as_slice(), drift_syms.as_slice()].concat();
-    for i in 0..all_b.len() {
-        for j in 0..all_b.len() {
+    for (i, &b_file) in all_b.iter().enumerate() {
+        for (j, &b_sym) in all_b_syms.iter().enumerate() {
             if i != j {
-                insert_refs(&db, all_b[i], all_b_syms[j], 10);
+                insert_refs(&db, b_file, b_sym, 10);
             }
         }
     }

@@ -93,15 +93,15 @@ pub fn handle_with_freshness(
     }
 
     let in_scope = |f: &FileRow| -> bool {
-        if let Some(p) = path {
-            if f.path != p {
-                return false;
-            }
+        if let Some(p) = path
+            && f.path != p
+        {
+            return false;
         }
-        if let Some(ref ids) = component_file_ids {
-            if !ids.contains(&f.id) {
-                return false;
-            }
+        if let Some(ref ids) = component_file_ids
+            && !ids.contains(&f.id)
+        {
+            return false;
         }
         true
     };
@@ -135,10 +135,7 @@ pub fn handle_with_freshness(
                 }
             }
 
-            let refs = findings_by_file
-                .get(&file.id)
-                .map(|v| v.clone())
-                .unwrap_or_default();
+            let refs = findings_by_file.get(&file.id).cloned().unwrap_or_default();
 
             ScoredFile {
                 file,
@@ -205,11 +202,12 @@ pub fn handle_with_freshness(
         "mode": mode,
     });
 
-    if path.is_none() && component.is_none() {
-        if let Ok(components) = build_component_scores(db, &findings_by_file) {
-            result["components"] = json!(components);
-            result["total_components"] = json!(components.len());
-        }
+    if path.is_none()
+        && component.is_none()
+        && let Ok(components) = build_component_scores(db, &findings_by_file)
+    {
+        result["components"] = json!(components);
+        result["total_components"] = json!(components.len());
     }
 
     if workspace_root.is_some() {

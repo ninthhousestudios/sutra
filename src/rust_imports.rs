@@ -31,11 +31,11 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
                 Some(s) if !s.is_empty() => s,
                 _ => continue,
             };
-        if let Some(target_id) = resolve_segments(&segments, &path_to_id) {
-            if target_id != *file_id {
-                db.update_import_resolved_file_id(*import_id, target_id)?;
-                resolved_count += 1;
-            }
+        if let Some(target_id) = resolve_segments(&segments, &path_to_id)
+            && target_id != *file_id
+        {
+            db.update_import_resolved_file_id(*import_id, target_id)?;
+            resolved_count += 1;
         }
     }
 

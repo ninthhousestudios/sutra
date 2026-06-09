@@ -68,44 +68,40 @@ pub fn detect_signals(db: &Db) -> Result<Vec<Signal>> {
         let lifecycle = conv.lifecycle_state.as_deref().unwrap_or("descriptive");
 
         match lifecycle {
-            "descriptive" => {
+            "descriptive"
                 if recent.iter().all(|h| {
                     h.support >= MIN_PROMOTE_SUPPORT && h.confidence >= MIN_PROMOTE_CONFIDENCE
-                }) {
-                    signals.push(Signal::PromoteToPreferred {
-                        convention_id: conv.id.clone(),
-                        rationale: format!(
-                            "stable high support ({}) and confidence ({:.0}%) over {} snapshots",
-                            recent[0].support,
-                            recent[0].confidence * 100.0,
-                            TREND_WINDOW,
-                        ),
-                    });
-                }
+                }) =>
+            {
+                signals.push(Signal::PromoteToPreferred {
+                    convention_id: conv.id.clone(),
+                    rationale: format!(
+                        "stable high support ({}) and confidence ({:.0}%) over {} snapshots",
+                        recent[0].support,
+                        recent[0].confidence * 100.0,
+                        TREND_WINDOW,
+                    ),
+                });
             }
-            "preferred" => {
-                if is_declining_support(&recent) {
-                    signals.push(Signal::Deprecate {
-                        convention_id: conv.id.clone(),
-                        rationale: format!(
-                            "support declining: {} \u{2192} {} over {} snapshots",
-                            recent.last().unwrap().support,
-                            recent[0].support,
-                            TREND_WINDOW,
-                        ),
-                    });
-                }
+            "preferred" if is_declining_support(&recent) => {
+                signals.push(Signal::Deprecate {
+                    convention_id: conv.id.clone(),
+                    rationale: format!(
+                        "support declining: {} \u{2192} {} over {} snapshots",
+                        recent.last().unwrap().support,
+                        recent[0].support,
+                        TREND_WINDOW,
+                    ),
+                });
             }
-            "deprecated" => {
-                if recent.iter().all(|h| h.support == 0) {
-                    signals.push(Signal::ProposeDelete {
-                        convention_id: conv.id.clone(),
-                        rationale: format!(
-                            "zero matching symbols for {} consecutive snapshots",
-                            TREND_WINDOW,
-                        ),
-                    });
-                }
+            "deprecated" if recent.iter().all(|h| h.support == 0) => {
+                signals.push(Signal::ProposeDelete {
+                    convention_id: conv.id.clone(),
+                    rationale: format!(
+                        "zero matching symbols for {} consecutive snapshots",
+                        TREND_WINDOW,
+                    ),
+                });
             }
             _ => {}
         }
@@ -134,10 +130,7 @@ pub fn generate_proposals(db: &Db, signals: Vec<Signal>) -> Result<Vec<i64>> {
     Ok(created)
 }
 
-fn dedup_by_snapshot<'a>(
-    history: &'a [ConventionHistoryRow],
-    limit: usize,
-) -> Vec<&'a ConventionHistoryRow> {
+fn dedup_by_snapshot(history: &[ConventionHistoryRow], limit: usize) -> Vec<&ConventionHistoryRow> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for h in history {

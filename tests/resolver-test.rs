@@ -110,9 +110,11 @@ fn cache_hit_on_unchanged_membership() {
 
     let mut resolver = ConstraintResolver::new();
     let first = resolver
-        .resolve(&[constraint.clone()], &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
         .unwrap();
-    let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let second = resolver
+        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
+        .unwrap();
     assert_eq!(first, second);
 }
 
@@ -134,7 +136,7 @@ fn cache_miss_on_membership_change() {
 
     let mut resolver = ConstraintResolver::new();
     let first = resolver
-        .resolve(&[constraint.clone()], &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
         .unwrap();
     assert_eq!(first.len(), 1);
 
@@ -305,7 +307,7 @@ fn cache_miss_on_path_map_change() {
 
     let mut resolver = ConstraintResolver::new();
     let first = resolver
-        .resolve(&[constraint.clone()], &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
         .unwrap();
     assert_eq!(first.len(), 1);
 

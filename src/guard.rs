@@ -404,6 +404,7 @@ pub fn check_file_constraints(
     inner().unwrap_or_default()
 }
 
+#[allow(clippy::type_complexity)]
 fn build_component_maps(
     conn: &Connection,
 ) -> Result<(HashMap<String, String>, HashMap<String, String>), Box<dyn std::error::Error>> {
@@ -422,11 +423,11 @@ fn build_component_maps(
     for row in rows {
         let (id, name, json) = row?;
         comp_name_to_id.insert(name, id.clone());
-        if let Some(s) = json {
-            if let Ok(paths) = serde_json::from_str::<Vec<String>>(&s) {
-                for path in paths {
-                    file_to_component.insert(path, id.clone());
-                }
+        if let Some(s) = json
+            && let Ok(paths) = serde_json::from_str::<Vec<String>>(&s)
+        {
+            for path in paths {
+                file_to_component.insert(path, id.clone());
             }
         }
     }
@@ -651,7 +652,7 @@ mod tests {
 
     #[test]
     fn blocking_unwaived_produces_deny() {
-        let findings = vec![make_finding(Severity::Blocking, false)];
+        let findings = [make_finding(Severity::Blocking, false)];
         let blocking: Vec<_> = findings
             .iter()
             .filter(|f| !f.waived && f.severity == Severity::Blocking)
@@ -664,7 +665,7 @@ mod tests {
 
     #[test]
     fn advisory_does_not_block() {
-        let findings = vec![make_finding(Severity::Advisory, false)];
+        let findings = [make_finding(Severity::Advisory, false)];
         let blocking: Vec<_> = findings
             .iter()
             .filter(|f| !f.waived && f.severity == Severity::Blocking)
@@ -674,7 +675,7 @@ mod tests {
 
     #[test]
     fn informational_does_not_block() {
-        let findings = vec![make_finding(Severity::Informational, false)];
+        let findings = [make_finding(Severity::Informational, false)];
         let blocking: Vec<_> = findings
             .iter()
             .filter(|f| !f.waived && f.severity == Severity::Blocking)
@@ -684,7 +685,7 @@ mod tests {
 
     #[test]
     fn waived_blocking_does_not_block() {
-        let findings = vec![make_finding(Severity::Blocking, true)];
+        let findings = [make_finding(Severity::Blocking, true)];
         let blocking: Vec<_> = findings
             .iter()
             .filter(|f| !f.waived && f.severity == Severity::Blocking)
@@ -694,7 +695,7 @@ mod tests {
 
     #[test]
     fn mixed_severities_only_blocking_blocks() {
-        let findings = vec![
+        let findings = [
             make_finding(Severity::Blocking, false),
             make_finding(Severity::Advisory, false),
             make_finding(Severity::Informational, false),

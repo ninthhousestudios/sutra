@@ -91,7 +91,7 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
         let violations_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));
         let violations_inspect = violations_store.clone();
 
-        let mut probe = ProbeHandle::new();
+        let probe = ProbeHandle::new();
         let mut timestamp: usize = 0;
 
         let (mut input, mut forbidden_input) = worker.dataflow::<usize, _, _>(|scope| {
@@ -127,7 +127,7 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                         buf.remove(node);
                     }
                 })
-                .probe_with(&mut probe);
+                .probe_with(&probe);
 
             reachable
                 .filter(|(src, dst)| src != dst)
@@ -137,13 +137,11 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                     let mut map = blast_counts_inspect.borrow_mut();
                     if *diff > 0 {
                         map.insert(*dst, *count);
-                    } else if *diff < 0 {
-                        if map.get(dst) == Some(count) {
-                            map.remove(dst);
-                        }
+                    } else if *diff < 0 && map.get(dst) == Some(count) {
+                        map.remove(dst);
                     }
                 })
-                .probe_with(&mut probe);
+                .probe_with(&probe);
 
             // Forbidden pairs maintained view: edges ∩ forbidden → violations
             edges_for_violations
@@ -158,7 +156,7 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                         store.remove(pair);
                     }
                 })
-                .probe_with(&mut probe);
+                .probe_with(&probe);
 
             (input, forbidden_input)
         });

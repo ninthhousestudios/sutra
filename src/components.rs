@@ -69,10 +69,10 @@ fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<(WeightedAdj, 
 
     let mut directed: HashMap<(i64, i64), usize> = HashMap::new();
     for (src_file, target_sym) in &refs {
-        if let Some(&target_file) = sym_to_file.get(target_sym) {
-            if *src_file != target_file {
-                *directed.entry((*src_file, target_file)).or_default() += 1;
-            }
+        if let Some(&target_file) = sym_to_file.get(target_sym)
+            && *src_file != target_file
+        {
+            *directed.entry((*src_file, target_file)).or_default() += 1;
         }
     }
 
@@ -139,7 +139,7 @@ pub(crate) fn is_test_file(path: &str) -> bool {
         || path.contains(".test.")
         || path.contains("_spec.")
         || path.contains(".spec.")
-        || segments.last().map_or(false, |s| s.starts_with("test_"))
+        || segments.last().is_some_and(|s| s.starts_with("test_"))
 }
 
 fn add_cochange_edges(
@@ -171,10 +171,10 @@ fn add_cochange_edges(
         if static_edges.contains(&(lo, hi)) {
             continue;
         }
-        if let (Some(pa), Some(pb)) = (id_to_path.get(&fa), id_to_path.get(&fb)) {
-            if is_test_file(pa) != is_test_file(pb) {
-                continue;
-            }
+        if let (Some(pa), Some(pb)) = (id_to_path.get(&fa), id_to_path.get(&fb))
+            && is_test_file(pa) != is_test_file(pb)
+        {
+            continue;
         }
         let w = weight_scale * jaccard;
         adj.entry(fa).or_default().push((fb, w));
@@ -572,17 +572,17 @@ fn detect_events(
                 contributors.push((ci, overlap));
             }
         }
-        if contributors.len() >= 2 {
-            if let Some(surviving_id) = cluster_to_comp.get(&ki) {
-                let absorbed: Vec<_> = contributors
-                    .iter()
-                    .filter(|(ci, _)| !matched_comps.contains(ci))
-                    .map(|(ci, _)| json!({"id": &existing[*ci].0, "name": &existing[*ci].1}))
-                    .collect();
-                if !absorbed.is_empty() {
-                    let detail = json!({ "absorbed": absorbed });
-                    db.insert_component_event(surviving_id, "merge", &detail.to_string())?;
-                }
+        if contributors.len() >= 2
+            && let Some(surviving_id) = cluster_to_comp.get(&ki)
+        {
+            let absorbed: Vec<_> = contributors
+                .iter()
+                .filter(|(ci, _)| !matched_comps.contains(ci))
+                .map(|(ci, _)| json!({"id": &existing[*ci].0, "name": &existing[*ci].1}))
+                .collect();
+            if !absorbed.is_empty() {
+                let detail = json!({ "absorbed": absorbed });
+                db.insert_component_event(surviving_id, "merge", &detail.to_string())?;
             }
         }
     }
@@ -638,12 +638,11 @@ fn detect_events(
         }
         let mut moved_to: HashMap<&String, usize> = HashMap::new();
         for p in prior {
-            if let Some(&target_ki) = file_to_cluster.get(p.as_str()) {
-                if target_ki != ki {
-                    if let Some(target_id) = cluster_to_comp.get(&target_ki) {
-                        *moved_to.entry(target_id).or_default() += 1;
-                    }
-                }
+            if let Some(&target_ki) = file_to_cluster.get(p.as_str())
+                && target_ki != ki
+                && let Some(target_id) = cluster_to_comp.get(&target_ki)
+            {
+                *moved_to.entry(target_id).or_default() += 1;
             }
         }
         for (target_id, count) in moved_to {
@@ -742,6 +741,7 @@ fn is_clustering_stale(
     Ok(false)
 }
 
+#[allow(clippy::type_complexity)]
 fn run_clustering<'a>(
     db: &Db,
     files: &'a [FileRow],
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_extract_stems_diverse() {
-        let syms = vec![
+        let syms = [
             make_symbol(1, "UserProfile", "struct"),
             make_symbol(2, "fetch_data", "function"),
             make_symbol(3, "render_chart", "function"),
@@ -1225,7 +1225,7 @@ mod tests {
 
     #[test]
     fn test_extract_stems_repetitive() {
-        let syms = vec![
+        let syms = [
             make_symbol(1, "handle_create", "function"),
             make_symbol(2, "handle_update", "function"),
             make_symbol(3, "handle_delete", "function"),
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn test_concept_density_formula() {
         // 2 kinds (struct, function) × 6 stems / 100 LOC = 0.12
-        let syms = vec![
+        let syms = [
             make_symbol(1, "UserProfile", "struct"),
             make_symbol(2, "fetch_data", "function"),
             make_symbol(3, "render_chart", "function"),
@@ -1257,7 +1257,7 @@ mod tests {
 
     #[test]
     fn test_concept_density_zero_loc() {
-        let syms = vec![make_symbol(1, "foo", "function")];
+        let syms = [make_symbol(1, "foo", "function")];
         let refs: Vec<&SymbolRow> = syms.iter().collect();
         assert_eq!(concept_density(&refs, 0), 0.0);
     }

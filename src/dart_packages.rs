@@ -40,10 +40,10 @@ impl DartPackageMap {
                         continue;
                     }
                     stack.push(path);
-                } else if name_str == "pubspec.yaml" {
-                    if let Some((pkg_name, lib_dir)) = extract_package_info(workspace_root, &path) {
-                        packages.insert(pkg_name, lib_dir);
-                    }
+                } else if name_str == "pubspec.yaml"
+                    && let Some((pkg_name, lib_dir)) = extract_package_info(workspace_root, &path)
+                {
+                    packages.insert(pkg_name, lib_dir);
                 }
             }
         }
@@ -148,11 +148,11 @@ pub fn resolve_dart_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
             None
         };
 
-        if let Some(path) = resolved_path {
-            if let Some(&target_file_id) = path_to_id.get(path.as_str()) {
-                db.update_import_resolved_file_id(*import_id, target_file_id)?;
-                resolved_count += 1;
-            }
+        if let Some(path) = resolved_path
+            && let Some(&target_file_id) = path_to_id.get(path.as_str())
+        {
+            db.update_import_resolved_file_id(*import_id, target_file_id)?;
+            resolved_count += 1;
         }
     }
 

@@ -194,12 +194,12 @@ pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
         .output()
         .ok();
 
-    if let Some(ref out) = output {
-        if out.status.success() {
-            let refname = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
-                return Ok(branch.to_string());
-            }
+    if let Some(ref out) = output
+        && out.status.success()
+    {
+        let refname = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+            return Ok(branch.to_string());
         }
     }
 
@@ -211,10 +211,10 @@ pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
             .args(["rev-parse", "--verify", candidate])
             .output()
             .ok();
-        if let Some(ref out) = check {
-            if out.status.success() {
-                return Ok(candidate.to_string());
-            }
+        if let Some(ref out) = check
+            && out.status.success()
+        {
+            return Ok(candidate.to_string());
         }
     }
 

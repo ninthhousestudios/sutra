@@ -707,10 +707,10 @@ pub fn handle(
             if !comp_findings.is_empty() {
                 comp_findings.sort_by(|a, b| {
                     a.severity.cmp(&b.severity).then_with(|| {
-                        let wa = BiomarkerKind::from_str(&a.biomarker_kind)
+                        let wa = BiomarkerKind::parse(&a.biomarker_kind)
                             .map(|k| k.default_weight())
                             .unwrap_or(0.0);
-                        let wb = BiomarkerKind::from_str(&b.biomarker_kind)
+                        let wb = BiomarkerKind::parse(&b.biomarker_kind)
                             .map(|k| k.default_weight())
                             .unwrap_or(0.0);
                         wb.partial_cmp(&wa).unwrap_or(std::cmp::Ordering::Equal)

@@ -255,7 +255,7 @@ pub fn find_pattern_families(
         });
     }
 
-    families.sort_by(|a, b| b.member_symbol_ids.len().cmp(&a.member_symbol_ids.len()));
+    families.sort_by_key(|f| std::cmp::Reverse(f.member_symbol_ids.len()));
     families
 }
 

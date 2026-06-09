@@ -342,10 +342,8 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
                 }
             }
         }
-        SymbolKind::Impl | SymbolKind::Trait => {
-            if modifiers_contain("unsafe") {
-                attrs.insert("is_unsafe".into(), true.into());
-            }
+        SymbolKind::Impl | SymbolKind::Trait if modifiers_contain("unsafe") => {
+            attrs.insert("is_unsafe".into(), true.into());
         }
         SymbolKind::Struct | SymbolKind::Enum => {
             if let Some(type_params) = node.child_by_field_name("type_parameters") {

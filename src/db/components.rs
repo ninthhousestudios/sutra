@@ -196,6 +196,7 @@ impl Db {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn clustering_meta(&self) -> Result<Option<(i64, i64, String, i64, i64)>> {
         let conn = self.conn.lock();
         match conn.query_row(

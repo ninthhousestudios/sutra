@@ -243,7 +243,7 @@ fn test_orphan_detected_for_dissolved_component() {
     let sutra_dir = dir.path().join(".sutra");
     std::fs::write(
         sutra_dir.join("aliases.toml"),
-        &format!("[component]\nmy-auth = \"{}\"\n", comp.name),
+        format!("[component]\nmy-auth = \"{}\"\n", comp.name),
     )
     .unwrap();
     vocabulary::sync_aliases(&db, dir.path()).unwrap();

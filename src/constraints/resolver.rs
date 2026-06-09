@@ -19,6 +19,12 @@ pub struct ConstraintResolver {
     cache: Option<ResolvedCache>,
 }
 
+impl Default for ConstraintResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConstraintResolver {
     pub fn new() -> Self {
         Self { cache: None }
@@ -33,11 +39,11 @@ impl ConstraintResolver {
         let current_gen = db.clustering_meta()?;
         let current_input_hash = compute_input_hash(constraints, path_map);
 
-        if let Some(ref cache) = self.cache {
-            if cache.membership_generation == current_gen && cache.input_hash == current_input_hash
-            {
-                return Ok(cache.pairs.clone());
-            }
+        if let Some(ref cache) = self.cache
+            && cache.membership_generation == current_gen
+            && cache.input_hash == current_input_hash
+        {
+            return Ok(cache.pairs.clone());
         }
 
         let components = db.all_components()?;

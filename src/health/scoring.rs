@@ -104,10 +104,10 @@ pub fn score_file(findings: &[HealthFindingRow]) -> FileHealthScore {
     let mut by_category: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
 
     for (i, f) in findings.iter().enumerate() {
-        let Some(kind) = BiomarkerKind::from_str(&f.biomarker_kind) else {
+        let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
             continue;
         };
-        let Some(severity) = HealthSeverity::from_str(&f.severity) else {
+        let Some(severity) = HealthSeverity::parse(&f.severity) else {
             continue;
         };
         let raw = severity.weight() * kind.default_weight();

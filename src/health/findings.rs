@@ -17,7 +17,7 @@ impl HealthSeverity {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "advisory" => Some(Self::Advisory),
             "informational" => Some(Self::Informational),
@@ -74,7 +74,7 @@ impl BiomarkerKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "nested_complexity" => Some(Self::NestedComplexity),
             "co_change_scatter" => Some(Self::CoChangeScatter),

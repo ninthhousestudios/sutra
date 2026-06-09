@@ -574,6 +574,7 @@ impl Db {
         Ok(count)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_convention_snapshot(
         &self,
         component_id: &str,

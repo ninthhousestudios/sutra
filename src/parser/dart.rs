@@ -308,10 +308,8 @@ fn extract_language_attrs(
                 attrs.insert("is_interface".into(), true.into());
             }
         }
-        SymbolKind::Mixin => {
-            if has_keyword(node, "base") {
-                attrs.insert("is_base".into(), true.into());
-            }
+        SymbolKind::Mixin if has_keyword(node, "base") => {
+            attrs.insert("is_base".into(), true.into());
         }
         SymbolKind::Function | SymbolKind::Method => {
             if let Some(sig) = sig_node {
@@ -344,19 +342,17 @@ fn extract_language_attrs(
                 if let Some(ret_type) = sig_inner
                     .child_by_field_name("return_type")
                     .or_else(|| sig_inner.child_by_field_name("type"))
+                    && let Ok(type_text) = ret_type.utf8_text(src)
+                    && (type_text.starts_with("Future") || type_text.starts_with("FutureOr"))
                 {
-                    if let Ok(type_text) = ret_type.utf8_text(src) {
-                        if type_text.starts_with("Future") || type_text.starts_with("FutureOr") {
-                            attrs.insert("returns_future".into(), true.into());
-                        }
-                    }
+                    attrs.insert("returns_future".into(), true.into());
                 }
             }
 
-            if let Some(body) = node.child_by_field_name("body") {
-                if has_keyword(body, "async") || has_keyword(body, "async*") {
-                    attrs.insert("is_async".into(), true.into());
-                }
+            if let Some(body) = node.child_by_field_name("body")
+                && (has_keyword(body, "async") || has_keyword(body, "async*"))
+            {
+                attrs.insert("is_async".into(), true.into());
             }
         }
         _ => {}
@@ -399,12 +395,11 @@ fn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {
 
     let mut anno_cursor = node.walk();
     for child in node.children(&mut anno_cursor) {
-        if child.kind() == "annotation" {
-            if let Ok(text) = child.utf8_text(src) {
-                if text.contains("vm:entry-point") {
-                    flags |= FLAG_FFI_ENTRY;
-                }
-            }
+        if child.kind() == "annotation"
+            && let Ok(text) = child.utf8_text(src)
+            && text.contains("vm:entry-point")
+        {
+            flags |= FLAG_FFI_ENTRY;
         }
     }
 
