@@ -698,3 +698,53 @@ struct Borrowed<'a> { data: &'a str }
     .unwrap();
     assert_eq!(attrs["has_lifetime_params"], true);
 }
+
+#[test]
+fn test_reparse_no_duplicate_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("lib.rs");
+    std::fs::write(
+        &src,
+        "pub fn alpha() {}\npub fn beta() {}\nstruct Gamma { x: i32 }\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let config = make_config(db_dir.path());
+    let entry = make_entry("reparse-test", dir.path().to_path_buf());
+    let db = sutra::db::Db::open_unchecked(&entry.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    // First parse.
+    let snap1 = pipeline::parse_workspace(&entry, &db, &config, &cancel, &registry).unwrap();
+    assert!(snap1.symbols_extracted > 0);
+
+    // Modify the file to force a re-parse (different hash).
+    std::fs::write(
+        &src,
+        "pub fn alpha() { 1 }\npub fn beta() {}\nstruct Gamma { x: i32 }\n",
+    )
+    .unwrap();
+
+    // Second parse.
+    let snap2 = pipeline::parse_workspace(&entry, &db, &config, &cancel, &registry).unwrap();
+    assert!(snap2.symbols_extracted > 0);
+
+    // Verify no duplicates: each (qualified_name, start_line) pair should appear once.
+    let file = db
+        .file_by_path("lib.rs")
+        .unwrap()
+        .expect("file should exist");
+    let syms = db.find_symbols_by_file(file.id).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for s in &syms {
+        let key = (s.qualified_name.clone(), s.start_line);
+        assert!(
+            seen.insert(key.clone()),
+            "duplicate symbol: {} at line {}",
+            key.0,
+            key.1
+        );
+    }
+}

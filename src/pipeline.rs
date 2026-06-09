@@ -6,12 +6,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use fs2::FileExt;
 use parking_lot::Mutex;
 use tracing::{info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{Db, InsertSymbolParams, SnapshotComponentRow, SnapshotFileRow, SnapshotParams};
+use crate::db::{
+    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
+    SnapshotFileRow, SnapshotParams,
+};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
@@ -47,6 +51,28 @@ impl ParseCoordinator {
             None => false,
         }
     }
+}
+
+fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::File> {
+    let lock_dir = config.db_dir.join(workspace_id);
+    std::fs::create_dir_all(&lock_dir).map_err(|e| {
+        crate::error::SutraError::Internal(format!(
+            "could not create lock directory {}: {e}",
+            lock_dir.display()
+        ))
+    })?;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_dir.join("parse.lock"))
+        .map_err(|e| {
+            crate::error::SutraError::Internal(format!("could not open parse lock file: {e}"))
+        })?;
+    lock_file.lock_exclusive().map_err(|e| {
+        crate::error::SutraError::Internal(format!("could not acquire parse lock: {e}"))
+    })?;
+    Ok(lock_file)
 }
 
 /// Summary of a parse pipeline run.
@@ -95,16 +121,16 @@ enum PostParseResult {
     NoChanges,
 }
 
-fn insert_symbols_dfs(
-    db: &Db,
-    file_id: i64,
-    symbols: &[parser::ExtractedSymbol],
-    parent_id: Option<i64>,
-) -> Result<i64> {
-    let mut count = 0;
+fn flatten_symbols_dfs<'a>(
+    symbols: &'a [parser::ExtractedSymbol],
+    parent_idx: Option<usize>,
+    out: &mut Vec<InsertSymbolParams<'a>>,
+    parents: &mut Vec<Option<usize>>,
+) {
     for sym in symbols {
-        let id = db.insert_symbol(&InsertSymbolParams {
-            file_id,
+        let my_idx = out.len();
+        out.push(InsertSymbolParams {
+            file_id: 0, // filled by replace_file_data
             qualified_name: &sym.qualified_name,
             short_name: &sym.short_name,
             kind: sym.kind.as_str(),
@@ -115,18 +141,26 @@ fn insert_symbols_dfs(
             start_col: sym.start_col as i64,
             end_line: sym.end_line as i64,
             end_col: sym.end_col as i64,
-            parent_symbol_id: parent_id,
+            parent_symbol_id: None, // resolved via parent_indices
             docstring: sym.docstring.as_deref(),
             cyclomatic: sym.cyclomatic.map(|v| v as i64),
             cognitive: sym.cognitive.map(|v| v as i64),
             max_nesting: sym.max_nesting.map(|v| v as i64),
             flags: sym.flags as i64,
             language_attrs: sym.language_attrs.as_deref(),
-        })?;
-        count += 1;
-        count += insert_symbols_dfs(db, file_id, &sym.children, Some(id))?;
+        });
+        parents.push(parent_idx);
+        flatten_symbols_dfs(&sym.children, Some(my_idx), out, parents);
     }
-    Ok(count)
+}
+
+fn flatten_symbols_for_insert(
+    symbols: &[parser::ExtractedSymbol],
+) -> (Vec<InsertSymbolParams<'_>>, Vec<Option<usize>>) {
+    let mut out = Vec::new();
+    let mut parents = Vec::new();
+    flatten_symbols_dfs(symbols, None, &mut out, &mut parents);
+    (out, parents)
 }
 
 fn parse_single_file(
@@ -195,12 +229,11 @@ fn parse_single_file(
     };
 
     let mut deleted_symbol_ids = Vec::new();
-    if let Some(ex) = existing {
+    if let Some(ref ex) = existing {
         let old_symbols = db.find_symbols_by_file(ex.id)?;
         for sym in &old_symbols {
             deleted_symbol_ids.push(sym.id);
         }
-        db.delete_file_cascade(ex.id)?;
     }
 
     let mut parse_errors: i64 = 0;
@@ -208,32 +241,38 @@ fn parse_single_file(
         parse_errors = 1;
     }
 
-    let file_id = db.upsert_file(
+    let (flat_symbols, parent_indices) = flatten_symbols_for_insert(&parse_result.symbols);
+    let import_params: Vec<InsertImportParams<'_>> = parse_result
+        .imports
+        .iter()
+        .map(|imp| InsertImportParams {
+            imported_path: &imp.raw_path,
+            line: imp.line as i64,
+        })
+        .collect();
+    let ref_params: Vec<InsertRefParams<'_>> = parse_result
+        .references
+        .iter()
+        .map(|rf| InsertRefParams {
+            unresolved_name: Some(&rf.name),
+            line: rf.line as i64,
+            col: rf.col as i64,
+            context_kind: rf.context_kind.as_str(),
+        })
+        .collect();
+
+    let (file_id, symbols_extracted) = db.replace_file_data(
         &rel_path,
         language,
         &content_hash,
         line_count as i64,
         parse_result.parsed_ok,
+        &flat_symbols,
+        &parent_indices,
+        &import_params,
+        &ref_params,
     )?;
-
-    let symbols_extracted = insert_symbols_dfs(db, file_id, &parse_result.symbols, None)?;
-
-    for imp in &parse_result.imports {
-        db.insert_import(file_id, &imp.raw_path, None, imp.line as i64)?;
-    }
-
-    let mut refs_extracted: i64 = 0;
-    for rf in &parse_result.references {
-        db.insert_ref(
-            file_id,
-            None,
-            Some(&rf.name),
-            rf.line as i64,
-            rf.col as i64,
-            rf.context_kind.as_str(),
-        )?;
-        refs_extracted += 1;
-    }
+    let refs_extracted = ref_params.len() as i64;
 
     Ok(Some(FileParseResult {
         file_id,
@@ -353,6 +392,7 @@ pub fn parse_workspace(
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
+    let _flock = acquire_parse_flock(config, &workspace.id)?;
     let start = Instant::now();
     let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
 
@@ -477,6 +517,7 @@ pub fn parse_changed_files(
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
+    let _flock = acquire_parse_flock(config, &workspace.id)?;
     let start = Instant::now();
     let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
 

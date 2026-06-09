@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use sutra::db::{Db, InsertSymbolParams, SnapshotParams, TABLE_REGISTRY, TablePartition};
+use sutra::db::{
+    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotParams, TABLE_REGISTRY,
+    TablePartition,
+};
 use sutra::workspace::WorkspaceEntry;
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -788,8 +791,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 34,
-        "fresh DB should register all 34 existing migrations"
+        count, 35,
+        "fresh DB should register all 35 existing migrations"
     );
 }
 
@@ -803,7 +806,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 34, "reopen should not duplicate migration rows");
+    assert_eq!(count, 35, "reopen should not duplicate migration rows");
 }
 
 #[test]
@@ -1397,4 +1400,173 @@ fn constraint_waiver_orphan_detection() {
     // No active → all orphans
     let orphans = db.reconcile_orphaned_constraint_waivers(&[]).unwrap();
     assert_eq!(orphans.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Symbol uniqueness and heal
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_insert_symbol_upserts_on_conflict() {
+    let (_dir, db) = setup_db();
+    let file_id = seed_file(&db, "test.rs");
+    let id1 = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id,
+            qualified_name: "foo",
+            short_name: "foo",
+            kind: "function",
+            signature: Some("fn foo()"),
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        })
+        .unwrap();
+
+    let id2 = db
+        .insert_symbol(&InsertSymbolParams {
+            file_id,
+            qualified_name: "foo",
+            short_name: "foo",
+            kind: "function",
+            signature: Some("fn foo() -> i32"),
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: 1,
+            start_col: 0,
+            end_line: 15,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        })
+        .unwrap();
+
+    assert_eq!(id1, id2, "ON CONFLICT should return same id");
+    let sym = db.symbol_by_id(id1).unwrap().unwrap();
+    assert_eq!(sym.end_line, 15, "conflicting insert should update columns");
+    assert_eq!(
+        sym.signature.as_deref(),
+        Some("fn foo() -> i32"),
+        "signature should be updated"
+    );
+}
+
+#[test]
+fn test_replace_file_data_atomic() {
+    let (_dir, db) = setup_db();
+    let symbols = vec![InsertSymbolParams {
+        file_id: 0,
+        qualified_name: "bar",
+        short_name: "bar",
+        kind: "function",
+        signature: None,
+        signature_hash: None,
+        visibility: None,
+        start_line: 1,
+        start_col: 0,
+        end_line: 5,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    }];
+    let parents = vec![None];
+    let imports = vec![InsertImportParams {
+        imported_path: "std::io",
+        line: 1,
+    }];
+    let refs = vec![InsertRefParams {
+        unresolved_name: Some("println"),
+        line: 3,
+        col: 4,
+        context_kind: "call",
+    }];
+
+    let (file_id, sym_count) = db
+        .replace_file_data(
+            "test.rs", "rust", "hash1", 5, true, &symbols, &parents, &imports, &refs,
+        )
+        .unwrap();
+    assert!(file_id > 0);
+    assert_eq!(sym_count, 1);
+
+    // Replace again with different data — should not duplicate.
+    let (file_id2, sym_count2) = db
+        .replace_file_data(
+            "test.rs", "rust", "hash2", 10, true, &symbols, &parents, &imports, &refs,
+        )
+        .unwrap();
+    assert!(file_id2 > 0);
+    assert_eq!(sym_count2, 1);
+
+    let all_syms = db.find_symbols_by_file(file_id2).unwrap();
+    assert_eq!(all_syms.len(), 1, "no duplicate symbols after re-replace");
+}
+
+#[test]
+fn test_heal_duplicate_symbols_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+        let file_id = db.upsert_file("dup.rs", "rust", "abc", 10, true).unwrap();
+        // Bypass the UNIQUE index by inserting with different start_lines first,
+        // then manually updating to create duplicates.
+        let conn = db.conn_for_test();
+        conn.execute(
+            "INSERT INTO symbols (file_id, qualified_name, short_name, kind, start_line, start_col, end_line, end_col, flags)
+             VALUES (?1, 'dup_sym', 'dup_sym', 'function', 1, 0, 10, 0, 0)",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
+             VALUES (last_insert_rowid(), 'dup_sym', 'dup_sym', NULL)",
+            [],
+        )
+        .unwrap();
+        // Drop the unique index so we can insert a real duplicate.
+        conn.execute("DROP INDEX IF EXISTS idx_symbols_unique_file_name_line", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_id, qualified_name, short_name, kind, start_line, start_col, end_line, end_col, flags)
+             VALUES (?1, 'dup_sym', 'dup_sym', 'function', 1, 0, 10, 0, 0)",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
+             VALUES (last_insert_rowid(), 'dup_sym', 'dup_sym', NULL)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let syms = db.find_symbols_by_file(file_id).unwrap();
+        assert_eq!(syms.len(), 2, "should have 2 duplicate symbols before heal");
+    }
+
+    // Reopen — heal_duplicate_symbols runs at startup.
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let file_id = db.file_by_path("dup.rs").unwrap().unwrap().id;
+    let syms = db.find_symbols_by_file(file_id).unwrap();
+    assert_eq!(syms.len(), 1, "heal should remove duplicate, leaving one");
 }

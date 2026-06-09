@@ -260,6 +260,18 @@ pub struct InsertSymbolParams<'a> {
     pub language_attrs: Option<&'a str>,
 }
 
+pub struct InsertImportParams<'a> {
+    pub imported_path: &'a str,
+    pub line: i64,
+}
+
+pub struct InsertRefParams<'a> {
+    pub unresolved_name: Option<&'a str>,
+    pub line: i64,
+    pub col: i64,
+    pub context_kind: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct RefRow {
     pub id: i64,
@@ -420,7 +432,63 @@ impl Db {
             workspace_id: workspace_id.to_string(),
         };
         db.run_migrations()?;
+        let healed = db.heal_duplicate_symbols()?;
+        if healed > 0 {
+            tracing::warn!(
+                workspace_id,
+                healed,
+                "healed duplicate symbol rows at startup"
+            );
+        }
         Ok(db)
+    }
+
+    fn heal_duplicate_symbols(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let dup_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM symbols s
+             WHERE EXISTS (
+                 SELECT 1 FROM symbols s2
+                 WHERE s2.file_id = s.file_id
+                   AND s2.qualified_name = s.qualified_name
+                   AND s2.start_line = s.start_line
+                   AND s2.id < s.id
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if dup_count == 0 {
+            return Ok(0);
+        }
+        let tx = conn.unchecked_transaction()?;
+        conn.execute(
+            "DELETE FROM symbols_fts WHERE symbol_id IN (
+                 SELECT s.id FROM symbols s
+                 WHERE EXISTS (
+                     SELECT 1 FROM symbols s2
+                     WHERE s2.file_id = s.file_id
+                       AND s2.qualified_name = s.qualified_name
+                       AND s2.start_line = s.start_line
+                       AND s2.id < s.id
+                 )
+             )",
+            [],
+        )?;
+        conn.execute(
+            "DELETE FROM symbols WHERE id IN (
+                 SELECT s.id FROM symbols s
+                 WHERE EXISTS (
+                     SELECT 1 FROM symbols s2
+                     WHERE s2.file_id = s.file_id
+                       AND s2.qualified_name = s.qualified_name
+                       AND s2.start_line = s.start_line
+                       AND s2.id < s.id
+                 )
+             )",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(dup_count)
     }
 
     // -----------------------------------------------------------------------
@@ -587,20 +655,192 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically replace all data for a file: delete old cascade, upsert file
+    /// row, insert symbols/imports/refs in a single transaction.
+    /// Returns `(file_id, symbols_inserted)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_file_data(
+        &self,
+        path: &str,
+        language: &str,
+        content_hash: &str,
+        line_count: i64,
+        parsed_ok: bool,
+        symbols: &[InsertSymbolParams<'_>],
+        parent_indices: &[Option<usize>],
+        imports: &[InsertImportParams<'_>],
+        refs: &[InsertRefParams<'_>],
+    ) -> Result<(i64, i64)> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+
+        // Delete old file data if it exists.
+        let old_file_id: Option<i64> = match conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        ) {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(SutraError::Db(e)),
+        };
+        if let Some(old_id) = old_file_id {
+            let symbol_ids: Vec<i64> = {
+                let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
+                let ids: rusqlite::Result<Vec<i64>> =
+                    stmt.query_map(params![old_id], |row| row.get(0))?.collect();
+                ids?
+            };
+            for sid in &symbol_ids {
+                conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
+            }
+            conn.execute(
+                "UPDATE imports SET resolved_file_id = NULL WHERE resolved_file_id = ?1",
+                params![old_id],
+            )?;
+            conn.execute("DELETE FROM files WHERE id = ?1", params![old_id])?;
+        }
+
+        // Upsert the file row.
+        conn.execute(
+            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET
+                language     = excluded.language,
+                content_hash = excluded.content_hash,
+                line_count   = excluded.line_count,
+                parsed_ok    = excluded.parsed_ok,
+                last_parsed  = excluded.last_parsed",
+            params![
+                path,
+                language,
+                content_hash,
+                line_count,
+                parsed_ok as i64,
+                now
+            ],
+        )?;
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
+
+        // Insert symbols, tracking generated IDs for parent mapping.
+        let mut symbol_ids: Vec<i64> = Vec::with_capacity(symbols.len());
+        for (i, p) in symbols.iter().enumerate() {
+            let parent_symbol_id = parent_indices[i].map(|pi| symbol_ids[pi]);
+            let id: i64 = conn.query_row(
+                "INSERT INTO symbols (
+                    file_id, qualified_name, short_name, kind,
+                    signature, signature_hash, visibility,
+                    start_line, start_col, end_line, end_col,
+                    parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
+                    language_attrs
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
+                    short_name = excluded.short_name,
+                    kind = excluded.kind,
+                    signature = excluded.signature,
+                    signature_hash = excluded.signature_hash,
+                    visibility = excluded.visibility,
+                    start_col = excluded.start_col,
+                    end_line = excluded.end_line,
+                    end_col = excluded.end_col,
+                    parent_symbol_id = excluded.parent_symbol_id,
+                    docstring = excluded.docstring,
+                    cyclomatic = excluded.cyclomatic,
+                    cognitive = excluded.cognitive,
+                    max_nesting = excluded.max_nesting,
+                    flags = excluded.flags,
+                    language_attrs = excluded.language_attrs
+                 RETURNING id",
+                params![
+                    file_id,
+                    p.qualified_name,
+                    p.short_name,
+                    p.kind,
+                    p.signature,
+                    p.signature_hash,
+                    p.visibility,
+                    p.start_line,
+                    p.start_col,
+                    p.end_line,
+                    p.end_col,
+                    parent_symbol_id,
+                    p.docstring,
+                    p.cyclomatic,
+                    p.cognitive,
+                    p.max_nesting,
+                    p.flags,
+                    p.language_attrs,
+                ],
+                |row| row.get(0),
+            )?;
+            symbol_ids.push(id);
+
+            conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![id])?;
+            conn.execute(
+                "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, p.short_name, p.qualified_name, p.docstring],
+            )?;
+        }
+
+        // Insert imports.
+        for imp in imports {
+            conn.execute(
+                "INSERT INTO imports (file_id, imported_path, resolved_file_id, line)
+                 VALUES (?1, ?2, NULL, ?3)",
+                params![file_id, imp.imported_path, imp.line],
+            )?;
+        }
+
+        // Insert refs.
+        for rf in refs {
+            conn.execute(
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind)
+                 VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
+                params![file_id, rf.unresolved_name, rf.line, rf.col, rf.context_kind],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok((file_id, symbol_ids.len() as i64))
+    }
+
     // -----------------------------------------------------------------------
     // symbols
     // -----------------------------------------------------------------------
 
     pub fn insert_symbol(&self, p: &InsertSymbolParams<'_>) -> Result<i64> {
         let conn = self.conn.lock();
-        conn.execute(
+        let id: i64 = conn.query_row(
             "INSERT INTO symbols (
                 file_id, qualified_name, short_name, kind,
                 signature, signature_hash, visibility,
                 start_line, start_col, end_line, end_col,
                 parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
                 language_attrs
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
+                short_name = excluded.short_name,
+                kind = excluded.kind,
+                signature = excluded.signature,
+                signature_hash = excluded.signature_hash,
+                visibility = excluded.visibility,
+                start_col = excluded.start_col,
+                end_line = excluded.end_line,
+                end_col = excluded.end_col,
+                parent_symbol_id = excluded.parent_symbol_id,
+                docstring = excluded.docstring,
+                cyclomatic = excluded.cyclomatic,
+                cognitive = excluded.cognitive,
+                max_nesting = excluded.max_nesting,
+                flags = excluded.flags,
+                language_attrs = excluded.language_attrs
+             RETURNING id",
             params![
                 p.file_id,
                 p.qualified_name,
@@ -621,9 +861,10 @@ impl Db {
                 p.flags,
                 p.language_attrs,
             ],
+            |row| row.get(0),
         )?;
-        let id = conn.last_insert_rowid();
 
+        conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![id])?;
         conn.execute(
             "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
              VALUES (?1, ?2, ?3, ?4)",

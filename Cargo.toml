@@ -64,6 +64,9 @@ regex = "1"
 # Hashing
 blake3 = "1"
 
+# File locking
+fs2 = "0.4"
+
 # Differential dataflow
 differential-dataflow = { version = "0.23", default-features = false }
 timely = "0.29"

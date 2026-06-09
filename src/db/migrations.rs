@@ -176,6 +176,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0034_drift_metrics.sql"),
         true,
     ),
+    (
+        "0035_dedup_symbols",
+        include_str!("../../migrations/0035_dedup_symbols.sql"),
+        true,
+    ),
 ];
 
 impl Db {
