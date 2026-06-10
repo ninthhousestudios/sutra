@@ -5,19 +5,11 @@ use tracing::info;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::pipeline::SKIP_DIRS;
 
 pub(crate) struct DartPackageMap {
     pub(crate) packages: HashMap<String, String>,
 }
-
-const SKIP_DIRS: &[&str] = &[
-    "build",
-    ".dart_tool",
-    ".pub-cache",
-    ".pub",
-    "target",
-    "node_modules",
-];
 
 impl DartPackageMap {
     pub(crate) fn build(workspace_root: &Path) -> Self {

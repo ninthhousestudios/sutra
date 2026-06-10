@@ -93,7 +93,7 @@ pub struct ParseSnapshot {
 const MAX_LINES: usize = 100_000;
 
 /// Directories to skip when walking the workspace.
-const SKIP_DIRS: &[&str] = &[
+pub(crate) const SKIP_DIRS: &[&str] = &[
     "target",
     "build",
     "node_modules",
