@@ -165,6 +165,19 @@ impl SutraServer {
         tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir).map_err(sutra_to_rmcp)
     }
 
+    fn tool_context(&self, ws_id: &str) -> std::result::Result<tools::ToolContext, ErrorData> {
+        let ws = self.resolve_workspace(ws_id)?;
+        let db = tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir)
+            .map_err(sutra_to_rmcp)?;
+        let response_freshness = self.freshness(&db);
+        Ok(tools::ToolContext::new(
+            db,
+            ws.root,
+            true,
+            response_freshness,
+        ))
+    }
+
     fn require_analysis(&self) -> std::result::Result<(), ErrorData> {
         if !self
             .analysis_enabled
@@ -317,16 +330,10 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<MapArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::map::handle_with_freshness(
-            &db,
-            args.path_prefix.as_deref(),
-            args.limit,
-            Some(ws.root.as_path()),
-        )
-        .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::map::handle_ctx(&ctx, args.path_prefix.as_deref(), args.limit)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -439,18 +446,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<FindArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::find::handle_with_freshness(
-            &db,
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::find::handle_ctx(
+            &ctx,
             &args.name,
             args.kind.as_deref(),
             args.limit,
             args.detail.unwrap_or(false),
-            Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Search indexed symbols by name pattern. \
@@ -460,18 +465,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<GrepArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::grep::handle_with_freshness(
-            &db,
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::grep::handle_ctx(
+            &ctx,
             &args.pattern,
             args.kind.as_deref(),
             args.limit,
             args.detail.unwrap_or(false),
-            Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -745,17 +748,10 @@ impl SutraServer {
         Parameters(args): Parameters<HotspotsArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::hotspots::handle_with_freshness(
-            &db,
-            &ws.root,
-            args.window_days,
-            args.limit,
-            true,
-        )
-        .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -770,18 +766,16 @@ impl SutraServer {
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::file_health::handle_with_freshness(
-            &db,
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::file_health::handle_ctx(
+            &ctx,
             args.path.as_deref(),
             args.limit,
             args.mode.as_deref(),
             args.component.as_deref(),
-            Some(ws.root.as_path()),
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(

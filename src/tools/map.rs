@@ -1,10 +1,12 @@
-use std::path::Path;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::error::Result;
+use crate::freshness::FreshnessAnnotator;
+
+use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MapArgs {
@@ -14,18 +16,24 @@ pub struct MapArgs {
     #[serde(default)]
     pub limit: Option<i64>,
 }
-use crate::error::Result;
-use crate::freshness::{self, FreshnessCounts};
 
 pub fn handle(db: &Db, path_prefix: Option<&str>, limit: Option<i64>) -> Result<serde_json::Value> {
-    handle_with_freshness(db, path_prefix, limit, None)
+    handle_inner(db, path_prefix, limit, None)
 }
 
-pub fn handle_with_freshness(
+pub fn handle_ctx(
+    ctx: &ToolContext,
+    path_prefix: Option<&str>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value> {
+    handle_inner(ctx.db(), path_prefix, limit, ctx.freshness_annotator())
+}
+
+fn handle_inner(
     db: &Db,
     path_prefix: Option<&str>,
     limit: Option<i64>,
-    workspace_root: Option<&Path>,
+    mut annotator: Option<FreshnessAnnotator<'_>>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(50);
     let files = db.all_files()?;
@@ -52,7 +60,6 @@ pub fn handle_with_freshness(
     entries.sort_by_key(|e| std::cmp::Reverse(e.2));
     entries.truncate(limit as usize);
 
-    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = entries
         .iter()
         .map(|(f, sym_count, importance, max_cog, avg_cog)| {
@@ -68,18 +75,16 @@ pub fn handle_with_freshness(
                 "max_cognitive": max_cog,
                 "avg_cognitive": avg_cog,
             });
-            if let Some(root) = workspace_root {
-                let status = freshness::check_file(root, &f.path, &f.last_parsed);
-                counts.record(status);
-                entry["_freshness"] = json!(status.as_str());
+            if let Some(ref mut ann) = annotator {
+                ann.annotate_file(&mut entry, &f.path, &f.last_parsed);
             }
             entry
         })
         .collect();
 
     let mut result = json!({ "files": items, "total": items.len() });
-    if workspace_root.is_some() {
-        result["_meta"] = json!({ "freshness": counts.to_json() });
+    if let Some(ann) = annotator {
+        result["_meta"] = json!({ "freshness": ann.finish() });
     }
     Ok(result)
 }

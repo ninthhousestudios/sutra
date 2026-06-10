@@ -1,7 +1,10 @@
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
-use sutra::tools::{deps, find, grep, impact, map, outline, read, refs, tools_meta, winnow};
+use sutra::tools::{
+    ToolContext, deps, find, grep, impact, map, outline, read, refs, tools_meta, winnow,
+};
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -255,10 +258,15 @@ fn test_outline_not_found() {
 // Freshness + confidence contract tests
 // ---------------------------------------------------------------------------
 
+fn freshness_ctx(dir: &tempfile::TempDir, db: Db) -> ToolContext {
+    ToolContext::for_test_with_freshness(Arc::new(db), dir.path().to_path_buf())
+}
+
 #[test]
 fn test_map_freshness_per_entry() {
     let (dir, db) = setup_test_db_with_root();
-    let result = map::handle_with_freshness(&db, None, None, Some(dir.path())).unwrap();
+    let ctx = freshness_ctx(&dir, db);
+    let result = map::handle_ctx(&ctx, None, None).unwrap();
 
     let files = result["files"].as_array().unwrap();
     assert!(!files.is_empty());
@@ -292,8 +300,8 @@ fn test_map_freshness_per_entry() {
 #[test]
 fn test_find_freshness_and_confidence() {
     let (dir, db) = setup_test_db_with_root();
-    let result =
-        find::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
+    let ctx = freshness_ctx(&dir, db);
+    let result = find::handle_ctx(&ctx, "main", None, None, false).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
@@ -329,8 +337,8 @@ fn test_find_freshness_and_confidence() {
 #[test]
 fn test_grep_freshness_and_confidence() {
     let (dir, db) = setup_test_db_with_root();
-    let result =
-        grep::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
+    let ctx = freshness_ctx(&dir, db);
+    let result = grep::handle_ctx(&ctx, "main", None, None, false).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
@@ -349,8 +357,8 @@ fn test_grep_freshness_and_confidence() {
 #[test]
 fn test_find_exact_match_confidence_is_1() {
     let (dir, db) = setup_test_db_with_root();
-    let result =
-        find::handle_with_freshness(&db, "main", None, None, false, Some(dir.path())).unwrap();
+    let ctx = freshness_ctx(&dir, db);
+    let result = find::handle_ctx(&ctx, "main", None, None, false).unwrap();
     let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();
     assert_eq!(
         score, 1.0,
@@ -365,8 +373,8 @@ fn test_find_exact_match_confidence_is_1() {
 #[test]
 fn test_find_fts_match_confidence_below_1() {
     let (dir, db) = setup_test_db_with_root();
-    let result =
-        find::handle_with_freshness(&db, "mai", None, None, false, Some(dir.path())).unwrap();
+    let ctx = freshness_ctx(&dir, db);
+    let result = find::handle_ctx(&ctx, "mai", None, None, false).unwrap();
     let matches = result["matches"].as_array().unwrap();
     if !matches.is_empty() {
         let score = result["_meta"]["confidence"]["score"].as_f64().unwrap();

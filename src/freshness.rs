@@ -111,6 +111,34 @@ pub fn confidence_json(tier: SearchTier) -> serde_json::Value {
     })
 }
 
+pub struct FreshnessAnnotator<'a> {
+    root: &'a Path,
+    counts: FreshnessCounts,
+}
+
+impl<'a> FreshnessAnnotator<'a> {
+    pub fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            counts: FreshnessCounts::default(),
+        }
+    }
+
+    pub fn annotate_file(&mut self, item: &mut serde_json::Value, path: &str, last_parsed: &str) {
+        let status = check_file(self.root, path, last_parsed);
+        self.counts.record(status);
+        item["_freshness"] = json!(status.as_str());
+    }
+
+    pub fn counts(&self) -> &FreshnessCounts {
+        &self.counts
+    }
+
+    pub fn finish(self) -> serde_json::Value {
+        self.counts.to_json()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

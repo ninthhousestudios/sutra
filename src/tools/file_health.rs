@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -7,8 +6,10 @@ use serde_json::json;
 
 use crate::db::{Db, FileRow, HealthFindingRow};
 use crate::error::Result;
-use crate::freshness::{self, FreshnessCounts};
+use crate::freshness::FreshnessAnnotator;
 use crate::health::scoring;
+
+use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileHealthArgs {
@@ -32,16 +33,33 @@ pub fn handle(
     mode: Option<&str>,
     component: Option<&str>,
 ) -> Result<serde_json::Value> {
-    handle_with_freshness(db, path, limit, mode, component, None)
+    handle_inner(db, path, limit, mode, component, None)
 }
 
-pub fn handle_with_freshness(
+pub fn handle_ctx(
+    ctx: &ToolContext,
+    path: Option<&str>,
+    limit: Option<i64>,
+    mode: Option<&str>,
+    component: Option<&str>,
+) -> Result<serde_json::Value> {
+    handle_inner(
+        ctx.db(),
+        path,
+        limit,
+        mode,
+        component,
+        ctx.freshness_annotator(),
+    )
+}
+
+fn handle_inner(
     db: &Db,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
     component: Option<&str>,
-    workspace_root: Option<&Path>,
+    mut annotator: Option<FreshnessAnnotator<'_>>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(20) as usize;
     let mode = mode.unwrap_or("actionable");
@@ -154,7 +172,6 @@ pub fn handle_with_freshness(
     });
     scored.truncate(limit);
 
-    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = scored
         .iter()
         .map(|s| {
@@ -187,10 +204,8 @@ pub fn handle_with_freshness(
                 "category_deductions": cat_json,
                 "findings": findings_json,
             });
-            if let Some(root) = workspace_root {
-                let status = freshness::check_file(root, &s.file.path, &s.file.last_parsed);
-                counts.record(status);
-                entry["_freshness"] = json!(status.as_str());
+            if let Some(ref mut ann) = annotator {
+                ann.annotate_file(&mut entry, &s.file.path, &s.file.last_parsed);
             }
             entry
         })
@@ -210,8 +225,8 @@ pub fn handle_with_freshness(
         result["total_components"] = json!(components.len());
     }
 
-    if workspace_root.is_some() {
-        result["_meta"] = json!({ "freshness": counts.to_json() });
+    if let Some(ann) = annotator {
+        result["_meta"] = json!({ "freshness": ann.finish() });
     }
     Ok(result)
 }

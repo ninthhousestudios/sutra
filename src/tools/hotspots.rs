@@ -5,6 +5,11 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::error::Result;
+use crate::freshness::FreshnessAnnotator;
+use crate::git;
+
+use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HotspotsArgs {
@@ -14,9 +19,6 @@ pub struct HotspotsArgs {
     #[serde(default)]
     pub limit: Option<i64>,
 }
-use crate::error::Result;
-use crate::freshness::{self, FreshnessCounts};
-use crate::git;
 
 pub fn handle(
     db: &Db,
@@ -24,15 +26,29 @@ pub fn handle(
     window_days: Option<u32>,
     limit: Option<i64>,
 ) -> Result<serde_json::Value> {
-    handle_with_freshness(db, workspace_root, window_days, limit, false)
+    handle_inner(db, workspace_root, window_days, limit, None)
 }
 
-pub fn handle_with_freshness(
+pub fn handle_ctx(
+    ctx: &ToolContext,
+    window_days: Option<u32>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value> {
+    handle_inner(
+        ctx.db(),
+        ctx.workspace_root(),
+        window_days,
+        limit,
+        ctx.freshness_annotator(),
+    )
+}
+
+fn handle_inner(
     db: &Db,
     workspace_root: &Path,
     window_days: Option<u32>,
     limit: Option<i64>,
-    include_freshness: bool,
+    mut annotator: Option<FreshnessAnnotator<'_>>,
 ) -> Result<serde_json::Value> {
     let window = window_days.unwrap_or(90);
     let limit = limit.unwrap_or(20) as usize;
@@ -78,7 +94,6 @@ pub fn handle_with_freshness(
     scored.sort_by_key(|e| std::cmp::Reverse(e.3));
     scored.truncate(limit);
 
-    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = scored
         .iter()
         .map(|(f, churn_count, max_cog, score)| {
@@ -90,10 +105,8 @@ pub fn handle_with_freshness(
                 "max_cognitive": max_cog,
                 "pagerank": f.pagerank,
             });
-            if include_freshness {
-                let status = freshness::check_file(workspace_root, &f.path, &f.last_parsed);
-                counts.record(status);
-                entry["_freshness"] = json!(status.as_str());
+            if let Some(ref mut ann) = annotator {
+                ann.annotate_file(&mut entry, &f.path, &f.last_parsed);
             }
             entry
         })
@@ -104,8 +117,8 @@ pub fn handle_with_freshness(
         "hotspots": items,
         "total": items.len(),
     });
-    if include_freshness {
-        result["_meta"] = json!({ "freshness": counts.to_json() });
+    if let Some(ann) = annotator {
+        result["_meta"] = json!({ "freshness": ann.finish() });
     }
     Ok(result)
 }

@@ -1,10 +1,12 @@
-use std::path::Path;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::error::Result;
+use crate::freshness::{self, FreshnessAnnotator};
+
+use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepArgs {
@@ -17,8 +19,6 @@ pub struct GrepArgs {
     #[serde(default)]
     pub detail: Option<bool>,
 }
-use crate::error::Result;
-use crate::freshness::{self, FreshnessCounts};
 
 pub fn handle(
     db: &Db,
@@ -27,21 +27,37 @@ pub fn handle(
     limit: Option<i64>,
     detail: bool,
 ) -> Result<serde_json::Value> {
-    handle_with_freshness(db, pattern, kind, limit, detail, None)
+    handle_inner(db, pattern, kind, limit, detail, None)
 }
 
-pub fn handle_with_freshness(
+pub fn handle_ctx(
+    ctx: &ToolContext,
+    pattern: &str,
+    kind: Option<&str>,
+    limit: Option<i64>,
+    detail: bool,
+) -> Result<serde_json::Value> {
+    handle_inner(
+        ctx.db(),
+        pattern,
+        kind,
+        limit,
+        detail,
+        ctx.freshness_annotator(),
+    )
+}
+
+fn handle_inner(
     db: &Db,
     pattern: &str,
     kind: Option<&str>,
     limit: Option<i64>,
     detail: bool,
-    workspace_root: Option<&Path>,
+    mut annotator: Option<FreshnessAnnotator<'_>>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(20);
     let (results, tier) = db.find_symbols_by_name_tiered(pattern, kind, limit)?;
 
-    let mut counts = FreshnessCounts::default();
     let items: Vec<_> = results
         .iter()
         .map(|s| {
@@ -60,19 +76,17 @@ pub fn handle_with_freshness(
                 entry["signature"] = json!(s.signature);
                 entry["docstring"] = json!(s.docstring);
             }
-            if let (Some(root), Some(fp)) = (workspace_root, &file_path) {
-                let status = freshness::check_file(root, &fp.path, &fp.last_parsed);
-                counts.record(status);
-                entry["_freshness"] = json!(status.as_str());
+            if let (Some(ann), Some(fp)) = (&mut annotator, &file_path) {
+                ann.annotate_file(&mut entry, &fp.path, &fp.last_parsed);
             }
             entry
         })
         .collect();
 
     let mut result = json!({ "matches": items, "total": items.len() });
-    if workspace_root.is_some() {
+    if let Some(ann) = annotator {
         result["_meta"] = json!({
-            "freshness": counts.to_json(),
+            "freshness": ann.finish(),
             "confidence": freshness::confidence_json(tier),
         });
     }
