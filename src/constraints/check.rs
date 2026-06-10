@@ -173,10 +173,11 @@ fn evaluate_dd(
         let current_set: HashSet<(i64, i64)> = current_violations.iter().copied().collect();
 
         for &(from_id, to_id) in &current_violations {
-            if let Some(cids) = changed_ids {
-                if !cids.contains(&from_id) && !cids.contains(&to_id) {
-                    continue;
-                }
+            if let Some(cids) = changed_ids
+                && !cids.contains(&from_id)
+                && !cids.contains(&to_id)
+            {
+                continue;
             }
 
             let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
@@ -214,10 +215,11 @@ fn evaluate_dd(
                 if current_set.contains(&(from_id, to_id)) {
                     continue;
                 }
-                if let Some(cids) = changed_ids {
-                    if !cids.contains(&from_id) && !cids.contains(&to_id) {
-                        continue;
-                    }
+                if let Some(cids) = changed_ids
+                    && !cids.contains(&from_id)
+                    && !cids.contains(&to_id)
+                {
+                    continue;
                 }
                 let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
                 let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
@@ -243,10 +245,10 @@ fn evaluate_dd(
     // Cycle detection
     let cycle_filter = changed_ids;
     for cycle in engine.query_cycles()? {
-        if let Some(cids) = cycle_filter {
-            if !cycle.file_ids.iter().any(|id| cids.contains(id)) {
-                continue;
-            }
+        if let Some(cids) = cycle_filter
+            && !cycle.file_ids.iter().any(|id| cids.contains(id))
+        {
+            continue;
         }
         let cycle_paths: Vec<String> = cycle
             .file_ids
