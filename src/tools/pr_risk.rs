@@ -69,7 +69,7 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
         }));
     }
 
-    let signals = change_signals::gather(db, changed_paths, churn)?;
+    let signals = change_signals::gather(db, changed_paths, churn, false)?;
 
     let mut symbol_risks: Vec<(String, f64, i64, i64)> = Vec::new();
     for f in &signals.per_file {
@@ -93,7 +93,7 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
 
     let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
     let complexity_score = scoring::normalize(
-        signals.max_cognitive as f64,
+        signals.max_cognitive.unwrap_or(0) as f64,
         change_signals::COMPLEXITY_NORM,
     );
     let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
@@ -137,7 +137,7 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
         "composite_score": scoring::round3(composite),
         "signals": {
             "blast_radius": { "score": scoring::round3(blast_score), "raw": signals.total_blast },
-            "complexity":   { "score": scoring::round3(complexity_score), "raw": signals.max_cognitive },
+            "complexity":   { "score": scoring::round3(complexity_score), "raw": signals.max_cognitive.unwrap_or(0) },
             "churn":        { "score": scoring::round3(churn_score), "raw": signals.total_churn },
             "volume":       { "score": scoring::round3(volume_score), "raw": file_count },
         },

@@ -28,7 +28,7 @@ pub fn handle(
     let head = head.unwrap_or("HEAD");
 
     let changed_paths = git::git_diff_files(workspace_root, base, head)?;
-    let signals = change_signals::gather(db, &changed_paths, &ChurnMap::default())?;
+    let signals = change_signals::gather(db, &changed_paths, &ChurnMap::default(), true)?;
 
     let changed_files: Vec<_> = signals
         .per_file
@@ -50,8 +50,7 @@ pub fn handle(
         .collect();
 
     let impact_count = affected_files.len();
-    let max_cog = signals.max_cognitive;
-    let has_complexity = signals.per_file.iter().any(|f| f.indexed);
+    let max_cog = signals.max_cognitive.unwrap_or(0);
 
     let mut verdict_reasons: Vec<String> = Vec::new();
 
@@ -84,7 +83,7 @@ pub fn handle(
             signals.total_blast
         ));
     }
-    if !has_complexity {
+    if signals.max_cognitive.is_none() {
         verdict_reasons.push("complexity data unavailable — reparse to populate".to_string());
     }
 

@@ -44,7 +44,8 @@ pub struct AffectedSymbol {
 pub struct ChangeSignals {
     pub per_file: Vec<FileSignal>,
     pub total_blast: i64,
-    pub max_cognitive: i64,
+    /// None when no symbol had cognitive data (all were null in DB).
+    pub max_cognitive: Option<i64>,
     pub max_cognitive_symbol: Option<String>,
     pub total_churn: u32,
     pub hotspot_files: u32,
@@ -52,10 +53,15 @@ pub struct ChangeSignals {
     pub affected_symbols: Vec<AffectedSymbol>,
 }
 
-pub fn gather(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<ChangeSignals> {
+pub fn gather(
+    db: &Db,
+    changed_paths: &[String],
+    churn: &ChurnMap,
+    include_affected: bool,
+) -> Result<ChangeSignals> {
     let mut per_file = Vec::new();
     let mut total_blast: i64 = 0;
-    let mut max_cognitive: i64 = 0;
+    let mut max_cognitive: Option<i64> = None;
     let mut max_cognitive_symbol: Option<String> = None;
     let mut total_churn: u32 = 0;
     let mut hotspot_files: u32 = 0;
@@ -75,8 +81,8 @@ pub fn gather(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<Cha
             let mut symbols = Vec::with_capacity(syms.len());
             for s in &syms {
                 let cog = s.cognitive.unwrap_or(0);
-                if cog > max_cognitive {
-                    max_cognitive = cog;
+                if s.cognitive.is_some() && max_cognitive.is_none_or(|prev| cog > prev) {
+                    max_cognitive = Some(cog);
                     max_cognitive_symbol = Some(s.qualified_name.clone());
                 }
                 all_symbol_ids.push(s.id);
@@ -107,45 +113,47 @@ pub fn gather(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<Cha
         }
     }
 
-    let affected_file_ids = if all_symbol_ids.is_empty() {
-        Vec::new()
-    } else {
-        db.find_files_referencing_symbols(&all_symbol_ids)?
-    };
-
-    let changed_set: std::collections::HashSet<&str> =
-        changed_paths.iter().map(|p| p.as_str()).collect();
-
     let mut affected_files: Vec<AffectedFile> = Vec::new();
     let mut affected_symbols: Vec<AffectedSymbol> = Vec::new();
 
-    for fid in &affected_file_ids {
-        if let Some(file) = db.file_by_id(*fid)? {
-            if changed_set.contains(file.path.as_str()) {
-                continue;
-            }
-            for s in db.find_symbols_by_file(file.id)? {
-                affected_symbols.push(AffectedSymbol {
-                    qualified_name: s.qualified_name.clone(),
-                    file: file.path.clone(),
+    if include_affected {
+        let affected_file_ids = if all_symbol_ids.is_empty() {
+            Vec::new()
+        } else {
+            db.find_files_referencing_symbols(&all_symbol_ids)?
+        };
+
+        let changed_set: std::collections::HashSet<&str> =
+            changed_paths.iter().map(|p| p.as_str()).collect();
+
+        for fid in &affected_file_ids {
+            if let Some(file) = db.file_by_id(*fid)? {
+                if changed_set.contains(file.path.as_str()) {
+                    continue;
+                }
+                for s in db.find_symbols_by_file(file.id)? {
+                    affected_symbols.push(AffectedSymbol {
+                        qualified_name: s.qualified_name.clone(),
+                        file: file.path.clone(),
+                        blast_radius: file.blast_radius,
+                        cognitive: s.cognitive.unwrap_or(0),
+                    });
+                }
+                affected_files.push(AffectedFile {
+                    path: file.path.clone(),
                     blast_radius: file.blast_radius,
-                    cognitive: s.cognitive.unwrap_or(0),
                 });
             }
-            affected_files.push(AffectedFile {
-                path: file.path.clone(),
-                blast_radius: file.blast_radius,
-            });
         }
+
+        affected_files.sort_by(|a, b| a.path.cmp(&b.path));
+        affected_files.dedup_by(|a, b| a.path == b.path);
+        affected_files.sort_by_key(|x| std::cmp::Reverse(x.blast_radius));
+
+        affected_symbols.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+        affected_symbols.dedup_by(|a, b| a.qualified_name == b.qualified_name);
+        affected_symbols.sort_by_key(|x| std::cmp::Reverse(x.blast_radius));
     }
-
-    affected_files.sort_by(|a, b| a.path.cmp(&b.path));
-    affected_files.dedup_by(|a, b| a.path == b.path);
-    affected_files.sort_by_key(|x| std::cmp::Reverse(x.blast_radius));
-
-    affected_symbols.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
-    affected_symbols.dedup_by(|a, b| a.qualified_name == b.qualified_name);
-    affected_symbols.sort_by_key(|x| std::cmp::Reverse(x.blast_radius));
 
     Ok(ChangeSignals {
         per_file,

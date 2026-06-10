@@ -728,7 +728,7 @@ pub fn compute(
         }));
     }
 
-    let signals = change_signals::gather(db, changed_paths, churn)?;
+    let signals = change_signals::gather(db, changed_paths, churn, true)?;
 
     let changed_files_out: Vec<_> = signals
         .per_file
@@ -914,7 +914,7 @@ pub fn compute(
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
     let complexity_score = scoring::normalize(
-        signals.max_cognitive as f64,
+        signals.max_cognitive.unwrap_or(0) as f64,
         change_signals::COMPLEXITY_NORM,
     );
     let hotspot_score =
