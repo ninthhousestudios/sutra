@@ -5,8 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, params};
 use serde::Deserialize;
 
-use crate::constraints;
-use crate::rules::{self, ConstraintKind, Severity};
+use crate::constraints::check::{self, CheckOutcome, EvalScope, FactsSource};
 
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
@@ -284,17 +283,7 @@ pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<Str
 // Constraint checking (lightweight, per-edit)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct ConstraintFinding {
-    pub constraint_id: String,
-    pub name: Option<String>,
-    pub kind: String,
-    pub severity: Severity,
-    pub from_path: String,
-    pub to_path: String,
-    pub detail: String,
-    pub waived: bool,
-}
+pub use check::ConstraintFinding;
 
 pub fn build_proposed_content(
     tool_input: &ToolInput,
@@ -394,290 +383,28 @@ pub fn check_proposed_file_constraints(
     project_root: &Path,
     file_id: i64,
     proposed_outgoing: &[(i64, i64)],
-) -> Vec<ConstraintFinding> {
+) -> CheckOutcome {
     let mut edges: Vec<(i64, i64)> = proposed_outgoing.to_vec();
     edges.extend(get_incoming_edges(conn, file_id));
-    check_edges_against_constraints(conn, project_root, &edges)
-}
-
-fn check_edges_against_constraints(
-    conn: &Connection,
-    project_root: &Path,
-    edges: &[(i64, i64)],
-) -> Vec<ConstraintFinding> {
-    let inner = || -> Result<Vec<ConstraintFinding>, Box<dyn std::error::Error>> {
-        if edges.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let rules = rules::load_rules(project_root)?;
-        let (all_constraints, constraint_parse_errors) = rules.all_constraints();
-
-        let mut findings = Vec::new();
-        for e in &constraint_parse_errors {
-            findings.push(ConstraintFinding {
-                constraint_id: format!("parse-error-{}", e.index),
-                name: e.name.clone(),
-                kind: "parse_error".to_string(),
-                severity: Severity::Blocking,
-                from_path: String::new(),
-                to_path: String::new(),
-                detail: format!(
-                    "malformed [[constraint]] at index {}{}: {}",
-                    e.index,
-                    e.name
-                        .as_deref()
-                        .map(|n| format!(" (name: {n})"))
-                        .unwrap_or_default(),
-                    e.error,
-                ),
-                waived: false,
-            });
-        }
-
-        if all_constraints.is_empty() {
-            return Ok(findings);
-        }
-
-        let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
-            matches!(
-                c.kind,
-                ConstraintKind::ForbiddenDep { .. } | ConstraintKind::Boundary { .. }
-            )
-        });
-        if !has_forbidden_or_boundary && findings.is_empty() {
-            return Ok(Vec::new());
-        }
-        if !has_forbidden_or_boundary {
-            return Ok(findings);
-        }
-
-        let mut needed_ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
-        needed_ids.sort_unstable();
-        needed_ids.dedup();
-
-        let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
-        let mut stmt = conn.prepare(&sql)?;
-        let path_map: HashMap<i64, String> = stmt
-            .query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let (file_to_component, comp_name_to_id) = build_component_maps(conn)?;
-
-        let relevant_paths: std::collections::HashSet<&str> =
-            path_map.values().map(|p| p.as_str()).collect();
-        let waivers: Vec<(String, String)> = conn
-            .prepare("SELECT constraint_id, file_path FROM constraint_waivers")?
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
-            .collect();
-
-        for (from_id, to_id) in edges {
-            let from = match path_map.get(from_id) {
-                Some(p) => p,
-                None => continue,
-            };
-            let to = match path_map.get(to_id) {
-                Some(p) => p,
-                None => continue,
-            };
-
-            if let Some(c) = constraints::find_matching_constraint(
-                &all_constraints,
-                from,
-                to,
-                &file_to_component,
-                &comp_name_to_id,
-            ) {
-                let waived = waivers
-                    .iter()
-                    .any(|(wc_id, wf_path)| wc_id == &c.id && wf_path == from);
-
-                findings.push(ConstraintFinding {
-                    constraint_id: c.id.clone(),
-                    name: c.name.clone(),
-                    kind: c.kind.kind_tag().to_string(),
-                    severity: c.severity,
-                    from_path: from.clone(),
-                    to_path: to.clone(),
-                    detail: constraints::format_violation_detail(c, from, to, false),
-                    waived,
-                });
-            }
-        }
-
-        Ok(findings)
-    };
-
-    inner().unwrap_or_default()
+    check::evaluate(
+        &FactsSource::RawConn(conn),
+        project_root,
+        EvalScope::Edges(&edges),
+    )
+    .unwrap_or_default()
 }
 
 pub fn check_file_constraints(
     conn: &Connection,
     project_root: &Path,
     file_id: i64,
-) -> Vec<ConstraintFinding> {
-    let inner = || -> Result<Vec<ConstraintFinding>, Box<dyn std::error::Error>> {
-        let rules = rules::load_rules(project_root)?;
-        let (all_constraints, constraint_parse_errors) = rules.all_constraints();
-
-        let mut findings = Vec::new();
-        for e in &constraint_parse_errors {
-            findings.push(ConstraintFinding {
-                constraint_id: format!("parse-error-{}", e.index),
-                name: e.name.clone(),
-                kind: "parse_error".to_string(),
-                severity: Severity::Blocking,
-                from_path: String::new(),
-                to_path: String::new(),
-                detail: format!(
-                    "malformed [[constraint]] at index {}{}: {}",
-                    e.index,
-                    e.name
-                        .as_deref()
-                        .map(|n| format!(" (name: {n})"))
-                        .unwrap_or_default(),
-                    e.error,
-                ),
-                waived: false,
-            });
-        }
-
-        if all_constraints.is_empty() {
-            return Ok(findings);
-        }
-
-        let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
-            matches!(
-                c.kind,
-                ConstraintKind::ForbiddenDep { .. } | ConstraintKind::Boundary { .. }
-            )
-        });
-        if !has_forbidden_or_boundary {
-            return Ok(findings);
-        }
-
-        // Gather import edges involving this file
-        let mut edges: Vec<(i64, i64)> = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT file_id, resolved_file_id FROM imports \
-             WHERE (file_id = ?1 OR resolved_file_id = ?1) \
-             AND resolved_file_id IS NOT NULL",
-        )?;
-        let rows = stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        for row in rows {
-            edges.push(row?);
-        }
-        if edges.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Build path map for referenced file IDs
-        let mut needed_ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
-        needed_ids.sort_unstable();
-        needed_ids.dedup();
-
-        let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
-        let mut stmt = conn.prepare(&sql)?;
-        let path_map: HashMap<i64, String> = stmt
-            .query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        // Build component maps (for boundary constraints)
-        let (file_to_component, comp_name_to_id) = build_component_maps(conn)?;
-
-        // Load waivers scoped to paths involved in edges
-        let relevant_paths: std::collections::HashSet<&str> =
-            path_map.values().map(|p| p.as_str()).collect();
-        let waivers: Vec<(String, String)> = conn
-            .prepare("SELECT constraint_id, file_path FROM constraint_waivers")?
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
-            .collect();
-
-        for (from_id, to_id) in &edges {
-            let from = match path_map.get(from_id) {
-                Some(p) => p,
-                None => continue,
-            };
-            let to = match path_map.get(to_id) {
-                Some(p) => p,
-                None => continue,
-            };
-
-            if let Some(c) = constraints::find_matching_constraint(
-                &all_constraints,
-                from,
-                to,
-                &file_to_component,
-                &comp_name_to_id,
-            ) {
-                let waived = waivers
-                    .iter()
-                    .any(|(wc_id, wf_path)| wc_id == &c.id && wf_path == from);
-
-                findings.push(ConstraintFinding {
-                    constraint_id: c.id.clone(),
-                    name: c.name.clone(),
-                    kind: c.kind.kind_tag().to_string(),
-                    severity: c.severity,
-                    from_path: from.clone(),
-                    to_path: to.clone(),
-                    detail: constraints::format_violation_detail(c, from, to, false),
-                    waived,
-                });
-            }
-        }
-
-        Ok(findings)
-    };
-
-    inner().unwrap_or_default()
-}
-
-#[allow(clippy::type_complexity)]
-fn build_component_maps(
-    conn: &Connection,
-) -> Result<(HashMap<String, String>, HashMap<String, String>), Box<dyn std::error::Error>> {
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
-
-    let mut stmt =
-        conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (id, name, json) = row?;
-        comp_name_to_id.insert(name, id.clone());
-        if let Some(s) = json
-            && let Ok(paths) = serde_json::from_str::<Vec<String>>(&s)
-        {
-            for path in paths {
-                file_to_component.insert(path, id.clone());
-            }
-        }
-    }
-
-    Ok((file_to_component, comp_name_to_id))
+) -> CheckOutcome {
+    check::evaluate(
+        &FactsSource::RawConn(conn),
+        project_root,
+        EvalScope::SingleFile(file_id),
+    )
+    .unwrap_or_default()
 }
 
 pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
@@ -686,7 +413,7 @@ pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
         if i > 0 {
             reason.push_str(" | ");
         }
-        if let Some(name) = &f.name {
+        if let Some(name) = &f.constraint_name {
             reason.push_str(&format!("[{}] {}", name, f.detail));
         } else {
             reason.push_str(&f.detail);
@@ -835,6 +562,8 @@ pub fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constraints::check::FindingDelta;
+    use crate::rules::Severity;
 
     #[test]
     fn additive_append() {
@@ -880,27 +609,33 @@ mod tests {
         assert!(is_additive_edit(&input));
     }
 
-    fn make_finding(severity: Severity, waived: bool) -> ConstraintFinding {
+    fn make_finding(severity: Severity) -> ConstraintFinding {
         ConstraintFinding {
             constraint_id: "abc12345".into(),
-            name: Some("no-tools-daemon".into()),
-            kind: "forbidden_dep".into(),
+            constraint_name: Some("no-tools-daemon".into()),
+            constraint_kind: "forbidden_dep".into(),
             severity,
+            provenance: None,
             from_path: "src/tools/foo.rs".into(),
             to_path: "src/daemon.rs".into(),
+            component_context: None,
             detail:
                 "forbidden: src/tools/foo.rs -> src/daemon.rs (rule: src/tools/* -> src/daemon.rs)"
                     .into(),
-            waived,
+            delta: FindingDelta::Unknown,
         }
     }
 
     #[test]
-    fn blocking_unwaived_produces_deny() {
-        let findings = [make_finding(Severity::Blocking, false)];
-        let blocking: Vec<_> = findings
+    fn blocking_active_produces_deny() {
+        let outcome = CheckOutcome {
+            active: vec![make_finding(Severity::Blocking)],
+            ..Default::default()
+        };
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert_eq!(blocking.len(), 1);
         let reason = format_constraint_deny(&blocking);
@@ -910,50 +645,77 @@ mod tests {
 
     #[test]
     fn advisory_does_not_block() {
-        let findings = [make_finding(Severity::Advisory, false)];
-        let blocking: Vec<_> = findings
+        let outcome = CheckOutcome {
+            active: vec![make_finding(Severity::Advisory)],
+            ..Default::default()
+        };
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert!(blocking.is_empty());
     }
 
     #[test]
     fn informational_does_not_block() {
-        let findings = [make_finding(Severity::Informational, false)];
-        let blocking: Vec<_> = findings
+        let outcome = CheckOutcome {
+            active: vec![make_finding(Severity::Informational)],
+            ..Default::default()
+        };
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert!(blocking.is_empty());
     }
 
     #[test]
     fn waived_blocking_does_not_block() {
-        let findings = [make_finding(Severity::Blocking, true)];
-        let blocking: Vec<_> = findings
+        use crate::constraints::check::WaivedFinding;
+        let outcome = CheckOutcome {
+            waived: vec![WaivedFinding {
+                finding: make_finding(Severity::Blocking),
+                rationale: "accepted".into(),
+                waived_by: "josh".into(),
+            }],
+            ..Default::default()
+        };
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert!(blocking.is_empty());
     }
 
     #[test]
     fn mixed_severities_only_blocking_blocks() {
-        let findings = [
-            make_finding(Severity::Blocking, false),
-            make_finding(Severity::Advisory, false),
-            make_finding(Severity::Informational, false),
-            make_finding(Severity::Blocking, true), // waived
-        ];
-        let blocking: Vec<_> = findings
+        use crate::constraints::check::WaivedFinding;
+        let outcome = CheckOutcome {
+            active: vec![
+                make_finding(Severity::Blocking),
+                make_finding(Severity::Advisory),
+                make_finding(Severity::Informational),
+            ],
+            waived: vec![WaivedFinding {
+                finding: make_finding(Severity::Blocking),
+                rationale: "accepted".into(),
+                waived_by: "josh".into(),
+            }],
+            ..Default::default()
+        };
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert_eq!(blocking.len(), 1);
-        let advisory: Vec<_> = findings
+        let advisory: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity != Severity::Blocking)
+            .filter(|f| f.severity != Severity::Blocking)
             .collect();
         assert_eq!(advisory.len(), 2);
     }
@@ -969,8 +731,8 @@ mod tests {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let findings = check_file_constraints(&conn, dir.path(), 1);
-        assert!(findings.is_empty());
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert!(outcome.active.is_empty());
     }
 
     #[test]
@@ -1003,11 +765,13 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let findings = check_file_constraints(&conn, dir.path(), 1);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].severity, Severity::Blocking);
-        assert!(!findings[0].waived);
-        assert_eq!(findings[0].name.as_deref(), Some("no-tools-daemon"));
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].severity, Severity::Blocking);
+        assert_eq!(
+            outcome.active[0].constraint_name.as_deref(),
+            Some("no-tools-daemon")
+        );
     }
 
     #[test]
@@ -1041,9 +805,9 @@ name = "no-tools-daemon"
         .unwrap();
 
         // First, get the constraint ID by running without waivers
-        let findings = check_file_constraints(&conn, dir.path(), 1);
-        assert_eq!(findings.len(), 1);
-        let constraint_id = findings[0].constraint_id.clone();
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        let constraint_id = outcome.active[0].constraint_id.clone();
 
         // Now add waiver
         conn.execute(
@@ -1052,9 +816,9 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let findings = check_file_constraints(&conn, dir.path(), 1);
-        assert_eq!(findings.len(), 1);
-        assert!(findings[0].waived);
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert!(outcome.active.is_empty());
+        assert_eq!(outcome.waived.len(), 1);
     }
 
     #[test]
@@ -1088,9 +852,9 @@ name = "db-config-coupling"
         .unwrap();
 
         // Query from file_id=1 (config.rs) — should find the incoming edge from db/mod.rs
-        let findings = check_file_constraints(&conn, dir.path(), 1);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].severity, Severity::Advisory);
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].severity, Severity::Advisory);
     }
 
     fn setup_constraint_db() -> (Connection, tempfile::TempDir) {
@@ -1128,29 +892,31 @@ name = "no-tools-daemon"
     #[test]
     fn proposed_violating_edit_denied() {
         let (conn, dir) = setup_constraint_db();
-        // Proposed outgoing: tools/review.rs → daemon.rs (forbidden)
         let proposed_outgoing = vec![(1, 2)];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        let blocking: Vec<_> = findings
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert_eq!(blocking.len(), 1);
-        assert_eq!(blocking[0].name.as_deref(), Some("no-tools-daemon"));
+        assert_eq!(
+            blocking[0].constraint_name.as_deref(),
+            Some("no-tools-daemon")
+        );
     }
 
     #[test]
     fn proposed_fixing_edit_allowed() {
         let (conn, dir) = setup_constraint_db();
-        // Index has the violation
         conn.execute_batch("INSERT INTO imports VALUES (1, 2);")
             .unwrap();
-        // Proposed outgoing: tools/review.rs → lib.rs (no violation — removed the forbidden import)
         let proposed_outgoing = vec![(1, 3)];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        let blocking: Vec<_> = findings
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert!(blocking.is_empty());
     }
@@ -1158,12 +924,12 @@ name = "no-tools-daemon"
     #[test]
     fn proposed_unrelated_edit_to_violating_file_denied() {
         let (conn, dir) = setup_constraint_db();
-        // Proposed outgoing still includes the forbidden edge (edit didn't change imports)
         let proposed_outgoing = vec![(1, 2), (1, 3)];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        let blocking: Vec<_> = findings
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert_eq!(blocking.len(), 1);
     }
@@ -1172,9 +938,9 @@ name = "no-tools-daemon"
     fn waiver_on_target_does_not_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        assert_eq!(findings.len(), 1);
-        let constraint_id = findings[0].constraint_id.clone();
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        assert_eq!(outcome.active.len(), 1);
+        let constraint_id = outcome.active[0].constraint_id.clone();
 
         // Waiver on the TARGET file (daemon.rs), not the source
         conn.execute(
@@ -1183,21 +949,22 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        assert_eq!(findings.len(), 1);
-        assert!(
-            !findings[0].waived,
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        assert_eq!(
+            outcome.active.len(),
+            1,
             "waiver on target should not suppress with from-only rule"
         );
+        assert!(outcome.waived.is_empty());
     }
 
     #[test]
     fn waiver_on_source_does_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        assert_eq!(findings.len(), 1);
-        let constraint_id = findings[0].constraint_id.clone();
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        assert_eq!(outcome.active.len(), 1);
+        let constraint_id = outcome.active[0].constraint_id.clone();
 
         // Waiver on the SOURCE file (tools/review.rs)
         conn.execute(
@@ -1206,9 +973,9 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
-        assert_eq!(findings.len(), 1);
-        assert!(findings[0].waived);
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        assert!(outcome.active.is_empty());
+        assert_eq!(outcome.waived.len(), 1);
     }
 
     #[test]
@@ -1249,10 +1016,11 @@ name = "no-tools-daemon"
             .unwrap();
         // We're editing daemon.rs — proposed outgoing is clean, but incoming is violating
         let proposed_outgoing: Vec<(i64, i64)> = vec![];
-        let findings = check_proposed_file_constraints(&conn, dir.path(), 2, &proposed_outgoing);
-        let blocking: Vec<_> = findings
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &proposed_outgoing);
+        let blocking: Vec<_> = outcome
+            .active
             .iter()
-            .filter(|f| !f.waived && f.severity == Severity::Blocking)
+            .filter(|f| f.severity == Severity::Blocking)
             .collect();
         assert_eq!(
             blocking.len(),

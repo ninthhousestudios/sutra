@@ -169,12 +169,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let blocking: Vec<_> = constraint_findings
+        .active
         .iter()
-        .filter(|f| !f.waived && f.severity == Severity::Blocking)
+        .filter(|f| f.severity == Severity::Blocking)
         .collect();
     let advisory: Vec<_> = constraint_findings
+        .active
         .iter()
-        .filter(|f| !f.waived && f.severity != Severity::Blocking)
+        .filter(|f| f.severity != Severity::Blocking)
         .collect();
 
     for f in &advisory {
