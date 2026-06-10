@@ -344,11 +344,11 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<OutlineArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let compact = args.compact.unwrap_or(false);
-        let result = tools::outline::handle(&db, &args.path, compact).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result =
+            tools::outline::handle(ctx.db(), &args.path, compact).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -358,11 +358,10 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ComponentsArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let compact = args.compact.unwrap_or(true);
-        let result = tools::components::handle(&db, compact).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result = tools::components::handle(ctx.db(), compact).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -376,12 +375,11 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::orient::OrientArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
-        let result =
-            tools::orient::handle(&db, &args.scope, &ws.root, Some(&dd)).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result = tools::orient::handle(ctx.db(), &args.scope, ctx.workspace_root(), Some(&dd))
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Manage convention lifecycle and waivers. \
@@ -395,10 +393,9 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::conventions::ConventionsArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::conventions::handle(&db, &args).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::conventions::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -414,12 +411,11 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::constraints::ConstraintsArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
-        let result =
-            tools::constraints::handle(&db, &ws.root, Some(&dd), &args).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result = tools::constraints::handle(ctx.db(), ctx.workspace_root(), Some(&dd), &args)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -431,10 +427,9 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ResolveArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::resolve::handle(&db, &args.query).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::resolve::handle(ctx.db(), &args.query).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -486,20 +481,18 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReadArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let is_stale = self.freshness(&db)["is_stale"].as_bool() == Some(true);
+        let ctx = self.tool_context(&args.workspace)?;
         let result = tools::read::handle(
-            &db,
-            &ws.root,
+            ctx.db(),
+            ctx.workspace_root(),
             &args.symbol,
             args.context_lines,
             args.limit,
             args.full.unwrap_or(false),
-            is_stale,
+            ctx.is_stale(),
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -511,13 +504,12 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ImpactArgs>,
     ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::impact::handle(&db, &args.symbol).map_err(sutra_to_rmcp)?;
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::impact::handle(ctx.db(), &args.symbol).map_err(sutra_to_rmcp)?;
         if let Some(file_path) = result["file"].as_str() {
-            guard::touch_ack(&ws.root, file_path);
+            guard::touch_ack(ctx.workspace_root(), file_path);
         }
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "File dependency graph from import edges. \
@@ -526,11 +518,10 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DepsArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::deps::handle(&db, args.path.as_deref(), args.depth).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::deps::handle(ctx.db(), args.path.as_deref(), args.depth)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -590,11 +581,10 @@ impl SutraServer {
         Parameters(args): Parameters<RefsArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::refs::handle(&db, &args.symbol, args.context_kind.as_deref())
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::refs::handle(ctx.db(), &args.symbol, args.context_kind.as_deref())
             .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Call hierarchy for a function. \
@@ -605,11 +595,15 @@ impl SutraServer {
         Parameters(args): Parameters<CallsArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::calls::handle(&db, &args.symbol, args.direction.as_deref(), args.depth)
-            .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::calls::handle(
+            ctx.db(),
+            &args.symbol,
+            args.direction.as_deref(),
+            args.depth,
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Trace call chains through the codebase. \
@@ -622,11 +616,15 @@ impl SutraServer {
         Parameters(args): Parameters<TraceArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::trace::handle(&db, &args.symbol, args.direction.as_deref(), args.limit)
-            .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::trace::handle(
+            ctx.db(),
+            &args.symbol,
+            args.direction.as_deref(),
+            args.limit,
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Blast radius of a git diff. \
@@ -637,12 +635,15 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
         self.await_parse(&args.workspace).await;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::diff_impact::handle(&db, &ws.root, args.base.as_deref(), args.head.as_deref())
-                .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::diff_impact::handle(
+            ctx.db(),
+            ctx.workspace_root(),
+            args.base.as_deref(),
+            args.head.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Composite PR risk score (0.0–1.0) for a git diff. \
@@ -655,12 +656,15 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
         self.await_parse(&args.workspace).await;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::pr_risk::handle(&db, &ws.root, args.base.as_deref(), args.head.as_deref())
-                .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::pr_risk::handle(
+            ctx.db(),
+            ctx.workspace_root(),
+            args.base.as_deref(),
+            args.head.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -673,11 +677,10 @@ impl SutraServer {
         Parameters(args): Parameters<ProvenanceArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result =
-            tools::provenance::handle(&db, &ws.root, &args.symbol).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::provenance::handle(ctx.db(), ctx.workspace_root(), &args.symbol)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -689,10 +692,10 @@ impl SutraServer {
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let result =
-            tools::cochange::handle(&db, &args.path, args.threshold).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+            tools::cochange::handle(ctx.db(), &args.path, args.threshold).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -709,12 +712,16 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
         self.await_parse(&args.workspace).await;
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
-        let result = tools::review::handle(&db, &ws.root, args.diff.as_deref(), Some(&dd))
-            .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result = tools::review::handle(
+            ctx.db(),
+            ctx.workspace_root(),
+            args.diff.as_deref(),
+            Some(&dd),
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -728,15 +735,14 @@ impl SutraServer {
         Parameters(args): Parameters<DeadArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let result = tools::dead::handle(
-            &db,
+            ctx.db(),
             args.path_prefix.as_deref(),
             args.include_pub.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -788,10 +794,9 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<TrendArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::trend::handle(&db, &args).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::trend::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -807,8 +812,7 @@ impl SutraServer {
         if args.calls_to.is_some() {
             self.require_analysis()?;
         }
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let filter = tools::winnow::WinnowFilter {
             kind: args.kind,
             min_complexity: args.min_complexity,
@@ -820,8 +824,9 @@ impl SutraServer {
             rank_by: args.rank_by,
             limit: args.limit,
         };
-        let result = tools::winnow::handle(&db, &ws.root, &filter).map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        let result = tools::winnow::handle(ctx.db(), ctx.workspace_root(), &filter)
+            .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -834,11 +839,10 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DuplicatesArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
-        let result = tools::duplicates::handle(&db, args.threshold, args.min_group)
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::duplicates::handle(ctx.db(), args.threshold, args.min_group)
             .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(
@@ -851,17 +855,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<SimilarArgs>,
     ) -> Result<String, ErrorData> {
-        let _ws = self.resolve_workspace(&args.workspace)?;
-        let db = self.get_db(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace)?;
         let result = tools::similar::handle(
-            &db,
+            ctx.db(),
             &args.symbol,
             args.mode.as_deref(),
             args.limit,
             args.threshold,
         )
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        to_compact_json(ctx.wrap(result))
     }
 
     #[tool(description = "Register a workspace root and start indexing. \
