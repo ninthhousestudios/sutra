@@ -785,7 +785,8 @@ forbidden_deps = [
 
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
 
     // DD should find the forbidden dep via maintained view
     assert!(
@@ -921,7 +922,8 @@ forbidden_deps = [
     // Only view.rs is changed — its forbidden import should be detected as introduced
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
 
     assert!(!findings.constraint_violations.is_empty());
     let v = &findings.constraint_violations[0];
@@ -999,7 +1001,8 @@ forbidden_deps = [
 
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
 
     assert!(
         findings.constraint_violations.is_empty(),
@@ -1065,6 +1068,7 @@ fn build_findings_persists_conventions_to_db() {
         &db,
         dir.path(),
         &["src/f_0.rs".to_string()],
+        "HEAD",
         None,
         &registry,
     );
@@ -1124,7 +1128,8 @@ forbidden_deps = [
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
     let findings =
-        review::build_findings(&db, dir.path(), &changed, Some(&shared), &registry).unwrap();
+        review::build_findings(&db, dir.path(), &changed, "HEAD", Some(&shared), &registry)
+            .unwrap();
     assert!(
         !findings.constraint_violations.is_empty(),
         "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
@@ -1314,6 +1319,7 @@ fn build_findings_surfaces_error_on_bad_rules() {
         &db,
         dir.path(),
         &["src/foo.rs".to_string()],
+        "HEAD",
         None,
         &registry,
     );
@@ -1344,7 +1350,8 @@ fn build_findings_cycle_violations_counted_in_total() {
 
     let changed = vec!["src/a.rs".to_string()];
     let registry = default_registry();
-    let findings = review::build_findings(&db, dir.path(), &changed, None, &registry).unwrap();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
 
     assert!(
         findings

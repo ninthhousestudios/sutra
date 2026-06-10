@@ -155,11 +155,17 @@ pub fn handle(
     };
 
     let registry = crate::parser::adapter::default_registry();
-    let (findings, findings_error) =
-        match build_findings(db, workspace_root, &changed_paths, dd_engine, &registry) {
-            Ok(f) => (f, None),
-            Err(e) => (ReviewFindings::default(), Some(e.to_string())),
-        };
+    let (findings, findings_error) = match build_findings(
+        db,
+        workspace_root,
+        &changed_paths,
+        &base_revision,
+        dd_engine,
+        &registry,
+    ) {
+        Ok(f) => (f, None),
+        Err(e) => (ReviewFindings::default(), Some(e.to_string())),
+    };
 
     let shape_changes = crate::similarity::diff::detect_shape_changes(
         db,
@@ -279,10 +285,48 @@ pub fn handle(
     Ok(result)
 }
 
+fn extract_outgoing_edges(
+    content: &str,
+    rel_path: &str,
+    file_id: i64,
+    workspace_root: &Path,
+    id_map: &HashMap<&str, i64>,
+) -> Vec<(i64, i64)> {
+    let language = if rel_path.ends_with(".rs") {
+        "rust"
+    } else {
+        return Vec::new();
+    };
+    let result = match crate::parser::parse_file(content, language, rel_path) {
+        Ok(r) if r.parsed_ok => r,
+        _ => return Vec::new(),
+    };
+    let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+    let path_ref_map: HashMap<&str, i64> = id_map.iter().map(|(k, v)| (*k, *v)).collect();
+    let mut edges = Vec::new();
+    for import in &result.imports {
+        let segments = match crate::rust_imports::normalize_to_crate_segments(
+            &import.raw_path,
+            rel_path,
+            crate_name.as_deref(),
+        ) {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        if let Some(target_id) = crate::rust_imports::resolve_segments(&segments, &path_ref_map) {
+            if target_id != file_id {
+                edges.push((file_id, target_id));
+            }
+        }
+    }
+    edges
+}
+
 pub fn build_findings(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
+    base_revision: &str,
     shared_dd: Option<&DdEngine>,
     registry: &LanguageRegistry,
 ) -> Result<ReviewFindings> {
@@ -345,26 +389,43 @@ pub fn build_findings(
         if !pairs.is_empty() {
             engine.set_forbidden_pairs(pairs)?;
             let current_violations = engine.query_violations()?;
-            // Compute delta: temporarily remove outgoing edges from changed
-            // files to identify which violations are [introduced] by the diff.
-            // Only outgoing edges are removed — incoming edges to changed files
-            // are controlled by their source, so boundary violations caused by
-            // component membership changes won't be labeled [introduced].
-            let changed_edges: Vec<(i64, i64)> = edges
+            // Compute old outgoing edges from merge-base content for changed
+            // files, so we can identify which edges are truly new in this diff.
+            let mut old_edges: std::collections::HashSet<(i64, i64)> =
+                std::collections::HashSet::new();
+            for path in changed_paths {
+                let file_id = match id_map.get(path.as_str()) {
+                    Some(&id) => id,
+                    None => continue,
+                };
+                if let Ok(Some(old_content)) =
+                    git::git_file_content_at(workspace_root, base_revision, path)
+                {
+                    for edge in
+                        extract_outgoing_edges(&old_content, path, file_id, workspace_root, &id_map)
+                    {
+                        old_edges.insert(edge);
+                    }
+                }
+            }
+
+            // Only edges that are in the current state but NOT in the merge-base
+            // are genuinely introduced by the diff.
+            let new_edges: Vec<(i64, i64)> = edges
                 .iter()
                 .filter(|(src, _)| changed_ids.contains(src))
                 .copied()
+                .filter(|e| !old_edges.contains(e))
                 .collect();
 
-            let baseline_set: std::collections::HashSet<(i64, i64)> = if !changed_edges.is_empty() {
+            let baseline_set: std::collections::HashSet<(i64, i64)> = if !new_edges.is_empty() {
                 engine.update(DdDelta {
                     added_edges: vec![],
-                    removed_edges: changed_edges.clone(),
+                    removed_edges: new_edges.clone(),
                 })?;
                 let baseline_result = engine.query_violations();
-                // Re-add edges before propagating any query error
                 engine.update(DdDelta {
-                    added_edges: changed_edges,
+                    added_edges: new_edges,
                     removed_edges: vec![],
                 })?;
                 baseline_result?.into_iter().collect()

@@ -219,12 +219,16 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
     let db_dir = guard::sutra_db_dir();
     let db = sutra::db::Db::open_unchecked(&ws_id, &db_dir)?;
 
-    let changed_paths = if staged {
-        sutra::git::git_diff_staged(&project_root)?
+    let (changed_paths, base_revision) = if staged {
+        (
+            sutra::git::git_diff_staged(&project_root)?,
+            "HEAD".to_string(),
+        )
     } else {
         let default_branch = sutra::git::detect_default_branch(&project_root)?;
         let base = sutra::git::git_merge_base(&project_root, &default_branch)?;
-        sutra::git::git_diff_files(&project_root, &base, "HEAD")?
+        let paths = sutra::git::git_diff_files(&project_root, &base, "HEAD")?;
+        (paths, base)
     };
 
     if changed_paths.is_empty() {
@@ -233,8 +237,14 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
     }
 
     let registry = sutra::parser::adapter::default_registry();
-    let findings =
-        sutra::tools::review::build_findings(&db, &project_root, &changed_paths, None, &registry)?;
+    let findings = sutra::tools::review::build_findings(
+        &db,
+        &project_root,
+        &changed_paths,
+        &base_revision,
+        None,
+        &registry,
+    )?;
 
     let mut blocking = Vec::new();
     let mut advisory = Vec::new();
