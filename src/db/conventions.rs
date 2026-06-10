@@ -470,10 +470,12 @@ impl Db {
         Ok(count > 0)
     }
 
-    pub fn waivers_for_check(&self) -> Result<HashMap<(String, String, String), String>> {
+    pub fn waivers_for_check(
+        &self,
+    ) -> Result<HashMap<(String, String, String), crate::waivers::WaiverMeta>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT convention_id, symbol_qualified_name, component_id, rationale
+            "SELECT convention_id, symbol_qualified_name, component_id, rationale, waived_by
              FROM convention_waivers",
         )?;
         let map = stmt
@@ -484,7 +486,10 @@ impl Db {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                     ),
-                    row.get::<_, String>(3)?,
+                    crate::waivers::WaiverMeta {
+                        rationale: row.get::<_, String>(3)?,
+                        waived_by: row.get::<_, String>(4)?,
+                    },
                 ))
             })?
             .collect::<std::result::Result<HashMap<_, _>, _>>()?;

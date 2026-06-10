@@ -456,16 +456,19 @@ fn waived_violations_appear_in_output() {
         constraint_violations_total: 0,
         convention_violations: vec![],
         convention_matches: vec![],
-        waived_violations: vec![review::WaivedViolation {
-            symbol: "core::process".into(),
-            file: "src/core.rs".into(),
-            convention_id: "abc123".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_doc".into()],
-            missing: vec!["has_doc".into()],
-            support: 8,
-            confidence: 0.95,
+        waived_violations: vec![Waived {
+            finding: review::ConventionViolation {
+                symbol: "core::process".into(),
+                file: "src/core.rs".into(),
+                convention_id: "abc123".into(),
+                antecedent: vec!["kind:function".into()],
+                consequent: vec!["has_doc".into()],
+                missing: vec!["has_doc".into()],
+                support: 8,
+                confidence: 0.95,
+            },
             rationale: "intentional omission".into(),
+            waived_by: String::new(),
         }],
         drift_alerts: vec![],
         ..Default::default()

@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use crate::constraints::check::ConstraintFinding;
 use crate::db::ConstraintWaiverRow;
+use crate::tools::review::ConventionViolation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaiverTarget {
@@ -8,7 +11,7 @@ pub enum WaiverTarget {
     HealthFinding,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WaiverMeta {
     pub rationale: String,
     pub waived_by: String,
@@ -60,5 +63,36 @@ impl Waivable for ConstraintFinding {
                 rationale: w.rationale.clone(),
                 waived_by: w.waived_by.clone(),
             })
+    }
+}
+
+pub struct ConventionWaiverSet {
+    pub map: HashMap<(String, String, String), WaiverMeta>,
+    pub sym_component: HashMap<(String, String), String>,
+}
+
+impl Waivable for ConventionViolation {
+    type WaiverSet = ConventionWaiverSet;
+
+    fn find_waiver(&self, waivers: &ConventionWaiverSet) -> Option<WaiverMeta> {
+        let comp = waivers
+            .sym_component
+            .get(&(self.file.clone(), self.symbol.clone()))
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let file_qualified = format!("{}::{}", self.file, self.symbol);
+        [
+            (self.convention_id.as_str(), self.symbol.as_str(), comp),
+            (self.convention_id.as_str(), file_qualified.as_str(), comp),
+            (self.convention_id.as_str(), self.symbol.as_str(), ""),
+            (self.convention_id.as_str(), file_qualified.as_str(), ""),
+        ]
+        .iter()
+        .find_map(|(cid, sym, cmp)| {
+            waivers
+                .map
+                .get(&(cid.to_string(), sym.to_string(), cmp.to_string()))
+        })
+        .cloned()
     }
 }

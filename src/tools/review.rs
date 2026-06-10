@@ -34,7 +34,7 @@ const W_HOTSPOT: f64 = 0.15;
 const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
 
-use crate::waivers::Waived;
+use crate::waivers::{self, Waived};
 pub use check::ConstraintFinding;
 
 #[derive(Clone)]
@@ -61,19 +61,6 @@ pub struct ConventionMatchFinding {
     pub confidence: f64,
 }
 
-#[derive(Clone)]
-pub struct WaivedViolation {
-    pub symbol: String,
-    pub file: String,
-    pub convention_id: String,
-    pub antecedent: Vec<String>,
-    pub consequent: Vec<String>,
-    pub missing: Vec<String>,
-    pub support: usize,
-    pub confidence: f64,
-    pub rationale: String,
-}
-
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintFinding>,
@@ -83,7 +70,7 @@ pub struct ReviewFindings {
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
     pub convention_matches: Vec<ConventionMatchFinding>,
-    pub waived_violations: Vec<WaivedViolation>,
+    pub waived_violations: Vec<Waived<ConventionViolation>>,
     pub drift_alerts: Vec<conventions::drift::DriftAlert>,
     pub convention_drift_findings: Vec<crate::db::HealthFindingRow>,
 }
@@ -523,50 +510,21 @@ pub fn build_findings(
         }
     }
 
-    let waivers = db.waivers_for_check()?;
-    let sym_component: HashMap<(&str, &str), &str> = changed_sym_attrs
+    let waiver_map = db.waivers_for_check()?;
+    let sym_component: HashMap<(String, String), String> = changed_sym_attrs
         .iter()
         .filter_map(|s| {
             s.component_id
                 .as_deref()
-                .map(|c| ((s.file.as_str(), s.name.as_str()), c))
+                .map(|c| ((s.file.clone(), s.name.clone()), c.to_string()))
         })
         .collect();
-    let mut waived_violations = Vec::new();
-    let mut unwaived = Vec::new();
-    for v in convention_violations {
-        let comp = sym_component
-            .get(&(v.file.as_str(), v.symbol.as_str()))
-            .copied()
-            .unwrap_or("");
-        let file_qualified = format!("{}::{}", v.file, v.symbol);
-        let rationale = [
-            (v.convention_id.as_str(), v.symbol.as_str(), comp),
-            (v.convention_id.as_str(), file_qualified.as_str(), comp),
-            (v.convention_id.as_str(), v.symbol.as_str(), ""),
-            (v.convention_id.as_str(), file_qualified.as_str(), ""),
-        ]
-        .iter()
-        .find_map(|(cid, sym, cmp)| {
-            waivers.get(&(cid.to_string(), sym.to_string(), cmp.to_string()))
-        })
-        .cloned();
-        if let Some(rationale) = rationale {
-            waived_violations.push(WaivedViolation {
-                symbol: v.symbol,
-                file: v.file,
-                convention_id: v.convention_id,
-                antecedent: v.antecedent,
-                consequent: v.consequent,
-                missing: v.missing,
-                support: v.support,
-                confidence: v.confidence,
-                rationale,
-            });
-        } else {
-            unwaived.push(v);
-        }
-    }
+    let convention_waiver_set = waivers::ConventionWaiverSet {
+        map: waiver_map,
+        sym_component,
+    };
+    let (convention_violations, waived_violations) =
+        waivers::partition(convention_violations, &convention_waiver_set);
 
     let drift_alerts = db.get_drift_alerts().unwrap_or_default();
     let convention_drift_findings = db
@@ -579,7 +537,7 @@ pub fn build_findings(
         waived_constraint_violations,
         constraint_parse_errors,
         constraint_violations_total,
-        convention_violations: unwaived,
+        convention_violations,
         convention_matches,
         waived_violations,
         drift_alerts,
@@ -983,9 +941,11 @@ pub fn compute(
         .iter()
         .map(|w| {
             json!({
-                "symbol": w.symbol, "file": w.file, "convention_id": w.convention_id,
-                "antecedent": w.antecedent, "consequent": w.consequent, "missing": w.missing,
-                "support": w.support, "confidence": w.confidence,
+                "symbol": w.finding.symbol, "file": w.finding.file,
+                "convention_id": w.finding.convention_id,
+                "antecedent": w.finding.antecedent, "consequent": w.finding.consequent,
+                "missing": w.finding.missing,
+                "support": w.finding.support, "confidence": w.finding.confidence,
                 "waived": true, "rationale": w.rationale,
             })
         })

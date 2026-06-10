@@ -1130,14 +1130,14 @@ fn waiver_component_scoping() {
 
     let check_map = db.waivers_for_check().unwrap();
     assert_eq!(check_map.len(), 2);
-    assert_eq!(
-        check_map.get(&("conv1".into(), "process".into(), "".into())),
-        Some(&"global waiver".to_string())
-    );
-    assert_eq!(
-        check_map.get(&("conv1".into(), "process".into(), "comp_a".into())),
-        Some(&"scoped waiver".to_string())
-    );
+    let global = check_map
+        .get(&("conv1".into(), "process".into(), "".into()))
+        .expect("global waiver should be present");
+    assert_eq!(global.rationale, "global waiver");
+    let scoped = check_map
+        .get(&("conv1".into(), "process".into(), "comp_a".into()))
+        .expect("scoped waiver should be present");
+    assert_eq!(scoped.rationale, "scoped waiver");
 }
 
 #[test]
