@@ -7,7 +7,8 @@ use serde_json::json;
 use crate::db::Db;
 use crate::error::Result;
 use crate::git;
-use crate::tools::scoring::{self, ChurnMap, Signal};
+use crate::tools::change_signals::{self, ChurnMap};
+use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PrRiskArgs {
@@ -35,10 +36,10 @@ pub fn handle(
     let head = head.unwrap_or("HEAD");
 
     let changed_paths = git::git_diff_files(workspace_root, base, head)?;
-    let churn_counts = git::git_churn(workspace_root, scoring::CHURN_WINDOW_DAYS)?;
+    let churn_counts = git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?;
     let churn = ChurnMap {
         counts: churn_counts,
-        window_days: scoring::CHURN_WINDOW_DAYS,
+        window_days: change_signals::CHURN_WINDOW_DAYS,
     };
 
     let mut result = compute(db, &changed_paths, &churn)?;
@@ -47,7 +48,7 @@ pub fn handle(
         obj.insert("head".into(), json!(head));
         obj.insert(
             "churn_window_days".into(),
-            json!(scoring::CHURN_WINDOW_DAYS),
+            json!(change_signals::CHURN_WINDOW_DAYS),
         );
     }
     Ok(result)
@@ -68,36 +69,34 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
         }));
     }
 
-    let mut total_blast: i64 = 0;
-    let mut max_cognitive: i64 = 0;
-    let mut total_churn: u32 = 0;
+    let signals = change_signals::gather(db, changed_paths, churn)?;
+
     let mut symbol_risks: Vec<(String, f64, i64, i64)> = Vec::new();
-
-    for path in changed_paths {
-        if let Some(file) = db.file_by_path(path)? {
-            total_blast += file.blast_radius;
-            let file_churn = churn.counts.get(path).copied().unwrap_or(0);
-            total_churn += file_churn;
-
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                let cog = s.cognitive.unwrap_or(0);
-                if cog > max_cognitive {
-                    max_cognitive = cog;
-                }
-                let blast_norm = scoring::normalize(file.blast_radius as f64, scoring::BLAST_NORM);
-                let cog_norm = scoring::normalize(cog as f64, scoring::COMPLEXITY_NORM);
-                let sym_risk = blast_norm * 0.6 + cog_norm * 0.4;
-                symbol_risks.push((s.qualified_name.clone(), sym_risk, file.blast_radius, cog));
-            }
+    for f in &signals.per_file {
+        if !f.indexed {
+            continue;
+        }
+        for s in &f.symbols {
+            let blast_norm = scoring::normalize(f.blast_radius as f64, change_signals::BLAST_NORM);
+            let cog_norm = scoring::normalize(s.cognitive as f64, change_signals::COMPLEXITY_NORM);
+            let sym_risk = blast_norm * 0.6 + cog_norm * 0.4;
+            symbol_risks.push((
+                s.qualified_name.clone(),
+                sym_risk,
+                f.blast_radius,
+                s.cognitive,
+            ));
         }
     }
 
     let file_count = changed_paths.len();
 
-    let blast_score = scoring::normalize(total_blast as f64, scoring::BLAST_NORM);
-    let complexity_score = scoring::normalize(max_cognitive as f64, scoring::COMPLEXITY_NORM);
-    let churn_score = scoring::normalize(total_churn as f64, scoring::CHURN_NORM);
+    let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
+    let complexity_score = scoring::normalize(
+        signals.max_cognitive as f64,
+        change_signals::COMPLEXITY_NORM,
+    );
+    let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
     let volume_score = scoring::normalize(file_count as f64, 25.0);
 
     let composite = scoring::weighted_score(&[
@@ -137,9 +136,9 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
     Ok(json!({
         "composite_score": scoring::round3(composite),
         "signals": {
-            "blast_radius": { "score": scoring::round3(blast_score), "raw": total_blast },
-            "complexity":   { "score": scoring::round3(complexity_score), "raw": max_cognitive },
-            "churn":        { "score": scoring::round3(churn_score), "raw": total_churn },
+            "blast_radius": { "score": scoring::round3(blast_score), "raw": signals.total_blast },
+            "complexity":   { "score": scoring::round3(complexity_score), "raw": signals.max_cognitive },
+            "churn":        { "score": scoring::round3(churn_score), "raw": signals.total_churn },
             "volume":       { "score": scoring::round3(volume_score), "raw": file_count },
         },
         "riskiest_symbols": top_symbols,
