@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::db::{Db, FileRow, HealthFindingRow};
 use crate::error::Result;
 use crate::freshness::{self, FreshnessCounts};
-use crate::health::{instability, scoring};
+use crate::health::scoring;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileHealthArgs {
@@ -168,7 +168,7 @@ pub fn handle_with_freshness(
                         "severity": f.severity,
                         "metric_value": f.metric_value,
                         "threshold": f.threshold,
-                        "deduction": round2(ded),
+                        "deduction": scoring::round2(ded),
                         "detail": f.detail,
                     })
                 })
@@ -177,13 +177,13 @@ pub fn handle_with_freshness(
             let cat_json: serde_json::Value = s
                 .deductions
                 .iter()
-                .map(|(&k, &v)| (k.to_string(), json!(round2(v))))
+                .map(|(&k, &v)| (k.to_string(), json!(scoring::round2(v))))
                 .collect::<serde_json::Map<String, serde_json::Value>>()
                 .into();
 
             let mut entry = json!({
                 "path": s.file.path,
-                "health_score": round2(s.score),
+                "health_score": scoring::round2(s.score),
                 "category_deductions": cat_json,
                 "findings": findings_json,
             });
@@ -204,7 +204,7 @@ pub fn handle_with_freshness(
 
     if path.is_none()
         && component.is_none()
-        && let Ok(components) = build_component_scores(db, &findings_by_file)
+        && let Ok(components) = build_component_scores(db)
     {
         result["components"] = json!(components);
         result["total_components"] = json!(components.len());
@@ -216,62 +216,32 @@ pub fn handle_with_freshness(
     Ok(result)
 }
 
-fn build_component_scores(
-    db: &Db,
-    findings_by_file: &HashMap<i64, Vec<&HealthFindingRow>>,
-) -> Result<Vec<serde_json::Value>> {
-    let components = db.all_components()?;
-    let memberships = db.component_members_with_line_count()?;
-    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
+fn build_component_scores(db: &Db) -> Result<Vec<serde_json::Value>> {
+    let workspace = scoring::score_workspace(db)?;
 
-    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
-    for (comp_id, file_id, line_count) in &memberships {
-        comp_files
-            .entry(comp_id.as_str())
-            .or_default()
-            .push((*file_id, *line_count));
-    }
-
-    let mut comp_results = Vec::new();
-    for comp in &components {
-        let members = match comp_files.get(comp.id.as_str()) {
-            Some(m) => m,
-            None => continue,
-        };
-
-        let file_scores: Vec<(f64, i64)> = members
-            .iter()
-            .map(|&(file_id, line_count)| {
-                let findings: Vec<HealthFindingRow> = findings_by_file
-                    .get(&file_id)
-                    .map(|refs| refs.iter().map(|r| (*r).clone()).collect())
-                    .unwrap_or_default();
-                let score = scoring::score_file(&findings).score;
-                (score, line_count)
-            })
-            .collect();
-
-        let total_nloc: i64 = file_scores.iter().map(|(_, n)| n).sum();
-        let comp_score = scoring::score_component(&file_scores);
-
-        let mut entry = json!({
-            "id": comp.id,
-            "name": comp.name,
-            "health_score": round2(comp_score),
-            "member_count": members.len(),
-            "total_nloc": total_nloc,
-        });
-
-        if let Some(inst) = instability_map.get(&comp.id) {
-            entry["instability"] = json!({
-                "ce": inst.ce,
-                "ca": inst.ca,
-                "value": round2(inst.instability),
+    let mut comp_results: Vec<serde_json::Value> = workspace
+        .component_scores
+        .iter()
+        .map(|cs| {
+            let mut entry = json!({
+                "id": cs.component_id,
+                "name": cs.component_name,
+                "health_score": scoring::round2(cs.score),
+                "member_count": cs.member_count,
+                "total_nloc": cs.total_nloc,
             });
-        }
 
-        comp_results.push(entry);
-    }
+            if let Some(inst) = &cs.instability {
+                entry["instability"] = json!({
+                    "ce": inst.ce,
+                    "ca": inst.ca,
+                    "value": scoring::round2(inst.instability),
+                });
+            }
+
+            entry
+        })
+        .collect();
 
     comp_results.sort_by(|a, b| {
         let sa = a["health_score"].as_f64().unwrap_or(10.0);
@@ -280,8 +250,4 @@ fn build_component_scores(
     });
 
     Ok(comp_results)
-}
-
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
 }

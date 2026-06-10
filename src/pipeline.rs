@@ -899,7 +899,6 @@ struct SnapshotHealthData {
 }
 
 fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
-    use crate::db::HealthFindingRow;
     use crate::health::scoring;
 
     let files = db.all_files()?;
@@ -921,41 +920,37 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
         }
     }
 
-    let all_with_waivers = db.get_health_findings_with_waiver_status()?;
-    let active: Vec<HealthFindingRow> = all_with_waivers
-        .into_iter()
-        .filter(|(_, waived)| !waived)
-        .map(|(f, _)| f)
+    let workspace = scoring::score_workspace(db)?;
+    let file_score_map: HashMap<i64, &scoring::ScoredFile> = workspace
+        .file_scores
+        .iter()
+        .map(|fs| (fs.file_id, fs))
         .collect();
-
-    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
-    for f in active {
-        findings_by_file.entry(f.file_id).or_default().push(f);
-    }
 
     let mut file_scores = Vec::new();
     let mut health_sum = 0.0;
 
     for f in &files {
-        let findings = findings_by_file
-            .get(&f.id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-        let result = scoring::score_file(findings);
-
-        let mut cat_totals: HashMap<&str, f64> = HashMap::new();
-        for d in &result.deductions {
-            *cat_totals.entry(d.category.as_str()).or_default() += d.scaled_deduction;
-        }
-        let cat_json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
+        let (score, cat_json) = match file_score_map.get(&f.id) {
+            Some(sf) => {
+                let cat_totals: HashMap<&str, f64> = sf
+                    .category_totals
+                    .iter()
+                    .map(|(cat, &v)| (cat.as_str(), v))
+                    .collect();
+                let json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
+                (sf.score, json)
+            }
+            None => (10.0, "{}".into()),
+        };
 
         file_scores.push(SnapshotFileRow {
             file_id: f.id,
             file_path: f.path.clone(),
-            score: result.score,
+            score,
             category_scores: cat_json,
         });
-        health_sum += result.score;
+        health_sum += score;
     }
 
     let health_score = if files.is_empty() {
@@ -964,40 +959,17 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
         health_sum / files.len() as f64
     };
 
-    let components = db.all_components()?;
-    let memberships = db.component_members_with_line_count()?;
-    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
-    for (comp_id, file_id, lc) in &memberships {
-        comp_files
-            .entry(comp_id.as_str())
-            .or_default()
-            .push((*file_id, *lc));
-    }
-
-    let file_score_map: HashMap<i64, f64> = file_scores
-        .iter()
-        .map(|fs| (fs.file_id, fs.score))
+    let component_scores = workspace
+        .component_scores
+        .into_iter()
+        .map(|cs| SnapshotComponentRow {
+            component_id: cs.component_id,
+            component_name: cs.component_name,
+            score: cs.score,
+            member_count: cs.member_count as i64,
+            total_nloc: cs.total_nloc,
+        })
         .collect();
-
-    let mut component_scores = Vec::new();
-    for comp in &components {
-        let Some(members) = comp_files.get(comp.id.as_str()) else {
-            continue;
-        };
-        let pairs: Vec<(f64, i64)> = members
-            .iter()
-            .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&10.0), lc))
-            .collect();
-        let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();
-        let comp_score = scoring::score_component(&pairs);
-        component_scores.push(SnapshotComponentRow {
-            component_id: comp.id.clone(),
-            component_name: comp.name.clone(),
-            score: comp_score,
-            member_count: members.len() as i64,
-            total_nloc,
-        });
-    }
 
     let pattern_family_count = db.pattern_family_count()?;
 

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::db::Db;
 use crate::error::Result;
 
+#[derive(Debug, Clone)]
 pub struct ComponentInstability {
     pub ce: usize,
     pub ca: usize,

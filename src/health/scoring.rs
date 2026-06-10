@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
-use crate::db::HealthFindingRow;
+use crate::db::{Db, HealthFindingRow};
+use crate::error::Result;
 use crate::health::findings::{BiomarkerKind, HealthSeverity};
+use crate::health::instability::{self, ComponentInstability};
 
 const BASE_SCORE: f64 = 10.0;
 const MIN_SCORE: f64 = 1.0;
@@ -156,4 +158,104 @@ pub fn score_component(file_scores: &[(f64, i64)]) -> f64 {
         .map(|(score, nloc)| score * (*nloc as f64))
         .sum();
     (weighted_sum / total_nloc as f64).clamp(MIN_SCORE, MAX_SCORE)
+}
+
+pub fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+#[derive(Debug)]
+pub struct ScoredFile {
+    pub file_id: i64,
+    pub score: f64,
+    pub deductions: Vec<FindingDeduction>,
+    pub category_totals: HashMap<HealthCategory, f64>,
+}
+
+#[derive(Debug)]
+pub struct ScoredComponent {
+    pub component_id: String,
+    pub component_name: String,
+    pub score: f64,
+    pub member_count: usize,
+    pub total_nloc: i64,
+    pub instability: Option<ComponentInstability>,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceHealth {
+    pub file_scores: Vec<ScoredFile>,
+    pub component_scores: Vec<ScoredComponent>,
+}
+
+pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
+    let all_with_waivers = db.get_health_findings_with_waiver_status()?;
+
+    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
+    for (finding, waived) in all_with_waivers {
+        if !waived {
+            findings_by_file
+                .entry(finding.file_id)
+                .or_default()
+                .push(finding);
+        }
+    }
+
+    let mut file_scores = Vec::new();
+    for (&file_id, findings) in &findings_by_file {
+        let result = score_file(findings);
+        let mut category_totals: HashMap<HealthCategory, f64> = HashMap::new();
+        for d in &result.deductions {
+            *category_totals.entry(d.category).or_default() += d.scaled_deduction;
+        }
+        file_scores.push(ScoredFile {
+            file_id,
+            score: result.score,
+            deductions: result.deductions,
+            category_totals,
+        });
+    }
+
+    let components = db.all_components()?;
+    let memberships = db.component_members_with_line_count()?;
+    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
+
+    let file_score_map: HashMap<i64, f64> = file_scores
+        .iter()
+        .map(|fs| (fs.file_id, fs.score))
+        .collect();
+
+    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    for (comp_id, file_id, line_count) in &memberships {
+        comp_files
+            .entry(comp_id.as_str())
+            .or_default()
+            .push((*file_id, *line_count));
+    }
+
+    let mut component_scores = Vec::new();
+    for comp in &components {
+        let Some(members) = comp_files.get(comp.id.as_str()) else {
+            continue;
+        };
+        let pairs: Vec<(f64, i64)> = members
+            .iter()
+            .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&BASE_SCORE), lc))
+            .collect();
+        let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();
+        let comp_score = score_component(&pairs);
+        component_scores.push(ScoredComponent {
+            component_id: comp.id.clone(),
+            component_name: comp.name.clone(),
+            score: comp_score,
+            member_count: members.len(),
+            total_nloc,
+            instability: instability_map.get(&comp.id).cloned(),
+        });
+    }
+
+    Ok(WorkspaceHealth {
+        file_scores,
+        component_scores,
+    })
 }
