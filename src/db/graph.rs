@@ -127,6 +127,49 @@ impl Db {
         Ok(rows?)
     }
 
+    pub fn cochange_for_file(
+        &self,
+        file_id: i64,
+        threshold: f64,
+    ) -> Result<Vec<(String, f64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "WITH target_commits AS (
+                SELECT commit_hash FROM commit_files WHERE file_id = ?1
+            ),
+            target_count AS (
+                SELECT COUNT(*) AS cnt FROM target_commits
+            ),
+            cochanged AS (
+                SELECT cf.file_id, COUNT(*) AS shared_cnt
+                FROM commit_files cf
+                JOIN target_commits tc ON cf.commit_hash = tc.commit_hash
+                WHERE cf.file_id != ?1
+                GROUP BY cf.file_id
+            ),
+            file_counts AS (
+                SELECT file_id, COUNT(*) AS cnt FROM commit_files GROUP BY file_id
+            )
+            SELECT f.path, c.shared_cnt,
+                   CAST(c.shared_cnt AS REAL) / (tc.cnt + fc.cnt - c.shared_cnt) AS jaccard
+            FROM cochanged c
+            JOIN files f ON f.id = c.file_id
+            JOIN target_count tc
+            JOIN file_counts fc ON fc.file_id = c.file_id
+            WHERE CAST(c.shared_cnt AS REAL) / (tc.cnt + fc.cnt - c.shared_cnt) >= ?2
+            ORDER BY jaccard DESC",
+        )?;
+        let rows: rusqlite::Result<Vec<(String, f64, i64)>> = stmt
+            .query_map(params![file_id, threshold], |row| {
+                let path: String = row.get(0)?;
+                let shared: i64 = row.get(1)?;
+                let jaccard: f64 = row.get(2)?;
+                Ok((path, jaccard, shared))
+            })?
+            .collect();
+        Ok(rows?)
+    }
+
     pub fn commit_file_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
         Ok(conn.query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))?)

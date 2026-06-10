@@ -1,46 +1,41 @@
-use std::path::Path;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::error::{Result, SutraError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CochangeArgs {
     pub workspace: String,
     pub path: String,
     #[serde(default)]
-    pub window_days: Option<u32>,
+    pub threshold: Option<f64>,
 }
-use crate::error::Result;
-use crate::git;
 
-pub fn handle(
-    db: &Db,
-    workspace_root: &Path,
-    path: &str,
-    window_days: Option<u32>,
-) -> Result<serde_json::Value> {
-    let window_days = window_days.unwrap_or(90);
+pub fn handle(db: &Db, path: &str, threshold: Option<f64>) -> Result<serde_json::Value> {
+    let threshold = threshold.unwrap_or(0.1);
 
-    let cochanged = git::git_cochange_files(workspace_root, path, window_days)?;
+    let file = db
+        .file_by_path(path)?
+        .ok_or_else(|| SutraError::Internal(format!("file not in index: {path}")))?;
 
-    let entries: Vec<serde_json::Value> = cochanged
+    let partners = db.cochange_for_file(file.id, threshold)?;
+
+    let entries: Vec<serde_json::Value> = partners
         .into_iter()
-        .map(|(co_path, count)| {
-            let in_index = db.file_by_path(&co_path).ok().flatten().is_some();
+        .map(|(co_path, jaccard, shared)| {
             json!({
                 "path": co_path,
-                "count": count,
-                "in_index": in_index,
+                "jaccard": jaccard,
+                "shared_commits": shared,
             })
         })
         .collect();
 
     Ok(json!({
         "path": path,
-        "window_days": window_days,
+        "threshold": threshold,
         "cochanged": entries,
     }))
 }

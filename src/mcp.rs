@@ -686,10 +686,9 @@ impl SutraServer {
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        let ws = self.resolve_workspace(&args.workspace)?;
         let db = self.get_db(&args.workspace)?;
-        let result = tools::cochange::handle(&db, &ws.root, &args.path, args.window_days)
-            .map_err(sutra_to_rmcp)?;
+        let result =
+            tools::cochange::handle(&db, &args.path, args.threshold).map_err(sutra_to_rmcp)?;
         self.wrap_response(&db, result)
     }
 

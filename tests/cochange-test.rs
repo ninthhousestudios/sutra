@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use sutra::db::{CommitRow, Db};
-use sutra::git::{git_cochange_files, git_commit_files};
+use sutra::git::git_commit_files;
 
 fn sutra_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -11,36 +11,6 @@ fn setup_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
     (dir, db)
-}
-
-#[test]
-fn cochange_returns_ok_for_known_file() {
-    let result = git_cochange_files(sutra_root(), "src/git.rs", 90);
-    assert!(result.is_ok(), "git_cochange_files failed: {result:?}");
-}
-
-#[test]
-fn cochange_result_is_sorted_descending() {
-    let pairs = git_cochange_files(sutra_root(), "src/mcp.rs", 180).unwrap();
-    for window in pairs.windows(2) {
-        assert!(
-            window[0].1 >= window[1].1,
-            "not sorted: {} ({}) before {} ({})",
-            window[0].0,
-            window[0].1,
-            window[1].0,
-            window[1].1,
-        );
-    }
-}
-
-#[test]
-fn cochange_excludes_queried_file() {
-    let pairs = git_cochange_files(sutra_root(), "src/git.rs", 180).unwrap();
-    assert!(
-        !pairs.iter().any(|(p, _)| p == "src/git.rs"),
-        "queried file should be excluded from results"
-    );
 }
 
 #[test]
@@ -70,6 +40,186 @@ fn git_commit_files_has_unique_hash_per_group() {
             inserted,
             "duplicate (hash, path) pair: ({}, {})",
             cf.hash, cf.path
+        );
+    }
+}
+
+#[test]
+fn cochange_for_file_returns_partners() {
+    let (_dir, db) = setup_db();
+
+    let f1 = db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    let f2 = db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    let f3 = db.upsert_file("src/c.rs", "rust", "h3", 10, true).unwrap();
+
+    let commits = vec![
+        CommitRow {
+            hash: "c1".into(),
+            committed_at: 1000,
+            author: "a@b.c".into(),
+        },
+        CommitRow {
+            hash: "c2".into(),
+            committed_at: 1001,
+            author: "a@b.c".into(),
+        },
+        CommitRow {
+            hash: "c3".into(),
+            committed_at: 1002,
+            author: "a@b.c".into(),
+        },
+    ];
+    // f1 and f2 share c1, c2; f1 and f3 share c1 only; f1 also in c3 alone
+    let pairs = vec![
+        ("c1".into(), f1),
+        ("c1".into(), f2),
+        ("c1".into(), f3),
+        ("c2".into(), f1),
+        ("c2".into(), f2),
+        ("c3".into(), f1),
+    ];
+    db.replace_commit_files(&commits, &pairs).unwrap();
+
+    let partners = db.cochange_for_file(f1, 0.1).unwrap();
+    assert!(!partners.is_empty(), "should find cochange partners");
+
+    let f2_entry = partners.iter().find(|(p, _, _)| p == "src/b.rs");
+    assert!(f2_entry.is_some(), "f2 should be a partner of f1");
+    let (_, jaccard, shared) = f2_entry.unwrap();
+    // shared=2, f1 has 3 commits, f2 has 2 commits → jaccard = 2/(3+2-2) = 2/3 ≈ 0.667
+    assert_eq!(*shared, 2);
+    assert!(
+        (*jaccard - 2.0 / 3.0).abs() < 0.01,
+        "jaccard should be ~0.667, got {jaccard}"
+    );
+
+    let f3_entry = partners.iter().find(|(p, _, _)| p == "src/c.rs");
+    assert!(f3_entry.is_some(), "f3 should be a partner of f1");
+    let (_, jaccard, shared) = f3_entry.unwrap();
+    // shared=1, f1 has 3, f3 has 1 → jaccard = 1/(3+1-1) = 1/3 ≈ 0.333
+    assert_eq!(*shared, 1);
+    assert!(
+        (*jaccard - 1.0 / 3.0).abs() < 0.01,
+        "jaccard should be ~0.333, got {jaccard}"
+    );
+}
+
+#[test]
+fn cochange_for_file_excludes_self() {
+    let (_dir, db) = setup_db();
+
+    let f1 = db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    let f2 = db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+
+    let commits = vec![CommitRow {
+        hash: "c1".into(),
+        committed_at: 1000,
+        author: "a@b.c".into(),
+    }];
+    let pairs = vec![("c1".into(), f1), ("c1".into(), f2)];
+    db.replace_commit_files(&commits, &pairs).unwrap();
+
+    let partners = db.cochange_for_file(f1, 0.0).unwrap();
+    assert!(
+        !partners.iter().any(|(p, _, _)| p == "src/a.rs"),
+        "queried file should be excluded from results"
+    );
+}
+
+#[test]
+fn cochange_for_file_respects_threshold() {
+    let (_dir, db) = setup_db();
+
+    let f1 = db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    let f2 = db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+
+    // f1 has 10 commits, f2 has 10, they share 1 → jaccard ≈ 0.053
+    let mut commits = Vec::new();
+    let mut pairs = Vec::new();
+    for i in 0..10 {
+        let hash = format!("a{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: i,
+            author: "x".into(),
+        });
+        pairs.push((hash, f1));
+    }
+    for i in 0..10 {
+        let hash = format!("b{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: i,
+            author: "x".into(),
+        });
+        pairs.push((hash, f2));
+    }
+    commits.push(CommitRow {
+        hash: "shared".into(),
+        committed_at: 100,
+        author: "x".into(),
+    });
+    pairs.push(("shared".into(), f1));
+    pairs.push(("shared".into(), f2));
+    db.replace_commit_files(&commits, &pairs).unwrap();
+
+    let partners = db.cochange_for_file(f1, 0.5).unwrap();
+    assert!(
+        partners.is_empty(),
+        "low-jaccard pair should be excluded at threshold 0.5"
+    );
+
+    let partners_low = db.cochange_for_file(f1, 0.01).unwrap();
+    assert!(
+        !partners_low.is_empty(),
+        "pair should appear with a low enough threshold"
+    );
+}
+
+#[test]
+fn cochange_for_file_sorted_by_jaccard_desc() {
+    let (_dir, db) = setup_db();
+
+    let f1 = db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    let f2 = db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    let f3 = db.upsert_file("src/c.rs", "rust", "h3", 10, true).unwrap();
+
+    let commits = vec![
+        CommitRow {
+            hash: "c1".into(),
+            committed_at: 1000,
+            author: "a@b.c".into(),
+        },
+        CommitRow {
+            hash: "c2".into(),
+            committed_at: 1001,
+            author: "a@b.c".into(),
+        },
+        CommitRow {
+            hash: "c3".into(),
+            committed_at: 1002,
+            author: "a@b.c".into(),
+        },
+    ];
+    let pairs = vec![
+        ("c1".into(), f1),
+        ("c1".into(), f2),
+        ("c1".into(), f3),
+        ("c2".into(), f1),
+        ("c2".into(), f2),
+        ("c3".into(), f1),
+    ];
+    db.replace_commit_files(&commits, &pairs).unwrap();
+
+    let partners = db.cochange_for_file(f1, 0.1).unwrap();
+    for window in partners.windows(2) {
+        assert!(
+            window[0].1 >= window[1].1,
+            "not sorted by jaccard: {} ({}) before {} ({})",
+            window[0].0,
+            window[0].1,
+            window[1].0,
+            window[1].1,
         );
     }
 }
