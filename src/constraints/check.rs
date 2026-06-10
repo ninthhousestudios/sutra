@@ -70,9 +70,7 @@ pub fn evaluate(
         FactsSource::DdBacked { db, dd_engine } => {
             evaluate_dd(db, *dd_engine, workspace_root, scope)
         }
-        FactsSource::RawConn(_conn) => {
-            todo!("RawConn path — commit 4")
-        }
+        FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope),
     }
 }
 
@@ -299,6 +297,201 @@ fn evaluate_dd(
         resolved,
         parse_errors,
     })
+}
+
+fn evaluate_raw(
+    conn: &rusqlite::Connection,
+    workspace_root: &Path,
+    scope: EvalScope,
+) -> Result<CheckOutcome> {
+    use rusqlite::params;
+
+    let loaded_rules = rules::load_rules(workspace_root)?;
+    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+
+    let parse_error_findings: Vec<ConstraintFinding> = parse_errors
+        .iter()
+        .map(|e| ConstraintFinding {
+            constraint_id: format!("parse-error-{}", e.index),
+            constraint_name: e.name.clone(),
+            constraint_kind: "parse_error".to_string(),
+            severity: Severity::Blocking,
+            provenance: None,
+            from_path: String::new(),
+            to_path: String::new(),
+            component_context: None,
+            detail: format!(
+                "malformed [[constraint]] at index {}{}: {}",
+                e.index,
+                e.name
+                    .as_deref()
+                    .map(|n| format!(" (name: {n})"))
+                    .unwrap_or_default(),
+                e.error,
+            ),
+            delta: FindingDelta::Unknown,
+        })
+        .collect();
+
+    let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
+        matches!(
+            c.kind,
+            rules::ConstraintKind::ForbiddenDep { .. } | rules::ConstraintKind::Boundary { .. }
+        )
+    });
+    if !has_forbidden_or_boundary {
+        return Ok(CheckOutcome {
+            active: parse_error_findings,
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    let edges: Vec<(i64, i64)> = match &scope {
+        EvalScope::SingleFile(file_id) => {
+            let mut stmt = conn.prepare(
+                "SELECT file_id, resolved_file_id FROM imports \
+                 WHERE (file_id = ?1 OR resolved_file_id = ?1) \
+                 AND resolved_file_id IS NOT NULL",
+            )?;
+            stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        }
+        EvalScope::Edges(e) => e.to_vec(),
+        _ => {
+            return Err(crate::error::SutraError::Internal(
+                "RawConn only supports SingleFile and Edges scopes".into(),
+            ));
+        }
+    };
+
+    if edges.is_empty() {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    // Build path map for referenced file IDs
+    let mut needed_ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    needed_ids.sort_unstable();
+    needed_ids.dedup();
+
+    let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let path_map: HashMap<i64, String> = stmt
+        .query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let (file_to_component, comp_name_to_id) = build_component_maps_raw(conn)?;
+
+    // Load waivers scoped to relevant paths
+    let relevant_paths: HashSet<&str> = path_map.values().map(|p| p.as_str()).collect();
+    let waivers: Vec<(String, String)> = conn
+        .prepare("SELECT constraint_id, file_path FROM constraint_waivers")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
+        .collect();
+
+    let mut active = Vec::new();
+    let mut waived = Vec::new();
+
+    for (from_id, to_id) in &edges {
+        let from = match path_map.get(from_id) {
+            Some(p) => p,
+            None => continue,
+        };
+        let to = match path_map.get(to_id) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        if let Some(c) = constraints::find_matching_constraint(
+            &all_constraints,
+            from,
+            to,
+            &file_to_component,
+            &comp_name_to_id,
+        ) {
+            let is_waived = waivers
+                .iter()
+                .any(|(wc_id, wf_path)| wc_id == &c.id && wf_path == from);
+
+            let finding = make_finding(c, from, to, &file_to_component, FindingDelta::Unknown);
+
+            if is_waived {
+                let waiver_row = conn
+                    .prepare(
+                        "SELECT rationale, waived_by FROM constraint_waivers \
+                         WHERE constraint_id = ?1 AND file_path = ?2 LIMIT 1",
+                    )
+                    .ok()
+                    .and_then(|mut s| {
+                        s.query_row(params![c.id, from], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .ok()
+                    });
+                let (rationale, waived_by) =
+                    waiver_row.unwrap_or_else(|| ("waived".to_string(), String::new()));
+                waived.push(WaivedFinding {
+                    finding,
+                    rationale,
+                    waived_by,
+                });
+            } else {
+                active.push(finding);
+            }
+        }
+    }
+
+    let mut all_active = parse_error_findings;
+    all_active.append(&mut active);
+
+    Ok(CheckOutcome {
+        active: all_active,
+        waived,
+        parse_errors,
+        ..Default::default()
+    })
+}
+
+fn build_component_maps_raw(
+    conn: &rusqlite::Connection,
+) -> Result<(HashMap<String, String>, HashMap<String, String>)> {
+    let mut file_to_component: HashMap<String, String> = HashMap::new();
+    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+
+    let mut stmt =
+        conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, name, json) = row?;
+        comp_name_to_id.insert(name, id.clone());
+        if let Some(s) = json
+            && let Ok(paths) = serde_json::from_str::<Vec<String>>(&s)
+        {
+            for path in paths {
+                file_to_component.insert(path, id.clone());
+            }
+        }
+    }
+
+    Ok((file_to_component, comp_name_to_id))
 }
 
 fn make_finding(
