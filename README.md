@@ -281,11 +281,13 @@ sutra_trend()                      → health changes between snapshots
 
 ## Guard (real-time constraint enforcement)
 
-`sutra-guard` is a separate binary that runs as a Claude Code `PreToolUse` hook. When an agent is about to edit a file, the guard checks the file's import edges against constraint rules:
+`sutra-guard` is a separate binary that runs as a Claude Code `PreToolUse` hook. When an agent is about to edit a file, the guard parses the proposed content to extract would-be import edges and checks them against constraint rules — blocking violations at introduce time, before they land in the index:
 
 - **blocking** violations → edit denied with explanation
 - **advisory/informational** → warning on stderr, edit proceeds
-- **waived** → silent pass
+- **waived** → silent pass (from-file scoped: waiver on the importing file, not the target)
+
+An edit that removes a blocking violation is always allowed through. If the guard cannot parse the proposed content (unsupported language, syntax error), it falls back to checking the file's current indexed edges.
 
 Configure in `.claude/settings.json`:
 

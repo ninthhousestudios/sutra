@@ -49,7 +49,7 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     Ok(resolved_count)
 }
 
-fn read_crate_name(workspace_root: &Path) -> Option<String> {
+pub fn read_crate_name(workspace_root: &Path) -> Option<String> {
     let cargo = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
     for line in cargo.lines() {
         let trimmed = line.trim();
@@ -68,7 +68,7 @@ fn read_crate_name(workspace_root: &Path) -> Option<String> {
 
 /// Convert an import path into module segments relative to the crate root.
 /// Returns `None` for external crate imports.
-fn normalize_to_crate_segments(
+pub fn normalize_to_crate_segments(
     imported_path: &str,
     importing_file: &str,
     crate_name: Option<&str>,
@@ -138,7 +138,7 @@ fn file_to_module_segments(file_path: &str) -> Vec<String> {
 /// Tries longest match first: `["db", "conventions", "ConventionRow"]`
 /// → `src/db/conventions/ConventionRow.rs` (no)
 /// → `src/db/conventions.rs` (yes!)
-fn resolve_segments(segments: &[String], path_to_id: &HashMap<&str, i64>) -> Option<i64> {
+pub fn resolve_segments(segments: &[String], path_to_id: &HashMap<&str, i64>) -> Option<i64> {
     for depth in (1..=segments.len()).rev() {
         let joined = segments[..depth]
             .iter()

@@ -144,8 +144,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         hot_symbols,
     };
 
-    // Constraint check runs regardless of additive-edit status
-    let constraint_findings = guard::check_file_constraints(&conn, &project_root, file_id);
+    // Constraint check: try proposed-content analysis first, fall back to indexed edges
+    let constraint_findings = if let Some(proposed) =
+        guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
+    {
+        if let Some(proposed_outgoing) = guard::extract_proposed_outgoing_edges(
+            &conn,
+            &project_root,
+            &rel_path,
+            file_id,
+            &proposed,
+        ) {
+            guard::check_proposed_file_constraints(
+                &conn,
+                &project_root,
+                file_id,
+                &proposed_outgoing,
+            )
+        } else {
+            guard::check_file_constraints(&conn, &project_root, file_id)
+        }
+    } else {
+        guard::check_file_constraints(&conn, &project_root, file_id)
+    };
 
     let blocking: Vec<_> = constraint_findings
         .iter()
