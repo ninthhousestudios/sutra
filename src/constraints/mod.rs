@@ -1,3 +1,4 @@
+pub mod check;
 mod engine;
 mod resolver;
 mod worker;
