@@ -229,31 +229,30 @@ impl Db {
     }
 
     pub fn get_health_findings_with_waiver_status(&self) -> Result<Vec<(HealthFindingRow, bool)>> {
+        use crate::waivers::{self, ResolvedHealthFinding};
+
         let findings = self.get_health_findings(None, None)?;
         let waivers = self.get_health_waivers()?;
 
-        let results = findings
+        let resolved: Vec<ResolvedHealthFinding> = findings
             .into_iter()
             .map(|f| {
-                let file_path = self.file_path_by_id(f.file_id);
+                let file_path = self.file_path_by_id(f.file_id).unwrap_or_default();
                 let symbol_name = f
                     .symbol_id
                     .and_then(|sid| self.symbol_qualified_name(sid).ok());
-                let is_waived = if let Ok(ref path) = file_path {
-                    waivers.iter().any(|w| {
-                        w.biomarker_kind == f.biomarker_kind
-                            && w.file_path == *path
-                            && match &w.symbol_qualified_name {
-                                None => true,
-                                Some(wname) => symbol_name.as_deref() == Some(wname.as_str()),
-                            }
-                    })
-                } else {
-                    false
-                };
-                (f, is_waived)
+                ResolvedHealthFinding {
+                    finding: f,
+                    file_path,
+                    symbol_name,
+                }
             })
             .collect();
+
+        let (active, waived) = waivers::partition(resolved, &waivers);
+        let mut results: Vec<(HealthFindingRow, bool)> =
+            active.into_iter().map(|r| (r.finding, false)).collect();
+        results.extend(waived.into_iter().map(|w| (w.finding.finding, true)));
         Ok(results)
     }
 
@@ -275,5 +274,23 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(path)
+    }
+
+    pub fn reconcile_orphaned_health_waivers(&self) -> Result<Vec<HealthWaiverRow>> {
+        let conn = self.conn.lock();
+        let sql = format!(
+            "SELECT {WAIVER_SELECT_COLS} FROM health_waivers w \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM health_findings hf \
+                 JOIN files f ON f.id = hf.file_id \
+                 WHERE hf.biomarker_kind = w.biomarker_kind \
+                 AND f.path = w.file_path \
+             ) ORDER BY w.created_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([], map_waiver_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }

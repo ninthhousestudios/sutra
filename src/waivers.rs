@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::constraints::check::ConstraintFinding;
-use crate::db::ConstraintWaiverRow;
+use crate::db::{ConstraintWaiverRow, HealthFindingRow, HealthWaiverRow};
 use crate::tools::review::ConventionViolation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,5 +94,32 @@ impl Waivable for ConventionViolation {
                 .get(&(cid.to_string(), sym.to_string(), cmp.to_string()))
         })
         .cloned()
+    }
+}
+
+pub struct ResolvedHealthFinding {
+    pub finding: HealthFindingRow,
+    pub file_path: String,
+    pub symbol_name: Option<String>,
+}
+
+impl Waivable for ResolvedHealthFinding {
+    type WaiverSet = [HealthWaiverRow];
+
+    fn find_waiver(&self, waivers: &[HealthWaiverRow]) -> Option<WaiverMeta> {
+        waivers
+            .iter()
+            .find(|w| {
+                w.biomarker_kind == self.finding.biomarker_kind
+                    && w.file_path == self.file_path
+                    && match &w.symbol_qualified_name {
+                        None => true,
+                        Some(wname) => self.symbol_name.as_deref() == Some(wname.as_str()),
+                    }
+            })
+            .map(|w| WaiverMeta {
+                rationale: w.rationale.clone(),
+                waived_by: w.waived_by.clone(),
+            })
     }
 }

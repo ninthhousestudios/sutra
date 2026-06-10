@@ -308,6 +308,35 @@ fn waiver_crud() {
     assert!(waivers.is_empty());
 }
 
+#[test]
+fn reconcile_orphaned_health_waivers() {
+    let (_dir, db) = setup_db();
+    let file_id = seed_file(&db, "src/foo.rs");
+    let sym_id = seed_fn(&db, file_id, "foo::bar", "bar", Some(6));
+
+    let findings = vec![HealthFinding {
+        file_id,
+        symbol_id: Some(sym_id),
+        biomarker_kind: BiomarkerKind::NestedComplexity,
+        severity: HealthSeverity::Advisory,
+        confidence: 0.9,
+        provenance: "test".into(),
+        metric_value: 6.0,
+        threshold: 4.0,
+        detail: "nesting 6".into(),
+    }];
+    db.replace_health_findings(&findings).unwrap();
+
+    db.create_health_waiver("nested_complexity", "src/foo.rs", None, "ok", "josh")
+        .unwrap();
+    db.create_health_waiver("nested_complexity", "src/gone.rs", None, "stale", "josh")
+        .unwrap();
+
+    let orphans = db.reconcile_orphaned_health_waivers().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].file_path, "src/gone.rs");
+}
+
 // --- Scoring ---
 
 fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {
