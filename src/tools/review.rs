@@ -15,7 +15,8 @@ use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
-use crate::tools::scoring::{self, ChurnMap, Signal};
+use crate::tools::change_signals::{self, ChurnMap};
+use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
@@ -112,8 +113,8 @@ pub fn handle(
     };
 
     let churn = ChurnMap {
-        counts: git::git_churn(workspace_root, scoring::CHURN_WINDOW_DAYS)?,
-        window_days: scoring::CHURN_WINDOW_DAYS,
+        counts: git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?,
+        window_days: change_signals::CHURN_WINDOW_DAYS,
     };
 
     let registry = crate::parser::adapter::default_registry();
@@ -150,7 +151,7 @@ pub fn handle(
         obj.insert("diff_mode".into(), json!(mode));
         obj.insert(
             "churn_window_days".into(),
-            json!(scoring::CHURN_WINDOW_DAYS),
+            json!(change_signals::CHURN_WINDOW_DAYS),
         );
         if let Some(err) = findings_error {
             obj.insert("findings_degraded".into(), json!(true));
@@ -545,114 +546,6 @@ pub fn build_findings(
     })
 }
 
-struct ChangeStats {
-    changed_files: Vec<serde_json::Value>,
-    changed_symbols: Vec<serde_json::Value>,
-    symbol_ids: Vec<i64>,
-    total_blast: i64,
-    max_cognitive: i64,
-    total_churn: u32,
-    hotspot_files: u32,
-}
-
-fn gather_change_stats(
-    db: &Db,
-    workspace_root: &Path,
-    changed_paths: &[String],
-    churn: &ChurnMap,
-) -> Result<ChangeStats> {
-    let mut stats = ChangeStats {
-        changed_files: Vec::new(),
-        changed_symbols: Vec::new(),
-        symbol_ids: Vec::new(),
-        total_blast: 0,
-        max_cognitive: 0,
-        total_churn: 0,
-        hotspot_files: 0,
-    };
-
-    for path in changed_paths {
-        let file_churn = churn.counts.get(path).copied().unwrap_or(0);
-        stats.total_churn += file_churn;
-
-        if let Some(file) = db.file_by_path(path)? {
-            let fl: FreshnessLevel =
-                freshness::check_file(workspace_root, path, &file.last_parsed).into();
-            stats.total_blast += file.blast_radius;
-            if file_churn > 5 && file.blast_radius > 10 {
-                stats.hotspot_files += 1;
-            }
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                stats.symbol_ids.push(s.id);
-                let cog = s.cognitive.unwrap_or(0);
-                if cog > stats.max_cognitive {
-                    stats.max_cognitive = cog;
-                }
-                stats.changed_symbols.push(json!({
-                    "symbol": s.qualified_name, "file": path, "cognitive": cog,
-                }));
-            }
-            stats.changed_files.push(json!({
-                "path": path, "blast_radius": file.blast_radius, "symbol_count": syms.len(),
-                "_freshness": fl,
-            }));
-        } else {
-            stats.changed_files.push(json!({
-                "path": path, "blast_radius": 0, "symbol_count": 0,
-                "_freshness": FreshnessLevel::StaleIndex,
-            }));
-        }
-    }
-    Ok(stats)
-}
-
-#[allow(clippy::type_complexity)]
-fn gather_affected(
-    db: &Db,
-    symbol_ids: &[i64],
-    changed_paths: &[String],
-) -> Result<(Vec<(String, i64)>, Vec<(String, String, i64, i64)>)> {
-    let affected_file_ids = if symbol_ids.is_empty() {
-        Vec::new()
-    } else {
-        db.find_files_referencing_symbols(symbol_ids)?
-    };
-
-    let changed_set: std::collections::HashSet<&str> =
-        changed_paths.iter().map(|p| p.as_str()).collect();
-
-    let mut files = Vec::new();
-    let mut symbols = Vec::new();
-
-    for fid in &affected_file_ids {
-        if let Some(file) = db.file_by_id(*fid)? {
-            if changed_set.contains(file.path.as_str()) {
-                continue;
-            }
-            for s in db.find_symbols_by_file(file.id)? {
-                symbols.push((
-                    s.qualified_name.clone(),
-                    file.path.clone(),
-                    file.blast_radius,
-                    s.cognitive.unwrap_or(0),
-                ));
-            }
-            files.push((file.path.clone(), file.blast_radius));
-        }
-    }
-
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    files.dedup_by(|a, b| a.0 == b.0);
-    files.sort_by_key(|x| std::cmp::Reverse(x.1));
-
-    symbols.sort_by(|a, b| a.0.cmp(&b.0));
-    symbols.dedup_by(|a, b| a.0 == b.0);
-    symbols.sort_by_key(|x| std::cmp::Reverse(x.2));
-
-    Ok((files, symbols))
-}
-
 fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel {
     db.file_by_path(path)
         .ok()
@@ -739,7 +632,7 @@ fn build_recommended_reads(
     db: &Db,
     workspace_root: &Path,
     findings: &ReviewFindings,
-    affected_files: &[(String, i64)],
+    affected_files: &[change_signals::AffectedFile],
     changed_files: &[serde_json::Value],
     behavioral_partners: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
@@ -751,8 +644,8 @@ fn build_recommended_reads(
         }
         let blast = affected_files
             .iter()
-            .find(|(p, _)| p == &v.file)
-            .map(|(_, b)| *b)
+            .find(|a| a.path == v.file)
+            .map(|a| a.blast_radius)
             .or_else(|| {
                 changed_files
                     .iter()
@@ -786,9 +679,9 @@ fn build_recommended_reads(
             reads.push((partner.to_string(), blast, false, true));
         }
     }
-    for (path, blast) in affected_files {
-        if !seen.contains(path) {
-            reads.push((path.clone(), *blast, false, false));
+    for a in affected_files {
+        if !seen.contains(&a.path) {
+            reads.push((a.path.clone(), a.blast_radius, false, false));
         }
     }
     reads.truncate(MAX_READS);
@@ -835,25 +728,52 @@ pub fn compute(
         }));
     }
 
-    let stats = gather_change_stats(db, workspace_root, changed_paths, churn)?;
-    let (affected_files, affected_symbols) = gather_affected(db, &stats.symbol_ids, changed_paths)?;
+    let signals = change_signals::gather(db, changed_paths, churn)?;
 
-    let total_affected_files = affected_files.len();
-    let total_affected_symbols = affected_symbols.len();
-
-    let affected_files_out: Vec<_> = affected_files
+    let changed_files_out: Vec<_> = signals
+        .per_file
         .iter()
-        .take(MAX_AFFECTED)
-        .map(|(path, blast)| {
-            let fl = file_freshness(db, workspace_root, path);
-            json!({ "path": path, "blast_radius": blast, "_freshness": fl })
+        .map(|f| {
+            let fl = file_freshness(db, workspace_root, &f.path);
+            json!({
+                "path": f.path, "blast_radius": f.blast_radius,
+                "symbol_count": f.symbols.len(), "_freshness": fl,
+            })
         })
         .collect();
-    let affected_symbols_out: Vec<_> = affected_symbols.iter().take(MAX_AFFECTED)
-        .map(|(sym, file, blast, cog)| {
-            let fl = file_freshness(db, workspace_root, file);
-            json!({ "symbol": sym, "file": file, "blast_radius": blast, "cognitive": cog, "_freshness": fl })
-        }).collect();
+    let changed_symbols_out: Vec<_> = signals
+        .per_file
+        .iter()
+        .flat_map(|f| {
+            f.symbols.iter().map(|s| {
+                json!({
+                    "symbol": s.qualified_name, "file": f.path, "cognitive": s.cognitive,
+                })
+            })
+        })
+        .collect();
+
+    let total_affected_files = signals.affected_files.len();
+    let total_affected_symbols = signals.affected_symbols.len();
+
+    let affected_files_out: Vec<_> = signals
+        .affected_files
+        .iter()
+        .take(MAX_AFFECTED)
+        .map(|a| {
+            let fl = file_freshness(db, workspace_root, &a.path);
+            json!({ "path": a.path, "blast_radius": a.blast_radius, "_freshness": fl })
+        })
+        .collect();
+    let affected_symbols_out: Vec<_> = signals
+        .affected_symbols
+        .iter()
+        .take(MAX_AFFECTED)
+        .map(|a| {
+            let fl = file_freshness(db, workspace_root, &a.file);
+            json!({ "symbol": a.qualified_name, "file": a.file, "blast_radius": a.blast_radius, "cognitive": a.cognitive, "_freshness": fl })
+        })
+        .collect();
 
     let constraint_violations_out: Vec<_> = findings
         .constraint_violations
@@ -992,11 +912,14 @@ pub fn compute(
         .collect();
 
     let file_count = changed_paths.len();
-    let blast_score = scoring::normalize(stats.total_blast as f64, scoring::BLAST_NORM);
-    let complexity_score = scoring::normalize(stats.max_cognitive as f64, scoring::COMPLEXITY_NORM);
+    let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
+    let complexity_score = scoring::normalize(
+        signals.max_cognitive as f64,
+        change_signals::COMPLEXITY_NORM,
+    );
     let hotspot_score =
-        scoring::normalize(stats.hotspot_files as f64, (file_count as f64).max(1.0));
-    let churn_score = scoring::normalize(stats.total_churn as f64, scoring::CHURN_NORM);
+        scoring::normalize(signals.hotspot_files as f64, (file_count as f64).max(1.0));
+    let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
     let convention_score = scoring::normalize(findings.convention_violations.len() as f64, 5.0);
 
     let risk_score = scoring::weighted_score(&[
@@ -1027,14 +950,14 @@ pub fn compute(
         db,
         workspace_root,
         findings,
-        &affected_files,
-        &stats.changed_files,
+        &signals.affected_files,
+        &changed_files_out,
         &behavioral,
     );
 
     let mut result = json!({
-        "changed_files": stats.changed_files,
-        "changed_symbols": stats.changed_symbols,
+        "changed_files": changed_files_out,
+        "changed_symbols": changed_symbols_out,
         "affected_files": affected_files_out,
         "affected_symbols": affected_symbols_out,
         "affected_total": {
