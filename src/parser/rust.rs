@@ -616,6 +616,19 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         });
     }
 
+    // Method names in call position: foo.method()
+    if kind == "field_identifier"
+        && is_method_call_name(node)
+        && let Ok(name) = node.utf8_text(src)
+    {
+        refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind: RefContextKind::Call,
+        });
+    }
+
     // Recurse into children
     if cursor.goto_first_child() {
         loop {
@@ -655,6 +668,13 @@ fn is_definition_name(node: Node) -> bool {
     false
 }
 
+fn is_method_call_name(node: Node) -> bool {
+    node.parent()
+        .filter(|p| p.kind() == "field_expression")
+        .and_then(|p| p.parent())
+        .is_some_and(|gp| gp.kind() == "call_expression")
+}
+
 /// Classify a reference by its parent context.
 fn classify_ref_context(node: Node) -> RefContextKind {
     if let Some(parent) = node.parent() {
@@ -667,7 +687,9 @@ fn classify_ref_context(node: Node) -> RefContextKind {
             {
                 return RefContextKind::Import;
             }
-            "field_expression" => return RefContextKind::FieldAccess,
+            "field_expression" if node.kind() == "field_identifier" => {
+                return RefContextKind::FieldAccess;
+            }
             _ => {}
         }
 
@@ -891,5 +913,79 @@ mod tests {
         let src = "pub fn normal() {}";
         let result = parse_rust(src, "test.rs").unwrap();
         assert_eq!(result.symbols[0].flags, 0);
+    }
+
+    #[test]
+    fn method_call_extracts_call_ref() {
+        let src = "fn go(db: Db) { db.query(); }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let query_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "query")
+            .expect("method name should be extracted");
+        assert_eq!(query_ref.context_kind, RefContextKind::Call);
+    }
+
+    #[test]
+    fn receiver_not_field_access() {
+        let src = "fn go(db: Db) { db.query(); }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let db_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "db")
+            .expect("receiver should be extracted");
+        assert_ne!(db_ref.context_kind, RefContextKind::FieldAccess);
+    }
+
+    #[test]
+    fn chained_method_calls() {
+        let src = "fn go(a: A) { a.b().c(); }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let names: Vec<&str> = result
+            .references
+            .iter()
+            .filter(|r| {
+                r.context_kind == RefContextKind::Call && ["b", "c"].contains(&r.name.as_str())
+            })
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(names.contains(&"b"), "b should be a Call ref");
+        assert!(names.contains(&"c"), "c should be a Call ref");
+        assert!(
+            result.references.iter().any(|r| r.name == "a"),
+            "receiver a should be extracted"
+        );
+    }
+
+    #[test]
+    fn plain_field_access_no_method_ref() {
+        let src = "fn go(foo: Foo) { let _ = foo.bar; }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        assert!(
+            !result.references.iter().any(|r| r.name == "bar"),
+            "plain field access should not produce a ref"
+        );
+        assert!(
+            result.references.iter().any(|r| r.name == "foo"),
+            "receiver in field access should be extracted"
+        );
+    }
+
+    #[test]
+    fn self_method_call() {
+        let src = "impl Foo { fn go(&self) { self.method(); } }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let method_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "method")
+            .expect("method name after self should be extracted");
+        assert_eq!(method_ref.context_kind, RefContextKind::Call);
+        assert!(
+            !result.references.iter().any(|r| r.name == "self"),
+            "self should not be extracted as a ref"
+        );
     }
 }
