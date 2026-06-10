@@ -9,6 +9,11 @@ use crate::db::Db;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadArgs {
     pub workspace: String,
+    #[schemars(
+        description = "Symbol name to read. Pass a qualified name (e.g. \"evaluate_dd\", \
+        \"GuardConfig::from_env\") or a short name (e.g. \"from_env\"). \
+        Do NOT prefix with file paths or extensions — \"build_findings\" not \"review.rs::build_findings\"."
+    )]
     pub symbol: String,
     #[serde(default)]
     pub context_lines: Option<usize>,
@@ -37,13 +42,18 @@ pub fn handle(
         limit.unwrap_or(DEFAULT_LINE_CAP)
     };
 
-    let sym = db
-        .resolve_symbol(symbol, None)?
-        .ok_or_else(|| SutraError::NotFound {
+    let sym = db.resolve_symbol(symbol, None)?.ok_or_else(|| {
+        let next_action = if let Some(suggestion) = diagnose_symbol_input(symbol) {
+            suggestion
+        } else {
+            "Use sutra_find to look up the symbol name first.".to_string()
+        };
+        SutraError::NotFound {
             tool: "sutra_read",
             kind: format!("symbol `{symbol}`"),
-            next_action: "Use sutra_find to look up the symbol name first.".to_string(),
-        })?;
+            next_action,
+        }
+    })?;
 
     let file = db
         .file_by_id(sym.file_id)?
@@ -136,4 +146,65 @@ pub fn handle(
         ));
     }
     Ok(result)
+}
+
+fn diagnose_symbol_input(symbol: &str) -> Option<String> {
+    // "review.rs::build_findings" or "check.rs::evaluate"
+    if let Some(pos) = symbol.find(".rs::") {
+        let after = &symbol[pos + 5..];
+        return Some(format!(
+            "Don't prefix with the file name — pass the symbol name directly: \
+             try `{after}` instead of `{symbol}`."
+        ));
+    }
+    // "src/tools/review.rs::build_findings"
+    if symbol.contains('/') {
+        let bare = symbol.rsplit("::").next().unwrap_or(symbol);
+        return Some(format!(
+            "Don't use file paths — pass the symbol name directly: \
+             try `{bare}` instead of `{symbol}`."
+        ));
+    }
+    // "review.rs" (just a filename, no symbol)
+    if symbol.ends_with(".rs")
+        || symbol.ends_with(".ts")
+        || symbol.ends_with(".py")
+        || symbol.ends_with(".dart")
+    {
+        return Some(format!(
+            "`{symbol}` looks like a file path, not a symbol name. \
+             Pass a function or type name (e.g. `build_findings`). \
+             Use sutra_outline to list symbols in a file."
+        ));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnose_file_dot_rs_prefix() {
+        let msg = diagnose_symbol_input("review.rs::build_findings").unwrap();
+        assert!(msg.contains("try `build_findings`"));
+    }
+
+    #[test]
+    fn diagnose_path_prefix() {
+        let msg = diagnose_symbol_input("src/tools/review.rs::build_findings").unwrap();
+        assert!(msg.contains("try `build_findings`"));
+    }
+
+    #[test]
+    fn diagnose_bare_filename() {
+        let msg = diagnose_symbol_input("review.rs").unwrap();
+        assert!(msg.contains("looks like a file path"));
+    }
+
+    #[test]
+    fn no_diagnosis_for_valid_symbol() {
+        assert!(diagnose_symbol_input("build_findings").is_none());
+        assert!(diagnose_symbol_input("GuardConfig::from_env").is_none());
+    }
 }
