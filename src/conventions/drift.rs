@@ -18,7 +18,7 @@ pub struct DriftAlert {
     pub diverging_attributes: Vec<DivergingAttribute>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DivergingAttribute {
     pub attribute: String,
     pub old_proportion: f64,

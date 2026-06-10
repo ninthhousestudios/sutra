@@ -449,6 +449,7 @@ pub fn parse_workspace(
             &mut file_ids_needing_resolution,
             &workspace.root,
             &registry.boundary_multipliers(),
+            registry,
         )?;
         Ok(PostParseResult::Full {
             unresolved_count,
@@ -590,6 +591,7 @@ pub fn parse_changed_files(
             &mut file_ids_needing_resolution,
             &workspace.root,
             &registry.boundary_multipliers(),
+            registry,
         )?;
         Ok(PostParseResult::Full {
             unresolved_count,
@@ -655,6 +657,7 @@ fn post_parse_sequence(
     file_ids_needing_resolution: &mut HashSet<i64>,
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
+    registry: &LanguageRegistry,
 ) -> Result<(i64, i64)> {
     if !deleted_symbol_ids.is_empty() {
         let dirty_file_ids = db.find_files_referencing_symbols(deleted_symbol_ids)?;
@@ -746,7 +749,14 @@ fn post_parse_sequence(
             info!(alias_count, "synced vocabulary aliases");
         }
 
-        let findings = crate::health::compute_all_health_findings(db, workspace_root)?;
+        let conv_outcome = crate::conventions::pipeline::rebuild(db, registry, workspace_root)?;
+        if conv_outcome.convention_count > 0 {
+            info!(count = conv_outcome.convention_count, "rebuilt conventions");
+        }
+        db.replace_drift_alerts(&conv_outcome.drift_alerts)?;
+
+        let mut findings = crate::health::compute_all_health_findings(db, workspace_root)?;
+        findings.extend(conv_outcome.convention_drift_findings);
         if !findings.is_empty() {
             info!(count = findings.len(), "computed health findings");
         }

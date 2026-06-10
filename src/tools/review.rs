@@ -85,7 +85,7 @@ pub struct ReviewFindings {
     pub convention_matches: Vec<ConventionMatchFinding>,
     pub waived_violations: Vec<WaivedViolation>,
     pub drift_alerts: Vec<conventions::drift::DriftAlert>,
-    pub convention_drift_findings: Vec<crate::health::HealthFinding>,
+    pub convention_drift_findings: Vec<crate::db::HealthFindingRow>,
 }
 
 pub fn handle(
@@ -344,12 +344,8 @@ pub fn build_findings(
     let all_files = db.all_files()?;
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
 
-    // File-to-component mapping (used for both constraint and convention processing)
-    let comp_with_paths = db.active_components_with_paths()?;
     let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
-    for (comp_id, name, paths) in &comp_with_paths {
-        comp_name_to_id.insert(name.clone(), comp_id.clone());
+    for (comp_id, _, paths) in &db.active_components_with_paths()? {
         for path in paths {
             file_to_component.insert(path.clone(), comp_id.clone());
         }
@@ -395,16 +391,16 @@ pub fn build_findings(
         constraint_violations.len() + waived_constraint_violations.len();
     let constraint_parse_errors = check_outcome.parse_errors;
 
-    // FCA: convention violations on changed symbols
+    // Convention check on changed symbols (conventions rebuilt at parse time)
     let mut convention_violations = Vec::new();
     let mut convention_matches = Vec::new();
-    let mut drift_alerts = Vec::new();
-    let mut convention_drift_findings: Vec<crate::health::HealthFinding> = Vec::new();
 
-    let mut all_sym_attrs = Vec::new();
-    let mut sig_info_map: HashMap<String, conventions::templates::SymbolSignatureInfo> =
-        HashMap::new();
-    for f in &all_files {
+    let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
+    let mut changed_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
+    for f in all_files
+        .iter()
+        .filter(|f| changed_set.contains(f.path.as_str()))
+    {
         let syms = db.find_symbols_by_file(f.id)?;
         let refs = db.find_refs_in_file(f.id)?;
 
@@ -456,137 +452,30 @@ pub fn build_findings(
                         fca_source.effect_patterns(),
                     );
                 }
-                sig_info_map.insert(
-                    s.qualified_name.clone(),
-                    conventions::templates::SymbolSignatureInfo {
-                        signature: s.signature.clone(),
-                        visibility: s.visibility.clone(),
-                        language_attrs: s.language_attrs.clone(),
-                        cognitive: s.cognitive,
-                    },
-                );
-                all_sym_attrs.push(attrs);
+                changed_sym_attrs.push(attrs);
             }
         }
     }
 
-    if !all_sym_attrs.is_empty() {
-        for sa in &mut all_sym_attrs {
-            sa.component_id = file_to_component.get(&sa.file).cloned();
-        }
+    for sa in &mut changed_sym_attrs {
+        sa.component_id = file_to_component.get(&sa.file).cloned();
+    }
 
-        let mut global_engine = FcaEngine::new();
-        let global_conventions = global_engine.rebuild(&all_sym_attrs);
+    let merged = db.all_conventions_merged()?;
+    let all_convs: Vec<conventions::Convention> = merged
+        .iter()
+        .cloned()
+        .map(conventions::Convention::from)
+        .collect();
 
-        let mut all_convs = global_conventions.clone();
-        let mut comp_symbol_groups: Vec<(String, String, Vec<conventions::SymbolAttrs>)> =
-            Vec::new();
-        for (comp_id, name, paths) in &comp_with_paths {
-            let path_set: std::collections::HashSet<&str> =
-                paths.iter().map(|p| p.as_str()).collect();
-            let comp_symbols: Vec<_> = all_sym_attrs
-                .iter()
-                .filter(|s| path_set.contains(s.file.as_str()))
-                .cloned()
-                .collect();
-            if comp_symbols.len() < 2 {
-                continue;
-            }
-            let min_support = conventions::component_min_support(comp_symbols.len());
-            let mut comp_engine = FcaEngine::new();
-            let comp_convs = comp_engine.rebuild_with_params(
-                &comp_symbols,
-                min_support,
-                conventions::MIN_CONFIDENCE,
-                Some(comp_id),
-            );
-            let deduped =
-                conventions::deduplicate_component_conventions(comp_convs, &global_conventions);
-            all_convs.extend(deduped);
-            comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_symbols));
-        }
-
-        let fca_conformance =
-            crate::health::drift::compute_fca_conformance(&all_convs, &comp_symbol_groups);
-        let hrr_coherence = crate::health::drift::compute_hrr_coherence(db).unwrap_or_default();
-
-        convention_drift_findings = crate::health::drift::detect_convention_drift(
-            db,
-            &fca_conformance,
-            &hrr_coherence,
-            &comp_symbol_groups,
-            &file_to_component,
-            &id_map,
-        )
-        .unwrap_or_default();
-
-        drift_alerts = conventions::drift::record_and_detect_drift(
-            db,
-            &comp_symbol_groups,
-            &fca_conformance,
-            &hrr_coherence,
-        )
-        .unwrap_or_default();
-
-        for c in &all_convs {
-            let _ = db.upsert_convention(
-                &c.id,
-                &c.antecedent.join(", "),
-                &c.consequent.join(", "),
-                c.support as i64,
-                c.confidence,
-                c.component_id.as_deref(),
-            );
-        }
-        let current_ids: Vec<&str> = all_convs.iter().map(|c| c.id.as_str()).collect();
-
-        let snapshot_id = uuid::Uuid::new_v4().to_string();
-        for c in &all_convs {
-            let _ =
-                db.record_convention_history(&c.id, c.support as i64, c.confidence, &snapshot_id);
-        }
-        if let Ok(absent) = db.tracked_convention_ids_absent_from(&current_ids) {
-            for cid in &absent {
-                let _ = db.record_convention_history(cid, 0, 0.0, &snapshot_id);
-            }
-        }
-
-        if let Ok(signals) = conventions::lifecycle::detect_signals(db) {
-            let _ = conventions::lifecycle::generate_proposals(db, signals);
-        }
-
-        let _ = db.delete_stale_conventions(&current_ids);
-
-        if let Err(e) = conventions::templates::generate_templates_for_conventions(
-            &all_convs,
-            &all_sym_attrs,
-            &sig_info_map,
-            db,
-        ) {
-            tracing::warn!("template generation failed: {e}");
-        }
-        if let Err(e) = db.delete_orphan_templates(&current_ids) {
-            tracing::warn!("orphan template cleanup failed: {e}");
-        }
-
-        let changed_set: std::collections::HashSet<&str> =
-            changed_paths.iter().map(|p| p.as_str()).collect();
-        let changed_sym_attrs: Vec<_> = all_sym_attrs
-            .iter()
-            .filter(|a| changed_set.contains(a.file.as_str()))
-            .cloned()
-            .collect();
-
-        let db_forbidden: Vec<String> = db
-            .all_conventions_merged()?
+    if !all_convs.is_empty() {
+        let mut effective_conventions = rules.conventions.clone();
+        for c in merged
             .iter()
             .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
-            .map(|c| c.id.clone())
-            .collect();
-        let mut effective_conventions = rules.conventions.clone();
-        for id in db_forbidden {
-            if !effective_conventions.suppress.contains(&id) {
-                effective_conventions.suppress.push(id);
+        {
+            if !effective_conventions.suppress.contains(&c.id) {
+                effective_conventions.suppress.push(c.id.clone());
             }
         }
 
@@ -606,13 +495,12 @@ pub fn build_findings(
             });
         }
 
-        let merged = db.all_conventions_merged()?;
-        let deprecated_ids: std::collections::HashSet<String> = merged
+        let deprecated_ids: HashSet<String> = merged
             .iter()
             .filter(|c| c.lifecycle_state.as_deref() == Some("deprecated"))
             .map(|c| c.id.clone())
             .collect();
-        let forbidden_ids: std::collections::HashSet<String> = merged
+        let forbidden_ids: HashSet<String> = merged
             .iter()
             .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
             .map(|c| c.id.clone())
@@ -636,7 +524,7 @@ pub fn build_findings(
     }
 
     let waivers = db.waivers_for_check()?;
-    let sym_component: HashMap<(&str, &str), &str> = all_sym_attrs
+    let sym_component: HashMap<(&str, &str), &str> = changed_sym_attrs
         .iter()
         .filter_map(|s| {
             s.component_id
@@ -679,6 +567,11 @@ pub fn build_findings(
             unwaived.push(v);
         }
     }
+
+    let drift_alerts = db.get_drift_alerts().unwrap_or_default();
+    let convention_drift_findings = db
+        .get_health_findings(None, Some("convention_drift"))
+        .unwrap_or_default();
 
     Ok(ReviewFindings {
         constraint_violations,

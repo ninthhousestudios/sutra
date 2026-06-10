@@ -695,6 +695,59 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn replace_drift_alerts(
+        &self,
+        alerts: &[crate::conventions::drift::DriftAlert],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            conn.execute("DELETE FROM drift_alerts", [])?;
+            let mut stmt = conn.prepare(
+                "INSERT INTO drift_alerts
+                 (component_id, component_name, entropy_old, entropy_new, delta, diverging_attributes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for a in alerts {
+                let div_json = serde_json::to_string(&a.diverging_attributes).unwrap_or_default();
+                stmt.execute(params![
+                    a.component_id,
+                    a.component_name,
+                    a.entropy_old,
+                    a.entropy_new,
+                    a.delta,
+                    div_json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_drift_alerts(&self) -> Result<Vec<crate::conventions::drift::DriftAlert>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT component_id, component_name, entropy_old, entropy_new, delta, diverging_attributes
+             FROM drift_alerts",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let div_json: String = row.get(5)?;
+                let diverging_attributes: Vec<crate::conventions::drift::DivergingAttribute> =
+                    serde_json::from_str(&div_json).unwrap_or_default();
+                Ok(crate::conventions::drift::DriftAlert {
+                    component_id: row.get(0)?,
+                    component_name: row.get(1)?,
+                    entropy_old: row.get(2)?,
+                    entropy_new: row.get(3)?,
+                    delta: row.get(4)?,
+                    diverging_attributes,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn delete_orphan_templates(&self, live_convention_ids: &[&str]) -> Result<usize> {
         let conn = self.conn.lock();
         if live_convention_ids.is_empty() {

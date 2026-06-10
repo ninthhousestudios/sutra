@@ -1032,13 +1032,9 @@ forbidden_deps = [
 }
 
 #[test]
-fn build_findings_persists_conventions_to_db() {
+fn convention_pipeline_persists_conventions_to_db() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
-
-    let rules_dir = dir.path().join(".sutra");
-    fs::create_dir_all(&rules_dir).unwrap();
-    fs::write(rules_dir.join("rules.toml"), "[constraints]\n").unwrap();
 
     // 40 pub functions: 38 with signatures (95%), enough for FCA to find
     // the implication {kind:function, vis:pub} => {has_sig} at 0.95 confidence.
@@ -1076,19 +1072,13 @@ fn build_findings_persists_conventions_to_db() {
     assert!(db.all_conventions().unwrap().is_empty());
 
     let registry = default_registry();
-    let _ = review::build_findings(
-        &db,
-        dir.path(),
-        &["src/f_0.rs".to_string()],
-        "HEAD",
-        None,
-        &registry,
-    );
+    let outcome = sutra::conventions::pipeline::rebuild(&db, &registry, dir.path()).unwrap();
+    assert!(outcome.convention_count > 0);
 
     let conventions = db.all_conventions().unwrap();
     assert!(
         !conventions.is_empty(),
-        "conventions should be persisted to DB after build_findings"
+        "conventions should be persisted to DB after pipeline::rebuild"
     );
     for c in &conventions {
         assert!(!c.id.is_empty());

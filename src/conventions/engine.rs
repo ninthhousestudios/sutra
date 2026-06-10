@@ -21,6 +21,19 @@ pub struct Convention {
     pub component_id: Option<String>,
 }
 
+impl From<crate::db::ConventionWithState> for Convention {
+    fn from(row: crate::db::ConventionWithState) -> Self {
+        Self {
+            id: row.id,
+            antecedent: row.antecedent.split(", ").map(String::from).collect(),
+            consequent: row.consequent.split(", ").map(String::from).collect(),
+            support: row.support as usize,
+            confidence: row.confidence,
+            component_id: row.component_id,
+        }
+    }
+}
+
 impl Convention {
     pub fn compute_id(
         antecedent: &[String],
