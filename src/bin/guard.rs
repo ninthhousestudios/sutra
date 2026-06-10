@@ -257,14 +257,14 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
             "constraint_id": v.constraint_id,
             "constraint_name": v.constraint_name,
             "kind": v.constraint_kind,
-            "severity": v.severity,
+            "severity": v.severity.as_str(),
             "from": v.from_path,
             "to": v.to_path,
             "detail": v.detail,
         });
-        match v.severity.as_str() {
-            "blocking" => blocking.push(entry),
-            "advisory" => advisory.push(entry),
+        match v.severity {
+            Severity::Blocking => blocking.push(entry),
+            Severity::Advisory => advisory.push(entry),
             _ => informational.push(entry),
         }
     }
@@ -274,13 +274,13 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
         .iter()
         .map(|v| {
             serde_json::json!({
-                "constraint_id": v.constraint_id,
-                "constraint_name": v.constraint_name,
-                "kind": v.constraint_kind,
-                "severity": v.severity,
-                "from": v.from_path,
-                "to": v.to_path,
-                "detail": v.detail,
+                "constraint_id": v.finding.constraint_id,
+                "constraint_name": v.finding.constraint_name,
+                "kind": v.finding.constraint_kind,
+                "severity": v.finding.severity.as_str(),
+                "from": v.finding.from_path,
+                "to": v.finding.to_path,
+                "detail": v.finding.detail,
                 "rationale": v.rationale,
                 "waived_by": v.waived_by,
             })

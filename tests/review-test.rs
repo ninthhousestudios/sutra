@@ -2,8 +2,10 @@ use std::fs;
 use std::time::Duration;
 
 use sutra::constraints::DdEngine;
+use sutra::constraints::check::FindingDelta;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::parser::adapter::default_registry;
+use sutra::rules::Severity;
 use sutra::tools::review;
 use sutra::tools::scoring::ChurnMap;
 
@@ -348,27 +350,29 @@ fn constraint_violations_appear_in_output() {
 
     let findings = review::ReviewFindings {
         constraint_violations: vec![
-            review::ConstraintViolation {
+            review::ConstraintFinding {
                 constraint_id: "abc12345".into(),
                 constraint_name: Some("no-core-internal".into()),
                 constraint_kind: "forbidden_dep".into(),
-                severity: "blocking".into(),
+                severity: Severity::Blocking,
                 provenance: Some("docs/adr-001".into()),
                 from_path: "src/core.rs".into(),
                 to_path: "src/internal.rs".into(),
                 component_context: None,
                 detail: "forbidden: src/core.rs -> src/internal.rs".into(),
+                delta: FindingDelta::Unknown,
             },
-            review::ConstraintViolation {
+            review::ConstraintFinding {
                 constraint_id: "builtin:cycles".into(),
                 constraint_name: None,
                 constraint_kind: "no_cycles".into(),
-                severity: "blocking".into(),
+                severity: Severity::Blocking,
                 provenance: None,
                 from_path: "src/core.rs".into(),
                 to_path: "src/helper.rs".into(),
                 component_context: None,
                 detail: "import cycle: src/core.rs -> src/helper.rs -> src/core.rs".into(),
+                delta: FindingDelta::Unknown,
             },
         ],
         resolved_constraint_violations: vec![],
@@ -497,16 +501,17 @@ fn violations_are_structurally_distinct() {
     let changed = vec!["src/core.rs".to_string()];
 
     let findings = review::ReviewFindings {
-        constraint_violations: vec![review::ConstraintViolation {
+        constraint_violations: vec![review::ConstraintFinding {
             constraint_id: "abc12345".into(),
             constraint_name: None,
             constraint_kind: "forbidden_dep".into(),
-            severity: "blocking".into(),
+            severity: Severity::Blocking,
             provenance: None,
             from_path: "src/core.rs".into(),
             to_path: "src/internal.rs".into(),
             component_context: None,
             detail: "forbidden dep".into(),
+            delta: FindingDelta::Unknown,
         }],
         resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
@@ -796,7 +801,7 @@ forbidden_deps = [
     let cv = &findings.constraint_violations[0];
     assert_eq!(cv.constraint_kind, "forbidden_dep");
     assert!(!cv.constraint_id.is_empty());
-    assert_eq!(cv.severity, "blocking");
+    assert_eq!(cv.severity, Severity::Blocking);
     assert!(cv.detail.contains("src/ui/view.rs"));
     assert!(findings.constraint_violations_total >= 1);
 
@@ -822,16 +827,19 @@ fn waived_constraint_violations_appear_in_output() {
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
         resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![review::WaivedConstraintViolation {
-            constraint_id: "abc12345".into(),
-            constraint_name: Some("no-core-internal".into()),
-            constraint_kind: "forbidden_dep".into(),
-            severity: "blocking".into(),
-            provenance: None,
-            from_path: "src/core.rs".into(),
-            to_path: "src/internal.rs".into(),
-            component_context: None,
-            detail: "forbidden: src/core.rs -> src/internal.rs".into(),
+        waived_constraint_violations: vec![review::WaivedFinding {
+            finding: review::ConstraintFinding {
+                constraint_id: "abc12345".into(),
+                constraint_name: Some("no-core-internal".into()),
+                constraint_kind: "forbidden_dep".into(),
+                severity: Severity::Blocking,
+                provenance: None,
+                from_path: "src/core.rs".into(),
+                to_path: "src/internal.rs".into(),
+                component_context: None,
+                detail: "forbidden: src/core.rs -> src/internal.rs".into(),
+                delta: FindingDelta::Unknown,
+            },
             rationale: "legacy coupling".into(),
             waived_by: "josh".into(),
         }],
@@ -1010,13 +1018,13 @@ forbidden_deps = [
     );
     assert_eq!(findings.waived_constraint_violations.len(), 1);
     let w = &findings.waived_constraint_violations[0];
-    assert_eq!(w.constraint_id, *constraint_id);
+    assert_eq!(w.finding.constraint_id, *constraint_id);
     assert_eq!(
         w.rationale,
         "legacy coupling, will be removed in next sprint"
     );
     assert_eq!(w.waived_by, "josh");
-    assert_eq!(w.from_path, "src/ui/view.rs");
+    assert_eq!(w.finding.from_path, "src/ui/view.rs");
 }
 
 #[test]

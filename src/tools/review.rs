@@ -1,20 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::components;
-use crate::constraints::{self, ConstraintResolver, DdDelta, DdEngine, DdFacts};
+use crate::constraints::DdEngine;
+use crate::constraints::check::{self, EvalScope, FactsSource};
 use crate::conventions::{self, FcaEngine};
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
 use crate::parser::adapter::LanguageRegistry;
-use crate::rules::{self, match_no_cycles_constraint};
+use crate::rules;
 use crate::tools::scoring::{self, ChurnMap, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -34,33 +34,8 @@ const W_HOTSPOT: f64 = 0.15;
 const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
 
-#[derive(Clone)]
-pub struct ConstraintViolation {
-    pub constraint_id: String,
-    pub constraint_name: Option<String>,
-    pub constraint_kind: String,
-    pub severity: String,
-    pub provenance: Option<String>,
-    pub from_path: String,
-    pub to_path: String,
-    pub component_context: Option<String>,
-    pub detail: String,
-}
-
-#[derive(Clone)]
-pub struct WaivedConstraintViolation {
-    pub constraint_id: String,
-    pub constraint_name: Option<String>,
-    pub constraint_kind: String,
-    pub severity: String,
-    pub provenance: Option<String>,
-    pub from_path: String,
-    pub to_path: String,
-    pub component_context: Option<String>,
-    pub detail: String,
-    pub rationale: String,
-    pub waived_by: String,
-}
+pub use check::ConstraintFinding;
+pub use check::WaivedFinding;
 
 #[derive(Clone)]
 pub struct ConventionViolation {
@@ -101,9 +76,9 @@ pub struct WaivedViolation {
 
 #[derive(Default)]
 pub struct ReviewFindings {
-    pub constraint_violations: Vec<ConstraintViolation>,
-    pub resolved_constraint_violations: Vec<ConstraintViolation>,
-    pub waived_constraint_violations: Vec<WaivedConstraintViolation>,
+    pub constraint_violations: Vec<ConstraintFinding>,
+    pub resolved_constraint_violations: Vec<ConstraintFinding>,
+    pub waived_constraint_violations: Vec<WaivedFinding>,
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
@@ -367,7 +342,6 @@ pub fn build_findings(
 ) -> Result<ReviewFindings> {
     let rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
-    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
 
     // File-to-component mapping (used for both constraint and convention processing)
@@ -381,232 +355,44 @@ pub fn build_findings(
         }
     }
 
-    // DD: constraint violations via maintained view + cycle detection
-    let (all_constraints, constraint_parse_errors) = rules.all_constraints();
-    let mut constraint_violations = Vec::new();
-    let mut resolved_constraint_violations = Vec::new();
-    let mut constraint_violations_total: usize = 0;
-
-    let ephemeral;
-    let edges = db.import_edges()?;
-    let dd: Option<&DdEngine> = if !edges.is_empty() {
-        if let Some(engine) = shared_dd {
-            if engine.is_invalidated() {
-                engine.reload(DdFacts {
-                    import_edges: edges.clone(),
-                });
-            } else if !engine.is_loaded() {
-                engine.ingest(DdFacts {
-                    import_edges: edges.clone(),
-                })?;
-            }
-            Some(engine)
-        } else {
-            ephemeral = DdEngine::new(Duration::from_secs(60));
-            ephemeral.ingest(DdFacts {
-                import_edges: edges.clone(),
-            })?;
-            Some(&ephemeral)
-        }
-    } else {
-        None
-    };
-
-    let changed_ids: std::collections::HashSet<i64> = changed_paths
+    // Constraint evaluation via unified check core
+    let changed_ids: HashSet<i64> = changed_paths
         .iter()
         .filter_map(|p| id_map.get(p.as_str()).copied())
         .collect();
 
-    if let Some(engine) = dd {
-        let mut resolver = ConstraintResolver::new();
-        let pairs = resolver.resolve(&all_constraints, db, &path_map)?;
-
-        if !pairs.is_empty() {
-            engine.set_forbidden_pairs(pairs)?;
-            let current_violations = engine.query_violations()?;
-            // Compute old outgoing edges from merge-base content for changed
-            // files, so we can identify which edges are truly new in this diff.
-            let mut old_edges: std::collections::HashSet<(i64, i64)> =
-                std::collections::HashSet::new();
-            for path in changed_paths {
-                let file_id = match id_map.get(path.as_str()) {
-                    Some(&id) => id,
-                    None => continue,
-                };
-                if let Ok(Some(old_content)) =
-                    git::git_file_content_at(workspace_root, base_revision, path)
-                {
-                    for edge in
-                        extract_outgoing_edges(&old_content, path, file_id, workspace_root, &id_map)
-                    {
-                        old_edges.insert(edge);
-                    }
-                }
-            }
-
-            // Only edges that are in the current state but NOT in the merge-base
-            // are genuinely introduced by the diff.
-            let new_edges: Vec<(i64, i64)> = edges
-                .iter()
-                .filter(|(src, _)| changed_ids.contains(src))
-                .copied()
-                .filter(|e| !old_edges.contains(e))
-                .collect();
-
-            let baseline_set: std::collections::HashSet<(i64, i64)> = if !new_edges.is_empty() {
-                engine.update(DdDelta {
-                    added_edges: vec![],
-                    removed_edges: new_edges.clone(),
-                })?;
-                let baseline_result = engine.query_violations();
-                engine.update(DdDelta {
-                    added_edges: new_edges,
-                    removed_edges: vec![],
-                })?;
-                baseline_result?.into_iter().collect()
-            } else {
-                current_violations.iter().copied().collect()
-            };
-
-            let current_set: std::collections::HashSet<(i64, i64)> =
-                current_violations.iter().copied().collect();
-
-            for &(from_id, to_id) in &current_violations {
-                let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-                let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
-                if !changed_ids.contains(&from_id) && !changed_ids.contains(&to_id) {
-                    continue;
-                }
-                let is_introduced = !baseline_set.contains(&(from_id, to_id));
-                if let Some(c) = constraints::find_matching_constraint(
-                    &all_constraints,
-                    &from_path,
-                    &to_path,
-                    &file_to_component,
-                    &comp_name_to_id,
-                ) {
-                    constraint_violations.push(ConstraintViolation {
-                        constraint_id: c.id.clone(),
-                        constraint_name: c.name.clone(),
-                        constraint_kind: c.kind.kind_tag().to_string(),
-                        severity: c.severity.as_str().to_string(),
-                        provenance: c.provenance.clone(),
-                        from_path: from_path.clone(),
-                        to_path: to_path.clone(),
-                        component_context: constraints::build_component_context(
-                            &c.kind,
-                            &file_to_component,
-                            &from_path,
-                            &to_path,
-                        ),
-                        detail: constraints::format_violation_detail(
-                            c,
-                            &from_path,
-                            &to_path,
-                            is_introduced,
-                        ),
-                    });
-                }
-            }
-
-            for &(from_id, to_id) in &baseline_set {
-                if current_set.contains(&(from_id, to_id)) {
-                    continue;
-                }
-                if !changed_ids.contains(&from_id) && !changed_ids.contains(&to_id) {
-                    continue;
-                }
-                let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-                let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
-                if let Some(c) = constraints::find_matching_constraint(
-                    &all_constraints,
-                    &from_path,
-                    &to_path,
-                    &file_to_component,
-                    &comp_name_to_id,
-                ) {
-                    resolved_constraint_violations.push(ConstraintViolation {
-                        constraint_id: c.id.clone(),
-                        constraint_name: c.name.clone(),
-                        constraint_kind: c.kind.kind_tag().to_string(),
-                        severity: c.severity.as_str().to_string(),
-                        provenance: c.provenance.clone(),
-                        from_path: from_path.clone(),
-                        to_path: to_path.clone(),
-                        component_context: constraints::build_component_context(
-                            &c.kind,
-                            &file_to_component,
-                            &from_path,
-                            &to_path,
-                        ),
-                        detail: constraints::format_violation_detail(
-                            c, &from_path, &to_path, false,
-                        ),
-                    });
-                }
+    let mut old_edges: HashSet<(i64, i64)> = HashSet::new();
+    for path in changed_paths {
+        let file_id = match id_map.get(path.as_str()) {
+            Some(&id) => id,
+            None => continue,
+        };
+        if let Ok(Some(old_content)) = git::git_file_content_at(workspace_root, base_revision, path)
+        {
+            for edge in extract_outgoing_edges(&old_content, path, file_id, workspace_root, &id_map)
+            {
+                old_edges.insert(edge);
             }
         }
-
-        if !changed_ids.is_empty() {
-            for cycle in engine.query_cycles()? {
-                if cycle.file_ids.iter().any(|id| changed_ids.contains(id)) {
-                    let cycle_paths: Vec<String> = cycle
-                        .file_ids
-                        .iter()
-                        .filter_map(|id| path_map.get(id).cloned())
-                        .collect();
-                    let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
-                    constraint_violations.push(ConstraintViolation {
-                        constraint_id: matched
-                            .map(|c| c.id.clone())
-                            .unwrap_or_else(|| "builtin:cycles".into()),
-                        constraint_name: matched.and_then(|c| c.name.clone()),
-                        constraint_kind: "no_cycles".into(),
-                        severity: matched
-                            .map(|c| c.severity.as_str().to_string())
-                            .unwrap_or_else(|| "blocking".into()),
-                        provenance: matched.and_then(|c| c.provenance.clone()),
-                        from_path: cycle_paths.first().cloned().unwrap_or_default(),
-                        to_path: cycle_paths.last().cloned().unwrap_or_default(),
-                        component_context: None,
-                        detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
-                    });
-                }
-            }
-        }
-
-        constraint_violations_total = constraint_violations.len();
     }
 
-    // Constraint waiver partition (parallel to convention waiver partition below)
-    let constraint_waivers = db.get_constraint_waivers(None)?;
-    let mut waived_constraint_violations = Vec::new();
-    let mut unwaived_constraints = Vec::new();
-    for v in constraint_violations {
-        let waiver = constraint_waivers.iter().find(|w| {
-            w.constraint_id == v.constraint_id
-                && w.file_path == v.from_path
-                && w.symbol_qualified_name.is_none()
-        });
-        if let Some(w) = waiver {
-            waived_constraint_violations.push(WaivedConstraintViolation {
-                constraint_id: v.constraint_id,
-                constraint_name: v.constraint_name,
-                constraint_kind: v.constraint_kind,
-                severity: v.severity,
-                provenance: v.provenance,
-                from_path: v.from_path,
-                to_path: v.to_path,
-                component_context: v.component_context,
-                detail: v.detail,
-                rationale: w.rationale.clone(),
-                waived_by: w.waived_by.clone(),
-            });
-        } else {
-            unwaived_constraints.push(v);
-        }
-    }
-    let constraint_violations = unwaived_constraints;
+    let check_outcome = check::evaluate(
+        &FactsSource::DdBacked {
+            db,
+            dd_engine: shared_dd,
+        },
+        workspace_root,
+        EvalScope::ChangedFiles {
+            changed_ids: &changed_ids,
+            old_edges: &old_edges,
+        },
+    )?;
+
+    let constraint_violations = check_outcome.active;
+    let constraint_violations_total = constraint_violations.len();
+    let resolved_constraint_violations = check_outcome.resolved;
+    let waived_constraint_violations = check_outcome.waived;
+    let constraint_parse_errors = check_outcome.parse_errors;
 
     // FCA: convention violations on changed symbols
     let mut convention_violations = Vec::new();
@@ -1225,7 +1011,7 @@ pub fn compute(
                 "constraint_id": v.constraint_id,
                 "constraint_name": v.constraint_name,
                 "kind": v.constraint_kind,
-                "severity": v.severity,
+                "severity": v.severity.as_str(),
                 "provenance": v.provenance,
                 "from": v.from_path,
                 "to": v.to_path,
@@ -1242,7 +1028,7 @@ pub fn compute(
                 "constraint_id": v.constraint_id,
                 "constraint_name": v.constraint_name,
                 "kind": v.constraint_kind,
-                "severity": v.severity,
+                "severity": v.severity.as_str(),
                 "provenance": v.provenance,
                 "from": v.from_path,
                 "to": v.to_path,
@@ -1256,14 +1042,14 @@ pub fn compute(
         .iter()
         .map(|v| {
             json!({
-                "constraint_id": v.constraint_id,
-                "constraint_name": v.constraint_name,
-                "kind": v.constraint_kind,
-                "severity": v.severity,
-                "from": v.from_path,
-                "to": v.to_path,
-                "component_context": v.component_context,
-                "detail": v.detail,
+                "constraint_id": v.finding.constraint_id,
+                "constraint_name": v.finding.constraint_name,
+                "kind": v.finding.constraint_kind,
+                "severity": v.finding.severity.as_str(),
+                "from": v.finding.from_path,
+                "to": v.finding.to_path,
+                "component_context": v.finding.component_context,
+                "detail": v.finding.detail,
                 "waived": true,
                 "rationale": v.rationale,
                 "waived_by": v.waived_by,
