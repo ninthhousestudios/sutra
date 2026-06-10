@@ -389,9 +389,10 @@ pub fn build_findings(
     )?;
 
     let constraint_violations = check_outcome.active;
-    let constraint_violations_total = constraint_violations.len();
     let resolved_constraint_violations = check_outcome.resolved;
     let waived_constraint_violations = check_outcome.waived;
+    let constraint_violations_total =
+        constraint_violations.len() + waived_constraint_violations.len();
     let constraint_parse_errors = check_outcome.parse_errors;
 
     // FCA: convention violations on changed symbols

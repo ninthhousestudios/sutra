@@ -144,22 +144,33 @@ fn evaluate_dd(
                 old_edges,
                 changed_ids,
             } => {
-                let new_edges: Vec<(i64, i64)> = edges
+                let current_changed_edges: HashSet<(i64, i64)> = edges
                     .iter()
                     .filter(|(src, _)| changed_ids.contains(src))
+                    .copied()
+                    .collect();
+
+                let new_edges: Vec<(i64, i64)> = current_changed_edges
+                    .iter()
                     .copied()
                     .filter(|e| !old_edges.contains(e))
                     .collect();
 
-                let baseline = if !new_edges.is_empty() {
+                let removed_edges: Vec<(i64, i64)> = old_edges
+                    .iter()
+                    .copied()
+                    .filter(|e| !current_changed_edges.contains(e))
+                    .collect();
+
+                let baseline = if !new_edges.is_empty() || !removed_edges.is_empty() {
                     engine.update(super::DdDelta {
-                        added_edges: vec![],
+                        added_edges: removed_edges.clone(),
                         removed_edges: new_edges.clone(),
                     })?;
                     let baseline_result = engine.query_violations();
                     engine.update(super::DdDelta {
                         added_edges: new_edges,
-                        removed_edges: vec![],
+                        removed_edges: removed_edges,
                     })?;
                     baseline_result?.into_iter().collect()
                 } else {

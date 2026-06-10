@@ -1025,6 +1025,10 @@ forbidden_deps = [
     );
     assert_eq!(w.waived_by, "josh");
     assert_eq!(w.finding.from_path, "src/ui/view.rs");
+    assert_eq!(
+        findings.constraint_violations_total, 1,
+        "total should include waived violations"
+    );
 }
 
 #[test]
@@ -1402,4 +1406,94 @@ fn degraded_findings_nullify_risk_score() {
         result["risk_score"].is_null(),
         "degraded review should have null risk_score"
     );
+}
+
+#[test]
+fn resolved_delta_for_removed_forbidden_edge() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[constraints]
+forbidden_deps = [
+  { from = "src/ui/*", to = "src/db/*" },
+]
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 100, true)
+        .unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 80, true)
+        .unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h3", 50, true)
+        .unwrap();
+
+    let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
+    let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
+    let f_lib = db.file_by_path("src/lib.rs").unwrap().unwrap();
+
+    db.insert_symbol(&sym(
+        f_view.id,
+        "view::render",
+        "render",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(
+        f_query.id,
+        "query::fetch",
+        "fetch",
+        None,
+        1,
+        10,
+        Some(2),
+    ))
+    .unwrap();
+    db.insert_symbol(&sym(f_lib.id, "lib::init", "init", None, 1, 10, Some(2)))
+        .unwrap();
+
+    // Current DB: only lib.rs -> query.rs (allowed). The forbidden view.rs -> query.rs was removed.
+    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1)
+        .unwrap();
+
+    // old_edges records that view.rs previously imported query.rs (forbidden)
+    let changed_ids: std::collections::HashSet<i64> = [f_view.id].into_iter().collect();
+    let old_edges: std::collections::HashSet<(i64, i64)> =
+        [(f_view.id, f_query.id)].into_iter().collect();
+
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::ChangedFiles {
+            changed_ids: &changed_ids,
+            old_edges: &old_edges,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        outcome.active.is_empty(),
+        "no current violation since forbidden edge was removed"
+    );
+    assert_eq!(
+        outcome.resolved.len(),
+        1,
+        "removed forbidden edge should appear as resolved"
+    );
+    assert_eq!(outcome.resolved[0].delta, FindingDelta::Resolved);
+    assert!(outcome.resolved[0].from_path.contains("ui/view.rs"));
+    assert!(outcome.resolved[0].to_path.contains("db/query.rs"));
 }
