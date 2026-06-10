@@ -337,6 +337,63 @@ fn reconcile_orphaned_health_waivers() {
     assert_eq!(orphans[0].file_path, "src/gone.rs");
 }
 
+#[test]
+fn reconcile_orphaned_health_waivers_symbol_scoped() {
+    let (_dir, db) = setup_db();
+    let file_id = seed_file(&db, "src/foo.rs");
+    let sym_a = seed_fn(&db, file_id, "foo::alive", "alive", Some(6));
+    let _sym_b = seed_fn(&db, file_id, "foo::gone", "gone", Some(7));
+
+    // Only sym_a's finding survives; sym_b's finding is removed.
+    let findings = vec![HealthFinding {
+        file_id,
+        symbol_id: Some(sym_a),
+        biomarker_kind: BiomarkerKind::NestedComplexity,
+        severity: HealthSeverity::Advisory,
+        confidence: 0.9,
+        provenance: "test".into(),
+        metric_value: 6.0,
+        threshold: 4.0,
+        detail: "nesting 6".into(),
+    }];
+    db.replace_health_findings(&findings).unwrap();
+
+    // File-level waiver — should NOT be orphaned (finding still exists in file)
+    db.create_health_waiver(
+        "nested_complexity",
+        "src/foo.rs",
+        None,
+        "file-level",
+        "josh",
+    )
+    .unwrap();
+    // Symbol waiver for the surviving symbol — should NOT be orphaned
+    db.create_health_waiver(
+        "nested_complexity",
+        "src/foo.rs",
+        Some("foo::alive"),
+        "alive-waiver",
+        "josh",
+    )
+    .unwrap();
+    // Symbol waiver for the gone symbol — SHOULD be orphaned
+    db.create_health_waiver(
+        "nested_complexity",
+        "src/foo.rs",
+        Some("foo::gone"),
+        "stale-waiver",
+        "josh",
+    )
+    .unwrap();
+
+    let orphans = db.reconcile_orphaned_health_waivers().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(
+        orphans[0].symbol_qualified_name.as_deref(),
+        Some("foo::gone")
+    );
+}
+
 // --- Scoring ---
 
 fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {

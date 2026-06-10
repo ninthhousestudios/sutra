@@ -283,8 +283,11 @@ impl Db {
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM health_findings hf \
                  JOIN files f ON f.id = hf.file_id \
+                 LEFT JOIN symbols s ON s.id = hf.symbol_id \
                  WHERE hf.biomarker_kind = w.biomarker_kind \
                  AND f.path = w.file_path \
+                 AND (w.symbol_qualified_name IS NULL \
+                      OR s.qualified_name = w.symbol_qualified_name) \
              ) ORDER BY w.created_at DESC"
         );
         let mut stmt = conn.prepare(&sql)?;
