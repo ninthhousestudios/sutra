@@ -1,15 +1,6 @@
-use std::collections::HashMap;
-
-pub const BLAST_NORM: f64 = 50.0;
-pub const COMPLEXITY_NORM: f64 = 30.0;
-pub const CHURN_NORM: f64 = 20.0;
-pub const CHURN_WINDOW_DAYS: u32 = 90;
-
-#[derive(Default)]
-pub struct ChurnMap {
-    pub counts: HashMap<String, u32>,
-    pub window_days: u32,
-}
+pub use super::change_signals::{
+    BLAST_NORM, CHURN_NORM, CHURN_WINDOW_DAYS, COMPLEXITY_NORM, ChurnMap,
+};
 
 pub fn normalize(raw: f64, ceiling: f64) -> f64 {
     (raw / ceiling).min(1.0)
