@@ -103,14 +103,6 @@ pub fn rebuild(
         }
     }
 
-    if all_sym_attrs.is_empty() {
-        return Ok(RebuildOutcome {
-            convention_count: 0,
-            drift_alerts: Vec::new(),
-            convention_drift_findings: Vec::new(),
-        });
-    }
-
     for sa in &mut all_sym_attrs {
         sa.component_id = file_to_component.get(&sa.file).cloned();
     }

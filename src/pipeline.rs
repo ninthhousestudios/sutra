@@ -749,6 +749,11 @@ fn post_parse_sequence(
             info!(alias_count, "synced vocabulary aliases");
         }
 
+        let hrr_count = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
+        if hrr_count > 0 {
+            info!(count = hrr_count, "computed HRR vectors");
+        }
+
         let conv_outcome = crate::conventions::pipeline::rebuild(db, registry, workspace_root)?;
         if conv_outcome.convention_count > 0 {
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
@@ -761,11 +766,6 @@ fn post_parse_sequence(
             info!(count = findings.len(), "computed health findings");
         }
         db.replace_health_findings(&findings)?;
-
-        let hrr_count = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
-        if hrr_count > 0 {
-            info!(count = hrr_count, "computed HRR vectors");
-        }
 
         let family_count = crate::similarity::compute_pattern_families(db)?;
         if family_count > 0 {
