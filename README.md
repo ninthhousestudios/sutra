@@ -4,7 +4,7 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, and tracks codebase health with empirically calibrated biomarkers. It exposes all of this through 28 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, and tracks codebase health with empirically calibrated biomarkers. It exposes all of this through 33 MCP tools that AI coding agents (and humans) can call.
 
 The core loop: **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
 
@@ -210,6 +210,7 @@ This powers duplicate detection (pattern families of 3+ structurally identical f
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
 | `sutra_parse` | Trigger a workspace reparse |
 | `sutra_tools` | Enable/disable tool tiers |
+| `sutra_add_root` | Register a workspace root and start indexing |
 | `sutra_help` | Agent-oriented help and workflow recipes |
 
 ### Analysis (enable via `sutra_tools`)
@@ -434,7 +435,7 @@ FCA conventions    DD constraints         HRR vectors
                 SQLite snapshots (WAL)
                          │
                          ▼
-                MCP server (stdio) → 28 tools with freshness envelopes
+                MCP server (stdio) → 33 tools with freshness envelopes
 ```
 
 ## Vision

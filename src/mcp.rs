@@ -991,17 +991,19 @@ impl SutraServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SutraServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "sutra v0.2.1 — code intelligence for manas. \
-             Core tools: sutra_health, sutra_help, sutra_map, sutra_outline, sutra_find, \
-             sutra_grep, sutra_read, sutra_impact, sutra_deps, sutra_parse, sutra_tools, \
-             sutra_components, sutra_orient. \
-             Analysis tools (enable via sutra_tools): sutra_refs, sutra_calls, \
-             sutra_diff_impact, sutra_cochange, sutra_pr_risk, sutra_provenance, sutra_trace, \
-             sutra_review. \
+        let mut tool_names: Vec<&str> = self.tool_router.map.keys().map(|k| k.as_ref()).collect();
+        tool_names.sort_unstable();
+        let roster = tool_names.join(", ");
+        let instructions = format!(
+            "sutra v{version} — code intelligence for manas. \
+             {count} tools: {roster}. \
              Call sutra_help() for workflow recipes. \
              All responses include as_of timestamp and is_stale indicator.",
-        )
+            version = env!("CARGO_PKG_VERSION"),
+            count = tool_names.len(),
+        );
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(instructions)
     }
 }
 
