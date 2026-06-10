@@ -1133,34 +1133,6 @@ impl Db {
         Ok(rows?)
     }
 
-    /// Return dead-symbol ratio (0.0–1.0) per file.
-    pub fn dead_symbol_ratio_by_file(&self) -> Result<std::collections::HashMap<i64, f64>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.file_id,
-                    SUM(CASE WHEN r.id IS NULL THEN 1 ELSE 0 END) AS dead,
-                    COUNT(*) AS total
-             FROM symbols s
-             LEFT JOIN refs r ON r.target_symbol_id = s.id
-             JOIN files f ON s.file_id = f.id
-             WHERE s.kind IN ('function','method','struct','enum','trait',
-                              'type_alias','class','mixin','const','static')
-               AND (s.flags & 7) = 0
-               AND f.path NOT LIKE 'tests/%'
-             GROUP BY s.file_id",
-        )?;
-        let rows: rusqlite::Result<Vec<(i64, f64, f64)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect();
-        Ok(rows?
-            .into_iter()
-            .map(|(fid, dead, total)| {
-                let ratio = if total > 0.0 { dead / total } else { 0.0 };
-                (fid, ratio)
-            })
-            .collect())
-    }
-
     /// Find files with zero fan-in that are not root files.
     /// Returns (path, line_count).
     pub fn find_unreachable_files(&self, path_prefix: Option<&str>) -> Result<Vec<(String, i64)>> {
