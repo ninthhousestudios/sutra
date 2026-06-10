@@ -7,12 +7,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::components;
-use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
+use crate::constraints::DdEngine;
+use crate::constraints::check::{EvalScope, FactsSource};
 use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, instability, scoring};
-use crate::rules::{self, Constraint, ConstraintKind, match_no_cycles_constraint};
+use crate::rules::{self, Constraint, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OrientArgs {
@@ -156,98 +157,6 @@ fn check_drift_from_snapshots(
         "delta": delta,
         "diverging_attributes": diverging_out,
     }))
-}
-
-struct OrientViolation {
-    constraint_id: String,
-    constraint_name: Option<String>,
-    severity: String,
-    from_path: String,
-    to_path: String,
-    detail: String,
-}
-
-fn compute_violations(
-    dd_engine: Option<&DdEngine>,
-    db: &Db,
-    all_constraints: &[Constraint],
-    path_map: &HashMap<i64, String>,
-    file_to_component: &HashMap<String, String>,
-    comp_name_to_id: &HashMap<String, String>,
-) -> Option<Vec<OrientViolation>> {
-    let dd = dd_engine?;
-    let edges = db.import_edges().ok()?;
-    if edges.is_empty() {
-        return Some(Vec::new());
-    }
-
-    if dd.is_invalidated() {
-        dd.reload(DdFacts {
-            import_edges: edges,
-        });
-    } else if !dd.is_loaded() {
-        dd.ingest(DdFacts {
-            import_edges: edges,
-        })
-        .ok()?;
-    }
-
-    let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(all_constraints, db, path_map).ok()?;
-
-    if !pairs.is_empty() {
-        dd.set_forbidden_pairs(pairs).ok()?;
-    }
-
-    let raw_violations = dd.query_violations().ok()?;
-    let mut result = Vec::new();
-
-    for &(from_id, to_id) in &raw_violations {
-        let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-        let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
-        if let Some(c) = constraints::find_matching_constraint(
-            all_constraints,
-            &from_path,
-            &to_path,
-            file_to_component,
-            comp_name_to_id,
-        ) {
-            let detail = constraints::format_violation_detail(c, &from_path, &to_path, false);
-            result.push(OrientViolation {
-                constraint_id: c.id.clone(),
-                constraint_name: c.name.clone(),
-                severity: c.severity.as_str().to_string(),
-                from_path,
-                to_path,
-                detail,
-            });
-        }
-    }
-
-    if let Ok(cycles) = dd.query_cycles() {
-        for cycle in cycles {
-            let cycle_paths: Vec<String> = cycle
-                .file_ids
-                .iter()
-                .filter_map(|id| path_map.get(id).cloned())
-                .collect();
-            let matched = match_no_cycles_constraint(all_constraints, &cycle_paths);
-            result.push(OrientViolation {
-                constraint_id: matched
-                    .map(|c| c.id.clone())
-                    .unwrap_or_else(|| "builtin:cycles".into()),
-                constraint_name: matched.and_then(|c| c.name.clone()),
-                severity: matched
-                    .map(|c| c.severity.as_str().to_string())
-                    .unwrap_or_else(|| "blocking".into()),
-                from_path: cycle_paths.first().cloned().unwrap_or_default(),
-                to_path: cycle_paths.last().cloned().unwrap_or_default(),
-                detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
-            });
-        }
-    }
-
-    Some(result)
 }
 
 fn constraints_for_component<'a>(
@@ -403,37 +312,26 @@ pub fn handle(
     let all_proposals = db.pending_proposals()?;
     let all_waivers = db.list_waivers(None).unwrap_or_default();
 
-    // Constraint system setup
+    // Constraint system
     let loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = loaded_rules.all_constraints();
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
 
     let comp_with_paths = db.active_components_with_paths()?;
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
     let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
-    for (comp_id, name, paths) in &comp_with_paths {
+    for (comp_id, name, _) in &comp_with_paths {
         comp_name_to_id.insert(name.clone(), comp_id.clone());
-        for path in paths {
-            file_to_component.insert(path.clone(), comp_id.clone());
-        }
     }
 
-    // DD engine: ingest if needed, resolve constraint pairs
     let all_files = db.all_files()?;
     let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
-    let dd_violations = if !all_constraints.is_empty() {
-        compute_violations(
-            dd_engine,
-            db,
-            &all_constraints,
-            &path_map,
-            &file_to_component,
-            &comp_name_to_id,
-        )
-    } else {
-        None
-    };
+    let check_outcome = crate::constraints::check::evaluate(
+        &FactsSource::DdBacked { db, dd_engine },
+        workspace_root,
+        EvalScope::Workspace,
+    )
+    .ok();
 
     // Health findings (load once, filter waived)
     let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
@@ -629,9 +527,12 @@ pub fn handle(
 
             let mut constraints_section = json!({ "active": active });
 
-            if let Some(violations) = &dd_violations {
-                let in_scope_violations: Vec<_> = violations
+            if let Some(outcome) = &check_outcome {
+                let all_findings = outcome
+                    .active
                     .iter()
+                    .chain(outcome.waived.iter().map(|w| &w.finding));
+                let in_scope_violations: Vec<_> = all_findings
                     .filter(|v| {
                         constraint_ids.contains(v.constraint_id.as_str())
                             && (file_set.contains(v.from_path.as_str())
@@ -643,7 +544,7 @@ pub fn handle(
                             "constraint_name": v.constraint_name,
                             "from_path": v.from_path,
                             "to_path": v.to_path,
-                            "severity": v.severity,
+                            "severity": v.severity.as_str(),
                             "detail": v.detail,
                         })
                     })
