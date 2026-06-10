@@ -21,4 +21,5 @@ pub mod rust_imports;
 pub mod similarity;
 pub mod tools;
 pub mod vocabulary;
+pub mod waivers;
 pub mod workspace;

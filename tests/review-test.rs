@@ -8,6 +8,7 @@ use sutra::parser::adapter::default_registry;
 use sutra::rules::Severity;
 use sutra::tools::review;
 use sutra::tools::scoring::ChurnMap;
+use sutra::waivers::Waived;
 
 fn sym<'a>(
     file_id: i64,
@@ -827,7 +828,7 @@ fn waived_constraint_violations_appear_in_output() {
     let findings = review::ReviewFindings {
         constraint_violations: vec![],
         resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![review::WaivedFinding {
+        waived_constraint_violations: vec![Waived {
             finding: review::ConstraintFinding {
                 constraint_id: "abc12345".into(),
                 constraint_name: Some("no-core-internal".into()),

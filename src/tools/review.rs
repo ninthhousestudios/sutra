@@ -34,8 +34,8 @@ const W_HOTSPOT: f64 = 0.15;
 const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
 
+use crate::waivers::Waived;
 pub use check::ConstraintFinding;
-pub use check::WaivedFinding;
 
 #[derive(Clone)]
 pub struct ConventionViolation {
@@ -78,7 +78,7 @@ pub struct WaivedViolation {
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintFinding>,
     pub resolved_constraint_violations: Vec<ConstraintFinding>,
-    pub waived_constraint_violations: Vec<WaivedFinding>,
+    pub waived_constraint_violations: Vec<Waived<ConstraintFinding>>,
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,

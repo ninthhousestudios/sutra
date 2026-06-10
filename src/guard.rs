@@ -673,9 +673,9 @@ mod tests {
 
     #[test]
     fn waived_blocking_does_not_block() {
-        use crate::constraints::check::WaivedFinding;
+        use crate::waivers::Waived;
         let outcome = CheckOutcome {
-            waived: vec![WaivedFinding {
+            waived: vec![Waived {
                 finding: make_finding(Severity::Blocking),
                 rationale: "accepted".into(),
                 waived_by: "josh".into(),
@@ -692,14 +692,14 @@ mod tests {
 
     #[test]
     fn mixed_severities_only_blocking_blocks() {
-        use crate::constraints::check::WaivedFinding;
+        use crate::waivers::Waived;
         let outcome = CheckOutcome {
             active: vec![
                 make_finding(Severity::Blocking),
                 make_finding(Severity::Advisory),
                 make_finding(Severity::Informational),
             ],
-            waived: vec![WaivedFinding {
+            waived: vec![Waived {
                 finding: make_finding(Severity::Blocking),
                 rationale: "accepted".into(),
                 waived_by: "josh".into(),
@@ -727,7 +727,7 @@ mod tests {
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);",
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -742,7 +742,7 @@ mod tests {
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/tools/review.rs');
              INSERT INTO files VALUES (2, 'src/daemon.rs');
              INSERT INTO imports VALUES (1, 2);",
@@ -781,7 +781,7 @@ name = "no-tools-daemon"
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/tools/review.rs');
              INSERT INTO files VALUES (2, 'src/daemon.rs');
              INSERT INTO imports VALUES (1, 2);",
@@ -811,7 +811,7 @@ name = "no-tools-daemon"
 
         // Now add waiver
         conn.execute(
-            "INSERT INTO constraint_waivers VALUES (?1, 'src/tools/review.rs')",
+            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'src/tools/review.rs', 'accepted', 'test')",
             params![constraint_id],
         )
         .unwrap();
@@ -828,7 +828,7 @@ name = "no-tools-daemon"
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/config.rs');
              INSERT INTO files VALUES (2, 'src/db/mod.rs');
              INSERT INTO imports VALUES (2, 1);",
@@ -863,7 +863,7 @@ name = "db-config-coupling"
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (constraint_id TEXT, file_path TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/tools/review.rs');
              INSERT INTO files VALUES (2, 'src/daemon.rs');
              INSERT INTO files VALUES (3, 'src/lib.rs');",
@@ -944,7 +944,7 @@ name = "no-tools-daemon"
 
         // Waiver on the TARGET file (daemon.rs), not the source
         conn.execute(
-            "INSERT INTO constraint_waivers VALUES (?1, 'src/daemon.rs')",
+            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'src/daemon.rs', 'accepted', 'test')",
             params![constraint_id],
         )
         .unwrap();
@@ -968,7 +968,7 @@ name = "no-tools-daemon"
 
         // Waiver on the SOURCE file (tools/review.rs)
         conn.execute(
-            "INSERT INTO constraint_waivers VALUES (?1, 'src/tools/review.rs')",
+            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'src/tools/review.rs', 'accepted', 'test')",
             params![constraint_id],
         )
         .unwrap();

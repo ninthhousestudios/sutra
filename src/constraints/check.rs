@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
 use crate::error::Result;
 use crate::rules::{self, Constraint, ConstraintParseError, Severity, match_no_cycles_constraint};
+use crate::waivers::{self, Waived};
 
 #[derive(Debug, Clone)]
 pub struct ConstraintFinding {
@@ -28,17 +29,10 @@ pub enum FindingDelta {
     Resolved,
 }
 
-#[derive(Debug, Clone)]
-pub struct WaivedFinding {
-    pub finding: ConstraintFinding,
-    pub rationale: String,
-    pub waived_by: String,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutcome {
     pub active: Vec<ConstraintFinding>,
-    pub waived: Vec<WaivedFinding>,
+    pub waived: Vec<Waived<ConstraintFinding>>,
     pub resolved: Vec<ConstraintFinding>,
     pub parse_errors: Vec<ConstraintParseError>,
 }
@@ -283,26 +277,8 @@ fn evaluate_dd(
         });
     }
 
-    // Waiver partition — canonical rule: from_path only
-    let waivers = db.get_constraint_waivers(None)?;
-    let mut active = Vec::new();
-    let mut waived = Vec::new();
-    for f in findings {
-        let waiver = waivers.iter().find(|w| {
-            w.constraint_id == f.constraint_id
-                && w.file_path == f.from_path
-                && w.symbol_qualified_name.is_none()
-        });
-        if let Some(w) = waiver {
-            waived.push(WaivedFinding {
-                finding: f,
-                rationale: w.rationale.clone(),
-                waived_by: w.waived_by.clone(),
-            });
-        } else {
-            active.push(f);
-        }
-    }
+    let constraint_waivers = db.get_constraint_waivers(None)?;
+    let (active, waived) = waivers::partition(findings, &constraint_waivers);
 
     Ok(CheckOutcome {
         active,
@@ -403,20 +379,33 @@ fn evaluate_raw(
 
     let (file_to_component, comp_name_to_id) = build_component_maps_raw(conn)?;
 
-    // Load waivers scoped to relevant paths
+    use crate::db::ConstraintWaiverRow;
+
     let relevant_paths: HashSet<&str> = path_map.values().map(|p| p.as_str()).collect();
-    let waivers: Vec<(String, String)> = conn
-        .prepare("SELECT constraint_id, file_path FROM constraint_waivers")?
+    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
+        .prepare(
+            "SELECT id, constraint_id, constraint_name, file_path, \
+             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+             FROM constraint_waivers",
+        )?
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok(ConstraintWaiverRow {
+                id: row.get(0)?,
+                constraint_id: row.get(1)?,
+                constraint_name: row.get(2)?,
+                file_path: row.get(3)?,
+                symbol_qualified_name: row.get(4)?,
+                rationale: row.get(5)?,
+                waived_by: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
         })?
         .filter_map(|r| r.ok())
-        .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
+        .filter(|w| relevant_paths.contains(w.file_path.as_str()))
         .collect();
 
-    let mut active = Vec::new();
-    let mut waived = Vec::new();
-
+    let mut findings = Vec::new();
     for (from_id, to_id) in &edges {
         let from = match path_map.get(from_id) {
             Some(p) => p,
@@ -434,37 +423,17 @@ fn evaluate_raw(
             &file_to_component,
             &comp_name_to_id,
         ) {
-            let is_waived = waivers
-                .iter()
-                .any(|(wc_id, wf_path)| wc_id == &c.id && wf_path == from);
-
-            let finding = make_finding(c, from, to, &file_to_component, FindingDelta::Unknown);
-
-            if is_waived {
-                let waiver_row = conn
-                    .prepare(
-                        "SELECT rationale, waived_by FROM constraint_waivers \
-                         WHERE constraint_id = ?1 AND file_path = ?2 LIMIT 1",
-                    )
-                    .ok()
-                    .and_then(|mut s| {
-                        s.query_row(params![c.id, from], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                        })
-                        .ok()
-                    });
-                let (rationale, waived_by) =
-                    waiver_row.unwrap_or_else(|| ("waived".to_string(), String::new()));
-                waived.push(WaivedFinding {
-                    finding,
-                    rationale,
-                    waived_by,
-                });
-            } else {
-                active.push(finding);
-            }
+            findings.push(make_finding(
+                c,
+                from,
+                to,
+                &file_to_component,
+                FindingDelta::Unknown,
+            ));
         }
     }
+
+    let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
 
     let mut all_active = parse_error_findings;
     all_active.append(&mut active);
