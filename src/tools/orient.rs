@@ -342,7 +342,7 @@ pub fn handle(
         }
     }
 
-    let workspace_health = scoring::score_workspace(db).ok();
+    let workspace_health = scoring::score_workspace(db, true).ok();
     let comp_health_map: HashMap<&str, &scoring::ScoredComponent> = workspace_health
         .as_ref()
         .map(|wh| {
@@ -352,15 +352,6 @@ pub fn handle(
                 .collect()
         })
         .unwrap_or_default();
-
-    let memberships = db.component_members_with_line_count().unwrap_or_default();
-    let mut comp_file_ids: HashMap<&str, Vec<i64>> = HashMap::new();
-    for (comp_id, file_id, _) in &memberships {
-        comp_file_ids
-            .entry(comp_id.as_str())
-            .or_default()
-            .push(*file_id);
-    }
 
     let mut orientation_sections = Vec::new();
 
@@ -606,8 +597,9 @@ pub fn handle(
         }
 
         // Top findings rendering (from raw findings, not scored rollup)
-        let mut comp_findings: Vec<&HealthFindingRow> = comp_file_ids
-            .get(comp.id.as_str())
+        let mut comp_findings: Vec<&HealthFindingRow> = workspace_health
+            .as_ref()
+            .and_then(|wh| wh.comp_file_ids.get(&comp.id))
             .into_iter()
             .flatten()
             .filter_map(|fid| findings_by_file.get(fid))

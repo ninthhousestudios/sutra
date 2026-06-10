@@ -217,7 +217,7 @@ pub fn handle_with_freshness(
 }
 
 fn build_component_scores(db: &Db) -> Result<Vec<serde_json::Value>> {
-    let workspace = scoring::score_workspace(db)?;
+    let workspace = scoring::score_workspace(db, true)?;
 
     let mut comp_results: Vec<serde_json::Value> = workspace
         .component_scores

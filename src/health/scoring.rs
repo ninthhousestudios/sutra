@@ -186,9 +186,10 @@ pub struct ScoredComponent {
 pub struct WorkspaceHealth {
     pub file_scores: Vec<ScoredFile>,
     pub component_scores: Vec<ScoredComponent>,
+    pub comp_file_ids: HashMap<String, Vec<i64>>,
 }
 
-pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
+pub fn score_workspace(db: &Db, include_instability: bool) -> Result<WorkspaceHealth> {
     let all_with_waivers = db.get_health_findings_with_waiver_status()?;
 
     let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
@@ -218,7 +219,11 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
 
     let components = db.all_components()?;
     let memberships = db.component_members_with_line_count()?;
-    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
+    let instability_map = if include_instability {
+        instability::compute_component_instability(db).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
 
     let file_score_map: HashMap<i64, f64> = file_scores
         .iter()
@@ -226,11 +231,16 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
         .collect();
 
     let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    let mut comp_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
     for (comp_id, file_id, line_count) in &memberships {
         comp_files
             .entry(comp_id.as_str())
             .or_default()
             .push((*file_id, *line_count));
+        comp_file_ids
+            .entry(comp_id.clone())
+            .or_default()
+            .push(*file_id);
     }
 
     let mut component_scores = Vec::new();
@@ -257,5 +267,6 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
     Ok(WorkspaceHealth {
         file_scores,
         component_scores,
+        comp_file_ids,
     })
 }
