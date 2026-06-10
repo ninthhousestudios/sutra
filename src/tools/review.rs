@@ -294,6 +294,8 @@ fn extract_outgoing_edges(
 ) -> Vec<(i64, i64)> {
     let language = if rel_path.ends_with(".rs") {
         "rust"
+    } else if rel_path.ends_with(".dart") {
+        "dart"
     } else {
         return Vec::new();
     };
@@ -301,23 +303,56 @@ fn extract_outgoing_edges(
         Ok(r) if r.parsed_ok => r,
         _ => return Vec::new(),
     };
-    let crate_name = crate::rust_imports::read_crate_name(workspace_root);
-    let path_ref_map: HashMap<&str, i64> = id_map.iter().map(|(k, v)| (*k, *v)).collect();
     let mut edges = Vec::new();
-    for import in &result.imports {
-        let segments = match crate::rust_imports::normalize_to_crate_segments(
-            &import.raw_path,
-            rel_path,
-            crate_name.as_deref(),
-        ) {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        if let Some(target_id) = crate::rust_imports::resolve_segments(&segments, &path_ref_map) {
-            if target_id != file_id {
-                edges.push((file_id, target_id));
+    match language {
+        "rust" => {
+            let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+            let path_ref_map: HashMap<&str, i64> = id_map.iter().map(|(k, v)| (*k, *v)).collect();
+            for import in &result.imports {
+                let segments = match crate::rust_imports::normalize_to_crate_segments(
+                    &import.raw_path,
+                    rel_path,
+                    crate_name.as_deref(),
+                ) {
+                    Some(s) if !s.is_empty() => s,
+                    _ => continue,
+                };
+                if let Some(target_id) =
+                    crate::rust_imports::resolve_segments(&segments, &path_ref_map)
+                {
+                    if target_id != file_id {
+                        edges.push((file_id, target_id));
+                    }
+                }
             }
         }
+        "dart" => {
+            let pkg_map = crate::dart_packages::DartPackageMap::build(workspace_root);
+            let id_to_path: HashMap<i64, &str> = id_map.iter().map(|(k, v)| (*v, *k)).collect();
+            for import in &result.imports {
+                let resolved = if import.raw_path.starts_with("package:") {
+                    crate::dart_packages::resolve_package_uri(&import.raw_path, &pkg_map)
+                } else if import.raw_path.ends_with(".dart")
+                    && !import.raw_path.starts_with("dart:")
+                {
+                    crate::dart_packages::resolve_relative_import(
+                        &import.raw_path,
+                        file_id,
+                        &id_to_path,
+                    )
+                } else {
+                    None
+                };
+                if let Some(path) = resolved {
+                    if let Some(&target_id) = id_map.get(path.as_str()) {
+                        if target_id != file_id {
+                            edges.push((file_id, target_id));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     edges
 }

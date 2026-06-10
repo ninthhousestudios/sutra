@@ -6,8 +6,8 @@ use tracing::info;
 use crate::db::Db;
 use crate::error::Result;
 
-struct DartPackageMap {
-    packages: HashMap<String, String>,
+pub(crate) struct DartPackageMap {
+    pub(crate) packages: HashMap<String, String>,
 }
 
 const SKIP_DIRS: &[&str] = &[
@@ -20,7 +20,7 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 impl DartPackageMap {
-    fn build(workspace_root: &Path) -> Self {
+    pub(crate) fn build(workspace_root: &Path) -> Self {
         let mut packages = HashMap::new();
         let mut stack = vec![workspace_root.to_path_buf()];
 
@@ -83,14 +83,14 @@ fn extract_package_info(workspace_root: &Path, pubspec_path: &Path) -> Option<(S
     Some((pkg_name, lib_prefix))
 }
 
-fn resolve_package_uri(uri: &str, pkg_map: &DartPackageMap) -> Option<String> {
+pub(crate) fn resolve_package_uri(uri: &str, pkg_map: &DartPackageMap) -> Option<String> {
     let rest = uri.strip_prefix("package:")?;
     let (pkg_name, subpath) = rest.split_once('/')?;
     let lib_dir = pkg_map.packages.get(pkg_name)?;
     Some(format!("{}{}", lib_dir, subpath))
 }
 
-fn resolve_relative_import(
+pub(crate) fn resolve_relative_import(
     path: &str,
     file_id: i64,
     id_to_path: &HashMap<i64, &str>,
