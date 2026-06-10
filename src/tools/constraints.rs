@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
+use crate::constraints::DdEngine;
+use crate::constraints::check::{self, EvalScope, FactsSource};
 use crate::db::Db;
 use crate::error::{Result, SutraError};
-use crate::rules::{self, ConstraintKind, match_no_cycles_constraint};
+use crate::rules::{self, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConstraintsArgs {
@@ -117,161 +117,32 @@ fn handle_violations(
     workspace_root: &Path,
     dd_engine: Option<&DdEngine>,
 ) -> Result<serde_json::Value> {
-    let rules = rules::load_rules(workspace_root)?;
-    let (all_constraints, constraint_parse_errors) = rules.all_constraints();
-    let all_files = db.all_files()?;
-    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let outcome = check::evaluate(
+        &FactsSource::DdBacked { db, dd_engine },
+        workspace_root,
+        EvalScope::Workspace,
+    )?;
 
-    let comp_with_paths = db.active_components_with_paths()?;
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
-    for (comp_id, name, paths) in &comp_with_paths {
-        comp_name_to_id.insert(name.clone(), comp_id.clone());
-        for path in paths {
-            file_to_component.insert(path.clone(), comp_id.clone());
-        }
-    }
-
-    let edges = db.import_edges()?;
-    if edges.is_empty() {
-        return Ok(json!({
-            "violations": [],
-            "waived_violations": [],
-            "note": "no import edges in workspace"
-        }));
-    }
-
-    let ephemeral;
-    let engine: &DdEngine = if let Some(e) = dd_engine {
-        if e.is_invalidated() {
-            e.reload(DdFacts {
-                import_edges: edges.clone(),
-            });
-        } else if !e.is_loaded() {
-            e.ingest(DdFacts {
-                import_edges: edges.clone(),
-            })?;
-        }
-        e
-    } else {
-        ephemeral = DdEngine::new(Duration::from_secs(60));
-        ephemeral.ingest(DdFacts {
-            import_edges: edges,
-        })?;
-        &ephemeral
-    };
-
-    let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&all_constraints, db, &path_map)?;
-
-    let mut violation_list = Vec::new();
-
-    if !pairs.is_empty() {
-        engine.set_forbidden_pairs(pairs)?;
-        let raw_violations = engine.query_violations()?;
-
-        for &(from_id, to_id) in &raw_violations {
-            let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-            let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
-            if let Some(c) = constraints::find_matching_constraint(
-                &all_constraints,
-                &from_path,
-                &to_path,
-                &file_to_component,
-                &comp_name_to_id,
-            ) {
-                let component_context = constraints::build_component_context(
-                    &c.kind,
-                    &file_to_component,
-                    &from_path,
-                    &to_path,
-                );
-                let detail = constraints::format_violation_detail(c, &from_path, &to_path, false);
-                violation_list.push(ViolationEntry {
-                    constraint_id: c.id.clone(),
-                    constraint_name: c.name.clone(),
-                    constraint_kind: c.kind.kind_tag().to_string(),
-                    severity: c.severity.as_str().to_string(),
-                    provenance: c.provenance.clone(),
-                    from_path,
-                    to_path,
-                    component_context,
-                    detail,
-                });
-            }
-        }
-    }
-
-    for cycle in engine.query_cycles()? {
-        let cycle_paths: Vec<String> = cycle
-            .file_ids
-            .iter()
-            .filter_map(|id| path_map.get(id).cloned())
-            .collect();
-        let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
-        violation_list.push(ViolationEntry {
-            constraint_id: matched
-                .map(|c| c.id.clone())
-                .unwrap_or_else(|| "builtin:cycles".into()),
-            constraint_name: matched.and_then(|c| c.name.clone()),
-            constraint_kind: "no_cycles".into(),
-            severity: matched
-                .map(|c| c.severity.as_str().to_string())
-                .unwrap_or_else(|| "blocking".into()),
-            provenance: matched.and_then(|c| c.provenance.clone()),
-            from_path: cycle_paths.first().cloned().unwrap_or_default(),
-            to_path: cycle_paths.last().cloned().unwrap_or_default(),
-            component_context: None,
-            detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
-        });
-    }
-
-    // Partition into active vs waived
-    let waivers = db.get_constraint_waivers(None)?;
-    let mut waived = Vec::new();
-    let mut active = Vec::new();
-    for v in violation_list {
-        let waiver = waivers.iter().find(|w| {
-            w.constraint_id == v.constraint_id
-                && w.file_path == v.from_path
-                && w.symbol_qualified_name.is_none()
-        });
-        if let Some(w) = waiver {
-            waived.push(json!({
-                "constraint_id": v.constraint_id,
-                "constraint_name": v.constraint_name,
-                "constraint_kind": v.constraint_kind,
-                "severity": v.severity,
-                "provenance": v.provenance,
-                "from_path": v.from_path,
-                "to_path": v.to_path,
-                "component_context": v.component_context,
-                "detail": v.detail,
-                "rationale": w.rationale,
-                "waived_by": w.waived_by,
-            }));
-        } else {
-            active.push(json!({
-                "constraint_id": v.constraint_id,
-                "constraint_name": v.constraint_name,
-                "constraint_kind": v.constraint_kind,
-                "severity": v.severity,
-                "provenance": v.provenance,
-                "from_path": v.from_path,
-                "to_path": v.to_path,
-                "component_context": v.component_context,
-                "detail": v.detail,
-            }));
-        }
-    }
+    let active: Vec<_> = outcome.active.iter().map(finding_to_json).collect();
+    let waived: Vec<_> = outcome
+        .waived
+        .iter()
+        .map(|w| {
+            let mut v = finding_to_json(&w.finding);
+            v["rationale"] = json!(w.rationale);
+            v["waived_by"] = json!(w.waived_by);
+            v
+        })
+        .collect();
 
     let mut result = json!({
         "violations": active,
         "waived_violations": waived,
     });
-    if !constraint_parse_errors.is_empty() {
+    if !outcome.parse_errors.is_empty() {
         result["parse_errors"] = json!(
-            constraint_parse_errors
+            outcome
+                .parse_errors
                 .iter()
                 .map(|e| json!({
                     "severity": "blocking",
@@ -285,16 +156,18 @@ fn handle_violations(
     Ok(result)
 }
 
-struct ViolationEntry {
-    constraint_id: String,
-    constraint_name: Option<String>,
-    constraint_kind: String,
-    severity: String,
-    provenance: Option<String>,
-    from_path: String,
-    to_path: String,
-    component_context: Option<String>,
-    detail: String,
+fn finding_to_json(f: &check::ConstraintFinding) -> serde_json::Value {
+    json!({
+        "constraint_id": f.constraint_id,
+        "constraint_name": f.constraint_name,
+        "constraint_kind": f.constraint_kind,
+        "severity": f.severity.as_str(),
+        "provenance": f.provenance,
+        "from_path": f.from_path,
+        "to_path": f.to_path,
+        "component_context": f.component_context,
+        "detail": f.detail,
+    })
 }
 
 fn handle_waive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
