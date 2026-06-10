@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -6,6 +5,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::error::Result;
+use crate::git;
+use crate::tools::change_signals::{self, ChurnMap};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffImpactArgs {
@@ -15,8 +17,6 @@ pub struct DiffImpactArgs {
     #[serde(default)]
     pub head: Option<String>,
 }
-use crate::error::Result;
-use crate::git;
 
 pub fn handle(
     db: &Db,
@@ -28,58 +28,32 @@ pub fn handle(
     let head = head.unwrap_or("HEAD");
 
     let changed_paths = git::git_diff_files(workspace_root, base, head)?;
+    let signals = change_signals::gather(db, &changed_paths, &ChurnMap::default())?;
 
-    let mut changed_files: Vec<serde_json::Value> = Vec::new();
-    let mut all_symbol_ids: HashSet<i64> = HashSet::new();
-    let mut max_cognitive: Option<i64> = None;
-    let mut max_cognitive_symbol: Option<String> = None;
-    let mut total_blast: i64 = 0;
+    let changed_files: Vec<_> = signals
+        .per_file
+        .iter()
+        .map(|f| {
+            let symbols: Vec<&str> = f
+                .symbols
+                .iter()
+                .map(|s| s.qualified_name.as_str())
+                .collect();
+            json!({ "path": f.path, "symbols": symbols })
+        })
+        .collect();
 
-    for path in &changed_paths {
-        if let Some(file) = db.file_by_path(path)? {
-            total_blast += file.blast_radius;
-            let syms = db.find_symbols_by_file(file.id)?;
-            for s in &syms {
-                all_symbol_ids.insert(s.id);
-                if let Some(c) = s.cognitive
-                    && max_cognitive.is_none_or(|prev| c > prev)
-                {
-                    max_cognitive = Some(c);
-                    max_cognitive_symbol = Some(s.qualified_name.clone());
-                }
-            }
-            let symbols: Vec<_> = syms.into_iter().map(|s| s.qualified_name).collect();
-            changed_files.push(json!({
-                "path": path,
-                "symbols": symbols,
-            }));
-        } else {
-            changed_files.push(json!({
-                "path": path,
-                "symbols": Vec::<String>::new(),
-            }));
-        }
-    }
-
-    let symbol_ids: Vec<i64> = all_symbol_ids.into_iter().collect();
-    let affected_file_ids = if symbol_ids.is_empty() {
-        Vec::new()
-    } else {
-        db.find_files_referencing_symbols(&symbol_ids)?
-    };
-
-    let affected_files: Vec<String> = affected_file_ids
-        .into_iter()
-        .filter_map(|fid| db.file_by_id(fid).ok().flatten().map(|f| f.path))
-        .filter(|p| !changed_paths.contains(p))
+    let affected_files: Vec<&str> = signals
+        .affected_files
+        .iter()
+        .map(|a| a.path.as_str())
         .collect();
 
     let impact_count = affected_files.len();
+    let max_cog = signals.max_cognitive;
+    let has_complexity = signals.per_file.iter().any(|f| f.indexed);
 
     let mut verdict_reasons: Vec<String> = Vec::new();
-
-    let has_complexity = max_cognitive.is_some();
-    let max_cog = max_cognitive.unwrap_or(0);
 
     if impact_count >= 30 {
         verdict_reasons.push(format!("{impact_count} affected files (threshold: 30)"));
@@ -90,27 +64,33 @@ pub fn handle(
         verdict_reasons.push(format!(
             "max cognitive complexity {} in {} (threshold: 25)",
             max_cog,
-            max_cognitive_symbol.as_deref().unwrap_or("?")
+            signals.max_cognitive_symbol.as_deref().unwrap_or("?")
         ));
     } else if max_cog >= 15 {
         verdict_reasons.push(format!(
             "max cognitive complexity {} in {} (threshold: 15)",
             max_cog,
-            max_cognitive_symbol.as_deref().unwrap_or("?")
+            signals.max_cognitive_symbol.as_deref().unwrap_or("?")
         ));
     }
-    if total_blast >= 50 {
-        verdict_reasons.push(format!("total blast radius {total_blast} (threshold: 50)"));
-    } else if total_blast >= 20 {
-        verdict_reasons.push(format!("total blast radius {total_blast} (threshold: 20)"));
+    if signals.total_blast >= 50 {
+        verdict_reasons.push(format!(
+            "total blast radius {} (threshold: 50)",
+            signals.total_blast
+        ));
+    } else if signals.total_blast >= 20 {
+        verdict_reasons.push(format!(
+            "total blast radius {} (threshold: 20)",
+            signals.total_blast
+        ));
     }
     if !has_complexity {
         verdict_reasons.push("complexity data unavailable — reparse to populate".to_string());
     }
 
-    let verdict = if impact_count >= 30 || max_cog >= 25 || total_blast >= 50 {
+    let verdict = if impact_count >= 30 || max_cog >= 25 || signals.total_blast >= 50 {
         "fail"
-    } else if impact_count >= 10 || max_cog >= 15 || total_blast >= 20 {
+    } else if impact_count >= 10 || max_cog >= 15 || signals.total_blast >= 20 {
         "warn"
     } else {
         "pass"
@@ -127,8 +107,8 @@ pub fn handle(
         "risk_metrics": {
             "affected_file_count": impact_count,
             "max_cognitive": max_cog,
-            "max_cognitive_symbol": max_cognitive_symbol,
-            "total_blast_radius": total_blast,
+            "max_cognitive_symbol": signals.max_cognitive_symbol,
+            "total_blast_radius": signals.total_blast,
         },
     }))
 }
