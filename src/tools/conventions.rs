@@ -10,6 +10,11 @@ pub struct ConventionsArgs {
     pub workspace: String,
     /// Action: "list", "accept", "dismiss", "set_lifecycle", "waive", "list_waivers", "revoke_waiver"
     pub action: String,
+    /// For "list": if true (default), only return non-descriptive conventions
+    /// (preferred, deprecated, forbidden) plus pending proposals.
+    /// Pass false to include all descriptive conventions.
+    #[serde(default)]
+    pub compact: Option<bool>,
     /// Proposal ID (for accept/dismiss)
     #[serde(default)]
     pub proposal_id: Option<i64>,
@@ -42,8 +47,9 @@ pub struct ConventionsArgs {
 const VALID_STATES: &[&str] = &["descriptive", "preferred", "deprecated", "forbidden"];
 
 pub fn handle(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
+    let compact = args.compact.unwrap_or(true);
     match args.action.as_str() {
-        "list" => handle_list(db),
+        "list" => handle_list(db, compact),
         "accept" => handle_accept(db, args),
         "dismiss" => handle_dismiss(db, args),
         "set_lifecycle" => handle_set_lifecycle(db, args),
@@ -56,14 +62,25 @@ pub fn handle(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {
     }
 }
 
-fn handle_list(db: &Db) -> Result<serde_json::Value> {
+fn handle_list(db: &Db, compact: bool) -> Result<serde_json::Value> {
     let conventions = db.all_conventions_merged()?;
     let proposals = db.pending_proposals()?;
 
+    let mut descriptive_omitted = 0usize;
     let conventions_out: Vec<_> = conventions
         .iter()
+        .filter(|c| {
+            if compact {
+                let state = c.lifecycle_state.as_deref().unwrap_or("descriptive");
+                if state == "descriptive" {
+                    descriptive_omitted += 1;
+                    return false;
+                }
+            }
+            true
+        })
         .map(|c| {
-            json!({
+            let mut obj = json!({
                 "id": c.id,
                 "antecedent": c.antecedent,
                 "consequent": c.consequent,
@@ -71,9 +88,12 @@ fn handle_list(db: &Db) -> Result<serde_json::Value> {
                 "confidence": c.confidence,
                 "lifecycle_state": c.lifecycle_state.as_deref().unwrap_or("descriptive"),
                 "component_id": c.component_id,
-                "first_seen": c.first_seen,
-                "last_seen": c.last_seen,
-            })
+            });
+            if !compact {
+                obj["first_seen"] = json!(c.first_seen);
+                obj["last_seen"] = json!(c.last_seen);
+            }
+            obj
         })
         .collect();
 
@@ -90,10 +110,14 @@ fn handle_list(db: &Db) -> Result<serde_json::Value> {
         })
         .collect();
 
-    Ok(json!({
+    let mut result = json!({
         "conventions": conventions_out,
         "pending_proposals": proposals_out,
-    }))
+    });
+    if compact && descriptive_omitted > 0 {
+        result["descriptive_omitted"] = json!(descriptive_omitted);
+    }
+    Ok(result)
 }
 
 fn handle_accept(db: &Db, args: &ConventionsArgs) -> Result<serde_json::Value> {

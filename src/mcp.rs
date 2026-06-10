@@ -377,15 +377,13 @@ impl SutraServer {
         self.wrap_response(&db, result)
     }
 
-    #[tool(
-        description = "Manage convention lifecycle and waivers: list conventions with state \
-        and pending proposals, accept or dismiss proposals, manually set lifecycle state, \
-        or manage waivers for reviewed-and-intentional deviations. \
-        Actions: list, accept (proposal_id), dismiss (proposal_id), \
+    #[tool(description = "Manage convention lifecycle and waivers. \
+        List defaults to compact mode: only non-descriptive conventions (preferred/deprecated/forbidden) \
+        plus pending proposals; pass compact=false to include all descriptive conventions. \
+        Actions: list (optional compact), accept (proposal_id), dismiss (proposal_id), \
         set_lifecycle (convention_id, lifecycle_state, reason), \
         waive (convention_id, symbol, rationale, waived_by, optional component_id), \
-        list_waivers (optional convention_id), revoke_waiver (waiver_id)."
-    )]
+        list_waivers (optional convention_id), revoke_waiver (waiver_id).")]
     pub async fn sutra_conventions(
         &self,
         Parameters(args): Parameters<tools::conventions::ConventionsArgs>,
