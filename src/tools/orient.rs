@@ -405,7 +405,7 @@ pub fn handle(
 
     // Constraint system setup
     let loaded_rules = rules::load_rules(workspace_root)?;
-    let all_constraints = loaded_rules.all_constraints().unwrap_or_default();
+    let (all_constraints, constraint_parse_errors) = loaded_rules.all_constraints();
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
 
     let comp_with_paths = db.active_components_with_paths()?;
@@ -751,10 +751,33 @@ pub fn handle(
         orientation_sections.push(section);
     }
 
-    Ok(json!({
+    let mut result = json!({
         "scope": scope,
         "orientation": orientation_sections,
-    }))
+    });
+
+    if !constraint_parse_errors.is_empty() {
+        result["constraint_parse_errors"] =
+            json!(constraint_parse_errors
+            .iter()
+            .map(|e| {
+                json!({
+                    "severity": "blocking",
+                    "index": e.index,
+                    "name": e.name,
+                    "error": e.error,
+                    "detail": format!(
+                        "malformed [[constraint]] at index {}{}: {}",
+                        e.index,
+                        e.name.as_deref().map(|n| format!(" (name: {n})")).unwrap_or_default(),
+                        e.error,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>());
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -1190,10 +1213,7 @@ name = "no-tool-daemon"
 "#,
         );
 
-        let constraints = rules::load_rules(dir.path())
-            .unwrap()
-            .all_constraints()
-            .unwrap();
+        let (constraints, _) = rules::load_rules(dir.path()).unwrap().all_constraints();
         let constraint_id = &constraints[0].id;
 
         db.create_constraint_waiver(

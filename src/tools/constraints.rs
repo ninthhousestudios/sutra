@@ -58,7 +58,7 @@ pub fn handle(
 
 fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
     let rules = rules::load_rules(workspace_root)?;
-    let all_constraints = rules.all_constraints()?;
+    let (all_constraints, constraint_parse_errors) = rules.all_constraints();
     let waivers = db.get_constraint_waivers(None)?;
 
     let mut waiver_counts: HashMap<&str, usize> = HashMap::new();
@@ -95,7 +95,21 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
         })
         .collect();
 
-    Ok(json!({ "constraints": constraints_out }))
+    let mut result = json!({ "constraints": constraints_out });
+    if !constraint_parse_errors.is_empty() {
+        result["parse_errors"] = json!(
+            constraint_parse_errors
+                .iter()
+                .map(|e| json!({
+                    "severity": "blocking",
+                    "index": e.index,
+                    "name": e.name,
+                    "error": e.error,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok(result)
 }
 
 fn handle_violations(
@@ -104,7 +118,7 @@ fn handle_violations(
     dd_engine: Option<&DdEngine>,
 ) -> Result<serde_json::Value> {
     let rules = rules::load_rules(workspace_root)?;
-    let all_constraints = rules.all_constraints()?;
+    let (all_constraints, constraint_parse_errors) = rules.all_constraints();
     let all_files = db.all_files()?;
     let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
@@ -251,10 +265,24 @@ fn handle_violations(
         }
     }
 
-    Ok(json!({
+    let mut result = json!({
         "violations": active,
         "waived_violations": waived,
-    }))
+    });
+    if !constraint_parse_errors.is_empty() {
+        result["parse_errors"] = json!(
+            constraint_parse_errors
+                .iter()
+                .map(|e| json!({
+                    "severity": "blocking",
+                    "index": e.index,
+                    "name": e.name,
+                    "error": e.error,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok(result)
 }
 
 struct ViolationEntry {

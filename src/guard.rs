@@ -411,9 +411,32 @@ fn check_edges_against_constraints(
         }
 
         let rules = rules::load_rules(project_root)?;
-        let all_constraints = rules.all_constraints()?;
+        let (all_constraints, constraint_parse_errors) = rules.all_constraints();
+
+        let mut findings = Vec::new();
+        for e in &constraint_parse_errors {
+            findings.push(ConstraintFinding {
+                constraint_id: format!("parse-error-{}", e.index),
+                name: e.name.clone(),
+                kind: "parse_error".to_string(),
+                severity: Severity::Blocking,
+                from_path: String::new(),
+                to_path: String::new(),
+                detail: format!(
+                    "malformed [[constraint]] at index {}{}: {}",
+                    e.index,
+                    e.name
+                        .as_deref()
+                        .map(|n| format!(" (name: {n})"))
+                        .unwrap_or_default(),
+                    e.error,
+                ),
+                waived: false,
+            });
+        }
+
         if all_constraints.is_empty() {
-            return Ok(Vec::new());
+            return Ok(findings);
         }
 
         let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
@@ -422,8 +445,11 @@ fn check_edges_against_constraints(
                 ConstraintKind::ForbiddenDep { .. } | ConstraintKind::Boundary { .. }
             )
         });
-        if !has_forbidden_or_boundary {
+        if !has_forbidden_or_boundary && findings.is_empty() {
             return Ok(Vec::new());
+        }
+        if !has_forbidden_or_boundary {
+            return Ok(findings);
         }
 
         let mut needed_ids: Vec<i64> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
@@ -453,7 +479,6 @@ fn check_edges_against_constraints(
             .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
             .collect();
 
-        let mut findings = Vec::new();
         for (from_id, to_id) in edges {
             let from = match path_map.get(from_id) {
                 Some(p) => p,
@@ -501,9 +526,32 @@ pub fn check_file_constraints(
 ) -> Vec<ConstraintFinding> {
     let inner = || -> Result<Vec<ConstraintFinding>, Box<dyn std::error::Error>> {
         let rules = rules::load_rules(project_root)?;
-        let all_constraints = rules.all_constraints()?;
+        let (all_constraints, constraint_parse_errors) = rules.all_constraints();
+
+        let mut findings = Vec::new();
+        for e in &constraint_parse_errors {
+            findings.push(ConstraintFinding {
+                constraint_id: format!("parse-error-{}", e.index),
+                name: e.name.clone(),
+                kind: "parse_error".to_string(),
+                severity: Severity::Blocking,
+                from_path: String::new(),
+                to_path: String::new(),
+                detail: format!(
+                    "malformed [[constraint]] at index {}{}: {}",
+                    e.index,
+                    e.name
+                        .as_deref()
+                        .map(|n| format!(" (name: {n})"))
+                        .unwrap_or_default(),
+                    e.error,
+                ),
+                waived: false,
+            });
+        }
+
         if all_constraints.is_empty() {
-            return Ok(Vec::new());
+            return Ok(findings);
         }
 
         let has_forbidden_or_boundary = all_constraints.iter().any(|c| {
@@ -513,7 +561,7 @@ pub fn check_file_constraints(
             )
         });
         if !has_forbidden_or_boundary {
-            return Ok(Vec::new());
+            return Ok(findings);
         }
 
         // Gather import edges involving this file
@@ -561,7 +609,6 @@ pub fn check_file_constraints(
             .filter(|(_, fp)| relevant_paths.contains(fp.as_str()))
             .collect();
 
-        let mut findings = Vec::new();
         for (from_id, to_id) in &edges {
             let from = match path_map.get(from_id) {
                 Some(p) => p,

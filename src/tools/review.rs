@@ -104,6 +104,7 @@ pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintViolation>,
     pub resolved_constraint_violations: Vec<ConstraintViolation>,
     pub waived_constraint_violations: Vec<WaivedConstraintViolation>,
+    pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
     pub convention_matches: Vec<ConventionMatchFinding>,
@@ -302,7 +303,7 @@ pub fn build_findings(
     }
 
     // DD: constraint violations via maintained view + cycle detection
-    let all_constraints = rules.all_constraints()?;
+    let (all_constraints, constraint_parse_errors) = rules.all_constraints();
     let mut constraint_violations = Vec::new();
     let mut resolved_constraint_violations = Vec::new();
     let mut constraint_violations_total: usize = 0;
@@ -800,6 +801,7 @@ pub fn build_findings(
         constraint_violations,
         resolved_constraint_violations,
         waived_constraint_violations,
+        constraint_parse_errors,
         constraint_violations_total,
         convention_violations: unwaived,
         convention_matches,
@@ -1326,6 +1328,26 @@ pub fn compute(
     });
     if !behavioral.is_empty() {
         result["behavioral_coupling"] = json!(behavioral);
+    }
+    if !findings.constraint_parse_errors.is_empty() {
+        result["constraint_parse_errors"] = json!(
+            findings
+                .constraint_parse_errors
+                .iter()
+                .map(|e| json!({
+                    "severity": "blocking",
+                    "index": e.index,
+                    "name": e.name,
+                    "error": e.error,
+                    "detail": format!(
+                        "malformed [[constraint]] at index {}{}: {}",
+                        e.index,
+                        e.name.as_deref().map(|n| format!(" (name: {n})")).unwrap_or_default(),
+                        e.error,
+                    ),
+                }))
+                .collect::<Vec<_>>()
+        );
     }
     Ok(result)
 }

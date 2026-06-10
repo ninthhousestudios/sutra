@@ -983,10 +983,9 @@ forbidden_deps = [
         .unwrap();
 
     // Create a constraint waiver for this specific violation
-    let constraints = sutra::rules::load_rules(dir.path())
+    let (constraints, _parse_errors) = sutra::rules::load_rules(dir.path())
         .unwrap()
-        .all_constraints()
-        .unwrap();
+        .all_constraints();
     let constraint_id = &constraints[0].id;
     db.create_constraint_waiver(
         constraint_id,

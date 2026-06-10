@@ -197,6 +197,13 @@ impl RawConstraint {
 
 // --- Rules (top-level TOML structure) ---
 
+#[derive(Debug, Clone)]
+pub struct ConstraintParseError {
+    pub index: usize,
+    pub name: Option<String>,
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Rules {
     #[serde(default)]
@@ -208,9 +215,10 @@ pub struct Rules {
 }
 
 impl Rules {
-    pub fn all_constraints(&self) -> Result<Vec<Constraint>> {
+    pub fn all_constraints(&self) -> (Vec<Constraint>, Vec<ConstraintParseError>) {
         let mut seen: HashMap<String, usize> = HashMap::new();
         let mut out: Vec<Constraint> = Vec::new();
+        let mut errors: Vec<ConstraintParseError> = Vec::new();
 
         for fd in &self.constraints.forbidden_deps {
             let kind = ConstraintKind::ForbiddenDep {
@@ -235,19 +243,30 @@ impl Rules {
             });
         }
 
-        for raw in self.constraint.clone() {
-            let c = raw.into_constraint()?;
-            if let Some(&idx) = seen.get(&c.id) {
-                if out[idx].severity != c.severity {
-                    warn!(id = %c.id, "duplicate constraint with different severity, keeping first");
+        for (i, raw) in self.constraint.clone().into_iter().enumerate() {
+            let name = raw.name.clone();
+            match raw.into_constraint() {
+                Ok(c) => {
+                    if let Some(&idx) = seen.get(&c.id) {
+                        if out[idx].severity != c.severity {
+                            warn!(id = %c.id, "duplicate constraint with different severity, keeping first");
+                        }
+                        continue;
+                    }
+                    seen.insert(c.id.clone(), out.len());
+                    out.push(c);
                 }
-                continue;
+                Err(e) => {
+                    errors.push(ConstraintParseError {
+                        index: i,
+                        name,
+                        error: e.to_string(),
+                    });
+                }
             }
-            seen.insert(c.id.clone(), out.len());
-            out.push(c);
         }
 
-        Ok(out)
+        (out, errors)
     }
 }
 
@@ -408,7 +427,7 @@ name = "no-tool-daemon"
 provenance = "docs/adr-001.md"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
             cs[0].kind,
@@ -433,7 +452,7 @@ to_component = "http"
 severity = "advisory"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
             cs[0].kind,
@@ -454,7 +473,7 @@ target = "src/config.rs"
 threshold = 10
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
             cs[0].kind,
@@ -474,7 +493,7 @@ kind = "no_cycles"
 scope = "src/core/"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].kind, ConstraintKind::NoCycles);
         assert_eq!(cs[0].scope.as_deref(), Some("src/core/"));
@@ -491,7 +510,7 @@ forbidden_deps = [
 ]
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 2);
         assert_eq!(
             cs[0].kind,
@@ -523,7 +542,7 @@ kind = "no_cycles"
 scope = "src/core/"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 3);
         assert!(matches!(cs[0].kind, ConstraintKind::ForbiddenDep { .. }));
         assert!(matches!(cs[1].kind, ConstraintKind::Boundary { .. }));
@@ -539,11 +558,11 @@ from = "a"
 to = "b"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         let id1 = &cs[0].id;
 
         let rules2 = parse_rules(toml).unwrap();
-        let cs2 = rules2.all_constraints().unwrap();
+        let cs2 = rules2.all_constraints().0;
         assert_eq!(id1, &cs2[0].id);
     }
 
@@ -561,7 +580,7 @@ from = "a"
 to = "c"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let cs = rules.all_constraints().unwrap();
+        let cs = rules.all_constraints().0;
         assert_ne!(cs[0].id, cs[1].id);
     }
 
@@ -581,8 +600,8 @@ from = "a"
 to = "b"
 name = "beta"
 "#;
-        let cs1 = parse_rules(toml1).unwrap().all_constraints().unwrap();
-        let cs2 = parse_rules(toml2).unwrap().all_constraints().unwrap();
+        let cs1 = parse_rules(toml1).unwrap().all_constraints().0;
+        let cs2 = parse_rules(toml2).unwrap().all_constraints().0;
         assert_eq!(cs1[0].id, cs2[0].id);
     }
 
@@ -607,7 +626,7 @@ threshold = 5
 [[constraint]]
 kind = "no_cycles"
 "#;
-        let cs = parse_rules(toml).unwrap().all_constraints().unwrap();
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
         assert_eq!(cs[0].severity, Severity::Blocking); // forbidden_dep
         assert_eq!(cs[1].severity, Severity::Blocking); // boundary
         assert_eq!(cs[2].severity, Severity::Advisory); // max_fan_in
@@ -623,7 +642,7 @@ from = "a"
 to = "b"
 severity = "informational"
 "#;
-        let cs = parse_rules(toml).unwrap().all_constraints().unwrap();
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
         assert_eq!(cs[0].severity, Severity::Informational);
     }
 
@@ -634,11 +653,13 @@ severity = "informational"
 kind = "banana"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let err = rules.all_constraints().unwrap_err();
-        let msg = err.to_string();
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
         assert!(
-            msg.contains("unknown constraint kind 'banana'"),
-            "got: {msg}"
+            errors[0].error.contains("unknown constraint kind 'banana'"),
+            "got: {}",
+            errors[0].error
         );
     }
 
@@ -650,9 +671,14 @@ kind = "forbidden_dep"
 from = "a"
 "#;
         let rules = parse_rules(toml).unwrap();
-        let err = rules.all_constraints().unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("requires 'to' field"), "got: {msg}");
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error.contains("requires 'to' field"),
+            "got: {}",
+            errors[0].error
+        );
     }
 
     #[test]
@@ -670,7 +696,7 @@ from = "a"
 to = "b"
 name = "second"
 "#;
-        let cs = parse_rules(toml).unwrap().all_constraints().unwrap();
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].name.as_deref(), Some("first"));
     }
@@ -690,7 +716,7 @@ to = "b"
 name = "duplicate"
 severity = "advisory"
 "#;
-        let cs = parse_rules(toml).unwrap().all_constraints().unwrap();
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
         assert_eq!(cs.len(), 1);
         // old format wins (processed first)
         assert!(cs[0].name.is_none());
