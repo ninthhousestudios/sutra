@@ -1,6 +1,6 @@
 use sutra::db::{Db, InsertSymbolParams};
+use sutra::tools::change_signals::ChurnMap;
 use sutra::tools::pr_risk;
-use sutra::tools::scoring::ChurnMap;
 
 fn sym<'a>(
     file_id: i64,

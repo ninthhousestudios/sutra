@@ -6,8 +6,8 @@ use sutra::constraints::check::FindingDelta;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::parser::adapter::default_registry;
 use sutra::rules::Severity;
+use sutra::tools::change_signals::ChurnMap;
 use sutra::tools::review;
-use sutra::tools::scoring::ChurnMap;
 use sutra::waivers::Waived;
 
 fn sym<'a>(

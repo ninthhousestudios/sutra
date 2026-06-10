@@ -1,7 +1,3 @@
-pub use super::change_signals::{
-    BLAST_NORM, CHURN_NORM, CHURN_WINDOW_DAYS, COMPLEXITY_NORM, ChurnMap,
-};
-
 pub fn normalize(raw: f64, ceiling: f64) -> f64 {
     (raw / ceiling).min(1.0)
 }
