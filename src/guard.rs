@@ -1286,4 +1286,108 @@ name = "bad-rule-targets-member"
             "incoming violating edge should still block"
         );
     }
+
+    // --- max_fan_in constraints ---
+
+    #[test]
+    fn max_fan_in_violation_detected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'src/config.rs', 15);
+             INSERT INTO files VALUES (2, 'src/lib.rs', 3);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "max_fan_in"
+target = "src/config.rs"
+threshold = 10
+name = "config-fan-in"
+"#,
+        )
+        .unwrap();
+
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].constraint_kind, "max_fan_in");
+        assert_eq!(outcome.active[0].severity, Severity::Advisory);
+        assert!(outcome.active[0].detail.contains("fan-in is 15"));
+        assert!(outcome.active[0].detail.contains("threshold is 10"));
+    }
+
+    #[test]
+    fn max_fan_in_below_threshold_no_finding() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'src/config.rs', 5);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "max_fan_in"
+target = "src/config.rs"
+threshold = 10
+"#,
+        )
+        .unwrap();
+
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert!(outcome.active.is_empty());
+    }
+
+    #[test]
+    fn max_fan_in_glob_target() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'src/core/config.rs', 20);
+             INSERT INTO files VALUES (2, 'src/core/utils.rs', 5);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "max_fan_in"
+target = "src/core/*"
+threshold = 10
+"#,
+        )
+        .unwrap();
+
+        // File 1 matches glob and exceeds threshold
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+
+        // File 2 matches glob but is below threshold
+        let outcome = check_file_constraints(&conn, dir.path(), 2);
+        assert!(outcome.active.is_empty());
+    }
 }

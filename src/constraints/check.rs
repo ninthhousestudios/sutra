@@ -2,9 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
+use glob::{MatchOptions, Pattern};
+
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
 use crate::error::Result;
-use crate::rules::{self, Constraint, ConstraintParseError, Severity, match_no_cycles_constraint};
+use crate::rules::{
+    self, Constraint, ConstraintKind, ConstraintParseError, Severity, match_no_cycles_constraint,
+};
 use crate::waivers::{self, Waived};
 
 #[derive(Debug, Clone)]
@@ -304,6 +308,49 @@ fn evaluate_dd(
         });
     }
 
+    // MaxFanIn evaluation
+    let glob_opts = MatchOptions {
+        require_literal_separator: true,
+        ..MatchOptions::default()
+    };
+    for c in &all_constraints {
+        let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
+            continue;
+        };
+        let pat = match Pattern::new(target) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        for f in &all_files {
+            if f.fan_in_files <= *threshold as i64 {
+                continue;
+            }
+            if !pat.matches_with(&f.path, glob_opts) {
+                continue;
+            }
+            if let Some(cids) = changed_ids
+                && !cids.contains(&f.id)
+            {
+                continue;
+            }
+            findings.push(ConstraintFinding {
+                constraint_id: c.id.clone(),
+                constraint_name: c.name.clone(),
+                constraint_kind: "max_fan_in".into(),
+                severity: c.severity,
+                provenance: c.provenance.clone(),
+                from_path: f.path.clone(),
+                to_path: String::new(),
+                component_context: None,
+                detail: format!(
+                    "fan-in is {}, threshold is {threshold}: {}",
+                    f.fan_in_files, f.path,
+                ),
+                delta: FindingDelta::Unknown,
+            });
+        }
+    }
+
     let constraint_waivers = db.get_constraint_waivers(None)?;
     let (active, waived) = waivers::partition(findings, &constraint_waivers);
 
@@ -356,7 +403,10 @@ fn evaluate_raw(
         )
     });
     let has_external = external::has_external_constraints(&all_constraints);
-    if !has_forbidden_or_boundary && !has_external {
+    let has_max_fan_in = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, rules::ConstraintKind::MaxFanIn { .. }));
+    if !has_forbidden_or_boundary && !has_external && !has_max_fan_in {
         return Ok(CheckOutcome {
             active: parse_error_findings,
             parse_errors,
@@ -422,7 +472,7 @@ fn evaluate_raw(
         }
     };
 
-    if edges.is_empty() && external_findings.is_empty() {
+    if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in {
         return Ok(CheckOutcome {
             active: parse_error_findings,
             parse_errors,
@@ -505,6 +555,48 @@ fn evaluate_raw(
                 &file_to_component,
                 FindingDelta::Unknown,
             ));
+        }
+    }
+
+    // MaxFanIn evaluation (SingleFile scope only)
+    if has_max_fan_in {
+        if let EvalScope::SingleFile(file_id) = &scope {
+            let fan_in_row: Option<(String, i64)> = conn
+                .prepare("SELECT path, fan_in_files FROM files WHERE id = ?1")?
+                .query_row(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .ok();
+            if let Some((path, fan_in)) = fan_in_row {
+                let glob_opts = MatchOptions {
+                    require_literal_separator: true,
+                    ..MatchOptions::default()
+                };
+                for c in &all_constraints {
+                    let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
+                        continue;
+                    };
+                    if fan_in <= *threshold as i64 {
+                        continue;
+                    }
+                    if let Ok(pat) = Pattern::new(target)
+                        && pat.matches_with(&path, glob_opts)
+                    {
+                        findings.push(ConstraintFinding {
+                            constraint_id: c.id.clone(),
+                            constraint_name: c.name.clone(),
+                            constraint_kind: "max_fan_in".into(),
+                            severity: c.severity,
+                            provenance: c.provenance.clone(),
+                            from_path: path.clone(),
+                            to_path: String::new(),
+                            component_context: None,
+                            detail: format!(
+                                "fan-in is {fan_in}, threshold is {threshold}: {path}",
+                            ),
+                            delta: FindingDelta::Unknown,
+                        });
+                    }
+                }
+            }
         }
     }
 
