@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-11 (simple-additions/7-8: dead constraints, max_fan_in eval)
+Last updated: 2026-06-11 (sutra/148: external signal gaps — leading ::, target deps, workspace renames, pubspec)
 
 ## Module layout
 
@@ -33,6 +33,13 @@ src/constraints/
                       no_cycles via SCC, max_fan_in via fan_in_files rollup,
                       external via external::check_*, dead_constraint via
                       constraint_coverage. Waiver partition at the end.
+  external.rs       — External-crate constraint checks (forbidden_external,
+                      confined_external). Two signals: import (use-statement
+                      paths via external_crate_of_import) and manifest (Cargo.toml
+                      via cargo_manifest_deps, pubspec.yaml via pubspec_deps).
+                      workspace_dep_renames resolves workspace=true aliases.
+                      scan_project_files walks for Cargo.toml + pubspec.yaml.
+                      check_workspace_externals is the index-side entry point.
   worker.rs         — timely/DD worker thread, Command/Response enums,
                       WorkerHandle, spawn_worker, run_worker (dataflow +
                       command loop), Kosaraju SCC
