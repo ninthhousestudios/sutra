@@ -408,13 +408,14 @@ fn walk_project_files(root: &Path, dir: &Path, depth: usize, out: &mut ProjectFi
                 continue;
             }
             walk_project_files(root, &path, depth + 1, out);
-        } else if let (Ok(content), Ok(rel)) =
-            (std::fs::read_to_string(&path), path.strip_prefix(root))
+        } else if (*name == *"Cargo.toml" || *name == *"pubspec.yaml")
+            && let (Ok(content), Ok(rel)) =
+                (std::fs::read_to_string(&path), path.strip_prefix(root))
         {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             if *name == *"Cargo.toml" {
                 out.manifests.push((rel_str, content));
-            } else if *name == *"pubspec.yaml" {
+            } else {
                 out.pubspecs.push((rel_str, content));
             }
         }
