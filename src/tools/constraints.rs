@@ -75,6 +75,10 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
         .iter()
         .map(|(_, name, _)| name.as_str())
         .collect();
+    let component_ids: Vec<&str> = comp_with_paths
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect();
 
     let constraints_out: Vec<_> = all_constraints
         .iter()
@@ -105,7 +109,7 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 }
             };
 
-            let coverage = constraint_coverage(c, &paths, &component_names);
+            let coverage = constraint_coverage(c, &paths, &component_names, &component_ids);
             let coverage_fields: serde_json::Map<String, serde_json::Value> = coverage
                 .fields
                 .iter()

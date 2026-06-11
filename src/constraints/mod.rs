@@ -127,6 +127,7 @@ pub fn constraint_coverage(
     constraint: &Constraint,
     paths: &[&str],
     component_names: &[&str],
+    component_ids: &[&str],
 ) -> ConstraintCoverage {
     let glob_opts = MatchOptions {
         require_literal_separator: true,
@@ -151,8 +152,12 @@ pub fn constraint_coverage(
             from_component,
             to_component,
         } => {
-            let from_exists = component_names.contains(&from_component.as_str()) as usize;
-            let to_exists = component_names.contains(&to_component.as_str()) as usize;
+            let from_exists = (component_names.contains(&from_component.as_str())
+                || component_ids.contains(&from_component.as_str()))
+                as usize;
+            let to_exists = (component_names.contains(&to_component.as_str())
+                || component_ids.contains(&to_component.as_str()))
+                as usize;
             vec![("from_component", from_exists), ("to_component", to_exists)]
         }
         ConstraintKind::MaxFanIn { target, .. } => {
@@ -223,7 +228,7 @@ mod tests {
             "src/tools/orient.rs",
             "src/daemon.rs",
         ];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert_eq!(cov.fields, vec![("from", 2), ("to", 1)]);
         assert!(cov.dead_fields().is_empty());
     }
@@ -235,7 +240,7 @@ mod tests {
             to: "src/old_daemon.rs".into(),
         });
         let paths = vec!["src/tools/review.rs", "src/daemon.rs"];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert_eq!(cov.dead_fields(), vec!["to"]);
     }
 
@@ -246,7 +251,7 @@ mod tests {
             to: "src/daemon.rs".into(),
         });
         let paths = vec!["src/tools/review.rs", "src/daemon.rs"];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert_eq!(cov.dead_fields(), vec!["from"]);
     }
 
@@ -256,8 +261,28 @@ mod tests {
             from_component: "db".into(),
             to_component: "http".into(),
         });
-        let cov = constraint_coverage(&c, &[], &["db"]);
+        let cov = constraint_coverage(&c, &[], &["db"], &[]);
         assert_eq!(cov.dead_fields(), vec!["to_component"]);
+    }
+
+    #[test]
+    fn coverage_boundary_matched_by_id() {
+        let c = make_constraint(ConstraintKind::Boundary {
+            from_component: "comp-id-abc".into(),
+            to_component: "comp-id-xyz".into(),
+        });
+        let cov = constraint_coverage(&c, &[], &[], &["comp-id-abc", "comp-id-xyz"]);
+        assert!(cov.dead_fields().is_empty());
+    }
+
+    #[test]
+    fn coverage_boundary_mixed_name_and_id() {
+        let c = make_constraint(ConstraintKind::Boundary {
+            from_component: "db".into(),
+            to_component: "comp-id-xyz".into(),
+        });
+        let cov = constraint_coverage(&c, &[], &["db"], &["comp-id-xyz"]);
+        assert!(cov.dead_fields().is_empty());
     }
 
     #[test]
@@ -267,7 +292,7 @@ mod tests {
             threshold: 10,
         });
         let paths = vec!["src/lib.rs", "src/main.rs"];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert_eq!(cov.dead_fields(), vec!["target"]);
     }
 
@@ -276,7 +301,7 @@ mod tests {
         let mut c = make_constraint(ConstraintKind::NoCycles);
         c.scope = Some("src/deleted/".into());
         let paths = vec!["src/lib.rs", "src/main.rs"];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert_eq!(cov.dead_fields(), vec!["scope"]);
     }
 
@@ -284,7 +309,7 @@ mod tests {
     fn coverage_no_cycles_without_scope_never_dead() {
         let c = make_constraint(ConstraintKind::NoCycles);
         let paths = vec!["src/lib.rs"];
-        let cov = constraint_coverage(&c, &paths, &[]);
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert!(cov.dead_fields().is_empty());
     }
 }

@@ -1390,4 +1390,41 @@ threshold = 10
         let outcome = check_file_constraints(&conn, dir.path(), 2);
         assert!(outcome.active.is_empty());
     }
+
+    #[test]
+    fn max_fan_in_proposed_edge_to_over_threshold_target() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'src/editor.rs', 0);
+             INSERT INTO files VALUES (2, 'src/config.rs', 15);",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "max_fan_in"
+target = "src/config.rs"
+threshold = 10
+name = "config-fan-in"
+"#,
+        )
+        .unwrap();
+
+        // Proposed edge from file 1 to file 2 (target already over threshold)
+        let proposed_outgoing = vec![(1, 2)];
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].constraint_kind, "max_fan_in");
+        assert!(outcome.active[0].detail.contains("fan-in is 15"));
+    }
 }

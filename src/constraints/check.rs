@@ -113,8 +113,13 @@ fn evaluate_dd(
             .iter()
             .map(|(_, name, _)| name.as_str())
             .collect();
+        let component_ids: Vec<&str> = comp_with_paths
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect();
         for c in &all_constraints {
-            let coverage = constraints::constraint_coverage(c, &paths, &component_names);
+            let coverage =
+                constraints::constraint_coverage(c, &paths, &component_names, &component_ids);
             let dead = coverage.dead_fields();
             if !dead.is_empty() {
                 findings.push(ConstraintFinding {
@@ -360,11 +365,6 @@ fn evaluate_dd(
             if !pat.matches_with(&f.path, glob_opts) {
                 continue;
             }
-            if let Some(cids) = changed_ids
-                && !cids.contains(&f.id)
-            {
-                continue;
-            }
             findings.push(ConstraintFinding {
                 constraint_id: c.id.clone(),
                 constraint_name: c.name.clone(),
@@ -590,43 +590,58 @@ fn evaluate_raw(
         }
     }
 
-    // MaxFanIn evaluation (SingleFile scope only)
+    // MaxFanIn evaluation
     if has_max_fan_in {
-        if let EvalScope::SingleFile(file_id) = &scope {
-            let fan_in_row: Option<(String, i64)> = conn
+        let glob_opts = MatchOptions {
+            require_literal_separator: true,
+            ..MatchOptions::default()
+        };
+        let fan_in_targets: Vec<(String, i64)> = match &scope {
+            EvalScope::SingleFile(file_id) => conn
                 .prepare("SELECT path, fan_in_files FROM files WHERE id = ?1")?
                 .query_row(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .ok();
-            if let Some((path, fan_in)) = fan_in_row {
-                let glob_opts = MatchOptions {
-                    require_literal_separator: true,
-                    ..MatchOptions::default()
+                .ok()
+                .into_iter()
+                .collect(),
+            EvalScope::Edges { edges, .. } => {
+                let target_ids: HashSet<i64> = edges.iter().map(|(_, t)| *t).collect();
+                let mut rows = Vec::new();
+                let mut stmt =
+                    conn.prepare("SELECT path, fan_in_files FROM files WHERE id = ?1")?;
+                for tid in &target_ids {
+                    if let Ok(row) = stmt.query_row(params![tid], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    }) {
+                        rows.push(row);
+                    }
+                }
+                rows
+            }
+            _ => Vec::new(),
+        };
+        for (path, fan_in) in &fan_in_targets {
+            for c in &all_constraints {
+                let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
+                    continue;
                 };
-                for c in &all_constraints {
-                    let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
-                        continue;
-                    };
-                    if fan_in <= *threshold as i64 {
-                        continue;
-                    }
-                    if let Ok(pat) = Pattern::new(target)
-                        && pat.matches_with(&path, glob_opts)
-                    {
-                        findings.push(ConstraintFinding {
-                            constraint_id: c.id.clone(),
-                            constraint_name: c.name.clone(),
-                            constraint_kind: "max_fan_in".into(),
-                            severity: c.severity,
-                            provenance: c.provenance.clone(),
-                            from_path: path.clone(),
-                            to_path: String::new(),
-                            component_context: None,
-                            detail: format!(
-                                "fan-in is {fan_in}, threshold is {threshold}: {path}",
-                            ),
-                            delta: FindingDelta::Unknown,
-                        });
-                    }
+                if *fan_in <= *threshold as i64 {
+                    continue;
+                }
+                if let Ok(pat) = Pattern::new(target)
+                    && pat.matches_with(path, glob_opts)
+                {
+                    findings.push(ConstraintFinding {
+                        constraint_id: c.id.clone(),
+                        constraint_name: c.name.clone(),
+                        constraint_kind: "max_fan_in".into(),
+                        severity: c.severity,
+                        provenance: c.provenance.clone(),
+                        from_path: path.clone(),
+                        to_path: String::new(),
+                        component_context: None,
+                        detail: format!("fan-in is {fan_in}, threshold is {threshold}: {path}",),
+                        delta: FindingDelta::Unknown,
+                    });
                 }
             }
         }
