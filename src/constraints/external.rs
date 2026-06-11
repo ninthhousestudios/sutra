@@ -28,7 +28,8 @@ pub fn external_crate_of_import(
 ) -> Option<String> {
     match language {
         "rust" => {
-            let path = raw_path.strip_suffix("::*").unwrap_or(raw_path);
+            let path = raw_path.strip_prefix("::").unwrap_or(raw_path);
+            let path = path.strip_suffix("::*").unwrap_or(path);
             let first = path.split("::").next()?.trim();
             if first.is_empty() || matches!(first, "crate" | "self" | "super") {
                 return None;
@@ -385,6 +386,26 @@ mod tests {
             external_crate_of_import("serde::Deserialize", "rust", &["vidya", "vidya_core"])
                 .as_deref(),
             Some("serde")
+        );
+    }
+
+    #[test]
+    fn rust_leading_colons_stripped() {
+        assert_eq!(
+            external_crate_of_import("::axum::Router", "rust", &[]).as_deref(),
+            Some("axum")
+        );
+        assert_eq!(
+            external_crate_of_import("::serde", "rust", &[]).as_deref(),
+            Some("serde")
+        );
+        assert_eq!(
+            external_crate_of_import("::tokio::sync::*", "rust", &[]).as_deref(),
+            Some("tokio")
+        );
+        assert_eq!(
+            external_crate_of_import("::vidya_core::query", "rust", &["vidya_core"]),
+            None
         );
     }
 
