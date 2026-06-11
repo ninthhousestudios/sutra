@@ -23,3 +23,13 @@ Default vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, 
 ### Domain docs
 
 Single-context layout. See `docs/agents/domain.md`.
+
+## Refactor contract discipline
+
+Consolidation refactors here have silently changed observable contracts three
+times (lessons ledger L9: violation totals counted post-waiver-partition,
+a "complexity unavailable" sentinel replaced by a different predicate,
+freshness snapshotted at request start instead of response time). When
+extracting shared helpers, diff the *behavioral contract* of every caller —
+output field semantics, sentinel values, timing of snapshots, work performed —
+not just types and tests.
