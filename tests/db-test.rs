@@ -791,8 +791,8 @@ fn test_fresh_db_creates_schema_migrations() {
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 36,
-        "fresh DB should register all 35 existing migrations"
+        count, 37,
+        "fresh DB should register all 37 existing migrations"
     );
 }
 
@@ -806,7 +806,7 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 36, "reopen should not duplicate migration rows");
+    assert_eq!(count, 37, "reopen should not duplicate migration rows");
 }
 
 #[test]

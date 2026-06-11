@@ -195,6 +195,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         partition: TablePartition::Ephemeral,
         is_virtual: false,
     },
+    TableMeta {
+        name: "index_meta",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -531,6 +536,12 @@ impl Db {
 
         self.run_migrations()?;
 
+        // Reset generation counters — all ephemeral data was wiped.
+        self.conn.lock().execute(
+            "UPDATE index_meta SET data_generation = 0, derived_complete_generation = 0 WHERE id = 1",
+            [],
+        )?;
+
         let names: Vec<&'static str> = ephemeral.iter().map(|t| t.name).collect();
         Ok(names)
     }
@@ -650,6 +661,11 @@ impl Db {
 
             // Delete the file; FK cascades handle symbols and refs.
             conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+
+            conn.execute(
+                "UPDATE index_meta SET data_generation = data_generation + 1 WHERE id = 1",
+                [],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -702,16 +718,17 @@ impl Db {
             conn.execute("DELETE FROM files WHERE id = ?1", params![old_id])?;
         }
 
-        // Upsert the file row.
+        // Upsert the file row (marks needs_resolution for post-parse ref resolution).
         conn.execute(
-            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed, needs_resolution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
              ON CONFLICT(path) DO UPDATE SET
-                language     = excluded.language,
-                content_hash = excluded.content_hash,
-                line_count   = excluded.line_count,
-                parsed_ok    = excluded.parsed_ok,
-                last_parsed  = excluded.last_parsed",
+                language         = excluded.language,
+                content_hash     = excluded.content_hash,
+                line_count       = excluded.line_count,
+                parsed_ok        = excluded.parsed_ok,
+                last_parsed      = excluded.last_parsed,
+                needs_resolution = 1",
             params![
                 path,
                 language,
@@ -805,6 +822,11 @@ impl Db {
                 params![file_id, rf.unresolved_name, rf.line, rf.col, rf.context_kind],
             )?;
         }
+
+        conn.execute(
+            "UPDATE index_meta SET data_generation = data_generation + 1 WHERE id = 1",
+            [],
+        )?;
 
         tx.commit()?;
         Ok((file_id, symbol_ids.len() as i64))
@@ -1290,6 +1312,87 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically replace all refs for a file and clear its needs_resolution flag.
+    pub fn replace_refs_and_clear_resolution(
+        &self,
+        file_id: i64,
+        refs: &[(Option<i64>, Option<&str>, i64, i64, &str)],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        conn.execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
+        for &(target_symbol_id, unresolved_name, line, col, context_kind) in refs {
+            conn.execute(
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![file_id, target_symbol_id, unresolved_name, line, col, context_kind],
+            )?;
+        }
+        conn.execute(
+            "UPDATE files SET needs_resolution = 0 WHERE id = ?1",
+            params![file_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Mark files as needing ref resolution (e.g. after their referenced symbols were deleted).
+    pub fn mark_needs_resolution(&self, file_ids: &[i64]) -> Result<()> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: String = file_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("UPDATE files SET needs_resolution = 1 WHERE id IN ({placeholders})");
+        let conn = self.conn.lock();
+        conn.execute(&sql, rusqlite::params_from_iter(file_ids.iter()))?;
+        Ok(())
+    }
+
+    /// Return IDs of all files that need ref resolution.
+    pub fn files_needing_resolution(&self) -> Result<Vec<i64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id FROM files WHERE needs_resolution = 1")?;
+        let ids: rusqlite::Result<Vec<i64>> = stmt.query_map([], |row| row.get(0))?.collect();
+        Ok(ids?)
+    }
+
+    /// Check whether any post-parse work remains (unresolved files or stale derived data).
+    pub fn has_pending_work(&self) -> Result<bool> {
+        let conn = self.conn.lock();
+        let pending: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE needs_resolution = 1)
+                OR (SELECT data_generation != derived_complete_generation FROM index_meta WHERE id = 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(pending)
+    }
+
+    /// Return the current data_generation from index_meta.
+    pub fn get_data_generation(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let data_gen: i64 = conn.query_row(
+            "SELECT data_generation FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(data_gen)
+    }
+
+    /// Mark derived data as complete up to the given generation.
+    pub fn set_derived_complete(&self, generation: i64) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE index_meta SET derived_complete_generation = ?1 WHERE id = 1",
+            params![generation],
+        )?;
+        Ok(())
+    }
+
     /// Return the distinct set of file_ids that contain a reference to any of
     /// the given symbol_ids.
     pub fn find_files_referencing_symbols(&self, symbol_ids: &[i64]) -> Result<Vec<i64>> {
@@ -1349,23 +1452,6 @@ impl Db {
         let rows: rusqlite::Result<Vec<ImportRow>> =
             stmt.query_map(params![file_id], map_import_row)?.collect();
         Ok(rows?)
-    }
-
-    /// Check whether any Dart imports lack a resolved_file_id.
-    pub fn has_unresolved_dart_imports(&self) -> Result<bool> {
-        let conn = self.conn.lock();
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM imports i
-                JOIN files f ON f.id = i.file_id
-                WHERE i.resolved_file_id IS NULL
-                AND f.language = 'dart'
-                AND i.imported_path NOT LIKE 'dart:%'
-            )",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(exists)
     }
 
     /// Return all unresolved Dart imports (package: and relative .dart paths).

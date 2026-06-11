@@ -293,6 +293,7 @@ fn resolve_file_refs(
     let file_imports = db.imports_for_file(file_id)?;
 
     if file_refs.is_empty() {
+        db.replace_refs_and_clear_resolution(file_id, &[])?;
         return Ok((0, 0));
     }
 
@@ -344,19 +345,24 @@ fn resolve_file_refs(
         &extracted_imports,
     );
 
-    db.delete_refs_by_file(file_id)?;
+    let ref_tuples: Vec<(Option<i64>, Option<&str>, i64, i64, &str)> = resolved
+        .iter()
+        .map(|rr| {
+            (
+                rr.target_symbol_id,
+                rr.unresolved_name.as_deref(),
+                rr.original.line as i64,
+                rr.original.col as i64,
+                rr.original.context_kind.as_str(),
+            )
+        })
+        .collect();
+
+    db.replace_refs_and_clear_resolution(file_id, &ref_tuples)?;
 
     let mut unresolved: i64 = 0;
     let mut skipped: i64 = 0;
     for rr in &resolved {
-        db.insert_ref(
-            file_id,
-            rr.target_symbol_id,
-            rr.unresolved_name.as_deref(),
-            rr.original.line as i64,
-            rr.original.col as i64,
-            rr.original.context_kind.as_str(),
-        )?;
         if rr.skipped {
             skipped += 1;
         } else if rr.target_symbol_id.is_none() {
@@ -412,7 +418,6 @@ pub fn parse_workspace(
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
-    let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
     let inner = (|| -> Result<PostParseResult> {
         for file_path in &source_files {
@@ -428,7 +433,6 @@ pub fn parse_workspace(
                     files_parsed += 1;
                     symbols_extracted += result.symbols_extracted;
                     refs_extracted += result.refs_extracted;
-                    file_ids_needing_resolution.insert(result.file_id);
                 }
             }
         }
@@ -437,8 +441,7 @@ pub fn parse_workspace(
             && parse_errors == 0
             && deleted_symbol_ids.is_empty()
             && pruned == 0
-            && has_previous_snapshot(db)?
-            && !db.has_unresolved_dart_imports()?
+            && !db.has_pending_work()?
         {
             return Ok(PostParseResult::NoChanges);
         }
@@ -446,7 +449,6 @@ pub fn parse_workspace(
         let (unresolved_count, skipped_count) = post_parse_sequence(
             db,
             &deleted_symbol_ids,
-            &mut file_ids_needing_resolution,
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
@@ -475,7 +477,24 @@ pub fn parse_workspace(
                 warn!(workspace = %workspace.id, "failed to record unchanged snapshot after parse: {e}");
             }
         }
-        _ => {
+        Ok(PostParseResult::Full { .. }) => {
+            if let Err(e) = record_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
+            } else if let Err(e) = db
+                .get_data_generation()
+                .and_then(|g| db.set_derived_complete(g))
+            {
+                warn!(workspace = %workspace.id, "failed to mark derived data complete: {e}");
+            }
+        }
+        Err(_) => {
             if let Err(e) = record_snapshot(
                 db,
                 files_parsed,
@@ -532,7 +551,6 @@ pub fn parse_changed_files(
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
     let mut deleted_symbol_ids: Vec<i64> = Vec::new();
-    let mut file_ids_needing_resolution: HashSet<i64> = HashSet::new();
 
     let inner = (|| -> Result<PostParseResult> {
         for del_path in deleted {
@@ -571,7 +589,6 @@ pub fn parse_changed_files(
                     files_parsed += 1;
                     symbols_extracted += result.symbols_extracted;
                     refs_extracted += result.refs_extracted;
-                    file_ids_needing_resolution.insert(result.file_id);
                 }
             }
         }
@@ -579,8 +596,7 @@ pub fn parse_changed_files(
         if files_parsed == 0
             && parse_errors == 0
             && deleted_symbol_ids.is_empty()
-            && has_previous_snapshot(db)?
-            && !db.has_unresolved_dart_imports()?
+            && !db.has_pending_work()?
         {
             return Ok(PostParseResult::NoChanges);
         }
@@ -588,7 +604,6 @@ pub fn parse_changed_files(
         let (unresolved_count, skipped_count) = post_parse_sequence(
             db,
             &deleted_symbol_ids,
-            &mut file_ids_needing_resolution,
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
@@ -617,7 +632,24 @@ pub fn parse_changed_files(
                 warn!(workspace = %workspace.id, "failed to record unchanged snapshot after incremental parse: {e}");
             }
         }
-        _ => {
+        Ok(PostParseResult::Full { .. }) => {
+            if let Err(e) = record_snapshot(
+                db,
+                files_parsed,
+                symbols_extracted,
+                refs_extracted,
+                recorded_errors,
+                duration_ms,
+            ) {
+                warn!(workspace = %workspace.id, "failed to record snapshot after incremental parse: {e}");
+            } else if let Err(e) = db
+                .get_data_generation()
+                .and_then(|g| db.set_derived_complete(g))
+            {
+                warn!(workspace = %workspace.id, "failed to mark derived data complete: {e}");
+            }
+        }
+        Err(_) => {
             if let Err(e) = record_snapshot(
                 db,
                 files_parsed,
@@ -654,22 +686,27 @@ pub fn parse_changed_files(
 fn post_parse_sequence(
     db: &Db,
     deleted_symbol_ids: &[i64],
-    file_ids_needing_resolution: &mut HashSet<i64>,
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
     registry: &LanguageRegistry,
 ) -> Result<(i64, i64)> {
+    // Mark deleted-symbol back-references in DB (durable, survives crash).
     if !deleted_symbol_ids.is_empty() {
-        let dirty_file_ids = db.find_files_referencing_symbols(deleted_symbol_ids)?;
-        for fid in dirty_file_ids {
-            file_ids_needing_resolution.insert(fid);
+        let back_refs = db.find_files_referencing_symbols(deleted_symbol_ids)?;
+        if !back_refs.is_empty() {
+            db.mark_needs_resolution(&back_refs)?;
         }
     }
+
+    // Query resolution work from DB — includes freshly-parsed files AND
+    // orphans from interrupted previous parses.
+    let resolution_ids = db.files_needing_resolution()?;
+    let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
     let mut unresolved_count: i64 = 0;
     let mut skipped_count: i64 = 0;
-    for &file_id in file_ids_needing_resolution.iter() {
+    for &file_id in &resolution_set {
         let (unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
         unresolved_count += unresolved;
         skipped_count += skipped;
@@ -688,12 +725,12 @@ fn post_parse_sequence(
     let files = db.all_files()?;
     if !files.is_empty() {
         let adjacency = graph::build_file_adjacency(&files, db)?;
-        graph::compute_rollups_with_adjacency(
-            db,
-            &files,
-            &adjacency,
-            Some(file_ids_needing_resolution),
-        )?;
+        let dirty_hint = if resolution_set.is_empty() {
+            None
+        } else {
+            Some(&resolution_set)
+        };
+        graph::compute_rollups_with_adjacency(db, &files, &adjacency, dirty_hint)?;
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency)?;
 
         let cochange_window = components::load_config(workspace_root)?
@@ -802,10 +839,6 @@ fn record_snapshot(
         &health.component_scores,
     )?;
     Ok(())
-}
-
-fn has_previous_snapshot(db: &Db) -> Result<bool> {
-    Ok(!db.latest_snapshots(1)?.is_empty())
 }
 
 fn record_unchanged_snapshot(
