@@ -106,6 +106,38 @@ fn evaluate_dd(
     let mut findings = Vec::new();
     let mut resolved = Vec::new();
 
+    // Dead constraint detection (Workspace and ChangedFiles scopes only)
+    if !matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
+        let paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let component_names: Vec<&str> = comp_with_paths
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
+        for c in &all_constraints {
+            let coverage = constraints::constraint_coverage(c, &paths, &component_names);
+            let dead = coverage.dead_fields();
+            if !dead.is_empty() {
+                findings.push(ConstraintFinding {
+                    constraint_id: c.id.clone(),
+                    constraint_name: c.name.clone(),
+                    constraint_kind: "dead_constraint".into(),
+                    severity: Severity::Informational,
+                    provenance: c.provenance.clone(),
+                    from_path: String::new(),
+                    to_path: String::new(),
+                    component_context: None,
+                    detail: format!(
+                        "{} constraint '{}': zero matches on {} — rule is inert",
+                        c.kind.kind_tag(),
+                        c.name.as_deref().unwrap_or(&c.id),
+                        dead.join(", "),
+                    ),
+                    delta: FindingDelta::Unknown,
+                });
+            }
+        }
+    }
+
     if external::has_external_constraints(&all_constraints) {
         let unresolved = db.unresolved_imports_with_files()?;
         let layout = crate::rust_imports::parse_workspace_layout(workspace_root);

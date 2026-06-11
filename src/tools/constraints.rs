@@ -57,6 +57,8 @@ pub fn handle(
 }
 
 fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
+    use crate::constraints::constraint_coverage;
+
     let rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = rules.all_constraints();
     let waivers = db.get_constraint_waivers(None)?;
@@ -65,6 +67,14 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
     for w in &waivers {
         *waiver_counts.entry(&w.constraint_id).or_default() += 1;
     }
+
+    let all_files = db.all_files()?;
+    let paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+    let comp_with_paths = db.active_components_with_paths()?;
+    let component_names: Vec<&str> = comp_with_paths
+        .iter()
+        .map(|(_, name, _)| name.as_str())
+        .collect();
 
     let constraints_out: Vec<_> = all_constraints
         .iter()
@@ -94,7 +104,16 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                     json!({ "crates": crates, "allowed_in": allowed_in, "include_dev": include_dev })
                 }
             };
-            json!({
+
+            let coverage = constraint_coverage(c, &paths, &component_names);
+            let coverage_fields: serde_json::Map<String, serde_json::Value> = coverage
+                .fields
+                .iter()
+                .map(|(name, count)| (name.to_string(), json!(count)))
+                .collect();
+            let dead_fields = coverage.dead_fields();
+
+            let mut entry = json!({
                 "id": c.id,
                 "kind": c.kind.kind_tag(),
                 "kind_detail": kind_detail,
@@ -103,7 +122,15 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 "provenance": c.provenance,
                 "scope": c.scope,
                 "waiver_count": waiver_counts.get(c.id.as_str()).copied().unwrap_or(0),
-            })
+                "matched_file_count": coverage_fields,
+            });
+            if !dead_fields.is_empty() {
+                entry["warning"] = json!(format!(
+                    "zero matches on {}: constraint is inert",
+                    dead_fields.join(", "),
+                ));
+            }
+            entry
         })
         .collect();
 
