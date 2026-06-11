@@ -4,16 +4,19 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-04 (5d-9: MCP constraint tools)
+Last updated: 2026-06-11 (simple-additions/7-8: dead constraints, max_fan_in eval)
 
 ## Module layout
 
 ```
 src/constraints/
   mod.rs            — re-exports DdEngine, ConstraintResolver; public types:
-                      Cycle, DdFacts, DdDelta, ConstraintViolation (legacy).
+                      Cycle, DdFacts, DdDelta, ConstraintViolation (legacy),
+                      ConstraintCoverage.
                       Shared helpers: find_matching_constraint,
-                      build_component_context, format_violation_detail.
+                      build_component_context, format_violation_detail,
+                      constraint_coverage (per-field glob/component match counts
+                      for dead constraint detection).
   engine.rs         — DdEngine (Cold/Loaded/Warm state machine), public API:
                       ingest, update, set_forbidden_pairs, query_violations,
                       query_cycles, query_blast_radius[_all], evict_if_idle.
@@ -22,6 +25,14 @@ src/constraints/
                       forbidden (i64, i64) pairs. Handles ForbiddenDep (glob)
                       + Boundary (component membership). Caches by input hash
                       + clustering generation.
+  check.rs          — Unified constraint evaluation. evaluate() dispatches to
+                      evaluate_dd (DD-backed: review, orient, sutra_constraints
+                      violations) or evaluate_raw (raw SQLite: guard hook).
+                      ConstraintFinding, CheckOutcome, EvalScope, FactsSource.
+                      Covers: forbidden_dep/boundary via DD maintained view,
+                      no_cycles via SCC, max_fan_in via fan_in_files rollup,
+                      external via external::check_*, dead_constraint via
+                      constraint_coverage. Waiver partition at the end.
   worker.rs         — timely/DD worker thread, Command/Response enums,
                       WorkerHandle, spawn_worker, run_worker (dataflow +
                       command loop), Kosaraju SCC
@@ -47,9 +58,12 @@ src/tools/
                       compute_violations: DD engine ingestion + violation query.
                       Filters violations + constraint waivers to component files.
   constraints.rs    — MCP tool: sutra_constraints. Actions: list (all
-                      constraints with metadata + waiver counts), violations
-                      (DD maintained view — forbidden_dep, boundary, no_cycles;
-                      excludes max_fan_in), waive (create constraint waiver),
+                      constraints with metadata, waiver counts,
+                      matched_file_count per field, dead-constraint warning),
+                      violations (DD maintained view — forbidden_dep, boundary,
+                      no_cycles, max_fan_in, forbidden_external, confined_external,
+                      plus dead_constraint informational findings),
+                      waive (create constraint waiver),
                       unwaive (revoke waiver). Thin translation over library
                       API + DB CRUD, following conventions.rs pattern.
 
