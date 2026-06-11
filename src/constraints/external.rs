@@ -226,27 +226,77 @@ pub fn check_import_items(
 
 /// Dependency names declared in a Cargo manifest, split into
 /// (normal, dev-and-build). `package = "..."` renames contribute both names.
-pub fn cargo_manifest_deps(content: &str) -> (Vec<String>, Vec<String>) {
+/// When `ws_renames` is provided, `workspace = true` entries are resolved
+/// through the root manifest's rename map.
+pub fn cargo_manifest_deps(
+    content: &str,
+    ws_renames: Option<&std::collections::HashMap<String, String>>,
+) -> (Vec<String>, Vec<String>) {
     let parsed: toml::Value = match content.parse() {
         Ok(v) => v,
         Err(_) => return (Vec::new(), Vec::new()),
     };
-    let collect = |table: &str| -> Vec<String> {
+    let root_table = match parsed.as_table() {
+        Some(t) => t,
+        None => return (Vec::new(), Vec::new()),
+    };
+    let collect_from = |table: &toml::value::Table, key: &str| -> Vec<String> {
         let mut names = Vec::new();
-        if let Some(deps) = parsed.get(table).and_then(|v| v.as_table()) {
-            for (key, val) in deps {
-                names.push(key.clone());
+        if let Some(deps) = table.get(key).and_then(|v| v.as_table()) {
+            for (dep_key, val) in deps {
+                names.push(dep_key.clone());
                 if let Some(pkg) = val.get("package").and_then(|p| p.as_str()) {
                     names.push(pkg.to_string());
+                } else if val
+                    .get("workspace")
+                    .and_then(|w| w.as_bool())
+                    .unwrap_or(false)
+                {
+                    if let Some(real) = ws_renames.and_then(|m| m.get(dep_key)) {
+                        names.push(real.clone());
+                    }
                 }
             }
         }
         names
     };
-    let normal = collect("dependencies");
-    let mut dev = collect("dev-dependencies");
-    dev.extend(collect("build-dependencies"));
+    let mut normal = collect_from(root_table, "dependencies");
+    let mut dev = collect_from(root_table, "dev-dependencies");
+    dev.extend(collect_from(root_table, "build-dependencies"));
+
+    if let Some(targets) = root_table.get("target").and_then(|v| v.as_table()) {
+        for (_spec, target_val) in targets {
+            if let Some(target_table) = target_val.as_table() {
+                normal.extend(collect_from(target_table, "dependencies"));
+                dev.extend(collect_from(target_table, "dev-dependencies"));
+                dev.extend(collect_from(target_table, "build-dependencies"));
+            }
+        }
+    }
+
     (normal, dev)
+}
+
+/// Build alias → real-package-name map from a root Cargo.toml's
+/// `[workspace.dependencies]` entries that have `package = "..."`.
+pub fn workspace_dep_renames(root_content: &str) -> std::collections::HashMap<String, String> {
+    let parsed: toml::Value = match root_content.parse() {
+        Ok(v) => v,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let mut map = std::collections::HashMap::new();
+    if let Some(deps) = parsed
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for (alias, val) in deps {
+            if let Some(pkg) = val.get("package").and_then(|p| p.as_str()) {
+                map.insert(alias.clone(), pkg.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// Check one Cargo manifest's declared dependencies against external constraints.
@@ -256,8 +306,9 @@ pub fn check_manifest(
     constraints: &[Constraint],
     manifest_rel_path: &str,
     content: &str,
+    ws_renames: Option<&std::collections::HashMap<String, String>>,
 ) -> Vec<ConstraintFinding> {
-    let (normal, dev) = cargo_manifest_deps(content);
+    let (normal, dev) = cargo_manifest_deps(content, ws_renames);
     let mut findings = Vec::new();
     for (names, is_dev) in [(&normal, false), (&dev, true)] {
         for name in names {
@@ -328,8 +379,19 @@ pub fn check_workspace_externals(
         }
     }
     let mut findings = check_import_items(constraints, &items);
-    for (rel_path, content) in scan_workspace_manifests(workspace_root) {
-        findings.extend(check_manifest(constraints, &rel_path, &content));
+    let manifests = scan_workspace_manifests(workspace_root);
+    let ws_renames = manifests
+        .iter()
+        .find(|(rel, _)| rel == "Cargo.toml")
+        .map(|(_, content)| workspace_dep_renames(content))
+        .unwrap_or_default();
+    let renames = if ws_renames.is_empty() {
+        None
+    } else {
+        Some(&ws_renames)
+    };
+    for (rel_path, content) in &manifests {
+        findings.extend(check_manifest(constraints, rel_path, content, renames));
     }
     findings
 }
@@ -530,7 +592,7 @@ insta = "1"
 [build-dependencies]
 cc = "1"
 "#;
-        let (normal, dev) = cargo_manifest_deps(manifest);
+        let (normal, dev) = cargo_manifest_deps(manifest, None);
         assert!(normal.contains(&"typst".to_string()));
         assert!(normal.contains(&"renamed".to_string()));
         assert!(normal.contains(&"actual-name".to_string()));
@@ -543,12 +605,12 @@ cc = "1"
     fn manifest_check_flags_forbidden_dep() {
         let cs = constraints_from(FORBID);
         let manifest = "[dependencies]\naxum = \"0.8\"\n";
-        let findings = check_manifest(&cs, "report/Cargo.toml", manifest);
+        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].to_path, "crate:axum");
         assert!(findings[0].detail.contains("manifest dependency"));
 
-        let clean = check_manifest(&cs, "server/Cargo.toml", manifest);
+        let clean = check_manifest(&cs, "server/Cargo.toml", manifest, None);
         assert!(clean.is_empty());
     }
 
@@ -562,7 +624,7 @@ crates = ["arrow-core"]
 "#,
         );
         let manifest = "[dependencies]\ninnocent = { package = \"arrow-core\", version = \"1\" }\n";
-        let findings = check_manifest(&cs, "server/Cargo.toml", manifest);
+        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, None);
         assert_eq!(findings.len(), 1);
     }
 
@@ -570,8 +632,86 @@ crates = ["arrow-core"]
     fn manifest_dev_deps_exempt_by_default() {
         let cs = constraints_from(FORBID);
         let manifest = "[dev-dependencies]\naxum = \"0.8\"\n";
-        let findings = check_manifest(&cs, "report/Cargo.toml", manifest);
+        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn manifest_target_deps_collected() {
+        let manifest = r#"
+[package]
+name = "myapp"
+
+[dependencies]
+serde = "1"
+
+[target.'cfg(unix)'.dependencies]
+inotify = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { package = "windows-sys", version = "0.52" }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = "0.29"
+"#;
+        let (normal, dev) = cargo_manifest_deps(manifest, None);
+        assert!(normal.contains(&"serde".to_string()));
+        assert!(normal.contains(&"inotify".to_string()));
+        assert!(normal.contains(&"winapi".to_string()));
+        assert!(normal.contains(&"windows-sys".to_string()));
+        assert!(dev.contains(&"nix".to_string()));
+    }
+
+    #[test]
+    fn workspace_dep_renames_extracts_package_field() {
+        let root = r#"
+[workspace]
+members = ["server"]
+
+[workspace.dependencies]
+innocent = { package = "arrow-core", version = "1" }
+serde = "1"
+"#;
+        let renames = workspace_dep_renames(root);
+        assert_eq!(
+            renames.get("innocent").map(|s| s.as_str()),
+            Some("arrow-core")
+        );
+        assert!(!renames.contains_key("serde"));
+    }
+
+    #[test]
+    fn manifest_workspace_true_resolves_rename() {
+        let renames =
+            std::collections::HashMap::from([("innocent".to_string(), "arrow-core".to_string())]);
+        let manifest = r#"
+[package]
+name = "server"
+
+[dependencies]
+innocent = { workspace = true }
+serde = { workspace = true }
+"#;
+        let (normal, _dev) = cargo_manifest_deps(manifest, Some(&renames));
+        assert!(normal.contains(&"innocent".to_string()));
+        assert!(normal.contains(&"arrow-core".to_string()));
+        assert!(normal.contains(&"serde".to_string()));
+    }
+
+    #[test]
+    fn manifest_check_catches_workspace_rename() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-core"]
+"#,
+        );
+        let renames =
+            std::collections::HashMap::from([("innocent".to_string(), "arrow-core".to_string())]);
+        let manifest = "[dependencies]\ninnocent = { workspace = true }\n";
+        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, Some(&renames));
+        assert_eq!(findings.len(), 1);
     }
 
     // --- import items dedup ---
