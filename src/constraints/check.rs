@@ -683,12 +683,14 @@ pub fn check_manifest_raw(
     let crate_names = layout.all_crate_names();
     let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
 
-    let ws_renames = workspace_root
-        .join("Cargo.toml")
-        .to_str()
-        .and_then(|_| std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok())
-        .map(|c| external::workspace_dep_renames(&c))
-        .unwrap_or_default();
+    let ws_renames = if manifest_rel_path == "Cargo.toml" {
+        external::workspace_dep_renames(content)
+    } else {
+        std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .ok()
+            .map(|c| external::workspace_dep_renames(&c))
+            .unwrap_or_default()
+    };
     let renames = if ws_renames.is_empty() {
         None
     } else {
