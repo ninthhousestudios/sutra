@@ -740,6 +740,65 @@ pub fn check_manifest_raw(
     })
 }
 
+/// Check a single pubspec.yaml against external-crate constraints,
+/// with waiver partitioning. Used by the guard on pubspec.yaml edits.
+pub fn check_pubspec_raw(
+    conn: &rusqlite::Connection,
+    workspace_root: &Path,
+    pubspec_rel_path: &str,
+    content: &str,
+) -> Result<CheckOutcome> {
+    use rusqlite::params;
+
+    let loaded_rules = rules::load_rules(workspace_root)?;
+    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+    if !external::has_external_constraints(&all_constraints) {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    let findings = external::check_pubspec(&all_constraints, pubspec_rel_path, content);
+    if findings.is_empty() {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    use crate::db::ConstraintWaiverRow;
+    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
+        .prepare(
+            "SELECT id, constraint_id, constraint_name, file_path, \
+             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+             FROM constraint_waivers WHERE file_path = ?1",
+        )?
+        .query_map(params![pubspec_rel_path], |row| {
+            Ok(ConstraintWaiverRow {
+                id: row.get(0)?,
+                constraint_id: row.get(1)?,
+                constraint_name: row.get(2)?,
+                file_path: row.get(3)?,
+                symbol_qualified_name: row.get(4)?,
+                rationale: row.get(5)?,
+                waived_by: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let (active, waived) = waivers::partition(findings, &constraint_waivers);
+    Ok(CheckOutcome {
+        active,
+        waived,
+        parse_errors,
+        ..Default::default()
+    })
+}
+
 fn build_component_maps_raw(
     conn: &rusqlite::Connection,
 ) -> Result<(HashMap<String, String>, HashMap<String, String>)> {

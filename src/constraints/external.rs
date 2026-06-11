@@ -34,7 +34,7 @@ pub fn external_crate_of_import(
             if first.is_empty() || matches!(first, "crate" | "self" | "super") {
                 return None;
             }
-            if workspace_crate_names.iter().any(|&c| c == first) {
+            if workspace_crate_names.contains(&first) {
                 return None;
             }
             Some(first.to_string())
@@ -251,10 +251,9 @@ pub fn cargo_manifest_deps(
                     .get("workspace")
                     .and_then(|w| w.as_bool())
                     .unwrap_or(false)
+                    && let Some(real) = ws_renames.and_then(|m| m.get(dep_key))
                 {
-                    if let Some(real) = ws_renames.and_then(|m| m.get(dep_key)) {
-                        names.push(real.clone());
-                    }
+                    names.push(real.clone());
                 }
             }
         }
@@ -320,15 +319,74 @@ pub fn check_manifest(
     findings
 }
 
+/// Dependency names declared in a pubspec.yaml, split into (normal, dev).
+pub fn pubspec_deps(content: &str) -> (Vec<String>, Vec<String>) {
+    use yaml_rust2::YamlLoader;
+
+    let docs = match YamlLoader::load_from_str(content) {
+        Ok(d) => d,
+        Err(_) => return (Vec::new(), Vec::new()),
+    };
+    let doc = match docs.first() {
+        Some(d) => d,
+        None => return (Vec::new(), Vec::new()),
+    };
+    let collect_keys = |key: &str| -> Vec<String> {
+        doc[key]
+            .as_hash()
+            .map(|h| {
+                h.keys()
+                    .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let normal = collect_keys("dependencies");
+    let dev = collect_keys("dev_dependencies");
+    (normal, dev)
+}
+
+/// Check one pubspec.yaml's declared dependencies against external constraints.
+pub fn check_pubspec(
+    constraints: &[Constraint],
+    pubspec_rel_path: &str,
+    content: &str,
+) -> Vec<ConstraintFinding> {
+    let (normal, dev) = pubspec_deps(content);
+    let mut findings = Vec::new();
+    for (names, is_dev) in [(&normal, false), (&dev, true)] {
+        for name in names {
+            if let Some(c) = match_external(constraints, pubspec_rel_path, name, is_dev) {
+                findings.push(make_external_finding(c, pubspec_rel_path, name, true));
+            }
+        }
+    }
+    findings
+}
+
+pub struct ProjectFiles {
+    pub manifests: Vec<(String, String)>,
+    pub pubspecs: Vec<(String, String)>,
+}
+
+/// Walk the workspace for Cargo.toml and pubspec.yaml files (depth-limited,
+/// skips target/, hidden dirs, node_modules, build/) and return grouped results.
+pub fn scan_project_files(root: &Path) -> ProjectFiles {
+    let mut pf = ProjectFiles {
+        manifests: Vec::new(),
+        pubspecs: Vec::new(),
+    };
+    walk_project_files(root, root, 0, &mut pf);
+    pf
+}
+
 /// Walk the workspace for Cargo.toml files (depth-limited, skips target/,
 /// hidden dirs, node_modules) and return (rel_path, content) pairs.
 pub fn scan_workspace_manifests(root: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    walk_manifests(root, root, 0, &mut out);
-    out
+    scan_project_files(root).manifests
 }
 
-fn walk_manifests(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, String)>) {
+fn walk_project_files(root: &Path, dir: &Path, depth: usize, out: &mut ProjectFiles) {
     if depth > 5 {
         return;
     }
@@ -341,15 +399,24 @@ fn walk_manifests(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, 
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if path.is_dir() {
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
+            if name.starts_with('.')
+                || name == "target"
+                || name == "node_modules"
+                || name == "build"
+                || name == ".dart_tool"
+            {
                 continue;
             }
-            walk_manifests(root, &path, depth + 1, out);
-        } else if name == "Cargo.toml"
-            && let (Ok(content), Ok(rel)) =
-                (std::fs::read_to_string(&path), path.strip_prefix(root))
+            walk_project_files(root, &path, depth + 1, out);
+        } else if let (Ok(content), Ok(rel)) =
+            (std::fs::read_to_string(&path), path.strip_prefix(root))
         {
-            out.push((rel.to_string_lossy().replace('\\', "/"), content));
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if *name == *"Cargo.toml" {
+                out.manifests.push((rel_str, content));
+            } else if *name == *"pubspec.yaml" {
+                out.pubspecs.push((rel_str, content));
+            }
         }
     }
 }
@@ -379,8 +446,9 @@ pub fn check_workspace_externals(
         }
     }
     let mut findings = check_import_items(constraints, &items);
-    let manifests = scan_workspace_manifests(workspace_root);
-    let ws_renames = manifests
+    let project_files = scan_project_files(workspace_root);
+    let ws_renames = project_files
+        .manifests
         .iter()
         .find(|(rel, _)| rel == "Cargo.toml")
         .map(|(_, content)| workspace_dep_renames(content))
@@ -390,8 +458,11 @@ pub fn check_workspace_externals(
     } else {
         Some(&ws_renames)
     };
-    for (rel_path, content) in &manifests {
+    for (rel_path, content) in &project_files.manifests {
         findings.extend(check_manifest(constraints, rel_path, content, renames));
+    }
+    for (rel_path, content) in &project_files.pubspecs {
+        findings.extend(check_pubspec(constraints, rel_path, content));
     }
     findings
 }
@@ -726,6 +797,64 @@ crates = ["arrow-core"]
         ];
         let findings = check_import_items(&cs, &items);
         assert_eq!(findings.len(), 2);
+    }
+
+    // --- pubspec ---
+
+    #[test]
+    fn pubspec_deps_parses_dependencies() {
+        let pubspec = r#"
+name: my_app
+version: 1.0.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.0.0
+  arrow_core: ^2.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  mockito: ^5.0.0
+"#;
+        let (normal, dev) = pubspec_deps(pubspec);
+        assert!(normal.contains(&"flutter".to_string()));
+        assert!(normal.contains(&"http".to_string()));
+        assert!(normal.contains(&"arrow_core".to_string()));
+        assert!(dev.contains(&"flutter_test".to_string()));
+        assert!(dev.contains(&"mockito".to_string()));
+        assert!(!normal.contains(&"mockito".to_string()));
+    }
+
+    #[test]
+    fn check_pubspec_flags_forbidden_dep() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow_core"]
+"#,
+        );
+        let pubspec = "name: my_app\n\ndependencies:\n  arrow_core: ^2.0.0\n";
+        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].detail.contains("manifest dependency"));
+    }
+
+    #[test]
+    fn check_pubspec_dev_deps_exempt_by_default() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "my_app/**"
+crates = ["mockito"]
+"#,
+        );
+        let pubspec = "name: my_app\n\ndev_dependencies:\n  mockito: ^5.0.0\n";
+        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec);
+        assert!(findings.is_empty());
     }
 
     // --- validate_no_external_targeting_members ---

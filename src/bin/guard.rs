@@ -150,6 +150,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if rel_path == "pubspec.yaml" || rel_path.ends_with("/pubspec.yaml") {
+        if let Some(proposed) =
+            guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
+        {
+            let outcome = guard::check_proposed_pubspec(&conn, &project_root, &rel_path, &proposed);
+            let blocking: Vec<_> = outcome
+                .active
+                .iter()
+                .filter(|f| f.severity == Severity::Blocking)
+                .collect();
+            for f in outcome
+                .active
+                .iter()
+                .filter(|f| f.severity != Severity::Blocking)
+            {
+                eprintln!(
+                    "sutra-guard: [{:?}] {} — {}",
+                    f.severity, f.constraint_id, f.detail
+                );
+            }
+            if !blocking.is_empty() {
+                let reason = guard::format_constraint_deny(&blocking);
+                if let Some(json) = guard::render_stdout(
+                    &guard::GuardDecision::Deny { reason },
+                    hook.hook_event_name.as_deref(),
+                ) {
+                    println!("{json}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let file_row: Option<(i64, f64, i64)> = conn
         .query_row(
             "SELECT id, COALESCE(pagerank, 0.0), blast_radius FROM files WHERE path = ?1",

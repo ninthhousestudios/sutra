@@ -453,6 +453,17 @@ pub fn check_proposed_manifest(
         .unwrap_or_default()
 }
 
+/// Check a proposed pubspec.yaml against external-crate constraints.
+pub fn check_proposed_pubspec(
+    conn: &Connection,
+    project_root: &Path,
+    pubspec_rel_path: &str,
+    proposed_content: &str,
+) -> CheckOutcome {
+    check::check_pubspec_raw(conn, project_root, pubspec_rel_path, proposed_content)
+        .unwrap_or_default()
+}
+
 pub fn check_file_constraints(
     conn: &Connection,
     project_root: &Path,
