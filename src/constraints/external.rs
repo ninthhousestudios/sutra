@@ -446,7 +446,6 @@ pub fn check_workspace_externals(
             items.push((file_path.clone(), name));
         }
     }
-    let mut findings = check_import_items(constraints, &items);
     let project_files = scan_project_files(workspace_root);
     let ws_renames = project_files
         .manifests
@@ -459,6 +458,16 @@ pub fn check_workspace_externals(
     } else {
         Some(&ws_renames)
     };
+    if !ws_renames.is_empty() {
+        let mut extra = Vec::new();
+        for (path, name) in &items {
+            if let Some(real) = ws_renames.get(name) {
+                extra.push((path.clone(), real.clone()));
+            }
+        }
+        items.extend(extra);
+    }
+    let mut findings = check_import_items(constraints, &items);
     for (rel_path, content) in &project_files.manifests {
         findings.extend(check_manifest(constraints, rel_path, content, renames));
     }
@@ -798,6 +807,37 @@ crates = ["arrow-core"]
         ];
         let findings = check_import_items(&cs, &items);
         assert_eq!(findings.len(), 2);
+    }
+
+    // --- import rename resolution ---
+
+    #[test]
+    fn import_alias_resolved_through_workspace_renames() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "server/src/**"
+crates = ["arrow-core"]
+"#,
+        );
+        let items = vec![("server/src/main.rs".to_string(), "innocent".to_string())];
+        let findings_without = check_import_items(&cs, &items);
+        assert!(findings_without.is_empty(), "alias alone should not match");
+
+        let mut resolved_items = items.clone();
+        let ws_renames =
+            std::collections::HashMap::from([("innocent".to_string(), "arrow-core".to_string())]);
+        let mut extra = Vec::new();
+        for (path, name) in &resolved_items {
+            if let Some(real) = ws_renames.get(name) {
+                extra.push((path.clone(), real.clone()));
+            }
+        }
+        resolved_items.extend(extra);
+        let findings_with = check_import_items(&cs, &resolved_items);
+        assert_eq!(findings_with.len(), 1, "real package name should match");
+        assert_eq!(findings_with[0].to_path, "crate:arrow-core");
     }
 
     // --- pubspec ---
