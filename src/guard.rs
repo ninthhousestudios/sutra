@@ -1500,4 +1500,143 @@ innocent = { package = "arrow-core", version = "1" }
                 .any(|f| f.to_path == "crate:arrow-core")
         );
     }
+
+    #[test]
+    fn root_rename_ignores_preexisting_member_violations() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-core", "evil-crate"]
+name = "no-bad-crates"
+"#,
+        )
+        .unwrap();
+
+        // Current root has no renames; member already has a direct forbidden dep
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"server\"]\n",
+        )
+        .unwrap();
+        let member_dir = dir.path().join("server");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"server\"\n\n[dependencies]\nevil-crate = \"1\"\ninnocent = { workspace = true }\n",
+        )
+        .unwrap();
+
+        // Proposed root adds a rename for "innocent" → arrow-core, but should
+        // NOT surface the pre-existing evil-crate violation
+        let proposed_root = r#"
+[workspace]
+members = ["server"]
+
+[workspace.dependencies]
+innocent = { package = "arrow-core", version = "1" }
+"#;
+        let outcome = check_proposed_manifest(&conn, dir.path(), "Cargo.toml", proposed_root);
+        let member_findings: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.from_path == "server/Cargo.toml")
+            .collect();
+        assert!(
+            member_findings
+                .iter()
+                .any(|f| f.to_path == "crate:arrow-core"),
+            "should flag the newly introduced arrow-core via rename"
+        );
+        assert!(
+            !member_findings
+                .iter()
+                .any(|f| f.to_path == "crate:evil-crate"),
+            "should NOT surface pre-existing evil-crate violation"
+        );
+    }
+
+    #[test]
+    fn root_rename_skips_non_workspace_members() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-core"]
+name = "no-arrow"
+"#,
+        )
+        .unwrap();
+
+        // Root declares only "server" as member, but a vendored crate also exists
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"server\"]\n",
+        )
+        .unwrap();
+        let member_dir = dir.path().join("server");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"server\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+
+        // Vendored crate NOT in workspace.members, uses the alias
+        let vendored_dir = dir.path().join("vendored");
+        std::fs::create_dir_all(&vendored_dir).unwrap();
+        std::fs::write(
+            vendored_dir.join("Cargo.toml"),
+            "[package]\nname = \"vendored\"\n\n[dependencies]\ninnocent = { workspace = true }\n",
+        )
+        .unwrap();
+
+        let proposed_root = r#"
+[workspace]
+members = ["server"]
+
+[workspace.dependencies]
+innocent = { package = "arrow-core", version = "1" }
+"#;
+        let outcome = check_proposed_manifest(&conn, dir.path(), "Cargo.toml", proposed_root);
+        let vendored_findings: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.from_path == "vendored/Cargo.toml")
+            .collect();
+        assert!(
+            vendored_findings.is_empty(),
+            "should not check non-member vendored crate; got: {:?}",
+            vendored_findings
+                .iter()
+                .map(|f| &f.to_path)
+                .collect::<Vec<_>>()
+        );
+    }
 }

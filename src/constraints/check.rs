@@ -748,27 +748,45 @@ pub fn check_manifest_raw(
 
     let (mut active, waived) = partition_manifest_findings(conn, manifest_rel_path, findings)?;
 
-    // When the root manifest's rename map changed, re-check member manifests
-    // with the proposed renames — a new/changed alias may resolve to a
+    // When the root manifest's rename map changed, re-check declared workspace
+    // members with the proposed renames — a new/changed alias may resolve to a
     // constrained package in members that use `workspace = true`.
+    // Only surfaces *newly introduced* findings (not pre-existing violations).
     if is_root && !ws_renames.is_empty() {
         let old_renames = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
             .ok()
             .map(|c| external::workspace_dep_renames(&c))
             .unwrap_or_default();
         if ws_renames != old_renames {
-            for (member_rel, member_content) in external::scan_workspace_manifests(workspace_root) {
-                if member_rel == "Cargo.toml" {
-                    continue;
-                }
-                let member_findings = external::check_manifest(
+            let old_rename_ref = if old_renames.is_empty() {
+                None
+            } else {
+                Some(&old_renames)
+            };
+            for (member_rel, member_content) in
+                external::workspace_member_manifests(workspace_root, content)
+            {
+                let old_findings = external::check_manifest(
+                    &all_constraints,
+                    &member_rel,
+                    &member_content,
+                    old_rename_ref,
+                );
+                let old_keys: std::collections::HashSet<(&str, &str)> = old_findings
+                    .iter()
+                    .map(|f| (f.constraint_id.as_str(), f.to_path.as_str()))
+                    .collect();
+                let new_findings: Vec<_> = external::check_manifest(
                     &all_constraints,
                     &member_rel,
                     &member_content,
                     renames,
-                );
+                )
+                .into_iter()
+                .filter(|f| !old_keys.contains(&(f.constraint_id.as_str(), f.to_path.as_str())))
+                .collect();
                 let (member_active, _) =
-                    partition_manifest_findings(conn, &member_rel, member_findings)?;
+                    partition_manifest_findings(conn, &member_rel, new_findings)?;
                 active.extend(member_active);
             }
         }

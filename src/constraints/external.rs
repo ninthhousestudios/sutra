@@ -386,6 +386,37 @@ pub fn scan_workspace_manifests(root: &Path) -> Vec<(String, String)> {
     scan_project_files(root).manifests
 }
 
+/// Read member Cargo.toml files for declared `[workspace].members` in the
+/// given root content. Only returns manifests for members that exist on disk.
+pub fn workspace_member_manifests(root: &Path, root_content: &str) -> Vec<(String, String)> {
+    let parsed: toml::Value = match root_content.parse() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let member_globs: Vec<&str> = parsed
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(|m| m.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for pattern in member_globs {
+        let abs_pattern = root.join(pattern);
+        let Ok(paths) = glob::glob(&abs_pattern.to_string_lossy()) else {
+            continue;
+        };
+        for entry in paths.flatten() {
+            let cargo = entry.join("Cargo.toml");
+            if let (Ok(content), Ok(rel)) =
+                (std::fs::read_to_string(&cargo), cargo.strip_prefix(root))
+            {
+                out.push((rel.to_string_lossy().replace('\\', "/"), content));
+            }
+        }
+    }
+    out
+}
+
 fn walk_project_files(root: &Path, dir: &Path, depth: usize, out: &mut ProjectFiles) {
     if depth > 5 {
         return;
