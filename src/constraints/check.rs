@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts};
+use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
 use crate::error::Result;
 use crate::rules::{self, Constraint, ConstraintParseError, Severity, match_no_cycles_constraint};
 use crate::waivers::{self, Waived};
@@ -44,7 +44,11 @@ pub enum EvalScope<'a> {
         old_edges: &'a HashSet<(i64, i64)>,
     },
     SingleFile(i64),
-    Edges(&'a [(i64, i64)]),
+    Edges {
+        edges: &'a [(i64, i64)],
+        /// Proposed `(from_path, crate_name)` external imports (guard side).
+        externals: &'a [(String, String)],
+    },
 }
 
 pub enum FactsSource<'a> {
@@ -90,11 +94,35 @@ fn evaluate_dd(
         }
     }
 
+    let changed_ids = match &scope {
+        EvalScope::ChangedFiles { changed_ids, .. } => Some(*changed_ids),
+        _ => None,
+    };
+
+    let mut findings = Vec::new();
+    let mut resolved = Vec::new();
+
+    if external::has_external_constraints(&all_constraints) {
+        let unresolved = db.unresolved_imports_with_files()?;
+        let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+        findings.extend(external::check_workspace_externals(
+            &all_constraints,
+            workspace_root,
+            &unresolved,
+            changed_ids,
+            crate_name.as_deref(),
+        ));
+    }
+
     let edges = db.import_edges()?;
     if edges.is_empty() {
+        let constraint_waivers = db.get_constraint_waivers(None)?;
+        let (active, waived) = waivers::partition(findings, &constraint_waivers);
         return Ok(CheckOutcome {
+            active,
+            waived,
+            resolved,
             parse_errors,
-            ..Default::default()
         });
     }
 
@@ -120,14 +148,6 @@ fn evaluate_dd(
 
     let mut resolver = ConstraintResolver::new();
     let pairs = resolver.resolve(&all_constraints, db, &path_map)?;
-
-    let changed_ids = match &scope {
-        EvalScope::ChangedFiles { changed_ids, .. } => Some(*changed_ids),
-        _ => None,
-    };
-
-    let mut findings = Vec::new();
-    let mut resolved = Vec::new();
 
     if !pairs.is_empty() {
         engine.set_forbidden_pairs(pairs)?;
@@ -164,7 +184,7 @@ fn evaluate_dd(
                     let baseline_result = engine.query_violations();
                     engine.update(super::DdDelta {
                         added_edges: new_edges,
-                        removed_edges: removed_edges,
+                        removed_edges,
                     })?;
                     baseline_result?.into_iter().collect()
                 } else {
@@ -328,12 +348,45 @@ fn evaluate_raw(
             rules::ConstraintKind::ForbiddenDep { .. } | rules::ConstraintKind::Boundary { .. }
         )
     });
-    if !has_forbidden_or_boundary {
+    let has_external = external::has_external_constraints(&all_constraints);
+    if !has_forbidden_or_boundary && !has_external {
         return Ok(CheckOutcome {
             active: parse_error_findings,
             parse_errors,
             ..Default::default()
         });
+    }
+
+    let mut external_findings: Vec<ConstraintFinding> = Vec::new();
+    if has_external {
+        match &scope {
+            EvalScope::SingleFile(file_id) => {
+                let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+                let mut stmt = conn.prepare(
+                    "SELECT f.path, f.language, i.imported_path FROM imports i \
+                     JOIN files f ON f.id = i.file_id \
+                     WHERE i.file_id = ?1 AND i.resolved_file_id IS NULL",
+                )?;
+                let rows: Vec<(String, String, String)> = stmt
+                    .query_map(params![file_id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                let items: Vec<(String, String)> = rows
+                    .iter()
+                    .filter_map(|(path, lang, imp)| {
+                        external::external_crate_of_import(imp, lang, crate_name.as_deref())
+                            .map(|c| (path.clone(), c))
+                    })
+                    .collect();
+                external_findings = external::check_import_items(&all_constraints, &items);
+            }
+            EvalScope::Edges { externals, .. } => {
+                external_findings = external::check_import_items(&all_constraints, externals);
+            }
+            _ => {}
+        }
     }
 
     let edges: Vec<(i64, i64)> = match &scope {
@@ -347,7 +400,7 @@ fn evaluate_raw(
                 .filter_map(|r| r.ok())
                 .collect()
         }
-        EvalScope::Edges(e) => e.to_vec(),
+        EvalScope::Edges { edges, .. } => edges.to_vec(),
         _ => {
             return Err(crate::error::SutraError::Internal(
                 "RawConn only supports SingleFile and Edges scopes".into(),
@@ -355,8 +408,9 @@ fn evaluate_raw(
         }
     };
 
-    if edges.is_empty() {
+    if edges.is_empty() && external_findings.is_empty() {
         return Ok(CheckOutcome {
+            active: parse_error_findings,
             parse_errors,
             ..Default::default()
         });
@@ -367,21 +421,28 @@ fn evaluate_raw(
     needed_ids.sort_unstable();
     needed_ids.dedup();
 
-    let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
-    let mut stmt = conn.prepare(&sql)?;
-    let path_map: HashMap<i64, String> = stmt
-        .query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
+    let path_map: HashMap<i64, String> = if needed_ids.is_empty() {
+        HashMap::new()
+    } else {
+        let placeholders: String = needed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT id, path FROM files WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        stmt.query_map(rusqlite::params_from_iter(needed_ids.iter()), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect()
+    };
 
     let (file_to_component, comp_name_to_id) = build_component_maps_raw(conn)?;
 
     use crate::db::ConstraintWaiverRow;
 
-    let relevant_paths: HashSet<&str> = path_map.values().map(|p| p.as_str()).collect();
+    let relevant_paths: HashSet<&str> = path_map
+        .values()
+        .map(|p| p.as_str())
+        .chain(external_findings.iter().map(|f| f.from_path.as_str()))
+        .collect();
     let constraint_waivers: Vec<ConstraintWaiverRow> = conn
         .prepare(
             "SELECT id, constraint_id, constraint_name, file_path, \
@@ -405,7 +466,7 @@ fn evaluate_raw(
         .filter(|w| relevant_paths.contains(w.file_path.as_str()))
         .collect();
 
-    let mut findings = Vec::new();
+    let mut findings = external_findings;
     for (from_id, to_id) in &edges {
         let from = match path_map.get(from_id) {
             Some(p) => p,
@@ -440,6 +501,65 @@ fn evaluate_raw(
 
     Ok(CheckOutcome {
         active: all_active,
+        waived,
+        parse_errors,
+        ..Default::default()
+    })
+}
+
+/// Check a single (possibly proposed) Cargo manifest against external-crate
+/// constraints, with waiver partitioning. Used by the guard on Cargo.toml edits.
+pub fn check_manifest_raw(
+    conn: &rusqlite::Connection,
+    workspace_root: &Path,
+    manifest_rel_path: &str,
+    content: &str,
+) -> Result<CheckOutcome> {
+    use rusqlite::params;
+
+    let loaded_rules = rules::load_rules(workspace_root)?;
+    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+    if !external::has_external_constraints(&all_constraints) {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    let findings = external::check_manifest(&all_constraints, manifest_rel_path, content);
+    if findings.is_empty() {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    use crate::db::ConstraintWaiverRow;
+    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
+        .prepare(
+            "SELECT id, constraint_id, constraint_name, file_path, \
+             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+             FROM constraint_waivers WHERE file_path = ?1",
+        )?
+        .query_map(params![manifest_rel_path], |row| {
+            Ok(ConstraintWaiverRow {
+                id: row.get(0)?,
+                constraint_id: row.get(1)?,
+                constraint_name: row.get(2)?,
+                file_path: row.get(3)?,
+                symbol_qualified_name: row.get(4)?,
+                rationale: row.get(5)?,
+                waived_by: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let (active, waived) = waivers::partition(findings, &constraint_waivers);
+    Ok(CheckOutcome {
+        active,
         waived,
         parse_errors,
         ..Default::default()

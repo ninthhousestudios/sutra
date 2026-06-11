@@ -401,8 +401,9 @@ impl SutraServer {
     #[tool(
         description = "Manage architectural constraints and their violations. \
         Actions: list (all constraints with kind, severity, name, provenance, scope, waiver count), \
-        violations (current constraint violations from DD maintained view — covers forbidden_dep, \
-        boundary, and no_cycles; does not include max_fan_in), \
+        violations (current constraint violations — covers forbidden_dep, \
+        boundary, no_cycles, and the external-crate kinds forbidden_external / confined_external \
+        [use-statement + Cargo manifest signals]; does not include max_fan_in), \
         waive (constraint_id, file_path, rationale, waived_by; optional constraint_name, \
         symbol_qualified_name), \
         unwaive (waiver_id)."

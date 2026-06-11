@@ -113,6 +113,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(500))?;
 
+    // Manifest guard: Cargo.toml edits checked against external-crate
+    // constraints (manifests aren't indexed files, so this must run before
+    // the file_row bail below).
+    if rel_path == "Cargo.toml" || rel_path.ends_with("/Cargo.toml") {
+        if let Some(proposed) =
+            guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
+        {
+            let outcome =
+                guard::check_proposed_manifest(&conn, &project_root, &rel_path, &proposed);
+            let blocking: Vec<_> = outcome
+                .active
+                .iter()
+                .filter(|f| f.severity == Severity::Blocking)
+                .collect();
+            for f in outcome
+                .active
+                .iter()
+                .filter(|f| f.severity != Severity::Blocking)
+            {
+                eprintln!(
+                    "sutra-guard: [{:?}] {} — {}",
+                    f.severity, f.constraint_id, f.detail
+                );
+            }
+            if !blocking.is_empty() {
+                let reason = guard::format_constraint_deny(&blocking);
+                if let Some(json) = guard::render_stdout(
+                    &guard::GuardDecision::Deny { reason },
+                    hook.hook_event_name.as_deref(),
+                ) {
+                    println!("{json}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let file_row: Option<(i64, f64, i64)> = conn
         .query_row(
             "SELECT id, COALESCE(pagerank, 0.0), blast_radius FROM files WHERE path = ?1",
@@ -148,18 +185,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let constraint_findings = if let Some(proposed) =
         guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
     {
-        if let Some(proposed_outgoing) = guard::extract_proposed_outgoing_edges(
-            &conn,
-            &project_root,
-            &rel_path,
-            file_id,
-            &proposed,
-        ) {
+        if let Some(proposed_imports) =
+            guard::extract_proposed_imports(&conn, &project_root, &rel_path, file_id, &proposed)
+        {
             guard::check_proposed_file_constraints(
                 &conn,
                 &project_root,
                 file_id,
-                &proposed_outgoing,
+                &proposed_imports.edges,
+                &proposed_imports.externals,
             )
         } else {
             guard::check_file_constraints(&conn, &project_root, file_id)

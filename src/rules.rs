@@ -32,6 +32,18 @@ pub enum ConstraintKind {
         threshold: u32,
     },
     NoCycles,
+    /// Forbid external crates/packages within a path scope.
+    ForbiddenExternal {
+        from: String,
+        crates: Vec<String>,
+        include_dev: bool,
+    },
+    /// External crates/packages importable ONLY from the listed paths.
+    ConfinedExternal {
+        crates: Vec<String>,
+        allowed_in: Vec<String>,
+        include_dev: bool,
+    },
 }
 
 impl Severity {
@@ -51,6 +63,8 @@ impl ConstraintKind {
             Self::Boundary { .. } => Severity::Blocking,
             Self::NoCycles => Severity::Blocking,
             Self::MaxFanIn { .. } => Severity::Advisory,
+            Self::ForbiddenExternal { .. } => Severity::Blocking,
+            Self::ConfinedExternal { .. } => Severity::Blocking,
         }
     }
 
@@ -60,6 +74,8 @@ impl ConstraintKind {
             Self::Boundary { .. } => "boundary",
             Self::MaxFanIn { .. } => "max_fan_in",
             Self::NoCycles => "no_cycles",
+            Self::ForbiddenExternal { .. } => "forbidden_external",
+            Self::ConfinedExternal { .. } => "confined_external",
         }
     }
 }
@@ -101,6 +117,35 @@ impl Constraint {
                 hasher.update(&threshold.to_le_bytes());
             }
             ConstraintKind::NoCycles => {}
+            ConstraintKind::ForbiddenExternal {
+                from,
+                crates,
+                include_dev,
+            } => {
+                hasher.update(from.as_bytes());
+                for c in crates {
+                    hasher.update(b"\x00");
+                    hasher.update(c.as_bytes());
+                }
+                hasher.update(b"\x00");
+                hasher.update(&[*include_dev as u8]);
+            }
+            ConstraintKind::ConfinedExternal {
+                crates,
+                allowed_in,
+                include_dev,
+            } => {
+                for c in crates {
+                    hasher.update(c.as_bytes());
+                    hasher.update(b"\x00");
+                }
+                hasher.update(b"\x00allowed\x00");
+                for a in allowed_in {
+                    hasher.update(a.as_bytes());
+                    hasher.update(b"\x00");
+                }
+                hasher.update(&[*include_dev as u8]);
+            }
         }
         if let Some(s) = scope {
             hasher.update(b"\x00scope\x00");
@@ -128,6 +173,10 @@ struct RawConstraint {
     // max_fan_in
     target: Option<String>,
     threshold: Option<u32>,
+    // forbidden_external / confined_external
+    crates: Option<Vec<String>>,
+    allowed_in: Option<Vec<String>>,
+    include_dev: Option<bool>,
 }
 
 impl RawConstraint {
@@ -176,6 +225,45 @@ impl RawConstraint {
                 ConstraintKind::MaxFanIn { target, threshold }
             }
             "no_cycles" => ConstraintKind::NoCycles,
+            "forbidden_external" => {
+                let crates = match self.crates {
+                    Some(c) if !c.is_empty() => c,
+                    _ => {
+                        return Err(SutraError::Internal(
+                            "constraint kind 'forbidden_external' requires a non-empty 'crates' list"
+                                .into(),
+                        ));
+                    }
+                };
+                ConstraintKind::ForbiddenExternal {
+                    from: self.from.unwrap_or_else(|| "**".into()),
+                    crates,
+                    include_dev: self.include_dev.unwrap_or(false),
+                }
+            }
+            "confined_external" => {
+                let crates = match self.crates {
+                    Some(c) if !c.is_empty() => c,
+                    _ => {
+                        return Err(SutraError::Internal(
+                            "constraint kind 'confined_external' requires a non-empty 'crates' list"
+                                .into(),
+                        ));
+                    }
+                };
+                let allowed_in = self.allowed_in.ok_or_else(|| {
+                    SutraError::Internal(
+                        "constraint kind 'confined_external' requires 'allowed_in' field \
+                         (empty list = banned everywhere)"
+                            .into(),
+                    )
+                })?;
+                ConstraintKind::ConfinedExternal {
+                    crates,
+                    allowed_in,
+                    include_dev: self.include_dev.unwrap_or(false),
+                }
+            }
             other => {
                 return Err(SutraError::Internal(format!(
                     "unknown constraint kind '{other}'"
@@ -721,5 +809,105 @@ severity = "advisory"
         // old format wins (processed first)
         assert!(cs[0].name.is_none());
         assert_eq!(cs[0].severity, Severity::Blocking);
+    }
+
+    #[test]
+    fn parse_forbidden_external_with_defaults() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow_core", "arrow_swe"]
+name = "agpl-boundary"
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(cs.len(), 1);
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ForbiddenExternal {
+                from: "**".into(),
+                crates: vec!["arrow_core".into(), "arrow_swe".into()],
+                include_dev: false,
+            }
+        );
+        assert_eq!(cs[0].severity, Severity::Blocking);
+    }
+
+    #[test]
+    fn parse_forbidden_external_scoped() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum"]
+include_dev = true
+severity = "advisory"
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ForbiddenExternal {
+                from: "report/**".into(),
+                crates: vec!["axum".into()],
+                include_dev: true,
+            }
+        );
+        assert_eq!(cs[0].severity, Severity::Advisory);
+    }
+
+    #[test]
+    fn parse_confined_external() {
+        let toml = r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic", "prost"]
+allowed_in = ["quiver-client/**"]
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ConfinedExternal {
+                crates: vec!["tonic".into(), "prost".into()],
+                allowed_in: vec!["quiver-client/**".into()],
+                include_dev: false,
+            }
+        );
+        assert_eq!(cs[0].severity, Severity::Blocking);
+    }
+
+    #[test]
+    fn forbidden_external_requires_crates() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert!(errors[0].error.contains("non-empty 'crates'"));
+    }
+
+    #[test]
+    fn confined_external_requires_allowed_in() {
+        let toml = r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic"]
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert!(errors[0].error.contains("allowed_in"));
+    }
+
+    #[test]
+    fn confined_external_empty_allowed_in_is_valid() {
+        let toml = r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["leftpad"]
+allowed_in = []
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert_eq!(valid.len(), 1);
+        assert!(errors.is_empty());
     }
 }

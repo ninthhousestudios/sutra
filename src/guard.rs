@@ -315,13 +315,22 @@ fn language_from_path(path: &str) -> Option<&'static str> {
     }
 }
 
-pub fn extract_proposed_outgoing_edges(
+/// Imports extracted from proposed (not-yet-written) file content.
+pub struct ProposedImports {
+    /// Workspace-internal resolved edges. For languages without proposed-edge
+    /// support (dart), falls back to the file's currently indexed outgoing edges.
+    pub edges: Vec<(i64, i64)>,
+    /// External `(from_path, crate_name)` imports for external-crate constraints.
+    pub externals: Vec<(String, String)>,
+}
+
+pub fn extract_proposed_imports(
     conn: &Connection,
     project_root: &Path,
     rel_path: &str,
     file_id: i64,
     proposed_content: &str,
-) -> Option<Vec<(i64, i64)>> {
+) -> Option<ProposedImports> {
     let language = language_from_path(rel_path)?;
 
     let result = crate::parser::parse_file(proposed_content, language, rel_path).ok()?;
@@ -329,41 +338,66 @@ pub fn extract_proposed_outgoing_edges(
         return None;
     }
 
-    if language != "rust" {
-        return None;
-    }
+    let crate_name = if language == "rust" {
+        crate::rust_imports::read_crate_name(project_root)
+    } else {
+        None
+    };
 
-    let crate_name = crate::rust_imports::read_crate_name(project_root);
-
-    let path_to_id: HashMap<String, i64> = conn
-        .prepare("SELECT path, id FROM files")
-        .ok()?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .ok()?
-        .filter_map(|r| r.ok())
-        .collect();
-    let path_ref_map: HashMap<&str, i64> =
-        path_to_id.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-
-    let mut edges = Vec::new();
+    let mut externals = Vec::new();
     for import in &result.imports {
-        let segments = match crate::rust_imports::normalize_to_crate_segments(
+        if let Some(name) = crate::constraints::external::external_crate_of_import(
             &import.raw_path,
-            rel_path,
+            language,
             crate_name.as_deref(),
         ) {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        if let Some(target_id) = crate::rust_imports::resolve_segments(&segments, &path_ref_map) {
-            if target_id != file_id {
-                edges.push((file_id, target_id));
-            }
+            externals.push((rel_path.to_string(), name));
         }
     }
-    Some(edges)
+
+    let edges = if language == "rust" {
+        let path_to_id: HashMap<String, i64> = conn
+            .prepare("SELECT path, id FROM files")
+            .ok()?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .ok()?
+            .filter_map(|r| r.ok())
+            .collect();
+        let path_ref_map: HashMap<&str, i64> =
+            path_to_id.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+        let mut edges = Vec::new();
+        for import in &result.imports {
+            let segments = match crate::rust_imports::normalize_to_crate_segments(
+                &import.raw_path,
+                rel_path,
+                crate_name.as_deref(),
+            ) {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            if let Some(target_id) = crate::rust_imports::resolve_segments(&segments, &path_ref_map)
+                && target_id != file_id {
+                    edges.push((file_id, target_id));
+                }
+        }
+        edges
+    } else {
+        // dart: proposed-edge derivation unsupported — use indexed outgoing edges
+        conn.prepare(
+            "SELECT file_id, resolved_file_id FROM imports \
+             WHERE file_id = ?1 AND resolved_file_id IS NOT NULL",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+
+    Some(ProposedImports { edges, externals })
 }
 
 fn get_incoming_edges(conn: &Connection, file_id: i64) -> Vec<(i64, i64)> {
@@ -383,15 +417,31 @@ pub fn check_proposed_file_constraints(
     project_root: &Path,
     file_id: i64,
     proposed_outgoing: &[(i64, i64)],
+    proposed_externals: &[(String, String)],
 ) -> CheckOutcome {
     let mut edges: Vec<(i64, i64)> = proposed_outgoing.to_vec();
     edges.extend(get_incoming_edges(conn, file_id));
     check::evaluate(
         &FactsSource::RawConn(conn),
         project_root,
-        EvalScope::Edges(&edges),
+        EvalScope::Edges {
+            edges: &edges,
+            externals: proposed_externals,
+        },
     )
     .unwrap_or_default()
+}
+
+/// Check a proposed Cargo.toml against external-crate constraints.
+/// Manifests aren't indexed files, so this runs outside the edge machinery.
+pub fn check_proposed_manifest(
+    conn: &Connection,
+    project_root: &Path,
+    manifest_rel_path: &str,
+    proposed_content: &str,
+) -> CheckOutcome {
+    check::check_manifest_raw(conn, project_root, manifest_rel_path, proposed_content)
+        .unwrap_or_default()
 }
 
 pub fn check_file_constraints(
@@ -893,7 +943,8 @@ name = "no-tools-daemon"
     fn proposed_violating_edit_denied() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -912,7 +963,8 @@ name = "no-tools-daemon"
         conn.execute_batch("INSERT INTO imports VALUES (1, 2);")
             .unwrap();
         let proposed_outgoing = vec![(1, 3)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -925,7 +977,8 @@ name = "no-tools-daemon"
     fn proposed_unrelated_edit_to_violating_file_denied() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2), (1, 3)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -938,7 +991,8 @@ name = "no-tools-daemon"
     fn waiver_on_target_does_not_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert_eq!(outcome.active.len(), 1);
         let constraint_id = outcome.active[0].constraint_id.clone();
 
@@ -949,7 +1003,8 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert_eq!(
             outcome.active.len(),
             1,
@@ -962,7 +1017,8 @@ name = "no-tools-daemon"
     fn waiver_on_source_does_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert_eq!(outcome.active.len(), 1);
         let constraint_id = outcome.active[0].constraint_id.clone();
 
@@ -973,9 +1029,140 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert!(outcome.active.is_empty());
         assert_eq!(outcome.waived.len(), 1);
+    }
+
+    // --- external-crate constraints ---
+
+    fn setup_external_db() -> (Connection, tempfile::TempDir) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'report/src/lib.rs', 'rust');
+             INSERT INTO files VALUES (2, 'server/src/main.rs', 'rust');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum", "sqlx"]
+name = "report-stays-pure"
+
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic", "prost"]
+allowed_in = ["quiver-client/**"]
+name = "protos-confined"
+"#,
+        )
+        .unwrap();
+
+        (conn, dir)
+    }
+
+    #[test]
+    fn proposed_external_import_denied() {
+        let (conn, dir) = setup_external_db();
+        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string())];
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        let blocking: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(
+            blocking[0].constraint_name.as_deref(),
+            Some("report-stays-pure")
+        );
+        assert_eq!(blocking[0].to_path, "crate:axum");
+    }
+
+    #[test]
+    fn proposed_confined_external_denied_outside_allowed_paths() {
+        let (conn, dir) = setup_external_db();
+        let externals = vec![("server/src/main.rs".to_string(), "tonic".to_string())];
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &externals);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(
+            outcome.active[0].constraint_name.as_deref(),
+            Some("protos-confined")
+        );
+
+        let allowed = vec![("quiver-client/src/lib.rs".to_string(), "tonic".to_string())];
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &allowed);
+        assert!(outcome.active.is_empty());
+    }
+
+    #[test]
+    fn indexed_unresolved_external_found_in_single_file_check() {
+        let (conn, dir) = setup_external_db();
+        conn.execute_batch("INSERT INTO imports VALUES (1, 'sqlx::query', NULL);")
+            .unwrap();
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].to_path, "crate:sqlx");
+    }
+
+    #[test]
+    fn external_waiver_suppresses() {
+        let (conn, dir) = setup_external_db();
+        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string())];
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        let constraint_id = outcome.active[0].constraint_id.clone();
+
+        conn.execute(
+            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'report/src/lib.rs', 'transition', 'test')",
+            params![constraint_id],
+        )
+        .unwrap();
+
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        assert!(outcome.active.is_empty());
+        assert_eq!(outcome.waived.len(), 1);
+    }
+
+    #[test]
+    fn proposed_manifest_dep_denied() {
+        let (conn, dir) = setup_external_db();
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let outcome = check_proposed_manifest(&conn, dir.path(), "server/Cargo.toml", manifest);
+        assert_eq!(outcome.active.len(), 1);
+        assert!(outcome.active[0].detail.contains("manifest dependency"));
+
+        let outcome =
+            check_proposed_manifest(&conn, dir.path(), "quiver-client/Cargo.toml", manifest);
+        assert!(outcome.active.is_empty());
+    }
+
+    #[test]
+    fn extract_proposed_imports_separates_internal_and_external() {
+        let (conn, dir) = setup_external_db();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"report\"\n",
+        )
+        .unwrap();
+        let content = "use axum::Router;\nuse crate::render;\nuse std::fmt;\n\nfn f() {}\n";
+        let pi =
+            extract_proposed_imports(&conn, dir.path(), "report/src/lib.rs", 1, content).unwrap();
+        let crates: Vec<&str> = pi.externals.iter().map(|(_, c)| c.as_str()).collect();
+        assert!(crates.contains(&"axum"));
+        assert!(crates.contains(&"std"));
+        assert!(!crates.iter().any(|c| *c == "crate" || *c == "render"));
     }
 
     #[test]
@@ -1016,7 +1203,8 @@ name = "no-tools-daemon"
             .unwrap();
         // We're editing daemon.rs — proposed outgoing is clean, but incoming is violating
         let proposed_outgoing: Vec<(i64, i64)> = vec![];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &proposed_outgoing);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 2, &proposed_outgoing, &[]);
         let blocking: Vec<_> = outcome
             .active
             .iter()

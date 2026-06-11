@@ -116,9 +116,30 @@ kind = "max_fan_in"
 target = "src/config.rs"
 threshold = 10
 severity = "advisory"
+
+# External-crate constraints: forbid crates outside the workspace.
+# Checked from two signals: use-statement/import paths (file:level findings)
+# and Cargo.toml [dependencies] (the linking truth — catches deps that are
+# linked but never imported). dev/build-dependencies are exempt unless
+# include_dev = true. Crate-name globs allowed; hyphens/underscores equivalent.
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"               # path glob, default "**" (whole workspace)
+crates = ["axum", "sqlx"]
+name = "report-stays-pure"
+
+# Confinement: these crates may ONLY be imported from the listed paths.
+# allowed_in = [] bans them everywhere.
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic", "prost"]
+allowed_in = ["quiver-client/**"]
+name = "protos-only-in-quiver-client"
 ```
 
-Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes.
+Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes. External-crate constraints are checked directly against unresolved import rows and workspace Cargo manifests (no DD view needed).
+
+In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from `report/`) are classified as external, so `forbidden_external` / `confined_external` also express crate-to-crate seams. Dart `package:` and `dart:` imports are matched by package name; pubspec.yaml manifests are not yet checked.
 
 Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time.
 

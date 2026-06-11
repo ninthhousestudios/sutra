@@ -81,6 +81,18 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                     json!({ "target": target, "threshold": threshold })
                 }
                 ConstraintKind::NoCycles => json!({}),
+                ConstraintKind::ForbiddenExternal {
+                    from,
+                    crates,
+                    include_dev,
+                } => json!({ "from": from, "crates": crates, "include_dev": include_dev }),
+                ConstraintKind::ConfinedExternal {
+                    crates,
+                    allowed_in,
+                    include_dev,
+                } => {
+                    json!({ "crates": crates, "allowed_in": allowed_in, "include_dev": include_dev })
+                }
             };
             json!({
                 "id": c.id,

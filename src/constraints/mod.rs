@@ -1,5 +1,6 @@
 pub mod check;
 mod engine;
+pub mod external;
 mod resolver;
 mod worker;
 

@@ -213,6 +213,14 @@ fn constraints_for_component<'a>(
                     component_files.iter().any(|f| f == target)
                 }
                 ConstraintKind::NoCycles => true,
+                ConstraintKind::ForbiddenExternal { from, .. } => {
+                    let from_pat = Pattern::new(from).ok();
+                    component_files
+                        .iter()
+                        .any(|f| from_pat.as_ref().is_some_and(|p| p.matches_with(f, opts)))
+                }
+                // confinement applies everywhere outside allowed_in — always relevant
+                ConstraintKind::ConfinedExternal { .. } => true,
             }
         })
         .collect()
@@ -283,6 +291,18 @@ fn constraint_detail(c: &Constraint) -> String {
             format!("{target} (max {threshold})")
         }
         ConstraintKind::NoCycles => "no import cycles".into(),
+        ConstraintKind::ForbiddenExternal { from, crates, .. } => {
+            format!("{from} must not depend on external [{}]", crates.join(", "))
+        }
+        ConstraintKind::ConfinedExternal {
+            crates, allowed_in, ..
+        } => {
+            format!(
+                "external [{}] allowed only in [{}]",
+                crates.join(", "),
+                allowed_in.join(", ")
+            )
+        }
     }
 }
 
