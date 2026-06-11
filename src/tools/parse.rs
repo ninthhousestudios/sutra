@@ -25,6 +25,7 @@ pub fn handle(
         "symbols_extracted": snapshot.symbols_extracted,
         "refs_extracted": snapshot.refs_extracted,
         "parse_errors": snapshot.parse_errors,
+        "resolved_refs": snapshot.resolved_count,
         "unresolved_refs": snapshot.unresolved_count,
         "skipped_refs": snapshot.skipped_count,
         "duration_ms": snapshot.duration_ms,

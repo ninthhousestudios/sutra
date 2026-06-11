@@ -84,6 +84,7 @@ pub struct ParseSnapshot {
     pub refs_extracted: i64,
     pub parse_errors: i64,
     pub duration_ms: i64,
+    pub resolved_count: i64,
     pub unresolved_count: i64,
     /// Refs where resolution was skipped (Import, FieldAccess contexts).
     pub skipped_count: i64,
@@ -110,11 +111,11 @@ struct FileParseResult {
     symbols_extracted: i64,
     refs_extracted: i64,
     parse_errors: i64,
-    deleted_symbol_ids: Vec<i64>,
 }
 
 enum PostParseResult {
     Full {
+        resolved_count: i64,
         unresolved_count: i64,
         skipped_count: i64,
     },
@@ -192,7 +193,6 @@ fn parse_single_file(
                 symbols_extracted: 0,
                 refs_extracted: 0,
                 parse_errors: 1,
-                deleted_symbol_ids: vec![],
             }));
         }
     };
@@ -223,18 +223,9 @@ fn parse_single_file(
                 symbols_extracted: 0,
                 refs_extracted: 0,
                 parse_errors: 1,
-                deleted_symbol_ids: vec![],
             }));
         }
     };
-
-    let mut deleted_symbol_ids = Vec::new();
-    if let Some(ref ex) = existing {
-        let old_symbols = db.find_symbols_by_file(ex.id)?;
-        for sym in &old_symbols {
-            deleted_symbol_ids.push(sym.id);
-        }
-    }
 
     let mut parse_errors: i64 = 0;
     if !parse_result.parsed_ok {
@@ -279,7 +270,6 @@ fn parse_single_file(
         symbols_extracted,
         refs_extracted,
         parse_errors,
-        deleted_symbol_ids,
     }))
 }
 
@@ -287,14 +277,14 @@ fn resolve_file_refs(
     db: &Db,
     file_id: i64,
     all_symbols: &[(i64, String, String, String)],
-) -> Result<(i64, i64)> {
+) -> Result<(i64, i64, i64)> {
     let file_symbols_rows = db.find_symbols_by_file(file_id)?;
     let file_refs = db.find_refs_in_file(file_id)?;
     let file_imports = db.imports_for_file(file_id)?;
 
     if file_refs.is_empty() {
         db.replace_refs_and_clear_resolution(file_id, &[])?;
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     let extracted_symbols: Vec<parser::ExtractedSymbol> = file_symbols_rows
@@ -360,6 +350,7 @@ fn resolve_file_refs(
 
     db.replace_refs_and_clear_resolution(file_id, &ref_tuples)?;
 
+    let mut resolved_count: i64 = 0;
     let mut unresolved: i64 = 0;
     let mut skipped: i64 = 0;
     for rr in &resolved {
@@ -367,10 +358,12 @@ fn resolve_file_refs(
             skipped += 1;
         } else if rr.target_symbol_id.is_none() {
             unresolved += 1;
+        } else {
+            resolved_count += 1;
         }
     }
 
-    Ok((unresolved, skipped))
+    Ok((resolved_count, unresolved, skipped))
 }
 
 fn prune_deleted_files(db: &Db, workspace_root: &Path) -> usize {
@@ -417,8 +410,6 @@ pub fn parse_workspace(
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
-    let mut deleted_symbol_ids: Vec<i64> = Vec::new();
-
     let inner = (|| -> Result<PostParseResult> {
         for file_path in &source_files {
             if cancel.load(Ordering::Relaxed) {
@@ -428,7 +419,6 @@ pub fn parse_workspace(
                 parse_single_file(db, file_path, &workspace.root, registry, &mut pool)?
             {
                 parse_errors += result.parse_errors;
-                deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
                     files_parsed += 1;
                     symbols_extracted += result.symbols_extracted;
@@ -437,23 +427,18 @@ pub fn parse_workspace(
             }
         }
 
-        if files_parsed == 0
-            && parse_errors == 0
-            && deleted_symbol_ids.is_empty()
-            && pruned == 0
-            && !db.has_pending_work()?
-        {
+        if files_parsed == 0 && parse_errors == 0 && pruned == 0 && !db.has_pending_work()? {
             return Ok(PostParseResult::NoChanges);
         }
 
-        let (unresolved_count, skipped_count) = post_parse_sequence(
+        let (resolved_count, unresolved_count, skipped_count) = post_parse_sequence(
             db,
-            &deleted_symbol_ids,
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
         )?;
         Ok(PostParseResult::Full {
+            resolved_count,
             unresolved_count,
             skipped_count,
         })
@@ -508,12 +493,13 @@ pub fn parse_workspace(
         }
     }
 
-    let (unresolved_count, skipped_count) = match inner? {
+    let (resolved_count, unresolved_count, skipped_count) = match inner? {
         PostParseResult::Full {
+            resolved_count,
             unresolved_count,
             skipped_count,
-        } => (unresolved_count, skipped_count),
-        PostParseResult::NoChanges => (0, 0),
+        } => (resolved_count, unresolved_count, skipped_count),
+        PostParseResult::NoChanges => (0, 0, 0),
     };
 
     Ok(ParseSnapshot {
@@ -523,6 +509,7 @@ pub fn parse_workspace(
         refs_extracted,
         parse_errors,
         duration_ms,
+        resolved_count,
         unresolved_count,
         skipped_count,
     })
@@ -550,8 +537,6 @@ pub fn parse_changed_files(
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
-    let mut deleted_symbol_ids: Vec<i64> = Vec::new();
-
     let inner = (|| -> Result<PostParseResult> {
         for del_path in deleted {
             if cancel.load(Ordering::Relaxed) {
@@ -564,10 +549,6 @@ pub fn parse_changed_files(
                 .to_string();
 
             if let Some(existing) = db.file_by_path(&rel_path)? {
-                let old_symbols = db.find_symbols_by_file(existing.id)?;
-                for sym in &old_symbols {
-                    deleted_symbol_ids.push(sym.id);
-                }
                 db.delete_file_cascade(existing.id)?;
             }
         }
@@ -584,7 +565,6 @@ pub fn parse_changed_files(
                 parse_single_file(db, file_path, &workspace.root, registry, &mut pool)?
             {
                 parse_errors += result.parse_errors;
-                deleted_symbol_ids.extend(result.deleted_symbol_ids);
                 if result.file_id != 0 {
                     files_parsed += 1;
                     symbols_extracted += result.symbols_extracted;
@@ -593,22 +573,18 @@ pub fn parse_changed_files(
             }
         }
 
-        if files_parsed == 0
-            && parse_errors == 0
-            && deleted_symbol_ids.is_empty()
-            && !db.has_pending_work()?
-        {
+        if files_parsed == 0 && parse_errors == 0 && !db.has_pending_work()? {
             return Ok(PostParseResult::NoChanges);
         }
 
-        let (unresolved_count, skipped_count) = post_parse_sequence(
+        let (resolved_count, unresolved_count, skipped_count) = post_parse_sequence(
             db,
-            &deleted_symbol_ids,
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
         )?;
         Ok(PostParseResult::Full {
+            resolved_count,
             unresolved_count,
             skipped_count,
         })
@@ -663,12 +639,13 @@ pub fn parse_changed_files(
         }
     }
 
-    let (unresolved_count, skipped_count) = match inner? {
+    let (resolved_count, unresolved_count, skipped_count) = match inner? {
         PostParseResult::Full {
+            resolved_count,
             unresolved_count,
             skipped_count,
-        } => (unresolved_count, skipped_count),
-        PostParseResult::NoChanges => (0, 0),
+        } => (resolved_count, unresolved_count, skipped_count),
+        PostParseResult::NoChanges => (0, 0, 0),
     };
 
     Ok(ParseSnapshot {
@@ -678,6 +655,7 @@ pub fn parse_changed_files(
         refs_extracted,
         parse_errors,
         duration_ms,
+        resolved_count,
         unresolved_count,
         skipped_count,
     })
@@ -685,29 +663,22 @@ pub fn parse_changed_files(
 
 fn post_parse_sequence(
     db: &Db,
-    deleted_symbol_ids: &[i64],
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
     registry: &LanguageRegistry,
-) -> Result<(i64, i64)> {
-    // Mark deleted-symbol back-references in DB (durable, survives crash).
-    if !deleted_symbol_ids.is_empty() {
-        let back_refs = db.find_files_referencing_symbols(deleted_symbol_ids)?;
-        if !back_refs.is_empty() {
-            db.mark_needs_resolution(&back_refs)?;
-        }
-    }
-
-    // Query resolution work from DB — includes freshly-parsed files AND
-    // orphans from interrupted previous parses.
+) -> Result<(i64, i64, i64)> {
+    // Query resolution work from DB — includes freshly-parsed files,
+    // dependents of deleted symbols, and orphans from interrupted parses.
     let resolution_ids = db.files_needing_resolution()?;
     let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
+    let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;
     let mut skipped_count: i64 = 0;
     for &file_id in &resolution_set {
-        let (unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
+        let (resolved, unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
+        resolved_count += resolved;
         unresolved_count += unresolved;
         skipped_count += skipped;
     }
@@ -810,7 +781,7 @@ fn post_parse_sequence(
         }
     }
 
-    Ok((unresolved_count, skipped_count))
+    Ok((resolved_count, unresolved_count, skipped_count))
 }
 
 fn record_snapshot(

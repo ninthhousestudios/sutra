@@ -173,10 +173,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let registry = sutra::parser::adapter::default_registry();
             let snapshot = sutra::pipeline::parse_workspace(ws, &db, &config, &cancel, &registry)?;
-            let resolvable = snapshot.refs_extracted - snapshot.skipped_count;
-            let resolved = resolvable - snapshot.unresolved_count;
+            let resolvable = snapshot.resolved_count + snapshot.unresolved_count;
             let pct = if resolvable > 0 {
-                resolved * 100 / resolvable
+                snapshot.resolved_count * 100 / resolvable
             } else {
                 0
             };
@@ -186,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 snapshot.files_walked,
                 snapshot.symbols_extracted,
                 snapshot.refs_extracted,
-                resolved,
+                snapshot.resolved_count,
                 resolvable,
                 pct,
                 snapshot.skipped_count,

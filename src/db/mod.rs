@@ -652,6 +652,16 @@ impl Db {
                 conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
             }
 
+            // Mark dependent files before cascade deletes destroy the evidence.
+            conn.execute(
+                "UPDATE files SET needs_resolution = 1
+                 WHERE id != ?1 AND id IN (
+                     SELECT DISTINCT file_id FROM refs
+                     WHERE target_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)
+                 )",
+                params![file_id],
+            )?;
+
             // Clear resolved_file_id on imports that target this file,
             // so the FK on resolved_file_id doesn't block the delete.
             conn.execute(
@@ -702,6 +712,16 @@ impl Db {
             Err(e) => return Err(SutraError::Db(e)),
         };
         if let Some(old_id) = old_file_id {
+            // Mark dependent files before cascade deletes destroy the evidence.
+            conn.execute(
+                "UPDATE files SET needs_resolution = 1
+                 WHERE id != ?1 AND id IN (
+                     SELECT DISTINCT file_id FROM refs
+                     WHERE target_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)
+                 )",
+                params![old_id],
+            )?;
+
             let symbol_ids: Vec<i64> = {
                 let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
                 let ids: rusqlite::Result<Vec<i64>> =
