@@ -1158,6 +1158,67 @@ name = "protos-confined"
     }
 
     #[test]
+    fn external_targeting_member_surfaces_as_blocking_finding() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'server/src/main.rs', 'rust');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "server/**"
+crates = ["report"]
+name = "bad-rule-targets-member"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"report\"]\n",
+        )
+        .unwrap();
+        let member_dir = dir.path().join("report");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"report\"\n",
+        )
+        .unwrap();
+
+        // Edges path (check_proposed_file_constraints)
+        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &[]);
+        let blocking: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        assert!(blocking[0].detail.contains("bad-rule-targets-member"));
+        assert!(blocking[0].detail.contains("forbidden_dep"));
+
+        // SingleFile path (check_file_constraints)
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        let blocking: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        assert!(blocking[0].detail.contains("bad-rule-targets-member"));
+    }
+
+    #[test]
     fn extract_proposed_imports_separates_internal_and_external() {
         let (conn, dir) = setup_external_db();
         std::fs::write(

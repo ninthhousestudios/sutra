@@ -14,7 +14,7 @@ use std::path::Path;
 use glob::{MatchOptions, Pattern};
 
 use crate::constraints::check::{ConstraintFinding, FindingDelta};
-use crate::rules::{Constraint, ConstraintKind};
+use crate::rules::{Constraint, ConstraintKind, Severity};
 
 /// Extract the external crate/package name from a raw import path, or `None`
 /// when the import is workspace-internal (or unrecognizable).
@@ -150,6 +150,21 @@ pub fn validate_no_external_targeting_members(
         }
     }
     Ok(())
+}
+
+pub fn config_error_finding(msg: &str) -> ConstraintFinding {
+    ConstraintFinding {
+        constraint_id: "config-error".to_string(),
+        constraint_name: None,
+        constraint_kind: "config_error".to_string(),
+        severity: Severity::Blocking,
+        provenance: None,
+        from_path: String::new(),
+        to_path: String::new(),
+        component_context: None,
+        detail: msg.to_string(),
+        delta: FindingDelta::Unknown,
+    }
 }
 
 fn make_external_finding(
@@ -581,5 +596,15 @@ name = "no-vidya-core"
     fn validate_passes_empty_workspace() {
         let cs = constraints_from(FORBID);
         assert!(validate_no_external_targeting_members(&cs, &[]).is_ok());
+    }
+
+    // --- config_error_finding ---
+
+    #[test]
+    fn config_error_finding_is_blocking() {
+        let f = config_error_finding("bad config");
+        assert_eq!(f.severity, Severity::Blocking);
+        assert_eq!(f.constraint_kind, "config_error");
+        assert!(f.detail.contains("bad config"));
     }
 }

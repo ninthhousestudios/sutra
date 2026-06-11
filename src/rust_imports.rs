@@ -67,11 +67,7 @@ pub fn parse_workspace_layout(workspace_root: &Path) -> WorkspaceLayout {
         Err(_) => return empty,
     };
 
-    let root_crate = parsed
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .map(|s| s.replace('-', "_"));
+    let root_crate = lib_crate_name(&parsed);
 
     let member_globs: Vec<String> = parsed
         .get("workspace")
@@ -109,17 +105,29 @@ fn read_workspace_member(workspace_root: &Path, member_dir: &Path) -> Option<Wor
     }
     let cargo = std::fs::read_to_string(member_dir.join("Cargo.toml")).ok()?;
     let parsed: toml::Value = cargo.parse().ok()?;
-    let name = parsed
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())?
-        .replace('-', "_");
+    let name = lib_crate_name(&parsed)?;
     let dir = member_dir
         .strip_prefix(workspace_root)
         .ok()?
         .to_string_lossy()
         .to_string();
     Some(WorkspaceMember { name, dir })
+}
+
+/// Cargo import crate name: [lib].name if set, else [package].name with hyphens → underscores.
+fn lib_crate_name(parsed: &toml::Value) -> Option<String> {
+    if let Some(lib_name) = parsed
+        .get("lib")
+        .and_then(|l| l.get("name"))
+        .and_then(|n| n.as_str())
+    {
+        return Some(lib_name.to_string());
+    }
+    parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.replace('-', "_"))
 }
 
 // ── Import resolution ─────────────────────────────────────────────────
@@ -533,6 +541,70 @@ mod tests {
             .collect();
         assert_eq!(resolve_segments(&segs, &path_to_id, "src"), Some(3));
     }
+
+    // ── lib_crate_name ────────────────────────────────────────────────
+
+    #[test]
+    fn lib_name_preferred_over_package_name() {
+        let toml: toml::Value = r#"
+[package]
+name = "vidya-core"
+
+[lib]
+name = "vidya_core_runtime"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(lib_crate_name(&toml).as_deref(), Some("vidya_core_runtime"));
+    }
+
+    #[test]
+    fn package_name_fallback_when_no_lib() {
+        let toml: toml::Value = r#"
+[package]
+name = "vidya-core"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(lib_crate_name(&toml).as_deref(), Some("vidya_core"));
+    }
+
+    // ── cross-crate with [lib].name ─────────────────────────────────
+
+    #[test]
+    fn cross_crate_uses_lib_name() {
+        let layout = WorkspaceLayout {
+            root_crate: Some("vidya".to_string()),
+            members: vec![WorkspaceMember {
+                name: "vidya_core_runtime".to_string(),
+                dir: "vidya-core".to_string(),
+            }],
+        };
+        let r = normalize_to_crate_segments(
+            "vidya_core_runtime::query::Engine",
+            "src/main.rs",
+            &layout,
+        );
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["query", "Engine"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn all_crate_names_includes_lib_name() {
+        let layout = WorkspaceLayout {
+            root_crate: Some("vidya".to_string()),
+            members: vec![WorkspaceMember {
+                name: "vidya_core_runtime".to_string(),
+                dir: "vidya-core".to_string(),
+            }],
+        };
+        let names = layout.all_crate_names();
+        assert!(names.contains(&"vidya_core_runtime"));
+        assert!(names.contains(&"vidya"));
+    }
+
+    // ── resolve_segments ──────────────────────────────────────────────
 
     #[test]
     fn resolve_in_member_crate() {

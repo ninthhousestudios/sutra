@@ -107,8 +107,11 @@ fn evaluate_dd(
         let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
         let crate_names = layout.all_crate_names();
         let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
-        external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
-            .map_err(|e| crate::error::SutraError::Internal(e))?;
+        if let Err(msg) =
+            external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
+        {
+            findings.push(external::config_error_finding(&msg));
+        }
         findings.extend(external::check_workspace_externals(
             &all_constraints,
             workspace_root,
@@ -363,16 +366,16 @@ fn evaluate_raw(
 
     let mut external_findings: Vec<ConstraintFinding> = Vec::new();
     if has_external {
+        let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
+        let crate_names = layout.all_crate_names();
+        let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+        if let Err(msg) =
+            external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
+        {
+            external_findings.push(external::config_error_finding(&msg));
+        }
         match &scope {
             EvalScope::SingleFile(file_id) => {
-                let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
-                let crate_names = layout.all_crate_names();
-                let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
-                external::validate_no_external_targeting_members(
-                    &all_constraints,
-                    &crate_name_refs,
-                )
-                .map_err(|e| crate::error::SutraError::Internal(e))?;
                 let mut stmt = conn.prepare(
                     "SELECT f.path, f.language, i.imported_path FROM imports i \
                      JOIN files f ON f.id = i.file_id \
@@ -391,10 +394,10 @@ fn evaluate_raw(
                             .map(|c| (path.clone(), c))
                     })
                     .collect();
-                external_findings = external::check_import_items(&all_constraints, &items);
+                external_findings.extend(external::check_import_items(&all_constraints, &items));
             }
             EvalScope::Edges { externals, .. } => {
-                external_findings = external::check_import_items(&all_constraints, externals);
+                external_findings.extend(external::check_import_items(&all_constraints, externals));
             }
             _ => {}
         }
@@ -537,7 +540,16 @@ pub fn check_manifest_raw(
         });
     }
 
-    let findings = external::check_manifest(&all_constraints, manifest_rel_path, content);
+    let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
+    let crate_names = layout.all_crate_names();
+    let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+
+    let mut findings = external::check_manifest(&all_constraints, manifest_rel_path, content);
+    if let Err(msg) =
+        external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
+    {
+        findings.push(external::config_error_finding(&msg));
+    }
     if findings.is_empty() {
         return Ok(CheckOutcome {
             parse_errors,
