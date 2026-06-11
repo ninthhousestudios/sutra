@@ -660,57 +660,21 @@ fn evaluate_raw(
     })
 }
 
-/// Check a single (possibly proposed) Cargo manifest against external-crate
-/// constraints, with waiver partitioning. Used by the guard on Cargo.toml edits.
-pub fn check_manifest_raw(
+/// Check a manifest's findings against waivers and return a partitioned outcome.
+fn partition_manifest_findings(
     conn: &rusqlite::Connection,
-    workspace_root: &Path,
     manifest_rel_path: &str,
-    content: &str,
-) -> Result<CheckOutcome> {
+    findings: Vec<ConstraintFinding>,
+) -> Result<(
+    Vec<ConstraintFinding>,
+    Vec<waivers::Waived<ConstraintFinding>>,
+)> {
+    use crate::db::ConstraintWaiverRow;
     use rusqlite::params;
 
-    let loaded_rules = rules::load_rules(workspace_root)?;
-    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
-    if !external::has_external_constraints(&all_constraints) {
-        return Ok(CheckOutcome {
-            parse_errors,
-            ..Default::default()
-        });
-    }
-
-    let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
-    let crate_names = layout.all_crate_names();
-    let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
-
-    let ws_renames = if manifest_rel_path == "Cargo.toml" {
-        external::workspace_dep_renames(content)
-    } else {
-        std::fs::read_to_string(workspace_root.join("Cargo.toml"))
-            .ok()
-            .map(|c| external::workspace_dep_renames(&c))
-            .unwrap_or_default()
-    };
-    let renames = if ws_renames.is_empty() {
-        None
-    } else {
-        Some(&ws_renames)
-    };
-    let mut findings =
-        external::check_manifest(&all_constraints, manifest_rel_path, content, renames);
-    if let Err(msg) =
-        external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
-    {
-        findings.push(external::config_error_finding(&msg));
-    }
     if findings.is_empty() {
-        return Ok(CheckOutcome {
-            parse_errors,
-            ..Default::default()
-        });
+        return Ok((Vec::new(), Vec::new()));
     }
-
-    use crate::db::ConstraintWaiverRow;
     let constraint_waivers: Vec<ConstraintWaiverRow> = conn
         .prepare(
             "SELECT id, constraint_id, constraint_name, file_path, \
@@ -732,8 +696,84 @@ pub fn check_manifest_raw(
         })?
         .filter_map(|r| r.ok())
         .collect();
+    Ok(waivers::partition(findings, &constraint_waivers))
+}
 
-    let (active, waived) = waivers::partition(findings, &constraint_waivers);
+/// Check a single (possibly proposed) Cargo manifest against external-crate
+/// constraints, with waiver partitioning. Used by the guard on Cargo.toml edits.
+///
+/// When checking the root Cargo.toml, also re-checks member manifests if the
+/// proposed edit changes workspace dependency renames — a rename change can
+/// cause `workspace = true` aliases in members to resolve to constrained packages.
+pub fn check_manifest_raw(
+    conn: &rusqlite::Connection,
+    workspace_root: &Path,
+    manifest_rel_path: &str,
+    content: &str,
+) -> Result<CheckOutcome> {
+    let loaded_rules = rules::load_rules(workspace_root)?;
+    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+    if !external::has_external_constraints(&all_constraints) {
+        return Ok(CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        });
+    }
+
+    let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
+    let crate_names = layout.all_crate_names();
+    let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+
+    let is_root = manifest_rel_path == "Cargo.toml";
+    let ws_renames = if is_root {
+        external::workspace_dep_renames(content)
+    } else {
+        std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .ok()
+            .map(|c| external::workspace_dep_renames(&c))
+            .unwrap_or_default()
+    };
+    let renames = if ws_renames.is_empty() {
+        None
+    } else {
+        Some(&ws_renames)
+    };
+    let mut findings =
+        external::check_manifest(&all_constraints, manifest_rel_path, content, renames);
+    if let Err(msg) =
+        external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
+    {
+        findings.push(external::config_error_finding(&msg));
+    }
+
+    let (mut active, waived) = partition_manifest_findings(conn, manifest_rel_path, findings)?;
+
+    // When the root manifest's rename map changed, re-check member manifests
+    // with the proposed renames — a new/changed alias may resolve to a
+    // constrained package in members that use `workspace = true`.
+    if is_root && !ws_renames.is_empty() {
+        let old_renames = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .ok()
+            .map(|c| external::workspace_dep_renames(&c))
+            .unwrap_or_default();
+        if ws_renames != old_renames {
+            for (member_rel, member_content) in external::scan_workspace_manifests(workspace_root) {
+                if member_rel == "Cargo.toml" {
+                    continue;
+                }
+                let member_findings = external::check_manifest(
+                    &all_constraints,
+                    &member_rel,
+                    &member_content,
+                    renames,
+                );
+                let (member_active, _) =
+                    partition_manifest_findings(conn, &member_rel, member_findings)?;
+                active.extend(member_active);
+            }
+        }
+    }
+
     Ok(CheckOutcome {
         active,
         waived,

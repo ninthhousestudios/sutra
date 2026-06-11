@@ -1438,4 +1438,66 @@ name = "config-fan-in"
         assert_eq!(outcome.active[0].constraint_kind, "max_fan_in");
         assert!(outcome.active[0].detail.contains("fan-in is 15"));
     }
+
+    #[test]
+    fn root_manifest_rename_change_rechecks_members() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-core"]
+name = "no-arrow"
+"#,
+        )
+        .unwrap();
+
+        // Current root manifest — no workspace renames
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"server\"]\n",
+        )
+        .unwrap();
+
+        // Member manifest uses "innocent" with workspace = true
+        let member_dir = dir.path().join("server");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"server\"\n\n[dependencies]\ninnocent = { workspace = true }\n",
+        )
+        .unwrap();
+
+        // Proposed root edit introduces workspace rename: innocent → arrow-core
+        let proposed_root = r#"
+[workspace]
+members = ["server"]
+
+[workspace.dependencies]
+innocent = { package = "arrow-core", version = "1" }
+"#;
+        let outcome = check_proposed_manifest(&conn, dir.path(), "Cargo.toml", proposed_root);
+        assert!(
+            !outcome.active.is_empty(),
+            "should flag member's workspace=true alias resolving to constrained package"
+        );
+        assert!(
+            outcome
+                .active
+                .iter()
+                .any(|f| f.to_path == "crate:arrow-core")
+        );
+    }
 }
