@@ -6,8 +6,126 @@ use tracing::debug;
 use crate::db::Db;
 use crate::error::Result;
 
+// ── Workspace layout ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceMember {
+    pub name: String,
+    pub dir: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceLayout {
+    pub root_crate: Option<String>,
+    pub members: Vec<WorkspaceMember>,
+}
+
+impl WorkspaceLayout {
+    fn crate_for_file(&self, file_path: &str) -> Option<(&str, String)> {
+        for m in &self.members {
+            let prefix = format!("{}/", m.dir);
+            if file_path.starts_with(&prefix) {
+                return Some((&m.name, format!("{}/src", m.dir)));
+            }
+        }
+        self.root_crate
+            .as_deref()
+            .map(|name| (name, "src".to_string()))
+    }
+
+    fn src_prefix_for_crate(&self, crate_name: &str) -> Option<String> {
+        if self.root_crate.as_deref() == Some(crate_name) {
+            return Some("src".to_string());
+        }
+        self.members
+            .iter()
+            .find(|m| m.name == crate_name)
+            .map(|m| format!("{}/src", m.dir))
+    }
+
+    pub fn all_crate_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.members.iter().map(|m| m.name.as_str()).collect();
+        if let Some(ref root) = self.root_crate {
+            names.push(root.as_str());
+        }
+        names
+    }
+}
+
+pub fn parse_workspace_layout(workspace_root: &Path) -> WorkspaceLayout {
+    let empty = WorkspaceLayout {
+        root_crate: None,
+        members: Vec::new(),
+    };
+    let cargo_path = workspace_root.join("Cargo.toml");
+    let content = match std::fs::read_to_string(&cargo_path) {
+        Ok(c) => c,
+        Err(_) => return empty,
+    };
+    let parsed: toml::Value = match content.parse() {
+        Ok(v) => v,
+        Err(_) => return empty,
+    };
+
+    let root_crate = parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.replace('-', "_"));
+
+    let member_globs: Vec<String> = parsed
+        .get("workspace")
+        .and_then(|w| w.get("members"))
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut members = Vec::new();
+    for pattern in &member_globs {
+        let abs_pattern = workspace_root.join(pattern);
+        let Ok(paths) = glob::glob(&abs_pattern.to_string_lossy()) else {
+            continue;
+        };
+        for entry in paths.flatten() {
+            if let Some(m) = read_workspace_member(workspace_root, &entry) {
+                members.push(m);
+            }
+        }
+    }
+
+    WorkspaceLayout {
+        root_crate,
+        members,
+    }
+}
+
+fn read_workspace_member(workspace_root: &Path, member_dir: &Path) -> Option<WorkspaceMember> {
+    if !member_dir.is_dir() {
+        return None;
+    }
+    let cargo = std::fs::read_to_string(member_dir.join("Cargo.toml")).ok()?;
+    let parsed: toml::Value = cargo.parse().ok()?;
+    let name = parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())?
+        .replace('-', "_");
+    let dir = member_dir
+        .strip_prefix(workspace_root)
+        .ok()?
+        .to_string_lossy()
+        .to_string();
+    Some(WorkspaceMember { name, dir })
+}
+
+// ── Import resolution ─────────────────────────────────────────────────
+
 pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
-    let crate_name = read_crate_name(workspace_root);
+    let layout = parse_workspace_layout(workspace_root);
 
     let unresolved = db.unresolved_rust_imports()?;
     if unresolved.is_empty() {
@@ -26,12 +144,12 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
             Some(p) => *p,
             None => continue,
         };
-        let segments =
-            match normalize_to_crate_segments(imported_path, file_path, crate_name.as_deref()) {
-                Some(s) if !s.is_empty() => s,
-                _ => continue,
-            };
-        if let Some(target_id) = resolve_segments(&segments, &path_to_id)
+        let resolved = match normalize_to_crate_segments(imported_path, file_path, &layout) {
+            Some(r) if !r.segments.is_empty() => r,
+            _ => continue,
+        };
+        if let Some(target_id) =
+            resolve_segments(&resolved.segments, &path_to_id, &resolved.src_prefix)
             && target_id != *file_id
         {
             db.update_import_resolved_file_id(*import_id, target_id)?;
@@ -66,32 +184,68 @@ pub fn read_crate_name(workspace_root: &Path) -> Option<String> {
     None
 }
 
-/// Convert an import path into module segments relative to the crate root.
+// ── Cross-crate resolution ────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImport {
+    pub segments: Vec<String>,
+    pub src_prefix: String,
+}
+
+/// Convert an import path into module segments relative to a crate root.
 /// Returns `None` for external crate imports.
 pub fn normalize_to_crate_segments(
     imported_path: &str,
     importing_file: &str,
-    crate_name: Option<&str>,
-) -> Option<Vec<String>> {
+    layout: &WorkspaceLayout,
+) -> Option<ResolvedImport> {
     let path = imported_path.strip_suffix("::*").unwrap_or(imported_path);
 
+    let (own_crate, own_src) = layout.crate_for_file(importing_file)?;
+
+    // crate:: prefix — resolve within the importing file's own crate
     if let Some(rest) = path.strip_prefix("crate::") {
-        return Some(rest.split("::").map(String::from).collect());
+        return Some(ResolvedImport {
+            segments: rest.split("::").map(String::from).collect(),
+            src_prefix: own_src,
+        });
     }
 
-    if let Some(name) = crate_name {
-        let prefix = format!("{name}::");
-        if let Some(rest) = path.strip_prefix(&prefix) {
-            return Some(rest.split("::").map(String::from).collect());
-        }
-        if path == name {
-            return Some(vec![]);
+    // Own crate name prefix (e.g. `use vidya::format` from vidya's src/)
+    let own_prefix = format!("{own_crate}::");
+    if let Some(rest) = path.strip_prefix(&own_prefix) {
+        return Some(ResolvedImport {
+            segments: rest.split("::").map(String::from).collect(),
+            src_prefix: own_src.clone(),
+        });
+    }
+    if path == own_crate {
+        return Some(ResolvedImport {
+            segments: vec![],
+            src_prefix: own_src.clone(),
+        });
+    }
+
+    // Sibling/workspace crate name prefix (e.g. `use vidya_core::query`)
+    let first_segment = path.split("::").next().unwrap_or("");
+    if first_segment != own_crate {
+        if let Some(target_src) = layout.src_prefix_for_crate(first_segment) {
+            let rest = path.strip_prefix(first_segment).unwrap_or("");
+            let rest = rest.strip_prefix("::").unwrap_or("");
+            return Some(ResolvedImport {
+                segments: if rest.is_empty() {
+                    vec![]
+                } else {
+                    rest.split("::").map(String::from).collect()
+                },
+                src_prefix: target_src,
+            });
         }
     }
 
     if path == "super" || path.starts_with("super::") {
         let rest = path.strip_prefix("super::").unwrap_or("");
-        let mut parent = file_to_module_segments(importing_file);
+        let mut parent = file_to_module_segments(importing_file, &own_src);
         if parent.is_empty() {
             return None;
         }
@@ -102,27 +256,30 @@ pub fn normalize_to_crate_segments(
         if parent.is_empty() {
             return None;
         }
-        return Some(parent);
+        return Some(ResolvedImport {
+            segments: parent,
+            src_prefix: own_src,
+        });
     }
 
     if path == "self" || path.starts_with("self::") {
         let rest = path.strip_prefix("self::").unwrap_or("");
-        let mut segs = file_to_module_segments(importing_file);
+        let mut segs = file_to_module_segments(importing_file, &own_src);
         if !rest.is_empty() {
             segs.extend(rest.split("::").map(String::from));
         }
-        return Some(segs);
+        return Some(ResolvedImport {
+            segments: segs,
+            src_prefix: own_src,
+        });
     }
 
     None
 }
 
-/// Derive module segments from a file path.
-/// `src/db/conventions.rs` → `["db", "conventions"]`
-/// `src/db/mod.rs` → `["db"]`
-/// `src/lib.rs` → `[]`
-fn file_to_module_segments(file_path: &str) -> Vec<String> {
-    let stripped = file_path.strip_prefix("src/").unwrap_or(file_path);
+fn file_to_module_segments(file_path: &str, src_prefix: &str) -> Vec<String> {
+    let prefix = format!("{src_prefix}/");
+    let stripped = file_path.strip_prefix(&prefix).unwrap_or(file_path);
 
     let without_ext = stripped.strip_suffix(".rs").unwrap_or(stripped);
 
@@ -134,11 +291,11 @@ fn file_to_module_segments(file_path: &str) -> Vec<String> {
         .collect()
 }
 
-/// Try to resolve module segments to a file ID.
-/// Tries longest match first: `["db", "conventions", "ConventionRow"]`
-/// → `src/db/conventions/ConventionRow.rs` (no)
-/// → `src/db/conventions.rs` (yes!)
-pub fn resolve_segments(segments: &[String], path_to_id: &HashMap<&str, i64>) -> Option<i64> {
+pub fn resolve_segments(
+    segments: &[String],
+    path_to_id: &HashMap<&str, i64>,
+    src_prefix: &str,
+) -> Option<i64> {
     for depth in (1..=segments.len()).rev() {
         let joined = segments[..depth]
             .iter()
@@ -146,12 +303,12 @@ pub fn resolve_segments(segments: &[String], path_to_id: &HashMap<&str, i64>) ->
             .collect::<Vec<_>>()
             .join("/");
 
-        let file_path = format!("src/{joined}.rs");
+        let file_path = format!("{src_prefix}/{joined}.rs");
         if let Some(&id) = path_to_id.get(file_path.as_str()) {
             return Some(id);
         }
 
-        let mod_path = format!("src/{joined}/mod.rs");
+        let mod_path = format!("{src_prefix}/{joined}/mod.rs");
         if let Some(&id) = path_to_id.get(mod_path.as_str()) {
             return Some(id);
         }
@@ -163,61 +320,194 @@ pub fn resolve_segments(segments: &[String], path_to_id: &HashMap<&str, i64>) ->
 mod tests {
     use super::*;
 
+    fn single_crate(name: &str) -> WorkspaceLayout {
+        WorkspaceLayout {
+            root_crate: Some(name.to_string()),
+            members: Vec::new(),
+        }
+    }
+
+    fn workspace_layout() -> WorkspaceLayout {
+        WorkspaceLayout {
+            root_crate: Some("vidya".to_string()),
+            members: vec![WorkspaceMember {
+                name: "vidya_core".to_string(),
+                dir: "vidya-core".to_string(),
+            }],
+        }
+    }
+
+    // ── normalize_to_crate_segments (single-crate, backward compat) ───
+
     #[test]
     fn crate_prefix() {
-        let segs = normalize_to_crate_segments("crate::db::Db", "src/tools/orient.rs", None);
-        assert_eq!(segs.unwrap(), vec!["db", "Db"]);
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments("crate::db::Db", "src/tools/orient.rs", &layout);
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["db", "Db"]);
+        assert_eq!(r.src_prefix, "src");
     }
 
     #[test]
     fn crate_name_prefix() {
-        let segs = normalize_to_crate_segments("sutra::db::Db", "tests/foo.rs", Some("sutra"));
-        assert_eq!(segs.unwrap(), vec!["db", "Db"]);
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments("sutra::db::Db", "src/tools/orient.rs", &layout);
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["db", "Db"]);
+        assert_eq!(r.src_prefix, "src");
     }
 
     #[test]
     fn super_prefix() {
-        let segs =
-            normalize_to_crate_segments("super::scoring::Signal", "src/tools/review.rs", None);
-        assert_eq!(segs.unwrap(), vec!["tools", "scoring", "Signal"]);
+        let layout = single_crate("sutra");
+        let r =
+            normalize_to_crate_segments("super::scoring::Signal", "src/tools/review.rs", &layout);
+        assert_eq!(r.unwrap().segments, vec!["tools", "scoring", "Signal"]);
     }
 
     #[test]
     fn super_from_mod_rs() {
-        let segs = normalize_to_crate_segments("super::workspace", "src/tools/mod.rs", None);
-        assert_eq!(segs.unwrap(), vec!["workspace"]);
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments("super::workspace", "src/tools/mod.rs", &layout);
+        assert_eq!(r.unwrap().segments, vec!["workspace"]);
     }
 
     #[test]
     fn super_glob() {
-        let segs = normalize_to_crate_segments("super::*", "src/db/conventions.rs", None);
-        assert_eq!(segs.unwrap(), vec!["db"]);
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments("super::*", "src/db/conventions.rs", &layout);
+        assert_eq!(r.unwrap().segments, vec!["db"]);
     }
 
     #[test]
     fn self_prefix() {
-        let segs = normalize_to_crate_segments("self::engine", "src/constraints/mod.rs", None);
-        assert_eq!(segs.unwrap(), vec!["constraints", "engine"]);
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments("self::engine", "src/constraints/mod.rs", &layout);
+        assert_eq!(r.unwrap().segments, vec!["constraints", "engine"]);
     }
 
     #[test]
     fn external_crate_returns_none() {
-        let segs =
-            normalize_to_crate_segments("std::collections::HashMap", "src/tools/orient.rs", None);
-        assert!(segs.is_none());
+        let layout = single_crate("sutra");
+        let r = normalize_to_crate_segments(
+            "std::collections::HashMap",
+            "src/tools/orient.rs",
+            &layout,
+        );
+        assert!(r.is_none());
     }
+
+    // ── normalize_to_crate_segments (multi-crate workspace) ───────────
+
+    #[test]
+    fn cross_crate_import() {
+        let layout = workspace_layout();
+        let r =
+            normalize_to_crate_segments("vidya_core::query::QueryEngine", "src/main.rs", &layout);
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["query", "QueryEngine"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn cross_crate_bare_name() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments("vidya_core", "src/main.rs", &layout);
+        let r = r.unwrap();
+        assert!(r.segments.is_empty());
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn cross_crate_glob() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments("vidya_core::resolve::*", "src/main.rs", &layout);
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["resolve"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn own_crate_from_member() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments(
+            "crate::resolve::ResolvedToken",
+            "vidya-core/src/lib.rs",
+            &layout,
+        );
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["resolve", "ResolvedToken"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn super_in_member_crate() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments(
+            "super::ontology",
+            "vidya-core/src/resolve/mod.rs",
+            &layout,
+        );
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["ontology"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn self_in_member_crate() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments(
+            "self::ResolvedToken",
+            "vidya-core/src/resolve/mod.rs",
+            &layout,
+        );
+        let r = r.unwrap();
+        assert_eq!(r.segments, vec!["resolve", "ResolvedToken"]);
+        assert_eq!(r.src_prefix, "vidya-core/src");
+    }
+
+    #[test]
+    fn external_from_workspace_still_none() {
+        let layout = workspace_layout();
+        let r = normalize_to_crate_segments("serde::Deserialize", "vidya-core/src/lib.rs", &layout);
+        assert!(r.is_none());
+    }
+
+    // ── file_to_module_segments ───────────────────────────────────────
 
     #[test]
     fn file_to_module_basic() {
         assert_eq!(
-            file_to_module_segments("src/db/conventions.rs"),
+            file_to_module_segments("src/db/conventions.rs", "src"),
             vec!["db", "conventions"]
         );
-        assert_eq!(file_to_module_segments("src/db/mod.rs"), vec!["db"]);
-        assert_eq!(file_to_module_segments("src/error.rs"), vec!["error"]);
+        assert_eq!(file_to_module_segments("src/db/mod.rs", "src"), vec!["db"]);
+        assert_eq!(
+            file_to_module_segments("src/error.rs", "src"),
+            vec!["error"]
+        );
         let empty: Vec<String> = vec![];
-        assert_eq!(file_to_module_segments("src/lib.rs"), empty);
+        assert_eq!(file_to_module_segments("src/lib.rs", "src"), empty);
     }
+
+    #[test]
+    fn file_to_module_member_crate() {
+        assert_eq!(
+            file_to_module_segments("vidya-core/src/query.rs", "vidya-core/src"),
+            vec!["query"]
+        );
+        assert_eq!(
+            file_to_module_segments("vidya-core/src/resolve/mod.rs", "vidya-core/src"),
+            vec!["resolve"]
+        );
+        let empty: Vec<String> = vec![];
+        assert_eq!(
+            file_to_module_segments("vidya-core/src/lib.rs", "vidya-core/src"),
+            empty
+        );
+    }
+
+    // ── resolve_segments ──────────────────────────────────────────────
 
     #[test]
     fn resolve_prefers_deepest_match() {
@@ -229,7 +519,7 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect();
-        assert_eq!(resolve_segments(&segs, &path_to_id), Some(2));
+        assert_eq!(resolve_segments(&segs, &path_to_id, "src"), Some(2));
     }
 
     #[test]
@@ -241,6 +531,31 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect();
-        assert_eq!(resolve_segments(&segs, &path_to_id), Some(3));
+        assert_eq!(resolve_segments(&segs, &path_to_id, "src"), Some(3));
+    }
+
+    #[test]
+    fn resolve_in_member_crate() {
+        let mut path_to_id = HashMap::new();
+        path_to_id.insert("vidya-core/src/query.rs", 10);
+        path_to_id.insert("vidya-core/src/resolve/mod.rs", 11);
+
+        let segs: Vec<String> = vec!["query", "QueryEngine"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            resolve_segments(&segs, &path_to_id, "vidya-core/src"),
+            Some(10)
+        );
+
+        let segs2: Vec<String> = vec!["resolve", "ResolvedToken"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            resolve_segments(&segs2, &path_to_id, "vidya-core/src"),
+            Some(11)
+        );
     }
 }

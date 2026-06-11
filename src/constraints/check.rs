@@ -104,13 +104,17 @@ fn evaluate_dd(
 
     if external::has_external_constraints(&all_constraints) {
         let unresolved = db.unresolved_imports_with_files()?;
-        let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+        let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
+        let crate_names = layout.all_crate_names();
+        let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+        external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
+            .map_err(|e| crate::error::SutraError::Internal(e))?;
         findings.extend(external::check_workspace_externals(
             &all_constraints,
             workspace_root,
             &unresolved,
             changed_ids,
-            crate_name.as_deref(),
+            &crate_name_refs,
         ));
     }
 
@@ -361,7 +365,14 @@ fn evaluate_raw(
     if has_external {
         match &scope {
             EvalScope::SingleFile(file_id) => {
-                let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+                let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
+                let crate_names = layout.all_crate_names();
+                let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+                external::validate_no_external_targeting_members(
+                    &all_constraints,
+                    &crate_name_refs,
+                )
+                .map_err(|e| crate::error::SutraError::Internal(e))?;
                 let mut stmt = conn.prepare(
                     "SELECT f.path, f.language, i.imported_path FROM imports i \
                      JOIN files f ON f.id = i.file_id \
@@ -376,7 +387,7 @@ fn evaluate_raw(
                 let items: Vec<(String, String)> = rows
                     .iter()
                     .filter_map(|(path, lang, imp)| {
-                        external::external_crate_of_import(imp, lang, crate_name.as_deref())
+                        external::external_crate_of_import(imp, lang, &crate_name_refs)
                             .map(|c| (path.clone(), c))
                     })
                     .collect();

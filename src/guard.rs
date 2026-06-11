@@ -338,24 +338,29 @@ pub fn extract_proposed_imports(
         return None;
     }
 
-    let crate_name = if language == "rust" {
-        crate::rust_imports::read_crate_name(project_root)
+    let layout = if language == "rust" {
+        Some(crate::rust_imports::parse_workspace_layout(project_root))
     } else {
         None
     };
+    let crate_names: Vec<&str> = layout
+        .as_ref()
+        .map(|l| l.all_crate_names())
+        .unwrap_or_default();
 
     let mut externals = Vec::new();
     for import in &result.imports {
         if let Some(name) = crate::constraints::external::external_crate_of_import(
             &import.raw_path,
             language,
-            crate_name.as_deref(),
+            &crate_names,
         ) {
             externals.push((rel_path.to_string(), name));
         }
     }
 
     let edges = if language == "rust" {
+        let layout = layout.as_ref().unwrap();
         let path_to_id: HashMap<String, i64> = conn
             .prepare("SELECT path, id FROM files")
             .ok()?
@@ -370,18 +375,22 @@ pub fn extract_proposed_imports(
 
         let mut edges = Vec::new();
         for import in &result.imports {
-            let segments = match crate::rust_imports::normalize_to_crate_segments(
+            let resolved = match crate::rust_imports::normalize_to_crate_segments(
                 &import.raw_path,
                 rel_path,
-                crate_name.as_deref(),
+                layout,
             ) {
-                Some(s) if !s.is_empty() => s,
+                Some(r) if !r.segments.is_empty() => r,
                 _ => continue,
             };
-            if let Some(target_id) = crate::rust_imports::resolve_segments(&segments, &path_ref_map)
-                && target_id != file_id {
-                    edges.push((file_id, target_id));
-                }
+            if let Some(target_id) = crate::rust_imports::resolve_segments(
+                &resolved.segments,
+                &path_ref_map,
+                &resolved.src_prefix,
+            ) && target_id != file_id
+            {
+                edges.push((file_id, target_id));
+            }
         }
         edges
     } else {

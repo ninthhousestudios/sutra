@@ -19,12 +19,12 @@ use crate::rules::{Constraint, ConstraintKind};
 /// Extract the external crate/package name from a raw import path, or `None`
 /// when the import is workspace-internal (or unrecognizable).
 ///
-/// `crate_name` is the importing workspace's own crate name (underscored), used
-/// to reject self-imports that failed resolution for unrelated reasons.
+/// `workspace_crate_names` lists all crate names in the workspace (underscored),
+/// used to exclude sibling crate imports from external classification.
 pub fn external_crate_of_import(
     raw_path: &str,
     language: &str,
-    crate_name: Option<&str>,
+    workspace_crate_names: &[&str],
 ) -> Option<String> {
     match language {
         "rust" => {
@@ -33,7 +33,7 @@ pub fn external_crate_of_import(
             if first.is_empty() || matches!(first, "crate" | "self" | "super") {
                 return None;
             }
-            if crate_name.is_some_and(|c| c == first) {
+            if workspace_crate_names.iter().any(|&c| c == first) {
                 return None;
             }
             Some(first.to_string())
@@ -120,6 +120,36 @@ pub fn has_external_constraints(constraints: &[Constraint]) -> bool {
             ConstraintKind::ForbiddenExternal { .. } | ConstraintKind::ConfinedExternal { .. }
         )
     })
+}
+
+/// Error when a forbidden_external/confined_external constraint targets a
+/// workspace member crate. Workspace members are resolved as internal edges;
+/// use forbidden_dep instead.
+pub fn validate_no_external_targeting_members(
+    constraints: &[Constraint],
+    workspace_crate_names: &[&str],
+) -> Result<(), String> {
+    if workspace_crate_names.is_empty() {
+        return Ok(());
+    }
+    for c in constraints {
+        let crates = match &c.kind {
+            ConstraintKind::ForbiddenExternal { crates, .. }
+            | ConstraintKind::ConfinedExternal { crates, .. } => crates,
+            _ => continue,
+        };
+        for member in workspace_crate_names {
+            if crate_matches(crates, member) {
+                let name = c.name.as_deref().unwrap_or(&c.id);
+                return Err(format!(
+                    "constraint '{name}' targets workspace member '{member}' via {} \
+                     — workspace members are internal; use forbidden_dep instead",
+                    c.kind.kind_tag(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn make_external_finding(
@@ -251,9 +281,9 @@ fn walk_manifests(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, 
         } else if name == "Cargo.toml"
             && let (Ok(content), Ok(rel)) =
                 (std::fs::read_to_string(&path), path.strip_prefix(root))
-            {
-                out.push((rel.to_string_lossy().replace('\\', "/"), content));
-            }
+        {
+            out.push((rel.to_string_lossy().replace('\\', "/"), content));
+        }
     }
 }
 
@@ -266,7 +296,7 @@ pub fn check_workspace_externals(
     workspace_root: &Path,
     unresolved: &[(i64, String, String, String)],
     changed_ids: Option<&std::collections::HashSet<i64>>,
-    crate_name: Option<&str>,
+    workspace_crate_names: &[&str],
 ) -> Vec<ConstraintFinding> {
     if !has_external_constraints(constraints) {
         return Vec::new();
@@ -276,7 +306,8 @@ pub fn check_workspace_externals(
         if changed_ids.is_some_and(|ids| !ids.contains(file_id)) {
             continue;
         }
-        if let Some(name) = external_crate_of_import(imported_path, language, crate_name) {
+        if let Some(name) = external_crate_of_import(imported_path, language, workspace_crate_names)
+        {
             items.push((file_path.clone(), name));
         }
     }
@@ -301,34 +332,51 @@ mod tests {
     #[test]
     fn rust_external_first_segment() {
         assert_eq!(
-            external_crate_of_import("axum::Router", "rust", None).as_deref(),
+            external_crate_of_import("axum::Router", "rust", &[]).as_deref(),
             Some("axum")
         );
         assert_eq!(
-            external_crate_of_import("serde", "rust", None).as_deref(),
+            external_crate_of_import("serde", "rust", &[]).as_deref(),
             Some("serde")
         );
         assert_eq!(
-            external_crate_of_import("std::collections::HashMap", "rust", None).as_deref(),
+            external_crate_of_import("std::collections::HashMap", "rust", &[]).as_deref(),
             Some("std")
         );
     }
 
     #[test]
     fn rust_internal_imports_rejected() {
-        assert_eq!(external_crate_of_import("crate::foo", "rust", None), None);
-        assert_eq!(external_crate_of_import("self::bar", "rust", None), None);
-        assert_eq!(external_crate_of_import("super::baz", "rust", None), None);
+        assert_eq!(external_crate_of_import("crate::foo", "rust", &[]), None);
+        assert_eq!(external_crate_of_import("self::bar", "rust", &[]), None);
+        assert_eq!(external_crate_of_import("super::baz", "rust", &[]), None);
         assert_eq!(
-            external_crate_of_import("my_crate::foo", "rust", Some("my_crate")),
+            external_crate_of_import("my_crate::foo", "rust", &["my_crate"]),
             None
+        );
+    }
+
+    #[test]
+    fn rust_workspace_members_excluded() {
+        assert_eq!(
+            external_crate_of_import("vidya_core::query", "rust", &["vidya", "vidya_core"]),
+            None
+        );
+        assert_eq!(
+            external_crate_of_import("vidya::format", "rust", &["vidya", "vidya_core"]),
+            None
+        );
+        assert_eq!(
+            external_crate_of_import("serde::Deserialize", "rust", &["vidya", "vidya_core"])
+                .as_deref(),
+            Some("serde")
         );
     }
 
     #[test]
     fn rust_glob_suffix_stripped() {
         assert_eq!(
-            external_crate_of_import("tokio::sync::*", "rust", None).as_deref(),
+            external_crate_of_import("tokio::sync::*", "rust", &[]).as_deref(),
             Some("tokio")
         );
     }
@@ -336,15 +384,15 @@ mod tests {
     #[test]
     fn dart_package_and_sdk_imports() {
         assert_eq!(
-            external_crate_of_import("package:flutter/material.dart", "dart", None).as_deref(),
+            external_crate_of_import("package:flutter/material.dart", "dart", &[]).as_deref(),
             Some("flutter")
         );
         assert_eq!(
-            external_crate_of_import("dart:io", "dart", None).as_deref(),
+            external_crate_of_import("dart:io", "dart", &[]).as_deref(),
             Some("dart:io")
         );
         assert_eq!(
-            external_crate_of_import("../widgets/card.dart", "dart", None),
+            external_crate_of_import("../widgets/card.dart", "dart", &[]),
             None
         );
     }
@@ -502,5 +550,36 @@ crates = ["arrow-core"]
         ];
         let findings = check_import_items(&cs, &items);
         assert_eq!(findings.len(), 2);
+    }
+
+    // --- validate_no_external_targeting_members ---
+
+    #[test]
+    fn validate_rejects_external_targeting_member() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["vidya_core"]
+name = "no-vidya-core"
+"#,
+        );
+        let err =
+            validate_no_external_targeting_members(&cs, &["vidya", "vidya_core"]).unwrap_err();
+        assert!(err.contains("no-vidya-core"));
+        assert!(err.contains("vidya_core"));
+        assert!(err.contains("forbidden_dep"));
+    }
+
+    #[test]
+    fn validate_passes_truly_external() {
+        let cs = constraints_from(FORBID);
+        assert!(validate_no_external_targeting_members(&cs, &["vidya", "vidya_core"]).is_ok());
+    }
+
+    #[test]
+    fn validate_passes_empty_workspace() {
+        let cs = constraints_from(FORBID);
+        assert!(validate_no_external_targeting_members(&cs, &[]).is_ok());
     }
 }

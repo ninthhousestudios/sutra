@@ -269,20 +269,22 @@ fn extract_outgoing_edges(
     let mut edges = Vec::new();
     match language {
         "rust" => {
-            let crate_name = crate::rust_imports::read_crate_name(workspace_root);
+            let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
             let path_ref_map: HashMap<&str, i64> = id_map.iter().map(|(k, v)| (*k, *v)).collect();
             for import in &result.imports {
-                let segments = match crate::rust_imports::normalize_to_crate_segments(
+                let resolved = match crate::rust_imports::normalize_to_crate_segments(
                     &import.raw_path,
                     rel_path,
-                    crate_name.as_deref(),
+                    &layout,
                 ) {
-                    Some(s) if !s.is_empty() => s,
+                    Some(r) if !r.segments.is_empty() => r,
                     _ => continue,
                 };
-                if let Some(target_id) =
-                    crate::rust_imports::resolve_segments(&segments, &path_ref_map)
-                {
+                if let Some(target_id) = crate::rust_imports::resolve_segments(
+                    &resolved.segments,
+                    &path_ref_map,
+                    &resolved.src_prefix,
+                ) {
                     if target_id != file_id {
                         edges.push((file_id, target_id));
                     }
