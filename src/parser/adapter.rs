@@ -138,14 +138,18 @@ impl LanguageRegistry {
     pub fn adapter_for_language(&self, lang: &str) -> Option<&dyn LanguageAdapter> {
         self.adapters
             .iter()
-            .find(|a| a.language_id() == lang)
+            .find(|a| a.language_id().eq_ignore_ascii_case(lang))
             .map(|a| a.as_ref())
     }
 
     pub fn extensions_for_languages(&self, langs: &[String]) -> Vec<&str> {
         self.adapters
             .iter()
-            .filter(|a| langs.iter().any(|l| l == a.language_id()))
+            .filter(|a| {
+                langs
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case(a.language_id()))
+            })
             .flat_map(|a| a.extensions().iter().copied())
             .collect()
     }
@@ -375,6 +379,22 @@ mod tests {
 
         let rust_only = registry.extensions_for_languages(&["rust".to_string()]);
         assert_eq!(rust_only, vec!["rs"]);
+    }
+
+    #[test]
+    fn case_insensitive_language_matching() {
+        let registry = default_registry();
+
+        assert!(registry.adapter_for_language("Rust").is_some());
+        assert!(registry.adapter_for_language("DART").is_some());
+        assert!(registry.adapter_for_language("Python").is_none());
+
+        let exts = registry.extensions_for_languages(&["Rust".to_string()]);
+        assert_eq!(exts, vec!["rs"]);
+
+        let exts = registry.extensions_for_languages(&["DART".to_string(), "rust".to_string()]);
+        assert!(exts.contains(&"rs"));
+        assert!(exts.contains(&"dart"));
     }
 
     #[test]

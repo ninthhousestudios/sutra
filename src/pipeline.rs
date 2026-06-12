@@ -406,6 +406,18 @@ pub fn parse_workspace(
     let source_files = walk_source_files(&workspace.root, &allowed_extensions);
     info!(workspace = %workspace.id, files_found = source_files.len(), "walked workspace");
 
+    if source_files.is_empty()
+        && workspace.root.is_dir()
+        && std::fs::read_dir(&workspace.root).map_or(false, |mut d| d.next().is_some())
+    {
+        warn!(
+            workspace = %workspace.id,
+            root = %workspace.root.display(),
+            languages = ?workspace.languages,
+            "walk found 0 source files — check workspace languages config"
+        );
+    }
+
     let mut files_parsed: i64 = 0;
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;

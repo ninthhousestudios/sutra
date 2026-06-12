@@ -978,6 +978,14 @@ impl SutraServer {
         if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
             val["parsing_in_progress"] = serde_json::Value::Bool(true);
         }
+        if files.is_empty()
+            && entry.root.is_dir()
+            && std::fs::read_dir(&entry.root).map_or(false, |mut d| d.next().is_some())
+        {
+            val["warnings"] = serde_json::json!([
+                "workspace root exists but 0 files indexed — check languages config matches adapter IDs (rust, dart)"
+            ]);
+        }
         to_compact_json(val)
     }
 }
