@@ -5,7 +5,7 @@ pub mod encoder;
 pub mod hrr;
 pub mod search;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use tracing::info;
@@ -23,13 +23,12 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
     let file_ids: Vec<i64> = changed_files.iter().map(|f| f.file_id).collect();
     let symbols = db.function_symbols_for_hrr_files(&file_ids)?;
 
-    let file_hashes: Vec<(i64, &str)> = changed_files
-        .iter()
-        .map(|f| (f.file_id, f.content_hash.as_str()))
-        .collect();
-
     if symbols.is_empty() {
-        db.insert_hrr_vectors_and_hashes(&[], &file_hashes)?;
+        let file_hashes: Vec<(i64, &str)> = changed_files
+            .iter()
+            .map(|f| (f.file_id, f.content_hash.as_str()))
+            .collect();
+        db.insert_hrr_vectors_and_hashes(&[], &file_hashes, &[])?;
         return Ok((0, true));
     }
 
@@ -38,12 +37,18 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
 
     let registry = default_registry();
 
+    let file_id_to_hash: HashMap<i64, &str> = changed_files
+        .iter()
+        .map(|f| (f.file_id, f.content_hash.as_str()))
+        .collect();
+
     let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, sym) in symbols.iter().enumerate() {
         by_file.entry(&sym.file_path).or_default().push(i);
     }
 
     let mut vectors: Vec<(i64, String, Vec<u8>)> = Vec::new();
+    let mut completed_file_ids: HashSet<i64> = HashSet::new();
 
     for (path, indices) in &by_file {
         let full_path = workspace_root.join(path);
@@ -68,6 +73,8 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
             None => continue,
         };
 
+        let file_id = symbols[indices[0]].file_id;
+
         for &idx in indices {
             let sym = &symbols[idx];
             let start =
@@ -81,18 +88,24 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
                 vectors.push((sym.symbol_id, "embed".into(), embed.to_bytes()));
             }
         }
+
+        completed_file_ids.insert(file_id);
     }
 
+    let file_hashes: Vec<(i64, &str)> = completed_file_ids
+        .iter()
+        .filter_map(|fid| file_id_to_hash.get(fid).map(|h| (*fid, *h)))
+        .collect();
+
+    let new_entries = cb.into_new_entries();
     let vec_refs: Vec<(i64, &str, &[u8])> = vectors
         .iter()
         .map(|(id, mode, blob)| (*id, mode.as_str(), blob.as_slice()))
         .collect();
-    db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes)?;
+    db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes, &new_entries)?;
 
-    let new_entries = cb.into_new_entries();
-    let new_count = db.save_hrr_codebook_entries(&new_entries)?;
-    if new_count > 0 {
-        info!(new_count, "new HRR codebook entries");
+    if !new_entries.is_empty() {
+        info!(new_count = new_entries.len(), "new HRR codebook entries");
     }
 
     Ok((symbols.len(), true))

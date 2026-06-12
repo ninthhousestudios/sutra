@@ -142,6 +142,7 @@ impl Db {
         &self,
         vectors: &[(i64, &str, &[u8])],
         file_hashes: &[(i64, &str)],
+        codebook_entries: &[(String, Vec<u8>)],
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
@@ -158,6 +159,14 @@ impl Db {
             )?;
             for &(file_id, hash) in file_hashes {
                 hash_stmt.execute(params![file_id, hash])?;
+            }
+
+            if !codebook_entries.is_empty() {
+                let mut cb_stmt = conn
+                    .prepare("INSERT OR IGNORE INTO hrr_codebook (key, vector) VALUES (?1, ?2)")?;
+                for (key, blob) in codebook_entries {
+                    cb_stmt.execute(params![key, blob])?;
+                }
             }
         }
         tx.commit()?;
