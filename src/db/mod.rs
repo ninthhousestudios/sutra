@@ -428,6 +428,7 @@ impl Db {
         // PRAGMAs — WAL first (must precede others on a fresh connection).
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;\
+             PRAGMA synchronous = NORMAL;\
              PRAGMA foreign_keys = ON;\
              PRAGMA busy_timeout = 5000;",
         )?;
@@ -1521,17 +1522,19 @@ impl Db {
         Ok(rows?)
     }
 
-    /// Set resolved_file_id on an import row.
-    pub fn update_import_resolved_file_id(
-        &self,
-        import_id: i64,
-        resolved_file_id: i64,
-    ) -> Result<()> {
+    /// Batch-set resolved_file_id on import rows in a single transaction.
+    pub fn batch_update_import_resolved_file_ids(&self, updates: &[(i64, i64)]) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
         let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE imports SET resolved_file_id = ?1 WHERE id = ?2",
-            params![resolved_file_id, import_id],
-        )?;
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = conn.prepare("UPDATE imports SET resolved_file_id = ?1 WHERE id = ?2")?;
+        for &(import_id, resolved_file_id) in updates {
+            stmt.execute(params![resolved_file_id, import_id])?;
+        }
+        drop(stmt);
+        tx.commit()?;
         Ok(())
     }
 

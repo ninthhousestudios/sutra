@@ -104,11 +104,14 @@ impl Db {
             return Ok(0);
         }
         let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
         let mut stmt =
             conn.prepare("INSERT OR IGNORE INTO hrr_codebook (key, vector) VALUES (?1, ?2)")?;
         for (key, blob) in entries {
             stmt.execute(params![key, blob])?;
         }
+        drop(stmt);
+        tx.commit()?;
         Ok(entries.len())
     }
 

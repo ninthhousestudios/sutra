@@ -146,7 +146,7 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     let id_to_path: HashMap<i64, &str> =
         all_files.iter().map(|f| (f.id, f.path.as_str())).collect();
 
-    let mut resolved_count = 0usize;
+    let mut updates = Vec::new();
     for (import_id, file_id, imported_path) in &unresolved {
         let file_path = match id_to_path.get(file_id) {
             Some(p) => *p,
@@ -160,10 +160,11 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
             resolve_segments(&resolved.segments, &path_to_id, &resolved.src_prefix)
             && target_id != *file_id
         {
-            db.update_import_resolved_file_id(*import_id, target_id)?;
-            resolved_count += 1;
+            updates.push((*import_id, target_id));
         }
     }
+    let resolved_count = updates.len();
+    db.batch_update_import_resolved_file_ids(&updates)?;
 
     if resolved_count > 0 {
         debug!(

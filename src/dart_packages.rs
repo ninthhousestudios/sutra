@@ -130,7 +130,7 @@ pub fn resolve_dart_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
         info!(packages = pkg_map.packages.len(), "built Dart package map");
     }
 
-    let mut resolved_count = 0;
+    let mut updates = Vec::new();
     for (import_id, file_id, imported_path) in &unresolved {
         let resolved_path = if imported_path.starts_with("package:") {
             resolve_package_uri(imported_path, &pkg_map)
@@ -143,10 +143,11 @@ pub fn resolve_dart_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
         if let Some(path) = resolved_path
             && let Some(&target_file_id) = path_to_id.get(path.as_str())
         {
-            db.update_import_resolved_file_id(*import_id, target_file_id)?;
-            resolved_count += 1;
+            updates.push((*import_id, target_file_id));
         }
     }
+    let resolved_count = updates.len();
+    db.batch_update_import_resolved_file_ids(&updates)?;
 
     Ok(resolved_count)
 }
