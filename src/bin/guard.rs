@@ -112,6 +112,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(500))?;
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
 
     // Manifest guard: Cargo.toml edits checked against external-crate
     // constraints (manifests aren't indexed files, so this must run before
