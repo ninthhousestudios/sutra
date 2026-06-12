@@ -396,3 +396,146 @@ fn operator_discrimination() {
         "functions differing only by operator should not be near-identical in strip mode, sim={top_sim:.4}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Incremental HRR recomputation (sutra/142)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_change_recompute_is_noop() {
+    let f = setup(&[(
+        "src/lib.rs",
+        "pub fn hello() -> i32 { 42 }\npub fn world() -> i32 { 0 }\n",
+    )]);
+    parse(&f);
+
+    let vecs_before = load_vectors(&f.db);
+    assert_eq!(
+        vecs_before.len(),
+        4,
+        "initial parse should produce 4 vectors"
+    );
+
+    let (count, changed) =
+        sutra::similarity::compute_hrr_vectors(&f.db, f.ws.root.as_path()).unwrap();
+    assert_eq!(count, 0, "no-change recompute should process zero symbols");
+    assert!(!changed, "no-change recompute should report no change");
+
+    let vecs_after = load_vectors(&f.db);
+    assert_eq!(vecs_before.len(), vecs_after.len());
+    for (before, after) in vecs_before.iter().zip(vecs_after.iter()) {
+        assert_eq!(before.0, after.0, "symbol_id should be unchanged");
+        assert_eq!(before.1, after.1, "mode should be unchanged");
+        assert_eq!(
+            before.2.data, after.2.data,
+            "vector data should be identical"
+        );
+    }
+}
+
+#[test]
+fn single_file_change_recomputes_only_that_file() {
+    let f = setup(&[
+        ("src/a.rs", "pub fn alpha() -> i32 { 1 }\n"),
+        ("src/b.rs", "pub fn beta() -> i32 { 2 }\n"),
+    ]);
+    parse(&f);
+
+    let vecs_after_first = load_vectors(&f.db);
+    assert_eq!(
+        vecs_after_first.len(),
+        4,
+        "2 functions × 2 modes = 4 vectors"
+    );
+
+    let syms = f.db.function_symbols_for_hrr().unwrap();
+    let a_sym = syms.iter().find(|s| s.file_path == "src/a.rs").unwrap();
+    let b_sym_id_before = syms
+        .iter()
+        .find(|s| s.file_path == "src/b.rs")
+        .unwrap()
+        .symbol_id;
+    let b_strip_before = get_vec(&vecs_after_first, b_sym_id_before, "strip")
+        .data
+        .clone();
+    let _a_strip_before = get_vec(&vecs_after_first, a_sym.symbol_id, "strip")
+        .data
+        .clone();
+
+    // Modify only file a
+    std::fs::write(
+        f.ws.root.join("src/a.rs"),
+        "pub fn alpha(x: i32) -> i32 { x + 1 }\n",
+    )
+    .unwrap();
+
+    // Re-parse (changed-file path)
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+    sutra::pipeline::parse_changed_files(
+        &f.ws,
+        &f.db,
+        &f.config,
+        &[f.ws.root.join("src/a.rs")],
+        &[],
+        &cancel,
+        &registry,
+    )
+    .unwrap();
+
+    // b's vectors should be unchanged (same symbol_id, same data)
+    let vecs_after_change = load_vectors(&f.db);
+    let syms_after = f.db.function_symbols_for_hrr().unwrap();
+    let b_sym_after = syms_after
+        .iter()
+        .find(|s| s.file_path == "src/b.rs")
+        .unwrap();
+    assert_eq!(
+        b_sym_after.symbol_id, b_sym_id_before,
+        "unchanged file should keep its symbol_id"
+    );
+    let b_strip_after = get_vec(&vecs_after_change, b_sym_after.symbol_id, "strip");
+    assert_eq!(
+        b_strip_before, b_strip_after.data,
+        "unchanged file's vectors should be identical"
+    );
+
+    // a's vectors should exist (with a new symbol_id since the file was re-parsed)
+    let a_sym_after = syms_after
+        .iter()
+        .find(|s| s.file_path == "src/a.rs")
+        .unwrap();
+    assert!(
+        get_vec(&vecs_after_change, a_sym_after.symbol_id, "strip")
+            .data
+            .len()
+            == 1024,
+        "changed file should have new vectors"
+    );
+}
+
+#[test]
+fn hrr_file_hashes_written_atomically_with_vectors() {
+    let f = setup(&[("src/lib.rs", "pub fn hello() -> i32 { 42 }\n")]);
+    parse(&f);
+
+    let conn = f.db.conn_for_test();
+    let hash_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM hrr_file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert!(hash_count > 0, "should have file hashes after parse");
+
+    let mismatched: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM hrr_file_hashes h
+             JOIN files f ON h.file_id = f.id
+             WHERE h.content_hash != f.content_hash",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        mismatched, 0,
+        "all hrr_file_hashes should match current files.content_hash"
+    );
+}

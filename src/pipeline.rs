@@ -757,7 +757,8 @@ fn post_parse_sequence(
             info!(alias_count, "synced vocabulary aliases");
         }
 
-        let hrr_count = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
+        let vec_count_before = db.hrr_vector_count()?;
+        let (hrr_count, _) = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
         if hrr_count > 0 {
             info!(count = hrr_count, "computed HRR vectors");
         }
@@ -775,9 +776,12 @@ fn post_parse_sequence(
         }
         db.replace_health_findings(&findings)?;
 
-        let family_count = crate::similarity::compute_pattern_families(db)?;
-        if family_count > 0 {
-            info!(count = family_count, "detected pattern families");
+        let vec_count_after = db.hrr_vector_count()?;
+        if vec_count_before != vec_count_after {
+            let family_count = crate::similarity::compute_pattern_families(db)?;
+            if family_count > 0 {
+                info!(count = family_count, "detected pattern families");
+            }
         }
     }
 

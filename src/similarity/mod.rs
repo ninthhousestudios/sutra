@@ -14,10 +14,23 @@ use crate::db::Db;
 use crate::error::{Result, SutraError};
 use crate::parser::adapter::default_registry;
 
-pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
-    let symbols = db.function_symbols_for_hrr()?;
+pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, bool)> {
+    let changed_files = db.files_needing_hrr_recompute()?;
+    if changed_files.is_empty() {
+        return Ok((0, false));
+    }
+
+    let file_ids: Vec<i64> = changed_files.iter().map(|f| f.file_id).collect();
+    let symbols = db.function_symbols_for_hrr_files(&file_ids)?;
+
+    let file_hashes: Vec<(i64, &str)> = changed_files
+        .iter()
+        .map(|f| (f.file_id, f.content_hash.as_str()))
+        .collect();
+
     if symbols.is_empty() {
-        return Ok(0);
+        db.insert_hrr_vectors_and_hashes(&[], &file_hashes)?;
+        return Ok((0, true));
     }
 
     let existing = db.load_hrr_codebook()?;
@@ -57,7 +70,6 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
 
         for &idx in indices {
             let sym = &symbols[idx];
-            // DB stores 1-indexed lines; tree-sitter Points are 0-indexed
             let start =
                 tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
             let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);
@@ -75,7 +87,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
         .iter()
         .map(|(id, mode, blob)| (*id, mode.as_str(), blob.as_slice()))
         .collect();
-    db.replace_hrr_vectors(&vec_refs)?;
+    db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes)?;
 
     let new_entries = cb.into_new_entries();
     let new_count = db.save_hrr_codebook_entries(&new_entries)?;
@@ -83,7 +95,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {
         info!(new_count, "new HRR codebook entries");
     }
 
-    Ok(symbols.len())
+    Ok((symbols.len(), true))
 }
 
 pub fn compute_pattern_families(db: &Db) -> Result<usize> {

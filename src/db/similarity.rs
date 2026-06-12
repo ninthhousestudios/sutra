@@ -37,6 +37,7 @@ pub struct PatternFamilyRow {
 
 pub struct HrrSymbolRow {
     pub symbol_id: i64,
+    pub file_id: i64,
     pub file_path: String,
     pub language: String,
     pub start_line: i64,
@@ -45,11 +46,18 @@ pub struct HrrSymbolRow {
     pub end_col: i64,
 }
 
+pub struct HrrChangedFile {
+    pub file_id: i64,
+    pub path: String,
+    pub language: String,
+    pub content_hash: String,
+}
+
 impl Db {
     pub fn function_symbols_for_hrr(&self) -> Result<Vec<HrrSymbolRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT s.id, f.path, f.language,
+            "SELECT s.id, s.file_id, f.path, f.language,
                     s.start_line, s.start_col, s.end_line, s.end_col
              FROM symbols s
              JOIN files f ON s.file_id = f.id
@@ -59,16 +67,101 @@ impl Db {
             .query_map([], |row| {
                 Ok(HrrSymbolRow {
                     symbol_id: row.get(0)?,
-                    file_path: row.get(1)?,
-                    language: row.get(2)?,
-                    start_line: row.get(3)?,
-                    start_col: row.get(4)?,
-                    end_line: row.get(5)?,
-                    end_col: row.get(6)?,
+                    file_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    language: row.get(3)?,
+                    start_line: row.get(4)?,
+                    start_col: row.get(5)?,
+                    end_line: row.get(6)?,
+                    end_col: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn function_symbols_for_hrr_files(&self, file_ids: &[i64]) -> Result<Vec<HrrSymbolRow>> {
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT s.id, s.file_id, f.path, f.language,
+                    s.start_line, s.start_col, s.end_line, s.end_col
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.kind IN ('function', 'method') AND f.id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = file_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok(HrrSymbolRow {
+                    symbol_id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    file_path: row.get(2)?,
+                    language: row.get(3)?,
+                    start_line: row.get(4)?,
+                    start_col: row.get(5)?,
+                    end_line: row.get(6)?,
+                    end_col: row.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn files_needing_hrr_recompute(&self) -> Result<Vec<HrrChangedFile>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT f.id, f.path, f.language, f.content_hash
+             FROM files f
+             JOIN symbols s ON s.file_id = f.id
+             WHERE s.kind IN ('function', 'method')
+               AND (NOT EXISTS (SELECT 1 FROM hrr_file_hashes h WHERE h.file_id = f.id)
+                    OR (SELECT h.content_hash FROM hrr_file_hashes h WHERE h.file_id = f.id) != f.content_hash)",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(HrrChangedFile {
+                    file_id: row.get(0)?,
+                    path: row.get(1)?,
+                    language: row.get(2)?,
+                    content_hash: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn insert_hrr_vectors_and_hashes(
+        &self,
+        vectors: &[(i64, &str, &[u8])],
+        file_hashes: &[(i64, &str)],
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut vec_stmt = conn.prepare(
+                "INSERT OR REPLACE INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)",
+            )?;
+            for &(sym_id, mode, blob) in vectors {
+                vec_stmt.execute(params![sym_id, mode, blob])?;
+            }
+
+            let mut hash_stmt = conn.prepare(
+                "INSERT OR REPLACE INTO hrr_file_hashes (file_id, content_hash) VALUES (?1, ?2)",
+            )?;
+            for &(file_id, hash) in file_hashes {
+                hash_stmt.execute(params![file_id, hash])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn replace_hrr_vectors(&self, vectors: &[(i64, &str, &[u8])]) -> Result<()> {
@@ -84,6 +177,12 @@ impl Db {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn hrr_vector_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM hrr_vectors", [], |r| r.get(0))?;
+        Ok(count)
     }
 
     pub fn load_hrr_codebook(&self) -> Result<HashMap<String, HrrVec>> {

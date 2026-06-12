@@ -191,6 +191,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0037_completion_tracking.sql"),
         true,
     ),
+    (
+        "0038_hrr_file_hashes",
+        include_str!("../../migrations/0038_hrr_file_hashes.sql"),
+        true,
+    ),
 ];
 
 impl Db {

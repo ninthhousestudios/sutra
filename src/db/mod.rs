@@ -176,6 +176,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
+        name: "hrr_file_hashes",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
         name: "pattern_families",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
