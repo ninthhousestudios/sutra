@@ -469,19 +469,10 @@ fn single_file_change_recomputes_only_that_file() {
     )
     .unwrap();
 
-    // Re-parse (changed-file path)
+    // Re-parse (full re-parse after modifying a.rs on disk)
     let cancel = AtomicBool::new(false);
     let registry = default_registry();
-    sutra::pipeline::parse_changed_files(
-        &f.ws,
-        &f.db,
-        &f.config,
-        &[f.ws.root.join("src/a.rs")],
-        &[],
-        &cancel,
-        &registry,
-    )
-    .unwrap();
+    sutra::pipeline::parse_workspace(&f.ws, &f.db, &f.config, &cancel, &registry).unwrap();
 
     // b's vectors should be unchanged (same symbol_id, same data)
     let vecs_after_change = load_vectors(&f.db);

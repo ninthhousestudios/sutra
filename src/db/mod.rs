@@ -774,7 +774,7 @@ impl Db {
         let mut symbol_ids: Vec<i64> = Vec::with_capacity(symbols.len());
         for (i, p) in symbols.iter().enumerate() {
             let parent_symbol_id = parent_indices[i].map(|pi| symbol_ids[pi]);
-            let id: i64 = conn.query_row(
+            let id: i64 = conn.prepare_cached(
                 "INSERT INTO symbols (
                     file_id, qualified_name, short_name, kind,
                     signature, signature_hash, visibility,
@@ -799,6 +799,7 @@ impl Db {
                     flags = excluded.flags,
                     language_attrs = excluded.language_attrs
                  RETURNING id",
+            )?.query_row(
                 params![
                     file_id,
                     p.qualified_name,
@@ -823,30 +824,31 @@ impl Db {
             )?;
             symbol_ids.push(id);
 
-            conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![id])?;
-            conn.execute(
+            conn.prepare_cached("DELETE FROM symbols_fts WHERE symbol_id = ?1")?
+                .execute(params![id])?;
+            conn.prepare_cached(
                 "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![id, p.short_name, p.qualified_name, p.docstring],
-            )?;
+            )?
+            .execute(params![id, p.short_name, p.qualified_name, p.docstring])?;
         }
 
         // Insert imports.
         for imp in imports {
-            conn.execute(
+            conn.prepare_cached(
                 "INSERT INTO imports (file_id, imported_path, resolved_file_id, line)
                  VALUES (?1, ?2, NULL, ?3)",
-                params![file_id, imp.imported_path, imp.line],
-            )?;
+            )?
+            .execute(params![file_id, imp.imported_path, imp.line])?;
         }
 
         // Insert refs.
         for rf in refs {
-            conn.execute(
+            conn.prepare_cached(
                 "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind)
                  VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
-                params![file_id, rf.unresolved_name, rf.line, rf.col, rf.context_kind],
-            )?;
+            )?
+            .execute(params![file_id, rf.unresolved_name, rf.line, rf.col, rf.context_kind])?;
         }
 
         conn.execute(
