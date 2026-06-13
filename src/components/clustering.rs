@@ -172,6 +172,12 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
     }
 
     let m2 = 2.0 * total_weight;
+
+    let mut sigma_tot: HashMap<usize, f64> = HashMap::new();
+    for j in 0..n {
+        *sigma_tot.entry(community[j]).or_default() += k[j];
+    }
+
     let mut improved = true;
     while improved {
         improved = false;
@@ -181,11 +187,6 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
             let mut comm_weights: HashMap<usize, f64> = HashMap::new();
             for &(j, w) in &neighbors[i] {
                 *comm_weights.entry(community[j]).or_default() += w;
-            }
-
-            let mut sigma_tot: HashMap<usize, f64> = HashMap::new();
-            for j in 0..n {
-                *sigma_tot.entry(community[j]).or_default() += k[j];
             }
 
             let ki_in_current = comm_weights.get(&current_comm).copied().unwrap_or(0.0);
@@ -206,6 +207,8 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
                 }
             }
             if best_comm != current_comm {
+                *sigma_tot.entry(current_comm).or_default() -= k[i];
+                *sigma_tot.entry(best_comm).or_default() += k[i];
                 community[i] = best_comm;
                 improved = true;
             }
