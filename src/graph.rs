@@ -5,10 +5,26 @@ use crate::error::Result;
 
 pub type FileGraph = HashMap<i64, HashSet<i64>>;
 
+pub struct GraphData {
+    pub sym_to_file: HashMap<i64, i64>,
+    pub all_refs: Vec<(i64, i64)>,
+}
+
+impl GraphData {
+    pub fn load(db: &Db) -> Result<Self> {
+        let sym_to_file = db.all_symbol_file_map()?.into_iter().collect();
+        let all_refs = db.all_resolved_refs()?;
+        Ok(Self {
+            sym_to_file,
+            all_refs,
+        })
+    }
+}
+
 pub fn build_file_adjacency(
     files: &[crate::db::FileRow],
-    db: &Db,
-) -> Result<(FileGraph, FileGraph)> {
+    gd: &GraphData,
+) -> (FileGraph, FileGraph) {
     let mut fan_in_map: HashMap<i64, HashSet<i64>> = HashMap::new();
     let mut outgoing: HashMap<i64, HashSet<i64>> = HashMap::new();
 
@@ -17,11 +33,8 @@ pub fn build_file_adjacency(
         outgoing.entry(f.id).or_default();
     }
 
-    let sym_file_pairs = db.all_symbol_file_map()?;
-    let sym_to_file: HashMap<i64, i64> = sym_file_pairs.into_iter().collect();
-
-    for (src_file_id, target_sym_id) in db.all_resolved_refs()? {
-        if let Some(&target_file_id) = sym_to_file.get(&target_sym_id)
+    for &(src_file_id, target_sym_id) in &gd.all_refs {
+        if let Some(&target_file_id) = gd.sym_to_file.get(&target_sym_id)
             && target_file_id != src_file_id
         {
             fan_in_map
@@ -35,7 +48,7 @@ pub fn build_file_adjacency(
         }
     }
 
-    Ok((fan_in_map, outgoing))
+    (fan_in_map, outgoing)
 }
 
 pub fn compute_rollups(
@@ -47,7 +60,8 @@ pub fn compute_rollups(
         return Ok(());
     }
 
-    let adjacency = build_file_adjacency(files, db)?;
+    let gd = GraphData::load(db)?;
+    let adjacency = build_file_adjacency(files, &gd);
     compute_rollups_with_adjacency(db, files, &adjacency, changed_file_ids)
 }
 
@@ -128,14 +142,16 @@ pub fn compute_pagerank(db: &Db, files: &[crate::db::FileRow]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
-    let adjacency = build_file_adjacency(files, db)?;
-    compute_pagerank_with_adjacency(db, files, &adjacency)
+    let gd = GraphData::load(db)?;
+    let adjacency = build_file_adjacency(files, &gd);
+    compute_pagerank_with_adjacency(db, files, &adjacency, &gd)
 }
 
 pub fn compute_pagerank_with_adjacency(
     db: &Db,
     files: &[crate::db::FileRow],
     adjacency: &(FileGraph, FileGraph),
+    gd: &GraphData,
 ) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -148,9 +164,6 @@ pub fn compute_pagerank_with_adjacency(
         .enumerate()
         .map(|(i, &id)| (id, i))
         .collect();
-
-    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
-    let all_refs = db.all_resolved_refs()?;
 
     let (_, outgoing) = (&adjacency.0, &adjacency.1);
     let mut out_edges: Vec<HashSet<usize>> = vec![HashSet::new(); n];
@@ -230,12 +243,12 @@ pub fn compute_pagerank_with_adjacency(
     db.batch_update_file_pagerank(&file_updates)?;
 
     let mut ref_counts: HashMap<i64, usize> = HashMap::new();
-    for &(_, target_sym_id) in &all_refs {
+    for &(_, target_sym_id) in &gd.all_refs {
         *ref_counts.entry(target_sym_id).or_default() += 1;
     }
 
     let mut file_symbols: HashMap<i64, Vec<(i64, usize)>> = HashMap::new();
-    for (&sym_id, &file_id) in &sym_to_file {
+    for (&sym_id, &file_id) in &gd.sym_to_file {
         let rc = ref_counts.get(&sym_id).copied().unwrap_or(0);
         file_symbols.entry(file_id).or_default().push((sym_id, rc));
     }

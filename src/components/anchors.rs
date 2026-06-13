@@ -1,11 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use uuid::Uuid;
 
 use crate::db::{Db, SymbolRow};
 use crate::error::Result;
-use crate::git;
 
 pub const ANCHOR_KINDS: &[&str] = &[
     "function",
@@ -84,16 +82,15 @@ struct ScoredSymbol {
     rationale: String,
 }
 
-pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize> {
+pub fn compute_semantic_anchors(
+    db: &Db,
+    gd: &crate::graph::GraphData,
+    churn_map: &HashMap<String, u32>,
+) -> Result<usize> {
     let components = db.all_components()?;
     if components.is_empty() {
         return Ok(0);
     }
-
-    let sym_file_pairs = db.all_symbol_file_map()?;
-    let sym_to_file: HashMap<i64, i64> = sym_file_pairs.into_iter().collect();
-    let all_refs = db.all_resolved_refs()?;
-    let churn_map = git::git_churn(workspace_root, 90).unwrap_or_default();
 
     let files = db.all_files()?;
     let file_id_to_path: HashMap<i64, &str> =
@@ -111,8 +108,8 @@ pub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize>
     }
 
     let mut intra_in_degree: HashMap<i64, usize> = HashMap::new();
-    for &(src_file_id, target_sym_id) in &all_refs {
-        if let Some(target_file_id) = sym_to_file.get(&target_sym_id) {
+    for &(src_file_id, target_sym_id) in &gd.all_refs {
+        if let Some(target_file_id) = gd.sym_to_file.get(&target_sym_id) {
             let src_comp = file_to_component.get(&src_file_id);
             let tgt_comp = file_to_component.get(target_file_id);
             if src_comp.is_some() && src_comp == tgt_comp {

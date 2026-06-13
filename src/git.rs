@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -251,6 +251,17 @@ pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<C
     }
 
     Ok(results)
+}
+
+pub fn churn_from_commit_files(commit_files: &[CommitFile]) -> HashMap<String, u32> {
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for cf in commit_files {
+        if seen.insert((&cf.hash, &cf.path)) {
+            *counts.entry(cf.path.clone()).or_default() += 1;
+        }
+    }
+    counts
 }
 
 /// Count how many commits touched each file in the given time window.

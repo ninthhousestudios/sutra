@@ -3,21 +3,19 @@ use std::path::Path;
 
 use crate::db::{Db, FileRow};
 use crate::error::Result;
+use crate::graph::GraphData;
 
 use super::ComponentsConfig;
 
 pub(super) type WeightedAdj = HashMap<i64, Vec<(i64, f64)>>;
 
-pub(super) fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<(WeightedAdj, usize)> {
-    let sym_to_file: HashMap<i64, i64> = db.all_symbol_file_map()?.into_iter().collect();
-    let refs = db.all_resolved_refs()?;
-
+pub(super) fn build_weighted_adjacency(files: &[FileRow], gd: &GraphData) -> (WeightedAdj, usize) {
     let mut directed: HashMap<(i64, i64), usize> = HashMap::new();
-    for (src_file, target_sym) in &refs {
-        if let Some(&target_file) = sym_to_file.get(target_sym)
-            && *src_file != target_file
+    for &(src_file, target_sym) in &gd.all_refs {
+        if let Some(&target_file) = gd.sym_to_file.get(&target_sym)
+            && src_file != target_file
         {
-            *directed.entry((*src_file, target_file)).or_default() += 1;
+            *directed.entry((src_file, target_file)).or_default() += 1;
         }
     }
 
@@ -35,7 +33,7 @@ pub(super) fn build_weighted_adjacency(files: &[FileRow], db: &Db) -> Result<(We
         adj.entry(a).or_default().push((b, w));
         adj.entry(b).or_default().push((a, w));
     }
-    Ok((adj, edge_count))
+    (adj, edge_count)
 }
 
 fn apply_boundary_hints(
@@ -333,10 +331,11 @@ pub(super) fn build_clusters(result: &LouvainResult) -> Vec<Vec<i64>> {
 pub(super) fn run_clustering<'a>(
     db: &Db,
     files: &'a [FileRow],
+    gd: &GraphData,
     config: &ComponentsConfig,
     boundary_multipliers: &HashMap<String, f64>,
 ) -> Result<Option<(Vec<Vec<i64>>, HashMap<i64, &'a FileRow>, usize)>> {
-    let (mut adj, edge_count) = build_weighted_adjacency(files, db)?;
+    let (mut adj, edge_count) = build_weighted_adjacency(files, gd);
 
     apply_boundary_hints(&mut adj, files, boundary_multipliers);
     add_cochange_edges(&mut adj, db, files, config)?;

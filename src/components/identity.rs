@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::db::{Db, FileRow};
 use crate::error::Result;
+use crate::graph::GraphData;
 
 use super::clustering::{auto_name, build_weighted_adjacency};
 use super::{
@@ -270,9 +271,9 @@ fn detect_events(
     Ok(())
 }
 
-pub(super) fn edge_count(files: &[FileRow], db: &Db) -> Result<usize> {
-    let (_, count) = build_weighted_adjacency(files, db)?;
-    Ok(count)
+pub(super) fn edge_count(files: &[FileRow], gd: &GraphData) -> usize {
+    let (_, count) = build_weighted_adjacency(files, gd);
+    count
 }
 
 pub(super) fn clustering_config_hash(

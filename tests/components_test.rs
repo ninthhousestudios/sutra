@@ -1,5 +1,6 @@
 use sutra::components;
 use sutra::db::{Db, InsertSymbolParams};
+use sutra::graph::GraphData;
 
 use std::collections::{HashMap, HashSet};
 
@@ -97,7 +98,14 @@ fn test_two_cluster_discovery() {
     // No cross-cluster refs
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     assert_eq!(count, 2, "should discover exactly 2 components");
 
@@ -127,11 +135,25 @@ fn test_first_run_gate_skips_when_components_and_membership_exist() {
 
     // First run creates components + membership
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert!(count > 0);
 
     // Second run should skip — both components and membership exist
-    let count2 = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count2 = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(
         count2, 0,
         "should skip when components and membership exist"
@@ -154,7 +176,14 @@ fn test_reconciliation_after_reindex_preserves_and_repopulates() {
 
     // First run
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let original_comps = db.all_components().unwrap();
     assert!(!original_comps.is_empty());
     let original_ids: std::collections::HashSet<String> =
@@ -179,7 +208,14 @@ fn test_reconciliation_after_reindex_preserves_and_repopulates() {
 
     // Reconciliation should preserve component identity
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert!(count > 0, "should reconcile after reindex");
 
     // Component IDs should be preserved
@@ -209,7 +245,14 @@ fn test_no_edges_produces_no_components() {
     db.upsert_file("src/b.rs", "rust", "h2", 50, true).unwrap();
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 0, "no edges means nothing to cluster");
 }
 
@@ -240,7 +283,14 @@ fn test_components_get_stable_uuids() {
     insert_refs(&db, a2, sa1, 5);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let comps = db.all_components().unwrap();
     assert!(!comps.is_empty());
@@ -264,7 +314,14 @@ fn test_sutra_components_tool() {
     insert_refs(&db, a2, sa1, 5);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let result = sutra::tools::components::handle(&db, false).unwrap();
     let obj = result.as_object().unwrap();
@@ -334,7 +391,14 @@ fn test_reconciliation_preserves_component_identity() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 2);
 
     let original_comps = db.all_components().unwrap();
@@ -350,7 +414,14 @@ fn test_reconciliation_preserves_component_identity() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 2, "reconciliation should produce 2 components");
 
     let reconciled_comps = db.all_components().unwrap();
@@ -392,7 +463,14 @@ fn test_dissolved_components_hidden_from_queries() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(db.all_components().unwrap().len(), 2);
 
     // Reindex and only re-insert one cluster (tools files removed)
@@ -417,7 +495,14 @@ fn test_dissolved_components_hidden_from_queries() {
     insert_refs(&db, a3, sa2, 10);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     // Only 1 active component visible
     let active = db.all_components().unwrap();
@@ -436,7 +521,14 @@ fn test_merge_event_detected() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let original = db.all_components().unwrap();
     assert_eq!(original.len(), 2);
 
@@ -507,7 +599,14 @@ fn test_merge_event_detected() {
     }
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let active = db.all_components().unwrap();
     assert_eq!(active.len(), 1, "should have 1 component after merge");
@@ -596,7 +695,14 @@ fn test_split_event_detected() {
     }
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 1, "should be 1 big component");
 
     let original = db.all_components().unwrap();
@@ -608,7 +714,14 @@ fn test_split_event_detected() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     // Original component should match one cluster (>60% overlap)
     // and split event should fire because its files span 2 clusters
@@ -700,7 +813,14 @@ fn test_drift_event_detected() {
     }
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let original = db.all_components().unwrap();
     assert_eq!(original.len(), 2);
 
@@ -786,7 +906,14 @@ fn test_drift_event_detected() {
     }
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     // Component A should have a drift event (40% of its files moved to B)
     let events = db.component_events(&comp_a_id).unwrap();
@@ -842,7 +969,14 @@ fn test_unmatched_cluster_creates_new_component() {
     insert_refs(&db, a3, sa2, 10);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let original = db.all_components().unwrap();
     assert_eq!(original.len(), 1);
     let original_id = original[0].id.clone();
@@ -852,7 +986,14 @@ fn test_unmatched_cluster_creates_new_component() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let active = db.all_components().unwrap();
     assert_eq!(
@@ -883,7 +1024,14 @@ fn test_staleness_skips_when_graph_unchanged() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 2);
 
     // Metadata should be recorded
@@ -891,7 +1039,14 @@ fn test_staleness_skips_when_graph_unchanged() {
     assert!(meta.is_some(), "clustering metadata should be written");
 
     // Second call with identical graph should skip
-    let count2 = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count2 = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count2, 0, "should skip when graph is unchanged");
 }
 
@@ -902,7 +1057,14 @@ fn test_staleness_detects_file_addition() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let original_meta = db.clustering_meta().unwrap().unwrap();
 
     // Add a new file with refs into cluster A
@@ -917,7 +1079,14 @@ fn test_staleness_detects_file_addition() {
     insert_refs(&db, a1, new_sym, 10);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert!(count > 0, "should recluster when files added");
 
     let new_meta = db.clustering_meta().unwrap().unwrap();
@@ -934,7 +1103,14 @@ fn test_staleness_detects_edge_change_above_threshold() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let (stored_edges, _stored_files, _, _, _) = db.clustering_meta().unwrap().unwrap();
 
     // Add cross-cluster edges exceeding 10% of stored_edges
@@ -956,7 +1132,14 @@ fn test_staleness_detects_edge_change_above_threshold() {
     insert_refs(&db, b2_id, sa1, 5);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert!(
         count > 0,
         "should recluster when edge count changed by >10%"
@@ -1020,7 +1203,14 @@ fn test_staleness_ignores_edge_change_below_threshold() {
     }
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let (stored_edges, _, _, _, _) = db.clustering_meta().unwrap().unwrap();
     // 10 files * 9 neighbors / 2 = 45 undirected edges per cluster, 90 total
     assert!(
@@ -1032,7 +1222,14 @@ fn test_staleness_ignores_edge_change_below_threshold() {
     insert_refs(&db, a_files[0], b_syms[0], 1);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(count, 0, "should skip when edge change is below threshold");
 }
 
@@ -1044,7 +1241,14 @@ fn test_staleness_threshold_override() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     // Add cross-cluster refs that would exceed 10% but not 50%
     let a1_id = db
@@ -1057,7 +1261,14 @@ fn test_staleness_threshold_override() {
     insert_refs(&db, b1_id, sa1, 5);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert_eq!(
         count, 0,
         "should skip when change is below custom 50% threshold"
@@ -1071,7 +1282,14 @@ fn test_clustering_meta_survives_reindex() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     let meta_before = db.clustering_meta().unwrap();
     assert!(meta_before.is_some());
 
@@ -1097,7 +1315,14 @@ fn test_first_run_records_metadata() {
     assert!(db.clustering_meta().unwrap().is_none());
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let meta = db.clustering_meta().unwrap();
     assert!(
@@ -1120,9 +1345,18 @@ fn test_semantic_anchors_computed_after_discovery() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
-    let anchor_count = components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    let anchor_count =
+        components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+            .unwrap();
     assert!(
         anchor_count > 0,
         "should compute anchors for discovered components"
@@ -1190,12 +1424,20 @@ fn test_anchors_prefer_high_in_degree() {
     insert_refs(&db, f4, s2, 5);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let comps = db.all_components().unwrap();
     assert!(!comps.is_empty());
 
-    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+        .unwrap();
 
     // Find the component containing f1
     let anchors = db.anchors_for_component(&comps[0].id).unwrap();
@@ -1244,8 +1486,16 @@ fn test_anchors_exclude_non_anchor_kinds() {
     insert_refs(&db, f2, fn_sym, 10);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+        .unwrap();
 
     let comps = db.all_components().unwrap();
     let all_anchors = db.all_anchors_grouped().unwrap();
@@ -1267,8 +1517,16 @@ fn test_anchors_in_components_tool_output() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+        .unwrap();
 
     let result = sutra::tools::components::handle(&db, false).unwrap();
     let comps = result["components"].as_array().unwrap();
@@ -1290,8 +1548,16 @@ fn test_anchors_recomputed_on_recluster() {
     setup_two_clusters(&db);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
-    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
+    components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+        .unwrap();
 
     let _comps = db.all_components().unwrap();
     let original_anchors: HashSet<String> = {
@@ -1320,10 +1586,18 @@ fn test_anchors_recomputed_on_recluster() {
     insert_refs(&db, a1, new_sym, 50);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
     assert!(count > 0, "should recluster after adding new file");
 
-    components::compute_semantic_anchors(&db, dir.path()).unwrap();
+    components::compute_semantic_anchors(&db, &GraphData::load(&db).unwrap(), &HashMap::new())
+        .unwrap();
 
     let new_anchors: HashSet<String> = {
         let grouped = db.all_anchors_grouped().unwrap();
@@ -1394,7 +1668,14 @@ fn test_concept_density_in_tool_output() {
     insert_refs(&db, b3, sb2, 10);
 
     let files = db.all_files().unwrap();
-    components::discover_components(&db, &files, dir.path(), &HashMap::new()).unwrap();
+    components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &HashMap::new(),
+    )
+    .unwrap();
 
     let result = sutra::tools::components::handle(&db, false).unwrap();
     let comps = result["components"].as_array().unwrap();
@@ -1481,6 +1762,8 @@ fn test_boundary_hints_boost_co_module_edges() {
     multipliers.insert("rust".to_string(), 2.0);
 
     let files = db.all_files().unwrap();
-    let count = components::discover_components(&db, &files, dir.path(), &multipliers).unwrap();
+    let gd = GraphData::load(&db).unwrap();
+    let count =
+        components::discover_components(&db, &files, &gd, dir.path(), &multipliers).unwrap();
     assert!(count >= 2, "should discover components with boundary hints");
 }

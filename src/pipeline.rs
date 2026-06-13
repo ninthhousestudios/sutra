@@ -561,20 +561,22 @@ fn post_parse_sequence(
 
     let files = db.all_files()?;
     if !files.is_empty() {
-        let adjacency = graph::build_file_adjacency(&files, db)?;
+        let gd = graph::GraphData::load(db)?;
+        let adjacency = graph::build_file_adjacency(&files, &gd);
         let dirty_hint = if resolution_set.is_empty() {
             None
         } else {
             Some(&resolution_set)
         };
         graph::compute_rollups_with_adjacency(db, &files, &adjacency, dirty_hint)?;
-        graph::compute_pagerank_with_adjacency(db, &files, &adjacency)?;
+        graph::compute_pagerank_with_adjacency(db, &files, &adjacency, &gd)?;
 
         let cochange_window = components::load_config(workspace_root)?
             .cochange_window_days
             .unwrap_or(90);
-        match crate::git::git_commit_files(workspace_root, cochange_window) {
+        let churn_map = match crate::git::git_commit_files(workspace_root, cochange_window) {
             Ok(commit_file_data) if !commit_file_data.is_empty() => {
+                let churn = crate::git::churn_from_commit_files(&commit_file_data);
                 let path_to_id: std::collections::HashMap<&str, i64> =
                     files.iter().map(|f| (f.path.as_str(), f.id)).collect();
                 let mut seen_hashes: std::collections::HashSet<&str> =
@@ -598,21 +600,24 @@ fn post_parse_sequence(
                     })
                     .collect();
                 db.replace_commit_files(&commit_rows, &db_pairs)?;
+                churn
             }
             Ok(_) => {
                 db.replace_commit_files(&[], &[])?;
+                HashMap::new()
             }
             Err(e) => {
                 warn!("git commit-file history unavailable: {e}");
                 db.replace_commit_files(&[], &[])?;
+                HashMap::new()
             }
-        }
+        };
 
         let component_count =
-            components::discover_components(db, &files, workspace_root, boundary_multipliers)?;
+            components::discover_components(db, &files, &gd, workspace_root, boundary_multipliers)?;
         if component_count > 0 {
             info!(component_count, "discovered components");
-            let anchor_count = components::compute_semantic_anchors(db, workspace_root)?;
+            let anchor_count = components::compute_semantic_anchors(db, &gd, &churn_map)?;
             if anchor_count > 0 {
                 info!(anchor_count, "computed semantic anchors");
             }

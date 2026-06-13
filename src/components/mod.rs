@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::db::{Db, FileRow};
 use crate::error::{Result, SutraError};
+use crate::graph::GraphData;
 
 pub use anchors::{
     ANCHOR_KINDS, anchor_count, compute_semantic_anchors, concept_density, extract_stems,
@@ -61,6 +62,7 @@ pub fn parse_config(content: &str) -> Result<ComponentsConfig> {
 pub fn discover_components(
     db: &Db,
     files: &[FileRow],
+    gd: &GraphData,
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
 ) -> Result<usize> {
@@ -80,7 +82,7 @@ pub fn discover_components(
     let newest_commit_at = db.newest_commit_at()?;
 
     if has_existing && has_membership {
-        let current_edge_count = identity::edge_count(files, db)?;
+        let current_edge_count = identity::edge_count(files, gd);
         if !identity::is_clustering_stale(
             db,
             current_edge_count,
@@ -95,7 +97,7 @@ pub fn discover_components(
     }
 
     let Some((clusters, file_map, edge_count)) =
-        clustering::run_clustering(db, files, &config, boundary_multipliers)?
+        clustering::run_clustering(db, files, gd, &config, boundary_multipliers)?
     else {
         return Ok(0);
     };
