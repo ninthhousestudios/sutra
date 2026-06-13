@@ -773,4 +773,42 @@ impl Db {
         let count = conn.execute(&sql, params.as_slice())?;
         Ok(count)
     }
+
+    pub fn get_fca_hash(&self) -> Result<Option<[u8; 32]>> {
+        let conn = self.conn.lock();
+        match conn.query_row(
+            "SELECT matrix_hash FROM fca_cache WHERE id = 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        ) {
+            Ok(blob) => {
+                if blob.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&blob);
+                    Ok(Some(arr))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_fca_hash(&self, hash: &[u8; 32]) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO fca_cache (id, matrix_hash) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET matrix_hash = excluded.matrix_hash",
+            params![hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    pub fn convention_count(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM conventions", [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
 }

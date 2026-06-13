@@ -107,6 +107,32 @@ pub fn rebuild(
         sa.component_id = file_to_component.get(&sa.file).cloned();
     }
 
+    let combined_hash = {
+        let mut h = blake3::Hasher::new();
+        for sa in &all_sym_attrs {
+            h.update(sa.file.as_bytes());
+            h.update(sa.name.as_bytes());
+            for attr in &sa.attributes {
+                h.update(attr.as_bytes());
+            }
+            if let Some(cid) = &sa.component_id {
+                h.update(cid.as_bytes());
+            }
+        }
+        h.finalize()
+    };
+    let combined_bytes: [u8; 32] = *combined_hash.as_bytes();
+    if let Ok(Some(cached)) = db.get_fca_hash() {
+        if cached == combined_bytes {
+            let convention_count = db.convention_count().unwrap_or(0);
+            return Ok(RebuildOutcome {
+                convention_count,
+                drift_alerts: Vec::new(),
+                convention_drift_findings: Vec::new(),
+            });
+        }
+    }
+
     let mut global_engine = FcaEngine::new();
     let global_conventions = global_engine.rebuild(&all_sym_attrs);
 
@@ -194,6 +220,7 @@ pub fn rebuild(
         tracing::warn!("orphan template cleanup failed: {e}");
     }
 
+    let _ = db.set_fca_hash(&combined_bytes);
     let convention_count = all_convs.len();
 
     Ok(RebuildOutcome {
