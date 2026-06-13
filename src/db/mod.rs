@@ -1647,6 +1647,8 @@ impl Db {
         match result {
             Ok(id) => {
                 conn.execute_batch("COMMIT")?;
+                drop(conn);
+                self.prune_snapshots(Self::MAX_SNAPSHOTS)?;
                 Ok(id)
             }
             Err(e) => {
@@ -1654,6 +1656,41 @@ impl Db {
                 Err(e)
             }
         }
+    }
+
+    const MAX_SNAPSHOTS: usize = 30;
+
+    /// Delete snapshots (and their child rows) beyond the most recent `keep`.
+    /// Returns the number of snapshots deleted.
+    pub fn prune_snapshots(&self, keep: usize) -> Result<usize> {
+        let conn = self.conn.lock();
+        let stale_ids: Vec<i64> = conn
+            .prepare("SELECT id FROM snapshots ORDER BY id DESC LIMIT -1 OFFSET ?1")?
+            .query_map(params![keep as i64], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(SutraError::Db)?;
+
+        if stale_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders: String = stale_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql_files =
+            format!("DELETE FROM health_snapshot_files WHERE snapshot_id IN ({placeholders})");
+        let sql_components =
+            format!("DELETE FROM health_snapshot_components WHERE snapshot_id IN ({placeholders})");
+        let sql_snapshots = format!("DELETE FROM snapshots WHERE id IN ({placeholders})");
+
+        let id_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            stale_ids.iter().map(|id| Box::new(*id) as _).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            id_params.iter().map(|b| b.as_ref()).collect();
+
+        conn.execute(&sql_files, param_refs.as_slice())?;
+        conn.execute(&sql_components, param_refs.as_slice())?;
+        conn.execute(&sql_snapshots, param_refs.as_slice())?;
+
+        Ok(stale_ids.len())
     }
 
     /// Return the timestamp of the most recent snapshot, or `None` if no

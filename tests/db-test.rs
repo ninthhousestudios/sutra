@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use sutra::db::{
-    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotParams, TABLE_REGISTRY,
-    TablePartition,
+    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
+    SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
 
@@ -1569,4 +1569,90 @@ fn test_heal_duplicate_symbols_on_reopen() {
     let file_id = db.file_by_path("dup.rs").unwrap().unwrap().id;
     let syms = db.find_symbols_by_file(file_id).unwrap();
     assert_eq!(syms.len(), 1, "heal should remove duplicate, leaving one");
+}
+
+#[test]
+fn test_snapshot_pruning() {
+    let (_dir, db) = setup_db();
+    let keep = 3usize;
+    let total = keep + 5;
+
+    let mut ids = Vec::new();
+    for i in 0..total {
+        let id = db
+            .insert_snapshot_atomic(
+                &SnapshotParams {
+                    files_parsed: i as i64,
+                    symbols_extracted: 0,
+                    refs_extracted: 0,
+                    parse_errors: 0,
+                    duration_ms: 0,
+                    total_complexity: 0,
+                    dead_symbol_count: 0,
+                    hotspot_count: 0,
+                    health_score: 0.0,
+                    ..Default::default()
+                },
+                &[SnapshotFileRow {
+                    file_id: 1,
+                    file_path: "a.rs".into(),
+                    score: i as f64,
+                    category_scores: "{}".into(),
+                }],
+                &[SnapshotComponentRow {
+                    component_id: "comp".into(),
+                    component_name: "comp".into(),
+                    score: i as f64,
+                    member_count: 1,
+                    total_nloc: 10,
+                }],
+            )
+            .unwrap();
+        ids.push(id);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let before = db.latest_snapshots(100).unwrap();
+    assert_eq!(before.len(), total, "all snapshots present before pruning");
+
+    let pruned = db.prune_snapshots(keep).unwrap();
+    assert_eq!(pruned, total - keep, "should prune {}", total - keep);
+
+    let snaps = db.latest_snapshots(100).unwrap();
+    assert_eq!(snaps.len(), keep, "should retain exactly {keep} snapshots");
+
+    let kept_ids: Vec<i64> = snaps.iter().map(|s| s.id).collect();
+    for &id in &ids[..total - keep] {
+        assert!(
+            !kept_ids.contains(&id),
+            "old snapshot {id} should be pruned"
+        );
+    }
+    for &id in &ids[total - keep..] {
+        assert!(
+            kept_ids.contains(&id),
+            "recent snapshot {id} should survive"
+        );
+    }
+
+    let pruned_id = ids[0];
+    let surviving_id = *ids.last().unwrap();
+    assert!(
+        db.snapshot_file_scores(pruned_id).unwrap().is_empty(),
+        "child file rows for pruned snapshot should be gone"
+    );
+    assert!(
+        db.snapshot_component_scores(pruned_id).unwrap().is_empty(),
+        "child component rows for pruned snapshot should be gone"
+    );
+    assert_eq!(
+        db.snapshot_file_scores(surviving_id).unwrap().len(),
+        1,
+        "child file rows for surviving snapshot should remain"
+    );
+    assert_eq!(
+        db.snapshot_component_scores(surviving_id).unwrap().len(),
+        1,
+        "child component rows for surviving snapshot should remain"
+    );
 }
