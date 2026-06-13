@@ -8,6 +8,7 @@ use crate::db::Db;
 use crate::error::Result;
 use crate::git;
 use crate::tools::change_signals::{self, ChurnMap};
+use crate::tools::symbol_diff;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffImpactArgs {
@@ -39,7 +40,13 @@ pub fn handle(
                 .iter()
                 .map(|s| s.qualified_name.as_str())
                 .collect();
-            json!({ "path": f.path, "symbols": symbols })
+            let symbol_changes =
+                symbol_diff::diff_file(workspace_root, &f.path, base, head).unwrap_or_default();
+            let mut entry = json!({ "path": f.path, "symbols": symbols });
+            if !symbol_changes.is_empty() {
+                entry["symbol_changes"] = serde_json::to_value(&symbol_changes).unwrap_or_default();
+            }
+            entry
         })
         .collect();
 

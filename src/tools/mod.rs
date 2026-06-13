@@ -27,6 +27,7 @@ pub mod resolve;
 pub mod review;
 pub mod scoring;
 pub mod similar;
+pub mod symbol_diff;
 pub mod tools_meta;
 pub mod trace;
 pub mod trend;
