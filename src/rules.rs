@@ -155,6 +155,23 @@ impl Constraint {
     }
 }
 
+fn validate_glob(field: &str, pattern: &str) -> Result<()> {
+    glob::Pattern::new(pattern).map_err(|e| {
+        SutraError::Internal(format!("invalid glob in '{field}': '{pattern}': {e}"))
+    })?;
+    Ok(())
+}
+
+fn validate_crate_glob(field: &str, pattern: &str) -> Result<()> {
+    let normalized = pattern.replace('-', "_");
+    glob::Pattern::new(&normalized).map_err(|e| {
+        SutraError::Internal(format!(
+            "invalid crate glob in '{field}': '{pattern}' (normalized: '{normalized}'): {e}"
+        ))
+    })?;
+    Ok(())
+}
+
 // --- TOML deserialization (raw) ---
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,6 +210,8 @@ impl RawConstraint {
                         "constraint kind 'forbidden_dep' requires 'to' field".into(),
                     )
                 })?;
+                validate_glob("from", &from)?;
+                validate_glob("to", &to)?;
                 ConstraintKind::ForbiddenDep { from, to }
             }
             "boundary" => {
@@ -222,6 +241,7 @@ impl RawConstraint {
                         "constraint kind 'max_fan_in' requires 'threshold' field".into(),
                     )
                 })?;
+                validate_glob("target", &target)?;
                 ConstraintKind::MaxFanIn { target, threshold }
             }
             "no_cycles" => ConstraintKind::NoCycles,
@@ -235,8 +255,13 @@ impl RawConstraint {
                         ));
                     }
                 };
+                let from = self.from.unwrap_or_else(|| "**".into());
+                validate_glob("from", &from)?;
+                for (i, c) in crates.iter().enumerate() {
+                    validate_crate_glob(&format!("crates[{i}]"), c)?;
+                }
                 ConstraintKind::ForbiddenExternal {
-                    from: self.from.unwrap_or_else(|| "**".into()),
+                    from,
                     crates,
                     include_dev: self.include_dev.unwrap_or(false),
                 }
@@ -258,6 +283,12 @@ impl RawConstraint {
                             .into(),
                     )
                 })?;
+                for (i, c) in crates.iter().enumerate() {
+                    validate_crate_glob(&format!("crates[{i}]"), c)?;
+                }
+                for (i, a) in allowed_in.iter().enumerate() {
+                    validate_glob(&format!("allowed_in[{i}]"), a)?;
+                }
                 ConstraintKind::ConfinedExternal {
                     crates,
                     allowed_in,
@@ -308,7 +339,17 @@ impl Rules {
         let mut out: Vec<Constraint> = Vec::new();
         let mut errors: Vec<ConstraintParseError> = Vec::new();
 
-        for fd in &self.constraints.forbidden_deps {
+        for (i, fd) in self.constraints.forbidden_deps.iter().enumerate() {
+            if let Err(e) =
+                validate_glob("from", &fd.from).and_then(|()| validate_glob("to", &fd.to))
+            {
+                errors.push(ConstraintParseError {
+                    index: i,
+                    name: None,
+                    error: format!("forbidden_deps[{i}]: {e}"),
+                });
+                continue;
+            }
             let kind = ConstraintKind::ForbiddenDep {
                 from: fd.from.clone(),
                 to: fd.to.clone(),
@@ -905,6 +946,151 @@ crates = ["tonic"]
 kind = "confined_external"
 crates = ["leftpad"]
 allowed_in = []
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert_eq!(valid.len(), 1);
+        assert!(errors.is_empty());
+    }
+
+    // --- glob validation tests ---
+
+    #[test]
+    fn invalid_glob_in_forbidden_dep_from() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/[bad"
+to = "src/ok.rs"
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid glob"));
+        assert!(errors[0].error.contains("from"));
+    }
+
+    #[test]
+    fn invalid_glob_in_forbidden_dep_to() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/**"
+to = "lib/[unclosed"
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid glob"));
+        assert!(errors[0].error.contains("to"));
+    }
+
+    #[test]
+    fn invalid_glob_in_max_fan_in_target() {
+        let toml = r#"
+[[constraint]]
+kind = "max_fan_in"
+target = "src/[bad"
+threshold = 5
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid glob"));
+        assert!(errors[0].error.contains("target"));
+    }
+
+    #[test]
+    fn invalid_glob_in_forbidden_external_crates() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["good*", "bad["]
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid crate glob"));
+        assert!(errors[0].error.contains("crates[1]"));
+    }
+
+    #[test]
+    fn invalid_glob_in_forbidden_external_from() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["leftpad"]
+from = "report/[unclosed"
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid glob"));
+        assert!(errors[0].error.contains("from"));
+    }
+
+    #[test]
+    fn invalid_glob_in_confined_external_allowed_in() {
+        let toml = r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["stripe"]
+allowed_in = ["src/payments/**", "lib/[bad"]
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("invalid glob"));
+        assert!(errors[0].error.contains("allowed_in[1]"));
+    }
+
+    #[test]
+    fn invalid_glob_in_old_format_forbidden_deps() {
+        let toml = r#"
+[constraints]
+forbidden_deps = [
+  { from = "src/[bad", to = "src/ok.rs" },
+]
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("forbidden_deps[0]"));
+    }
+
+    #[test]
+    fn valid_globs_pass_validation() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/**/*.rs"
+to = "src/daemon.rs"
+
+[[constraint]]
+kind = "max_fan_in"
+target = "src/config.*"
+threshold = 10
+
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-*", "tokio"]
+from = "report/**"
+
+[[constraint]]
+kind = "confined_external"
+crates = ["stripe*"]
+allowed_in = ["src/payments/**", "src/billing/**"]
+"#;
+        let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert_eq!(valid.len(), 4);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn crate_glob_with_hyphens_validates_after_normalization() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_external"
+crates = ["arrow-flight-*"]
 "#;
         let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
         assert_eq!(valid.len(), 1);
