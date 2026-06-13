@@ -40,11 +40,15 @@ pub fn handle(
                 .iter()
                 .map(|s| s.qualified_name.as_str())
                 .collect();
-            let symbol_changes =
-                symbol_diff::diff_file(workspace_root, &f.path, base, head).unwrap_or_default();
             let mut entry = json!({ "path": f.path, "symbols": symbols });
-            if !symbol_changes.is_empty() {
-                entry["symbol_changes"] = serde_json::to_value(&symbol_changes).unwrap_or_default();
+            match symbol_diff::diff_file(workspace_root, &f.path, base, head) {
+                Ok(sc) if !sc.is_empty() => {
+                    entry["symbol_changes"] = serde_json::to_value(&sc).unwrap_or_default();
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    entry["symbol_diff_error"] = json!(e.to_string());
+                }
             }
             entry
         })

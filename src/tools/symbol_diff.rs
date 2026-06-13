@@ -74,20 +74,21 @@ pub fn classify_symbols(
     let old_flat = flatten_symbols(&old_parse.symbols);
     let new_flat = flatten_symbols(&new_parse.symbols);
 
-    let old_map: HashMap<&str, &ExtractedSymbol> = old_flat
-        .iter()
-        .map(|s| (s.qualified_name.as_str(), *s))
-        .collect();
-    let new_map: HashMap<&str, &ExtractedSymbol> = new_flat
-        .iter()
-        .map(|s| (s.qualified_name.as_str(), *s))
-        .collect();
+    type SymKey<'a> = (&'a str, &'a str);
+    fn sym_key(s: &ExtractedSymbol) -> SymKey<'_> {
+        (s.qualified_name.as_str(), s.kind.as_str())
+    }
+
+    let old_map: HashMap<SymKey<'_>, &ExtractedSymbol> =
+        old_flat.iter().map(|s| (sym_key(s), *s)).collect();
+    let new_map: HashMap<SymKey<'_>, &ExtractedSymbol> =
+        new_flat.iter().map(|s| (sym_key(s), *s)).collect();
 
     let mut changes = Vec::new();
 
     for new_sym in &new_flat {
         let name = new_sym.qualified_name.as_str();
-        match old_map.get(name) {
+        match old_map.get(&sym_key(new_sym)) {
             None => {
                 changes.push(SymbolChange {
                     symbol: name.to_string(),
@@ -138,7 +139,7 @@ pub fn classify_symbols(
 
     for old_sym in &old_flat {
         let name = old_sym.qualified_name.as_str();
-        if !new_map.contains_key(name) {
+        if !new_map.contains_key(&sym_key(old_sym)) {
             changes.push(SymbolChange {
                 symbol: name.to_string(),
                 kind: old_sym.kind.as_str().to_string(),
@@ -400,5 +401,29 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change, ChangeKind::BodyChanged);
         assert!(changes[0].callee_diff.is_none());
+    }
+
+    #[test]
+    fn test_struct_and_impl_not_conflated() {
+        let source = "struct Foo {}\nimpl Foo {\n  fn bar() {}\n}";
+        let old = make_parse(
+            vec![
+                make_sym("Foo", SymbolKind::Struct, None, 1, 1),
+                make_sym("Foo", SymbolKind::Impl, None, 2, 4),
+            ],
+            vec![],
+        );
+        let new_source = "struct Foo { x: i32 }\nimpl Foo {\n  fn bar() {}\n}";
+        let new = make_parse(
+            vec![
+                make_sym("Foo", SymbolKind::Struct, None, 1, 1),
+                make_sym("Foo", SymbolKind::Impl, None, 2, 4),
+            ],
+            vec![],
+        );
+        let changes = classify_symbols(&old, &new, source, new_source);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, "struct");
+        assert_eq!(changes[0].change, ChangeKind::BodyChanged);
     }
 }
