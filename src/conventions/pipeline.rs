@@ -122,21 +122,9 @@ pub fn rebuild(
         h.finalize()
     };
     let combined_bytes: [u8; 32] = *combined_hash.as_bytes();
-    if let Ok(Some(cached)) = db.get_fca_hash() {
-        if cached == combined_bytes {
-            let convention_count = db.convention_count().unwrap_or(0);
-            return Ok(RebuildOutcome {
-                convention_count,
-                drift_alerts: Vec::new(),
-                convention_drift_findings: Vec::new(),
-            });
-        }
-    }
+    let fca_cache_hit =
+        matches!(db.get_fca_hash(), Ok(Some(ref cached)) if *cached == combined_bytes);
 
-    let mut global_engine = FcaEngine::new();
-    let global_conventions = global_engine.rebuild(&all_sym_attrs);
-
-    let mut all_convs = global_conventions.clone();
     let mut comp_symbol_groups: Vec<(String, String, Vec<SymbolAttrs>)> = Vec::new();
     for (comp_id, name, paths) in &comp_with_paths {
         let path_set: std::collections::HashSet<&str> = paths.iter().map(|p| p.as_str()).collect();
@@ -148,18 +136,34 @@ pub fn rebuild(
         if comp_symbols.len() < 2 {
             continue;
         }
-        let min_support = super::component_min_support(comp_symbols.len());
-        let mut comp_engine = FcaEngine::new();
-        let comp_convs = comp_engine.rebuild_with_params(
-            &comp_symbols,
-            min_support,
-            super::MIN_CONFIDENCE,
-            Some(comp_id),
-        );
-        let deduped = super::deduplicate_component_conventions(comp_convs, &global_conventions);
-        all_convs.extend(deduped);
         comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_symbols));
     }
+
+    let all_convs: Vec<super::engine::Convention> = if fca_cache_hit {
+        db.all_conventions_merged()?
+            .into_iter()
+            .map(super::engine::Convention::from)
+            .collect()
+    } else {
+        let mut global_engine = FcaEngine::new();
+        let global_conventions = global_engine.rebuild(&all_sym_attrs);
+        let mut all_convs = global_conventions.clone();
+
+        for (comp_id, _name, comp_symbols) in &comp_symbol_groups {
+            let min_support = super::component_min_support(comp_symbols.len());
+            let mut comp_engine = FcaEngine::new();
+            let comp_convs = comp_engine.rebuild_with_params(
+                comp_symbols,
+                min_support,
+                super::MIN_CONFIDENCE,
+                Some(comp_id),
+            );
+            let deduped = super::deduplicate_component_conventions(comp_convs, &global_conventions);
+            all_convs.extend(deduped);
+        }
+
+        all_convs
+    };
 
     let fca_conformance =
         crate::health::drift::compute_fca_conformance(&all_convs, &comp_symbol_groups);
@@ -220,7 +224,9 @@ pub fn rebuild(
         tracing::warn!("orphan template cleanup failed: {e}");
     }
 
-    let _ = db.set_fca_hash(&combined_bytes);
+    if !fca_cache_hit {
+        let _ = db.set_fca_hash(&combined_bytes);
+    }
     let convention_count = all_convs.len();
 
     Ok(RebuildOutcome {

@@ -196,6 +196,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0038_hrr_file_hashes.sql"),
         true,
     ),
+    (
+        "0039_idx_imports_file",
+        include_str!("../../migrations/0039_idx_imports_file.sql"),
+        true,
+    ),
+    (
+        "0040_fca_cache",
+        include_str!("../../migrations/0040_fca_cache.sql"),
+        true,
+    ),
 ];
 
 impl Db {
