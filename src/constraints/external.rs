@@ -13,7 +13,7 @@ use std::path::Path;
 
 use glob::{MatchOptions, Pattern};
 
-use crate::constraints::check::{ConstraintFinding, FindingDelta};
+use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::rules::{Constraint, ConstraintKind, Severity};
 
 /// Extract the external crate/package name from a raw import path, or `None`

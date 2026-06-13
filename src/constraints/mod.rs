@@ -1,6 +1,7 @@
 pub mod check;
 mod engine;
 pub mod external;
+pub mod finding;
 mod resolver;
 mod worker;
 
@@ -9,6 +10,7 @@ use std::collections::HashMap;
 use glob::{MatchOptions, Pattern};
 
 pub use engine::DdEngine;
+pub use finding::{ConstraintFinding, FindingDelta};
 pub use resolver::ConstraintResolver;
 
 use crate::rules::{Constraint, ConstraintKind};

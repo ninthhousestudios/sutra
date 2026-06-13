@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::constraints::check::ConstraintFinding;
+use crate::constraints::ConstraintFinding;
+use crate::conventions::ConventionViolation;
 use crate::db::{ConstraintWaiverRow, HealthFindingRow, HealthWaiverRow};
-use crate::tools::review::ConventionViolation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaiverTarget {

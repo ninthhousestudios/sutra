@@ -283,7 +283,7 @@ pub fn relativize_file_path(project_root: &Path, file_path: &Path) -> Option<Str
 // Constraint checking (lightweight, per-edit)
 // ---------------------------------------------------------------------------
 
-pub use check::ConstraintFinding;
+pub use crate::constraints::ConstraintFinding;
 
 pub fn build_proposed_content(
     tool_input: &ToolInput,
@@ -632,7 +632,7 @@ pub fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::check::FindingDelta;
+    use crate::constraints::FindingDelta;
     use crate::rules::Severity;
 
     #[test]

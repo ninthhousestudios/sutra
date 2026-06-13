@@ -35,20 +35,9 @@ const W_HOTSPOT: f64 = 0.15;
 const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
 
+pub use crate::constraints::ConstraintFinding;
+pub use crate::conventions::ConventionViolation;
 use crate::waivers::{self, Waived};
-pub use check::ConstraintFinding;
-
-#[derive(Clone)]
-pub struct ConventionViolation {
-    pub symbol: String,
-    pub file: String,
-    pub convention_id: String,
-    pub antecedent: Vec<String>,
-    pub consequent: Vec<String>,
-    pub missing: Vec<String>,
-    pub support: usize,
-    pub confidence: f64,
-}
 
 #[derive(Clone)]
 pub struct ConventionMatchFinding {
@@ -472,18 +461,8 @@ pub fn build_findings(
         let mut check_engine = FcaEngine::new();
         check_engine.set_conventions(all_convs);
 
-        for v in check_engine.check(&changed_sym_attrs, &effective_conventions) {
-            convention_violations.push(ConventionViolation {
-                symbol: v.symbol,
-                file: v.file,
-                convention_id: v.convention_id,
-                antecedent: v.antecedent,
-                consequent: v.consequent,
-                missing: v.missing,
-                support: v.support,
-                confidence: v.confidence,
-            });
-        }
+        convention_violations
+            .extend(check_engine.check(&changed_sym_attrs, &effective_conventions));
 
         let deprecated_ids: HashSet<String> = merged
             .iter()

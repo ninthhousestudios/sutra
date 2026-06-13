@@ -5,33 +5,12 @@ use std::time::Duration;
 use glob::{MatchOptions, Pattern};
 
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
+pub use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::error::Result;
 use crate::rules::{
     self, Constraint, ConstraintKind, ConstraintParseError, Severity, match_no_cycles_constraint,
 };
 use crate::waivers::{self, Waived};
-
-#[derive(Debug, Clone)]
-pub struct ConstraintFinding {
-    pub constraint_id: String,
-    pub constraint_name: Option<String>,
-    pub constraint_kind: String,
-    pub severity: Severity,
-    pub provenance: Option<String>,
-    pub from_path: String,
-    pub to_path: String,
-    pub component_context: Option<String>,
-    pub detail: String,
-    pub delta: FindingDelta,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FindingDelta {
-    Unknown,
-    PreExisting,
-    Introduced,
-    Resolved,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutcome {
