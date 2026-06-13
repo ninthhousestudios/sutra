@@ -305,7 +305,10 @@ pub fn git_file_content_at(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does not exist") || stderr.contains("bad revision") {
+        if stderr.contains("does not exist")
+            || stderr.contains("exists on disk, but not in")
+            || stderr.contains("bad revision")
+        {
             return Ok(None);
         }
         return Err(SutraError::Internal(format!("git show: {stderr}")));
