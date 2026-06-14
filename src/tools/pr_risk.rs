@@ -65,7 +65,7 @@ pub fn compute(
     explain: bool,
 ) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
-        return Ok(json!({
+        let mut result = json!({
             "composite_score": 0.0,
             "signals": {
                 "blast_radius": { "score": 0.0, "raw": 0 },
@@ -75,7 +75,20 @@ pub fn compute(
             },
             "riskiest_symbols": [],
             "weights": weights_doc(),
-        }));
+        });
+        if explain {
+            result["_explain"] = json!({
+                "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
+                "signals": {
+                    "blast_radius": { "ceiling": change_signals::BLAST_NORM, "contribution": 0.0 },
+                    "complexity":   { "ceiling": change_signals::COMPLEXITY_NORM, "contribution": 0.0 },
+                    "churn":        { "ceiling": change_signals::CHURN_NORM, "contribution": 0.0 },
+                    "volume":       { "ceiling": 25.0, "contribution": 0.0 },
+                },
+                "riskiest_symbols_formula": "normalize(blast, 50) * 0.6 + normalize(cognitive, 30) * 0.4",
+            });
+        }
+        return Ok(result);
     }
 
     let signals = change_signals::gather(db, changed_paths, churn, false)?;

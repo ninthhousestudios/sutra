@@ -697,7 +697,7 @@ pub fn compute(
     explain: bool,
 ) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
-        return Ok(json!({
+        let mut result = json!({
             "changed_files": [],
             "changed_symbols": [],
             "affected_files": [],
@@ -718,7 +718,20 @@ pub fn compute(
             "waived_violations": [],
             "drift_alerts": [],
             "convention_drift": [],
-        }));
+        });
+        if explain {
+            result["_explain"] = json!({
+                "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
+                "weights": {
+                    "blast_radius": { "weight": W_BLAST, "ceiling": change_signals::BLAST_NORM, "contribution": 0.0, "rationale": "blast radius of changed symbols" },
+                    "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": 0.0, "rationale": "peak cognitive complexity in changed code" },
+                    "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": 1.0, "contribution": 0.0, "rationale": "proportion of changed files that are churn hotspots" },
+                    "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": 0.0, "rationale": "total recent churn across changed files" },
+                    "convention_violations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": 0.0, "rationale": "number of convention violations detected" },
+                },
+            });
+        }
+        return Ok(result);
     }
 
     let signals = change_signals::gather(db, changed_paths, churn, true)?;
@@ -910,8 +923,8 @@ pub fn compute(
         signals.max_cognitive.unwrap_or(0) as f64,
         change_signals::COMPLEXITY_NORM,
     );
-    let hotspot_score =
-        scoring::normalize(signals.hotspot_files as f64, (file_count as f64).max(1.0));
+    let hotspot_ceiling = (file_count as f64).max(1.0);
+    let hotspot_score = scoring::normalize(signals.hotspot_files as f64, hotspot_ceiling);
     let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
     let convention_score = scoring::normalize(findings.convention_violations.len() as f64, 5.0);
 
@@ -1007,7 +1020,7 @@ pub fn compute(
             "weights": {
                 "blast_radius": { "weight": W_BLAST, "ceiling": change_signals::BLAST_NORM, "contribution": scoring::round3(W_BLAST * blast_score), "rationale": "blast radius of changed symbols" },
                 "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score), "rationale": "peak cognitive complexity in changed code" },
-                "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": "file_count (dynamic)", "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
+                "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": hotspot_ceiling, "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
                 "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score), "rationale": "total recent churn across changed files" },
                 "convention_violations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": scoring::round3(W_CONVENTIONS * convention_score), "rationale": "number of convention violations detected" },
             },
