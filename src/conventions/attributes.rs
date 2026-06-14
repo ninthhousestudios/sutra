@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::db::{RefRow, SymbolRow};
 use crate::parser::adapter::LanguageRegistry;
 
@@ -157,6 +159,58 @@ pub fn enrich_with_effects(
         && sig.contains("&mut ")
     {
         sym_attrs.attributes.push("effect:mut_state".into());
+    }
+}
+
+fn parse_dart_callee_prefix(prefix: &str) -> Option<(&str, Option<&str>)> {
+    let mut parts = prefix.splitn(2, "::");
+    let package = parts.next().filter(|s| !s.is_empty())?;
+    let member = parts.next().filter(|s| !s.is_empty());
+    Some((package, member))
+}
+
+/// Dart-specific: detect effects from import-derived package refs.
+/// Pattern A: aliased calls (`http.get`) — FieldAccess ref name matches package name.
+/// Pattern B: direct class use (`File.open`) — unresolved ref name matches class from package.
+pub fn enrich_with_dart_import_effects(
+    sym_attrs: &mut SymbolAttrs,
+    sym: &SymbolRow,
+    file_refs: &[RefRow],
+    import_packages: &HashSet<&str>,
+    patterns: &[EffectPattern],
+) {
+    for pattern in patterns {
+        if sym_attrs
+            .attributes
+            .contains(&pattern.attr_name.to_string())
+        {
+            continue;
+        }
+
+        let matched = pattern.callee_prefixes.iter().any(|prefix| {
+            let Some((package, member)) = parse_dart_callee_prefix(prefix) else {
+                return false;
+            };
+            if !import_packages.contains(package) {
+                return false;
+            }
+            file_refs.iter().any(|r| {
+                if r.line < sym.start_line || r.line > sym.end_line {
+                    return false;
+                }
+                let Some(ref name) = r.unresolved_name else {
+                    return false;
+                };
+                match member {
+                    None => r.context_kind == "field_access" && name == package,
+                    Some(class) => name == class,
+                }
+            })
+        });
+
+        if matched {
+            sym_attrs.attributes.push(pattern.attr_name.to_string());
+        }
     }
 }
 
@@ -495,5 +549,157 @@ mod tests {
         let mut attrs = extract_cross_language_attrs(&sym, "src/query.rs").unwrap();
         enrich_with_effects(&mut attrs, &sym, &[], &|_| None, &[]);
         assert!(!attrs.attributes.contains(&"effect:mut_state".to_string()));
+    }
+
+    #[test]
+    fn parse_dart_callee_prefix_package_alias() {
+        assert_eq!(parse_dart_callee_prefix("http::"), Some(("http", None)));
+        assert_eq!(parse_dart_callee_prefix("dio::"), Some(("dio", None)));
+        assert_eq!(
+            parse_dart_callee_prefix("sqflite::"),
+            Some(("sqflite", None))
+        );
+    }
+
+    #[test]
+    fn parse_dart_callee_prefix_class_member() {
+        assert_eq!(
+            parse_dart_callee_prefix("dart:io::File"),
+            Some(("dart:io", Some("File")))
+        );
+        assert_eq!(
+            parse_dart_callee_prefix("dart:io::HttpClient"),
+            Some(("dart:io", Some("HttpClient")))
+        );
+    }
+
+    #[test]
+    fn parse_dart_callee_prefix_empty() {
+        assert_eq!(parse_dart_callee_prefix(""), None);
+        assert_eq!(parse_dart_callee_prefix("::"), None);
+    }
+
+    fn make_dart_ref(name: &str, context_kind: &str, line: i64) -> RefRow {
+        RefRow {
+            id: 1,
+            file_id: 1,
+            target_symbol_id: None,
+            unresolved_name: Some(name.into()),
+            line,
+            col: 0,
+            context_kind: context_kind.into(),
+        }
+    }
+
+    #[test]
+    fn dart_import_effects_aliased_call() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn fetch_data()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/api.dart").unwrap();
+        let refs = vec![make_dart_ref("http", "field_access", 5)];
+        let packages: HashSet<&str> = ["http"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:net",
+            callee_prefixes: &["http::", "dio::"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn dart_import_effects_direct_class() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn read_file()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/io.dart").unwrap();
+        let refs = vec![make_dart_ref("File", "call", 3)];
+        let packages: HashSet<&str> = ["dart:io"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["dart:io::File", "dart:io::Directory"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    #[test]
+    fn dart_import_effects_no_match_without_import() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn helper()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/util.dart").unwrap();
+        let refs = vec![make_dart_ref("http", "field_access", 5)];
+        let packages: HashSet<&str> = HashSet::new();
+        let patterns = [EffectPattern {
+            attr_name: "effect:net",
+            callee_prefixes: &["http::"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(!attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn dart_import_effects_respects_symbol_span() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn no_io()"),
+            None,
+            Some(1),
+            0,
+        );
+        // Symbol spans lines 1-10; ref is at line 15 (outside)
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/app.dart").unwrap();
+        let refs = vec![make_dart_ref("http", "field_access", 15)];
+        let packages: HashSet<&str> = ["http"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:net",
+            callee_prefixes: &["http::"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(!attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn dart_import_effects_skips_already_tagged() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn fetch()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/net.dart").unwrap();
+        attrs.attributes.push("effect:net".to_string());
+        let refs = vec![make_dart_ref("http", "field_access", 5)];
+        let packages: HashSet<&str> = ["http"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:net",
+            callee_prefixes: &["http::"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        let count = attrs
+            .attributes
+            .iter()
+            .filter(|a| *a == "effect:net")
+            .count();
+        assert_eq!(count, 1);
     }
 }

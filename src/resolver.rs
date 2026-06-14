@@ -51,7 +51,7 @@ fn resolve_single(
         return ResolvedRef {
             original: r.clone(),
             target_symbol_id: None,
-            unresolved_name: None,
+            unresolved_name: Some(r.name.clone()),
             skipped: true,
         };
     }

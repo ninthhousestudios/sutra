@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::db::Db;
@@ -61,6 +61,23 @@ pub fn rebuild(
             }
         }
 
+        let dart_import_packages: Option<HashSet<String>> = if f.language == "dart" {
+            let imports = db.imports_for_file(f.id)?;
+            let pkgs: HashSet<String> = imports
+                .iter()
+                .filter_map(|imp| {
+                    crate::constraints::external::external_crate_of_import(
+                        &imp.imported_path,
+                        "dart",
+                        &[],
+                    )
+                })
+                .collect();
+            if pkgs.is_empty() { None } else { Some(pkgs) }
+        } else {
+            None
+        };
+
         for s in &syms {
             if let Some(mut attrs) =
                 super::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
@@ -88,6 +105,16 @@ pub fn rebuild(
                         },
                         fca_source.effect_patterns(),
                     );
+                    if let Some(ref pkgs) = dart_import_packages {
+                        let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+                        super::enrich_with_dart_import_effects(
+                            &mut attrs,
+                            s,
+                            &refs,
+                            &pkg_refs,
+                            fca_source.effect_patterns(),
+                        );
+                    }
                 }
                 sig_info_map.insert(
                     s.qualified_name.clone(),

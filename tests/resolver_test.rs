@@ -396,7 +396,7 @@ fn test_import_refs_skipped() {
     assert_eq!(resolved.len(), 1);
     assert!(resolved[0].skipped, "Import refs should be skipped");
     assert!(resolved[0].target_symbol_id.is_none());
-    assert!(resolved[0].unresolved_name.is_none());
+    assert_eq!(resolved[0].unresolved_name.as_deref(), Some("HashMap"));
 }
 
 /// FieldAccess refs should be skipped (need type info).
@@ -411,6 +411,7 @@ fn test_field_access_skipped() {
 
     assert_eq!(resolved.len(), 1);
     assert!(resolved[0].skipped, "FieldAccess refs should be skipped");
+    assert_eq!(resolved[0].unresolved_name.as_deref(), Some("len"));
 }
 
 /// Kind filter fallback: if no kind-compatible match, fall back to any match.
