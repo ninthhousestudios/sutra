@@ -23,6 +23,12 @@ module_boundary_hints() → ModuleBoundaryStrength
 - `Vec<ExtractedRef>` — identifier references with context_kind classification
 - `Vec<ExtractedImport>` — import edges (raw path strings, resolved later)
 
+**Variable/constant extraction:** Top-level and class-level variable/constant
+declarations must be indexed. Map immutable bindings (`const`, `final`,
+`readonly`) to `SymbolKind::Const` and mutable bindings to
+`SymbolKind::Static`. Without this, `sutra_grep` can't find module-level
+configuration, constants, or global state.
+
 Everything above Layer 0 — conventions (FCA), constraints (DD), health
 (biomarkers), similarity (HRR), components, review — is language-agnostic.
 A new language only needs a parser module and an adapter registration in

@@ -132,8 +132,17 @@ fn collect_symbols(
                     symbols.push(sym);
                 }
             }
+            "top_level_variable_declaration" => {
+                symbols.extend(extract_variable_symbols(
+                    child,
+                    src,
+                    name_context,
+                    file_path,
+                ));
+            }
             // External declarations in class bodies: `declaration` wraps
             // [external?, getter_signature | setter_signature | function_signature]
+            // or field declarations (static_final_declaration_list / initialized_identifier_list)
             "declaration" => {
                 let mut c = child.walk();
                 if let Some(sig) = child
@@ -152,6 +161,13 @@ fn collect_symbols(
                         sym.flags |= extract_flags(child, src, file_path);
                         symbols.push(sym);
                     }
+                } else {
+                    symbols.extend(extract_variable_symbols(
+                        child,
+                        src,
+                        name_context,
+                        file_path,
+                    ));
                 }
             }
             "constructor_signature" => {
@@ -280,6 +296,107 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
     )
 }
 
+fn extract_variable_symbols(
+    node: Node,
+    src: &[u8],
+    name_context: &[String],
+    file_path: &str,
+) -> Vec<ExtractedSymbol> {
+    let mut symbols = Vec::new();
+
+    let has_keyword = |kw: &str| -> bool {
+        let mut cursor = node.walk();
+        node.children(&mut cursor).any(|c| c.kind() == kw)
+    };
+
+    let kind = if has_keyword("const") || has_keyword("final") {
+        SymbolKind::Const
+    } else {
+        SymbolKind::Static
+    };
+
+    let type_text = {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|c| c.kind() == "type")
+            .and_then(|t| t.utf8_text(src).ok())
+            .map(|s| s.to_string())
+    };
+
+    let modifier = if has_keyword("const") {
+        Some("const")
+    } else if has_keyword("final") {
+        Some("final")
+    } else if has_keyword("var") {
+        Some("var")
+    } else {
+        None
+    };
+
+    let build_sig = |name: &str| -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(m) = modifier {
+            parts.push(m.to_string());
+        }
+        if let Some(ref t) = type_text {
+            parts.push(t.clone());
+        }
+        parts.push(name.to_string());
+        Some(parts.join(" "))
+    };
+
+    let mut cursor = node.walk();
+    for list_child in node.children(&mut cursor) {
+        match list_child.kind() {
+            "static_final_declaration_list" => {
+                let mut lc = list_child.walk();
+                for decl in list_child.children(&mut lc) {
+                    if decl.kind() != "static_final_declaration" {
+                        continue;
+                    }
+                    let mut dc = decl.walk();
+                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier")
+                        && let Ok(name) = ident.utf8_text(src)
+                    {
+                        let sig = build_sig(name);
+                        if let Some(mut sym) =
+                            build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
+                        {
+                            sym.language_attrs = extract_language_attrs(node, None, src, kind);
+                            sym.flags |= extract_flags(node, src, file_path);
+                            symbols.push(sym);
+                        }
+                    }
+                }
+            }
+            "initialized_identifier_list" => {
+                let mut lc = list_child.walk();
+                for decl in list_child.children(&mut lc) {
+                    if decl.kind() != "initialized_identifier" {
+                        continue;
+                    }
+                    let mut dc = decl.walk();
+                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier")
+                        && let Ok(name) = ident.utf8_text(src)
+                    {
+                        let sig = build_sig(name);
+                        if let Some(mut sym) =
+                            build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
+                        {
+                            sym.language_attrs = extract_language_attrs(node, None, src, kind);
+                            sym.flags |= extract_flags(node, src, file_path);
+                            symbols.push(sym);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    symbols
+}
+
 fn extract_language_attrs(
     node: Node,
     sig_node: Option<Node>,
@@ -353,6 +470,20 @@ fn extract_language_attrs(
                 && (has_keyword(body, "async") || has_keyword(body, "async*"))
             {
                 attrs.insert("is_async".into(), true.into());
+            }
+        }
+        SymbolKind::Const | SymbolKind::Static => {
+            if has_keyword(node, "const") {
+                attrs.insert("is_const".into(), true.into());
+            }
+            if has_keyword(node, "final") {
+                attrs.insert("is_final".into(), true.into());
+            }
+            if has_keyword(node, "static") {
+                attrs.insert("is_static".into(), true.into());
+            }
+            if has_keyword(node, "late") {
+                attrs.insert("is_late".into(), true.into());
             }
         }
         _ => {}

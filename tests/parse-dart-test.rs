@@ -526,3 +526,138 @@ class NativeBinding {
         "class getter should be Method"
     );
 }
+
+#[test]
+fn test_parse_dart_top_level_variables() {
+    let src = r#"
+const maxRetries = 3;
+final String apiUrl = 'https://example.com';
+var counter = 0;
+int count = 0;
+"#;
+    let result = parser::parse_file(src, "dart", "lib/config.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let flat = flatten_symbols(&result.symbols);
+    assert_eq!(flat.len(), 4);
+
+    let max_retries = flat.iter().find(|s| s.short_name == "maxRetries").unwrap();
+    assert_eq!(max_retries.kind, SymbolKind::Const);
+    assert_eq!(max_retries.qualified_name, "maxRetries");
+    assert_eq!(max_retries.signature.as_deref(), Some("const maxRetries"));
+
+    let api_url = flat.iter().find(|s| s.short_name == "apiUrl").unwrap();
+    assert_eq!(api_url.kind, SymbolKind::Const);
+    assert_eq!(api_url.signature.as_deref(), Some("final String apiUrl"));
+
+    let counter = flat.iter().find(|s| s.short_name == "counter").unwrap();
+    assert_eq!(counter.kind, SymbolKind::Static);
+    assert_eq!(counter.signature.as_deref(), Some("var counter"));
+
+    let count = flat.iter().find(|s| s.short_name == "count").unwrap();
+    assert_eq!(count.kind, SymbolKind::Static);
+    assert_eq!(count.signature.as_deref(), Some("int count"));
+}
+
+#[test]
+fn test_parse_dart_class_fields() {
+    let src = r#"
+class Config {
+    static const maxRetries = 3;
+    final String name;
+    int count = 0;
+    late final String _cached;
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/config.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let flat = flatten_symbols(&result.symbols);
+
+    let max_retries = flat.iter().find(|s| s.short_name == "maxRetries").unwrap();
+    assert_eq!(max_retries.kind, SymbolKind::Const);
+    assert_eq!(max_retries.qualified_name, "Config::maxRetries");
+
+    let name = flat.iter().find(|s| s.short_name == "name").unwrap();
+    assert_eq!(name.kind, SymbolKind::Const);
+    assert_eq!(name.qualified_name, "Config::name");
+
+    let count = flat.iter().find(|s| s.short_name == "count").unwrap();
+    assert_eq!(count.kind, SymbolKind::Static);
+    assert_eq!(count.qualified_name, "Config::count");
+
+    let cached = flat.iter().find(|s| s.short_name == "_cached").unwrap();
+    assert_eq!(cached.kind, SymbolKind::Const);
+    assert_eq!(cached.qualified_name, "Config::_cached");
+    assert_eq!(cached.visibility.as_deref(), Some("private"));
+}
+
+#[test]
+fn test_language_attrs_variables() {
+    let src = r#"
+const x = 1;
+final y = 2;
+var z = 3;
+"#;
+    let result = parser::parse_file(src, "dart", "lib/vars.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let x = flat.iter().find(|s| s.short_name == "x").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(x.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["is_const"], true);
+
+    let y = flat.iter().find(|s| s.short_name == "y").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(y.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["is_final"], true);
+
+    let z = flat.iter().find(|s| s.short_name == "z").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(z.language_attrs.as_deref().unwrap()).unwrap();
+    assert!(attrs.get("is_const").is_none());
+    assert!(attrs.get("is_final").is_none());
+}
+
+#[test]
+fn test_language_attrs_class_field_static_late() {
+    let src = r#"
+class Foo {
+    static const a = 1;
+    late final String b;
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/foo.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let a = flat.iter().find(|s| s.short_name == "a").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(a.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["is_const"], true);
+    assert_eq!(attrs["is_static"], true);
+
+    let b = flat.iter().find(|s| s.short_name == "b").unwrap();
+    let attrs: serde_json::Value =
+        serde_json::from_str(b.language_attrs.as_deref().unwrap()).unwrap();
+    assert_eq!(attrs["is_final"], true);
+    assert_eq!(attrs["is_late"], true);
+}
+
+#[test]
+fn test_multi_variable_declaration() {
+    let src = r#"
+int a = 1, b = 2, c = 3;
+"#;
+    let result = parser::parse_file(src, "dart", "lib/multi.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    assert_eq!(
+        flat.len(),
+        3,
+        "multi-var declaration should produce 3 symbols"
+    );
+    assert!(flat.iter().any(|s| s.short_name == "a"));
+    assert!(flat.iter().any(|s| s.short_name == "b"));
+    assert!(flat.iter().any(|s| s.short_name == "c"));
+    assert!(flat.iter().all(|s| s.kind == SymbolKind::Static));
+}
