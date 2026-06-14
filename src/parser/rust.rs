@@ -39,6 +39,7 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 pub const FLAG_TEST: u32 = 0x01;
 pub const FLAG_CFG_TEST: u32 = 0x02;
 pub const FLAG_FFI_ENTRY: u32 = 0x04;
+pub const FLAG_OVERRIDE: u32 = 0x08;
 
 fn extract_flags(node: Node, src: &[u8]) -> u32 {
     let mut flags = 0u32;

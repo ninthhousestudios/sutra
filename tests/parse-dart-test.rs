@@ -434,7 +434,7 @@ fn test_flags_non_test_file() {
 }
 
 #[test]
-fn test_flags_override() {
+fn test_flags_override_lifecycle_method() {
     let src = r#"
 class MyWidget {
     @override
@@ -446,7 +446,12 @@ class MyWidget {
     let flat = flatten_symbols(&result.symbols);
 
     let build = flat.iter().find(|s| s.short_name == "build").unwrap();
-    assert_ne!(build.flags & 0x04, 0, "@override should set FLAG_FFI_ENTRY");
+    assert_ne!(
+        build.flags & 0x04,
+        0,
+        "@override lifecycle method should set FLAG_FFI_ENTRY"
+    );
+    assert_ne!(build.flags & 0x08, 0, "@override should set FLAG_OVERRIDE");
 
     let normal = flat
         .iter()
@@ -456,6 +461,49 @@ class MyWidget {
         normal.flags & 0x04,
         0,
         "non-override should not have FLAG_FFI_ENTRY"
+    );
+    assert_eq!(
+        normal.flags & 0x08,
+        0,
+        "non-override should not have FLAG_OVERRIDE"
+    );
+}
+
+#[test]
+fn test_flags_override_non_lifecycle_method() {
+    let src = r#"
+class MyRepo {
+    @override
+    void fetchItems() {}
+    @override
+    void dispose() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/repo.dart").unwrap();
+    let flat = flatten_symbols(&result.symbols);
+
+    let fetch = flat.iter().find(|s| s.short_name == "fetchItems").unwrap();
+    assert_eq!(
+        fetch.flags & 0x04,
+        0,
+        "non-lifecycle @override should NOT set FLAG_FFI_ENTRY"
+    );
+    assert_ne!(
+        fetch.flags & 0x08,
+        0,
+        "non-lifecycle @override should set FLAG_OVERRIDE"
+    );
+
+    let dispose = flat.iter().find(|s| s.short_name == "dispose").unwrap();
+    assert_ne!(
+        dispose.flags & 0x04,
+        0,
+        "lifecycle @override should set FLAG_FFI_ENTRY"
+    );
+    assert_ne!(
+        dispose.flags & 0x08,
+        0,
+        "lifecycle @override should set FLAG_OVERRIDE"
     );
 }
 

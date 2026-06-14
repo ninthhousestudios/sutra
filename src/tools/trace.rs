@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::{Db, SymbolRow};
+use crate::parser::dart::DART_LIFECYCLE_METHODS;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TraceArgs {
@@ -25,10 +26,7 @@ const MAX_DEPTH: usize = 15;
 pub fn is_known_entry_point(short_name: &str, kind: &str) -> bool {
     match short_name {
         "main" => true,
-        // Dart widget/state lifecycle
-        "build" | "initState" | "dispose" | "didChangeDependencies" | "didUpdateWidget" => {
-            kind == "method"
-        }
+        name if kind == "method" => DART_LIFECYCLE_METHODS.contains(&name),
         _ => false,
     }
 }
@@ -276,7 +274,9 @@ fn entry_point_rules_doc() -> serde_json::Value {
     json!({
         "name_based": {
             "rust": ["main"],
-            "dart": ["main", "build", "initState", "dispose", "didChangeDependencies", "didUpdateWidget"],
+            "dart": std::iter::once("main")
+                .chain(DART_LIFECYCLE_METHODS.iter().copied())
+                .collect::<Vec<_>>(),
         },
         "structural": "any symbol with zero inbound call references is treated as an entry point",
         "default_limit": DEFAULT_LIMIT,

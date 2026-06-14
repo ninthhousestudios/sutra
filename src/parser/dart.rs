@@ -1,6 +1,16 @@
 use crate::error::Result;
 use crate::parser::adapter::ParseContext;
-use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_TEST};
+use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_OVERRIDE, FLAG_TEST};
+
+pub const DART_LIFECYCLE_METHODS: &[&str] = &[
+    "build",
+    "initState",
+    "dispose",
+    "didChangeDependencies",
+    "didUpdateWidget",
+    "deactivate",
+    "reassemble",
+];
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity,
@@ -53,7 +63,7 @@ fn collect_symbols(
                 {
                     sym.language_attrs =
                         extract_language_attrs(child, None, src, SymbolKind::Class);
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, None);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
@@ -70,7 +80,7 @@ fn collect_symbols(
                 {
                     sym.language_attrs =
                         extract_language_attrs(child, None, src, SymbolKind::Mixin);
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, None);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
@@ -85,7 +95,7 @@ fn collect_symbols(
                 if let Some(mut sym) =
                     extract_named_symbol(child, src, name_context, SymbolKind::Extension)
                 {
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, None);
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
@@ -100,7 +110,7 @@ fn collect_symbols(
                 if let Some(mut sym) =
                     extract_named_symbol(child, src, name_context, SymbolKind::Enum)
                 {
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, None);
                     symbols.push(sym);
                 }
             }
@@ -113,7 +123,7 @@ fn collect_symbols(
                 };
                 if let Some(mut sym) = extract_fn_symbol(sig_node, child, src, name_context, kind) {
                     sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, kind);
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, Some(&sym.short_name));
                     symbols.push(sym);
                 }
             }
@@ -128,7 +138,7 @@ fn collect_symbols(
                     extract_method_symbol(sig_node, child, src, name_context, kind)
                 {
                     sym.language_attrs = extract_language_attrs(child, Some(sig_node), src, kind);
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, Some(&sym.short_name));
                     symbols.push(sym);
                 }
             }
@@ -158,7 +168,7 @@ fn collect_symbols(
                         extract_method_symbol(sig, child, src, name_context, kind)
                     {
                         sym.language_attrs = extract_language_attrs(child, Some(sig), src, kind);
-                        sym.flags |= extract_flags(child, src, file_path);
+                        sym.flags |= extract_flags(child, src, file_path, Some(&sym.short_name));
                         symbols.push(sym);
                     }
                 } else {
@@ -176,13 +186,13 @@ fn collect_symbols(
                 {
                     sym.language_attrs =
                         extract_language_attrs(child, Some(child), src, SymbolKind::Method);
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, Some(&sym.short_name));
                     symbols.push(sym);
                 }
             }
             "type_alias" => {
                 if let Some(mut sym) = extract_type_alias(child, src, name_context) {
-                    sym.flags |= extract_flags(child, src, file_path);
+                    sym.flags |= extract_flags(child, src, file_path, None);
                     symbols.push(sym);
                 }
             }
@@ -363,7 +373,7 @@ fn extract_variable_symbols(
                             build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
                         {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path);
+                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
                             symbols.push(sym);
                         }
                     }
@@ -384,7 +394,7 @@ fn extract_variable_symbols(
                             build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
                         {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path);
+                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
                             symbols.push(sym);
                         }
                     }
@@ -408,7 +418,7 @@ fn extract_variable_symbols(
                             None,
                         ) {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path);
+                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
                             symbols.push(sym);
                         }
                     }
@@ -530,7 +540,7 @@ fn has_annotation(node: Node, src: &[u8], name: &str) -> bool {
     })
 }
 
-fn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {
+fn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&str>) -> u32 {
     let mut flags = 0u32;
 
     if has_annotation(node, src, "isTest")
@@ -545,7 +555,10 @@ fn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {
     }
 
     if has_annotation(node, src, "override") {
-        flags |= FLAG_FFI_ENTRY;
+        flags |= FLAG_OVERRIDE;
+        if short_name.is_some_and(|n| DART_LIFECYCLE_METHODS.contains(&n)) {
+            flags |= FLAG_FFI_ENTRY;
+        }
     }
 
     let mut anno_cursor = node.walk();
