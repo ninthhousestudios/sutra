@@ -59,7 +59,7 @@ async fn test_register_parse_query_cycle() {
     assert!(snap.files_parsed >= 2, "expected at least 2 files parsed");
     assert!(snap.symbols_extracted > 0, "expected symbols extracted");
 
-    let map_result = map::handle(&db, None, None).unwrap();
+    let map_result = map::handle(&db, None, None, false).unwrap();
     let files = map_result["files"].as_array().unwrap();
     assert!(!files.is_empty(), "map should return files");
 

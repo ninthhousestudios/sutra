@@ -17,6 +17,9 @@ pub struct PrRiskArgs {
     pub base: Option<String>,
     #[serde(default)]
     pub head: Option<String>,
+    /// When true, include `_explain` with normalization ceilings and per-signal contributions.
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 
 const W_BLAST: f64 = 0.35;
@@ -31,6 +34,7 @@ pub fn handle(
     workspace_root: &Path,
     base: Option<&str>,
     head: Option<&str>,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     let base = base.unwrap_or("HEAD~1");
     let head = head.unwrap_or("HEAD");
@@ -42,7 +46,7 @@ pub fn handle(
         window_days: change_signals::CHURN_WINDOW_DAYS,
     };
 
-    let mut result = compute(db, &changed_paths, &churn)?;
+    let mut result = compute(db, &changed_paths, &churn, explain)?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("base".into(), json!(base));
         obj.insert("head".into(), json!(head));
@@ -54,7 +58,12 @@ pub fn handle(
     Ok(result)
 }
 
-pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<serde_json::Value> {
+pub fn compute(
+    db: &Db,
+    changed_paths: &[String],
+    churn: &ChurnMap,
+    explain: bool,
+) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
         return Ok(json!({
             "composite_score": 0.0,
@@ -133,7 +142,7 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
         })
         .collect();
 
-    Ok(json!({
+    let mut result = json!({
         "composite_score": scoring::round3(composite),
         "signals": {
             "blast_radius": { "score": scoring::round3(blast_score), "raw": signals.total_blast },
@@ -143,7 +152,22 @@ pub fn compute(db: &Db, changed_paths: &[String], churn: &ChurnMap) -> Result<se
         },
         "riskiest_symbols": top_symbols,
         "weights": weights_doc(),
-    }))
+    });
+
+    if explain {
+        result["_explain"] = json!({
+            "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
+            "signals": {
+                "blast_radius": { "ceiling": change_signals::BLAST_NORM, "contribution": scoring::round3(W_BLAST * blast_score) },
+                "complexity":   { "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score) },
+                "churn":        { "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score) },
+                "volume":       { "ceiling": 25.0, "contribution": scoring::round3(W_VOLUME * volume_score) },
+            },
+            "riskiest_symbols_formula": "normalize(blast, 50) * 0.6 + normalize(cognitive, 30) * 0.4",
+        });
+    }
+
+    Ok(result)
 }
 
 fn weights_doc() -> serde_json::Value {

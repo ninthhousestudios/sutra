@@ -80,7 +80,7 @@ fn setup_db_with_files() -> (tempfile::TempDir, Db) {
 fn empty_diff_returns_zero_score() {
     let (_dir, db) = setup_db();
     let changed_paths: Vec<String> = vec![];
-    let result = pr_risk::compute(&db, &changed_paths, &Default::default()).unwrap();
+    let result = pr_risk::compute(&db, &changed_paths, &Default::default(), false).unwrap();
 
     let score = result["composite_score"].as_f64().unwrap();
     assert!(
@@ -94,7 +94,7 @@ fn empty_diff_returns_zero_score() {
 fn single_low_risk_file_scores_low() {
     let (_dir, db) = setup_db_with_files();
     let changed = vec!["src/a.rs".to_string()];
-    let result = pr_risk::compute(&db, &changed, &Default::default()).unwrap();
+    let result = pr_risk::compute(&db, &changed, &Default::default(), false).unwrap();
 
     let score = result["composite_score"].as_f64().unwrap();
     assert!(
@@ -124,7 +124,7 @@ fn composite_combines_all_signals() {
     churn.counts.insert("src/b.rs".to_string(), 15);
     churn.window_days = 90;
 
-    let result = pr_risk::compute(&db, &changed, &churn).unwrap();
+    let result = pr_risk::compute(&db, &changed, &churn, false).unwrap();
 
     let score = result["composite_score"].as_f64().unwrap();
     // b.rs has blast=30, cognitive=25, churn=15 — should push score significantly up
@@ -147,7 +147,7 @@ fn composite_combines_all_signals() {
 fn riskiest_symbols_ranked_correctly() {
     let (_dir, db) = setup_db_with_files();
     let changed = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-    let result = pr_risk::compute(&db, &changed, &Default::default()).unwrap();
+    let result = pr_risk::compute(&db, &changed, &Default::default(), false).unwrap();
 
     let syms = result["riskiest_symbols"].as_array().unwrap();
     assert_eq!(syms.len(), 2);
@@ -166,7 +166,7 @@ fn riskiest_symbols_ranked_correctly() {
 #[test]
 fn weights_documented_with_rationale() {
     let (_dir, db) = setup_db();
-    let result = pr_risk::compute(&db, &[], &Default::default()).unwrap();
+    let result = pr_risk::compute(&db, &[], &Default::default(), false).unwrap();
 
     let weights = &result["weights"];
     for signal in &["blast_radius", "complexity", "churn", "volume"] {
@@ -213,7 +213,7 @@ fn score_clamped_to_one() {
         churn.counts.insert(p.clone(), 50);
     }
 
-    let result = pr_risk::compute(&db, &paths, &churn).unwrap();
+    let result = pr_risk::compute(&db, &paths, &churn, false).unwrap();
     let score = result["composite_score"].as_f64().unwrap();
     assert!(score <= 1.0, "score must be clamped to 1.0, got {score}");
     assert!(

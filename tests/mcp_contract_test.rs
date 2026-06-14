@@ -103,7 +103,7 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn test_map_contract() {
     let (_dir, db) = setup_test_db();
-    let result = map::handle(&db, None, None).unwrap();
+    let result = map::handle(&db, None, None, false).unwrap();
 
     let files = result["files"]
         .as_array()
@@ -176,7 +176,7 @@ fn test_grep_contract() {
 #[test]
 fn test_impact_contract() {
     let (_dir, db) = setup_test_db();
-    let result = impact::handle(&db, "main").unwrap();
+    let result = impact::handle(&db, "main", false).unwrap();
 
     assert!(result["symbol"].is_string(), "'symbol' must be a string");
     assert!(result["risk"].is_string(), "'risk' must be a string");
@@ -266,7 +266,7 @@ fn freshness_ctx(dir: &tempfile::TempDir, db: Db) -> ToolContext {
 fn test_map_freshness_per_entry() {
     let (dir, db) = setup_test_db_with_root();
     let ctx = freshness_ctx(&dir, db);
-    let result = map::handle_ctx(&ctx, None, None).unwrap();
+    let result = map::handle_ctx(&ctx, None, None, false).unwrap();
 
     let files = result["files"].as_array().unwrap();
     assert!(!files.is_empty());
@@ -389,7 +389,7 @@ fn test_find_fts_match_confidence_below_1() {
 #[test]
 fn test_map_without_freshness_has_no_meta() {
     let (_dir, db) = setup_test_db();
-    let result = map::handle(&db, None, None).unwrap();
+    let result = map::handle(&db, None, None, false).unwrap();
     assert!(
         result.get("_meta").is_none(),
         "plain handle() should not include _meta"

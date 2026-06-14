@@ -2225,7 +2225,7 @@ fn file_health_component_filter() {
     db.replace_health_findings(&findings).unwrap();
 
     // Without filter: both files + component summary
-    let all = sutra::tools::file_health::handle(&db, None, None, None, None).unwrap();
+    let all = sutra::tools::file_health::handle(&db, None, None, None, None, false).unwrap();
     assert_eq!(all["total_files"].as_u64().unwrap(), 2);
     assert!(
         all.get("components").is_some(),
@@ -2233,7 +2233,8 @@ fn file_health_component_filter() {
     );
 
     // With component filter: only Alpha's file, no component summary
-    let filtered = sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha")).unwrap();
+    let filtered =
+        sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha"), false).unwrap();
     assert_eq!(filtered["total_files"].as_u64().unwrap(), 1);
     assert_eq!(
         filtered["files"][0]["path"].as_str().unwrap(),
@@ -2259,7 +2260,8 @@ fn file_health_component_instability() {
 
     db.insert_import(fa, "src/beta/b.rs", Some(fb), 1).unwrap();
 
-    let result = sutra::tools::file_health::handle(&db, None, None, Some("all"), None).unwrap();
+    let result =
+        sutra::tools::file_health::handle(&db, None, None, Some("all"), None, false).unwrap();
     let components = result["components"].as_array().unwrap();
     assert!(!components.is_empty());
 

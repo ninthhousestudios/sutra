@@ -10,12 +10,15 @@ use crate::db::Db;
 pub struct ImpactArgs {
     pub workspace: String,
     pub symbol: String,
+    /// When true, include `_explain` with BFS frontier by depth and threshold constants.
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 use crate::error::{Result, SutraError};
 
 const BFS_MAX_DEPTH: usize = 3;
 
-pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
+pub fn handle(db: &Db, symbol: &str, explain: bool) -> Result<serde_json::Value> {
     let sym = db
         .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
@@ -37,6 +40,8 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
     let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
     queue.push_back((sym.id, 0));
 
+    let mut frontier: Vec<Vec<serde_json::Value>> = vec![Vec::new(); BFS_MAX_DEPTH];
+
     while let Some((sid, depth)) = queue.pop_front() {
         if depth >= BFS_MAX_DEPTH {
             continue;
@@ -47,6 +52,18 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
             if let Some(caller_sym) = db.find_enclosing_symbol(r.file_id, r.line)?
                 && visited_symbols.insert(caller_sym.id)
             {
+                if explain {
+                    let file_path = db
+                        .file_by_id(r.file_id)
+                        .ok()
+                        .flatten()
+                        .map(|f| f.path)
+                        .unwrap_or_default();
+                    frontier[depth].push(json!({
+                        "symbol": &caller_sym.qualified_name,
+                        "file": file_path,
+                    }));
+                }
                 queue.push_back((caller_sym.id, depth + 1));
             }
         }
@@ -71,7 +88,7 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
         .map(|f| f.path)
         .unwrap_or_default();
 
-    Ok(json!({
+    let mut result = json!({
         "symbol": sym.qualified_name,
         "kind": sym.kind,
         "file": sym_file_path,
@@ -81,7 +98,23 @@ pub fn handle(db: &Db, symbol: &str) -> Result<serde_json::Value> {
         "risk": risk,
         "risk_factors": risk_factors,
         "direct_caller_files": direct_file_paths,
-    }))
+    });
+
+    if explain {
+        result["_explain"] = json!({
+            "bfs_frontier": {
+                "depth_1": frontier[0],
+                "depth_2": frontier[1],
+                "depth_3": frontier[2],
+            },
+            "thresholds": {
+                "high": { "direct_callers": 15, "files_touched": 20 },
+                "medium": { "direct_callers": 5, "files_touched": 8 },
+            }
+        });
+    }
+
+    Ok(result)
 }
 
 fn compute_risk(direct_callers: usize, files_touched: usize) -> (&'static str, Vec<String>) {

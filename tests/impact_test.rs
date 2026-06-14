@@ -101,7 +101,7 @@ fn setup_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn test_impact_low_fan_in() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn").unwrap();
+    let result = impact::handle(&db, "a::target_fn", false).unwrap();
 
     assert_eq!(result["risk"], "low");
     assert_eq!(result["direct_callers"], 1);
@@ -110,7 +110,7 @@ fn test_impact_low_fan_in() {
 #[test]
 fn test_impact_transitive() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn").unwrap();
+    let result = impact::handle(&db, "a::target_fn", false).unwrap();
 
     // Transitive BFS should find B and C
     assert!(result["transitive_symbols"].as_u64().unwrap() >= 2);
@@ -120,7 +120,7 @@ fn test_impact_transitive() {
 #[test]
 fn test_impact_unknown_symbol() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "nonexistent::symbol");
+    let result = impact::handle(&db, "nonexistent::symbol", false);
     assert!(result.is_err());
 }
 
@@ -159,7 +159,7 @@ fn test_impact_high_fan_in() {
             .unwrap();
     }
 
-    let result = impact::handle(&db, "core::hot_fn").unwrap();
+    let result = impact::handle(&db, "core::hot_fn", false).unwrap();
     assert_eq!(result["risk"], "high");
     assert!(result["direct_callers"].as_u64().unwrap() >= 15);
 }
@@ -208,7 +208,7 @@ async fn test_impact_real_codebase() {
     );
 
     // "open" is the most-called method on Db — it must appear in the symbol table.
-    let result = impact::handle(&db, "open");
+    let result = impact::handle(&db, "open", false);
     assert!(
         result.is_ok(),
         "impact query on 'open' should succeed against real codebase"

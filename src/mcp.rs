@@ -332,8 +332,13 @@ impl SutraServer {
         Parameters(args): Parameters<MapArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::map::handle_ctx(&ctx, args.path_prefix.as_deref(), args.limit)
-            .map_err(sutra_to_rmcp)?;
+        let result = tools::map::handle_ctx(
+            &ctx,
+            args.path_prefix.as_deref(),
+            args.limit,
+            args.explain.unwrap_or(false),
+        )
+        .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 
@@ -507,7 +512,8 @@ impl SutraServer {
         Parameters(args): Parameters<ImpactArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::impact::handle(ctx.db(), &args.symbol).map_err(sutra_to_rmcp)?;
+        let result = tools::impact::handle(ctx.db(), &args.symbol, args.explain.unwrap_or(false))
+            .map_err(sutra_to_rmcp)?;
         if let Some(file_path) = result["file"].as_str() {
             guard::touch_ack(ctx.workspace_root(), file_path);
         }
@@ -687,6 +693,7 @@ impl SutraServer {
             ctx.workspace_root(),
             args.base.as_deref(),
             args.head.as_deref(),
+            args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -744,6 +751,7 @@ impl SutraServer {
             ctx.workspace_root(),
             args.diff.as_deref(),
             Some(&dd),
+            args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -804,6 +812,7 @@ impl SutraServer {
             args.limit,
             args.mode.as_deref(),
             args.component.as_deref(),
+            args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))

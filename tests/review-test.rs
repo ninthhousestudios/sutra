@@ -57,7 +57,7 @@ fn no_findings() -> review::ReviewFindings {
 fn empty_diff_returns_correct_shape() {
     let (dir, db) = setup_db();
     let result =
-        review::compute(&db, dir.path(), &[], &Default::default(), &no_findings()).unwrap();
+        review::compute(&db, dir.path(), &[], &Default::default(), &no_findings(), false).unwrap();
 
     assert_eq!(result["changed_files"].as_array().unwrap().len(), 0);
     assert_eq!(result["changed_symbols"].as_array().unwrap().len(), 0);
@@ -150,6 +150,7 @@ fn single_file_change_populates_all_fields() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -182,7 +183,7 @@ fn risk_breakdown_sums_correctly() {
     let mut churn = ChurnMap::default();
     churn.counts.insert("src/core.rs".to_string(), 12);
 
-    let result = review::compute(&db, dir.path(), &changed, &churn, &no_findings()).unwrap();
+    let result = review::compute(&db, dir.path(), &changed, &churn, &no_findings(), false).unwrap();
 
     let breakdown = &result["risk_breakdown"];
     let blast = breakdown["blast_radius"].as_f64().unwrap();
@@ -244,6 +245,7 @@ fn truncation_caps_affected_lists() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -314,7 +316,7 @@ fn risk_score_clamped_to_one() {
         ..Default::default()
     };
 
-    let result = review::compute(&db, dir.path(), &paths, &churn, &findings).unwrap();
+    let result = review::compute(&db, dir.path(), &paths, &churn, &findings, false).unwrap();
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk <= 1.0, "risk must be clamped to 1.0, got {risk}");
     assert!(risk >= 0.95, "extreme risk should be near 1.0, got {risk}");
@@ -330,6 +332,7 @@ fn unknown_files_handled_gracefully() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -387,7 +390,7 @@ fn constraint_violations_appear_in_output() {
     };
 
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 2);
@@ -429,7 +432,7 @@ fn convention_violations_appear_in_output() {
     };
 
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     let cv = result["convention_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 1);
@@ -475,7 +478,7 @@ fn waived_violations_appear_in_output() {
     };
 
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     let wv = result["waived_violations"].as_array().unwrap();
     assert_eq!(wv.len(), 1);
@@ -537,7 +540,7 @@ fn violations_are_structurally_distinct() {
     };
 
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     // Constraint violations have enriched fields
     let cv = &result["constraint_violations"].as_array().unwrap()[0];
@@ -571,6 +574,7 @@ fn convention_violations_increase_risk_score() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
     let risk_without = result_without["risk_score"].as_f64().unwrap();
@@ -619,7 +623,7 @@ fn convention_violations_increase_risk_score() {
     };
 
     let result_with =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
     let risk_with = result_with["risk_score"].as_f64().unwrap();
 
     assert!(
@@ -694,7 +698,7 @@ fn recommended_reads_ranks_violation_sites_first() {
 
     let changed = vec!["src/hub.rs".to_string()];
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     let rr = result["recommended_reads"].as_array().unwrap();
     assert!(!rr.is_empty());
@@ -856,7 +860,7 @@ fn waived_constraint_violations_appear_in_output() {
     };
 
     let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings).unwrap();
+        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
     assert!(
@@ -1175,6 +1179,7 @@ fn changed_files_include_freshness() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -1234,6 +1239,7 @@ fn affected_files_include_freshness() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -1292,6 +1298,7 @@ fn freshness_reflects_actual_file_state() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
 
@@ -1384,6 +1391,7 @@ fn degraded_findings_nullify_risk_score() {
         &changed,
         &Default::default(),
         &no_findings(),
+        false,
     )
     .unwrap();
     assert!(

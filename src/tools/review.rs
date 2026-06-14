@@ -24,6 +24,9 @@ pub struct ReviewArgs {
     /// "branch" (default), "staged", "unstaged", or a commit spec (e.g. "HEAD~3..HEAD", "abc123")
     #[serde(default)]
     pub diff: Option<String>,
+    /// When true, include `_explain` with weights, ceilings, and per-signal contributions.
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 
 const MAX_AFFECTED: usize = 20;
@@ -70,6 +73,7 @@ pub fn handle(
     workspace_root: &Path,
     diff_mode: Option<&str>,
     dd_engine: Option<&DdEngine>,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
@@ -135,7 +139,14 @@ pub fn handle(
     let health_delta =
         crate::health::ondemand::compute_health_delta(db, &changed_paths, &ondemand_findings).ok();
 
-    let mut result = compute(db, workspace_root, &changed_paths, &churn, &findings)?;
+    let mut result = compute(
+        db,
+        workspace_root,
+        &changed_paths,
+        &churn,
+        &findings,
+        explain,
+    )?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("diff_mode".into(), json!(mode));
         obj.insert(
@@ -683,6 +694,7 @@ pub fn compute(
     changed_paths: &[String],
     churn: &ChurnMap,
     findings: &ReviewFindings,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     if changed_paths.is_empty() {
         return Ok(json!({
@@ -988,6 +1000,18 @@ pub fn compute(
                 }))
                 .collect::<Vec<_>>()
         );
+    }
+    if explain {
+        result["_explain"] = json!({
+            "formula": "sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]",
+            "weights": {
+                "blast_radius": { "weight": W_BLAST, "ceiling": change_signals::BLAST_NORM, "contribution": scoring::round3(W_BLAST * blast_score), "rationale": "blast radius of changed symbols" },
+                "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score), "rationale": "peak cognitive complexity in changed code" },
+                "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": "file_count (dynamic)", "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
+                "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score), "rationale": "total recent churn across changed files" },
+                "convention_violations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": scoring::round3(W_CONVENTIONS * convention_score), "rationale": "number of convention violations detected" },
+            },
+        });
     }
     Ok(result)
 }
