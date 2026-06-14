@@ -211,6 +211,7 @@ pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result
         .args([
             "log",
             "--first-parent",
+            "--no-merges",
             "--reverse",
             "--format=%H %at %ae %s",
         ])

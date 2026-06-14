@@ -44,8 +44,20 @@ pub fn handle(
     let mut entries = Vec::with_capacity(commits.len());
     for commit in commits {
         let parent = format!("{}~1", commit.hash);
-        let changed =
-            git::git_diff_files(workspace_root, &parent, &commit.hash).unwrap_or_default();
+        let changed = match git::git_diff_files(workspace_root, &parent, &commit.hash) {
+            Ok(paths) => paths,
+            Err(e) => {
+                entries.push(json!({
+                    "hash": commit.hash,
+                    "subject": commit.subject,
+                    "author": commit.author,
+                    "timestamp": commit.timestamp,
+                    "diff_error": e.to_string(),
+                    "files": [],
+                }));
+                continue;
+            }
+        };
 
         let mut file_entries = Vec::with_capacity(changed.len());
         for path in &changed {
