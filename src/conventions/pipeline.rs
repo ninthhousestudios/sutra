@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::db::Db;
@@ -61,19 +61,8 @@ pub fn rebuild(
             }
         }
 
-        let dart_import_packages: Option<HashSet<String>> = if f.language == "dart" {
-            let imports = db.imports_for_file(f.id)?;
-            let pkgs: HashSet<String> = imports
-                .iter()
-                .filter_map(|imp| {
-                    crate::constraints::external::external_crate_of_import(
-                        &imp.imported_path,
-                        "dart",
-                        &[],
-                    )
-                })
-                .collect();
-            if pkgs.is_empty() { None } else { Some(pkgs) }
+        let dart_import_packages = if f.language == "dart" {
+            super::dart_effect_packages(&db.imports_for_file(f.id)?)
         } else {
             None
         };
@@ -85,36 +74,14 @@ pub fn rebuild(
                 if let Some(adapter) = registry.adapter_for_language(&f.language)
                     && let Some(fca_source) = adapter.as_fca_source()
                 {
-                    let call_refs: Vec<_> = refs
-                        .iter()
-                        .filter(|r| {
-                            r.context_kind == "call"
-                                && r.line >= s.start_line
-                                && r.line <= s.end_line
-                        })
-                        .collect();
-                    super::enrich_with_effects(
+                    super::enrich_all_effects(
                         &mut attrs,
                         s,
-                        &call_refs,
-                        &|id| {
-                            callee_cache.get(&id).map(|c| super::ResolvedCallee {
-                                qualified_name: c.qualified_name.clone(),
-                                signature: c.signature.clone(),
-                            })
-                        },
-                        fca_source.effect_patterns(),
+                        &refs,
+                        &callee_cache,
+                        fca_source,
+                        dart_import_packages.as_ref(),
                     );
-                    if let Some(ref pkgs) = dart_import_packages {
-                        let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();
-                        super::enrich_with_dart_import_effects(
-                            &mut attrs,
-                            s,
-                            &refs,
-                            &pkg_refs,
-                            fca_source.effect_patterns(),
-                        );
-                    }
                 }
                 sig_info_map.insert(
                     s.qualified_name.clone(),

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::{RefRow, SymbolRow};
 use crate::parser::adapter::LanguageRegistry;
@@ -203,7 +203,12 @@ pub fn enrich_with_dart_import_effects(
                 };
                 match member {
                     None => r.context_kind == "field_access" && name == package,
-                    Some(class) => name == class,
+                    Some(class) => {
+                        matches!(
+                            r.context_kind.as_str(),
+                            "call" | "construction" | "field_access"
+                        ) && name == class
+                    }
                 }
             })
         });
@@ -212,6 +217,56 @@ pub fn enrich_with_dart_import_effects(
             sym_attrs.attributes.push(pattern.attr_name.to_string());
         }
     }
+}
+
+/// Shared enrichment: resolved-callee effects + Dart import-based effects.
+/// Both `conventions/pipeline.rs` rebuild and `tools/review.rs` review-time
+/// attribute building must call this to stay in sync.
+pub fn enrich_all_effects(
+    attrs: &mut SymbolAttrs,
+    sym: &SymbolRow,
+    file_refs: &[RefRow],
+    callee_cache: &HashMap<i64, ResolvedCallee>,
+    fca_source: &dyn crate::parser::adapter::FcaAttributeSource,
+    dart_import_packages: Option<&HashSet<String>>,
+) {
+    let call_refs: Vec<_> = file_refs
+        .iter()
+        .filter(|r| r.context_kind == "call" && r.line >= sym.start_line && r.line <= sym.end_line)
+        .collect();
+    enrich_with_effects(
+        attrs,
+        sym,
+        &call_refs,
+        &|id| {
+            callee_cache.get(&id).map(|c| ResolvedCallee {
+                qualified_name: c.qualified_name.clone(),
+                signature: c.signature.clone(),
+            })
+        },
+        fca_source.effect_patterns(),
+    );
+    if let Some(pkgs) = dart_import_packages {
+        let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+        enrich_with_dart_import_effects(
+            attrs,
+            sym,
+            file_refs,
+            &pkg_refs,
+            fca_source.effect_patterns(),
+        );
+    }
+}
+
+/// Build the set of effect-relevant Dart package names from a file's imports.
+pub fn dart_effect_packages(imports: &[crate::db::ImportRow]) -> Option<HashSet<String>> {
+    let pkgs: HashSet<String> = imports
+        .iter()
+        .filter_map(|imp| {
+            crate::constraints::external::external_crate_of_import(&imp.imported_path, "dart", &[])
+        })
+        .collect();
+    if pkgs.is_empty() { None } else { Some(pkgs) }
 }
 
 #[cfg(test)]
@@ -701,5 +756,47 @@ mod tests {
             .filter(|a| *a == "effect:net")
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn dart_import_effects_pattern_b_excludes_type_use() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn accepts_file()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/typed.dart").unwrap();
+        let refs = vec![make_dart_ref("File", "type_use", 3)];
+        let packages: HashSet<&str> = ["dart:io"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["dart:io::File"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    #[test]
+    fn dart_import_effects_pattern_b_allows_construction() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("fn create_file()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "lib/io.dart").unwrap();
+        let refs = vec![make_dart_ref("File", "construction", 5)];
+        let packages: HashSet<&str> = ["dart:io"].into_iter().collect();
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["dart:io::File"],
+        }];
+        enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
+        assert!(attrs.attributes.contains(&"effect:fs".to_string()));
     }
 }

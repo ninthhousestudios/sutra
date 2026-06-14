@@ -414,6 +414,12 @@ pub fn build_findings(
             }
         }
 
+        let dart_import_packages = if f.language == "dart" {
+            conventions::dart_effect_packages(&db.imports_for_file(f.id)?)
+        } else {
+            None
+        };
+
         for s in &syms {
             if let Some(mut attrs) =
                 conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
@@ -421,25 +427,13 @@ pub fn build_findings(
                 if let Some(adapter) = registry.adapter_for_language(&f.language)
                     && let Some(fca_source) = adapter.as_fca_source()
                 {
-                    let call_refs: Vec<_> = refs
-                        .iter()
-                        .filter(|r| {
-                            r.context_kind == "call"
-                                && r.line >= s.start_line
-                                && r.line <= s.end_line
-                        })
-                        .collect();
-                    conventions::enrich_with_effects(
+                    conventions::enrich_all_effects(
                         &mut attrs,
                         s,
-                        &call_refs,
-                        &|id| {
-                            callee_cache.get(&id).map(|c| conventions::ResolvedCallee {
-                                qualified_name: c.qualified_name.clone(),
-                                signature: c.signature.clone(),
-                            })
-                        },
-                        fca_source.effect_patterns(),
+                        &refs,
+                        &callee_cache,
+                        fca_source,
+                        dart_import_packages.as_ref(),
                     );
                 }
                 changed_sym_attrs.push(attrs);
