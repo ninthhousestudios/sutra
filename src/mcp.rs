@@ -64,6 +64,7 @@ pub struct StatusArgs {
 
 use crate::tools::calls::CallsArgs;
 use crate::tools::cochange::CochangeArgs;
+use crate::tools::commit_manifest::CommitManifestArgs;
 use crate::tools::components::ComponentsArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
@@ -558,7 +559,7 @@ impl SutraServer {
 
     #[tool(
         description = "Manage tool tiers. Enable or disable the analysis tier \
-        (sutra_refs, sutra_calls, sutra_diff_impact, sutra_cochange, sutra_review). \
+        (sutra_refs, sutra_calls, sutra_diff_impact, sutra_commit_manifest, sutra_cochange, sutra_review). \
         Use list=true to see available tiers and their status."
     )]
     pub async fn sutra_tools(
@@ -638,6 +639,29 @@ impl SutraServer {
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::diff_impact::handle(
+            ctx.db(),
+            ctx.workspace_root(),
+            args.base.as_deref(),
+            args.head.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
+    }
+
+    #[tool(description = "Per-commit structural manifest for a commit range. \
+        Returns each commit with its changed files and symbol-level change \
+        classifications (added/deleted/signature_changed/body_changed). \
+        Use for multi-commit branch review where per-commit intent matters. \
+        Defaults to branch range (merge-base..HEAD). Max 50 commits. \
+        Requires analysis tier.")]
+    pub async fn sutra_commit_manifest(
+        &self,
+        Parameters(args): Parameters<CommitManifestArgs>,
+    ) -> Result<String, ErrorData> {
+        self.require_analysis()?;
+        self.await_parse(&args.workspace).await;
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::commit_manifest::handle(
             ctx.db(),
             ctx.workspace_root(),
             args.base.as_deref(),

@@ -290,6 +290,15 @@ Look at the `convention_violations` and `constraint_violations` sections. \
 FCA-derived attribute implications and DD-constraint dependency directions are checked \
 against your staged changes.
 
+## Review a branch commit-by-commit
+```
+sutra_tools(enable=\"analysis\")
+sutra_commit_manifest(workspace=\"myproject\")
+```
+Returns per-commit entries with changed files and symbol-level change classifications \
+(added/deleted/signature_changed/body_changed). Useful for understanding why a branch \
+was split into separate commits. Pass `base` and `head` for a custom range.
+
 ## Trace a path between two symbols
 ```
 sutra_tools(enable=\"analysis\")

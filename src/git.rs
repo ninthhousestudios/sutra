@@ -197,6 +197,53 @@ pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+pub struct CommitEntry {
+    pub hash: String,
+    pub timestamp: i64,
+    pub author: String,
+    pub subject: String,
+}
+
+pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<CommitEntry>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--format=%H %at %ae %s",
+        ])
+        .arg(format!("{base}..{head}"))
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git log: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(4, ' ').collect();
+        if parts.len() == 4 {
+            results.push(CommitEntry {
+                hash: parts[0].to_string(),
+                timestamp: parts[1].parse().unwrap_or(0),
+                author: parts[2].to_string(),
+                subject: parts[3].to_string(),
+            });
+        }
+    }
+
+    Ok(results)
+}
+
 /// Return all (commit_hash, timestamp, author, file_path) tuples from git
 /// history within the given window. One entry per file per commit.
 pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<CommitFile>> {
