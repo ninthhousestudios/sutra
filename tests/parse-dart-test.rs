@@ -661,3 +661,48 @@ int a = 1, b = 2, c = 3;
     assert!(flat.iter().any(|s| s.short_name == "c"));
     assert!(flat.iter().all(|s| s.kind == SymbolKind::Static));
 }
+
+#[test]
+fn test_parse_dart_abstract_and_external_fields() {
+    let src = r#"
+abstract class Foo {
+    abstract final int x;
+    abstract int y;
+}
+class NativeBinding {
+    external final String name;
+    external static var count;
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/abs.dart").unwrap();
+    assert!(result.parsed_ok);
+
+    let flat = flatten_symbols(&result.symbols);
+
+    let x = flat
+        .iter()
+        .find(|s| s.short_name == "x")
+        .expect("abstract final field x");
+    assert_eq!(x.kind, SymbolKind::Const);
+    assert_eq!(x.qualified_name, "Foo::x");
+
+    let y = flat
+        .iter()
+        .find(|s| s.short_name == "y")
+        .expect("abstract field y");
+    assert_eq!(y.kind, SymbolKind::Static);
+    assert_eq!(y.qualified_name, "Foo::y");
+
+    let name = flat
+        .iter()
+        .find(|s| s.short_name == "name")
+        .expect("external final field name");
+    assert_eq!(name.kind, SymbolKind::Const);
+    assert_eq!(name.qualified_name, "NativeBinding::name");
+
+    let count = flat
+        .iter()
+        .find(|s| s.short_name == "count")
+        .expect("external static var count");
+    assert_eq!(count.qualified_name, "NativeBinding::count");
+}

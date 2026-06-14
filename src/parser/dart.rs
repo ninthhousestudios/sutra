@@ -390,6 +390,30 @@ fn extract_variable_symbols(
                     }
                 }
             }
+            "identifier_list" => {
+                let mut lc = list_child.walk();
+                for child in list_child.children(&mut lc) {
+                    if child.kind() != "identifier" {
+                        continue;
+                    }
+                    if let Ok(name) = child.utf8_text(src) {
+                        let sig = build_sig(name);
+                        if let Some(mut sym) = build_symbol(
+                            child,
+                            src,
+                            name_context,
+                            name.to_string(),
+                            kind,
+                            sig,
+                            None,
+                        ) {
+                            sym.language_attrs = extract_language_attrs(node, None, src, kind);
+                            sym.flags |= extract_flags(node, src, file_path);
+                            symbols.push(sym);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
