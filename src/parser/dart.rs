@@ -373,7 +373,7 @@ fn extract_variable_symbols(
                             build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
                         {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
+                            sym.flags |= extract_flags(node, src, file_path, None);
                             symbols.push(sym);
                         }
                     }
@@ -394,7 +394,7 @@ fn extract_variable_symbols(
                             build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
                         {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
+                            sym.flags |= extract_flags(node, src, file_path, None);
                             symbols.push(sym);
                         }
                     }
@@ -418,7 +418,7 @@ fn extract_variable_symbols(
                             None,
                         ) {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path, Some(&sym.short_name));
+                            sym.flags |= extract_flags(node, src, file_path, None);
                             symbols.push(sym);
                         }
                     }
