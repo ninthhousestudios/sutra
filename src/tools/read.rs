@@ -149,7 +149,8 @@ pub fn handle(
     }
 
     if let Some(ldb) = lessons_db {
-        let lessons = ldb.query_for_context(&sym.qualified_name)?;
+        let project_slug = workspace_root.file_name().and_then(|n| n.to_str());
+        let lessons = ldb.query_for_context(&sym.qualified_name, project_slug)?;
         if !lessons.is_empty() {
             result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
         }

@@ -21,7 +21,9 @@ fn store_and_retrieve_by_symbol() {
         .unwrap();
     assert!(!id.is_empty());
 
-    let lessons = db.query_for_context("refresh_index").unwrap();
+    let lessons = db
+        .query_for_context("refresh_index", Some("sutra"))
+        .unwrap();
     assert_eq!(lessons.len(), 1);
     assert_eq!(lessons[0].id, id);
     assert!(lessons[0].text.contains("unwrap_or_default"));
@@ -42,7 +44,7 @@ fn no_match_returns_empty() {
     })
     .unwrap();
 
-    let lessons = db.query_for_context("completely_different").unwrap();
+    let lessons = db.query_for_context("completely_different", None).unwrap();
     assert!(lessons.is_empty());
 }
 
@@ -68,7 +70,7 @@ fn archived_lessons_not_surfaced() {
         .unwrap();
     }
 
-    let lessons = db.query_for_context("some_fn").unwrap();
+    let lessons = db.query_for_context("some_fn", None).unwrap();
     assert!(lessons.is_empty());
 }
 
@@ -84,9 +86,9 @@ fn multiple_anchors_on_one_lesson() {
     })
     .unwrap();
 
-    assert_eq!(db.query_for_context("fn_a").unwrap().len(), 1);
-    assert_eq!(db.query_for_context("fn_b").unwrap().len(), 1);
-    assert_eq!(db.query_for_context("fn_c").unwrap().len(), 0);
+    assert_eq!(db.query_for_context("fn_a", None).unwrap().len(), 1);
+    assert_eq!(db.query_for_context("fn_b", None).unwrap().len(), 1);
+    assert_eq!(db.query_for_context("fn_c", None).unwrap().len(), 0);
 }
 
 #[test]
@@ -126,7 +128,7 @@ fn query_updates_last_surfaced() {
         assert!(before.is_none());
     }
 
-    let _ = db.query_for_context("target_fn").unwrap();
+    let _ = db.query_for_context("target_fn", None).unwrap();
 
     // After query, last_surfaced should be set
     {
@@ -175,4 +177,65 @@ fn source_tasks_persisted_as_citations() {
             .unwrap()
     };
     assert_eq!(task_ids, vec!["sutra/119", "sutra/38"]);
+}
+
+#[test]
+fn project_scoping_filters_cross_project_lessons() {
+    let (_dir, db) = setup_lessons_db();
+
+    db.store(&StoreLessonParams {
+        text: "sutra-specific lesson",
+        anchors: &[(AnchorKind::Symbol, "init")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: Some("sutra"),
+    })
+    .unwrap();
+
+    db.store(&StoreLessonParams {
+        text: "chitta-specific lesson",
+        anchors: &[(AnchorKind::Symbol, "init")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: Some("chitta"),
+    })
+    .unwrap();
+
+    db.store(&StoreLessonParams {
+        text: "global lesson",
+        anchors: &[(AnchorKind::Symbol, "init")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Scoped to sutra: sees sutra + global, not chitta
+    let sutra_lessons = db.query_for_context("init", Some("sutra")).unwrap();
+    assert_eq!(sutra_lessons.len(), 2);
+    assert!(
+        sutra_lessons
+            .iter()
+            .any(|l| l.text.contains("sutra-specific"))
+    );
+    assert!(sutra_lessons.iter().any(|l| l.text.contains("global")));
+    assert!(
+        !sutra_lessons
+            .iter()
+            .any(|l| l.text.contains("chitta-specific"))
+    );
+
+    // Scoped to chitta: sees chitta + global, not sutra
+    let chitta_lessons = db.query_for_context("init", Some("chitta")).unwrap();
+    assert_eq!(chitta_lessons.len(), 2);
+    assert!(
+        chitta_lessons
+            .iter()
+            .any(|l| l.text.contains("chitta-specific"))
+    );
+    assert!(chitta_lessons.iter().any(|l| l.text.contains("global")));
+
+    // No project filter: sees all three
+    let all_lessons = db.query_for_context("init", None).unwrap();
+    assert_eq!(all_lessons.len(), 3);
 }

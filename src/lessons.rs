@@ -180,7 +180,11 @@ pub struct SurfacedLesson {
 }
 
 impl LessonsDb {
-    pub fn query_for_context(&self, symbol_name: &str) -> Result<Vec<SurfacedLesson>> {
+    pub fn query_for_context(
+        &self,
+        symbol_name: &str,
+        project: Option<&str>,
+    ) -> Result<Vec<SurfacedLesson>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT l.id, l.text, l.verified, l.confidence,
@@ -189,10 +193,11 @@ impl LessonsDb {
              JOIN anchors a ON a.lesson_id = l.id
              WHERE a.kind = 'symbol' AND a.value = ?1
                AND l.archived = 0
+               AND (l.project_origin IS NULL OR l.project_origin = ?2 OR ?2 IS NULL)
              ORDER BY l.verified DESC, l.confidence DESC",
         )?;
         let lessons: Vec<SurfacedLesson> = stmt
-            .query_map(params![symbol_name], |row| {
+            .query_map(params![symbol_name, project], |row| {
                 Ok(SurfacedLesson {
                     id: row.get(0)?,
                     text: row.get(1)?,
