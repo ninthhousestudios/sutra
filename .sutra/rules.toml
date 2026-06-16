@@ -239,10 +239,42 @@ severity = "advisory"
 
 [[constraint]]
 kind = "max_fan_in"
-target = "src/components.rs"
+target = "src/components/mod.rs"
 threshold = 15
 name = "components-fan-in"
 severity = "advisory"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Lessons isolation (checkpoint:sutra/152, 2026-06-16)
+# ═══════════════════════════════════════════════════════════════════
+# LessonsDb owns its own SQLite file, independent of per-workspace DBs.
+# It must not couple to workspace DB internals, and heavyweight subsystems
+# (guard, DD worker) must not depend on it.
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/lessons.rs"
+to = "src/db/*"
+name = "lessons-no-db"
+provenance = "checkpoint:sutra/152"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/guard.rs"
+to = "src/lessons.rs"
+name = "guard-no-lessons"
+provenance = "checkpoint:sutra/152"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/constraints/worker.rs"
+to = "src/lessons.rs"
+name = "worker-no-lessons"
+provenance = "checkpoint:sutra/152"
+severity = "blocking"
 
 
 # ═══════════════════════════════════════════════════════════════════
