@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -22,6 +23,11 @@ pub struct ReadArgs {
     pub limit: Option<usize>,
     #[serde(default)]
     pub full: Option<bool>,
+    #[serde(default)]
+    #[schemars(
+        description = "Include relevant import statements (default true). Set false to suppress."
+    )]
+    pub imports: Option<bool>,
 }
 use crate::error::{Result, SutraError};
 
@@ -35,6 +41,7 @@ pub fn handle(
     limit: Option<usize>,
     full: bool,
     is_stale: bool,
+    include_imports: bool,
     lessons_db: Option<&LessonsDb>,
 ) -> Result<serde_json::Value> {
     let context_lines = context_lines.unwrap_or(5);
@@ -130,6 +137,12 @@ pub fn handle(
         .map(|(i, line)| format!("{:>5} {}", start + i + 1, line))
         .collect();
 
+    let import_lines = if include_imports {
+        collect_relevant_imports(db, sym.file_id, &file.path, &lines, sym_start, sym_end)?
+    } else {
+        Vec::new()
+    };
+
     let mut result = json!({
         "symbol": sym.qualified_name,
         "file": file.path,
@@ -139,6 +152,9 @@ pub fn handle(
         "kind": sym.kind,
         "signature": sym.signature,
     });
+    if !import_lines.is_empty() {
+        result["imports"] = json!(import_lines);
+    }
     if truncated {
         result["truncated"] = json!(true);
         result["total_lines"] = json!(total_lines);
@@ -157,6 +173,103 @@ pub fn handle(
     }
 
     Ok(result)
+}
+
+fn collect_relevant_imports(
+    db: &Db,
+    file_id: i64,
+    file_path: &str,
+    lines: &[&str],
+    sym_start: usize,
+    sym_end: usize,
+) -> Result<Vec<String>> {
+    let import_rows = db.imports_for_file(file_id)?;
+    if import_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let body = lines[sym_start..sym_end].join("\n");
+    let is_dart = file_path.ends_with(".dart");
+
+    // Group import rows by source line. For each line, track whether any
+    // expanded identifier from that line is referenced in the symbol body.
+    let mut line_matched: BTreeMap<usize, bool> = BTreeMap::new();
+    for row in &import_rows {
+        let line_idx = row.line as usize;
+        if *line_matched.get(&line_idx).unwrap_or(&false) {
+            continue; // already matched, skip further checks for this line
+        }
+        let before_symbol = line_idx <= sym_start; // 1-based line vs 0-based index
+        let matched = if is_dart {
+            before_symbol // Dart imports are file-level; include all that precede the symbol
+        } else {
+            let ident = imported_identifier(&row.imported_path);
+            if ident == "*" {
+                before_symbol // globs only from the file header, not nested modules
+            } else {
+                word_appears_in(&body, ident)
+            }
+        };
+        line_matched
+            .entry(line_idx)
+            .and_modify(|v| *v = *v || matched)
+            .or_insert(matched);
+    }
+
+    let result: Vec<String> = line_matched
+        .into_iter()
+        .filter(|(_, matched)| *matched)
+        .filter_map(|(line_num, _)| {
+            lines
+                .get(line_num.checked_sub(1)?) // 1-based → 0-based
+                .map(|l| l.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Ok(result)
+}
+
+/// Extract the identifier brought into scope by a Rust import path.
+/// `std::collections::HashMap` → `HashMap`
+/// `serde_json::Value as JsonValue` → `JsonValue`
+/// `std::io::*` → `*`
+fn imported_identifier(imported_path: &str) -> &str {
+    if let Some(alias) = imported_path.split(" as ").nth(1) {
+        return alias.trim();
+    }
+    imported_path
+        .rsplit("::")
+        .next()
+        .unwrap_or(imported_path)
+        .trim()
+}
+
+/// Check whether `word` appears in `text` at a word boundary (not as a
+/// substring of a larger identifier).
+fn word_appears_in(text: &str, word: &str) -> bool {
+    let word_bytes = word.as_bytes();
+    let text_bytes = text.as_bytes();
+    let wlen = word_bytes.len();
+    if wlen == 0 || wlen > text_bytes.len() {
+        return false;
+    }
+    let mut pos = 0;
+    while let Some(offset) = text[pos..].find(word) {
+        let start = pos + offset;
+        let end = start + wlen;
+        let before_ok = start == 0 || !is_ident_char(text_bytes[start - 1]);
+        let after_ok = end == text_bytes.len() || !is_ident_char(text_bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        pos = start + 1;
+    }
+    false
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 fn diagnose_symbol_input(symbol: &str) -> Option<String> {
@@ -217,5 +330,57 @@ mod tests {
     fn no_diagnosis_for_valid_symbol() {
         assert!(diagnose_symbol_input("build_findings").is_none());
         assert!(diagnose_symbol_input("GuardConfig::from_env").is_none());
+    }
+
+    #[test]
+    fn imported_identifier_last_segment() {
+        assert_eq!(imported_identifier("std::collections::HashMap"), "HashMap");
+        assert_eq!(imported_identifier("crate::db::Db"), "Db");
+    }
+
+    #[test]
+    fn imported_identifier_with_alias() {
+        assert_eq!(
+            imported_identifier("serde_json::Value as JsonValue"),
+            "JsonValue"
+        );
+    }
+
+    #[test]
+    fn imported_identifier_glob() {
+        assert_eq!(imported_identifier("std::io::*"), "*");
+    }
+
+    #[test]
+    fn imported_identifier_single_segment() {
+        assert_eq!(imported_identifier("serde"), "serde");
+    }
+
+    #[test]
+    fn word_boundary_match_basic() {
+        assert!(word_appears_in(
+            "let m: HashMap<K, V> = HashMap::new();",
+            "HashMap"
+        ));
+        assert!(word_appears_in("HashMap", "HashMap"));
+    }
+
+    #[test]
+    fn word_boundary_rejects_substring() {
+        assert!(!word_appears_in("let c = DbConfig::new();", "Db"));
+        assert!(!word_appears_in("use HashMaps;", "HashMap"));
+    }
+
+    #[test]
+    fn word_boundary_at_edges() {
+        assert!(word_appears_in("HashMap::new()", "HashMap"));
+        assert!(word_appears_in("foo(HashMap)", "HashMap"));
+        assert!(word_appears_in("x.HashMap", "HashMap"));
+    }
+
+    #[test]
+    fn word_boundary_empty() {
+        assert!(!word_appears_in("anything", ""));
+        assert!(!word_appears_in("", "HashMap"));
     }
 }

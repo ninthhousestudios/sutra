@@ -243,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 false,
                 false,
+                true,
                 None,
             )?;
             println!("{}", serde_json::to_string(&result)?);

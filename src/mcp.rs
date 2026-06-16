@@ -503,6 +503,7 @@ impl SutraServer {
             args.limit,
             args.full.unwrap_or(false),
             ctx.is_stale(),
+            args.imports.unwrap_or(true),
             Some(&self.lessons_db),
         )
         .map_err(sutra_to_rmcp)?;
