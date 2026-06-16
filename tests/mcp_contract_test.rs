@@ -403,7 +403,7 @@ fn test_map_without_freshness_has_no_meta() {
 #[test]
 fn test_read_fresh_returns_content() {
     let (dir, db) = setup_test_db_with_root();
-    let result = read::handle(&db, dir.path(), "main", None, None, false, false).unwrap();
+    let result = read::handle(&db, dir.path(), "main", None, None, false, false, None).unwrap();
     assert!(
         result["content"].is_string(),
         "fresh read should include content"
@@ -417,7 +417,7 @@ fn test_read_fresh_returns_content() {
 #[test]
 fn test_read_stale_withholds_content() {
     let (dir, db) = setup_test_db_with_root();
-    let result = read::handle(&db, dir.path(), "main", None, None, false, true).unwrap();
+    let result = read::handle(&db, dir.path(), "main", None, None, false, true, None).unwrap();
     assert!(
         result.get("content").is_none(),
         "stale read must not include content"

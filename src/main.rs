@@ -243,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 false,
                 false,
+                None,
             )?;
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -345,11 +346,15 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
 
     let (ws_config, db_cache) = load_workspaces_and_cache(&config)?;
     let parse_coord = sutra::pipeline::ParseCoordinator::new();
+    let lessons_db = Arc::new(
+        sutra::lessons::LessonsDb::open(&config.db_dir).expect("failed to open lessons.db"),
+    );
     let server = SutraServer::new(
         config.clone(),
         ws_config.clone(),
         db_cache.clone(),
         parse_coord.clone(),
+        lessons_db,
     );
 
     // Background reparse: if CWD is inside a registered workspace and the
@@ -463,6 +468,9 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
         String,
         Arc<sutra::constraints::DdEngine>,
     >::new()));
+    let lessons_db = Arc::new(
+        sutra::lessons::LessonsDb::open(&config.db_dir).expect("failed to open lessons.db"),
+    );
 
     let cancel = CancellationToken::new();
     let mut session_manager = LocalSessionManager::default();
@@ -476,6 +484,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let db_clone = db_cache.clone();
     let coord_clone = parse_coord.clone();
     let dd_clone = dd_engines.clone();
+    let lessons_clone = lessons_db.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
             Ok(SutraServer::new(
@@ -483,6 +492,7 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
                 ws_clone.clone(),
                 db_clone.clone(),
                 coord_clone.clone(),
+                lessons_clone.clone(),
             )
             .with_dd_engines(dd_clone.clone()))
         },

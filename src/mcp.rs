@@ -17,6 +17,7 @@ use crate::constraints::DdEngine;
 use crate::db::Db;
 use crate::error::SutraError;
 use crate::guard;
+use crate::lessons::LessonsDb;
 use crate::pipeline::ParseCoordinator;
 use crate::tools;
 use crate::workspace::{self, WorkspacesConfig};
@@ -81,6 +82,7 @@ use crate::tools::pr_risk::PrRiskArgs;
 use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
+use crate::tools::remember::RememberArgs;
 use crate::tools::resolve::ResolveArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::similar::SimilarArgs;
@@ -100,6 +102,7 @@ pub struct SutraServer {
     analysis_enabled: Arc<AtomicBool>,
     parse_coord: ParseCoordinator,
     dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
+    lessons_db: Arc<LessonsDb>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -112,6 +115,7 @@ impl Clone for SutraServer {
             analysis_enabled: Arc::clone(&self.analysis_enabled),
             parse_coord: self.parse_coord.clone(),
             dd_engines: Arc::clone(&self.dd_engines),
+            lessons_db: Arc::clone(&self.lessons_db),
             tool_router: Self::tool_router(),
         }
     }
@@ -123,6 +127,7 @@ impl SutraServer {
         workspaces: Arc<RwLock<WorkspacesConfig>>,
         db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
         parse_coord: ParseCoordinator,
+        lessons_db: Arc<LessonsDb>,
     ) -> Self {
         Self {
             db_cache,
@@ -131,6 +136,7 @@ impl SutraServer {
             analysis_enabled: Arc::new(AtomicBool::new(false)),
             parse_coord,
             dd_engines: Arc::new(Mutex::new(HashMap::new())),
+            lessons_db,
             tool_router: Self::tool_router(),
         }
     }
@@ -497,9 +503,21 @@ impl SutraServer {
             args.limit,
             args.full.unwrap_or(false),
             ctx.is_stale(),
+            Some(&self.lessons_db),
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
+    }
+
+    #[tool(description = "Store a code-anchored lesson (negative knowledge). \
+        Provide text describing what you learned and location anchors \
+        (symbol names or file paths) so the lesson surfaces in future sutra_read calls.")]
+    pub async fn sutra_remember(
+        &self,
+        Parameters(args): Parameters<RememberArgs>,
+    ) -> Result<String, ErrorData> {
+        let result = tools::remember::handle(&self.lessons_db, &args).map_err(sutra_to_rmcp)?;
+        to_compact_json(result)
     }
 
     #[tool(

@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::lessons::LessonsDb;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadArgs {
@@ -34,6 +35,7 @@ pub fn handle(
     limit: Option<usize>,
     full: bool,
     is_stale: bool,
+    lessons_db: Option<&LessonsDb>,
 ) -> Result<serde_json::Value> {
     let context_lines = context_lines.unwrap_or(5);
     let line_cap = if full {
@@ -145,6 +147,14 @@ pub fn handle(
             line_cap, total_lines, total_lines
         ));
     }
+
+    if let Some(ldb) = lessons_db {
+        let lessons = ldb.query_for_context(&sym.qualified_name)?;
+        if !lessons.is_empty() {
+            result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+        }
+    }
+
     Ok(result)
 }
 

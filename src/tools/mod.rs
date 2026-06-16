@@ -24,6 +24,7 @@ pub mod pr_risk;
 pub mod provenance;
 pub mod read;
 pub mod refs;
+pub mod remember;
 pub mod resolve;
 pub mod review;
 pub mod scoring;
