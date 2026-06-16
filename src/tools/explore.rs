@@ -53,6 +53,15 @@ fn expand_patterns(query: &str) -> Vec<String> {
     patterns
 }
 
+fn fan_out_depth(unique_hits: usize) -> usize {
+    match unique_hits {
+        0 => 0,
+        1..=3 => 2,
+        4..=9 => 1,
+        _ => 0,
+    }
+}
+
 fn select_strategy(total_hits: usize, returned: usize) -> Value {
     if total_hits == 0 {
         json!({
@@ -278,5 +287,16 @@ mod tests {
         let s = select_strategy(6, 6);
         assert_eq!(s["action"], "read_top_n");
         assert_eq!(s["n"], 3);
+    }
+
+    #[test]
+    fn fan_out_depth_thresholds() {
+        assert_eq!(fan_out_depth(0), 0);
+        assert_eq!(fan_out_depth(1), 2);
+        assert_eq!(fan_out_depth(3), 2);
+        assert_eq!(fan_out_depth(4), 1);
+        assert_eq!(fan_out_depth(9), 1);
+        assert_eq!(fan_out_depth(10), 0);
+        assert_eq!(fan_out_depth(100), 0);
     }
 }
