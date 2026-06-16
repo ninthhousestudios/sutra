@@ -278,6 +278,30 @@ severity = "blocking"
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Explore tool isolation (checkpoint:sutra/171, 2026-06-16)
+# ═══════════════════════════════════════════════════════════════════
+# sutra_explore is a deterministic, index-only pipeline: grep → rank → assemble.
+# It must not grow to import heavyweight analysis engines. The PRD explicitly
+# rejects vector search, embeddings, and NL interpretation.
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/explore.rs"
+to = "src/similarity/*"
+name = "explore-no-similarity"
+provenance = "checkpoint:sutra/171"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/explore.rs"
+to = "src/conventions/*"
+name = "explore-no-conventions"
+provenance = "checkpoint:sutra/171"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Convention management
 # ═══════════════════════════════════════════════════════════════════
 
