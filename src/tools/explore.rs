@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::db::Db;
 use crate::error::Result;
@@ -87,6 +87,110 @@ fn select_strategy(total_hits: usize, returned: usize) -> Value {
     }
 }
 
+fn collect_fan_out(
+    db: &Db,
+    direct_hits: &[(crate::db::SymbolRow, f64)],
+    max_depth: usize,
+) -> Vec<(crate::db::SymbolRow, f64)> {
+    if max_depth == 0 {
+        return vec![];
+    }
+
+    let direct_ids: HashSet<i64> = direct_hits.iter().map(|(s, _)| s.id).collect();
+    let mut visited = direct_ids.clone();
+    let mut queue: VecDeque<(i64, i64, i64, i64, f64, usize)> = VecDeque::new();
+    let mut fan_out_items: Vec<(crate::db::SymbolRow, f64)> = Vec::new();
+
+    for (sym, score) in direct_hits {
+        queue.push_back((sym.id, sym.file_id, sym.start_line, sym.end_line, *score, 0));
+    }
+
+    while let Some((sid, file_id, start, end, parent_score, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let decayed = parent_score * 0.5;
+
+        if let Ok(refs) = db.find_refs_to_symbol(sid) {
+            for r in refs.iter().filter(|r| r.context_kind == "call") {
+                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line) {
+                    if visited.insert(caller.id) {
+                        let next = (
+                            caller.id,
+                            caller.file_id,
+                            caller.start_line,
+                            caller.end_line,
+                            decayed,
+                            depth + 1,
+                        );
+                        fan_out_items.push((caller, decayed));
+                        queue.push_back(next);
+                    }
+                }
+            }
+        }
+
+        if let Ok(refs) = db.find_refs_in_file(file_id) {
+            for r in refs
+                .iter()
+                .filter(|r| r.context_kind == "call" && r.line >= start && r.line <= end)
+            {
+                if let Some(target_id) = r.target_symbol_id {
+                    if let Ok(Some(callee)) = db.symbol_by_id(target_id) {
+                        if visited.insert(callee.id) {
+                            let next = (
+                                callee.id,
+                                callee.file_id,
+                                callee.start_line,
+                                callee.end_line,
+                                decayed,
+                                depth + 1,
+                            );
+                            fan_out_items.push((callee, decayed));
+                            queue.push_back(next);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fan_out_items
+}
+
+fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
+    let id_set: HashSet<i64> = items.iter().map(|(s, _)| s.id).collect();
+    let name_by_id: HashMap<i64, &str> = items
+        .iter()
+        .map(|(s, _)| (s.id, s.qualified_name.as_str()))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut edges = Vec::new();
+
+    for (sym, _) in items {
+        if let Ok(refs) = db.find_refs_in_file(sym.file_id) {
+            for r in refs.iter().filter(|r| {
+                r.context_kind == "call" && r.line >= sym.start_line && r.line <= sym.end_line
+            }) {
+                if let Some(tid) = r.target_symbol_id {
+                    if id_set.contains(&tid) && tid != sym.id {
+                        let key = (sym.id, tid);
+                        if seen.insert(key) {
+                            edges.push(json!({
+                                "from": sym.qualified_name,
+                                "to": name_by_id[&tid],
+                                "kind": "call",
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    edges
+}
+
 pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
     let patterns = expand_patterns(query);
 
@@ -110,7 +214,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let file_map: HashMap<i64, crate::db::FileRow> = unique_file_ids
+    let mut file_map: HashMap<i64, crate::db::FileRow> = unique_file_ids
         .iter()
         .filter_map(|&fid| db.file_by_id(fid).ok().flatten().map(|f| (fid, f)))
         .collect();
@@ -156,9 +260,29 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
     });
+
+    let direct_ids: HashSet<i64> = scored.iter().map(|(s, _)| s.id).collect();
+    let depth = fan_out_depth(total_hits);
+    let fan_out = collect_fan_out(db, &scored, depth);
+    scored.extend(fan_out);
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
+    });
     scored.truncate(budget);
 
-    // Component lookup for budgeted items
+    // Extend file_map with any new files from fan-out items
+    for (sym, _) in &scored {
+        if !file_map.contains_key(&sym.file_id) {
+            if let Ok(Some(f)) = db.file_by_id(sym.file_id) {
+                file_map.insert(sym.file_id, f);
+            }
+        }
+    }
+
+    let edges = collect_edges(db, &scored);
+
     let budgeted_file_ids: Vec<i64> = scored
         .iter()
         .map(|(s, _)| s.file_id)
@@ -169,6 +293,9 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         .component_names_by_file_ids(&budgeted_file_ids)
         .unwrap_or_default();
 
+    let mut direct_count = 0i64;
+    let mut fan_out_count = 0i64;
+
     let items: Vec<Value> = scored
         .iter()
         .map(|(sym, _score)| {
@@ -178,12 +305,20 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 .unwrap_or_default();
             let component = component_map.get(&sym.file_id);
             let lines = sym.end_line - sym.start_line + 1;
+            let reason = if direct_ids.contains(&sym.id) {
+                direct_count += 1;
+                "direct_match"
+            } else {
+                fan_out_count += 1;
+                "fan_out"
+            };
             json!({
                 "symbol": sym.qualified_name,
                 "file": file_path,
                 "kind": sym.kind,
                 "lines": lines,
                 "component": component,
+                "reason": reason,
                 "estimated_tokens": lines * 4,
                 "fetch": format!("sutra_read(symbol='{}')", sym.qualified_name),
             })
@@ -203,11 +338,12 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
 
     Ok(json!({
         "items": items,
+        "edges": edges,
         "strategy": select_strategy(total_hits, items.len()),
         "summary": {
             "total_items": items.len(),
-            "direct_matches": items.len(),
-            "fan_out_items": 0,
+            "direct_matches": direct_count,
+            "fan_out_items": fan_out_count,
             "components_touched": components_touched,
             "total_estimated_tokens": total_tokens,
         },

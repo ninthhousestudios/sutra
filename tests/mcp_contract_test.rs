@@ -678,6 +678,14 @@ fn test_refs_context_kind_filter() {
 }
 
 fn setup_explore_db() -> (tempfile::TempDir, Db) {
+    setup_explore_db_inner(false)
+}
+
+fn setup_explore_db_with_calls() -> (tempfile::TempDir, Db) {
+    setup_explore_db_inner(true)
+}
+
+fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("explore_test", dir.path()).unwrap();
 
@@ -685,39 +693,53 @@ fn setup_explore_db() -> (tempfile::TempDir, Db) {
         .unwrap();
     let file = db.file_by_path("src/parser.rs").unwrap().unwrap();
 
-    for (qn, sn, start, end) in [
+    let syms: Vec<(&str, &str, i64, i64)> = vec![
         ("parse_imports", "parse_imports", 1, 20),
         ("resolve_imports", "resolve_imports", 25, 50),
         ("handle_exports", "handle_exports", 55, 70),
         ("build_ast", "build_ast", 75, 100),
-    ] {
-        db.insert_symbol(&InsertSymbolParams {
-            file_id: file.id,
-            qualified_name: qn,
-            short_name: sn,
-            kind: "function",
-            signature: Some(&format!("fn {sn}()")),
-            signature_hash: None,
-            visibility: Some("pub"),
-            start_line: start,
-            start_col: 0,
-            end_line: end,
-            end_col: 0,
-            parent_symbol_id: None,
-            docstring: None,
-            cyclomatic: None,
-            cognitive: None,
-            max_nesting: None,
-            flags: 0,
-            language_attrs: None,
-        })
-        .unwrap();
+    ];
+
+    let mut sym_ids = Vec::new();
+    for (qn, sn, start, end) in &syms {
+        let id = db
+            .insert_symbol(&InsertSymbolParams {
+                file_id: file.id,
+                qualified_name: qn,
+                short_name: sn,
+                kind: "function",
+                signature: Some(&format!("fn {sn}()")),
+                signature_hash: None,
+                visibility: Some("pub"),
+                start_line: *start,
+                start_col: 0,
+                end_line: *end,
+                end_col: 0,
+                parent_symbol_id: None,
+                docstring: None,
+                cyclomatic: None,
+                cognitive: None,
+                max_nesting: None,
+                flags: 0,
+                language_attrs: None,
+            })
+            .unwrap();
+        sym_ids.push(id);
+    }
+
+    if with_calls {
+        // parse_imports calls resolve_imports (ref at line 10, within parse_imports body 1-20)
+        db.insert_ref(file.id, Some(sym_ids[1]), None, 10, 4, "call")
+            .unwrap();
+        // build_ast calls parse_imports (ref at line 80, within build_ast body 75-100)
+        db.insert_ref(file.id, Some(sym_ids[0]), None, 80, 4, "call")
+            .unwrap();
     }
 
     db.insert_snapshot(&SnapshotParams {
         files_parsed: 1,
         symbols_extracted: 4,
-        refs_extracted: 0,
+        refs_extracted: if with_calls { 2 } else { 0 },
         parse_errors: 0,
         duration_ms: 100,
         total_complexity: 0,
@@ -794,4 +816,120 @@ fn test_explore_negative_budget_clamps() {
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "negative budget should clamp to 1");
+}
+
+#[test]
+fn test_explore_reason_field() {
+    let (_dir, db) = setup_explore_db();
+    let result = explore::handle(&db, "import", 10).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    for item in items {
+        assert_eq!(
+            item["reason"].as_str().unwrap(),
+            "direct_match",
+            "without call edges, all items should be direct_match"
+        );
+    }
+}
+
+#[test]
+fn test_explore_fan_out_few_hits() {
+    // "build_ast" matches 1 symbol → 1-3 range → 2-hop fan-out
+    // build_ast calls parse_imports, parse_imports calls resolve_imports
+    // So fan-out should surface parse_imports (hop 1) and resolve_imports (hop 2)
+    let (_dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, "build_ast", 10).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    let direct: Vec<_> = items
+        .iter()
+        .filter(|i| i["reason"].as_str() == Some("direct_match"))
+        .collect();
+    let fan_out: Vec<_> = items
+        .iter()
+        .filter(|i| i["reason"].as_str() == Some("fan_out"))
+        .collect();
+
+    assert_eq!(direct.len(), 1, "build_ast is the only direct match");
+    assert!(
+        fan_out.len() >= 1,
+        "should have at least 1 fan-out item, got {}",
+        fan_out.len()
+    );
+
+    let fan_out_names: Vec<&str> = fan_out
+        .iter()
+        .filter_map(|i| i["symbol"].as_str())
+        .collect();
+    assert!(
+        fan_out_names.contains(&"parse_imports"),
+        "parse_imports should be a fan-out item (callee of build_ast), got: {fan_out_names:?}"
+    );
+
+    let summary = &result["summary"];
+    assert!(
+        summary["fan_out_items"].as_i64().unwrap() >= 1,
+        "summary should report fan-out items"
+    );
+    assert_eq!(
+        summary["direct_matches"].as_i64().unwrap(),
+        1,
+        "summary should report 1 direct match"
+    );
+}
+
+#[test]
+fn test_explore_fan_out_score_decay() {
+    // Fan-out items should rank below direct matches
+    let (_dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, "build_ast", 10).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    // First item should be the direct match
+    assert_eq!(items[0]["reason"].as_str().unwrap(), "direct_match");
+    // All subsequent should be fan_out
+    for item in &items[1..] {
+        assert_eq!(item["reason"].as_str().unwrap(), "fan_out");
+    }
+}
+
+#[test]
+fn test_explore_edges() {
+    let (_dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, "build_ast", 10).unwrap();
+
+    let edges = result["edges"]
+        .as_array()
+        .expect("edges array should exist");
+    // build_ast calls parse_imports — both should be in the response
+    let has_build_to_parse = edges.iter().any(|e| {
+        e["from"].as_str() == Some("build_ast")
+            && e["to"].as_str() == Some("parse_imports")
+            && e["kind"].as_str() == Some("call")
+    });
+    assert!(
+        has_build_to_parse,
+        "should have edge from build_ast to parse_imports, edges: {edges:?}"
+    );
+
+    // All edge endpoints should be in the response items
+    let item_names: Vec<&str> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["symbol"].as_str())
+        .collect();
+    for edge in edges {
+        let from = edge["from"].as_str().unwrap();
+        let to = edge["to"].as_str().unwrap();
+        assert!(
+            item_names.contains(&from),
+            "edge 'from' {from} not in response items"
+        );
+        assert!(
+            item_names.contains(&to),
+            "edge 'to' {to} not in response items"
+        );
+    }
 }
