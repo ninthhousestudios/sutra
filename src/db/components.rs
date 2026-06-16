@@ -402,6 +402,36 @@ impl Db {
         })
     }
 
+    pub fn component_names_by_file_ids(
+        &self,
+        file_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        let conn = self.conn.lock();
+        if file_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders: Vec<String> = (1..=file_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT cm.file_id, c.name \
+             FROM component_membership cm \
+             JOIN components c ON c.id = cm.component_id \
+             WHERE c.dissolved_at IS NULL \
+             AND cm.file_id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = file_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub fn set_component_lifecycle(&self, component_id: &str, state: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(

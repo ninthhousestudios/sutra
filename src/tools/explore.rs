@@ -1,10 +1,12 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::Db;
 use crate::error::Result;
+
+const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "method", "enum"];
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExploreArgs {
@@ -90,30 +92,89 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
     }
 
     let budget = budget.max(1) as usize;
+    let total_hits = hits.len();
 
-    let mut scored: Vec<_> = hits.into_values().collect();
+    // Fetch FileRows for structural importance signals
+    let unique_file_ids: Vec<i64> = hits
+        .values()
+        .map(|(s, _)| s.file_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let file_map: HashMap<i64, crate::db::FileRow> = unique_file_ids
+        .iter()
+        .filter_map(|&fid| db.file_by_id(fid).ok().flatten().map(|f| (fid, f)))
+        .collect();
+
+    // Compute normalization maxima
+    let max_match_density = hits.values().map(|(_, c)| *c).max().unwrap_or(1) as f64;
+    let max_structural: f64 = hits
+        .values()
+        .map(|(sym, _)| {
+            file_map
+                .get(&sym.file_id)
+                .map(|f| (f.fan_in_files + f.blast_radius) as f64)
+                .unwrap_or(0.0)
+        })
+        .fold(0.0_f64, f64::max);
+    let max_structural = if max_structural > 0.0 {
+        max_structural
+    } else {
+        1.0
+    };
+
+    // Score each hit with the 3-signal weighted formula
+    let mut scored: Vec<(crate::db::SymbolRow, f64)> = hits
+        .into_values()
+        .map(|(sym, match_count)| {
+            let match_density_norm = match_count as f64 / max_match_density;
+            let structural_norm = file_map
+                .get(&sym.file_id)
+                .map(|f| (f.fan_in_files + f.blast_radius) as f64 / max_structural)
+                .unwrap_or(0.0);
+            let def_priority = if DEFINITION_KINDS.contains(&sym.kind.as_str()) {
+                1.0
+            } else {
+                0.0
+            };
+            let score = match_density_norm * 0.5 + structural_norm * 0.3 + def_priority * 0.2;
+            (sym, score)
+        })
+        .collect();
+
     scored.sort_by(|a, b| {
-        b.1.cmp(&a.1)
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
     });
-    let total_hits = scored.len();
     scored.truncate(budget);
+
+    // Component lookup for budgeted items
+    let budgeted_file_ids: Vec<i64> = scored
+        .iter()
+        .map(|(s, _)| s.file_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let component_map = db
+        .component_names_by_file_ids(&budgeted_file_ids)
+        .unwrap_or_default();
 
     let items: Vec<Value> = scored
         .iter()
         .map(|(sym, _score)| {
-            let file_path = db
-                .file_by_id(sym.file_id)
-                .ok()
-                .flatten()
+            let file_path = file_map
+                .get(&sym.file_id)
                 .map(|f| f.path.clone())
                 .unwrap_or_default();
+            let component = component_map.get(&sym.file_id);
             let lines = sym.end_line - sym.start_line + 1;
             json!({
                 "symbol": sym.qualified_name,
                 "file": file_path,
                 "kind": sym.kind,
                 "lines": lines,
+                "component": component,
                 "estimated_tokens": lines * 4,
                 "fetch": format!("sutra_read(symbol='{}')", sym.qualified_name),
             })
@@ -125,6 +186,12 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         .filter_map(|i| i["estimated_tokens"].as_i64())
         .sum();
 
+    let components_touched = items
+        .iter()
+        .filter_map(|i| i["component"].as_str())
+        .collect::<HashSet<_>>()
+        .len();
+
     Ok(json!({
         "items": items,
         "strategy": select_strategy(total_hits, items.len()),
@@ -132,7 +199,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
             "total_items": items.len(),
             "direct_matches": items.len(),
             "fan_out_items": 0,
-            "components_touched": 0,
+            "components_touched": components_touched,
             "total_estimated_tokens": total_tokens,
         },
     }))
@@ -180,6 +247,12 @@ mod tests {
         let patterns = expand_patterns("foo bar");
         let count = patterns.iter().filter(|p| p.as_str() == "foo").count();
         assert_eq!(count, 1, "no duplicates");
+    }
+
+    #[test]
+    fn expand_empty_string() {
+        let patterns = expand_patterns("");
+        assert_eq!(patterns, vec![""]);
     }
 
     #[test]
