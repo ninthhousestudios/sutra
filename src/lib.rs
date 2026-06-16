@@ -11,6 +11,7 @@ pub mod git;
 pub mod graph;
 pub mod guard;
 pub mod health;
+pub mod lessons;
 pub mod mcp;
 pub mod parser;
 pub mod pipeline;
