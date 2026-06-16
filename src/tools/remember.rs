@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::error::Result;
+use crate::error::{Result, SutraError};
 use crate::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -36,14 +36,24 @@ pub fn handle(lessons_db: &LessonsDb, args: &RememberArgs) -> Result<serde_json:
         .iter()
         .map(|a| {
             let kind = match a.kind.as_str() {
+                "symbol" => AnchorKind::Symbol,
                 "file" => AnchorKind::File,
                 "import_pattern" => AnchorKind::ImportPattern,
                 "directory" => AnchorKind::Directory,
-                _ => AnchorKind::Symbol,
+                other => {
+                    return Err(SutraError::InvalidArgument {
+                        tool: "sutra_remember",
+                        argument: "location_anchors[].kind",
+                        constraint: "must be one of: symbol, file, import_pattern, directory"
+                            .into(),
+                        received: Some(other.to_string()),
+                        next_action: "Fix the anchor kind and retry.".into(),
+                    });
+                }
             };
-            (kind, a.value.as_str())
+            Ok((kind, a.value.as_str()))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let cats: Vec<&str> = args
         .categories

@@ -141,3 +141,38 @@ fn query_updates_last_surfaced() {
         assert!(after.is_some());
     }
 }
+
+#[test]
+fn source_tasks_persisted_as_citations() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Don't use unwrap_or_default on fallible refreshes",
+            anchors: &[(AnchorKind::Symbol, "refresh_index")],
+            categories: &[],
+            source_task_ids: &["sutra/38", "sutra/119"],
+            project_origin: Some("sutra"),
+        })
+        .unwrap();
+
+    let conn = db.conn_for_test();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM citations WHERE lesson_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+
+    let task_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT task_id FROM citations WHERE lesson_id = ?1 ORDER BY task_id")
+            .unwrap();
+        stmt.query_map(rusqlite::params![id], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(task_ids, vec!["sutra/119", "sutra/38"]);
+}

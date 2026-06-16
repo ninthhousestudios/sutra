@@ -153,6 +153,13 @@ impl LessonsDb {
             )?;
         }
 
+        for task_id in params.source_task_ids {
+            tx.execute(
+                "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'source')",
+                params![id, task_id],
+            )?;
+        }
+
         tx.commit()?;
         Ok(id)
     }
