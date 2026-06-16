@@ -756,8 +756,13 @@ fn test_explore_basic() {
     }
     assert!(result["strategy"]["action"].is_string());
     assert!(result["strategy"]["rationale"].is_string());
-    assert!(result["summary"]["total_items"].is_i64());
-    assert!(result["summary"]["total_estimated_tokens"].is_i64());
+    let summary = &result["summary"];
+    assert!(summary["total_items"].is_i64());
+    assert!(summary["direct_matches"].is_i64());
+    assert!(summary["fan_out_items"].is_i64());
+    assert!(summary["components_touched"].is_i64());
+    assert!(summary["total_estimated_tokens"].is_i64());
+    assert_eq!(summary["fan_out_items"].as_i64().unwrap(), 0);
 }
 
 #[test]
@@ -780,4 +785,13 @@ fn test_explore_budget_limits_items() {
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "budget=1 should return at most 1 item");
+}
+
+#[test]
+fn test_explore_negative_budget_clamps() {
+    let (_dir, db) = setup_explore_db();
+    let result = explore::handle(&db, "parse_imports", -5).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    assert!(items.len() <= 1, "negative budget should clamp to 1");
 }

@@ -17,17 +17,37 @@ pub struct ExploreArgs {
 }
 
 fn expand_patterns(query: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut patterns = Vec::new();
-    let words: Vec<&str> = query.split_whitespace().collect();
-    patterns.push(query.to_string());
-    if words.len() > 1 {
-        patterns.push(words.join("_"));
-        for word in &words {
+    let mut push = |s: String| {
+        if seen.insert(s.clone()) {
+            patterns.push(s);
+        }
+    };
+
+    push(query.to_string());
+
+    // Split on whitespace: "import parsing" → join as "import_parsing", plus individual words
+    let ws_words: Vec<&str> = query.split_whitespace().collect();
+    if ws_words.len() > 1 {
+        push(ws_words.join("_"));
+        for word in &ws_words {
             if word.len() >= 3 {
-                patterns.push(word.to_string());
+                push(word.to_string());
             }
         }
     }
+
+    // Split on underscores: "parse_imports" → individual segments
+    let us_words: Vec<&str> = query.split('_').collect();
+    if us_words.len() > 1 {
+        for word in &us_words {
+            if word.len() >= 3 {
+                push(word.to_string());
+            }
+        }
+    }
+
     patterns
 }
 
@@ -69,10 +89,15 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         }
     }
 
+    let budget = budget.max(1) as usize;
+
     let mut scored: Vec<_> = hits.into_values().collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
+    });
     let total_hits = scored.len();
-    scored.truncate(budget as usize);
+    scored.truncate(budget);
 
     let items: Vec<Value> = scored
         .iter()
@@ -105,6 +130,9 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         "strategy": select_strategy(total_hits, items.len()),
         "summary": {
             "total_items": items.len(),
+            "direct_matches": items.len(),
+            "fan_out_items": 0,
+            "components_touched": 0,
             "total_estimated_tokens": total_tokens,
         },
     }))
@@ -130,6 +158,14 @@ mod tests {
     }
 
     #[test]
+    fn expand_snake_case_splits() {
+        let patterns = expand_patterns("parse_imports");
+        assert!(patterns.contains(&"parse_imports".to_string()));
+        assert!(patterns.contains(&"parse".to_string()));
+        assert!(patterns.contains(&"imports".to_string()));
+    }
+
+    #[test]
     fn expand_skips_short_words() {
         let patterns = expand_patterns("do it now");
         assert!(patterns.contains(&"do it now".to_string()));
@@ -137,6 +173,13 @@ mod tests {
         assert!(patterns.contains(&"now".to_string()));
         assert!(!patterns.contains(&"do".to_string()));
         assert!(!patterns.contains(&"it".to_string()));
+    }
+
+    #[test]
+    fn expand_deduplicates() {
+        let patterns = expand_patterns("foo bar");
+        let count = patterns.iter().filter(|p| p.as_str() == "foo").count();
+        assert_eq!(count, 1, "no duplicates");
     }
 
     #[test]
