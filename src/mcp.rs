@@ -71,6 +71,7 @@ use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
 use crate::tools::duplicates::DuplicatesArgs;
+use crate::tools::explore::ExploreArgs;
 use crate::tools::file_health::FileHealthArgs;
 use crate::tools::find::FindArgs;
 use crate::tools::grep::GrepArgs;
@@ -482,6 +483,22 @@ impl SutraServer {
             args.detail.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
+    }
+
+    #[tool(
+        description = "Explore a topic in the codebase. Returns a ranked list of matching \
+        symbols with literal sutra_read fetch instructions and a strategy recommendation. \
+        One call replaces iterative map/outline/grep exploration."
+    )]
+    pub async fn sutra_explore(
+        &self,
+        Parameters(args): Parameters<ExploreArgs>,
+    ) -> Result<String, ErrorData> {
+        let ctx = self.tool_context(&args.workspace)?;
+        let budget = args.budget.unwrap_or(10);
+        let result =
+            tools::explore::handle(ctx.db(), &args.query, budget).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

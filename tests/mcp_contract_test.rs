@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
 use sutra::tools::{
-    ToolContext, deps, find, grep, impact, map, outline, read, refs, tools_meta, winnow,
+    ToolContext, deps, explore, find, grep, impact, map, outline, read, refs, tools_meta, winnow,
 };
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
@@ -675,4 +675,109 @@ fn test_refs_context_kind_filter() {
         0,
         "filter with no matches should return 0 refs"
     );
+}
+
+fn setup_explore_db() -> (tempfile::TempDir, Db) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_test", dir.path()).unwrap();
+
+    db.upsert_file("src/parser.rs", "rust", "hash1", 100, true)
+        .unwrap();
+    let file = db.file_by_path("src/parser.rs").unwrap().unwrap();
+
+    for (qn, sn, start, end) in [
+        ("parse_imports", "parse_imports", 1, 20),
+        ("resolve_imports", "resolve_imports", 25, 50),
+        ("handle_exports", "handle_exports", 55, 70),
+        ("build_ast", "build_ast", 75, 100),
+    ] {
+        db.insert_symbol(&InsertSymbolParams {
+            file_id: file.id,
+            qualified_name: qn,
+            short_name: sn,
+            kind: "function",
+            signature: Some(&format!("fn {sn}()")),
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: start,
+            start_col: 0,
+            end_line: end,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        })
+        .unwrap();
+    }
+
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 4,
+        refs_extracted: 0,
+        parse_errors: 0,
+        duration_ms: 100,
+        total_complexity: 0,
+        dead_symbol_count: 0,
+        hotspot_count: 0,
+        health_score: 0.0,
+        ..Default::default()
+    })
+    .unwrap();
+
+    (dir, db)
+}
+
+#[test]
+fn test_explore_basic() {
+    let (_dir, db) = setup_explore_db();
+    let result = explore::handle(&db, "import", 10).unwrap();
+
+    let items = result["items"].as_array().expect("items array");
+    assert!(
+        items.len() >= 2,
+        "should match parse_imports and resolve_imports, got {}",
+        items.len()
+    );
+    for item in items {
+        assert!(item["symbol"].is_string());
+        assert!(item["file"].is_string());
+        assert!(item["kind"].is_string());
+        assert!(item["lines"].is_i64());
+        assert!(item["estimated_tokens"].is_i64());
+        let fetch = item["fetch"].as_str().unwrap();
+        assert!(
+            fetch.starts_with("sutra_read(symbol='"),
+            "fetch must be a literal sutra_read call, got: {fetch}"
+        );
+    }
+    assert!(result["strategy"]["action"].is_string());
+    assert!(result["strategy"]["rationale"].is_string());
+    assert!(result["summary"]["total_items"].is_i64());
+    assert!(result["summary"]["total_estimated_tokens"].is_i64());
+}
+
+#[test]
+fn test_explore_zero_hits() {
+    let (_dir, db) = setup_explore_db();
+    let result = explore::handle(&db, "nonexistent_xyzzy", 10).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    assert!(items.is_empty());
+    assert_eq!(
+        result["strategy"]["action"].as_str().unwrap(),
+        "narrow_query"
+    );
+}
+
+#[test]
+fn test_explore_budget_limits_items() {
+    let (_dir, db) = setup_explore_db();
+    let result = explore::handle(&db, "parse_imports", 1).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    assert!(items.len() <= 1, "budget=1 should return at most 1 item");
 }
