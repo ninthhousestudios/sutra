@@ -2158,7 +2158,7 @@ fn orient_includes_health_section() {
     assert!(!findings.is_empty());
     db.replace_health_findings(&findings).unwrap();
 
-    let result = sutra::tools::orient::handle(&db, "Tools", dir.path(), None).unwrap();
+    let result = sutra::tools::orient::handle(&db, "Tools", dir.path(), None, None).unwrap();
     let orientation = result["orientation"].as_array().unwrap();
     assert_eq!(orientation.len(), 1);
 
@@ -2187,7 +2187,7 @@ fn orient_health_absent_when_clean() {
     db.insert_component("comp1", "Clean").unwrap();
     db.batch_insert_membership(&[("comp1".into(), fa)]).unwrap();
 
-    let result = sutra::tools::orient::handle(&db, "Clean", dir.path(), None).unwrap();
+    let result = sutra::tools::orient::handle(&db, "Clean", dir.path(), None, None).unwrap();
     let section = &result["orientation"][0];
 
     // Health section present but with perfect score and no findings

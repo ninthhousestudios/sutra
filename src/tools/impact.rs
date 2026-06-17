@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db::Db;
+use crate::lessons::LessonsDb;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImpactArgs {
@@ -18,7 +19,12 @@ use crate::error::{Result, SutraError};
 
 const BFS_MAX_DEPTH: usize = 3;
 
-pub fn handle(db: &Db, symbol: &str, explain: bool) -> Result<serde_json::Value> {
+pub fn handle(
+    db: &Db,
+    symbol: &str,
+    explain: bool,
+    lessons_db: Option<&LessonsDb>,
+) -> Result<serde_json::Value> {
     let sym = db
         .resolve_symbol(symbol, None)?
         .ok_or_else(|| SutraError::NotFound {
@@ -99,6 +105,21 @@ pub fn handle(db: &Db, symbol: &str, explain: bool) -> Result<serde_json::Value>
         "risk_factors": risk_factors,
         "direct_caller_files": direct_file_paths,
     });
+
+    if let Some(ldb) = lessons_db {
+        let ws_langs = db.distinct_languages().unwrap_or_default();
+        let ctx = crate::lessons::MatchContext {
+            symbol_name: &sym.qualified_name,
+            file_path: Some(&sym_file_path),
+            imports: &[],
+            project: None,
+            workspace_languages: &ws_langs,
+        };
+        let lessons = ldb.query_for_context(&ctx)?;
+        if !lessons.is_empty() {
+            result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+        }
+    }
 
     if explain {
         result["_explain"] = json!({

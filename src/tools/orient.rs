@@ -13,6 +13,7 @@ use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, scoring};
+use crate::lessons::LessonsDb;
 use crate::rules::{self, Constraint, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -311,6 +312,7 @@ pub fn handle(
     scope: &str,
     workspace_root: &Path,
     dd_engine: Option<&DdEngine>,
+    lessons_db: Option<&LessonsDb>,
 ) -> Result<serde_json::Value> {
     let components = resolve_scope(db, scope)?;
     if components.is_empty() {
@@ -371,6 +373,10 @@ pub fn handle(
                 .map(|cs| (cs.component_id.as_str(), cs))
                 .collect()
         })
+        .unwrap_or_default();
+
+    let ws_langs = lessons_db
+        .map(|_| db.distinct_languages().unwrap_or_default())
         .unwrap_or_default();
 
     let mut orientation_sections = Vec::new();
@@ -661,6 +667,28 @@ pub fn handle(
             section["health"] = health_section;
         }
 
+        if let Some(ldb) = lessons_db {
+            let mut seen_ids = HashSet::new();
+            let mut comp_lessons = Vec::new();
+            for file_path in &comp.files {
+                let ctx = crate::lessons::MatchContext {
+                    symbol_name: "",
+                    file_path: Some(file_path),
+                    imports: &[],
+                    project: None,
+                    workspace_languages: &ws_langs,
+                };
+                for lesson in ldb.query_for_context(&ctx)? {
+                    if seen_ids.insert(lesson.id.clone()) {
+                        comp_lessons.push(lesson);
+                    }
+                }
+            }
+            if !comp_lessons.is_empty() {
+                section["lessons"] = serde_json::to_value(&comp_lessons).unwrap_or_default();
+            }
+        }
+
         orientation_sections.push(section);
     }
 
@@ -782,7 +810,7 @@ mod tests {
     #[test]
     fn handle_no_component_returns_error() {
         let (db, dir) = setup_db();
-        let result = handle(&db, "nonexistent", dir.path(), None).unwrap();
+        let result = handle(&db, "nonexistent", dir.path(), None, None).unwrap();
         assert!(
             result["error"]
                 .as_str()
@@ -796,7 +824,7 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         assert_eq!(orientation["component_name"], "mycomp");
         assert!(orientation.get("preferred").is_none());
@@ -814,7 +842,7 @@ mod tests {
         db.upsert_convention_template("conv-1", "pub fn $NAME(&self) -> Result<$T>", &[])
             .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         let preferred = &orientation["preferred"]["conventions"];
         assert_eq!(preferred.as_array().unwrap().len(), 1);
@@ -833,7 +861,7 @@ mod tests {
         db.set_convention_lifecycle("global-1", "preferred", None)
             .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         let preferred = &orientation["preferred"]["conventions"];
         assert_eq!(preferred[0]["scope"], "global");
@@ -847,7 +875,7 @@ mod tests {
         db.set_convention_lifecycle("conv-1", "deprecated", None)
             .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         assert!(
             orientation["warnings"]["conventions"]
@@ -867,7 +895,7 @@ mod tests {
         db.set_convention_lifecycle("conv-1", "forbidden", None)
             .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         assert!(
             orientation["anti_patterns"]["conventions"]
@@ -884,7 +912,7 @@ mod tests {
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         let patterns = &orientation["observed_patterns"];
         assert!(
@@ -905,7 +933,7 @@ mod tests {
             .unwrap();
         db.set_component_lifecycle("comp-1", "sketch").unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         assert!(orientation.get("preferred").is_none());
         assert!(
@@ -974,7 +1002,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         let waivers = orientation["active_waivers"].as_array().unwrap();
         assert_eq!(waivers.len(), 1);
@@ -995,7 +1023,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
         let proposals = orientation["pending_proposals"].as_array().unwrap();
         assert_eq!(proposals.len(), 1);
@@ -1030,7 +1058,7 @@ provenance = "docs/adr-001"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0]["constraints"];
         assert!(!section.is_null());
         let active = section["active"].as_array().unwrap();
@@ -1058,7 +1086,7 @@ to_component = "http"
 "#,
         );
 
-        let result = handle(&db, "db", dir.path(), None).unwrap();
+        let result = handle(&db, "db", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let active = section["active"].as_array().unwrap();
         assert_eq!(active.len(), 1);
@@ -1080,7 +1108,7 @@ to = "src/config.rs"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
         let active = result["orientation"][0]["constraints"]["active"]
             .as_array()
             .unwrap();
@@ -1102,7 +1130,7 @@ scope = "src/db/"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
         assert!(result["orientation"][0]["constraints"].is_null());
     }
 
@@ -1139,7 +1167,7 @@ name = "no-tool-daemon"
         )
         .unwrap();
 
-        let result = handle(&db, "tools", dir.path(), None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let waivers = section["waivers"].as_array().unwrap();
         assert_eq!(waivers.len(), 1);
@@ -1153,7 +1181,7 @@ name = "no-tool-daemon"
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         assert!(result["orientation"][0]["constraints"].is_null());
     }
 
@@ -1191,7 +1219,7 @@ name = "no-tool-daemon"
         );
 
         let engine = DdEngine::new(std::time::Duration::from_secs(60));
-        let result = handle(&db, "tools", dir.path(), Some(&engine)).unwrap();
+        let result = handle(&db, "tools", dir.path(), Some(&engine), None).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let violations = section["violations"].as_array().unwrap();
         assert_eq!(violations.len(), 1);
@@ -1220,7 +1248,7 @@ to = "src/banned.rs"
 "#,
         );
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0];
         assert!(section["sketch_mode_note"].as_str().is_some());
         let active = section["constraints"]["active"].as_array().unwrap();
@@ -1277,7 +1305,7 @@ to = "src/banned.rs"
         // a imports c — that pair should be excluded
         db.insert_import(id_a, "src/c.rs", Some(id_c), 1).unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0];
         let coupling = section["hidden_coupling"].as_array().unwrap();
 
@@ -1324,7 +1352,7 @@ to = "src/banned.rs"
         ];
         db.replace_commit_files(&commits, &pairs).unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let section = &result["orientation"][0];
         assert!(section.get("hidden_coupling").is_none());
     }
@@ -1334,7 +1362,7 @@ to = "src/banned.rs"
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         assert!(result["orientation"][0].get("hidden_coupling").is_none());
     }
 }

@@ -176,7 +176,7 @@ fn test_grep_contract() {
 #[test]
 fn test_impact_contract() {
     let (_dir, db) = setup_test_db();
-    let result = impact::handle(&db, "main", false).unwrap();
+    let result = impact::handle(&db, "main", false, None).unwrap();
 
     assert!(result["symbol"].is_string(), "'symbol' must be a string");
     assert!(result["risk"].is_string(), "'risk' must be a string");
