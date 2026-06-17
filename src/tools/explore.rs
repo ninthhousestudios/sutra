@@ -50,6 +50,34 @@ fn expand_patterns(query: &str) -> Vec<String> {
         }
     }
 
+    // CamelCase variant from multi-word queries: "import parsing" → "ImportParsing" / "ImportPars"
+    let camel_words: Vec<&str> = query
+        .split(|c: char| c == '_' || c == ' ')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if camel_words.len() > 1 {
+        let title_case = |w: &str| -> String {
+            let mut chars = w.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            }
+        };
+        let full: String = camel_words.iter().map(|w| title_case(w)).collect();
+        push(full);
+        if let Some(last) = camel_words.last() {
+            if last.len() > 4 {
+                let mut truncated: String = camel_words[..camel_words.len() - 1]
+                    .iter()
+                    .map(|w| title_case(w))
+                    .collect();
+                let trunc_last: String = last.chars().take(4).collect();
+                truncated.push_str(&title_case(&trunc_last));
+                push(truncated);
+            }
+        }
+    }
+
     patterns
 }
 
@@ -62,29 +90,88 @@ fn fan_out_depth(unique_hits: usize) -> usize {
     }
 }
 
-fn select_strategy(total_hits: usize, returned: usize) -> Value {
-    if total_hits == 0 {
-        json!({
+fn select_strategy(
+    scores: &[f64],
+    total_grep_hits: usize,
+    comp_counts: &[(String, usize)],
+) -> Value {
+    let n = scores.len();
+
+    if n == 0 {
+        return json!({
             "action": "narrow_query",
             "rationale": "No symbols matched the query. Try a more specific or different term."
-        })
-    } else if total_hits <= 3 {
-        json!({
-            "action": "read_all",
-            "rationale": format!("Only {} items — read them all.", total_hits)
-        })
-    } else if total_hits >= 10 {
-        json!({
-            "action": "narrow_query",
-            "rationale": format!("{} hits — query is too broad. Consider narrowing.", total_hits)
-        })
-    } else {
-        json!({
-            "action": "read_top_n",
-            "n": std::cmp::min(3, returned),
-            "rationale": format!("{} items found. Start with the top matches.", returned)
-        })
+        });
     }
+
+    if n < 3 {
+        return json!({
+            "action": "read_all",
+            "rationale": format!("Only {} items — read them all.", n)
+        });
+    }
+
+    if total_grep_hits >= 10 && scores[0] < 0.4 {
+        let mut rationale = format!(
+            "{} hits with no strong match — query is too broad.",
+            total_grep_hits
+        );
+        if !comp_counts.is_empty() {
+            let suggestions: Vec<String> = comp_counts
+                .iter()
+                .take(3)
+                .map(|(name, count)| format!("{} ({} hits)", name, count))
+                .collect();
+            rationale.push_str(&format!(
+                " Try narrowing to a component: {}.",
+                suggestions.join(", ")
+            ));
+        }
+        let suggested_refinements: Vec<&str> = comp_counts
+            .iter()
+            .take(3)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        return json!({
+            "action": "narrow_query",
+            "rationale": rationale,
+            "suggested_refinements": suggested_refinements
+        });
+    }
+
+    if n >= 2 && scores[0] > 2.0 * scores[1] {
+        return json!({
+            "action": "read_top_n",
+            "n": 1,
+            "rationale": "Top result scores well above the rest — start there."
+        });
+    }
+
+    if let Some((top_comp, top_count)) = comp_counts.first() {
+        if *top_count as f64 / n as f64 >= 0.8 {
+            return json!({
+                "action": "explore_component",
+                "component": top_comp,
+                "rationale": format!(
+                    "{}% of results are in component '{}' — explore it directly.",
+                    (*top_count * 100) / n,
+                    top_comp
+                )
+            });
+        }
+    }
+
+    let within_2x = scores
+        .iter()
+        .take(3)
+        .take_while(|&&s| s * 2.0 >= scores[0])
+        .count();
+    let read_n = within_2x.max(2).min(3);
+    json!({
+        "action": "read_top_n",
+        "n": read_n,
+        "rationale": format!("{} items found. Start with the top {} matches.", n, read_n)
+    })
 }
 
 fn collect_fan_out(
@@ -192,6 +279,66 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
 }
 
 pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
+    // Qualified-name detection: query containing :: falls through to sutra_find behavior
+    if query.contains("::") {
+        let (symbols, _tier) = db.find_symbols_by_name_tiered(query, None, 1)?;
+        if symbols.is_empty() {
+            return Ok(json!({
+                "items": [],
+                "edges": [],
+                "strategy": {
+                    "action": "narrow_query",
+                    "rationale": format!("No symbol matching '{}' found. Check the qualified name.", query)
+                },
+                "summary": {
+                    "total_items": 0,
+                    "direct_matches": 0,
+                    "fan_out_items": 0,
+                    "components_touched": 0,
+                    "total_estimated_tokens": 0
+                }
+            }));
+        }
+        let sym = &symbols[0];
+        let file_path = db
+            .file_by_id(sym.file_id)
+            .ok()
+            .flatten()
+            .map(|f| f.path.clone())
+            .unwrap_or_default();
+        let file_ids = vec![sym.file_id];
+        let component_map = db
+            .component_names_by_file_ids(&file_ids)
+            .unwrap_or_default();
+        let component = component_map.get(&sym.file_id);
+        let lines = sym.end_line - sym.start_line + 1;
+        return Ok(json!({
+            "items": [{
+                "symbol": sym.qualified_name,
+                "file": file_path,
+                "kind": sym.kind,
+                "lines": lines,
+                "component": component,
+                "reason": "direct_match",
+                "estimated_tokens": lines * 4,
+                "fetch": format!("sutra_read(symbol='{}')", sym.qualified_name),
+            }],
+            "edges": [],
+            "strategy": {
+                "action": "read_top_n",
+                "n": 1,
+                "rationale": "Qualified symbol lookup — read it directly."
+            },
+            "summary": {
+                "total_items": 1,
+                "direct_matches": 1,
+                "fan_out_items": 0,
+                "components_touched": 1,
+                "total_estimated_tokens": lines * 4
+            }
+        }));
+    }
+
     let patterns = expand_patterns(query);
 
     let mut hits: HashMap<i64, (crate::db::SymbolRow, usize)> = HashMap::new();
@@ -293,6 +440,18 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         .component_names_by_file_ids(&budgeted_file_ids)
         .unwrap_or_default();
 
+    // Compute per-component item counts for strategy selection
+    let mut comp_count_map: HashMap<String, usize> = HashMap::new();
+    for (sym, _) in &scored {
+        if let Some(name) = component_map.get(&sym.file_id) {
+            *comp_count_map.entry(name.clone()).or_default() += 1;
+        }
+    }
+    let mut comp_counts: Vec<(String, usize)> = comp_count_map.into_iter().collect();
+    comp_counts.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let scores: Vec<f64> = scored.iter().map(|(_, s)| *s).collect();
+
     let mut direct_count = 0i64;
     let mut fan_out_count = 0i64;
 
@@ -339,7 +498,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
     Ok(json!({
         "items": items,
         "edges": edges,
-        "strategy": select_strategy(total_hits, items.len()),
+        "strategy": select_strategy(&scores, total_hits, &comp_counts),
         "summary": {
             "total_items": items.len(),
             "direct_matches": direct_count,
@@ -401,28 +560,99 @@ mod tests {
     }
 
     #[test]
-    fn strategy_zero_hits() {
-        let s = select_strategy(0, 0);
+    fn expand_camel_case_from_spaces() {
+        let patterns = expand_patterns("import parsing");
+        assert!(patterns.contains(&"ImportParsing".to_string()));
+        assert!(patterns.contains(&"ImportPars".to_string()));
+    }
+
+    #[test]
+    fn expand_camel_case_from_underscores() {
+        let patterns = expand_patterns("parse_imports");
+        assert!(patterns.contains(&"ParseImports".to_string()));
+        assert!(patterns.contains(&"ParseImpo".to_string()));
+    }
+
+    #[test]
+    fn expand_camel_case_no_truncation_for_short_last_word() {
+        let patterns = expand_patterns("get foo");
+        assert!(patterns.contains(&"GetFoo".to_string()));
+        // "foo" is only 3 chars, no truncated variant
+        assert!(!patterns.iter().any(|p| p.starts_with("Get")
+            && p != "GetFoo"
+            && p.chars().next().unwrap().is_uppercase()));
+    }
+
+    #[test]
+    fn strategy_zero_items() {
+        let s = select_strategy(&[], 0, &[]);
         assert_eq!(s["action"], "narrow_query");
     }
 
     #[test]
-    fn strategy_few_hits() {
-        let s = select_strategy(2, 2);
+    fn strategy_read_all_few_items() {
+        let s = select_strategy(&[0.8, 0.5], 2, &[]);
         assert_eq!(s["action"], "read_all");
     }
 
     #[test]
-    fn strategy_many_hits() {
-        let s = select_strategy(15, 10);
+    fn strategy_narrow_query_diffuse() {
+        // 12 grep hits, weak top score, spread across components
+        let scores = vec![0.3, 0.28, 0.25, 0.2, 0.18];
+        let comps = vec![
+            ("parser".to_string(), 2),
+            ("db".to_string(), 2),
+            ("tools".to_string(), 1),
+        ];
+        let s = select_strategy(&scores, 12, &comps);
         assert_eq!(s["action"], "narrow_query");
+        assert!(s["suggested_refinements"].is_array());
+        let refs = s["suggested_refinements"].as_array().unwrap();
+        assert_eq!(refs[0], "parser");
     }
 
     #[test]
-    fn strategy_medium_hits() {
-        let s = select_strategy(6, 6);
+    fn strategy_read_top_1_dominant() {
+        // Top score > 2× second
+        let scores = vec![0.9, 0.3, 0.2, 0.1];
+        let s = select_strategy(&scores, 5, &[]);
         assert_eq!(s["action"], "read_top_n");
+        assert_eq!(s["n"], 1);
+    }
+
+    #[test]
+    fn strategy_explore_component() {
+        // 8 of 10 items in "parser" component → 80%
+        let scores = vec![0.7, 0.6, 0.5, 0.5, 0.4, 0.4, 0.3, 0.3, 0.2, 0.2];
+        let comps = vec![("parser".to_string(), 8), ("db".to_string(), 2)];
+        let s = select_strategy(&scores, 7, &comps);
+        assert_eq!(s["action"], "explore_component");
+        assert_eq!(s["component"], "parser");
+    }
+
+    #[test]
+    fn strategy_read_top_n_cluster() {
+        // Top 3 within 2× of each other, no single dominant, mixed components
+        let scores = vec![0.8, 0.6, 0.5, 0.3, 0.2];
+        let comps = vec![
+            ("tools".to_string(), 2),
+            ("db".to_string(), 2),
+            ("parser".to_string(), 1),
+        ];
+        let s = select_strategy(&scores, 5, &comps);
+        assert_eq!(s["action"], "read_top_n");
+        // 0.6 * 2 = 1.2 >= 0.8 ✓, 0.5 * 2 = 1.0 >= 0.8 ✓ → 3 within 2×
         assert_eq!(s["n"], 3);
+    }
+
+    #[test]
+    fn strategy_read_top_2_when_third_drops() {
+        // Top 2 close, third drops off
+        let scores = vec![0.8, 0.7, 0.3, 0.2];
+        let s = select_strategy(&scores, 4, &[]);
+        assert_eq!(s["action"], "read_top_n");
+        // 0.7 * 2 = 1.4 >= 0.8 ✓, 0.3 * 2 = 0.6 < 0.8 ✗ → 2 within 2×
+        assert_eq!(s["n"], 2);
     }
 
     #[test]
