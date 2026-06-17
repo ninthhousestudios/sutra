@@ -803,6 +803,39 @@ impl LessonsDb {
 }
 
 // ---------------------------------------------------------------------------
+// Anchor hygiene
+// ---------------------------------------------------------------------------
+
+impl LessonsDb {
+    /// Delete auto-generated `import_pattern` anchors whose root crate appears
+    /// in more files than `cap`. Only touches generated anchors (pattern `<root>::*`).
+    pub fn prune_high_freq_import_anchors(
+        &self,
+        freq: &std::collections::HashMap<String, usize>,
+        cap: usize,
+    ) -> Result<usize> {
+        let roots: Vec<&String> = freq
+            .iter()
+            .filter(|&(_, &count)| count > cap)
+            .map(|(root, _)| root)
+            .collect();
+        if roots.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let mut deleted = 0usize;
+        for root in &roots {
+            let pattern = format!("{root}::*");
+            deleted += conn.execute(
+                "DELETE FROM anchors WHERE kind = 'import_pattern' AND value = ?1",
+                params![pattern],
+            )?;
+        }
+        Ok(deleted)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test support
 // ---------------------------------------------------------------------------
 

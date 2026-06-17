@@ -174,11 +174,21 @@ pub fn handle(
         project_origin: args.project_origin.as_deref(),
     })?;
 
+    let pruned = if let Some(db) = workspace_db {
+        let freq = db.import_root_file_counts().unwrap_or_default();
+        lessons_db
+            .prune_high_freq_import_anchors(&freq, IMPORT_FREQ_CAP)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     Ok(json!({
         "stored": true,
         "lesson_id": id,
         "anchor_count": total_anchors,
         "enriched": enrichment.is_some(),
+        "pruned_anchors": pruned,
     }))
 }
 

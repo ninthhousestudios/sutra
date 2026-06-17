@@ -1484,14 +1484,13 @@ impl Db {
     /// Count distinct files per import root crate across the workspace.
     pub fn import_root_file_counts(&self) -> Result<std::collections::HashMap<String, usize>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT imported_path, COUNT(DISTINCT file_id) FROM imports GROUP BY imported_path",
-        )?;
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut stmt = conn.prepare("SELECT file_id, imported_path FROM imports")?;
+        let mut sets: std::collections::HashMap<String, std::collections::HashSet<i64>> =
+            std::collections::HashMap::new();
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let path: String = row.get(0)?;
-            let count: usize = row.get(1)?;
+            let file_id: i64 = row.get(0)?;
+            let path: String = row.get(1)?;
             let root = path
                 .strip_prefix("package:")
                 .map(|r| r.split('/').next().unwrap_or(""))
@@ -1509,10 +1508,10 @@ impl Db {
                     }
                 });
             if !root.is_empty() {
-                *counts.entry(root.to_string()).or_default() += count;
+                sets.entry(root.to_string()).or_default().insert(file_id);
             }
         }
-        Ok(counts)
+        Ok(sets.into_iter().map(|(k, v)| (k, v.len())).collect())
     }
 
     /// Return all import rows for a file.
