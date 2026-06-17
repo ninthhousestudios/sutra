@@ -206,11 +206,15 @@ struct Enrichment {
     categories: Vec<String>,
 }
 
+const IMPORT_FREQ_CAP: usize = 5;
+
 fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
     let mut seen_dirs: HashSet<String> = HashSet::new();
     let mut seen_imports: HashSet<String> = HashSet::new();
     let mut cats: HashSet<String> = HashSet::new();
     let mut anchors = Vec::new();
+
+    let freq = db.import_root_file_counts().unwrap_or_default();
 
     for &(kind, value) in explicit_anchors {
         let file_row = match kind {
@@ -225,7 +229,7 @@ fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
         let Some(file) = file_row else { continue };
 
         if let Some((dir, _)) = file.path.rsplit_once('/') {
-            if seen_dirs.insert(dir.to_string()) {
+            if dir.contains('/') && seen_dirs.insert(dir.to_string()) {
                 anchors.push((AnchorKind::Directory, dir.to_string()));
             }
         }
@@ -239,9 +243,11 @@ fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
         for imp in &imports {
             let root = import_root(&imp.imported_path);
             if !root.is_empty() && seen_imports.insert(root.to_string()) {
-                anchors.push((AnchorKind::ImportPattern, format!("{root}::*")));
                 if let Some(&(_, tech)) = IMPORT_TECH_MAP.iter().find(|&&(k, _)| k == root) {
                     cats.insert(tech.to_string());
+                }
+                if freq.get(root).copied().unwrap_or(0) <= IMPORT_FREQ_CAP {
+                    anchors.push((AnchorKind::ImportPattern, format!("{root}::*")));
                 }
             }
         }
@@ -280,11 +286,9 @@ fn import_root(imported_path: &str) -> &str {
     if let Some(rest) = imported_path.strip_prefix("package:") {
         return rest.split('/').next().unwrap_or("");
     }
-    // Dart stdlib — not useful as a technology anchor
-    if imported_path.starts_with("dart:") {
+    if imported_path.starts_with("dart:") || imported_path.starts_with("pub use ") {
         return "";
     }
-    // Rust: "rusqlite::params" → "rusqlite"; internal/relative paths → skip
     let root = imported_path.split("::").next().unwrap_or("");
     if root.starts_with('.') || root.starts_with('/') {
         return "";

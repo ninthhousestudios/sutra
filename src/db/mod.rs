@@ -1481,6 +1481,40 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Count distinct files per import root crate across the workspace.
+    pub fn import_root_file_counts(&self) -> Result<std::collections::HashMap<String, usize>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT imported_path, COUNT(DISTINCT file_id) FROM imports GROUP BY imported_path",
+        )?;
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let count: usize = row.get(1)?;
+            let root = path
+                .strip_prefix("package:")
+                .map(|r| r.split('/').next().unwrap_or(""))
+                .unwrap_or_else(|| {
+                    if path.starts_with("dart:") || path.starts_with("pub use ") {
+                        return "";
+                    }
+                    let r = path.split("::").next().unwrap_or("");
+                    if r.starts_with('.') || r.starts_with('/') {
+                        return "";
+                    }
+                    match r {
+                        "crate" | "self" | "super" | "std" => "",
+                        _ => r,
+                    }
+                });
+            if !root.is_empty() {
+                *counts.entry(root.to_string()).or_default() += count;
+            }
+        }
+        Ok(counts)
+    }
+
     /// Return all import rows for a file.
     pub fn imports_for_file(&self, file_id: i64) -> Result<Vec<ImportRow>> {
         let conn = self.conn.lock();
