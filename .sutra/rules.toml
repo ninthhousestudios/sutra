@@ -300,6 +300,22 @@ name = "explore-no-conventions"
 provenance = "checkpoint:sutra/171"
 severity = "blocking"
 
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/explore.rs"
+to = "src/health/*"
+name = "explore-no-health"
+provenance = "checkpoint:sutra/175"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/explore.rs"
+to = "src/lessons.rs"
+name = "explore-no-lessons"
+provenance = "checkpoint:sutra/175"
+severity = "blocking"
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Convention management
