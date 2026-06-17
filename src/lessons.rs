@@ -18,6 +18,10 @@ pub struct LessonsDb {
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_initial", include_str!("lessons_schema.sql")),
     ("0002_fts5", include_str!("lessons_fts5.sql")),
+    (
+        "0003_cite_idempotency",
+        include_str!("lessons_cite_idempotency.sql"),
+    ),
 ];
 
 impl LessonsDb {
@@ -259,6 +263,8 @@ impl LessonsDb {
 
         let mut seen = HashSet::new();
         let mut lessons = Vec::new();
+        // Track which anchor keys actually caused each lesson to surface
+        let mut matched_anchors: HashMap<String, HashSet<String>> = HashMap::new();
 
         // Phase 1: symbol match (indexed, fast). Also checks short name
         // so anchors stored as "foo" match when the caller passes "Mod::foo".
@@ -271,7 +277,7 @@ impl LessonsDb {
         {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT l.id, l.text, l.verified, l.confidence,
-                        l.project_origin, l.created_at
+                        l.project_origin, l.created_at, a.value
                  FROM lessons l
                  JOIN anchors a ON a.lesson_id = l.id
                  WHERE a.kind = 'symbol' AND (a.value = ?1 OR (?3 AND a.value = ?2))
@@ -279,15 +285,21 @@ impl LessonsDb {
                    AND (l.project_origin IS NULL OR l.project_origin = ?4 OR ?4 IS NULL)
                  ORDER BY l.verified DESC, l.confidence DESC",
             )?;
-            let rows = stmt
-                .query_map(
-                    params![ctx.symbol_name, short_name, has_qualifier, ctx.project],
-                    map_surfaced_lesson,
-                )?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            for lesson in rows {
-                seen.insert(lesson.id.clone());
-                lessons.push(lesson);
+            let mut rows = stmt.query(params![
+                ctx.symbol_name,
+                short_name,
+                has_qualifier,
+                ctx.project
+            ])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let anchor_val: String = row.get(6)?;
+                let key = format!("symbol:{anchor_val}");
+                matched_anchors.entry(id.clone()).or_default().insert(key);
+                if !seen.contains(&id) {
+                    seen.insert(id);
+                    lessons.push(map_surfaced_lesson(row)?);
+                }
             }
         }
 
@@ -305,14 +317,15 @@ impl LessonsDb {
             let mut rows = stmt.query(params![ctx.project])?;
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
-                if seen.contains(&id) {
-                    continue;
-                }
                 let anchor_kind: String = row.get(6)?;
                 let anchor_value: String = row.get(7)?;
                 if matches_anchor(&anchor_kind, &anchor_value, ctx) {
-                    seen.insert(id);
-                    lessons.push(map_surfaced_lesson(row)?);
+                    let key = format!("{anchor_kind}:{anchor_value}");
+                    matched_anchors.entry(id.clone()).or_default().insert(key);
+                    if !seen.contains(&id) {
+                        seen.insert(id);
+                        lessons.push(map_surfaced_lesson(row)?);
+                    }
                 }
             }
         }
@@ -359,28 +372,13 @@ impl LessonsDb {
         }
 
         // Phase 4: verified-first surfacing priority — suppress unverified
-        // lessons when a verified lesson shares an anchor.
+        // lessons when a verified lesson matched the same anchor in this context.
         if lessons.iter().any(|l| l.verified) && lessons.iter().any(|l| !l.verified) {
-            let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
-            let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let mut astmt = conn.prepare(&format!(
-                "SELECT lesson_id, kind || ':' || value FROM anchors WHERE lesson_id IN ({ph})"
-            ))?;
-            let mut arows = astmt.query(rusqlite::params_from_iter(ids.iter()))?;
-            let mut anchor_map: HashMap<String, Vec<String>> = HashMap::new();
-            while let Some(row) = arows.next()? {
-                let lid: String = row.get(0)?;
-                let key: String = row.get(1)?;
-                anchor_map.entry(lid).or_default().push(key);
-            }
-            drop(arows);
-            drop(astmt);
-
-            let verified_anchors: HashSet<&str> = lessons
+            let verified_matched: HashSet<&str> = lessons
                 .iter()
                 .filter(|l| l.verified)
                 .flat_map(|l| {
-                    anchor_map
+                    matched_anchors
                         .get(&l.id)
                         .into_iter()
                         .flatten()
@@ -392,13 +390,9 @@ impl LessonsDb {
                 if l.verified {
                     return true;
                 }
-                let dominated = anchor_map
+                let dominated = matched_anchors
                     .get(&l.id)
-                    .map(|anchors| {
-                        anchors
-                            .iter()
-                            .any(|a| verified_anchors.contains(a.as_str()))
-                    })
+                    .map(|keys| keys.iter().any(|k| verified_matched.contains(k.as_str())))
                     .unwrap_or(false);
                 !dominated
             });
@@ -410,6 +404,14 @@ impl LessonsDb {
                 l.text = format!("[unverified] {}", l.text);
             }
         }
+
+        // Sort verified-first before applying cap so verified lessons always
+        // take priority slots.
+        lessons.sort_by(|a, b| {
+            b.verified
+                .cmp(&a.verified)
+                .then(b.confidence.cmp(&a.confidence))
+        });
 
         let total = lessons.len();
         let omitted = total.saturating_sub(CONTEXT_SURFACING_CAP);
@@ -558,19 +560,26 @@ impl LessonsDb {
             })?;
 
         tx.execute(
-            "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'cite')",
+            "INSERT OR IGNORE INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'cite')",
             params![lesson_id, task_id.unwrap_or("")],
         )?;
+        let inserted = tx.changes() > 0;
 
-        let new_confidence = old_confidence + 1;
+        let new_confidence = if inserted {
+            old_confidence + 1
+        } else {
+            old_confidence
+        };
         let now_verified = new_confidence >= VERIFICATION_THRESHOLD;
         let crossed = now_verified && !old_verified;
 
-        tx.execute(
-            "UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now') \
-             WHERE id = ?3",
-            params![new_confidence, now_verified, lesson_id],
-        )?;
+        if inserted {
+            tx.execute(
+                "UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now') \
+                 WHERE id = ?3",
+                params![new_confidence, now_verified, lesson_id],
+            )?;
+        }
 
         tx.commit()?;
         Ok(CiteResult {

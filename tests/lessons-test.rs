@@ -1274,3 +1274,142 @@ fn unverified_tagged_when_no_verified_exist() {
     assert_eq!(cl.lessons.len(), 1);
     assert!(cl.lessons[0].text.starts_with("[unverified] "));
 }
+
+#[test]
+fn duplicate_cite_is_idempotent() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "lesson",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let r1 = db.cite(&id, Some("task/1")).unwrap();
+    assert_eq!(r1.new_confidence, 1);
+
+    // Same task cites again — should be no-op
+    let r2 = db.cite(&id, Some("task/1")).unwrap();
+    assert_eq!(r2.new_confidence, 1);
+    assert!(!r2.verified);
+
+    // Different task still works
+    let r3 = db.cite(&id, Some("task/2")).unwrap();
+    assert_eq!(r3.new_confidence, 2);
+    assert!(r3.verified);
+}
+
+#[test]
+fn multi_anchor_no_false_suppression() {
+    let (_dir, db) = setup_lessons_db();
+
+    // Verified lesson anchored to symbol "shared_fn" AND file "src/alpha.rs"
+    let v_id = db
+        .store(&StoreLessonParams {
+            text: "verified multi-anchor",
+            anchors: &[
+                (AnchorKind::Symbol, "shared_fn"),
+                (AnchorKind::File, "src/alpha.rs"),
+            ],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.cite(&v_id, Some("t/1")).unwrap();
+    db.cite(&v_id, Some("t/2")).unwrap();
+
+    // Unverified lesson anchored ONLY to file "src/alpha.rs" (non-matching
+    // in this context since we query by symbol "other_fn", file "src/beta.rs")
+    // but ALSO anchored to symbol "other_fn" which IS the query symbol.
+    // It shares file anchor "src/alpha.rs" with the verified lesson, but that
+    // anchor didn't match this context — only "symbol:other_fn" matched.
+    db.store(&StoreLessonParams {
+        text: "unverified different context",
+        anchors: &[
+            (AnchorKind::Symbol, "other_fn"),
+            (AnchorKind::File, "src/alpha.rs"),
+        ],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Query for "other_fn" in file "src/beta.rs" — the file anchor
+    // "src/alpha.rs" does NOT match this context.
+    let ctx = MatchContext {
+        symbol_name: "other_fn",
+        file_path: Some("src/beta.rs"),
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    };
+    let cl = db.query_for_context(&ctx).unwrap();
+
+    // The unverified lesson should surface because its matched anchor
+    // (symbol:other_fn) doesn't overlap with the verified lesson's
+    // matched anchor (symbol:shared_fn). The shared file anchor
+    // "src/alpha.rs" didn't match this context so shouldn't cause
+    // suppression.
+    let has_unverified = cl
+        .lessons
+        .iter()
+        .any(|l| l.text.contains("[unverified] unverified different context"));
+    assert!(
+        has_unverified,
+        "unverified lesson should not be suppressed when the shared anchor didn't match this context"
+    );
+}
+
+#[test]
+fn cap_prioritizes_verified_over_unverified() {
+    let (_dir, db) = setup_lessons_db();
+
+    // Store 12 lessons: 2 verified on different symbols, 10 unverified on
+    // different symbols. Query via a file anchor that matches all of them.
+    let mut verified_ids = Vec::new();
+    for i in 0..2 {
+        let id = db
+            .store(&StoreLessonParams {
+                text: &format!("verified-{i}"),
+                anchors: &[(AnchorKind::File, "src/big.rs")],
+                categories: &[],
+                source_task_ids: &[],
+                project_origin: None,
+            })
+            .unwrap();
+        db.cite(&id, Some(&format!("t/{i}a"))).unwrap();
+        db.cite(&id, Some(&format!("t/{i}b"))).unwrap();
+        verified_ids.push(id);
+    }
+    for i in 0..10 {
+        db.store(&StoreLessonParams {
+            text: &format!("unverified-{i}"),
+            anchors: &[(AnchorKind::File, "src/big.rs")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    }
+
+    let ctx = MatchContext {
+        symbol_name: "",
+        file_path: Some("src/big.rs"),
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    };
+    let cl = db.query_for_context(&ctx).unwrap();
+
+    // Both verified lessons must be in the result (cap is 10)
+    let verified_count = cl.lessons.iter().filter(|l| l.verified).count();
+    assert_eq!(verified_count, 2, "all verified lessons should survive cap");
+    // Verified should come first
+    assert!(cl.lessons[0].verified);
+    assert!(cl.lessons[1].verified);
+}
