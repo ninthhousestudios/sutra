@@ -534,7 +534,9 @@ impl SutraServer {
     }
 
     #[tool(description = "Store or cite a code-anchored lesson. \
-        Store mode: provide text + location_anchors (symbol names or file paths). \
+        Store mode: provide text + location_anchors (symbol names or file paths); \
+        pass workspace to auto-enrich with import-pattern anchors, directory anchors, \
+        and language/technology categories from the workspace graph. \
         Cite mode: provide cite=<lesson_id> to record a citation and increase confidence; \
         when confidence reaches the threshold the lesson becomes verified. \
         Anti-verify: provide cite + anti_verify=true to flag a lesson as wrong (decreases confidence).")]
@@ -542,7 +544,12 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<RememberArgs>,
     ) -> Result<String, ErrorData> {
-        let result = tools::remember::handle(&self.lessons_db, &args).map_err(sutra_to_rmcp)?;
+        let ws_db = args
+            .workspace
+            .as_deref()
+            .and_then(|ws| self.get_db(ws).ok());
+        let result = tools::remember::handle(&self.lessons_db, ws_db.as_deref(), &args)
+            .map_err(sutra_to_rmcp)?;
         to_compact_json(result)
     }
 
