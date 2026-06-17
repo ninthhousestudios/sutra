@@ -533,9 +533,11 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Store a code-anchored lesson (negative knowledge). \
-        Provide text describing what you learned and location anchors \
-        (symbol names or file paths) so the lesson surfaces in future sutra_read calls.")]
+    #[tool(description = "Store or cite a code-anchored lesson. \
+        Store mode: provide text + location_anchors (symbol names or file paths). \
+        Cite mode: provide cite=<lesson_id> to record a citation and increase confidence; \
+        when confidence reaches the threshold the lesson becomes verified. \
+        Anti-verify: provide cite + anti_verify=true to flag a lesson as wrong (decreases confidence).")]
     pub async fn sutra_remember(
         &self,
         Parameters(args): Parameters<RememberArgs>,
