@@ -668,6 +668,7 @@ pub fn handle(
         }
 
         if let Some(ldb) = lessons_db {
+            let project_slug = workspace_root.file_name().and_then(|n| n.to_str());
             let mut seen_ids = HashSet::new();
             let mut comp_lessons = Vec::new();
             for file_path in &comp.files {
@@ -675,10 +676,11 @@ pub fn handle(
                     symbol_name: "",
                     file_path: Some(file_path),
                     imports: &[],
-                    project: None,
+                    project: project_slug,
                     workspace_languages: &ws_langs,
                 };
-                for lesson in ldb.query_for_context(&ctx)? {
+                let cl = ldb.query_for_context(&ctx)?;
+                for lesson in cl.lessons {
                     if seen_ids.insert(lesson.id.clone()) {
                         comp_lessons.push(lesson);
                     }

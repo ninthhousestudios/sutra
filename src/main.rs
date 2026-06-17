@@ -265,7 +265,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
-            let result = sutra::tools::impact::handle(&db, &symbol, false, None)?;
+            let ws_root = std::path::Path::new(&ws.root);
+            let result = sutra::tools::impact::handle(&db, &symbol, false, None, ws_root)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Workspaces(cmd) => match cmd {

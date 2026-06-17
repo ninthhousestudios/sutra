@@ -180,9 +180,13 @@ pub fn handle(
             project: project_slug,
             workspace_languages: &ws_langs,
         };
-        let lessons = ldb.query_for_context(&ctx)?;
-        if !lessons.is_empty() {
-            result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+        let cl = ldb.query_for_context(&ctx)?;
+        if !cl.lessons.is_empty() {
+            result["lessons"] = serde_json::to_value(&cl.lessons).unwrap_or_default();
+            if cl.omitted > 0 {
+                result["lessons_omitted"] = json!(cl.omitted);
+                result["lessons_hint"] = json!("Use sutra_lessons for the full set.");
+            }
         }
     }
 

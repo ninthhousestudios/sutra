@@ -100,14 +100,28 @@ fn map_explain_true_has_breakdown() {
 #[test]
 fn impact_explain_false_has_no_explain_key() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn", false, None).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        false,
+        None,
+        std::path::Path::new("test"),
+    )
+    .unwrap();
     assert!(result.get("_explain").is_none());
 }
 
 #[test]
 fn impact_explain_true_has_frontier_and_thresholds() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn", true, None).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        true,
+        None,
+        std::path::Path::new("test"),
+    )
+    .unwrap();
 
     let explain = &result["_explain"];
     assert!(explain.is_object());

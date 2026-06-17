@@ -33,7 +33,8 @@ fn store_and_retrieve_by_symbol() {
 
     let lessons = db
         .query_for_context(&symbol_ctx("refresh_index", Some("sutra")))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(lessons.len(), 1);
     assert_eq!(lessons[0].id, id);
     assert!(lessons[0].text.contains("unwrap_or_default"));
@@ -56,7 +57,8 @@ fn no_match_returns_empty() {
 
     let lessons = db
         .query_for_context(&symbol_ctx("completely_different", None))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(lessons.is_empty());
 }
 
@@ -82,7 +84,10 @@ fn archived_lessons_not_surfaced() {
         .unwrap();
     }
 
-    let lessons = db.query_for_context(&symbol_ctx("some_fn", None)).unwrap();
+    let lessons = db
+        .query_for_context(&symbol_ctx("some_fn", None))
+        .unwrap()
+        .lessons;
     assert!(lessons.is_empty());
 }
 
@@ -101,18 +106,21 @@ fn multiple_anchors_on_one_lesson() {
     assert_eq!(
         db.query_for_context(&symbol_ctx("fn_a", None))
             .unwrap()
+            .lessons
             .len(),
         1
     );
     assert_eq!(
         db.query_for_context(&symbol_ctx("fn_b", None))
             .unwrap()
+            .lessons
             .len(),
         1
     );
     assert_eq!(
         db.query_for_context(&symbol_ctx("fn_c", None))
             .unwrap()
+            .lessons
             .len(),
         0
     );
@@ -156,7 +164,8 @@ fn query_updates_last_surfaced() {
 
     let _ = db
         .query_for_context(&symbol_ctx("target_fn", None))
-        .unwrap();
+        .unwrap()
+        .lessons;
 
     {
         let conn = db.conn_for_test();
@@ -239,7 +248,8 @@ fn project_scoping_filters_cross_project_lessons() {
 
     let sutra_lessons = db
         .query_for_context(&symbol_ctx("init", Some("sutra")))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(sutra_lessons.len(), 2);
     assert!(
         sutra_lessons
@@ -255,7 +265,8 @@ fn project_scoping_filters_cross_project_lessons() {
 
     let chitta_lessons = db
         .query_for_context(&symbol_ctx("init", Some("chitta")))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(chitta_lessons.len(), 2);
     assert!(
         chitta_lessons
@@ -264,7 +275,10 @@ fn project_scoping_filters_cross_project_lessons() {
     );
     assert!(chitta_lessons.iter().any(|l| l.text.contains("global")));
 
-    let all_lessons = db.query_for_context(&symbol_ctx("init", None)).unwrap();
+    let all_lessons = db
+        .query_for_context(&symbol_ctx("init", None))
+        .unwrap()
+        .lessons;
     assert_eq!(all_lessons.len(), 3);
 }
 
@@ -292,7 +306,8 @@ fn file_glob_matches_path() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
     assert!(hit[0].text.contains("DB layer"));
 
@@ -304,7 +319,8 @@ fn file_glob_matches_path() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(miss.is_empty());
 }
 
@@ -332,7 +348,8 @@ fn import_pattern_matches_imports() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
     assert!(hit[0].text.contains("rusqlite pitfall"));
 
@@ -345,7 +362,8 @@ fn import_pattern_matches_imports() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(miss.is_empty());
 }
 
@@ -369,7 +387,8 @@ fn directory_anchor_matches_files_under_dir() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
 
     let miss_other = db
@@ -380,7 +399,8 @@ fn directory_anchor_matches_files_under_dir() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(miss_other.is_empty());
 
     // "src/dba/foo.rs" must NOT match "src/db" — no false prefix
@@ -392,7 +412,8 @@ fn directory_anchor_matches_files_under_dir() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(miss_prefix.is_empty());
 }
 
@@ -420,7 +441,8 @@ fn multi_anchor_or_semantics() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
     assert!(hit[0].text.contains("OR semantics"));
 }
@@ -466,7 +488,8 @@ fn no_false_positives_across_kinds() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(results.is_empty());
 }
 
@@ -485,14 +508,16 @@ fn symbol_short_name_match() {
     // Query with qualified name should match anchor stored as short name
     let hit = db
         .query_for_context(&symbol_ctx("LessonsDb::query_for_context", None))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
     assert!(hit[0].text.contains("Short name"));
 
     // Direct short name still works
     let direct = db
         .query_for_context(&symbol_ctx("query_for_context", None))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(direct.len(), 1);
 }
 
@@ -520,7 +545,8 @@ fn symbol_and_file_deduplicates() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(results.len(), 1);
 }
 
@@ -544,7 +570,8 @@ fn directory_with_trailing_slash() {
             project: None,
             workspace_languages: &[],
         })
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(hit.len(), 1);
 }
 
@@ -854,7 +881,8 @@ fn category_filtering_excludes_wrong_language() {
     let dart_ws = vec!["dart".to_string()];
     let results = db
         .query_for_context(&lang_ctx("process", &dart_ws))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert!(
         results.is_empty(),
         "rust-only lesson should not surface in dart workspace"
@@ -863,7 +891,8 @@ fn category_filtering_excludes_wrong_language() {
     let rust_ws = vec!["rust".to_string()];
     let results = db
         .query_for_context(&lang_ctx("process", &rust_ws))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(
         results.len(),
         1,
@@ -884,7 +913,10 @@ fn uncategorized_lessons_surface_everywhere() {
     .unwrap();
 
     let dart_ws = vec!["dart".to_string()];
-    let results = db.query_for_context(&lang_ctx("init", &dart_ws)).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("init", &dart_ws))
+        .unwrap()
+        .lessons;
     assert_eq!(
         results.len(),
         1,
@@ -892,7 +924,10 @@ fn uncategorized_lessons_surface_everywhere() {
     );
 
     let rust_ws = vec!["rust".to_string()];
-    let results = db.query_for_context(&lang_ctx("init", &rust_ws)).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("init", &rust_ws))
+        .unwrap()
+        .lessons;
     assert_eq!(results.len(), 1);
 }
 
@@ -911,7 +946,8 @@ fn technology_category_surfaces_in_all_workspaces() {
     let dart_ws = vec!["dart".to_string()];
     let results = db
         .query_for_context(&lang_ctx("open_db", &dart_ws))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(
         results.len(),
         1,
@@ -921,7 +957,8 @@ fn technology_category_surfaces_in_all_workspaces() {
     let rust_ws = vec!["rust".to_string()];
     let results = db
         .query_for_context(&lang_ctx("open_db", &rust_ws))
-        .unwrap();
+        .unwrap()
+        .lessons;
     assert_eq!(results.len(), 1);
 }
 
@@ -937,13 +974,28 @@ fn mixed_categories_surface_if_any_relevant() {
     })
     .unwrap();
 
-    // dart workspace: "rust" fails but "sqlite" (non-language) passes → surfaces
+    // dart workspace: lesson has language tag "rust" which doesn't match → filtered out
     let dart_ws = vec!["dart".to_string()];
-    let results = db.query_for_context(&lang_ctx("store", &dart_ws)).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("store", &dart_ws))
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        results.len(),
+        0,
+        "lesson with non-matching language tag should be filtered even with technology tag"
+    );
+
+    // rust workspace: language tag "rust" matches → surfaces
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("store", &rust_ws))
+        .unwrap()
+        .lessons;
     assert_eq!(
         results.len(),
         1,
-        "mixed categories should surface if any non-language category present"
+        "lesson with matching language tag should surface"
     );
 }
 
@@ -960,7 +1012,10 @@ fn empty_workspace_languages_skips_filtering() {
     .unwrap();
 
     // Empty workspace_languages → no filtering, everything surfaces
-    let results = db.query_for_context(&lang_ctx("build", &[])).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("build", &[]))
+        .unwrap()
+        .lessons;
     assert_eq!(
         results.len(),
         1,
@@ -997,7 +1052,10 @@ fn category_filtering_with_multiple_language_lessons() {
     .unwrap();
 
     let rust_ws = vec!["rust".to_string()];
-    let results = db.query_for_context(&lang_ctx("spawn", &rust_ws)).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("spawn", &rust_ws))
+        .unwrap()
+        .lessons;
     assert_eq!(results.len(), 2);
     assert!(results.iter().any(|l| l.text.contains("Rust concurrency")));
     assert!(
@@ -1008,7 +1066,10 @@ fn category_filtering_with_multiple_language_lessons() {
     assert!(!results.iter().any(|l| l.text.contains("Dart async")));
 
     let dart_ws = vec!["dart".to_string()];
-    let results = db.query_for_context(&lang_ctx("spawn", &dart_ws)).unwrap();
+    let results = db
+        .query_for_context(&lang_ctx("spawn", &dart_ws))
+        .unwrap()
+        .lessons;
     assert_eq!(results.len(), 2);
     assert!(results.iter().any(|l| l.text.contains("Dart async")));
     assert!(

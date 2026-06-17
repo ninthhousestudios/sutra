@@ -189,6 +189,14 @@ pub struct MatchContext<'a> {
     pub workspace_languages: &'a [String],
 }
 
+const CONTEXT_SURFACING_CAP: usize = 10;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextLessons {
+    pub lessons: Vec<SurfacedLesson>,
+    pub omitted: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SurfacedLesson {
     pub id: String,
@@ -199,6 +207,12 @@ pub struct SurfacedLesson {
     pub created_at: String,
 }
 
+const GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
 fn matches_anchor(kind: &str, value: &str, ctx: &MatchContext<'_>) -> bool {
     match kind {
         "file" => {
@@ -206,14 +220,16 @@ fn matches_anchor(kind: &str, value: &str, ctx: &MatchContext<'_>) -> bool {
                 return false;
             };
             glob::Pattern::new(value)
-                .map(|p| p.matches(fp))
+                .map(|p| p.matches_with(fp, GLOB_OPTS))
                 .unwrap_or(false)
         }
         "import_pattern" => {
             let Ok(pat) = glob::Pattern::new(value) else {
                 return false;
             };
-            ctx.imports.iter().any(|imp| pat.matches(imp))
+            ctx.imports
+                .iter()
+                .any(|imp| pat.matches_with(imp, GLOB_OPTS))
         }
         "directory" => {
             let Some(fp) = ctx.file_path else {
@@ -238,7 +254,7 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
 }
 
 impl LessonsDb {
-    pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<Vec<SurfacedLesson>> {
+    pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
         let conn = self.conn.lock();
 
         let mut seen = HashSet::new();
@@ -330,15 +346,21 @@ impl LessonsDb {
                 if cats.is_empty() {
                     return true;
                 }
-                cats.iter().any(|c| {
-                    if is_language_category(c) {
-                        ws_lang_set.contains(c.as_str())
-                    } else {
-                        true
-                    }
-                })
+                let lang_tags: Vec<&str> = cats
+                    .iter()
+                    .filter(|c| is_language_category(c))
+                    .map(|c| c.as_str())
+                    .collect();
+                if lang_tags.is_empty() {
+                    return true;
+                }
+                lang_tags.iter().any(|t| ws_lang_set.contains(t))
             });
         }
+
+        let total = lessons.len();
+        let omitted = total.saturating_sub(CONTEXT_SURFACING_CAP);
+        lessons.truncate(CONTEXT_SURFACING_CAP);
 
         if !lessons.is_empty() {
             let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
@@ -351,13 +373,23 @@ impl LessonsDb {
             )?;
         }
 
-        Ok(lessons)
+        Ok(ContextLessons { lessons, omitted })
     }
 }
 
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
+
+fn quote_fts5_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(|term| {
+            let escaped = term.replace('"', "\"\"");
+            format!("\"{escaped}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 pub struct LessonsSearchParams<'a> {
     pub query: Option<&'a str>,
@@ -386,7 +418,8 @@ impl LessonsDb {
             sql.push_str(" JOIN lessons_fts ON lessons_fts.rowid = l.rowid");
             param_idx += 1;
             conditions.push(format!("lessons_fts MATCH ?{param_idx}"));
-            bind_values.push(Box::new(q.to_string()));
+            let safe_q = quote_fts5_query(q);
+            bind_values.push(Box::new(safe_q));
         }
 
         if let Some(cat) = params.category {

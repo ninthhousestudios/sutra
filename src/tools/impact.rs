@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -24,6 +25,7 @@ pub fn handle(
     symbol: &str,
     explain: bool,
     lessons_db: Option<&LessonsDb>,
+    workspace_root: &Path,
 ) -> Result<serde_json::Value> {
     let sym = db
         .resolve_symbol(symbol, None)?
@@ -107,17 +109,22 @@ pub fn handle(
     });
 
     if let Some(ldb) = lessons_db {
+        let project_slug = workspace_root.file_name().and_then(|n| n.to_str());
         let ws_langs = db.distinct_languages().unwrap_or_default();
         let ctx = crate::lessons::MatchContext {
             symbol_name: &sym.qualified_name,
             file_path: Some(&sym_file_path),
             imports: &[],
-            project: None,
+            project: project_slug,
             workspace_languages: &ws_langs,
         };
-        let lessons = ldb.query_for_context(&ctx)?;
-        if !lessons.is_empty() {
-            result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+        let cl = ldb.query_for_context(&ctx)?;
+        if !cl.lessons.is_empty() {
+            result["lessons"] = serde_json::to_value(&cl.lessons).unwrap_or_default();
+            if cl.omitted > 0 {
+                result["lessons_omitted"] = json!(cl.omitted);
+                result["lessons_hint"] = json!("Use sutra_lessons for the full set.");
+            }
         }
     }
 

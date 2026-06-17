@@ -571,6 +571,7 @@ impl SutraServer {
             &args.symbol,
             args.explain.unwrap_or(false),
             Some(&self.lessons_db),
+            ctx.workspace_root(),
         )
         .map_err(sutra_to_rmcp)?;
         if let Some(file_path) = result["file"].as_str() {

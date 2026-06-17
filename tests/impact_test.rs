@@ -102,7 +102,14 @@ fn setup_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn test_impact_low_fan_in() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn", false, None).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        false,
+        None,
+        std::path::Path::new("test"),
+    )
+    .unwrap();
 
     assert_eq!(result["risk"], "low");
     assert_eq!(result["direct_callers"], 1);
@@ -111,7 +118,14 @@ fn test_impact_low_fan_in() {
 #[test]
 fn test_impact_transitive() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "a::target_fn", false, None).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        false,
+        None,
+        std::path::Path::new("test"),
+    )
+    .unwrap();
 
     // Transitive BFS should find B and C
     assert!(result["transitive_symbols"].as_u64().unwrap() >= 2);
@@ -121,7 +135,13 @@ fn test_impact_transitive() {
 #[test]
 fn test_impact_unknown_symbol() {
     let (_dir, db) = setup_db();
-    let result = impact::handle(&db, "nonexistent::symbol", false, None);
+    let result = impact::handle(
+        &db,
+        "nonexistent::symbol",
+        false,
+        None,
+        std::path::Path::new("test"),
+    );
     assert!(result.is_err());
 }
 
@@ -160,7 +180,14 @@ fn test_impact_high_fan_in() {
             .unwrap();
     }
 
-    let result = impact::handle(&db, "core::hot_fn", false, None).unwrap();
+    let result = impact::handle(
+        &db,
+        "core::hot_fn",
+        false,
+        None,
+        std::path::Path::new("test"),
+    )
+    .unwrap();
     assert_eq!(result["risk"], "high");
     assert!(result["direct_callers"].as_u64().unwrap() >= 15);
 }
@@ -209,7 +236,7 @@ async fn test_impact_real_codebase() {
     );
 
     // "open" is the most-called method on Db — it must appear in the symbol table.
-    let result = impact::handle(&db, "open", false, None);
+    let result = impact::handle(&db, "open", false, None, std::path::Path::new("test"));
     assert!(
         result.is_ok(),
         "impact query on 'open' should succeed against real codebase"
@@ -290,7 +317,14 @@ fn impact_includes_matching_lessons() {
     })
     .unwrap();
 
-    let result = impact::handle(&db, "a::target_fn", false, Some(&ldb)).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        false,
+        Some(&ldb),
+        std::path::Path::new("test"),
+    )
+    .unwrap();
     let lessons = result["lessons"].as_array().unwrap();
     assert_eq!(lessons.len(), 1);
     assert!(lessons[0]["text"].as_str().unwrap().contains("target_fn"));
@@ -309,6 +343,13 @@ fn impact_no_lessons_field_when_none_match() {
     })
     .unwrap();
 
-    let result = impact::handle(&db, "a::target_fn", false, Some(&ldb)).unwrap();
+    let result = impact::handle(
+        &db,
+        "a::target_fn",
+        false,
+        Some(&ldb),
+        std::path::Path::new("test"),
+    )
+    .unwrap();
     assert!(result.get("lessons").is_none());
 }
