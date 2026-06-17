@@ -23,6 +23,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("lessons_cite_idempotency.sql"),
     ),
     ("0004_staleness", include_str!("lessons_staleness.sql")),
+    ("0005_metadata", include_str!("lessons_metadata.sql")),
 ];
 
 impl LessonsDb {
