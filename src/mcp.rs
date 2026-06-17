@@ -539,6 +539,18 @@ impl SutraServer {
     }
 
     #[tool(
+        description = "Search stored lessons by text (FTS5) and/or structured filters \
+        (category, symbol anchor, verified). Returns matching lessons ranked by relevance."
+    )]
+    pub async fn sutra_lessons(
+        &self,
+        Parameters(args): Parameters<tools::lessons::LessonsArgs>,
+    ) -> Result<String, ErrorData> {
+        let result = tools::lessons::handle(&self.lessons_db, &args).map_err(sutra_to_rmcp)?;
+        to_compact_json(result)
+    }
+
+    #[tool(
         description = "Blast radius analysis for a symbol. Counts direct callers, \
         runs transitive BFS (depth 3), and computes risk level (low/medium/high). \
         Also acknowledges the file for the modification guard."

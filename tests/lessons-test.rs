@@ -1,4 +1,4 @@
-use sutra::lessons::{AnchorKind, LessonsDb, MatchContext, StoreLessonParams};
+use sutra::lessons::{AnchorKind, LessonsDb, LessonsSearchParams, MatchContext, StoreLessonParams};
 use tempfile::tempdir;
 
 fn setup_lessons_db() -> (tempfile::TempDir, LessonsDb) {
@@ -534,4 +534,281 @@ fn directory_with_trailing_slash() {
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// FTS5 search tests
+// ---------------------------------------------------------------------------
+
+fn search_params<'a>() -> LessonsSearchParams<'a> {
+    LessonsSearchParams {
+        query: None,
+        category: None,
+        symbol: None,
+        verified: None,
+        project: None,
+        limit: 50,
+    }
+}
+
+#[test]
+fn fts5_text_search() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Always wrap SQLite mutations in transactions",
+        anchors: &[(AnchorKind::Symbol, "store")],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Rust lifetime errors usually mean a borrow outlives its scope",
+        anchors: &[(AnchorKind::Symbol, "parse")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("SQLite transactions"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("SQLite"));
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("lifetime borrow"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("lifetime"));
+}
+
+#[test]
+fn fts5_ranking_prefers_better_match() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "A brief note: thread safety matters when writing concurrent code",
+        anchors: &[],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Thread safety for thread pool access",
+        anchors: &[],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // FTS5 uses implicit AND — both docs contain "thread" and "safety"
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("thread safety"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    // BM25 ranks the shorter doc (higher term density) first
+    assert!(results[0].text.contains("thread pool"));
+}
+
+#[test]
+fn search_filter_by_category() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Rust lesson one",
+        anchors: &[],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "SQLite lesson one",
+        anchors: &[],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            category: Some("rust"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("Rust"));
+}
+
+#[test]
+fn search_filter_by_symbol() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Lesson about store",
+        anchors: &[(AnchorKind::Symbol, "store")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Lesson about parse",
+        anchors: &[(AnchorKind::Symbol, "parse")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            symbol: Some("store"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("store"));
+}
+
+#[test]
+fn search_filter_by_verified() {
+    let (_dir, db) = setup_lessons_db();
+    let verified_id = db
+        .store(&StoreLessonParams {
+            text: "Verified lesson",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Unverified lesson",
+        anchors: &[],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    {
+        let conn = db.conn_for_test();
+        conn.execute(
+            "UPDATE lessons SET verified = 1 WHERE id = ?1",
+            rusqlite::params![verified_id],
+        )
+        .unwrap();
+    }
+
+    let results = db
+        .search(&LessonsSearchParams {
+            verified: Some(true),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("Verified"));
+}
+
+#[test]
+fn search_combined_filters() {
+    let (_dir, db) = setup_lessons_db();
+    let target_id = db
+        .store(&StoreLessonParams {
+            text: "Always use WAL mode for SQLite write performance",
+            anchors: &[(AnchorKind::Symbol, "open")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.store(&StoreLessonParams {
+        text: "WAL mode helps concurrent readers",
+        anchors: &[(AnchorKind::Symbol, "open")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "SQLite WAL is default in our codebase",
+        anchors: &[(AnchorKind::Symbol, "init")],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    {
+        let conn = db.conn_for_test();
+        conn.execute(
+            "UPDATE lessons SET verified = 1 WHERE id = ?1",
+            rusqlite::params![target_id],
+        )
+        .unwrap();
+    }
+
+    // text + category + symbol + verified — only the target lesson matches all four
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("WAL"),
+            category: Some("sqlite"),
+            symbol: Some("open"),
+            verified: Some(true),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("write performance"));
+}
+
+#[test]
+fn search_empty_results() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Some lesson",
+        anchors: &[],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("nonexistent xyzzy foobarbaz"),
+            ..search_params()
+        })
+        .unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn search_no_filters_returns_all() {
+    let (_dir, db) = setup_lessons_db();
+    for i in 0..3 {
+        db.store(&StoreLessonParams {
+            text: &format!("Lesson number {i}"),
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    }
+
+    let results = db.search(&search_params()).unwrap();
+    assert_eq!(results.len(), 3);
 }

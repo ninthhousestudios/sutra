@@ -15,7 +15,10 @@ pub struct LessonsDb {
     conn: Mutex<Connection>,
 }
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_initial", include_str!("lessons_schema.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_initial", include_str!("lessons_schema.sql")),
+    ("0002_fts5", include_str!("lessons_fts5.sql")),
+];
 
 impl LessonsDb {
     pub fn open(db_dir: &Path) -> Result<Self> {
@@ -299,6 +302,90 @@ impl LessonsDb {
                 rusqlite::params_from_iter(ids.iter()),
             )?;
         }
+
+        Ok(lessons)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+pub struct LessonsSearchParams<'a> {
+    pub query: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub symbol: Option<&'a str>,
+    pub verified: Option<bool>,
+    pub project: Option<&'a str>,
+    pub limit: usize,
+}
+
+impl LessonsDb {
+    pub fn search(&self, params: &LessonsSearchParams<'_>) -> Result<Vec<SurfacedLesson>> {
+        let conn = self.conn.lock();
+
+        let mut sql = String::from(
+            "SELECT DISTINCT l.id, l.text, l.verified, l.confidence, \
+             l.project_origin, l.created_at FROM lessons l",
+        );
+        let mut conditions: Vec<String> = vec!["l.archived = 0".to_string()];
+        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 0usize;
+
+        let has_fts = params.query.is_some();
+
+        if let Some(q) = params.query {
+            sql.push_str(" JOIN lessons_fts ON lessons_fts.rowid = l.rowid");
+            param_idx += 1;
+            conditions.push(format!("lessons_fts MATCH ?{param_idx}"));
+            bind_values.push(Box::new(q.to_string()));
+        }
+
+        if let Some(cat) = params.category {
+            sql.push_str(" JOIN categories c ON c.lesson_id = l.id");
+            param_idx += 1;
+            conditions.push(format!("c.tag = ?{param_idx}"));
+            bind_values.push(Box::new(cat.to_string()));
+        }
+
+        if let Some(sym) = params.symbol {
+            sql.push_str(" JOIN anchors a ON a.lesson_id = l.id");
+            param_idx += 1;
+            conditions.push(format!("a.kind = 'symbol' AND a.value = ?{param_idx}"));
+            bind_values.push(Box::new(sym.to_string()));
+        }
+
+        if let Some(true) = params.verified {
+            conditions.push("l.verified = 1".to_string());
+        }
+
+        if let Some(proj) = params.project {
+            param_idx += 1;
+            conditions.push(format!(
+                "(l.project_origin IS NULL OR l.project_origin = ?{param_idx})"
+            ));
+            bind_values.push(Box::new(proj.to_string()));
+        }
+
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+
+        if has_fts {
+            sql.push_str(" ORDER BY rank");
+        } else {
+            sql.push_str(" ORDER BY l.verified DESC, l.confidence DESC");
+        }
+
+        param_idx += 1;
+        sql.push_str(&format!(" LIMIT ?{param_idx}"));
+        bind_values.push(Box::new(params.limit as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            bind_values.iter().map(|b| b.as_ref()).collect();
+        let lessons: Vec<SurfacedLesson> = stmt
+            .query_map(refs.as_slice(), map_surfaced_lesson)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(lessons)
     }

@@ -17,6 +17,7 @@ pub mod health;
 pub mod help;
 pub mod hotspots;
 pub mod impact;
+pub mod lessons;
 pub mod map;
 pub mod orient;
 pub mod outline;
