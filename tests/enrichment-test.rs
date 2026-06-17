@@ -296,3 +296,80 @@ fn dart_package_imports_enriched() {
     assert!(cats.contains(&"dart".to_string()));
     assert!(cats.contains(&"flutter".to_string()));
 }
+
+#[test]
+fn rust_internal_imports_skipped() {
+    let (_wd, db, _ld, lessons_db) = setup();
+    let file_id = db
+        .upsert_file("src/db/mod.rs", "rust", "h1", 50, true)
+        .unwrap();
+    db.insert_import(file_id, "crate::error::Result", None, 1)
+        .unwrap();
+    db.insert_import(file_id, "self::helpers::parse", None, 2)
+        .unwrap();
+    db.insert_import(file_id, "super::config::Config", None, 3)
+        .unwrap();
+    db.insert_import(file_id, "std::collections::HashMap", None, 4)
+        .unwrap();
+    db.insert_import(file_id, "rusqlite::Connection", None, 5)
+        .unwrap();
+    seed_symbol(&db, file_id, "Db::open", "open");
+
+    let args = store_args("internal import lesson", vec![anchor("symbol", "Db::open")]);
+    let result = sutra::tools::remember::handle(&lessons_db, Some(&db), &args).unwrap();
+    let id = result["lesson_id"].as_str().unwrap();
+
+    let anchors = stored_anchors(&lessons_db, id);
+    // crate, self, super, std should NOT produce import anchors
+    assert!(
+        !anchors.iter().any(|(_, v)| v.starts_with("crate::")),
+        "crate:: skipped: {anchors:?}"
+    );
+    assert!(
+        !anchors.iter().any(|(_, v)| v.starts_with("self::")),
+        "self:: skipped: {anchors:?}"
+    );
+    assert!(
+        !anchors.iter().any(|(_, v)| v.starts_with("super::")),
+        "super:: skipped: {anchors:?}"
+    );
+    assert!(
+        !anchors.iter().any(|(_, v)| v.starts_with("std::")),
+        "std:: skipped: {anchors:?}"
+    );
+    // rusqlite should still be enriched
+    assert!(
+        anchors.contains(&("import_pattern".into(), "rusqlite::*".into())),
+        "external import preserved: {anchors:?}"
+    );
+}
+
+#[test]
+fn ambiguous_short_symbol_skips_enrichment() {
+    let (_wd, db, _ld, lessons_db) = setup();
+    let file_a = db.upsert_file("src/db.rs", "rust", "ha", 50, true).unwrap();
+    let file_b = db
+        .upsert_file("lib/store.dart", "dart", "hb", 30, true)
+        .unwrap();
+    seed_symbol(&db, file_a, "Db::store", "store");
+    seed_symbol(&db, file_b, "Store::store", "store");
+
+    // Short name "store" is ambiguous — enrichment should not pick arbitrarily
+    let args = store_args("ambiguous lesson", vec![anchor("symbol", "store")]);
+    let result = sutra::tools::remember::handle(&lessons_db, Some(&db), &args).unwrap();
+    let id = result["lesson_id"].as_str().unwrap();
+
+    let anchors = stored_anchors(&lessons_db, id);
+    assert_eq!(
+        anchors.len(),
+        1,
+        "only explicit anchor stored when symbol is ambiguous: {anchors:?}"
+    );
+    assert_eq!(anchors[0], ("symbol".into(), "store".into()));
+
+    let cats = stored_categories(&lessons_db, id);
+    assert!(
+        cats.is_empty(),
+        "no inferred categories for ambiguous symbol: {cats:?}"
+    );
+}

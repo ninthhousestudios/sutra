@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Db;
+use crate::db::{Db, ResolveResult};
 use crate::error::{Result, SutraError};
 use crate::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
 
@@ -213,11 +213,10 @@ fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
 
     for &(kind, value) in explicit_anchors {
         let file_row = match kind {
-            AnchorKind::Symbol => db
-                .resolve_symbol(value, None)
-                .ok()
-                .flatten()
-                .and_then(|sym| db.file_by_id(sym.file_id).ok().flatten()),
+            AnchorKind::Symbol => match db.resolve_symbol_diagnostic(value, None) {
+                Ok(ResolveResult::Unique(sym)) => db.file_by_id(sym.file_id).ok().flatten(),
+                _ => None,
+            },
             AnchorKind::File => db.file_by_path(value).ok().flatten(),
             _ => continue,
         };
@@ -261,10 +260,13 @@ fn import_root(imported_path: &str) -> &str {
     if imported_path.starts_with("dart:") {
         return "";
     }
-    // Rust: "rusqlite::params" → "rusqlite"; relative paths → skip
+    // Rust: "rusqlite::params" → "rusqlite"; internal/relative paths → skip
     let root = imported_path.split("::").next().unwrap_or("");
     if root.starts_with('.') || root.starts_with('/') {
         return "";
     }
-    root
+    match root {
+        "crate" | "self" | "super" | "std" => "",
+        _ => root,
+    }
 }
