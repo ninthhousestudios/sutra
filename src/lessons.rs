@@ -42,6 +42,7 @@ impl LessonsDb {
             conn: Mutex::new(conn),
         };
         db.run_migrations()?;
+        let _ = db.archive_decayed(90 * 86400);
         Ok(db)
     }
 
@@ -164,7 +165,7 @@ impl LessonsDb {
 
         for task_id in params.source_task_ids {
             tx.execute(
-                "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'source')",
+                "INSERT OR IGNORE INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'source')",
                 params![id, task_id],
             )?;
         }
@@ -234,9 +235,18 @@ fn matches_anchor(kind: &str, value: &str, ctx: &MatchContext<'_>) -> bool {
             let Ok(pat) = glob::Pattern::new(value) else {
                 return false;
             };
-            ctx.imports
-                .iter()
-                .any(|imp| pat.matches_with(imp, GLOB_OPTS))
+            ctx.imports.iter().any(|imp| {
+                if pat.matches_with(imp, GLOB_OPTS) {
+                    return true;
+                }
+                // Dart imports are `package:foo/bar.dart` but enriched anchors
+                // use `foo::*` — normalize to `foo::bar.dart` for matching.
+                if let Some(rest) = imp.strip_prefix("package:") {
+                    let normalized = rest.replacen('/', "::", 1);
+                    return pat.matches_with(&normalized, GLOB_OPTS);
+                }
+                false
+            })
         }
         "directory" => {
             let Some(fp) = ctx.file_path else {

@@ -368,6 +368,52 @@ fn import_pattern_matches_imports() {
 }
 
 #[test]
+fn import_pattern_matches_dart_package_imports() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "flutter widget pitfall",
+        anchors: &[(AnchorKind::ImportPattern, "flutter::*")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let dart_imports = vec!["package:flutter/material.dart".to_string()];
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: None,
+            imports: &dart_imports,
+            project: None,
+            workspace_languages: &[],
+        })
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        hit.len(),
+        1,
+        "flutter::* should match package:flutter/material.dart"
+    );
+
+    let miss_imports = vec!["package:provider/provider.dart".to_string()];
+    let miss = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: None,
+            imports: &miss_imports,
+            project: None,
+            workspace_languages: &[],
+        })
+        .unwrap()
+        .lessons;
+    assert!(
+        miss.is_empty(),
+        "flutter::* should not match package:provider/..."
+    );
+}
+
+#[test]
 fn directory_anchor_matches_files_under_dir() {
     let (_dir, db) = setup_lessons_db();
     db.store(&StoreLessonParams {
