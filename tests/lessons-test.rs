@@ -1865,3 +1865,81 @@ fn verified_without_snapshot_has_no_stale_flag() {
         "verified without snapshot should be None, not Some(false)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bug reproductions (sutra/162 review)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn anti_verify_twice_same_lesson() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "lesson",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    db.cite(&id, Some("task/1"), None).unwrap();
+    db.cite(&id, Some("task/2"), None).unwrap();
+    db.cite(&id, Some("task/3"), None).unwrap();
+    // confidence = 3, verified
+
+    let r1 = db.anti_verify(&id).unwrap();
+    assert_eq!(r1.new_confidence, 2);
+    assert!(r1.verified); // still at threshold
+
+    // Second anti-verify should also succeed — different negative signal
+    let r2 = db.anti_verify(&id);
+    assert!(
+        r2.is_ok(),
+        "second anti_verify should not fail: {:?}",
+        r2.err()
+    );
+    assert_eq!(r2.unwrap().new_confidence, 1);
+}
+
+#[test]
+fn stale_when_anchor_deleted() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Lesson about deleted fn",
+            anchors: &[(AnchorKind::Symbol, "deleted_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let resolver = |kind: &str, value: &str| -> Option<String> {
+        if kind == "symbol" && value == "deleted_fn" {
+            Some("original_hash".to_string())
+        } else {
+            None
+        }
+    };
+
+    db.cite(&id, Some("task/1"), Some(&resolver)).unwrap();
+    db.cite(&id, Some("task/2"), Some(&resolver)).unwrap();
+    // Now verified with snapshot
+
+    // Symbol deleted — resolver returns None
+    let gone_resolver = |_kind: &str, _value: &str| -> Option<String> { None };
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("deleted_fn", None))
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 1);
+
+    db.apply_staleness(&mut lessons, &gone_resolver).unwrap();
+    assert_eq!(
+        lessons[0].stale,
+        Some(true),
+        "deleted anchor should be marked stale, not treated as current"
+    );
+}

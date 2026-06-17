@@ -635,9 +635,16 @@ impl LessonsDb {
                 SutraError::Internal(format!("lesson not found or archived: {lesson_id}"))
             })?;
 
+        let vote_seq: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM citations WHERE lesson_id = ?1 AND field = 'anti_verify'",
+                params![lesson_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         tx.execute(
-            "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, '', 'anti_verify')",
-            params![lesson_id],
+            "INSERT OR IGNORE INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'anti_verify')",
+            params![lesson_id, format!("anti:{vote_seq}")],
         )?;
 
         let new_confidence = (old_confidence - 1).max(0);
@@ -749,10 +756,10 @@ impl LessonsDb {
                 continue;
             }
             match hash_resolver(kind, value) {
-                Some(current_hash) if current_hash != *snapshot_hash => {
+                Some(current_hash) if current_hash == *snapshot_hash => {}
+                Some(_) | None => {
                     *stale_entry = true;
                 }
-                _ => {}
             }
         }
         Ok(result)
