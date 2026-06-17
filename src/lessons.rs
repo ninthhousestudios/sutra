@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -169,6 +170,13 @@ impl LessonsDb {
 // Query
 // ---------------------------------------------------------------------------
 
+pub struct MatchContext<'a> {
+    pub symbol_name: &'a str,
+    pub file_path: Option<&'a str>,
+    pub imports: &'a [String],
+    pub project: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SurfacedLesson {
     pub id: String,
@@ -179,35 +187,107 @@ pub struct SurfacedLesson {
     pub created_at: String,
 }
 
+fn matches_anchor(kind: &str, value: &str, ctx: &MatchContext<'_>) -> bool {
+    match kind {
+        "file" => {
+            let Some(fp) = ctx.file_path else {
+                return false;
+            };
+            glob::Pattern::new(value)
+                .map(|p| p.matches(fp))
+                .unwrap_or(false)
+        }
+        "import_pattern" => {
+            let Ok(pat) = glob::Pattern::new(value) else {
+                return false;
+            };
+            ctx.imports.iter().any(|imp| pat.matches(imp))
+        }
+        "directory" => {
+            let Some(fp) = ctx.file_path else {
+                return false;
+            };
+            let dir = value.trim_end_matches('/');
+            fp.starts_with(dir) && fp.as_bytes().get(dir.len()) == Some(&b'/')
+        }
+        _ => false,
+    }
+}
+
+fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLesson> {
+    Ok(SurfacedLesson {
+        id: row.get(0)?,
+        text: row.get(1)?,
+        verified: row.get::<_, i64>(2)? != 0,
+        confidence: row.get(3)?,
+        project_origin: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 impl LessonsDb {
-    pub fn query_for_context(
-        &self,
-        symbol_name: &str,
-        project: Option<&str>,
-    ) -> Result<Vec<SurfacedLesson>> {
+    pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<Vec<SurfacedLesson>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT l.id, l.text, l.verified, l.confidence,
-                    l.project_origin, l.created_at
-             FROM lessons l
-             JOIN anchors a ON a.lesson_id = l.id
-             WHERE a.kind = 'symbol' AND a.value = ?1
-               AND l.archived = 0
-               AND (l.project_origin IS NULL OR l.project_origin = ?2 OR ?2 IS NULL)
-             ORDER BY l.verified DESC, l.confidence DESC",
-        )?;
-        let lessons: Vec<SurfacedLesson> = stmt
-            .query_map(params![symbol_name, project], |row| {
-                Ok(SurfacedLesson {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    verified: row.get::<_, i64>(2)? != 0,
-                    confidence: row.get(3)?,
-                    project_origin: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut seen = HashSet::new();
+        let mut lessons = Vec::new();
+
+        // Phase 1: symbol match (indexed, fast). Also checks short name
+        // so anchors stored as "foo" match when the caller passes "Mod::foo".
+        let short_name = ctx
+            .symbol_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(ctx.symbol_name);
+        let has_qualifier = short_name != ctx.symbol_name;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT l.id, l.text, l.verified, l.confidence,
+                        l.project_origin, l.created_at
+                 FROM lessons l
+                 JOIN anchors a ON a.lesson_id = l.id
+                 WHERE a.kind = 'symbol' AND (a.value = ?1 OR (?3 AND a.value = ?2))
+                   AND l.archived = 0
+                   AND (l.project_origin IS NULL OR l.project_origin = ?4 OR ?4 IS NULL)
+                 ORDER BY l.verified DESC, l.confidence DESC",
+            )?;
+            let rows = stmt
+                .query_map(
+                    params![ctx.symbol_name, short_name, has_qualifier, ctx.project],
+                    map_surfaced_lesson,
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for lesson in rows {
+                seen.insert(lesson.id.clone());
+                lessons.push(lesson);
+            }
+        }
+
+        // Phase 2: file/import/directory anchors — load candidates, filter in Rust
+        if ctx.file_path.is_some() || !ctx.imports.is_empty() {
+            let mut stmt = conn.prepare(
+                "SELECT l.id, l.text, l.verified, l.confidence,
+                        l.project_origin, l.created_at, a.kind, a.value
+                 FROM lessons l
+                 JOIN anchors a ON a.lesson_id = l.id
+                 WHERE a.kind IN ('file', 'import_pattern', 'directory')
+                   AND l.archived = 0
+                   AND (l.project_origin IS NULL OR l.project_origin = ?1 OR ?1 IS NULL)",
+            )?;
+            let mut rows = stmt.query(params![ctx.project])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if seen.contains(&id) {
+                    continue;
+                }
+                let anchor_kind: String = row.get(6)?;
+                let anchor_value: String = row.get(7)?;
+                if matches_anchor(&anchor_kind, &anchor_value, ctx) {
+                    seen.insert(id);
+                    lessons.push(map_surfaced_lesson(row)?);
+                }
+            }
+        }
 
         if !lessons.is_empty() {
             let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();

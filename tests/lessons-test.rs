@@ -1,10 +1,19 @@
-use sutra::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
+use sutra::lessons::{AnchorKind, LessonsDb, MatchContext, StoreLessonParams};
 use tempfile::tempdir;
 
 fn setup_lessons_db() -> (tempfile::TempDir, LessonsDb) {
     let dir = tempdir().unwrap();
     let db = LessonsDb::open(dir.path()).unwrap();
     (dir, db)
+}
+
+fn symbol_ctx<'a>(name: &'a str, project: Option<&'a str>) -> MatchContext<'a> {
+    MatchContext {
+        symbol_name: name,
+        file_path: None,
+        imports: &[],
+        project,
+    }
 }
 
 #[test]
@@ -22,7 +31,7 @@ fn store_and_retrieve_by_symbol() {
     assert!(!id.is_empty());
 
     let lessons = db
-        .query_for_context("refresh_index", Some("sutra"))
+        .query_for_context(&symbol_ctx("refresh_index", Some("sutra")))
         .unwrap();
     assert_eq!(lessons.len(), 1);
     assert_eq!(lessons[0].id, id);
@@ -44,7 +53,9 @@ fn no_match_returns_empty() {
     })
     .unwrap();
 
-    let lessons = db.query_for_context("completely_different", None).unwrap();
+    let lessons = db
+        .query_for_context(&symbol_ctx("completely_different", None))
+        .unwrap();
     assert!(lessons.is_empty());
 }
 
@@ -70,7 +81,7 @@ fn archived_lessons_not_surfaced() {
         .unwrap();
     }
 
-    let lessons = db.query_for_context("some_fn", None).unwrap();
+    let lessons = db.query_for_context(&symbol_ctx("some_fn", None)).unwrap();
     assert!(lessons.is_empty());
 }
 
@@ -86,9 +97,24 @@ fn multiple_anchors_on_one_lesson() {
     })
     .unwrap();
 
-    assert_eq!(db.query_for_context("fn_a", None).unwrap().len(), 1);
-    assert_eq!(db.query_for_context("fn_b", None).unwrap().len(), 1);
-    assert_eq!(db.query_for_context("fn_c", None).unwrap().len(), 0);
+    assert_eq!(
+        db.query_for_context(&symbol_ctx("fn_a", None))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.query_for_context(&symbol_ctx("fn_b", None))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.query_for_context(&symbol_ctx("fn_c", None))
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[test]
@@ -115,7 +141,6 @@ fn query_updates_last_surfaced() {
         })
         .unwrap();
 
-    // Before query, last_surfaced should be NULL
     {
         let conn = db.conn_for_test();
         let before: Option<String> = conn
@@ -128,9 +153,10 @@ fn query_updates_last_surfaced() {
         assert!(before.is_none());
     }
 
-    let _ = db.query_for_context("target_fn", None).unwrap();
+    let _ = db
+        .query_for_context(&symbol_ctx("target_fn", None))
+        .unwrap();
 
-    // After query, last_surfaced should be set
     {
         let conn = db.conn_for_test();
         let after: Option<String> = conn
@@ -210,8 +236,9 @@ fn project_scoping_filters_cross_project_lessons() {
     })
     .unwrap();
 
-    // Scoped to sutra: sees sutra + global, not chitta
-    let sutra_lessons = db.query_for_context("init", Some("sutra")).unwrap();
+    let sutra_lessons = db
+        .query_for_context(&symbol_ctx("init", Some("sutra")))
+        .unwrap();
     assert_eq!(sutra_lessons.len(), 2);
     assert!(
         sutra_lessons
@@ -225,8 +252,9 @@ fn project_scoping_filters_cross_project_lessons() {
             .any(|l| l.text.contains("chitta-specific"))
     );
 
-    // Scoped to chitta: sees chitta + global, not sutra
-    let chitta_lessons = db.query_for_context("init", Some("chitta")).unwrap();
+    let chitta_lessons = db
+        .query_for_context(&symbol_ctx("init", Some("chitta")))
+        .unwrap();
     assert_eq!(chitta_lessons.len(), 2);
     assert!(
         chitta_lessons
@@ -235,7 +263,275 @@ fn project_scoping_filters_cross_project_lessons() {
     );
     assert!(chitta_lessons.iter().any(|l| l.text.contains("global")));
 
-    // No project filter: sees all three
-    let all_lessons = db.query_for_context("init", None).unwrap();
+    let all_lessons = db.query_for_context(&symbol_ctx("init", None)).unwrap();
     assert_eq!(all_lessons.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// New: anchor matching tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_glob_matches_path() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "DB layer lesson",
+        anchors: &[(AnchorKind::File, "src/db/*.rs")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/db/mod.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert!(hit[0].text.contains("DB layer"));
+
+    let miss = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/tools/read.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert!(miss.is_empty());
+}
+
+#[test]
+fn import_pattern_matches_imports() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "rusqlite pitfall",
+        anchors: &[(AnchorKind::ImportPattern, "rusqlite::*")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let imports_hit = vec![
+        "rusqlite::params".to_string(),
+        "serde_json::json".to_string(),
+    ];
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: None,
+            imports: &imports_hit,
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert!(hit[0].text.contains("rusqlite pitfall"));
+
+    let imports_miss = vec!["serde_json::json".to_string()];
+    let miss = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: None,
+            imports: &imports_miss,
+            project: None,
+        })
+        .unwrap();
+    assert!(miss.is_empty());
+}
+
+#[test]
+fn directory_anchor_matches_files_under_dir() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "DB directory lesson",
+        anchors: &[(AnchorKind::Directory, "src/db")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/db/mod.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+
+    let miss_other = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/tools/read.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert!(miss_other.is_empty());
+
+    // "src/dba/foo.rs" must NOT match "src/db" — no false prefix
+    let miss_prefix = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/dba/foo.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert!(miss_prefix.is_empty());
+}
+
+#[test]
+fn multi_anchor_or_semantics() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "OR semantics lesson",
+        anchors: &[
+            (AnchorKind::Symbol, "nonexistent_sym"),
+            (AnchorKind::File, "src/*.rs"),
+        ],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Symbol doesn't match, but file glob does — should still surface
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "other_sym",
+            file_path: Some("src/main.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert!(hit[0].text.contains("OR semantics"));
+}
+
+#[test]
+fn no_false_positives_across_kinds() {
+    let (_dir, db) = setup_lessons_db();
+
+    db.store(&StoreLessonParams {
+        text: "file-anchored",
+        anchors: &[(AnchorKind::File, "src/db/*.rs")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    db.store(&StoreLessonParams {
+        text: "import-anchored",
+        anchors: &[(AnchorKind::ImportPattern, "tokio::*")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    db.store(&StoreLessonParams {
+        text: "dir-anchored",
+        anchors: &[(AnchorKind::Directory, "tests")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Context that matches none of the above
+    let imports = vec!["serde::Serialize".to_string()];
+    let results = db
+        .query_for_context(&MatchContext {
+            symbol_name: "unrelated",
+            file_path: Some("src/mcp.rs"),
+            imports: &imports,
+            project: None,
+        })
+        .unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn symbol_short_name_match() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Short name lesson",
+        anchors: &[(AnchorKind::Symbol, "query_for_context")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Query with qualified name should match anchor stored as short name
+    let hit = db
+        .query_for_context(&symbol_ctx("LessonsDb::query_for_context", None))
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert!(hit[0].text.contains("Short name"));
+
+    // Direct short name still works
+    let direct = db
+        .query_for_context(&symbol_ctx("query_for_context", None))
+        .unwrap();
+    assert_eq!(direct.len(), 1);
+}
+
+#[test]
+fn symbol_and_file_deduplicates() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Dedup lesson",
+        anchors: &[
+            (AnchorKind::Symbol, "my_fn"),
+            (AnchorKind::File, "src/*.rs"),
+        ],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Both symbol and file match — lesson should appear exactly once
+    let results = db
+        .query_for_context(&MatchContext {
+            symbol_name: "my_fn",
+            file_path: Some("src/main.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn directory_with_trailing_slash() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Trailing slash lesson",
+        anchors: &[(AnchorKind::Directory, "src/db/")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let hit = db
+        .query_for_context(&MatchContext {
+            symbol_name: "irrelevant",
+            file_path: Some("src/db/mod.rs"),
+            imports: &[],
+            project: None,
+        })
+        .unwrap();
+    assert_eq!(hit.len(), 1);
 }

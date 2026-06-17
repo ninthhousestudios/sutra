@@ -166,7 +166,19 @@ pub fn handle(
 
     if let Some(ldb) = lessons_db {
         let project_slug = workspace_root.file_name().and_then(|n| n.to_str());
-        let lessons = ldb.query_for_context(&sym.qualified_name, project_slug)?;
+        let import_paths: Vec<String> = db
+            .imports_for_file(sym.file_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| i.imported_path)
+            .collect();
+        let ctx = crate::lessons::MatchContext {
+            symbol_name: &sym.qualified_name,
+            file_path: Some(&file.path),
+            imports: &import_paths,
+            project: project_slug,
+        };
+        let lessons = ldb.query_for_context(&ctx)?;
         if !lessons.is_empty() {
             result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
         }
