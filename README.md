@@ -4,9 +4,9 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, and tracks codebase health with empirically calibrated biomarkers. It exposes all of this through 33 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 37 MCP tools that AI coding agents (and humans) can call.
 
-The core loop: **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
+The core loop: **explore** (find relevant code in one call) → **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
 
 ## Install
 
@@ -164,7 +164,7 @@ Per-file and per-component health scores (1.0–10.0 scale) derived from empiric
 
 Scores use category-capped deductions so no single dimension can dominate. Component scores are NLOC-weighted averages of member files. Health waivers let you acknowledge known issues without suppressing the signal.
 
-### 5. Vocabulary mapping (Layer 5)
+### 6. Vocabulary mapping (Layer 5)
 
 Sutra lets you define human-readable names for code concepts so agents (and humans) can refer to them naturally. Create `.sutra/aliases.toml` in your project root:
 
@@ -200,7 +200,7 @@ Resolution searches in priority order: aliases (exact match) → component names
 
 This means you can tell an agent "find the being detail cards code" and it resolves to concrete file locations without the agent having to rediscover the mapping each time.
 
-### 6. Structural similarity (Layer 6)
+### 7. Structural similarity (Layer 6)
 
 Holographic Reduced Representations (HRR) encode each function's AST into a 1024-dimensional vector. Two modes:
 
@@ -208,6 +208,18 @@ Holographic Reduced Representations (HRR) encode each function's AST into a 1024
 - **embed** — structure + identifiers. Finds semantically similar code.
 
 This powers duplicate detection (pattern families of 3+ structurally identical functions) and semantic diff in review (classifying changes as safe-refactor vs. subtle-behavioral-change based on HRR delta vs. text delta).
+
+### 8. Code-anchored lessons (Layer 7)
+
+Lessons are the negative complement to conventions: conventions say "do this," lessons say "don't do that, here's why." They capture experiential knowledge — things learned about code that a future editor needs to know — in a shared SQLite store (`~/.sutra/lessons.db`) that all sutra instances read.
+
+**Writing:** Agents call `sutra_remember` with text and location anchors (the symbol or file they were working on). Sutra enriches the lesson automatically — inferring import-pattern anchors, directory globs, and category tags from the workspace index. Writing is low-ceremony; quality is controlled reactively.
+
+**Surfacing:** Lessons appear contextually through tools agents already call. `sutra_read` shows lessons anchored to the symbol being read. `sutra_impact` surfaces warnings about affected symbols. `sutra_orient` includes lessons alongside conventions. For explicit queries, `sutra_lessons` provides FTS5 text search with structured filters.
+
+**Confidence lifecycle:** Lessons are born unverified with zero confidence. When an agent cites a lesson during a yojana task close-out (`sutra_remember(cite=<id>)`), confidence rises. After crossing a citation threshold, lessons flip to verified. Unverified lessons only surface when no verified lessons cover the same context, and are flagged `[unverified]`. Lessons that go uncited decay and are eventually auto-archived.
+
+**Cross-project scope:** Because lessons attach to technologies and patterns (rust, sqlite, concurrency) rather than projects, knowledge isn't siloed. A lesson learned in one project surfaces in any workspace where the anchors match and category filters pass.
 
 ## MCP tools
 
@@ -229,6 +241,9 @@ This powers duplicate detection (pattern families of 3+ structurally identical f
 | `sutra_resolve` | Resolve a vocabulary term (alias, component name, or anchor) to code locations |
 | `sutra_conventions` | Manage convention lifecycle (list, promote, deprecate, waive) and review proposals |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
+| `sutra_explore` | Structural exploration — topic query → ranked symbol map with fetch instructions and strategy hint |
+| `sutra_remember` | Write a code-anchored lesson with text and location anchors (auto-enriched with patterns and categories) |
+| `sutra_lessons` | Query lessons — FTS5 text search with structured filters (category, symbol, verified status, project) |
 | `sutra_parse` | Trigger a workspace reparse |
 | `sutra_tools` | Enable/disable tool tiers |
 | `sutra_add_root` | Register a workspace root and start indexing |
@@ -253,8 +268,21 @@ This powers duplicate detection (pattern families of 3+ structurally identical f
 | `sutra_duplicates` | Near-duplicate function detection via HRR strip vector clustering into pattern families |
 | `sutra_similar` | Find structurally similar functions — strip mode (AST shape) or embed mode (structure + naming) |
 | `sutra_trend` | Health trend — compare two snapshots with per-file/per-component deltas, or query a file's score history over time |
+| `sutra_commit_manifest` | Manifest of symbols and files changed in a commit or range |
 
 ## Common workflows
+
+### Explore unfamiliar code
+
+```
+Agent: sutra_explore(query="constraint enforcement")
+→ ranked symbol list with scores, components, estimated tokens
+→ literal sutra_read fetch instructions for each item
+→ strategy hint: read_top_n (n=3) — "top 3 are high-confidence matches in the constraints component"
+→ edges between result items (call/dep relationships)
+```
+
+One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_read` → backtrack cycle. The strategy hint (`read_top_n`, `read_all`, `narrow_query`, `explore_component`) tells the agent what to do next.
 
 ### Orient before editing
 
@@ -289,6 +317,26 @@ sutra_calls(symbol="parse_rules")  → who calls it, what it calls
 sutra_refs(symbol="parse_rules")   → every usage site
 sutra_provenance(symbol="parse_rules") → git history with commit types
 sutra_trace(symbol="parse_rules")  → call chains from entry points
+```
+
+### Record and query lessons
+
+```
+# Agent learns something while fixing a bug
+Agent: sutra_remember(text="WAL checkpoint can stall if ...", anchors=["LessonsDb", "src/lessons/db.rs"])
+→ lesson stored with inferred import-pattern and category anchors
+
+# Later, another agent reads the same code
+Agent: sutra_read(symbol="LessonsDb")
+→ source code + [lesson] WAL checkpoint can stall if ...
+
+# Explicit search
+Agent: sutra_lessons(query="sqlite concurrency")
+→ matching lessons ranked by relevance, flagged [verified] or [unverified]
+
+# Citation during task close-out
+Agent: sutra_remember(cite="01J...", source_tasks=["sutra/180"])
+→ confidence increased, citation recorded
 ```
 
 ### Find code quality issues
@@ -453,10 +501,13 @@ FCA conventions    DD constraints         HRR vectors
                 health findings + scoring
                          │
                          ▼
-                SQLite snapshots (WAL)
+                SQLite snapshots (WAL)          lessons store
+                         │                 (~/.sutra/lessons.db)
+                         │              contextual surfacing via
+                         │            read / impact / orient tools
                          │
                          ▼
-                MCP server (stdio) → 33 tools with freshness envelopes
+                MCP server (stdio) → 37 tools with freshness envelopes
 ```
 
 ## Vision
@@ -472,4 +523,5 @@ Sutra's mission is to help human-AI teams produce *coherent* software, not just 
 | 4 | Health (biomarkers, scoring, snapshots, trends) | Implemented |
 | 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases, orient; HRR fuzzy matching planned) |
 | 6 | Similarity (HRR vectors, duplicates, semantic diff) | Implemented |
-| 7 | Verification (property tests, model checking, mutation testing) | Deferred |
+| 7 | Lessons (code-anchored negative knowledge, contextual surfacing, confidence lifecycle) | Implemented |
+| 8 | Verification (property tests, model checking, mutation testing) | Deferred |
