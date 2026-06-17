@@ -166,7 +166,7 @@ fn select_strategy(
         .take(3)
         .take_while(|&&s| s * 2.0 >= scores[0])
         .count();
-    let read_n = within_2x.max(2).min(3);
+    let read_n = within_2x.min(3);
     json!({
         "action": "read_top_n",
         "n": read_n,
@@ -402,12 +402,6 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         })
         .collect();
 
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
-    });
-
     let direct_ids: HashSet<i64> = scored.iter().map(|(s, _)| s.id).collect();
     let depth = fan_out_depth(total_hits);
     let fan_out = collect_fan_out(db, &scored, depth);
@@ -452,8 +446,11 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
 
     let scores: Vec<f64> = scored.iter().map(|(_, s)| *s).collect();
 
-    let mut direct_count = 0i64;
-    let mut fan_out_count = 0i64;
+    let direct_count = scored
+        .iter()
+        .filter(|(s, _)| direct_ids.contains(&s.id))
+        .count() as i64;
+    let fan_out_count = scored.len() as i64 - direct_count;
 
     let items: Vec<Value> = scored
         .iter()
@@ -465,10 +462,8 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
             let component = component_map.get(&sym.file_id);
             let lines = sym.end_line - sym.start_line + 1;
             let reason = if direct_ids.contains(&sym.id) {
-                direct_count += 1;
                 "direct_match"
             } else {
-                fan_out_count += 1;
                 "fan_out"
             };
             json!({
