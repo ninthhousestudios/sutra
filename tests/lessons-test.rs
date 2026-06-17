@@ -586,6 +586,7 @@ fn search_params<'a>() -> LessonsSearchParams<'a> {
         symbol: None,
         verified: None,
         project: None,
+        include_archived: false,
         limit: 50,
     }
 }
@@ -1665,4 +1666,148 @@ fn cite_without_resolver_still_works() {
         )
         .unwrap();
     assert_eq!(av_count, 0, "no snapshots without resolver");
+}
+
+// ---------------------------------------------------------------------------
+// Decay / archive
+// ---------------------------------------------------------------------------
+
+fn store_old_lesson(db: &LessonsDb, text: &str, symbol: &str, age_days: i64) -> String {
+    let id = db
+        .store(&StoreLessonParams {
+            text,
+            anchors: &[(AnchorKind::Symbol, symbol)],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    let conn = db.conn_for_test();
+    conn.execute(
+        &format!(
+            "UPDATE lessons SET created_at = datetime('now', '-{age_days} days') WHERE id = ?1"
+        ),
+        rusqlite::params![id],
+    )
+    .unwrap();
+    id
+}
+
+#[test]
+fn archive_decayed_archives_old_unverified() {
+    let (_dir, db) = setup_lessons_db();
+    let old_id = store_old_lesson(&db, "Old lesson", "old_fn", 100);
+    let _fresh_id = store_old_lesson(&db, "Fresh lesson", "fresh_fn", 1);
+
+    let window = 30 * 86400; // 30 days
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 1);
+
+    // Old lesson is archived
+    let conn = db.conn_for_test();
+    let is_archived: bool = conn
+        .query_row(
+            "SELECT archived FROM lessons WHERE id = ?1",
+            rusqlite::params![old_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(is_archived);
+}
+
+#[test]
+fn archive_decayed_spares_verified() {
+    let (_dir, db) = setup_lessons_db();
+    let id = store_old_lesson(&db, "Verified old lesson", "verified_fn", 100);
+
+    // Verify it
+    db.cite(&id, Some("task/1"), None).unwrap();
+    db.cite(&id, Some("task/2"), None).unwrap();
+
+    let window = 30 * 86400;
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 0, "verified lessons are immune to decay");
+}
+
+#[test]
+fn archive_decayed_spares_recently_cited() {
+    let (_dir, db) = setup_lessons_db();
+    let id = store_old_lesson(&db, "Cited lesson", "cited_fn", 100);
+
+    // Cite once — sets last_cited, keeps it alive despite old created_at
+    db.cite(&id, Some("task/1"), None).unwrap();
+
+    let window = 30 * 86400;
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 0, "cited lessons are immune to decay");
+}
+
+#[test]
+fn archived_excluded_from_surfacing() {
+    let (_dir, db) = setup_lessons_db();
+    let id = store_old_lesson(&db, "Soon archived", "archived_fn", 100);
+
+    // Confirm it surfaces before archiving
+    let lessons = db
+        .query_for_context(&symbol_ctx("archived_fn", None))
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 1);
+
+    // Backdate last_surfaced so it's outside the decay window
+    {
+        let conn = db.conn_for_test();
+        conn.execute(
+            "UPDATE lessons SET last_surfaced = datetime('now', '-100 days') WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    }
+
+    db.archive_decayed(30 * 86400).unwrap();
+
+    let lessons = db
+        .query_for_context(&symbol_ctx("archived_fn", None))
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 0, "archived lessons stop surfacing");
+
+    // But still findable via search with include_archived
+    let results = db
+        .search(&LessonsSearchParams {
+            include_archived: true,
+            ..search_params()
+        })
+        .unwrap();
+    assert!(
+        results.iter().any(|l| l.id == id),
+        "archived lessons visible with include_archived"
+    );
+}
+
+#[test]
+fn archive_decayed_spares_recently_surfaced() {
+    let (_dir, db) = setup_lessons_db();
+    let id = store_old_lesson(&db, "Surfaced lesson", "surfaced_fn", 100);
+
+    // Surface it (query_for_context sets last_surfaced)
+    let _ = db
+        .query_for_context(&symbol_ctx("surfaced_fn", None))
+        .unwrap();
+
+    let window = 30 * 86400;
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 0, "recently surfaced lessons are immune");
+
+    // Now backdate last_surfaced too
+    let conn = db.conn_for_test();
+    conn.execute(
+        "UPDATE lessons SET last_surfaced = datetime('now', '-100 days') WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 1, "old-surfaced lessons get archived");
 }

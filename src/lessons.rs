@@ -456,6 +456,7 @@ pub struct LessonsSearchParams<'a> {
     pub symbol: Option<&'a str>,
     pub verified: Option<bool>,
     pub project: Option<&'a str>,
+    pub include_archived: bool,
     pub limit: usize,
 }
 
@@ -467,7 +468,11 @@ impl LessonsDb {
             "SELECT DISTINCT l.id, l.text, l.verified, l.confidence, \
              l.project_origin, l.created_at FROM lessons l",
         );
-        let mut conditions: Vec<String> = vec!["l.archived = 0".to_string()];
+        let mut conditions: Vec<String> = if params.include_archived {
+            vec![]
+        } else {
+            vec!["l.archived = 0".to_string()]
+        };
         let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut param_idx = 0usize;
 
@@ -507,8 +512,10 @@ impl LessonsDb {
             bind_values.push(Box::new(proj.to_string()));
         }
 
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
 
         if has_fts {
             sql.push_str(" ORDER BY rank");
@@ -646,6 +653,28 @@ impl LessonsDb {
             new_confidence,
             verified: still_verified,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decay / archive
+// ---------------------------------------------------------------------------
+
+impl LessonsDb {
+    /// Archive unverified lessons that haven't been cited or surfaced within
+    /// `window_secs` seconds. Returns the number of lessons archived.
+    pub fn archive_decayed(&self, window_secs: i64) -> Result<usize> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE lessons SET archived = 1
+             WHERE archived = 0
+               AND verified = 0
+               AND last_cited IS NULL
+               AND (last_surfaced IS NULL OR last_surfaced < datetime('now', ?1))
+               AND created_at < datetime('now', ?1)",
+            params![format!("-{window_secs} seconds")],
+        )?;
+        Ok(changed)
     }
 }
 

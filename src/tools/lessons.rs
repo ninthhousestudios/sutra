@@ -22,6 +22,9 @@ pub struct LessonsArgs {
     /// Project scope
     #[serde(default)]
     pub project: Option<String>,
+    /// Include archived lessons in results (default: false)
+    #[serde(default)]
+    pub include_archived: Option<bool>,
 }
 
 pub fn handle(lessons_db: &LessonsDb, args: &LessonsArgs) -> Result<serde_json::Value> {
@@ -31,6 +34,7 @@ pub fn handle(lessons_db: &LessonsDb, args: &LessonsArgs) -> Result<serde_json::
         symbol: args.symbol.as_deref(),
         verified: args.verified,
         project: args.project.as_deref(),
+        include_archived: args.include_archived.unwrap_or(false),
         limit: 50,
     };
     let lessons = lessons_db.search(&params)?;
