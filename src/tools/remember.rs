@@ -7,11 +7,16 @@ use crate::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
-    /// The lesson text — what you learned that a future editor needs to know
-    pub text: String,
-    /// Location anchors: symbol names or file paths this lesson applies to
-    pub location_anchors: Vec<LocationAnchor>,
-    /// Yojana task IDs that motivated this lesson (e.g. ["sutra/38"])
+    /// The lesson text — what you learned that a future editor needs to know.
+    /// Required when storing a new lesson; ignored when citing.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Location anchors: symbol names or file paths this lesson applies to.
+    /// Required when storing a new lesson; ignored when citing.
+    #[serde(default)]
+    pub location_anchors: Option<Vec<LocationAnchor>>,
+    /// Yojana task IDs that motivated this lesson (e.g. ["sutra/38"]).
+    /// For cite mode, the first entry is recorded as the citing task.
     #[serde(default)]
     pub source_tasks: Option<Vec<String>>,
     /// Project slug where the lesson was discovered
@@ -20,6 +25,14 @@ pub struct RememberArgs {
     /// Category tags (e.g. ["rust", "sqlite", "concurrency"])
     #[serde(default)]
     pub categories: Option<Vec<String>>,
+    /// Cite an existing lesson by ID. Records a citation and increases confidence.
+    /// When confidence crosses the threshold, the lesson becomes verified.
+    #[serde(default)]
+    pub cite: Option<String>,
+    /// When true alongside `cite`, flags the lesson as wrong/outdated (decreases confidence).
+    /// Does not delete — the lesson may be corrected rather than removed.
+    #[serde(default)]
+    pub anti_verify: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -31,8 +44,53 @@ pub struct LocationAnchor {
 }
 
 pub fn handle(lessons_db: &LessonsDb, args: &RememberArgs) -> Result<serde_json::Value> {
-    let anchors: Vec<(AnchorKind, &str)> = args
-        .location_anchors
+    if let Some(lesson_id) = &args.cite {
+        if args.anti_verify.unwrap_or(false) {
+            let result = lessons_db.anti_verify(lesson_id)?;
+            return Ok(json!({
+                "anti_verified": true,
+                "lesson_id": lesson_id,
+                "new_confidence": result.new_confidence,
+                "verified": result.verified,
+            }));
+        }
+        let task_id = args
+            .source_tasks
+            .as_ref()
+            .and_then(|t| t.first())
+            .map(|s| s.as_str());
+        let result = lessons_db.cite(lesson_id, task_id)?;
+        return Ok(json!({
+            "cited": true,
+            "lesson_id": lesson_id,
+            "new_confidence": result.new_confidence,
+            "verified": result.verified,
+            "crossed_threshold": result.crossed_threshold,
+        }));
+    }
+
+    let text = args
+        .text
+        .as_deref()
+        .ok_or_else(|| SutraError::InvalidArgument {
+            tool: "sutra_remember",
+            argument: "text",
+            constraint: "required when storing a new lesson (omit `cite` or provide `text`)".into(),
+            received: None,
+            next_action: "Provide the lesson text and retry.".into(),
+        })?;
+    let anchors_raw =
+        args.location_anchors
+            .as_deref()
+            .ok_or_else(|| SutraError::InvalidArgument {
+                tool: "sutra_remember",
+                argument: "location_anchors",
+                constraint: "required when storing a new lesson".into(),
+                received: None,
+                next_action: "Provide at least one location anchor and retry.".into(),
+            })?;
+
+    let anchors: Vec<(AnchorKind, &str)> = anchors_raw
         .iter()
         .map(|a| {
             let kind = match a.kind.as_str() {
@@ -71,7 +129,7 @@ pub fn handle(lessons_db: &LessonsDb, args: &RememberArgs) -> Result<serde_json:
         .collect();
 
     let id = lessons_db.store(&StoreLessonParams {
-        text: &args.text,
+        text,
         anchors: &anchors,
         categories: &cats,
         source_task_ids: &tasks,
@@ -81,6 +139,6 @@ pub fn handle(lessons_db: &LessonsDb, args: &RememberArgs) -> Result<serde_json:
     Ok(json!({
         "stored": true,
         "lesson_id": id,
-        "anchor_count": args.location_anchors.len(),
+        "anchor_count": anchors_raw.len(),
     }))
 }

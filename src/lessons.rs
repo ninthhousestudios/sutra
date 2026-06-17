@@ -358,6 +358,59 @@ impl LessonsDb {
             });
         }
 
+        // Phase 4: verified-first surfacing priority — suppress unverified
+        // lessons when a verified lesson shares an anchor.
+        if lessons.iter().any(|l| l.verified) && lessons.iter().any(|l| !l.verified) {
+            let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
+            let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let mut astmt = conn.prepare(&format!(
+                "SELECT lesson_id, kind || ':' || value FROM anchors WHERE lesson_id IN ({ph})"
+            ))?;
+            let mut arows = astmt.query(rusqlite::params_from_iter(ids.iter()))?;
+            let mut anchor_map: HashMap<String, Vec<String>> = HashMap::new();
+            while let Some(row) = arows.next()? {
+                let lid: String = row.get(0)?;
+                let key: String = row.get(1)?;
+                anchor_map.entry(lid).or_default().push(key);
+            }
+            drop(arows);
+            drop(astmt);
+
+            let verified_anchors: HashSet<&str> = lessons
+                .iter()
+                .filter(|l| l.verified)
+                .flat_map(|l| {
+                    anchor_map
+                        .get(&l.id)
+                        .into_iter()
+                        .flatten()
+                        .map(|s| s.as_str())
+                })
+                .collect();
+
+            lessons.retain(|l| {
+                if l.verified {
+                    return true;
+                }
+                let dominated = anchor_map
+                    .get(&l.id)
+                    .map(|anchors| {
+                        anchors
+                            .iter()
+                            .any(|a| verified_anchors.contains(a.as_str()))
+                    })
+                    .unwrap_or(false);
+                !dominated
+            });
+        }
+
+        // Tag all surviving unverified lessons
+        for l in &mut lessons {
+            if !l.verified {
+                l.text = format!("[unverified] {}", l.text);
+            }
+        }
+
         let total = lessons.len();
         let omitted = total.saturating_sub(CONTEXT_SURFACING_CAP);
         lessons.truncate(CONTEXT_SURFACING_CAP);
@@ -469,6 +522,96 @@ impl LessonsDb {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(lessons)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Citation / verification lifecycle
+// ---------------------------------------------------------------------------
+
+const VERIFICATION_THRESHOLD: i64 = 2;
+
+pub struct CiteResult {
+    pub new_confidence: i64,
+    pub verified: bool,
+    pub crossed_threshold: bool,
+}
+
+pub struct AntiVerifyResult {
+    pub new_confidence: i64,
+    pub verified: bool,
+}
+
+impl LessonsDb {
+    pub fn cite(&self, lesson_id: &str, task_id: Option<&str>) -> Result<CiteResult> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+
+        let (old_confidence, old_verified): (i64, bool) = tx
+            .query_row(
+                "SELECT confidence, verified FROM lessons WHERE id = ?1 AND archived = 0",
+                params![lesson_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| {
+                SutraError::Internal(format!("lesson not found or archived: {lesson_id}"))
+            })?;
+
+        tx.execute(
+            "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'cite')",
+            params![lesson_id, task_id.unwrap_or("")],
+        )?;
+
+        let new_confidence = old_confidence + 1;
+        let now_verified = new_confidence >= VERIFICATION_THRESHOLD;
+        let crossed = now_verified && !old_verified;
+
+        tx.execute(
+            "UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now') \
+             WHERE id = ?3",
+            params![new_confidence, now_verified, lesson_id],
+        )?;
+
+        tx.commit()?;
+        Ok(CiteResult {
+            new_confidence,
+            verified: now_verified,
+            crossed_threshold: crossed,
+        })
+    }
+
+    pub fn anti_verify(&self, lesson_id: &str) -> Result<AntiVerifyResult> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+
+        let old_confidence: i64 = tx
+            .query_row(
+                "SELECT confidence FROM lessons WHERE id = ?1 AND archived = 0",
+                params![lesson_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                SutraError::Internal(format!("lesson not found or archived: {lesson_id}"))
+            })?;
+
+        tx.execute(
+            "INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, '', 'anti_verify')",
+            params![lesson_id],
+        )?;
+
+        let new_confidence = (old_confidence - 1).max(0);
+        let still_verified = new_confidence >= VERIFICATION_THRESHOLD;
+
+        tx.execute(
+            "UPDATE lessons SET confidence = ?1, verified = ?2 WHERE id = ?3",
+            params![new_confidence, still_verified, lesson_id],
+        )?;
+
+        tx.commit()?;
+        Ok(AntiVerifyResult {
+            new_confidence,
+            verified: still_verified,
+        })
     }
 }
 

@@ -1079,3 +1079,198 @@ fn category_filtering_with_multiple_language_lessons() {
     );
     assert!(!results.iter().any(|l| l.text.contains("Rust concurrency")));
 }
+
+// ---------------------------------------------------------------------------
+// Citation lifecycle
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cite_increases_confidence() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Always use transactions",
+            anchors: &[(AnchorKind::Symbol, "run_migrations")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let result = db.cite(&id, Some("sutra/158")).unwrap();
+    assert_eq!(result.new_confidence, 1);
+    assert!(!result.verified);
+    assert!(!result.crossed_threshold);
+
+    // Citation row recorded
+    let conn = db.conn_for_test();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM citations WHERE lesson_id = ?1 AND field = 'cite'",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn cite_crosses_verification_threshold() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Always use transactions",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let r1 = db.cite(&id, Some("task/1")).unwrap();
+    assert_eq!(r1.new_confidence, 1);
+    assert!(!r1.verified);
+    assert!(!r1.crossed_threshold);
+
+    let r2 = db.cite(&id, Some("task/2")).unwrap();
+    assert_eq!(r2.new_confidence, 2);
+    assert!(r2.verified);
+    assert!(r2.crossed_threshold);
+
+    // Third cite: still verified, but didn't *cross* this time
+    let r3 = db.cite(&id, Some("task/3")).unwrap();
+    assert_eq!(r3.new_confidence, 3);
+    assert!(r3.verified);
+    assert!(!r3.crossed_threshold);
+}
+
+#[test]
+fn anti_verify_drops_confidence() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "lesson",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    db.cite(&id, Some("task/1")).unwrap();
+    db.cite(&id, Some("task/2")).unwrap();
+    // Now verified with confidence 2
+
+    let r = db.anti_verify(&id).unwrap();
+    assert_eq!(r.new_confidence, 1);
+    assert!(!r.verified);
+}
+
+#[test]
+fn anti_verify_floors_at_zero() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "lesson",
+            anchors: &[],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let r = db.anti_verify(&id).unwrap();
+    assert_eq!(r.new_confidence, 0);
+    assert!(!r.verified);
+}
+
+// ---------------------------------------------------------------------------
+// Surfacing priority
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verified_suppresses_unverified_on_same_anchor() {
+    let (_dir, db) = setup_lessons_db();
+    let v_id = db
+        .store(&StoreLessonParams {
+            text: "verified lesson",
+            anchors: &[(AnchorKind::Symbol, "target_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.store(&StoreLessonParams {
+        text: "unverified lesson",
+        anchors: &[(AnchorKind::Symbol, "target_fn")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Verify the first lesson
+    db.cite(&v_id, Some("t/1")).unwrap();
+    db.cite(&v_id, Some("t/2")).unwrap();
+
+    let ctx = symbol_ctx("target_fn", None);
+    let cl = db.query_for_context(&ctx).unwrap();
+    assert_eq!(cl.lessons.len(), 1);
+    assert!(cl.lessons[0].text.contains("verified lesson"));
+    assert!(!cl.lessons[0].text.contains("[unverified]"));
+}
+
+#[test]
+fn unverified_surfaces_when_no_verified_on_same_anchor() {
+    let (_dir, db) = setup_lessons_db();
+
+    // Verified lesson on anchor "other_fn"
+    let v_id = db
+        .store(&StoreLessonParams {
+            text: "verified on other",
+            anchors: &[(AnchorKind::Symbol, "other_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.cite(&v_id, Some("t/1")).unwrap();
+    db.cite(&v_id, Some("t/2")).unwrap();
+
+    // Unverified lesson on anchor "target_fn"
+    db.store(&StoreLessonParams {
+        text: "unverified on target",
+        anchors: &[(AnchorKind::Symbol, "target_fn")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let ctx = symbol_ctx("target_fn", None);
+    let cl = db.query_for_context(&ctx).unwrap();
+    assert_eq!(cl.lessons.len(), 1);
+    assert!(
+        cl.lessons[0]
+            .text
+            .contains("[unverified] unverified on target")
+    );
+}
+
+#[test]
+fn unverified_tagged_when_no_verified_exist() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "some lesson",
+        anchors: &[(AnchorKind::Symbol, "my_fn")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let ctx = symbol_ctx("my_fn", None);
+    let cl = db.query_for_context(&ctx).unwrap();
+    assert_eq!(cl.lessons.len(), 1);
+    assert!(cl.lessons[0].text.starts_with("[unverified] "));
+}
