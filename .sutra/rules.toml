@@ -318,6 +318,37 @@ severity = "blocking"
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Lessons engine isolation (checkpoint:sutra/157, 2026-06-16)
+# ═══════════════════════════════════════════════════════════════════
+# Lessons engine is a library consumed by tool handlers. It must not
+# couple back to tools, conventions (FCA), or constraints (DD).
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/lessons.rs"
+to = "src/tools/*"
+name = "lessons-no-tools"
+provenance = "checkpoint:sutra/157"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/lessons.rs"
+to = "src/conventions/*"
+name = "lessons-no-conventions"
+provenance = "checkpoint:sutra/157"
+severity = "blocking"
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/lessons.rs"
+to = "src/constraints/*"
+name = "lessons-no-constraints"
+provenance = "checkpoint:sutra/157"
+severity = "blocking"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Convention management
 # ═══════════════════════════════════════════════════════════════════
 

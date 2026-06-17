@@ -85,6 +85,18 @@ pragmatic reasons. Agents should not deepen them.
 Rationale: LessonsDb owns its own SQLite file, independent of per-workspace DBs.
 Heavyweight subsystems (guard, DD worker) must not depend on it.
 
+### Lessons engine isolation (blocking, checkpoint:sutra/157)
+
+| Constraint | From | To | Status |
+|---|---|---|---|
+| lessons-no-tools | src/lessons.rs | src/tools/* | live |
+| lessons-no-conventions | src/lessons.rs | src/conventions/* | live |
+| lessons-no-constraints | src/lessons.rs | src/constraints/* | live |
+
+Rationale: lessons engine is a library consumed by tool handlers. Must not couple
+back to tools, conventions (FCA), or constraints (DD). Complements the existing
+lessons-no-db constraint from checkpoint:sutra/152.
+
 ### Explore tool isolation (blocking, checkpoint:sutra/171 + sutra/175)
 
 | Constraint | From | To | Provenance | Status |
@@ -112,3 +124,4 @@ lessons. The PRD explicitly rejects vector search, embeddings, and NL interpreta
 | 2026-06-16 | sutra/152 | 3 lessons-isolation constraints added |
 | 2026-06-16 | sutra/171 | 2 explore-isolation constraints added, 8 tautological conventions suppressed |
 | 2026-06-16 | sutra/175 | 2 explore constraints added (health, lessons). 15 convention proposals dismissed (all tautologies). Enforcement ledger backfilled from rules.toml provenance. |
+| 2026-06-16 | sutra/157 | 3 lessons-engine isolation constraints added (no-tools, no-conventions, no-constraints). 29 orphaned convention proposals dismissed (re-clustered IDs). |
