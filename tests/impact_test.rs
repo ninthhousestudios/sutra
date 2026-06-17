@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use sutra::config::Config;
 use sutra::db::{Db, InsertSymbolParams};
+use sutra::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::tools::impact;
@@ -270,4 +271,44 @@ fn test_fan_in_blast_radius_consistency() {
 
     assert_eq!(row_b.blast_radius, 1, "changing B affects A");
     assert_eq!(row_c.blast_radius, 2, "changing C affects B and A");
+}
+
+// ---------------------------------------------------------------------------
+// Lesson injection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn impact_includes_matching_lessons() {
+    let (dir, db) = setup_db();
+    let ldb = LessonsDb::open(dir.path()).unwrap();
+    ldb.store(&StoreLessonParams {
+        text: "Be careful with target_fn refactors",
+        anchors: &[(AnchorKind::Symbol, "target_fn")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let result = impact::handle(&db, "a::target_fn", false, Some(&ldb)).unwrap();
+    let lessons = result["lessons"].as_array().unwrap();
+    assert_eq!(lessons.len(), 1);
+    assert!(lessons[0]["text"].as_str().unwrap().contains("target_fn"));
+}
+
+#[test]
+fn impact_no_lessons_field_when_none_match() {
+    let (dir, db) = setup_db();
+    let ldb = LessonsDb::open(dir.path()).unwrap();
+    ldb.store(&StoreLessonParams {
+        text: "Unrelated lesson",
+        anchors: &[(AnchorKind::Symbol, "unrelated_sym")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let result = impact::handle(&db, "a::target_fn", false, Some(&ldb)).unwrap();
+    assert!(result.get("lessons").is_none());
 }

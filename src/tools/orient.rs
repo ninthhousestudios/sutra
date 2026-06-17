@@ -1365,4 +1365,45 @@ to = "src/banned.rs"
         let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         assert!(result["orientation"][0].get("hidden_coupling").is_none());
     }
+
+    #[test]
+    fn orient_includes_lessons_per_component() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+
+        let ldb = crate::lessons::LessonsDb::open(dir.path()).unwrap();
+        ldb.store(&crate::lessons::StoreLessonParams {
+            text: "Watch out for re-exports in lib.rs",
+            anchors: &[(crate::lessons::AnchorKind::File, "src/lib.rs")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb)).unwrap();
+        let section = &result["orientation"][0];
+        let lessons = section["lessons"].as_array().unwrap();
+        assert_eq!(lessons.len(), 1);
+        assert!(lessons[0]["text"].as_str().unwrap().contains("re-exports"));
+    }
+
+    #[test]
+    fn orient_no_lessons_key_when_none_match() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+
+        let ldb = crate::lessons::LessonsDb::open(dir.path()).unwrap();
+        ldb.store(&crate::lessons::StoreLessonParams {
+            text: "Unrelated lesson",
+            anchors: &[(crate::lessons::AnchorKind::File, "src/unrelated/*.rs")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb)).unwrap();
+        assert!(result["orientation"][0].get("lessons").is_none());
+    }
 }
