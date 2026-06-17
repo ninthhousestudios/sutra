@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -173,11 +173,20 @@ impl LessonsDb {
 // Query
 // ---------------------------------------------------------------------------
 
+const KNOWN_LANGUAGE_CATEGORIES: &[&str] = &["rust", "dart"];
+
+fn is_language_category(cat: &str) -> bool {
+    KNOWN_LANGUAGE_CATEGORIES
+        .iter()
+        .any(|&lc| lc.eq_ignore_ascii_case(cat))
+}
+
 pub struct MatchContext<'a> {
     pub symbol_name: &'a str,
     pub file_path: Option<&'a str>,
     pub imports: &'a [String],
     pub project: Option<&'a str>,
+    pub workspace_languages: &'a [String],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,6 +299,45 @@ impl LessonsDb {
                     lessons.push(map_surfaced_lesson(row)?);
                 }
             }
+        }
+
+        // Phase 3: category filtering — exclude language-specific lessons
+        // irrelevant to this workspace. Skip when workspace_languages is empty
+        // (no workspace context → surface everything).
+        if !lessons.is_empty() && !ctx.workspace_languages.is_empty() {
+            let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT lesson_id, tag FROM categories WHERE lesson_id IN ({placeholders})"
+            ))?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(ids.iter()))?;
+            let mut cat_map: HashMap<String, Vec<String>> = HashMap::new();
+            while let Some(row) = rows.next()? {
+                let lid: String = row.get(0)?;
+                let tag: String = row.get(1)?;
+                cat_map.entry(lid).or_default().push(tag);
+            }
+            drop(rows);
+            drop(stmt);
+
+            let ws_lang_set: HashSet<&str> =
+                ctx.workspace_languages.iter().map(|s| s.as_str()).collect();
+
+            lessons.retain(|l| {
+                let Some(cats) = cat_map.get(&l.id) else {
+                    return true;
+                };
+                if cats.is_empty() {
+                    return true;
+                }
+                cats.iter().any(|c| {
+                    if is_language_category(c) {
+                        ws_lang_set.contains(c.as_str())
+                    } else {
+                        true
+                    }
+                })
+            });
         }
 
         if !lessons.is_empty() {

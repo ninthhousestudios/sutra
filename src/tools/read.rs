@@ -172,11 +172,13 @@ pub fn handle(
             .into_iter()
             .map(|i| i.imported_path)
             .collect();
+        let ws_langs = db.distinct_languages().unwrap_or_default();
         let ctx = crate::lessons::MatchContext {
             symbol_name: &sym.qualified_name,
             file_path: Some(&file.path),
             imports: &import_paths,
             project: project_slug,
+            workspace_languages: &ws_langs,
         };
         let lessons = ldb.query_for_context(&ctx)?;
         if !lessons.is_empty() {

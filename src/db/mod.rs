@@ -1258,6 +1258,17 @@ impl Db {
         Ok(kinds)
     }
 
+    pub fn distinct_languages(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT DISTINCT language FROM files ORDER BY language")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut langs = Vec::new();
+        for r in rows {
+            langs.push(r?);
+        }
+        Ok(langs)
+    }
+
     /// Find the narrowest symbol enclosing the given line in a file.
     pub fn find_enclosing_symbol(&self, file_id: i64, line: i64) -> Result<Option<SymbolRow>> {
         let symbols = self.find_symbols_by_file(file_id)?;

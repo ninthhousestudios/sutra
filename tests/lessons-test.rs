@@ -13,6 +13,7 @@ fn symbol_ctx<'a>(name: &'a str, project: Option<&'a str>) -> MatchContext<'a> {
         file_path: None,
         imports: &[],
         project,
+        workspace_languages: &[],
     }
 }
 
@@ -289,6 +290,7 @@ fn file_glob_matches_path() {
             file_path: Some("src/db/mod.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
@@ -300,6 +302,7 @@ fn file_glob_matches_path() {
             file_path: Some("src/tools/read.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert!(miss.is_empty());
@@ -327,6 +330,7 @@ fn import_pattern_matches_imports() {
             file_path: None,
             imports: &imports_hit,
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
@@ -339,6 +343,7 @@ fn import_pattern_matches_imports() {
             file_path: None,
             imports: &imports_miss,
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert!(miss.is_empty());
@@ -362,6 +367,7 @@ fn directory_anchor_matches_files_under_dir() {
             file_path: Some("src/db/mod.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
@@ -372,6 +378,7 @@ fn directory_anchor_matches_files_under_dir() {
             file_path: Some("src/tools/read.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert!(miss_other.is_empty());
@@ -383,6 +390,7 @@ fn directory_anchor_matches_files_under_dir() {
             file_path: Some("src/dba/foo.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert!(miss_prefix.is_empty());
@@ -410,6 +418,7 @@ fn multi_anchor_or_semantics() {
             file_path: Some("src/main.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
@@ -455,6 +464,7 @@ fn no_false_positives_across_kinds() {
             file_path: Some("src/mcp.rs"),
             imports: &imports,
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert!(results.is_empty());
@@ -508,6 +518,7 @@ fn symbol_and_file_deduplicates() {
             file_path: Some("src/main.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(results.len(), 1);
@@ -531,6 +542,7 @@ fn directory_with_trailing_slash() {
             file_path: Some("src/db/mod.rs"),
             imports: &[],
             project: None,
+            workspace_languages: &[],
         })
         .unwrap();
     assert_eq!(hit.len(), 1);
@@ -811,4 +823,198 @@ fn search_no_filters_returns_all() {
 
     let results = db.search(&search_params()).unwrap();
     assert_eq!(results.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Category filtering tests
+// ---------------------------------------------------------------------------
+
+fn lang_ctx<'a>(name: &'a str, workspace_languages: &'a [String]) -> MatchContext<'a> {
+    MatchContext {
+        symbol_name: name,
+        file_path: None,
+        imports: &[],
+        project: None,
+        workspace_languages,
+    }
+}
+
+#[test]
+fn category_filtering_excludes_wrong_language() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Rust borrow checker pitfall",
+        anchors: &[(AnchorKind::Symbol, "process")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let dart_ws = vec!["dart".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("process", &dart_ws))
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "rust-only lesson should not surface in dart workspace"
+    );
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("process", &rust_ws))
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "rust lesson should surface in rust workspace"
+    );
+}
+
+#[test]
+fn uncategorized_lessons_surface_everywhere() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Universal lesson with no categories",
+        anchors: &[(AnchorKind::Symbol, "init")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let dart_ws = vec!["dart".to_string()];
+    let results = db.query_for_context(&lang_ctx("init", &dart_ws)).unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "uncategorized lesson should surface in any workspace"
+    );
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db.query_for_context(&lang_ctx("init", &rust_ws)).unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn technology_category_surfaces_in_all_workspaces() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "SQLite WAL mode lesson",
+        anchors: &[(AnchorKind::Symbol, "open_db")],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let dart_ws = vec!["dart".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("open_db", &dart_ws))
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "technology category should surface in any workspace"
+    );
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("open_db", &rust_ws))
+        .unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn mixed_categories_surface_if_any_relevant() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Rust SQLite write discipline",
+        anchors: &[(AnchorKind::Symbol, "store")],
+        categories: &["rust", "sqlite"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // dart workspace: "rust" fails but "sqlite" (non-language) passes → surfaces
+    let dart_ws = vec!["dart".to_string()];
+    let results = db.query_for_context(&lang_ctx("store", &dart_ws)).unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "mixed categories should surface if any non-language category present"
+    );
+}
+
+#[test]
+fn empty_workspace_languages_skips_filtering() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Rust-only lesson",
+        anchors: &[(AnchorKind::Symbol, "build")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // Empty workspace_languages → no filtering, everything surfaces
+    let results = db.query_for_context(&lang_ctx("build", &[])).unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "empty workspace_languages should skip category filtering"
+    );
+}
+
+#[test]
+fn category_filtering_with_multiple_language_lessons() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Rust concurrency lesson",
+        anchors: &[(AnchorKind::Symbol, "spawn")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Dart async lesson",
+        anchors: &[(AnchorKind::Symbol, "spawn")],
+        categories: &["dart"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "General concurrency lesson",
+        anchors: &[(AnchorKind::Symbol, "spawn")],
+        categories: &["concurrency"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db.query_for_context(&lang_ctx("spawn", &rust_ws)).unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|l| l.text.contains("Rust concurrency")));
+    assert!(
+        results
+            .iter()
+            .any(|l| l.text.contains("General concurrency"))
+    );
+    assert!(!results.iter().any(|l| l.text.contains("Dart async")));
+
+    let dart_ws = vec!["dart".to_string()];
+    let results = db.query_for_context(&lang_ctx("spawn", &dart_ws)).unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|l| l.text.contains("Dart async")));
+    assert!(
+        results
+            .iter()
+            .any(|l| l.text.contains("General concurrency"))
+    );
+    assert!(!results.iter().any(|l| l.text.contains("Rust concurrency")));
 }
