@@ -669,7 +669,7 @@ impl LessonsDb {
             "UPDATE lessons SET archived = 1
              WHERE archived = 0
                AND verified = 0
-               AND last_cited IS NULL
+               AND (last_cited IS NULL OR last_cited < datetime('now', ?1))
                AND (last_surfaced IS NULL OR last_surfaced < datetime('now', ?1))
                AND created_at < datetime('now', ?1)",
             params![format!("-{window_secs} seconds")],
@@ -777,7 +777,7 @@ impl LessonsDb {
         let stale_map = self.check_staleness(&verified_ids, hash_resolver)?;
         for lesson in lessons.iter_mut() {
             if lesson.verified {
-                lesson.stale = Some(stale_map.get(&lesson.id).copied().unwrap_or(false));
+                lesson.stale = stale_map.get(&lesson.id).copied().map(Some).unwrap_or(None);
             }
         }
         Ok(())

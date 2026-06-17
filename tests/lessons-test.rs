@@ -1811,3 +1811,57 @@ fn archive_decayed_spares_recently_surfaced() {
     let archived = db.archive_decayed(window).unwrap();
     assert_eq!(archived, 1, "old-surfaced lessons get archived");
 }
+
+#[test]
+fn archive_decayed_archives_old_cited_unverified() {
+    let (_dir, db) = setup_lessons_db();
+    let id = store_old_lesson(&db, "Old cited lesson", "old_cited_fn", 100);
+
+    // Cite once (doesn't reach verification threshold)
+    db.cite(&id, Some("task/1"), None).unwrap();
+
+    // Backdate last_cited to outside the window
+    let conn = db.conn_for_test();
+    conn.execute(
+        "UPDATE lessons SET last_cited = datetime('now', '-100 days') WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let window = 30 * 86400;
+    let archived = db.archive_decayed(window).unwrap();
+    assert_eq!(archived, 1, "old-cited unverified lessons should decay");
+}
+
+#[test]
+fn verified_without_snapshot_has_no_stale_flag() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Pre-migration verified lesson",
+            anchors: &[(AnchorKind::Symbol, "legacy_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    // Verify without a resolver (simulates pre-migration or no workspace)
+    db.cite(&id, Some("task/1"), None).unwrap();
+    db.cite(&id, Some("task/2"), None).unwrap();
+
+    let resolver = |_kind: &str, _value: &str| -> Option<String> { Some("any_hash".to_string()) };
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("legacy_fn", None))
+        .unwrap()
+        .lessons;
+    assert!(lessons[0].verified);
+
+    db.apply_staleness(&mut lessons, &resolver).unwrap();
+    assert_eq!(
+        lessons[0].stale, None,
+        "verified without snapshot should be None, not Some(false)"
+    );
+}
