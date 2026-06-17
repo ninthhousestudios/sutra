@@ -1097,7 +1097,7 @@ fn cite_increases_confidence() {
         })
         .unwrap();
 
-    let result = db.cite(&id, Some("sutra/158")).unwrap();
+    let result = db.cite(&id, Some("sutra/158"), None).unwrap();
     assert_eq!(result.new_confidence, 1);
     assert!(!result.verified);
     assert!(!result.crossed_threshold);
@@ -1127,18 +1127,18 @@ fn cite_crosses_verification_threshold() {
         })
         .unwrap();
 
-    let r1 = db.cite(&id, Some("task/1")).unwrap();
+    let r1 = db.cite(&id, Some("task/1"), None).unwrap();
     assert_eq!(r1.new_confidence, 1);
     assert!(!r1.verified);
     assert!(!r1.crossed_threshold);
 
-    let r2 = db.cite(&id, Some("task/2")).unwrap();
+    let r2 = db.cite(&id, Some("task/2"), None).unwrap();
     assert_eq!(r2.new_confidence, 2);
     assert!(r2.verified);
     assert!(r2.crossed_threshold);
 
     // Third cite: still verified, but didn't *cross* this time
-    let r3 = db.cite(&id, Some("task/3")).unwrap();
+    let r3 = db.cite(&id, Some("task/3"), None).unwrap();
     assert_eq!(r3.new_confidence, 3);
     assert!(r3.verified);
     assert!(!r3.crossed_threshold);
@@ -1157,8 +1157,8 @@ fn anti_verify_drops_confidence() {
         })
         .unwrap();
 
-    db.cite(&id, Some("task/1")).unwrap();
-    db.cite(&id, Some("task/2")).unwrap();
+    db.cite(&id, Some("task/1"), None).unwrap();
+    db.cite(&id, Some("task/2"), None).unwrap();
     // Now verified with confidence 2
 
     let r = db.anti_verify(&id).unwrap();
@@ -1210,8 +1210,8 @@ fn verified_suppresses_unverified_on_same_anchor() {
     .unwrap();
 
     // Verify the first lesson
-    db.cite(&v_id, Some("t/1")).unwrap();
-    db.cite(&v_id, Some("t/2")).unwrap();
+    db.cite(&v_id, Some("t/1"), None).unwrap();
+    db.cite(&v_id, Some("t/2"), None).unwrap();
 
     let ctx = symbol_ctx("target_fn", None);
     let cl = db.query_for_context(&ctx).unwrap();
@@ -1234,8 +1234,8 @@ fn unverified_surfaces_when_no_verified_on_same_anchor() {
             project_origin: None,
         })
         .unwrap();
-    db.cite(&v_id, Some("t/1")).unwrap();
-    db.cite(&v_id, Some("t/2")).unwrap();
+    db.cite(&v_id, Some("t/1"), None).unwrap();
+    db.cite(&v_id, Some("t/2"), None).unwrap();
 
     // Unverified lesson on anchor "target_fn"
     db.store(&StoreLessonParams {
@@ -1288,16 +1288,16 @@ fn duplicate_cite_is_idempotent() {
         })
         .unwrap();
 
-    let r1 = db.cite(&id, Some("task/1")).unwrap();
+    let r1 = db.cite(&id, Some("task/1"), None).unwrap();
     assert_eq!(r1.new_confidence, 1);
 
     // Same task cites again — should be no-op
-    let r2 = db.cite(&id, Some("task/1")).unwrap();
+    let r2 = db.cite(&id, Some("task/1"), None).unwrap();
     assert_eq!(r2.new_confidence, 1);
     assert!(!r2.verified);
 
     // Different task still works
-    let r3 = db.cite(&id, Some("task/2")).unwrap();
+    let r3 = db.cite(&id, Some("task/2"), None).unwrap();
     assert_eq!(r3.new_confidence, 2);
     assert!(r3.verified);
 }
@@ -1319,8 +1319,8 @@ fn multi_anchor_no_false_suppression() {
             project_origin: None,
         })
         .unwrap();
-    db.cite(&v_id, Some("t/1")).unwrap();
-    db.cite(&v_id, Some("t/2")).unwrap();
+    db.cite(&v_id, Some("t/1"), None).unwrap();
+    db.cite(&v_id, Some("t/2"), None).unwrap();
 
     // Unverified lesson anchored ONLY to file "src/alpha.rs" (non-matching
     // in this context since we query by symbol "other_fn", file "src/beta.rs")
@@ -1382,8 +1382,8 @@ fn cap_prioritizes_verified_over_unverified() {
                 project_origin: None,
             })
             .unwrap();
-        db.cite(&id, Some(&format!("t/{i}a"))).unwrap();
-        db.cite(&id, Some(&format!("t/{i}b"))).unwrap();
+        db.cite(&id, Some(&format!("t/{i}a")), None).unwrap();
+        db.cite(&id, Some(&format!("t/{i}b")), None).unwrap();
         verified_ids.push(id);
     }
     for i in 0..10 {
@@ -1412,4 +1412,257 @@ fn cap_prioritizes_verified_over_unverified() {
     // Verified should come first
     assert!(cl.lessons[0].verified);
     assert!(cl.lessons[1].verified);
+}
+
+// ---------------------------------------------------------------------------
+// Staleness detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verification_snapshots_content_hash() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Always lock before write",
+            anchors: &[(AnchorKind::Symbol, "write_data")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let resolver = |kind: &str, value: &str| -> Option<String> {
+        if kind == "symbol" && value == "write_data" {
+            Some("hash_abc123".to_string())
+        } else {
+            None
+        }
+    };
+
+    // First cite — no threshold crossing yet
+    db.cite(&id, Some("task/1"), Some(&resolver)).unwrap();
+
+    let conn = db.conn_for_test();
+    let av_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM anchor_verification WHERE lesson_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(av_count, 0, "no snapshot before verification threshold");
+
+    drop(conn);
+
+    // Second cite — crosses threshold
+    let r2 = db.cite(&id, Some("task/2"), Some(&resolver)).unwrap();
+    assert!(r2.crossed_threshold);
+
+    let conn = db.conn_for_test();
+    let av_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM anchor_verification WHERE lesson_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(av_count, 1, "snapshot created on verification");
+
+    let stored_hash: String = conn
+        .query_row(
+            "SELECT content_hash FROM anchor_verification WHERE lesson_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_hash, "hash_abc123");
+
+    // verified_at set on lesson
+    let verified_at: Option<String> = conn
+        .query_row(
+            "SELECT verified_at FROM lessons WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(verified_at.is_some(), "verified_at should be set");
+}
+
+#[test]
+fn stale_when_content_changed() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Stale test lesson",
+            anchors: &[(AnchorKind::Symbol, "my_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let original_resolver = |kind: &str, value: &str| -> Option<String> {
+        if kind == "symbol" && value == "my_fn" {
+            Some("original_hash".to_string())
+        } else {
+            None
+        }
+    };
+
+    db.cite(&id, Some("task/1"), Some(&original_resolver))
+        .unwrap();
+    db.cite(&id, Some("task/2"), Some(&original_resolver))
+        .unwrap();
+
+    // Content has changed
+    let changed_resolver = |kind: &str, value: &str| -> Option<String> {
+        if kind == "symbol" && value == "my_fn" {
+            Some("changed_hash".to_string())
+        } else {
+            None
+        }
+    };
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("my_fn", None))
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 1);
+    assert!(lessons[0].verified);
+    assert_eq!(lessons[0].stale, None, "stale not yet applied");
+
+    db.apply_staleness(&mut lessons, &changed_resolver).unwrap();
+    assert_eq!(lessons[0].stale, Some(true));
+}
+
+#[test]
+fn not_stale_when_content_unchanged() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Not stale lesson",
+            anchors: &[(AnchorKind::Symbol, "stable_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let resolver = |kind: &str, value: &str| -> Option<String> {
+        if kind == "symbol" && value == "stable_fn" {
+            Some("same_hash".to_string())
+        } else {
+            None
+        }
+    };
+
+    db.cite(&id, Some("task/1"), Some(&resolver)).unwrap();
+    db.cite(&id, Some("task/2"), Some(&resolver)).unwrap();
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("stable_fn", None))
+        .unwrap()
+        .lessons;
+    db.apply_staleness(&mut lessons, &resolver).unwrap();
+    assert_eq!(lessons[0].stale, Some(false));
+}
+
+#[test]
+fn unverified_has_no_stale_flag() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Unverified lesson",
+        anchors: &[(AnchorKind::Symbol, "some_fn")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let resolver = |_kind: &str, _value: &str| -> Option<String> { Some("any".to_string()) };
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("some_fn", None))
+        .unwrap()
+        .lessons;
+    assert!(!lessons[0].verified);
+    db.apply_staleness(&mut lessons, &resolver).unwrap();
+    assert_eq!(lessons[0].stale, None, "unverified lessons keep stale=None");
+}
+
+#[test]
+fn multi_anchor_one_changed_is_stale() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Multi-anchor staleness",
+            anchors: &[
+                (AnchorKind::Symbol, "fn_a"),
+                (AnchorKind::File, "src/lib.rs"),
+            ],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let original_resolver = |kind: &str, value: &str| -> Option<String> {
+        match (kind, value) {
+            ("symbol", "fn_a") => Some("hash_a".to_string()),
+            ("file", "src/lib.rs") => Some("hash_b".to_string()),
+            _ => None,
+        }
+    };
+
+    db.cite(&id, Some("task/1"), Some(&original_resolver))
+        .unwrap();
+    db.cite(&id, Some("task/2"), Some(&original_resolver))
+        .unwrap();
+
+    // Only the file anchor changed
+    let partial_change_resolver = |kind: &str, value: &str| -> Option<String> {
+        match (kind, value) {
+            ("symbol", "fn_a") => Some("hash_a".to_string()),
+            ("file", "src/lib.rs") => Some("hash_b_changed".to_string()),
+            _ => None,
+        }
+    };
+
+    let mut lessons = db
+        .query_for_context(&symbol_ctx("fn_a", None))
+        .unwrap()
+        .lessons;
+    db.apply_staleness(&mut lessons, &partial_change_resolver)
+        .unwrap();
+    assert_eq!(lessons[0].stale, Some(true), "any anchor change → stale");
+}
+
+#[test]
+fn cite_without_resolver_still_works() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "No resolver lesson",
+            anchors: &[(AnchorKind::Symbol, "no_ws_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    // Cite with None resolver — should still cross threshold, just no snapshots
+    let r1 = db.cite(&id, Some("task/1"), None).unwrap();
+    assert!(!r1.crossed_threshold);
+    let r2 = db.cite(&id, Some("task/2"), None).unwrap();
+    assert!(r2.crossed_threshold);
+
+    let conn = db.conn_for_test();
+    let av_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM anchor_verification WHERE lesson_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(av_count, 0, "no snapshots without resolver");
 }

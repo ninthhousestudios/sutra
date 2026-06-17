@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::db::{Db, ResolveResult};
 use crate::error::{Result, SutraError};
-use crate::lessons::{AnchorKind, LessonsDb, StoreLessonParams};
+use crate::lessons::{AnchorKind, HashResolver, LessonsDb, StoreLessonParams};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
@@ -70,7 +70,8 @@ pub fn handle(
             .as_ref()
             .and_then(|t| t.first())
             .map(|s| s.as_str());
-        let result = lessons_db.cite(lesson_id, task_id)?;
+        let resolver = workspace_db.map(|db| build_hash_resolver(db));
+        let result = lessons_db.cite(lesson_id, task_id, resolver.as_ref().map(|r| r.as_ref()))?;
         return Ok(json!({
             "cited": true,
             "lesson_id": lesson_id,
@@ -250,6 +251,29 @@ fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
         anchors,
         categories: cats.into_iter().collect(),
     }
+}
+
+pub fn build_hash_resolver(db: &Db) -> Box<HashResolver<'_>> {
+    Box::new(move |kind: &str, value: &str| -> Option<String> {
+        match kind {
+            "symbol" => {
+                let sym = match db.resolve_symbol_diagnostic(value, None) {
+                    Ok(ResolveResult::Unique(s)) => s,
+                    _ => return None,
+                };
+                db.file_by_id(sym.file_id)
+                    .ok()
+                    .flatten()
+                    .map(|f| f.content_hash)
+            }
+            "file" => db
+                .file_by_path(value)
+                .ok()
+                .flatten()
+                .map(|f| f.content_hash),
+            _ => None,
+        }
+    })
 }
 
 fn import_root(imported_path: &str) -> &str {

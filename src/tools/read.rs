@@ -180,8 +180,10 @@ pub fn handle(
             project: project_slug,
             workspace_languages: &ws_langs,
         };
-        let cl = ldb.query_for_context(&ctx)?;
+        let mut cl = ldb.query_for_context(&ctx)?;
         if !cl.lessons.is_empty() {
+            let resolver = super::remember::build_hash_resolver(db);
+            let _ = ldb.apply_staleness(&mut cl.lessons, &resolver);
             result["lessons"] = serde_json::to_value(&cl.lessons).unwrap_or_default();
             if cl.omitted > 0 {
                 result["lessons_omitted"] = json!(cl.omitted);

@@ -22,6 +22,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0003_cite_idempotency",
         include_str!("lessons_cite_idempotency.sql"),
     ),
+    ("0004_staleness", include_str!("lessons_staleness.sql")),
 ];
 
 impl LessonsDb {
@@ -209,6 +210,8 @@ pub struct SurfacedLesson {
     pub confidence: i64,
     pub project_origin: Option<String>,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 const GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
@@ -254,6 +257,7 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
         confidence: row.get(3)?,
         project_origin: row.get(4)?,
         created_at: row.get(5)?,
+        stale: None,
     })
 }
 
@@ -544,8 +548,18 @@ pub struct AntiVerifyResult {
     pub verified: bool,
 }
 
+/// Resolves an anchor (kind, value) to the current content hash of its backing file.
+/// Returns `None` for anchor kinds that aren't hashable (directory, import_pattern)
+/// or when the symbol/file can't be resolved.
+pub type HashResolver<'a> = dyn Fn(&str, &str) -> Option<String> + 'a;
+
 impl LessonsDb {
-    pub fn cite(&self, lesson_id: &str, task_id: Option<&str>) -> Result<CiteResult> {
+    pub fn cite(
+        &self,
+        lesson_id: &str,
+        task_id: Option<&str>,
+        hash_resolver: Option<&HashResolver<'_>>,
+    ) -> Result<CiteResult> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
 
@@ -574,11 +588,22 @@ impl LessonsDb {
         let crossed = now_verified && !old_verified;
 
         if inserted {
+            let verified_at_clause = if crossed {
+                ", verified_at = datetime('now')"
+            } else {
+                ""
+            };
             tx.execute(
-                "UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now') \
-                 WHERE id = ?3",
+                &format!(
+                    "UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now'){verified_at_clause} \
+                     WHERE id = ?3"
+                ),
                 params![new_confidence, now_verified, lesson_id],
             )?;
+        }
+
+        if crossed {
+            Self::snapshot_anchor_hashes(&tx, lesson_id, hash_resolver)?;
         }
 
         tx.commit()?;
@@ -621,6 +646,112 @@ impl LessonsDb {
             new_confidence,
             verified: still_verified,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Staleness detection
+// ---------------------------------------------------------------------------
+
+impl LessonsDb {
+    fn snapshot_anchor_hashes(
+        tx: &rusqlite::Transaction<'_>,
+        lesson_id: &str,
+        hash_resolver: Option<&HashResolver<'_>>,
+    ) -> Result<()> {
+        let resolver = match hash_resolver {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+
+        let mut stmt = tx.prepare("SELECT id, kind, value FROM anchors WHERE lesson_id = ?1")?;
+        let anchors: Vec<(i64, String, String)> = stmt
+            .query_map(params![lesson_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for (anchor_id, kind, value) in &anchors {
+            if let Some(hash) = resolver(kind, value) {
+                tx.execute(
+                    "INSERT INTO anchor_verification (lesson_id, anchor_id, content_hash, verified_at)
+                     VALUES (?1, ?2, ?3, datetime('now'))
+                     ON CONFLICT(anchor_id) DO UPDATE SET content_hash = ?3, verified_at = datetime('now')",
+                    params![lesson_id, anchor_id, hash],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// For each surfaced lesson, check whether any verified anchor's content
+    /// has changed since verification. Returns a map of lesson_id → stale.
+    /// Only lessons with `anchor_verification` rows are checked.
+    pub fn check_staleness(
+        &self,
+        lesson_ids: &[&str],
+        hash_resolver: &HashResolver<'_>,
+    ) -> Result<HashMap<String, bool>> {
+        if lesson_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = self.conn.lock();
+        let placeholders = lesson_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT av.lesson_id, a.kind, a.value, av.content_hash
+             FROM anchor_verification av
+             JOIN anchors a ON a.id = av.anchor_id
+             WHERE av.lesson_id IN ({placeholders})"
+        ))?;
+        let rows: Vec<(String, String, String, String)> = stmt
+            .query_map(rusqlite::params_from_iter(lesson_ids.iter()), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut result: HashMap<String, bool> = HashMap::new();
+        for (lesson_id, kind, value, snapshot_hash) in &rows {
+            let stale_entry = result.entry(lesson_id.clone()).or_insert(false);
+            if *stale_entry {
+                continue;
+            }
+            match hash_resolver(kind, value) {
+                Some(current_hash) if current_hash != *snapshot_hash => {
+                    *stale_entry = true;
+                }
+                _ => {}
+            }
+        }
+        Ok(result)
+    }
+
+    /// Annotate surfaced lessons with staleness flags in place.
+    /// Verified lessons with anchor_verification snapshots get `Some(true/false)`;
+    /// unverified lessons stay `None`.
+    pub fn apply_staleness(
+        &self,
+        lessons: &mut [SurfacedLesson],
+        hash_resolver: &HashResolver<'_>,
+    ) -> Result<()> {
+        let verified_ids: Vec<&str> = lessons
+            .iter()
+            .filter(|l| l.verified)
+            .map(|l| l.id.as_str())
+            .collect();
+        if verified_ids.is_empty() {
+            return Ok(());
+        }
+        let stale_map = self.check_staleness(&verified_ids, hash_resolver)?;
+        for lesson in lessons.iter_mut() {
+            if lesson.verified {
+                lesson.stale = Some(stale_map.get(&lesson.id).copied().unwrap_or(false));
+            }
+        }
+        Ok(())
     }
 }
 

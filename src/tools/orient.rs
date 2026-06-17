@@ -687,6 +687,8 @@ pub fn handle(
                 }
             }
             if !comp_lessons.is_empty() {
+                let resolver = super::remember::build_hash_resolver(db);
+                let _ = ldb.apply_staleness(&mut comp_lessons, &resolver);
                 section["lessons"] = serde_json::to_value(&comp_lessons).unwrap_or_default();
             }
         }
