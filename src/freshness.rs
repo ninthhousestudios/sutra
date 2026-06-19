@@ -120,12 +120,17 @@ pub fn workspace_has_changed(
     stored_head: Option<&str>,
     indexed_paths: &[String],
 ) -> bool {
-    if let Some(stored) = stored_head {
-        if let Some(current) = crate::git::head_commit_hash(workspace_root) {
+    let current_head = crate::git::head_commit_hash(workspace_root);
+    match (stored_head, &current_head) {
+        (Some(stored), Some(current)) => {
             if current != stored {
                 return true;
             }
         }
+        // Git workspace but no stored HEAD (pre-migration snapshot) —
+        // force stale so the next parse records a HEAD hash.
+        (None, Some(_)) => return true,
+        _ => {}
     }
 
     let Ok(parsed_dt) = chrono::DateTime::parse_from_rfc3339(parse_timestamp) else {
@@ -276,20 +281,32 @@ mod tests {
     }
 
     #[test]
-    fn workspace_changed_when_head_differs() {
+    fn workspace_not_stale_when_stored_head_but_not_git() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("lib.rs");
         fs::write(&file, "fn hello() {}").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         let parsed_at = chrono::Utc::now().to_rfc3339();
         let paths = vec!["lib.rs".to_string()];
-        // Non-git dir: head_commit_hash returns None, so stored HEAD can't be compared
-        // — falls through to mtime check which passes.
+        // Non-git dir: head_commit_hash returns None, stored HEAD present
+        // — (Some, None) falls through to mtime check which passes.
         assert!(!workspace_has_changed(
             dir.path(),
             &parsed_at,
             Some("abc123"),
             &paths,
         ));
+    }
+
+    #[test]
+    fn workspace_not_stale_non_git_no_stored_head() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "fn hello() {}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let parsed_at = chrono::Utc::now().to_rfc3339();
+        let paths = vec!["lib.rs".to_string()];
+        // Non-git dir, no stored HEAD — (None, None) falls through to mtime.
+        assert!(!workspace_has_changed(dir.path(), &parsed_at, None, &paths,));
     }
 }

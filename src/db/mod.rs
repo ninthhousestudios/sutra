@@ -364,6 +364,9 @@ pub struct SnapshotParams {
     pub health_score: f64,
     pub pattern_family_count: i64,
     pub head_commit: Option<String>,
+    /// Pre-parse timestamp for freshness watermark. When set, used instead
+    /// of insert-time so edits during parsing aren't hidden.
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1596,7 +1599,10 @@ impl Db {
 
     /// Insert a snapshot record. Returns the new row id.
     pub fn insert_snapshot(&self, p: &SnapshotParams) -> Result<i64> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let ts = p
+            .timestamp
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
@@ -1606,7 +1612,7 @@ impl Db {
                                     pattern_family_count, head_commit)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
-                now,
+                ts,
                 p.files_parsed,
                 p.symbols_extracted,
                 p.refs_extracted,
@@ -1630,7 +1636,10 @@ impl Db {
         files: &[SnapshotFileRow],
         components: &[SnapshotComponentRow],
     ) -> Result<i64> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let ts = p
+            .timestamp
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let conn = self.conn.lock();
         conn.execute_batch("BEGIN")?;
 
@@ -1643,7 +1652,7 @@ impl Db {
                                         pattern_family_count, head_commit)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
-                    now,
+                    ts,
                     p.files_parsed,
                     p.symbols_extracted,
                     p.refs_extracted,

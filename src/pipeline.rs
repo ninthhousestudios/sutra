@@ -393,6 +393,7 @@ pub fn parse_workspace(
 ) -> Result<ParseSnapshot> {
     let _flock = acquire_parse_flock(config, &workspace.id)?;
     let head_commit = crate::git::head_commit_hash(&workspace.root);
+    let parse_started_at = chrono::Utc::now().to_rfc3339();
     let start = Instant::now();
     let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
 
@@ -467,6 +468,7 @@ pub fn parse_workspace(
             if let Err(e) = record_unchanged_snapshot(
                 db,
                 head_commit.clone(),
+                Some(parse_started_at.clone()),
                 files_parsed,
                 symbols_extracted,
                 refs_extracted,
@@ -480,6 +482,7 @@ pub fn parse_workspace(
             if let Err(e) = record_snapshot(
                 db,
                 head_commit.clone(),
+                Some(parse_started_at.clone()),
                 files_parsed,
                 symbols_extracted,
                 refs_extracted,
@@ -498,6 +501,7 @@ pub fn parse_workspace(
             if let Err(e) = record_snapshot(
                 db,
                 head_commit,
+                Some(parse_started_at),
                 files_parsed,
                 symbols_extracted,
                 refs_extracted,
@@ -664,6 +668,7 @@ fn post_parse_sequence(
 fn record_snapshot(
     db: &Db,
     head_commit: Option<String>,
+    timestamp: Option<String>,
     files_parsed: i64,
     symbols_extracted: i64,
     refs_extracted: i64,
@@ -684,6 +689,7 @@ fn record_snapshot(
             health_score: health.health_score,
             pattern_family_count: health.pattern_family_count,
             head_commit,
+            timestamp,
         },
         &health.file_scores,
         &health.component_scores,
@@ -694,6 +700,7 @@ fn record_snapshot(
 fn record_unchanged_snapshot(
     db: &Db,
     head_commit: Option<String>,
+    timestamp: Option<String>,
     files_parsed: i64,
     symbols_extracted: i64,
     refs_extracted: i64,
@@ -704,6 +711,7 @@ fn record_unchanged_snapshot(
         return record_snapshot(
             db,
             head_commit,
+            timestamp,
             files_parsed,
             symbols_extracted,
             refs_extracted,
@@ -727,6 +735,7 @@ fn record_unchanged_snapshot(
             health_score: previous.health_score,
             pattern_family_count: previous.pattern_family_count,
             head_commit,
+            timestamp,
         },
         &file_scores,
         &component_scores,
