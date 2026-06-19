@@ -1148,6 +1148,7 @@ fn insert_snapshot(db: &Db, health_score: f64) -> i64 {
         hotspot_count: 1,
         health_score,
         pattern_family_count: 3,
+        ..Default::default()
     })
     .unwrap()
 }

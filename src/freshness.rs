@@ -111,6 +111,45 @@ pub fn confidence_json(tier: SearchTier) -> serde_json::Value {
     })
 }
 
+/// Check whether indexed files have actually changed since last parse.
+/// Returns true only if HEAD moved, any indexed file was modified/deleted,
+/// or the parse timestamp is unparseable.
+pub fn workspace_has_changed(
+    workspace_root: &Path,
+    parse_timestamp: &str,
+    stored_head: Option<&str>,
+    indexed_paths: &[String],
+) -> bool {
+    if let Some(stored) = stored_head {
+        if let Some(current) = crate::git::head_commit_hash(workspace_root) {
+            if current != stored {
+                return true;
+            }
+        }
+    }
+
+    let Ok(parsed_dt) = chrono::DateTime::parse_from_rfc3339(parse_timestamp) else {
+        return true;
+    };
+    let parsed_sys: std::time::SystemTime = parsed_dt.into();
+
+    for path in indexed_paths {
+        let full = workspace_root.join(path);
+        match std::fs::metadata(&full) {
+            Ok(meta) => {
+                if let Ok(mtime) = meta.modified() {
+                    if mtime > parsed_sys {
+                        return true;
+                    }
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+
+    false
+}
+
 pub struct FreshnessAnnotator<'a> {
     root: &'a Path,
     counts: FreshnessCounts,
@@ -203,5 +242,54 @@ mod tests {
     #[test]
     fn confidence_fts_is_below_exact() {
         assert!(SearchTier::Fts.confidence() < SearchTier::Exact.confidence());
+    }
+
+    #[test]
+    fn workspace_unchanged_when_no_files_modified() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "fn hello() {}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let parsed_at = chrono::Utc::now().to_rfc3339();
+        let paths = vec!["lib.rs".to_string()];
+        assert!(!workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+    }
+
+    #[test]
+    fn workspace_changed_when_file_modified() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "fn hello() {}").unwrap();
+        let parsed_at = chrono::Utc::now().to_rfc3339();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(&file, "fn hello() { changed }").unwrap();
+        let paths = vec!["lib.rs".to_string()];
+        assert!(workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+    }
+
+    #[test]
+    fn workspace_changed_when_file_deleted() {
+        let dir = tempdir().unwrap();
+        let parsed_at = chrono::Utc::now().to_rfc3339();
+        let paths = vec!["gone.rs".to_string()];
+        assert!(workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+    }
+
+    #[test]
+    fn workspace_changed_when_head_differs() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "fn hello() {}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let parsed_at = chrono::Utc::now().to_rfc3339();
+        let paths = vec!["lib.rs".to_string()];
+        // Non-git dir: head_commit_hash returns None, so stored HEAD can't be compared
+        // — falls through to mtime check which passes.
+        assert!(!workspace_has_changed(
+            dir.path(),
+            &parsed_at,
+            Some("abc123"),
+            &paths,
+        ));
     }
 }

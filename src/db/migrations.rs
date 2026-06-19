@@ -206,6 +206,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0040_fca_cache.sql"),
         true,
     ),
+    (
+        "0041_snapshot_head_commit",
+        include_str!("../../migrations/0041_snapshot_head_commit.sql"),
+        true,
+    ),
 ];
 
 impl Db {

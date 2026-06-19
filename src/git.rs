@@ -366,3 +366,14 @@ pub fn git_file_content_at(
         .map(Some)
         .map_err(|e| SutraError::Internal(format!("git show: non-UTF8 content: {e}")))
 }
+
+pub fn head_commit_hash(workspace_root: &Path) -> Option<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}

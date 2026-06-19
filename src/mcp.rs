@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -177,7 +177,7 @@ impl SutraServer {
         let ws = self.resolve_workspace(ws_id)?;
         let db = tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir)
             .map_err(sutra_to_rmcp)?;
-        let response_freshness = self.freshness(&db);
+        let response_freshness = self.freshness(&db, &ws.root);
         Ok(tools::ToolContext::new(
             db,
             ws.root,
@@ -251,13 +251,22 @@ impl SutraServer {
         Ok((ws_id, entry, already_exists))
     }
 
-    fn freshness(&self, db: &Db) -> serde_json::Value {
-        let (as_of, is_stale) = match db.last_parse_time() {
-            Ok(Some(ts)) => {
+    fn freshness(&self, db: &Db, workspace_root: &Path) -> serde_json::Value {
+        let (as_of, is_stale) = match db.last_parse_info() {
+            Ok(Some((ts, head_commit))) => {
                 let is_stale = chrono::DateTime::parse_from_rfc3339(&ts)
                     .map(|dt| {
                         let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
-                        age.num_seconds() as u64 > self.config.stale_threshold_sec
+                        if age.num_seconds() as u64 <= self.config.stale_threshold_sec {
+                            return false;
+                        }
+                        let paths = db.all_indexed_paths().unwrap_or_default();
+                        crate::freshness::workspace_has_changed(
+                            workspace_root,
+                            &ts,
+                            head_commit.as_deref(),
+                            &paths,
+                        )
                     })
                     .unwrap_or(true);
                 (Some(ts), is_stale)
@@ -285,10 +294,11 @@ impl SutraServer {
     fn wrap_response(
         &self,
         db: &Db,
+        workspace_root: &Path,
         mut result: serde_json::Value,
     ) -> std::result::Result<String, ErrorData> {
         if let Some(obj) = result.as_object_mut() {
-            let f = self.freshness(db);
+            let f = self.freshness(db, workspace_root);
             if let Some(f_obj) = f.as_object() {
                 for (k, v) in f_obj {
                     obj.insert(k.clone(), v.clone());
@@ -610,6 +620,7 @@ impl SutraServer {
         Parameters(args): Parameters<WorkspaceArgs>,
     ) -> Result<String, ErrorData> {
         let ws = self.resolve_workspace(&args.workspace)?;
+        let ws_root = ws.root.clone();
         let db = self.get_db(&args.workspace)?;
         let lock = self.parse_coord.lock_for(&args.workspace);
         let _guard = lock.lock().await;
@@ -629,7 +640,7 @@ impl SutraServer {
             )
         })?
         .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, result)
+        self.wrap_response(&db, &ws_root, result)
     }
 
     #[tool(
@@ -1064,7 +1075,7 @@ impl SutraServer {
         let files = db.all_files().unwrap_or_default();
         let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
         let total_symbols: i64 = sym_counts.values().sum();
-        let freshness = self.freshness(&db);
+        let freshness = self.freshness(&db, &entry.root);
 
         let status = if files.is_empty() { "empty" } else { "ready" };
 

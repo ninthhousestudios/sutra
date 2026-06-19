@@ -363,6 +363,7 @@ pub struct SnapshotParams {
     pub hotspot_count: i64,
     pub health_score: f64,
     pub pattern_family_count: i64,
+    pub head_commit: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1602,8 +1603,8 @@ impl Db {
                                     refs_extracted, parse_errors, duration_ms,
                                     total_complexity, dead_symbol_count,
                                     hotspot_count, health_score,
-                                    pattern_family_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                    pattern_family_count, head_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 now,
                 p.files_parsed,
@@ -1616,6 +1617,7 @@ impl Db {
                 p.hotspot_count,
                 p.health_score,
                 p.pattern_family_count,
+                p.head_commit,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1638,8 +1640,8 @@ impl Db {
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
                                         hotspot_count, health_score,
-                                        pattern_family_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                        pattern_family_count, head_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     now,
                     p.files_parsed,
@@ -1652,6 +1654,7 @@ impl Db {
                     p.hotspot_count,
                     p.health_score,
                     p.pattern_family_count,
+                    p.head_commit,
                 ],
             )?;
             let snapshot_id = conn.last_insert_rowid();
@@ -1750,6 +1753,32 @@ impl Db {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(SutraError::Db(e)),
         }
+    }
+
+    /// Return (timestamp, head_commit) from the most recent snapshot.
+    pub fn last_parse_info(&self) -> Result<Option<(String, Option<String>)>> {
+        let conn = self.conn.lock();
+        match conn.query_row(
+            "SELECT timestamp, head_commit FROM snapshots ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(SutraError::Db(e)),
+        }
+    }
+
+    /// Return all indexed file paths (relative to workspace root).
+    pub fn all_indexed_paths(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut paths = Vec::new();
+        for r in rows {
+            paths.push(r.map_err(SutraError::Db)?);
+        }
+        Ok(paths)
     }
 
     /// Return the N most recent snapshots, ordered newest-first.
