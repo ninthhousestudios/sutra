@@ -1,0 +1,407 @@
+Clone audit: 360 sites, by category
+
+┌───────────────────────┬───────┬─────┬────────────────────────────────────────────────────────────────────────────────────────────────┐
+│        Bucket         │ Sites │  %  │                                            Verdict                                             │
+├───────────────────────┼───────┼─────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Idiomatic / necessary │   ~95 │ 26% │ Arc clones, DD collection handles, test setup, owned structs from borrowed DB rows. No action. │
+├───────────────────────┼───────┼─────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Borrow-checker fights │    ~8 │  2% │ Real but small — local fixes.                                                                  │
+├───────────────────────┼───────┼─────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Could use references  │   ~15 │  4% │ HashMap<i64, String> → HashMap<i64, &str> where the source outlives the map.                   │
+├───────────────────────┼───────┼─────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Structural smell      │  ~242 │ 67% │ The same identity strings cloned over and over. This is the real problem.                      │
+└───────────────────────┴───────┴─────┴────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+The structural problem
+
+Three fields account for the vast majority of clones:
+
+- qualified_name: String — 23 sites. Cloned in every tool that builds output structs (calls, refs, similar, change_signals, trace, conventions, components).
+- .id.clone() on Convention/Constraint/Component — 30 sites. Every finding/violation construction clones it.
+- antecedent: Vec<String> / consequent: Vec<String> on Convention — 21 sites. Entire vectors cloned into every violation struct.
+
+These are all identity data — set once from the DB, never mutated, read and cloned everywhere. The pattern is "agent fights the type system by cloning repeatedly" rather than designing the right ownership model.
+
+Recommended fix, ranked by impact
+
+1. Arc<str> for identity strings (~53 clones → free ref-count bumps)
+SymbolRow.qualified_name, FileRow.path, Convention.id, Constraint.id, and their downstream output struct fields. The DB layer constructs Arc<str> once from the sqlite row; every consumer pays zero. Single biggest win.
+
+2. Arc-wrap Convention/Constraint structs (~21 clones eliminated)
+Violation structs hold Arc<Convention> instead of cloning id + antecedent + consequent individually. These structs are immutable after construction — perfect Arc candidates.
+
+3. HashMap<i64, &str> for lookup maps (~15 clones eliminated)
+The path_map, comp_name_to_id, file_to_component patterns all build owned HashMaps where the source data outlives the map. Borrow instead of clone.
+
+4. trace.rs: track Vec<i64>, resolve names at output (~7 clones eliminated)
+The DFS only uses the i64 id; the String is carried purely for formatting. Also stack.last().unwrap().clone() where only the i64 (which is Copy) is used — trivial fix.
+
+5. Borrow-checker fights (~8 sites)
+- self.rebuild(&self.symbol_attrs.clone()) — partial-borrow workaround, fix with mem::take or restructure
+- self.conventions.clone() returned from &mut self — return &[Convention] instead
+- self.constraint.clone().into_iter() — just .iter()
+- stack.last().unwrap().clone() for destructuring — just .0
+
+Honest assessment
+
+The bulk of the problem isn't "bad code" — it's missing a design decision. When the codebase was written, everything was String because it's the path of least resistance, and then every consumer pays the clone tax. The fix is one architectural choice (Arc<str> for identity fields) that propagates through the DB layer and eliminates ~2/3 of all clones mechanically. The borrow-checker fights are noise by comparison.
+
+src/parser/adapter.rs:            self.parsers.insert(lang_id.clone(), p);
+src/parser/adapter.rs:                            sa.attributes.push(key.clone());
+src/parser/adapter.rs:                            sa.attributes.push(key.clone());
+src/parser/rust.rs:                    let name = sym.short_name.clone();
+src/parser/rust.rs:                    let impl_name = sym.short_name.clone();
+src/parser/rust.rs:                    let name = sym.short_name.clone();
+src/parser/dart.rs:                    let name = sym.short_name.clone();
+src/parser/dart.rs:                    let name = sym.short_name.clone();
+src/parser/dart.rs:                    let name = sym.short_name.clone();
+src/parser/dart.rs:            parts.push(t.clone());
+src/tools/winnow.rs:        file_filters.push(churn_filter(churn_map.clone(), min));
+src/tools/winnow.rs:        sym_filters.push(kind_filter(k.clone()));
+src/tools/winnow.rs:                file_path: file.path.clone(),
+src/tools/winnow.rs:                file_last_parsed: file.last_parsed.clone(),
+src/tools/calls.rs:                    qualified_name: c.qualified_name.clone(),
+src/tools/calls.rs:                    kind: c.kind.clone(),
+src/tools/refs.rs:                    qualified_name: c.qualified_name.clone(),
+src/tools/refs.rs:                    kind: c.kind.clone(),
+src/tools/refs.rs:            symbol: sym.qualified_name.clone(),
+src/tools/refs.rs:            symbol_kind: sym.kind.clone(),
+src/tools/similar.rs:                    qualified_name: c.qualified_name.clone(),
+src/tools/similar.rs:                    kind: c.kind.clone(),
+src/tools/trend.rs:            Ok((range[0].clone(), range[range.len() - 1].clone()))
+src/tools/trend.rs:            Ok((snaps[1].clone(), snaps[0].clone()))
+src/tools/change_signals.rs:                    max_cognitive_symbol = Some(s.qualified_name.clone());
+src/tools/change_signals.rs:                    qualified_name: s.qualified_name.clone(),
+src/tools/change_signals.rs:                path: path.clone(),
+src/tools/change_signals.rs:                path: path.clone(),
+src/tools/change_signals.rs:                        qualified_name: s.qualified_name.clone(),
+src/tools/change_signals.rs:                        file: file.path.clone(),
+src/tools/change_signals.rs:                    path: file.path.clone(),
+src/tools/symbol_diff.rs:        .map(|r| r.name.clone())
+src/tools/symbol_diff.rs:                    symbol: s.qualified_name.clone(),
+src/tools/symbol_diff.rs:                    symbol: s.qualified_name.clone(),
+src/tools/file_health.rs:                .map(|refs| refs.iter().map(|r| (*r).clone()).collect())
+src/tools/pr_risk.rs:                s.qualified_name.clone(),
+src/tools/review.rs:            file_to_component.insert(path.clone(), comp_id.clone());
+src/tools/review.rs:        let mut effective_conventions = rules.conventions.clone();
+src/tools/review.rs:                effective_conventions.suppress.push(c.id.clone());
+src/tools/review.rs:            .map(|c| c.id.clone())
+src/tools/review.rs:            .map(|c| c.id.clone())
+src/tools/review.rs:                .map(|c| ((s.file.clone(), s.name.clone()), c.to_string()))
+src/tools/review.rs:        if !seen.insert(v.file.clone()) {
+src/tools/review.rs:        violation_sites.push((v.file.clone(), blast, v.confidence));
+src/tools/review.rs:        reads.push((path.clone(), *blast, true, false));
+src/tools/review.rs:            reads.push((a.path.clone(), a.blast_radius, false, false));
+src/tools/trace.rs:    let mut stack: Vec<(i64, String)> = vec![(target.id, target.qualified_name.clone())];
+src/tools/trace.rs:    let (current_id, _) = stack.last().unwrap().clone();
+src/tools/trace.rs:        paths.push(stack.clone());
+src/tools/trace.rs:        paths.push(stack.clone());
+src/tools/trace.rs:                cycles.push((stack.clone(), caller_sym.qualified_name.clone()));
+src/tools/trace.rs:            stack.push((caller_sym.id, caller_sym.qualified_name.clone()));
+src/tools/trace.rs:        paths.push(stack.clone());
+src/tools/trace.rs:    let mut stack = vec![(target.id, target.qualified_name.clone())];
+src/tools/trace.rs:    let (current_id, _) = stack.last().unwrap().clone();
+src/tools/trace.rs:            paths.push(stack.clone());
+src/tools/trace.rs:        paths.push(stack.clone());
+src/tools/trace.rs:                cycles.push((stack.clone(), callee_sym.qualified_name.clone()));
+src/tools/trace.rs:            stack.push((callee_sym.id, callee_sym.qualified_name.clone()));
+src/tools/explore.rs:        if seen.insert(s.clone()) {
+src/tools/explore.rs:    let mut visited = direct_ids.clone();
+src/tools/explore.rs:            .map(|f| f.path.clone())
+src/tools/explore.rs:            *comp_count_map.entry(name.clone()).or_default() += 1;
+src/tools/explore.rs:                .map(|f| f.path.clone())
+src/tools/mod.rs:    map.insert(workspace.id.clone(), Arc::clone(&db));
+src/tools/mod.rs:                    obj.insert(k.clone(), v.clone());
+src/tools/read.rs:            received: Some(file.path.clone()),
+src/tools/orient.rs:                id: comp_id.clone(),
+src/tools/orient.rs:                name: comp_name.clone(),
+src/tools/orient.rs:                files: paths.clone(),
+src/tools/orient.rs:            .map(|(_, name, p)| (name.clone(), p.clone()))
+src/tools/orient.rs:            .unwrap_or_else(|| (alias.term.clone(), vec![]));
+src/tools/orient.rs:            id: alias.target_ref.clone(),
+src/tools/orient.rs:                id: comp_id.clone(),
+src/tools/orient.rs:                name: comp_name.clone(),
+src/tools/orient.rs:                files: paths.clone(),
+src/tools/orient.rs:                id: comp_id.clone(),
+src/tools/orient.rs:                name: comp_name.clone(),
+src/tools/orient.rs:                files: paths.clone(),
+src/tools/orient.rs:                    scope.clone()
+src/tools/orient.rs:        comp_name_to_id.insert(name.clone(), comp_id.clone());
+src/tools/orient.rs:    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+src/tools/orient.rs:                    if seen_ids.insert(lesson.id.clone()) {
+src/error.rs:                argument: Some(name.clone()),
+src/error.rs:                constraint: constraint.clone(),
+src/error.rs:                next_action: next_action.clone(),
+src/error.rs:                next_action: next_action.clone(),
+src/bin/guard.rs:        Some(ref p) => p.clone(),
+src/bin/guard.rs:        rel_path: rel_path.clone(),
+src/db/components.rs:                .entry(row.component_id.clone())
+src/db/mod.rs:            .clone()
+src/db/mod.rs:            .clone()
+src/rest.rs:        .unwrap_or_else(|| req.path.clone());
+src/rest.rs:        id: id.clone(),
+src/rest.rs:        root: root.clone(),
+src/rest.rs:        languages: languages.clone(),
+src/rest.rs:    if let Err(e) = crate::workspace::add_workspace(&state.config.workspaces_path, entry.clone()) {
+src/rest.rs:        ws.workspace.push(entry.clone());
+src/rest.rs:        state.db_cache.lock().insert(id.clone(), Arc::new(db));
+src/conventions/context.rs:        concepts.push((extent, current.clone()));
+src/conventions/context.rs:            concepts.push((extent, next.clone()));
+src/conventions/context.rs:                        antecedent: vec![self.attribute_names[a].clone()],
+src/conventions/context.rs:                        consequent: vec![self.attribute_names[b].clone()],
+src/conventions/bitset.rs:        let mut r = self.clone();
+src/conventions/lifecycle.rs:                    convention_id: conv.id.clone(),
+src/conventions/lifecycle.rs:                    convention_id: conv.id.clone(),
+src/conventions/lifecycle.rs:                    convention_id: conv.id.clone(),
+src/conventions/templates.rs:    let mut sorted_c = complexities.clone();
+src/conventions/templates.rs:        parts.push(vis.clone());
+src/conventions/drift.rs:            *counts.entry(attr.clone()).or_default() += 1;
+src/conventions/engine.rs:            return self.conventions.clone();
+src/conventions/engine.rs:        self.conventions.clone()
+src/conventions/engine.rs:            self.symbol_attrs.push(sa.clone());
+src/conventions/engine.rs:        self.rebuild(&self.symbol_attrs.clone())
+src/conventions/engine.rs:                        symbol: sym.name.clone(),
+src/conventions/engine.rs:                        file: sym.file.clone(),
+src/conventions/engine.rs:                        convention_id: conv.id.clone(),
+src/conventions/engine.rs:                        antecedent: conv.antecedent.clone(),
+src/conventions/engine.rs:                        consequent: conv.consequent.clone(),
+src/conventions/engine.rs:                        symbol: sym.name.clone(),
+src/conventions/engine.rs:                        file: sym.file.clone(),
+src/conventions/engine.rs:                        convention_id: conv.id.clone(),
+src/conventions/engine.rs:                        antecedent: conv.antecedent.clone(),
+src/conventions/engine.rs:                        consequent: conv.consequent.clone(),
+src/conventions/engine.rs:                *attr_freq.entry(attr.clone()).or_default() += 1;
+src/conventions/engine.rs:                    *attr_map.entry(attr.clone()).or_insert(len)
+src/conventions/engine.rs:        let object_names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
+src/conventions/engine.rs:        let ctx = FormalContext::new(object_names, attr_names.clone(), &relations);
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:        let mut attrs = conv.antecedent.clone();
+src/conventions/engine.rs:        attrs.extend(conv.consequent.clone());
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:            suppress: vec![conv.id.clone()],
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:                convention: conv.id.clone(),
+src/conventions/engine.rs:        let mut attrs = conv_a.antecedent.clone();
+src/conventions/engine.rs:                attrs.push(a.clone());
+src/conventions/engine.rs:                convention: conv_a.id.clone(),
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:                convention: conv.id.clone(),
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:            attributes: conv.antecedent.clone(),
+src/conventions/engine.rs:                convention: conv.id.clone(),
+src/conventions/attributes.rs:        name: sym.qualified_name.clone(),
+src/conventions/attributes.rs:                qualified_name: c.qualified_name.clone(),
+src/conventions/attributes.rs:                signature: c.signature.clone(),
+src/conventions/pipeline.rs:        comp_name_to_id.insert(name.clone(), comp_id.clone());
+src/conventions/pipeline.rs:            file_to_component.insert(path.clone(), comp_id.clone());
+src/conventions/pipeline.rs:                    s.qualified_name.clone(),
+src/conventions/pipeline.rs:                        signature: s.signature.clone(),
+src/conventions/pipeline.rs:                        visibility: s.visibility.clone(),
+src/conventions/pipeline.rs:                        language_attrs: s.language_attrs.clone(),
+src/conventions/pipeline.rs:        comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_symbols));
+src/conventions/pipeline.rs:        let mut all_convs = global_conventions.clone();
+src/constraints/worker.rs:        let cycle_nodes_inspect = cycle_nodes.clone();
+src/constraints/worker.rs:        let blast_counts_inspect = blast_counts.clone();
+src/constraints/worker.rs:        let violations_inspect = violations_store.clone();
+src/constraints/worker.rs:            let edges_for_violations = edges.clone();
+src/constraints/worker.rs:            let reachable = edges.clone().iterate(|scope, inner| {
+src/constraints/worker.rs:                let inner_keep = inner.clone();
+src/constraints/worker.rs:                .clone()
+src/constraints/worker.rs:                .semijoin(forbidden.clone())
+src/constraints/engine.rs:            } => forbidden_pairs.clone(),
+src/constraints/engine.rs:                        added: delta.added_edges.clone(),
+src/constraints/engine.rs:                        removed: delta.removed_edges.clone(),
+src/constraints/engine.rs:                    .send(Command::SetForbiddenPairs(pairs.clone()))
+src/constraints/engine.rs:                        rule_from: rule.from.clone(),
+src/constraints/engine.rs:                        rule_to: rule.to.clone(),
+src/constraints/engine.rs:        if let Err(e) = handle.send(Command::Ingest(edges.clone())) {
+src/constraints/engine.rs:            if let Err(e) = handle.send(Command::SetForbiddenPairs(forbidden_pairs.clone())) {
+src/constraints/resolver.rs:            return Ok(cache.pairs.clone());
+src/constraints/resolver.rs:            pairs: pairs.clone(),
+src/constraints/resolver.rs:        return Ok(ids.clone());
+src/constraints/resolver.rs:    cache.insert(component_id.to_string(), ids.clone());
+src/constraints/resolver.rs:        .map(|c| c.id.clone())
+src/constraints/external.rs:        constraint_id: c.id.clone(),
+src/constraints/external.rs:        constraint_name: c.name.clone(),
+src/constraints/external.rs:        provenance: c.provenance.clone(),
+src/constraints/external.rs:            if seen.insert((from_path.clone(), crate_name.as_str())) {
+src/constraints/external.rs:                names.push(dep_key.clone());
+src/constraints/external.rs:                    names.push(real.clone());
+src/constraints/external.rs:                map.insert(alias.clone(), pkg.to_string());
+src/constraints/external.rs:            items.push((file_path.clone(), name));
+src/constraints/external.rs:                extra.push((path.clone(), real.clone()));
+src/constraints/external.rs:        let mut resolved_items = items.clone();
+src/constraints/external.rs:                extra.push((path.clone(), real.clone()));
+src/constraints/check.rs:    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+src/constraints/check.rs:        comp_name_to_id.insert(name.clone(), comp_id.clone());
+src/constraints/check.rs:            file_to_component.insert(path.clone(), comp_id.clone());
+src/constraints/check.rs:                    constraint_id: c.id.clone(),
+src/constraints/check.rs:                    constraint_name: c.name.clone(),
+src/constraints/check.rs:                    provenance: c.provenance.clone(),
+src/constraints/check.rs:                import_edges: edges.clone(),
+src/constraints/check.rs:                import_edges: edges.clone(),
+src/constraints/check.rs:            import_edges: edges.clone(),
+src/constraints/check.rs:                        added_edges: removed_edges.clone(),
+src/constraints/check.rs:                        removed_edges: new_edges.clone(),
+src/constraints/check.rs:                .map(|c| c.id.clone())
+src/constraints/check.rs:            constraint_name: matched.and_then(|c| c.name.clone()),
+src/constraints/check.rs:            provenance: matched.and_then(|c| c.provenance.clone()),
+src/constraints/check.rs:                constraint_id: c.id.clone(),
+src/constraints/check.rs:                constraint_name: c.name.clone(),
+src/constraints/check.rs:                provenance: c.provenance.clone(),
+src/constraints/check.rs:                from_path: f.path.clone(),
+src/constraints/check.rs:            constraint_name: e.name.clone(),
+src/constraints/check.rs:                            .map(|c| (path.clone(), c))
+src/constraints/check.rs:                        constraint_id: c.id.clone(),
+src/constraints/check.rs:                        constraint_name: c.name.clone(),
+src/constraints/check.rs:                        provenance: c.provenance.clone(),
+src/constraints/check.rs:                        from_path: path.clone(),
+src/constraints/check.rs:        comp_name_to_id.insert(name, id.clone());
+src/constraints/check.rs:                file_to_component.insert(path, id.clone());
+src/constraints/check.rs:        constraint_id: c.id.clone(),
+src/constraints/check.rs:        constraint_name: c.name.clone(),
+src/constraints/check.rs:        provenance: c.provenance.clone(),
+src/health/ondemand.rs:                qualified_name: sym.qualified_name.clone(),
+src/health/ondemand.rs:        all_findings.extend(ondemand_rows.clone());
+src/health/ondemand.rs:            path: path.clone(),
+src/health/findings.rs:            provenance: self.provenance.clone(),
+src/health/findings.rs:            detail: self.detail.clone(),
+src/health/drift.rs:                comp_id.clone(),
+src/health/drift.rs:        by_component.entry(comp_id.clone()).or_default().push(vec);
+src/health/drift.rs:            result.insert(comp_id.clone(), sum / count as f64);
+src/health/scoring.rs:            .entry(comp_id.clone())
+src/health/scoring.rs:            component_id: comp.id.clone(),
+src/health/scoring.rs:            component_name: comp.name.clone(),
+src/similarity/codebook.rs:            return v.clone();
+src/similarity/codebook.rs:        self.entries.insert(key.to_string(), v.clone());
+src/similarity/diff.rs:                file_path: path.clone(),
+src/similarity/diff.rs:                symbol_name: new_fn.name.clone(),
+src/similarity/diff.rs:        let mut new_lines = old_lines.clone();
+src/similarity/diff.rs:            old_lines.push(line.clone());
+src/similarity/diff.rs:        let mut new_lines = old_lines.clone();
+src/similarity/diff.rs:            old_lines.push(line.clone());
+src/similarity/diff.rs:        let mut new_lines = old_lines.clone();
+src/similarity/diff.rs:            old_lines.push(line.clone());
+src/similarity/diff.rs:        let mut new_lines = old_lines.clone();
+src/similarity/diff.rs:            old_lines.push(line.clone());
+src/similarity/hrr.rs:            return self.clone();
+src/similarity/hrr.rs:            return self.clone();
+src/similarity/hrr.rs:        let bundled = bundle(&[a.clone(), b.clone(), c.clone()]);
+src/similarity/search.rs:        let candidates = vec![(10, close.clone()), (20, far)];
+src/similarity/search.rs:        let candidates = vec![(1, query.clone()), (2, query.clone())];
+src/similarity/duplicates.rs:        let vectors = vec![(1, v.clone()), (2, v.clone()), (3, v.clone())];
+src/similarity/duplicates.rs:        let vectors = vec![(1, v.clone()), (2, v.clone()), (3, make_vec(99))];
+src/similarity/duplicates.rs:        let vectors = vec![(1, v.clone()), (2, v.clone())];
+src/similarity/duplicates.rs:            (1, v1.clone()),
+src/similarity/duplicates.rs:            (2, v1.clone()),
+src/similarity/duplicates.rs:            (3, v1.clone()),
+src/similarity/duplicates.rs:            (4, v2.clone()),
+src/similarity/duplicates.rs:            (5, v2.clone()),
+src/similarity/duplicates.rs:            (6, v2.clone()),
+src/config.rs:                let mut p = db_dir.clone();
+src/vocabulary.rs:                term.clone(),
+src/vocabulary.rs:                target_ref.clone(),
+src/vocabulary.rs:                target_ref: c.name.clone(),
+src/vocabulary.rs:                component_id: Some(c.id.clone()),
+src/vocabulary.rs:                    target_ref: a.symbol_name.clone(),
+src/vocabulary.rs:                    component_id: Some(comp_id.clone()),
+src/vocabulary.rs:            return Ok(Some(c.id.clone()));
+src/components/identity.rs:        components.push((id.clone(), name, paths_json));
+src/components/identity.rs:            membership.push((id.clone(), fid));
+src/components/identity.rs:                .filter_map(|id| file_map.get(id).map(|f| f.path.clone()))
+src/components/identity.rs:            all_membership.push((id.clone(), fid));
+src/components/identity.rs:        new_cluster_to_comp.insert(ki, id.clone());
+src/components/identity.rs:        new_components.push((id.clone(), name, paths_json));
+src/components/identity.rs:            all_membership.push((id.clone(), fid));
+src/components/identity.rs:        cluster_to_comp.insert(ki, existing[ci].0.clone());
+src/components/identity.rs:        cluster_to_comp.insert(ki, id.clone());
+src/components/anchors.rs:            file_to_component.insert(fid, c.id.clone());
+src/components/anchors.rs:        component_file_ids.insert(c.id.clone(), fids);
+src/components/anchors.rs:                    qualified_name: sym.qualified_name.clone(),
+src/components/anchors.rs:                c.id.clone(),
+src/components/anchors.rs:                s.qualified_name.clone(),
+src/components/anchors.rs:                s.rationale.clone(),
+src/rust_imports.rs:            src_prefix: own_src.clone(),
+src/rust_imports.rs:            src_prefix: own_src.clone(),
+src/graph.rs:            let mut dirty = changed.clone();
+src/guard.rs:        _ => tool_input.content.clone(),
+src/guard.rs:        let constraint_id = outcome.active[0].constraint_id.clone();
+src/guard.rs:        let constraint_id = outcome.active[0].constraint_id.clone();
+src/guard.rs:        let constraint_id = outcome.active[0].constraint_id.clone();
+src/guard.rs:        let constraint_id = outcome.active[0].constraint_id.clone();
+src/waivers.rs:                rationale: w.rationale.clone(),
+src/waivers.rs:                waived_by: w.waived_by.clone(),
+src/waivers.rs:            .get(&(self.file.clone(), self.symbol.clone()))
+src/waivers.rs:                rationale: w.rationale.clone(),
+src/waivers.rs:                waived_by: w.waived_by.clone(),
+src/rules.rs:                from: fd.from.clone(),
+src/rules.rs:                to: fd.to.clone(),
+src/rules.rs:            seen.insert(id.clone(), out.len());
+src/rules.rs:        for (i, raw) in self.constraint.clone().into_iter().enumerate() {
+src/rules.rs:            let name = raw.name.clone();
+src/rules.rs:                    seen.insert(c.id.clone(), out.len());
+src/resolver.rs:            original: r.clone(),
+src/resolver.rs:            unresolved_name: Some(r.name.clone()),
+src/resolver.rs:        original: r.clone(),
+src/resolver.rs:        unresolved_name: Some(name.clone()),
+src/resolver.rs:        original: r.clone(),
+src/lessons.rs:                matched_anchors.entry(id.clone()).or_default().insert(key);
+src/lessons.rs:                    matched_anchors.entry(id.clone()).or_default().insert(key);
+src/lessons.rs:            let stale_entry = result.entry(lesson_id.clone()).or_insert(false);
+src/git.rs:                commit: current_commit.clone(),
+src/git.rs:            time_cache.insert(current_commit.clone(), current_time);
+src/git.rs:                hash: current_hash.clone(),
+src/git.rs:                author: current_author.clone(),
+src/git.rs:            *counts.entry(cf.path.clone()).or_default() += 1;
+src/mcp.rs:            parse_coord: self.parse_coord.clone(),
+src/mcp.rs:            .clone()
+src/mcp.rs:            id: ws_id.clone(),
+src/mcp.rs:                workspace::add_workspace(&self.config.workspaces_path, entry.clone())
+src/mcp.rs:                config.workspace.push(entry.clone());
+src/mcp.rs:                    obj.insert(k.clone(), v.clone());
+src/mcp.rs:        let ws_root = ws.root.clone();
+src/mcp.rs:        let Ok(guard) = lock.clone().try_lock_owned() else {
+src/mcp.rs:        let ws_id_bg = ws_id.clone();
+src/mcp.rs:        let entry_bg = entry.clone();
+src/mcp.rs:            let entry_bg = entry.clone();
+src/main.rs:                    id: id.clone(),
+src/main.rs:        config.clone(),
+src/main.rs:        ws_config.clone(),
+src/main.rs:        db_cache.clone(),
+src/main.rs:        parse_coord.clone(),
+src/main.rs:        Some(e) => e.clone(),
+src/main.rs:    let Ok(guard) = lock.clone().try_lock_owned() else {
+src/main.rs:    let ws_id = entry.id.clone();
+src/main.rs:    let addr = config.listen_addr.clone();
+src/main.rs:        StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone());
+src/main.rs:    let cfg_clone = config.clone();
+src/main.rs:    let ws_clone = ws_config.clone();
+src/main.rs:    let db_clone = db_cache.clone();
+src/main.rs:    let coord_clone = parse_coord.clone();
+src/main.rs:    let dd_clone = dd_engines.clone();
+src/main.rs:    let lessons_clone = lessons_db.clone();
+src/main.rs:                cfg_clone.clone(),
+src/main.rs:                ws_clone.clone(),
+src/main.rs:                db_clone.clone(),
+src/main.rs:                coord_clone.clone(),
+src/main.rs:                lessons_clone.clone(),
+src/main.rs:            .with_dd_engines(dd_clone.clone()))
+src/main.rs:    let rest = sutra::rest::router(config.clone(), ws_config.clone(), db_cache.clone());
+src/pipeline.rs:            .clone()
+src/pipeline.rs:            qualified_name: s.qualified_name.clone(),
+src/pipeline.rs:            short_name: s.short_name.clone(),
+src/pipeline.rs:            signature: s.signature.clone(),
+src/pipeline.rs:            signature_hash: s.signature_hash.clone(),
+src/pipeline.rs:            visibility: s.visibility.clone(),
+src/pipeline.rs:            docstring: s.docstring.clone(),
+src/pipeline.rs:            name: r.unresolved_name.clone().unwrap_or_default(),
+src/pipeline.rs:            raw_path: i.imported_path.clone(),
+src/pipeline.rs:                head_commit.clone(),
+src/pipeline.rs:                Some(parse_started_at.clone()),
+src/pipeline.rs:                head_commit.clone(),
+src/pipeline.rs:                Some(parse_started_at.clone()),
+src/pipeline.rs:                            hash: cf.hash.clone(),
+src/pipeline.rs:                            author: cf.author.clone(),
+src/pipeline.rs:                            .map(|&id| (cf.hash.clone(), id))
+src/pipeline.rs:            file_path: f.path.clone(),

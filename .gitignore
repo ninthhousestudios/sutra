@@ -1,5 +1,6 @@
 # AgentOps session artifacts
 .agents/
+docs/box-dyn
 
 # Build output
 target/
