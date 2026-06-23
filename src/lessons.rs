@@ -16,14 +16,23 @@ pub struct LessonsDb {
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[
-    ("0001_initial", include_str!("lessons_schema.sql")),
-    ("0002_fts5", include_str!("lessons_fts5.sql")),
+    (
+        "0001_initial",
+        include_str!("lessons/sql/lessons_schema.sql"),
+    ),
+    ("0002_fts5", include_str!("lessons/sql/lessons_fts5.sql")),
     (
         "0003_cite_idempotency",
-        include_str!("lessons_cite_idempotency.sql"),
+        include_str!("lessons/sql/lessons_cite_idempotency.sql"),
     ),
-    ("0004_staleness", include_str!("lessons_staleness.sql")),
-    ("0005_metadata", include_str!("lessons_metadata.sql")),
+    (
+        "0004_staleness",
+        include_str!("lessons/sql/lessons_staleness.sql"),
+    ),
+    (
+        "0005_metadata",
+        include_str!("lessons/sql/lessons_metadata.sql"),
+    ),
 ];
 
 impl LessonsDb {
