@@ -69,12 +69,12 @@ fn evaluate_dd(
     let path_map: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
 
     let comp_with_paths = db.active_components_with_paths()?;
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+    let mut file_to_component: HashMap<&str, &str> = HashMap::new();
+    let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
     for (comp_id, name, paths) in &comp_with_paths {
-        comp_name_to_id.insert(name.clone(), comp_id.clone());
+        comp_name_to_id.insert(name, comp_id);
         for path in paths {
-            file_to_component.insert(path.clone(), comp_id.clone());
+            file_to_component.insert(path, comp_id);
         }
     }
 
@@ -510,7 +510,15 @@ fn evaluate_raw(
         .collect()
     };
 
-    let (file_to_component, comp_name_to_id) = build_component_maps_raw(conn)?;
+    let comp_rows = build_component_rows_raw(conn)?;
+    let mut file_to_component: HashMap<&str, &str> = HashMap::new();
+    let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
+    for (comp_id, name, paths) in &comp_rows {
+        comp_name_to_id.insert(name, comp_id);
+        for path in paths {
+            file_to_component.insert(path, comp_id);
+        }
+    }
 
     use crate::db::ConstraintWaiverRow;
 
@@ -839,12 +847,10 @@ pub fn check_pubspec_raw(
     })
 }
 
-fn build_component_maps_raw(
+fn build_component_rows_raw(
     conn: &rusqlite::Connection,
-) -> Result<(HashMap<String, String>, HashMap<String, String>)> {
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
-
+) -> Result<Vec<(String, String, Vec<String>)>> {
+    let mut out = Vec::new();
     let mut stmt =
         conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
@@ -856,24 +862,19 @@ fn build_component_maps_raw(
     })?;
     for row in rows {
         let (id, name, json) = row?;
-        comp_name_to_id.insert(name, id.clone());
-        if let Some(s) = json
-            && let Ok(paths) = serde_json::from_str::<Vec<String>>(&s)
-        {
-            for path in paths {
-                file_to_component.insert(path, id.clone());
-            }
-        }
+        let paths = json
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default();
+        out.push((id, name, paths));
     }
-
-    Ok((file_to_component, comp_name_to_id))
+    Ok(out)
 }
 
 fn make_finding(
     c: &Constraint,
     from_path: &str,
     to_path: &str,
-    file_to_component: &HashMap<String, String>,
+    file_to_component: &HashMap<&str, &str>,
     delta: FindingDelta,
 ) -> ConstraintFinding {
     ConstraintFinding {

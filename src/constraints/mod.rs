@@ -43,8 +43,8 @@ pub fn find_matching_constraint<'a>(
     constraints: &'a [Constraint],
     from_path: &str,
     to_path: &str,
-    file_to_component: &HashMap<String, String>,
-    comp_name_to_id: &HashMap<String, String>,
+    file_to_component: &HashMap<&str, &str>,
+    comp_name_to_id: &HashMap<&str, &str>,
 ) -> Option<&'a Constraint> {
     let opts = MatchOptions {
         require_literal_separator: true,
@@ -85,7 +85,7 @@ pub fn find_matching_constraint<'a>(
 
 pub fn build_component_context(
     kind: &ConstraintKind,
-    file_to_component: &HashMap<String, String>,
+    file_to_component: &HashMap<&str, &str>,
     from_path: &str,
     to_path: &str,
 ) -> Option<String> {

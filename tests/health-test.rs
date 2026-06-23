@@ -1830,7 +1830,7 @@ fn drift_detection_fca_drop_fires() {
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
 
     let mut file_to_comp = HashMap::new();
-    file_to_comp.insert("src/a.rs".to_string(), "comp1".to_string());
+    file_to_comp.insert("src/a.rs", "comp1");
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
     let findings = detect_convention_drift(
@@ -1878,7 +1878,7 @@ fn drift_detection_below_threshold_no_finding() {
         component_id: Some("comp1".into()),
     }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
-    let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
+    let file_to_comp: HashMap<&str, &str> = [("src/a.rs", "comp1")].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
     let findings = detect_convention_drift(
@@ -1915,7 +1915,7 @@ fn drift_detection_no_history_no_finding() {
         component_id: Some("comp1".into()),
     }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
-    let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
+    let file_to_comp: HashMap<&str, &str> = [("src/a.rs", "comp1")].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
     let findings = detect_convention_drift(
@@ -1960,7 +1960,7 @@ fn drift_detection_both_paths_independent() {
         component_id: Some("comp1".into()),
     }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
-    let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
+    let file_to_comp: HashMap<&str, &str> = [("src/a.rs", "comp1")].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
     let findings = detect_convention_drift(
@@ -2005,7 +2005,7 @@ fn drift_detection_hrr_drop_fires() {
         component_id: Some("comp1".into()),
     }];
     let components = vec![("comp1".into(), "TestComp".into(), syms)];
-    let file_to_comp: HashMap<String, String> = [("src/a.rs".into(), "comp1".into())].into();
+    let file_to_comp: HashMap<&str, &str> = [("src/a.rs", "comp1")].into();
     let id_map: HashMap<&str, i64> = [("src/a.rs", fid)].into();
 
     let findings = detect_convention_drift(

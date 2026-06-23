@@ -97,11 +97,11 @@ pub fn compute_semantic_anchors(
     let all_symbols = db.all_symbols_by_file()?;
 
     let mut component_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
-    let mut file_to_component: HashMap<i64, String> = HashMap::new();
+    let mut file_to_component: HashMap<i64, &str> = HashMap::new();
     for c in &components {
         let fids = db.component_file_ids(&c.id)?;
         for &fid in &fids {
-            file_to_component.insert(fid, c.id.clone());
+            file_to_component.insert(fid, &c.id);
         }
         component_file_ids.insert(c.id.clone(), fids);
     }

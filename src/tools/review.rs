@@ -335,10 +335,11 @@ pub fn build_findings(
     let all_files = db.all_files()?;
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
 
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    for (comp_id, _, paths) in &db.active_components_with_paths()? {
+    let comp_with_paths = db.active_components_with_paths()?;
+    let mut file_to_component: HashMap<&str, &str> = HashMap::new();
+    for (comp_id, _, paths) in &comp_with_paths {
         for path in paths {
-            file_to_component.insert(path.clone(), comp_id.clone());
+            file_to_component.insert(path, comp_id);
         }
     }
 
@@ -440,7 +441,9 @@ pub fn build_findings(
     }
 
     for sa in &mut changed_sym_attrs {
-        sa.component_id = file_to_component.get(&sa.file).cloned();
+        sa.component_id = file_to_component
+            .get(sa.file.as_str())
+            .map(|s| s.to_string());
     }
 
     let merged = db.all_conventions_merged()?;

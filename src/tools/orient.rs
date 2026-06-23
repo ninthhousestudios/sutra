@@ -165,7 +165,7 @@ fn constraints_for_component<'a>(
     all_constraints: &'a [Constraint],
     component_files: &[String],
     component_id: &str,
-    comp_name_to_id: &HashMap<String, String>,
+    comp_name_to_id: &HashMap<&str, &str>,
 ) -> Vec<&'a Constraint> {
     let opts = MatchOptions {
         require_literal_separator: true,
@@ -206,10 +206,10 @@ fn constraints_for_component<'a>(
                         || to_component == component_id
                         || comp_name_to_id
                             .get(from_component.as_str())
-                            .is_some_and(|id| id == component_id)
+                            .is_some_and(|id| *id == component_id)
                         || comp_name_to_id
                             .get(to_component.as_str())
-                            .is_some_and(|id| id == component_id)
+                            .is_some_and(|id| *id == component_id)
                 }
                 ConstraintKind::MaxFanIn { target, .. } => {
                     component_files.iter().any(|f| f == target)
@@ -232,7 +232,7 @@ fn hidden_coupling_for_component(
     db: &Db,
     component_id: &str,
     threshold: f64,
-    path_map: &HashMap<i64, Arc<str>>,
+    path_map: &HashMap<i64, &str>,
 ) -> Vec<serde_json::Value> {
     let file_ids: HashSet<i64> = match db.component_file_ids(component_id) {
         Ok(ids) => ids.into_iter().collect(),
@@ -259,13 +259,13 @@ fn hidden_coupling_for_component(
         .filter(|(fa, fb, _, _)| file_ids.contains(fa) && file_ids.contains(fb))
         .filter(|(fa, fb, _, _)| !static_edges.contains(&((*fa).min(*fb), (*fa).max(*fb))))
         .filter(|(fa, fb, _, _)| {
-            let pa = path_map.get(fa).map(|s| &**s).unwrap_or("");
-            let pb = path_map.get(fb).map(|s| &**s).unwrap_or("");
+            let pa = path_map.get(fa).copied().unwrap_or("");
+            let pb = path_map.get(fb).copied().unwrap_or("");
             components::is_test_file(pa) == components::is_test_file(pb)
         })
         .map(|(fa, fb, jaccard, shared)| {
-            let file_a = path_map.get(&fa).map(|s| &**s).unwrap_or("");
-            let file_b = path_map.get(&fb).map(|s| &**s).unwrap_or("");
+            let file_a = path_map.get(&fa).copied().unwrap_or("");
+            let file_b = path_map.get(&fb).copied().unwrap_or("");
             (
                 jaccard,
                 json!({
@@ -337,14 +337,13 @@ pub fn handle(
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
 
     let comp_with_paths = db.active_components_with_paths()?;
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+    let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
     for (comp_id, name, _) in &comp_with_paths {
-        comp_name_to_id.insert(name.clone(), comp_id.clone());
+        comp_name_to_id.insert(name, comp_id);
     }
 
     let all_files = db.all_files()?;
-    let path_map: HashMap<i64, Arc<str>> =
-        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let path_map: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
 
     let check_outcome = crate::constraints::check::evaluate(
         &FactsSource::DdBacked { db, dd_engine },

@@ -23,12 +23,12 @@ pub fn rebuild(
     let all_files = db.all_files()?;
 
     let comp_with_paths = db.active_components_with_paths()?;
-    let mut file_to_component: HashMap<String, String> = HashMap::new();
-    let mut comp_name_to_id: HashMap<String, String> = HashMap::new();
+    let mut file_to_component: HashMap<&str, &str> = HashMap::new();
+    let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
     for (comp_id, name, paths) in &comp_with_paths {
-        comp_name_to_id.insert(name.clone(), comp_id.clone());
+        comp_name_to_id.insert(name, comp_id);
         for path in paths {
-            file_to_component.insert(path.clone(), comp_id.clone());
+            file_to_component.insert(path, comp_id);
         }
     }
 
@@ -98,7 +98,9 @@ pub fn rebuild(
     }
 
     for sa in &mut all_sym_attrs {
-        sa.component_id = file_to_component.get(&sa.file).cloned();
+        sa.component_id = file_to_component
+            .get(sa.file.as_str())
+            .map(|s| s.to_string());
     }
 
     let combined_hash = {
