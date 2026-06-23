@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use glob::{MatchOptions, Pattern};
@@ -386,8 +387,8 @@ fn evaluate_raw(
     let parse_error_findings: Vec<ConstraintFinding> = parse_errors
         .iter()
         .map(|e| ConstraintFinding {
-            constraint_id: format!("parse-error-{}", e.index),
-            constraint_name: e.name.clone(),
+            constraint_id: Arc::from(format!("parse-error-{}", e.index)),
+            constraint_name: e.name.as_deref().map(Arc::from),
             constraint_kind: "parse_error".to_string(),
             severity: Severity::Blocking,
             provenance: None,
@@ -753,7 +754,7 @@ pub fn check_manifest_raw(
                 );
                 let old_keys: std::collections::HashSet<(&str, &str)> = old_findings
                     .iter()
-                    .map(|f| (f.constraint_id.as_str(), f.to_path.as_str()))
+                    .map(|f| (&*f.constraint_id, f.to_path.as_str()))
                     .collect();
                 let new_findings: Vec<_> = external::check_manifest(
                     &all_constraints,
@@ -762,7 +763,7 @@ pub fn check_manifest_raw(
                     renames,
                 )
                 .into_iter()
-                .filter(|f| !old_keys.contains(&(f.constraint_id.as_str(), f.to_path.as_str())))
+                .filter(|f| !old_keys.contains(&(&*f.constraint_id, f.to_path.as_str())))
                 .collect();
                 let (member_active, _) =
                     partition_manifest_findings(conn, &member_rel, new_findings)?;

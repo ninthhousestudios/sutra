@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -82,18 +83,18 @@ impl ConstraintKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Constraint {
-    pub id: String,
+    pub id: Arc<str>,
     pub kind: ConstraintKind,
     pub severity: Severity,
-    pub name: Option<String>,
-    pub provenance: Option<String>,
+    pub name: Option<Arc<str>>,
+    pub provenance: Option<Arc<str>>,
     pub scope: Option<String>,
 }
 
 impl Constraint {
     /// Identity = blake3(kind_tag, kind-specific params, scope). Scope is part of
     /// identity because constraints scoped to different paths are semantically distinct.
-    fn compute_id(kind: &ConstraintKind, scope: Option<&str>) -> String {
+    fn compute_id(kind: &ConstraintKind, scope: Option<&str>) -> Arc<str> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(kind.kind_tag().as_bytes());
         hasher.update(b"\x00");
@@ -151,7 +152,7 @@ impl Constraint {
             hasher.update(b"\x00scope\x00");
             hasher.update(s.as_bytes());
         }
-        hasher.finalize().to_hex()[..8].to_string()
+        Arc::from(&hasher.finalize().to_hex()[..8])
     }
 }
 
@@ -307,8 +308,8 @@ impl RawConstraint {
             id,
             kind,
             severity,
-            name: self.name,
-            provenance: self.provenance,
+            name: self.name.map(Arc::from),
+            provenance: self.provenance.map(Arc::from),
             scope: self.scope,
         })
     }
@@ -335,7 +336,7 @@ pub struct Rules {
 
 impl Rules {
     pub fn all_constraints(&self) -> (Vec<Constraint>, Vec<ConstraintParseError>) {
-        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut seen: HashMap<Arc<str>, usize> = HashMap::new();
         let mut out: Vec<Constraint> = Vec::new();
         let mut errors: Vec<ConstraintParseError> = Vec::new();
 

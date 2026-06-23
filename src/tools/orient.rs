@@ -524,7 +524,7 @@ pub fn handle(
 
         if !in_scope_constraints.is_empty() {
             let constraint_ids: HashSet<&str> =
-                in_scope_constraints.iter().map(|c| c.id.as_str()).collect();
+                in_scope_constraints.iter().map(|c| &*c.id).collect();
             let file_set: HashSet<&str> = comp.files.iter().map(|f| f.as_str()).collect();
 
             let active: Vec<_> = in_scope_constraints
@@ -558,7 +558,7 @@ pub fn handle(
                     .chain(outcome.waived.iter().map(|w| &w.finding));
                 let in_scope_violations: Vec<_> = all_findings
                     .filter(|v| {
-                        constraint_ids.contains(v.constraint_id.as_str())
+                        constraint_ids.contains(&*v.constraint_id)
                             && (file_set.contains(v.from_path.as_str())
                                 || file_set.contains(v.to_path.as_str()))
                     })
@@ -581,7 +581,7 @@ pub fn handle(
             let in_scope_constraint_waivers: Vec<_> = all_constraint_waivers
                 .iter()
                 .filter(|w| {
-                    constraint_ids.contains(w.constraint_id.as_str())
+                    constraint_ids.contains(&*w.constraint_id)
                         && file_set.contains(w.file_path.as_str())
                 })
                 .map(|w| {
@@ -1177,7 +1177,7 @@ name = "no-tool-daemon"
         let section = &result["orientation"][0]["constraints"];
         let waivers = section["waivers"].as_array().unwrap();
         assert_eq!(waivers.len(), 1);
-        assert_eq!(waivers[0]["constraint_id"], constraint_id.as_str());
+        assert_eq!(waivers[0]["constraint_id"], &**constraint_id);
         assert_eq!(waivers[0]["rationale"], "temporary during migration");
         assert_eq!(waivers[0]["waived_by"], "josh");
     }

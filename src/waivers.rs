@@ -82,10 +82,10 @@ impl Waivable for ConventionViolation {
             .unwrap_or("");
         let file_qualified = format!("{}::{}", self.file, self.symbol);
         [
-            (self.convention_id.as_str(), self.symbol.as_str(), comp),
-            (self.convention_id.as_str(), file_qualified.as_str(), comp),
-            (self.convention_id.as_str(), self.symbol.as_str(), ""),
-            (self.convention_id.as_str(), file_qualified.as_str(), ""),
+            (&*self.convention_id, self.symbol.as_str(), comp),
+            (&*self.convention_id, file_qualified.as_str(), comp),
+            (&*self.convention_id, self.symbol.as_str(), ""),
+            (&*self.convention_id, file_qualified.as_str(), ""),
         ]
         .iter()
         .find_map(|(cid, sym, cmp)| {

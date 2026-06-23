@@ -136,7 +136,7 @@ fn file_ids_for(
 
 fn compute_input_hash(constraints: &[Constraint], path_map: &HashMap<i64, &str>) -> u64 {
     let mut hasher = DefaultHasher::new();
-    let mut ids: Vec<&str> = constraints.iter().map(|c| c.id.as_str()).collect();
+    let mut ids: Vec<&str> = constraints.iter().map(|c| &*c.id).collect();
     ids.sort();
     for id in ids {
         id.hash(&mut hasher);

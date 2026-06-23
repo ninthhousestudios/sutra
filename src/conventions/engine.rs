@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::context::FormalContext;
 use crate::rules::ConventionsConfig;
@@ -13,7 +14,7 @@ pub struct SymbolAttrs {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Convention {
-    pub id: String,
+    pub id: Arc<str>,
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub support: usize,
@@ -24,7 +25,7 @@ pub struct Convention {
 impl From<crate::db::ConventionWithState> for Convention {
     fn from(row: crate::db::ConventionWithState) -> Self {
         Self {
-            id: row.id,
+            id: Arc::from(row.id),
             antecedent: row.antecedent.split(", ").map(String::from).collect(),
             consequent: row.consequent.split(", ").map(String::from).collect(),
             support: row.support as usize,
@@ -39,7 +40,7 @@ impl Convention {
         antecedent: &[String],
         consequent: &[String],
         component_id: Option<&str>,
-    ) -> String {
+    ) -> Arc<str> {
         let mut ante = antecedent.to_vec();
         ante.sort();
         let mut cons = consequent.to_vec();
@@ -48,7 +49,7 @@ impl Convention {
             Some(cid) => format!("{}\x02{}\0{}", cid, ante.join("\x1f"), cons.join("\x1f")),
             None => format!("{}\0{}", ante.join("\x1f"), cons.join("\x1f")),
         };
-        blake3::hash(input.as_bytes()).to_hex()[..16].to_string()
+        Arc::from(&blake3::hash(input.as_bytes()).to_hex()[..16])
     }
 }
 
@@ -56,7 +57,7 @@ impl Convention {
 pub struct ConventionViolation {
     pub symbol: String,
     pub file: String,
-    pub convention_id: String,
+    pub convention_id: Arc<str>,
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub missing: Vec<String>,
@@ -68,7 +69,7 @@ pub struct ConventionViolation {
 pub struct ConventionMatch {
     pub symbol: String,
     pub file: String,
-    pub convention_id: String,
+    pub convention_id: Arc<str>,
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub lifecycle_state: String,
@@ -178,14 +179,14 @@ impl FcaEngine {
         let mut violations = Vec::new();
 
         for conv in &self.conventions {
-            if suppressed.contains(conv.id.as_str()) {
+            if suppressed.contains(&*conv.id) {
                 continue;
             }
 
             let exempted: Vec<&str> = config
                 .exempt
                 .iter()
-                .filter(|e| e.convention == conv.id)
+                .filter(|e| e.convention == *conv.id)
                 .flat_map(|e| e.symbols.iter().map(|s| s.as_str()))
                 .collect();
 
@@ -249,9 +250,9 @@ impl FcaEngine {
         let mut matches = Vec::new();
 
         for conv in &self.conventions {
-            let lifecycle = if deprecated_ids.contains(&conv.id) {
+            let lifecycle = if deprecated_ids.contains(&*conv.id) {
                 "deprecated"
-            } else if forbidden_ids.contains(&conv.id) {
+            } else if forbidden_ids.contains(&*conv.id) {
                 "forbidden"
             } else {
                 continue;
@@ -426,8 +427,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         let conv1 = engine.rebuild(&symbols);
         let conv2 = engine.rebuild(&symbols);
-        let ids1: Vec<&str> = conv1.iter().map(|c| c.id.as_str()).collect();
-        let ids2: Vec<&str> = conv2.iter().map(|c| c.id.as_str()).collect();
+        let ids1: Vec<&str> = conv1.iter().map(|c| &*c.id).collect();
+        let ids2: Vec<&str> = conv2.iter().map(|c| &*c.id).collect();
         assert_eq!(ids1, ids2);
     }
 
@@ -775,7 +776,7 @@ mod tests {
         }];
 
         let config = ConventionsConfig {
-            suppress: vec![conv.id.clone()],
+            suppress: vec![conv.id.to_string()],
             ..Default::default()
         };
         let violations = engine.check(&changed, &config);
@@ -800,7 +801,7 @@ mod tests {
 
         let config = ConventionsConfig {
             exempt: vec![ConventionExemption {
-                convention: conv.id.clone(),
+                convention: conv.id.to_string(),
                 symbols: vec!["ExemptedSymbol".into()],
             }],
             ..Default::default()
@@ -838,7 +839,7 @@ mod tests {
 
         let config = ConventionsConfig {
             exempt: vec![ConventionExemption {
-                convention: conv_a.id.clone(),
+                convention: conv_a.id.to_string(),
                 symbols: vec!["PartialExempt".into()],
             }],
             ..Default::default()
@@ -871,7 +872,7 @@ mod tests {
 
         let config = ConventionsConfig {
             exempt: vec![ConventionExemption {
-                convention: conv.id.clone(),
+                convention: conv.id.to_string(),
                 symbols: vec!["src/foo.rs::process".into()],
             }],
             ..Default::default()
@@ -917,7 +918,7 @@ mod tests {
 
         let config = ConventionsConfig {
             exempt: vec![ConventionExemption {
-                convention: conv.id.clone(),
+                convention: conv.id.to_string(),
                 symbols: vec!["process".into()],
             }],
             ..Default::default()
@@ -1136,10 +1137,7 @@ mod tests {
         };
         let violations = engine.check(&[sym_in_a], &ConventionsConfig::default());
 
-        let conv_ids: Vec<&str> = violations
-            .iter()
-            .map(|v| v.convention_id.as_str())
-            .collect();
+        let conv_ids: Vec<&str> = violations.iter().map(|v| &*v.convention_id).collect();
         assert!(
             conv_ids.contains(&"global-1"),
             "should violate global convention"
@@ -1185,7 +1183,7 @@ mod tests {
         let violations = engine.check(&[orphan], &ConventionsConfig::default());
 
         assert_eq!(violations.len(), 1);
-        assert_eq!(violations[0].convention_id, "global-1");
+        assert_eq!(&*violations[0].convention_id, "global-1");
     }
 
     #[test]
@@ -1227,7 +1225,7 @@ mod tests {
         let matches = engine.check_inverse(&[sym], &deprecated, &forbidden);
 
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].convention_id, "dep-1");
+        assert_eq!(&*matches[0].convention_id, "dep-1");
         assert_eq!(matches[0].lifecycle_state, "deprecated");
     }
 

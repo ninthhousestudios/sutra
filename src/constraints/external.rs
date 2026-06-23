@@ -10,6 +10,7 @@
 //!   link without a single use-statement.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use glob::{MatchOptions, Pattern};
 
@@ -155,7 +156,7 @@ pub fn validate_no_external_targeting_members(
 
 pub fn config_error_finding(msg: &str) -> ConstraintFinding {
     ConstraintFinding {
-        constraint_id: "config-error".to_string(),
+        constraint_id: Arc::from("config-error"),
         constraint_name: None,
         constraint_kind: "config_error".to_string(),
         severity: Severity::Blocking,

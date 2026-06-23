@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rusqlite::params;
 
 use super::Db;
@@ -6,8 +8,8 @@ use crate::error::Result;
 #[derive(Debug, Clone)]
 pub struct ConstraintWaiverRow {
     pub id: i64,
-    pub constraint_id: String,
-    pub constraint_name: Option<String>,
+    pub constraint_id: Arc<str>,
+    pub constraint_name: Option<Arc<str>>,
     pub file_path: String,
     pub symbol_qualified_name: Option<String>,
     pub rationale: String,
@@ -19,8 +21,8 @@ pub struct ConstraintWaiverRow {
 fn map_waiver_row(row: &rusqlite::Row) -> rusqlite::Result<ConstraintWaiverRow> {
     Ok(ConstraintWaiverRow {
         id: row.get(0)?,
-        constraint_id: row.get(1)?,
-        constraint_name: row.get(2)?,
+        constraint_id: Arc::from(row.get::<_, String>(1)?),
+        constraint_name: row.get::<_, Option<String>>(2)?.map(Arc::from),
         file_path: row.get(3)?,
         symbol_qualified_name: row.get(4)?,
         rationale: row.get(5)?,

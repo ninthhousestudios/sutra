@@ -47,7 +47,7 @@ use crate::waivers::{self, Waived};
 pub struct ConventionMatchFinding {
     pub symbol: String,
     pub file: String,
-    pub convention_id: String,
+    pub convention_id: Arc<str>,
     pub antecedent: Vec<String>,
     pub consequent: Vec<String>,
     pub lifecycle_state: String,

@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sutra::constraints::DdEngine;
@@ -56,8 +57,15 @@ fn no_findings() -> review::ReviewFindings {
 #[test]
 fn empty_diff_returns_correct_shape() {
     let (dir, db) = setup_db();
-    let result =
-        review::compute(&db, dir.path(), &[], &Default::default(), &no_findings(), false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &[],
+        &Default::default(),
+        &no_findings(),
+        false,
+    )
+    .unwrap();
 
     assert_eq!(result["changed_files"].as_array().unwrap().len(), 0);
     assert_eq!(result["changed_symbols"].as_array().unwrap().len(), 0);
@@ -302,7 +310,7 @@ fn risk_score_clamped_to_one() {
             .map(|i| review::ConventionViolation {
                 symbol: format!("extreme_{i}::danger"),
                 file: format!("src/extreme_{i}.rs"),
-                convention_id: format!("c{i}"),
+                convention_id: Arc::from(format!("c{i}")),
                 antecedent: vec!["kind:function".into()],
                 consequent: vec!["has_doc".into()],
                 missing: vec!["has_doc".into()],
@@ -389,8 +397,15 @@ fn constraint_violations_appear_in_output() {
         ..Default::default()
     };
 
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 2);
@@ -431,8 +446,15 @@ fn convention_violations_appear_in_output() {
         ..Default::default()
     };
 
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     let cv = result["convention_violations"].as_array().unwrap();
     assert_eq!(cv.len(), 1);
@@ -477,8 +499,15 @@ fn waived_violations_appear_in_output() {
         ..Default::default()
     };
 
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     let wv = result["waived_violations"].as_array().unwrap();
     assert_eq!(wv.len(), 1);
@@ -539,8 +568,15 @@ fn violations_are_structurally_distinct() {
         ..Default::default()
     };
 
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     // Constraint violations have enriched fields
     let cv = &result["constraint_violations"].as_array().unwrap()[0];
@@ -622,8 +658,15 @@ fn convention_violations_increase_risk_score() {
         ..Default::default()
     };
 
-    let result_with =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result_with = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
     let risk_with = result_with["risk_score"].as_f64().unwrap();
 
     assert!(
@@ -697,8 +740,15 @@ fn recommended_reads_ranks_violation_sites_first() {
     };
 
     let changed = vec!["src/hub.rs".to_string()];
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     let rr = result["recommended_reads"].as_array().unwrap();
     assert!(!rr.is_empty());
@@ -859,8 +909,15 @@ fn waived_constraint_violations_appear_in_output() {
         ..Default::default()
     };
 
-    let result =
-        review::compute(&db, dir.path(), &changed, &Default::default(), &findings, false).unwrap();
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
 
     let cv = result["constraint_violations"].as_array().unwrap();
     assert!(

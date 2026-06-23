@@ -125,7 +125,7 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 "name": c.name,
                 "provenance": c.provenance,
                 "scope": c.scope,
-                "waiver_count": waiver_counts.get(c.id.as_str()).copied().unwrap_or(0),
+                "waiver_count": waiver_counts.get(&*c.id).copied().unwrap_or(0),
                 "matched_file_count": coverage_fields,
             });
             if !dead_fields.is_empty() {

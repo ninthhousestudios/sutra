@@ -1243,7 +1243,7 @@ fn constraint_waiver_crud() {
 
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers.len(), 1);
-    assert_eq!(waivers[0].constraint_id, "abc12345");
+    assert_eq!(&*waivers[0].constraint_id, "abc12345");
     assert_eq!(
         waivers[0].constraint_name.as_deref(),
         Some("no-tool-daemon")
@@ -1320,7 +1320,7 @@ fn constraint_waiver_file_scoping() {
 
     let for_b = db.get_constraint_waivers_for_file("src/b.rs").unwrap();
     assert_eq!(for_b.len(), 1);
-    assert_eq!(for_b[0].constraint_id, "abc");
+    assert_eq!(&*for_b[0].constraint_id, "abc");
 
     let for_c = db.get_constraint_waivers_for_file("src/c.rs").unwrap();
     assert!(for_c.is_empty());
@@ -1370,7 +1370,7 @@ fn constraint_waiver_survives_reindex() {
 
     let waivers = db.get_constraint_waivers(None).unwrap();
     assert_eq!(waivers.len(), 1, "constraint waiver should survive reindex");
-    assert_eq!(waivers[0].constraint_id, "abc");
+    assert_eq!(&*waivers[0].constraint_id, "abc");
     assert_eq!(waivers[0].rationale, "legacy");
 }
 
@@ -1387,7 +1387,7 @@ fn constraint_waiver_orphan_detection() {
 
     let orphans = db.reconcile_orphaned_constraint_waivers(&["abc"]).unwrap();
     assert_eq!(orphans.len(), 2);
-    let orphan_ids: Vec<&str> = orphans.iter().map(|w| w.constraint_id.as_str()).collect();
+    let orphan_ids: Vec<&str> = orphans.iter().map(|w| &*w.constraint_id).collect();
     assert!(orphan_ids.contains(&"def"));
     assert!(orphan_ids.contains(&"ghi"));
 

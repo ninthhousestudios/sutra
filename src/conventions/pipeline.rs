@@ -191,7 +191,7 @@ pub fn rebuild(
             c.component_id.as_deref(),
         );
     }
-    let current_ids: Vec<&str> = all_convs.iter().map(|c| c.id.as_str()).collect();
+    let current_ids: Vec<&str> = all_convs.iter().map(|c| &*c.id).collect();
 
     let snapshot_id = uuid::Uuid::new_v4().to_string();
     for c in &all_convs {
