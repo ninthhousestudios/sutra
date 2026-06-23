@@ -62,7 +62,7 @@ async fn test_pagerank_populated_after_parse() {
     .unwrap();
 
     let files = db.all_files().unwrap();
-    let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
+    let lib = files.iter().find(|f| &*f.path == "src/lib.rs").unwrap();
     assert!(lib.pagerank.is_some(), "lib.rs should have pagerank");
     assert!(
         lib.pagerank.unwrap() > 0.0,
@@ -70,7 +70,7 @@ async fn test_pagerank_populated_after_parse() {
     );
 
     // lib.rs is depended on by main.rs and util.rs — should have highest PR.
-    let main = files.iter().find(|f| f.path == "src/main.rs").unwrap();
+    let main = files.iter().find(|f| &*f.path == "src/main.rs").unwrap();
     assert!(
         lib.pagerank.unwrap() > main.pagerank.unwrap_or(0.0),
         "lib.rs PR ({:?}) should exceed main.rs PR ({:?})",
@@ -137,7 +137,7 @@ async fn test_pagerank_warm_start_converges() {
     let files_first = db.all_files().unwrap();
     let _lib_pr1 = files_first
         .iter()
-        .find(|f| f.path == "src/lib.rs")
+        .find(|f| &*f.path == "src/lib.rs")
         .unwrap()
         .pagerank
         .unwrap();
@@ -158,13 +158,13 @@ async fn test_pagerank_warm_start_converges() {
     let files_second = db.all_files().unwrap();
     let lib_pr2 = files_second
         .iter()
-        .find(|f| f.path == "src/lib.rs")
+        .find(|f| &*f.path == "src/lib.rs")
         .unwrap()
         .pagerank
         .unwrap();
     let main_pr2 = files_second
         .iter()
-        .find(|f| f.path == "src/main.rs")
+        .find(|f| &*f.path == "src/main.rs")
         .unwrap()
         .pagerank
         .unwrap_or(0.0);

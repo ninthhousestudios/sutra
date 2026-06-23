@@ -62,7 +62,7 @@ fn handle_inner(
         .iter()
         .map(|s| {
             let file_path = db.file_by_id(s.file_id).ok().flatten();
-            let file_str = file_path.as_ref().map(|f| f.path.as_str());
+            let file_str = file_path.as_ref().map(|f| &*f.path);
             let mut entry = json!({
                 "qualified_name": s.qualified_name,
                 "kind": s.kind,

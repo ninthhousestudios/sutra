@@ -115,7 +115,7 @@ pub fn compute_ondemand_findings(
             all_stats.push(FunctionBlameStats {
                 symbol_id: sym.id,
                 file_id: file_row.id,
-                qualified_name: sym.qualified_name.clone(),
+                qualified_name: sym.qualified_name.to_string(),
                 distinct_commits: commits.len(),
                 cyclomatic: sym.cyclomatic,
                 max_nesting: sym.max_nesting,

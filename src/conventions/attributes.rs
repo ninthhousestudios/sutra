@@ -30,7 +30,7 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
     if sym.flags & 0x03 != 0 {
         return None;
     }
-    if !MEANINGFUL_KINDS.contains(&sym.kind.as_str()) {
+    if !MEANINGFUL_KINDS.contains(&&*sym.kind) {
         return None;
     }
 
@@ -82,7 +82,7 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
     };
     attributes.push(naming.into());
 
-    if sym.kind == "method" {
+    if &*sym.kind == "method" {
         attributes.push("is_method".into());
     }
 
@@ -97,7 +97,7 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
     }
 
     Some(SymbolAttrs {
-        name: sym.qualified_name.clone(),
+        name: sym.qualified_name.to_string(),
         file: file_path.to_string(),
         attributes,
         component_id: None,

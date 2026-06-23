@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use serde_json::json;
 use uuid::Uuid;
@@ -23,7 +24,7 @@ pub(super) fn create_fresh_components(
     for fids in clusters {
         let paths: Vec<&str> = fids
             .iter()
-            .filter_map(|id| file_map.get(id).map(|f| f.path.as_str()))
+            .filter_map(|id| file_map.get(id).map(|f| &*f.path))
             .collect();
         let name = auto_name(&paths);
         let id = Uuid::now_v7().to_string();
@@ -44,7 +45,7 @@ pub(super) fn reconcile_components(
 ) -> Result<usize> {
     let existing = db.active_components_with_paths()?;
 
-    let cluster_paths: Vec<HashSet<String>> = clusters
+    let cluster_paths: Vec<HashSet<Arc<str>>> = clusters
         .iter()
         .map(|fids| {
             fids.iter()
@@ -67,7 +68,7 @@ pub(super) fn reconcile_components(
         for (ki, cluster_set) in cluster_paths.iter().enumerate() {
             let inter = prior_set
                 .iter()
-                .filter(|p| cluster_set.contains(**p))
+                .filter(|p| cluster_set.contains::<str>(p))
                 .count();
             let union = prior_set.len() + cluster_set.len() - inter;
             if union > 0 {
@@ -112,7 +113,7 @@ pub(super) fn reconcile_components(
         }
         let paths: Vec<&str> = fids
             .iter()
-            .filter_map(|id| file_map.get(id).map(|f| f.path.as_str()))
+            .filter_map(|id| file_map.get(id).map(|f| &*f.path))
             .collect();
         let name = auto_name(&paths);
         let id = Uuid::now_v7().to_string();
@@ -151,7 +152,7 @@ pub(super) fn reconcile_components(
 fn detect_events(
     db: &Db,
     existing: &[(String, String, Vec<String>)],
-    cluster_paths: &[HashSet<String>],
+    cluster_paths: &[HashSet<Arc<str>>],
     matches: &[(usize, usize)],
     matched_comps: &HashSet<usize>,
     new_cluster_to_comp: &HashMap<usize, String>,
@@ -159,7 +160,7 @@ fn detect_events(
     let mut file_to_cluster: HashMap<&str, usize> = HashMap::new();
     for (ki, paths) in cluster_paths.iter().enumerate() {
         for p in paths {
-            file_to_cluster.insert(p.as_str(), ki);
+            file_to_cluster.insert(p, ki);
         }
     }
 

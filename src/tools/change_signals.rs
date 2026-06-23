@@ -83,12 +83,12 @@ pub fn gather(
                 let cog = s.cognitive.unwrap_or(0);
                 if s.cognitive.is_some() && max_cognitive.is_none_or(|prev| cog > prev) {
                     max_cognitive = Some(cog);
-                    max_cognitive_symbol = Some(s.qualified_name.clone());
+                    max_cognitive_symbol = Some(s.qualified_name.to_string());
                 }
                 all_symbol_ids.push(s.id);
                 symbols.push(SymbolSignal {
                     id: s.id,
-                    qualified_name: s.qualified_name.clone(),
+                    qualified_name: s.qualified_name.to_string(),
                     cognitive: cog,
                 });
             }
@@ -128,19 +128,19 @@ pub fn gather(
 
         for fid in &affected_file_ids {
             if let Some(file) = db.file_by_id(*fid)? {
-                if changed_set.contains(file.path.as_str()) {
+                if changed_set.contains(&*file.path) {
                     continue;
                 }
                 for s in db.find_symbols_by_file(file.id)? {
                     affected_symbols.push(AffectedSymbol {
-                        qualified_name: s.qualified_name.clone(),
-                        file: file.path.clone(),
+                        qualified_name: s.qualified_name.to_string(),
+                        file: file.path.to_string(),
                         blast_radius: file.blast_radius,
                         cognitive: s.cognitive.unwrap_or(0),
                     });
                 }
                 affected_files.push(AffectedFile {
-                    path: file.path.clone(),
+                    path: file.path.to_string(),
                     blast_radius: file.blast_radius,
                 });
             }

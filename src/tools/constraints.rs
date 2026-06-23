@@ -69,7 +69,7 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
     }
 
     let all_files = db.all_files()?;
-    let paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+    let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
     let comp_with_paths = db.active_components_with_paths()?;
     let component_names: Vec<&str> = comp_with_paths
         .iter()

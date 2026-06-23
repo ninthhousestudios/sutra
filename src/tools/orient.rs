@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use glob::{MatchOptions, Pattern};
 use schemars::JsonSchema;
@@ -231,7 +232,7 @@ fn hidden_coupling_for_component(
     db: &Db,
     component_id: &str,
     threshold: f64,
-    path_map: &HashMap<i64, String>,
+    path_map: &HashMap<i64, Arc<str>>,
 ) -> Vec<serde_json::Value> {
     let file_ids: HashSet<i64> = match db.component_file_ids(component_id) {
         Ok(ids) => ids.into_iter().collect(),
@@ -258,13 +259,13 @@ fn hidden_coupling_for_component(
         .filter(|(fa, fb, _, _)| file_ids.contains(fa) && file_ids.contains(fb))
         .filter(|(fa, fb, _, _)| !static_edges.contains(&((*fa).min(*fb), (*fa).max(*fb))))
         .filter(|(fa, fb, _, _)| {
-            let pa = path_map.get(fa).map(|s| s.as_str()).unwrap_or("");
-            let pb = path_map.get(fb).map(|s| s.as_str()).unwrap_or("");
+            let pa = path_map.get(fa).map(|s| &**s).unwrap_or("");
+            let pb = path_map.get(fb).map(|s| &**s).unwrap_or("");
             components::is_test_file(pa) == components::is_test_file(pb)
         })
         .map(|(fa, fb, jaccard, shared)| {
-            let file_a = path_map.get(&fa).cloned().unwrap_or_default();
-            let file_b = path_map.get(&fb).cloned().unwrap_or_default();
+            let file_a = path_map.get(&fa).map(|s| &**s).unwrap_or("");
+            let file_b = path_map.get(&fb).map(|s| &**s).unwrap_or("");
             (
                 jaccard,
                 json!({
@@ -342,7 +343,8 @@ pub fn handle(
     }
 
     let all_files = db.all_files()?;
-    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let path_map: HashMap<i64, Arc<str>> =
+        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
     let check_outcome = crate::constraints::check::evaluate(
         &FactsSource::DdBacked { db, dd_engine },

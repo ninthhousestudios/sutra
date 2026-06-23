@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -33,7 +34,7 @@ pub fn load_owners_config(workspace_root: &Path) -> OwnersConfig {
     }
 }
 
-fn file_path_map(db: &Db) -> Result<HashMap<i64, String>> {
+fn file_path_map(db: &Db) -> Result<HashMap<i64, Arc<str>>> {
     Ok(db
         .all_files()?
         .into_iter()
@@ -50,7 +51,7 @@ pub fn compute_co_change_scatter(db: &Db) -> Result<Vec<HealthFinding>> {
             partner_count >= SCATTER_PARTNER_THRESHOLD && commit_count >= SCATTER_COMMIT_THRESHOLD
         })
         .map(|(file_id, partner_count, commit_count)| {
-            let path = paths.get(&file_id).map(|s| s.as_str()).unwrap_or("?");
+            let path = paths.get(&file_id).map(|s| &**s).unwrap_or("?");
             HealthFinding {
                 file_id,
                 symbol_id: None,
@@ -91,7 +92,7 @@ pub fn compute_change_entropy(db: &Db) -> Result<Vec<HealthFinding>> {
         .into_iter()
         .filter(|&(_, entropy)| entropy >= ENTROPY_THRESHOLD)
         .map(|(file_id, entropy)| {
-            let path = paths.get(&file_id).map(|s| s.as_str()).unwrap_or("?");
+            let path = paths.get(&file_id).map(|s| &**s).unwrap_or("?");
             HealthFinding {
                 file_id,
                 symbol_id: None,
@@ -146,7 +147,7 @@ pub fn compute_ownership_risk(db: &Db, workspace_root: &Path) -> Result<Vec<Heal
         if !top_trigger && !minor_trigger {
             continue;
         }
-        let path = paths.get(file_id).map(|s| s.as_str()).unwrap_or("?");
+        let path = paths.get(file_id).map(|s| &**s).unwrap_or("?");
         let detail = if top_trigger && minor_trigger {
             format!(
                 "{path}: top owner {:.0}% (< 40%) and {minor_count} minor contributors",
@@ -197,8 +198,8 @@ pub fn compute_hidden_coupling(db: &Db) -> Result<Vec<HealthFinding>> {
         } else {
             HealthSeverity::Informational
         };
-        let path_a = paths.get(&fa).map(|s| s.as_str()).unwrap_or("?");
-        let path_b = paths.get(&fb).map(|s| s.as_str()).unwrap_or("?");
+        let path_a = paths.get(&fa).map(|s| &**s).unwrap_or("?");
+        let path_b = paths.get(&fb).map(|s| &**s).unwrap_or("?");
         let pct = (jaccard * 100.0) as u32;
         for (file_id, other_path) in [(fa, path_b), (fb, path_a)] {
             findings.push(HealthFinding {

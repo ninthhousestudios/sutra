@@ -34,6 +34,10 @@ fn setup_files(db: &Db, paths: &[&str]) -> HashMap<i64, String> {
     map
 }
 
+fn as_ref_map(m: &HashMap<i64, String>) -> HashMap<i64, &str> {
+    m.iter().map(|(&k, v)| (k, v.as_str())).collect()
+}
+
 fn setup_component(db: &Db, name: &str, file_ids: &[i64]) -> String {
     let cid = format!("comp-{name}");
     let prior_paths = String::new();
@@ -82,7 +86,9 @@ fn boundary_resolution_with_membership() {
     });
 
     let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let pairs = resolver
+        .resolve(&[constraint], &db, &as_ref_map(&path_map))
+        .unwrap();
 
     // Cross product: 2 tool files × 2 core files = 4 pairs
     assert_eq!(pairs.len(), 4);
@@ -109,11 +115,12 @@ fn cache_hit_on_unchanged_membership() {
     });
 
     let mut resolver = ConstraintResolver::new();
+    let ref_map = as_ref_map(&path_map);
     let first = resolver
-        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &ref_map)
         .unwrap();
     let second = resolver
-        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &ref_map)
         .unwrap();
     assert_eq!(first, second);
 }
@@ -135,8 +142,9 @@ fn cache_miss_on_membership_change() {
     });
 
     let mut resolver = ConstraintResolver::new();
+    let ref_map = as_ref_map(&path_map);
     let first = resolver
-        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
+        .resolve(std::slice::from_ref(&constraint), &db, &ref_map)
         .unwrap();
     assert_eq!(first.len(), 1);
 
@@ -145,7 +153,7 @@ fn cache_miss_on_membership_change() {
         .unwrap();
     db.upsert_clustering_meta(0, 3, "h2", 0, 0).unwrap();
 
-    let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let second = resolver.resolve(&[constraint], &db, &ref_map).unwrap();
     assert_eq!(second.len(), 2);
 }
 
@@ -178,7 +186,9 @@ fn forbidden_dep_passes_through() {
         .collect();
 
     let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let pairs = resolver
+        .resolve(&[constraint], &db, &as_ref_map(&path_map))
+        .unwrap();
 
     assert_eq!(pairs.len(), 2);
     for &tid in &tool_ids {
@@ -223,7 +233,9 @@ fn mixed_boundary_and_forbidden_dep() {
     ];
 
     let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&constraints, &db, &path_map).unwrap();
+    let pairs = resolver
+        .resolve(&constraints, &db, &as_ref_map(&path_map))
+        .unwrap();
 
     assert!(pairs.contains(&(tool_id, core_id)));
     assert!(pairs.contains(&(tool_id, daemon_id)));
@@ -241,7 +253,9 @@ fn unknown_component_skipped() {
     });
 
     let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let pairs = resolver
+        .resolve(&[constraint], &db, &as_ref_map(&path_map))
+        .unwrap();
     assert!(pairs.is_empty());
 }
 
@@ -251,7 +265,7 @@ fn empty_constraints() {
     let path_map = setup_files(&db, &["src/a.rs"]);
 
     let mut resolver = ConstraintResolver::new();
-    let pairs = resolver.resolve(&[], &db, &path_map).unwrap();
+    let pairs = resolver.resolve(&[], &db, &as_ref_map(&path_map)).unwrap();
     assert!(pairs.is_empty());
 }
 
@@ -276,7 +290,8 @@ fn cache_miss_on_constraint_change() {
     );
 
     let mut resolver = ConstraintResolver::new();
-    let first = resolver.resolve(&[c1], &db, &path_map).unwrap();
+    let ref_map = as_ref_map(&path_map);
+    let first = resolver.resolve(&[c1], &db, &ref_map).unwrap();
     assert_eq!(first.len(), 2);
 
     // Different constraint (different ID, different globs) — must re-resolve
@@ -287,7 +302,7 @@ fn cache_miss_on_constraint_change() {
             to: "src/tools/*".into(),
         },
     );
-    let second = resolver.resolve(&[c2], &db, &path_map).unwrap();
+    let second = resolver.resolve(&[c2], &db, &ref_map).unwrap();
     assert_eq!(second.len(), 2);
     assert_ne!(
         first, second,
@@ -307,7 +322,11 @@ fn cache_miss_on_path_map_change() {
 
     let mut resolver = ConstraintResolver::new();
     let first = resolver
-        .resolve(std::slice::from_ref(&constraint), &db, &path_map)
+        .resolve(
+            std::slice::from_ref(&constraint),
+            &db,
+            &as_ref_map(&path_map),
+        )
         .unwrap();
     assert_eq!(first.len(), 1);
 
@@ -317,7 +336,9 @@ fn cache_miss_on_path_map_change() {
         .unwrap();
     path_map.insert(new_id, "src/tools/orient.rs".to_string());
 
-    let second = resolver.resolve(&[constraint], &db, &path_map).unwrap();
+    let second = resolver
+        .resolve(&[constraint], &db, &as_ref_map(&path_map))
+        .unwrap();
     assert_eq!(
         second.len(),
         2,

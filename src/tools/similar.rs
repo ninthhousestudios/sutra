@@ -63,13 +63,13 @@ pub fn handle(
             let infos: Vec<CandidateInfo> = candidates
                 .iter()
                 .map(|c| CandidateInfo {
-                    qualified_name: c.qualified_name.clone(),
-                    kind: c.kind.clone(),
+                    qualified_name: c.qualified_name.to_string(),
+                    kind: c.kind.to_string(),
                     file: db
                         .file_by_id(c.file_id)
                         .ok()
                         .flatten()
-                        .map(|f| f.path)
+                        .map(|f| f.path.to_string())
                         .unwrap_or_default(),
                 })
                 .collect();
@@ -85,7 +85,7 @@ pub fn handle(
         }
     };
 
-    if sym.kind != "function" && sym.kind != "method" {
+    if &*sym.kind != "function" && &*sym.kind != "method" {
         return Ok(json!({
             "symbol": sym.qualified_name,
             "kind": sym.kind,

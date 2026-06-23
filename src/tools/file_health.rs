@@ -122,7 +122,7 @@ fn handle_inner(
 
     let in_scope = |f: &FileRow| -> bool {
         if let Some(p) = path
-            && f.path != p
+            && &*f.path != p
         {
             return false;
         }

@@ -46,13 +46,13 @@ pub fn handle(
             let infos: Vec<CandidateInfo> = candidates
                 .iter()
                 .map(|c| CandidateInfo {
-                    qualified_name: c.qualified_name.clone(),
-                    kind: c.kind.clone(),
+                    qualified_name: c.qualified_name.to_string(),
+                    kind: c.kind.to_string(),
                     file: db
                         .file_by_id(c.file_id)
                         .ok()
                         .flatten()
-                        .map(|f| f.path)
+                        .map(|f| f.path.to_string())
                         .unwrap_or_default(),
                 })
                 .collect();
@@ -107,12 +107,12 @@ fn collect_callers(
                 .file_by_id(r.file_id)
                 .ok()
                 .flatten()
-                .map(|f| f.path)
+                .map(|f| f.path.to_string())
                 .unwrap_or_default();
             let caller_sym = db.find_enclosing_symbol(r.file_id, r.line)?;
             let caller_name = caller_sym
                 .as_ref()
-                .map(|s| s.qualified_name.as_str())
+                .map(|s| &*s.qualified_name)
                 .unwrap_or("<unknown>");
             entries.push(json!({
                 "caller": caller_name,
@@ -158,12 +158,12 @@ fn collect_callees(
                 let callee_sym = db.symbol_by_id(target_id)?;
                 let callee_name = callee_sym
                     .as_ref()
-                    .map(|s| s.qualified_name.as_str())
+                    .map(|s| &*s.qualified_name)
                     .unwrap_or_else(|| r.unresolved_name.as_deref().unwrap_or("<unknown>"));
                 let callee_file = callee_sym
                     .as_ref()
                     .and_then(|s| db.file_by_id(s.file_id).ok().flatten())
-                    .map(|f| f.path)
+                    .map(|f| f.path.to_string())
                     .unwrap_or_default();
                 entries.push(json!({
                     "callee": callee_name,

@@ -312,11 +312,11 @@ async fn test_parent_symbol_id_round_trip() {
 
     let impl_sym = symbols
         .iter()
-        .find(|s| s.kind == "impl")
+        .find(|s| &*s.kind == "impl")
         .expect("should have impl");
     let struct_sym = symbols
         .iter()
-        .find(|s| s.kind == "struct")
+        .find(|s| &*s.kind == "struct")
         .expect("should have struct");
 
     // Struct is top-level — no parent
@@ -331,7 +331,7 @@ async fn test_parent_symbol_id_round_trip() {
     );
 
     // Methods should have impl as parent
-    let methods: Vec<_> = symbols.iter().filter(|s| s.kind == "method").collect();
+    let methods: Vec<_> = symbols.iter().filter(|s| &*s.kind == "method").collect();
     assert_eq!(methods.len(), 2);
     for m in &methods {
         assert_eq!(
@@ -372,15 +372,15 @@ async fn test_nested_parent_symbol_id_chain() {
 
     let module = symbols
         .iter()
-        .find(|s| s.kind == "module")
+        .find(|s| &*s.kind == "module")
         .expect("should have module");
     let impl_sym = symbols
         .iter()
-        .find(|s| s.kind == "impl")
+        .find(|s| &*s.kind == "impl")
         .expect("should have impl");
     let method = symbols
         .iter()
-        .find(|s| s.kind == "method")
+        .find(|s| &*s.kind == "method")
         .expect("should have method");
 
     // module is top-level
@@ -424,7 +424,7 @@ struct Borrowed<'a> { data: &'a str }
 
     let fetch = symbols
         .iter()
-        .find(|s| s.short_name == "fetch")
+        .find(|s| &*s.short_name == "fetch")
         .expect("fetch");
     let attrs: serde_json::Value = serde_json::from_str(
         fetch
@@ -438,7 +438,7 @@ struct Borrowed<'a> { data: &'a str }
 
     let danger = symbols
         .iter()
-        .find(|s| s.short_name == "danger")
+        .find(|s| &*s.short_name == "danger")
         .expect("danger");
     let attrs: serde_json::Value = serde_json::from_str(
         danger
@@ -451,7 +451,7 @@ struct Borrowed<'a> { data: &'a str }
 
     let plain = symbols
         .iter()
-        .find(|s| s.short_name == "plain")
+        .find(|s| &*s.short_name == "plain")
         .expect("plain");
     assert_eq!(
         plain.language_attrs.as_deref(),
@@ -461,7 +461,7 @@ struct Borrowed<'a> { data: &'a str }
 
     let borrowed = symbols
         .iter()
-        .find(|s| s.short_name == "Borrowed")
+        .find(|s| &*s.short_name == "Borrowed")
         .expect("Borrowed");
     let attrs: serde_json::Value = serde_json::from_str(
         borrowed

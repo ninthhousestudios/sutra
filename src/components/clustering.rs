@@ -52,13 +52,13 @@ fn apply_boundary_hints(
             continue;
         }
 
-        let parent_a = Path::new(&file_a.path).parent();
+        let parent_a = Path::new(&*file_a.path).parent();
 
         for (nbr_id, weight) in neighbors.iter_mut() {
             let Some(file_b) = file_map.get(nbr_id) else {
                 continue;
             };
-            if file_a.language == file_b.language && Path::new(&file_b.path).parent() == parent_a {
+            if file_a.language == file_b.language && Path::new(&*file_b.path).parent() == parent_a {
                 *weight *= multiplier;
             }
         }
@@ -95,7 +95,7 @@ fn add_cochange_edges(
         return Ok(0);
     }
 
-    let id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, &*f.path)).collect();
 
     let static_edges: HashSet<(i64, i64)> = adj
         .iter()

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -332,7 +333,7 @@ pub fn build_findings(
 ) -> Result<ReviewFindings> {
     let rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
-    let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
+    let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
 
     let mut file_to_component: HashMap<String, String> = HashMap::new();
     for (comp_id, _, paths) in &db.active_components_with_paths()? {
@@ -387,10 +388,7 @@ pub fn build_findings(
 
     let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
     let mut changed_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
-    for f in all_files
-        .iter()
-        .filter(|f| changed_set.contains(f.path.as_str()))
-    {
+    for f in all_files.iter().filter(|f| changed_set.contains(&*f.path)) {
         let syms = db.find_symbols_by_file(f.id)?;
         let refs = db.find_refs_in_file(f.id)?;
 
@@ -407,7 +405,7 @@ pub fn build_findings(
                 callee_cache.insert(
                     *id,
                     conventions::ResolvedCallee {
-                        qualified_name: sym.qualified_name,
+                        qualified_name: sym.qualified_name.to_string(),
                         signature: sym.signature,
                     },
                 );
@@ -566,7 +564,7 @@ fn behavioral_coupling(
         Err(_) => return Vec::new(),
     };
 
-    let all_files: HashMap<i64, String> = db
+    let all_files: HashMap<i64, Arc<str>> = db
         .all_files()
         .unwrap_or_default()
         .into_iter()

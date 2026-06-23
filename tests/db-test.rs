@@ -161,9 +161,9 @@ fn test_insert_and_lookup_symbol() {
         .unwrap();
 
     let by_id = db.symbol_by_id(sid).unwrap().unwrap();
-    assert_eq!(by_id.qualified_name, "lib::bar");
-    assert_eq!(by_id.short_name, "bar");
-    assert_eq!(by_id.kind, "function");
+    assert_eq!(&*by_id.qualified_name, "lib::bar");
+    assert_eq!(&*by_id.short_name, "bar");
+    assert_eq!(&*by_id.kind, "function");
     assert_eq!(by_id.visibility.as_deref(), Some("pub"));
     assert_eq!(by_id.docstring.as_deref(), Some("docs"));
 
@@ -180,7 +180,7 @@ fn test_find_symbols_by_name_exact() {
 
     let results = db.find_symbols_by_name("alpha", None, 10).unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].short_name, "alpha");
+    assert_eq!(&*results[0].short_name, "alpha");
 }
 
 #[test]
@@ -194,13 +194,13 @@ fn test_find_symbols_by_name_with_kind_filter() {
         .find_symbols_by_name("process", Some("function"), 10)
         .unwrap();
     assert_eq!(fns.len(), 1);
-    assert_eq!(fns[0].kind, "function");
+    assert_eq!(&*fns[0].kind, "function");
 
     let structs = db
         .find_symbols_by_name("process", Some("struct"), 10)
         .unwrap();
     assert_eq!(structs.len(), 1);
-    assert_eq!(structs[0].kind, "struct");
+    assert_eq!(&*structs[0].kind, "struct");
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn test_find_symbols_by_name_fts_fallback() {
 
     let results = db.find_symbols_by_name("my_func", None, 10).unwrap();
     assert!(!results.is_empty());
-    assert_eq!(results[0].short_name, "my_function");
+    assert_eq!(&*results[0].short_name, "my_function");
 }
 
 #[test]
@@ -771,7 +771,7 @@ fn test_find_symbols_by_name_with_colons() {
     seed_symbol(&db, fid, "foo::bar", "bar", "function");
 
     let results = db.find_symbols_by_name("foo::bar", None, 10).unwrap();
-    assert!(results.is_empty() || results[0].qualified_name == "foo::bar");
+    assert!(results.is_empty() || &*results[0].qualified_name == "foo::bar");
 
     let results = db
         .find_symbols_by_name("nonexistent::thing", None, 10)

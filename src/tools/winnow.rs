@@ -70,17 +70,17 @@ struct SymbolEntry {
 
 fn glob_filter(pattern: &str) -> FilePredicate {
     let pat = glob::Pattern::new(pattern).unwrap_or_else(|_| glob::Pattern::new("*").unwrap());
-    Box::new(move |file| pat.matches(&file.path))
+    Box::new(move |file| pat.matches(&*file.path))
 }
 
 fn churn_filter(churn_map: HashMap<String, u32>, min: u32) -> FilePredicate {
-    Box::new(move |file| churn_map.get(&file.path).copied().unwrap_or(0) >= min)
+    Box::new(move |file| churn_map.get(&*file.path).copied().unwrap_or(0) >= min)
 }
 
 // --- Symbol-level predicate builders ---
 
 fn kind_filter(kind: String) -> SymbolPredicate {
-    Box::new(move |e| e.sym.kind == kind)
+    Box::new(move |e| &*e.sym.kind == kind)
 }
 
 fn complexity_filter(min: i64) -> SymbolPredicate {
@@ -152,7 +152,7 @@ pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<s
             continue;
         }
 
-        let file_churn = churn_map.get(&file.path).copied().unwrap_or(0);
+        let file_churn = churn_map.get(&*file.path).copied().unwrap_or(0);
         let symbols = db.find_symbols_by_file(file.id)?;
 
         for sym in symbols {
@@ -160,7 +160,7 @@ pub fn handle(db: &Db, workspace_root: &Path, filter: &WinnowFilter) -> Result<s
                 importance: sym.pagerank.unwrap_or(0.0),
                 complexity: sym.cognitive.unwrap_or(0),
                 churn: file_churn,
-                file_path: file.path.clone(),
+                file_path: file.path.to_string(),
                 file_last_parsed: file.last_parsed.clone(),
                 sym,
             };

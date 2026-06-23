@@ -141,10 +141,8 @@ pub fn resolve_rust_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     }
 
     let all_files = db.all_files()?;
-    let path_to_id: HashMap<&str, i64> =
-        all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
-    let id_to_path: HashMap<i64, &str> =
-        all_files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let path_to_id: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
+    let id_to_path: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
 
     let mut updates = Vec::new();
     for (import_id, file_id, imported_path) in &unresolved {

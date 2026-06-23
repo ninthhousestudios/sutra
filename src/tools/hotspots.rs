@@ -78,7 +78,7 @@ fn handle_inner(
     let mut scored: Vec<_> = files
         .iter()
         .filter_map(|f| {
-            let c = churn.get(&f.path).copied().unwrap_or(0);
+            let c = churn.get(&*f.path).copied().unwrap_or(0);
             if c == 0 {
                 return None;
             }

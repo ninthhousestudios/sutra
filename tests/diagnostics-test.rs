@@ -138,7 +138,7 @@ fn test_resolve_symbol_diagnostic_unique() {
     seed_symbol(&db, fid, "MyStruct", "MyStruct", "struct");
 
     match db.resolve_symbol_diagnostic("MyStruct", None).unwrap() {
-        ResolveResult::Unique(s) => assert_eq!(s.qualified_name, "MyStruct"),
+        ResolveResult::Unique(s) => assert_eq!(&*s.qualified_name, "MyStruct"),
         other => panic!("expected Unique, got {other:?}"),
     }
 }

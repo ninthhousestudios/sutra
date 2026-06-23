@@ -249,7 +249,7 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
     let id_set: HashSet<i64> = items.iter().map(|(s, _)| s.id).collect();
     let name_by_id: HashMap<i64, &str> = items
         .iter()
-        .map(|(s, _)| (s.id, s.qualified_name.as_str()))
+        .map(|(s, _)| (s.id, &*s.qualified_name))
         .collect();
     let mut seen = HashSet::new();
     let mut edges = Vec::new();
@@ -392,7 +392,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 .get(&sym.file_id)
                 .map(|f| (f.fan_in_files + f.blast_radius) as f64 / max_structural)
                 .unwrap_or(0.0);
-            let def_priority = if DEFINITION_KINDS.contains(&sym.kind.as_str()) {
+            let def_priority = if DEFINITION_KINDS.contains(&&*sym.kind) {
                 1.0
             } else {
                 0.0

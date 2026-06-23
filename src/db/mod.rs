@@ -21,6 +21,7 @@ pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
 
 use std::path::Path;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, params};
@@ -214,7 +215,7 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
 #[derive(Debug, Clone)]
 pub struct FileRow {
     pub id: i64,
-    pub path: String,
+    pub path: Arc<str>,
     pub language: String,
     pub content_hash: String,
     pub line_count: i64,
@@ -229,9 +230,9 @@ pub struct FileRow {
 pub struct SymbolRow {
     pub id: i64,
     pub file_id: i64,
-    pub qualified_name: String,
-    pub short_name: String,
-    pub kind: String,
+    pub qualified_name: Arc<str>,
+    pub short_name: Arc<str>,
+    pub kind: Arc<str>,
     pub signature: Option<String>,
     pub signature_hash: Option<String>,
     pub visibility: Option<String>,
@@ -1064,7 +1065,7 @@ impl Db {
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(SutraError::Db(e)),
                 }?
-            } && kind_filter.is_none_or(|k| sym.kind == k)
+            } && kind_filter.is_none_or(|k| &*sym.kind == k)
             {
                 results.push(sym);
             }
@@ -1939,7 +1940,7 @@ fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
     let parsed_ok_int: i64 = row.get(5)?;
     Ok(FileRow {
         id: row.get(0)?,
-        path: row.get(1)?,
+        path: Arc::from(row.get::<_, String>(1)?),
         language: row.get(2)?,
         content_hash: row.get(3)?,
         line_count: row.get(4)?,
@@ -1955,9 +1956,9 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
     Ok(SymbolRow {
         id: row.get(0)?,
         file_id: row.get(1)?,
-        qualified_name: row.get(2)?,
-        short_name: row.get(3)?,
-        kind: row.get(4)?,
+        qualified_name: Arc::from(row.get::<_, String>(2)?),
+        short_name: Arc::from(row.get::<_, String>(3)?),
+        kind: Arc::from(row.get::<_, String>(4)?),
         signature: row.get(5)?,
         signature_hash: row.get(6)?,
         visibility: row.get(7)?,

@@ -290,8 +290,8 @@ fn resolve_file_refs(
     let extracted_symbols: Vec<parser::ExtractedSymbol> = file_symbols_rows
         .iter()
         .map(|s| parser::ExtractedSymbol {
-            qualified_name: s.qualified_name.clone(),
-            short_name: s.short_name.clone(),
+            qualified_name: s.qualified_name.to_string(),
+            short_name: s.short_name.to_string(),
             kind: parse_symbol_kind(&s.kind),
             signature: s.signature.clone(),
             signature_hash: s.signature_hash.clone(),
@@ -373,7 +373,7 @@ fn prune_deleted_files(db: &Db, workspace_root: &Path) -> usize {
     };
     let mut count = 0;
     for file in &files {
-        if !workspace_root.join(&file.path).exists() {
+        if !workspace_root.join(&*file.path).exists() {
             if let Err(e) = db.delete_file_cascade(file.id) {
                 warn!(file = %file.path, "failed to prune deleted file: {e}");
             } else {
@@ -586,7 +586,7 @@ fn post_parse_sequence(
             Ok(commit_file_data) if !commit_file_data.is_empty() => {
                 let churn = crate::git::churn_from_commit_files(&commit_file_data);
                 let path_to_id: std::collections::HashMap<&str, i64> =
-                    files.iter().map(|f| (f.path.as_str(), f.id)).collect();
+                    files.iter().map(|f| (&*f.path, f.id)).collect();
                 let mut seen_hashes: std::collections::HashSet<&str> =
                     std::collections::HashSet::new();
                 let mut commit_rows = Vec::new();
@@ -841,7 +841,7 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
 
         file_scores.push(SnapshotFileRow {
             file_id: f.id,
-            file_path: f.path.clone(),
+            file_path: f.path.to_string(),
             score,
             category_scores: cat_json,
         });

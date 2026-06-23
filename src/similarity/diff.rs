@@ -259,7 +259,7 @@ pub fn detect_shape_changes(
             let symbol_id = file_id.and_then(|fid| {
                 db.find_symbols_by_file(fid).ok().and_then(|syms| {
                     syms.into_iter()
-                        .find(|s| s.short_name == new_fn.name)
+                        .find(|s| *s.short_name == *new_fn.name)
                         .map(|s| s.id)
                 })
             });

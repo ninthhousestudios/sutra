@@ -32,7 +32,7 @@ pub fn rebuild(
         }
     }
 
-    let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();
+    let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
 
     let mut all_sym_attrs = Vec::new();
     let mut sig_info_map: HashMap<String, templates::SymbolSignatureInfo> = HashMap::new();
@@ -54,7 +54,7 @@ pub fn rebuild(
                 callee_cache.insert(
                     *id,
                     super::ResolvedCallee {
-                        qualified_name: sym.qualified_name,
+                        qualified_name: sym.qualified_name.to_string(),
                         signature: sym.signature,
                     },
                 );
@@ -84,7 +84,7 @@ pub fn rebuild(
                     );
                 }
                 sig_info_map.insert(
-                    s.qualified_name.clone(),
+                    s.qualified_name.to_string(),
                     templates::SymbolSignatureInfo {
                         signature: s.signature.clone(),
                         visibility: s.visibility.clone(),

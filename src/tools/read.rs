@@ -72,14 +72,14 @@ pub fn handle(
             next_action: "The file may have been deleted. Run sutra_parse to refresh.".to_string(),
         })?;
 
-    let abs_path = workspace_root.join(&file.path);
+    let abs_path = workspace_root.join(&*file.path);
 
     if !abs_path.starts_with(workspace_root) {
         return Err(SutraError::InvalidArgument {
             tool: "sutra_read",
             argument: "symbol",
             constraint: "file path must stay within workspace root".to_string(),
-            received: Some(file.path.clone()),
+            received: Some(file.path.to_string()),
             next_action: "This file path contains path traversal sequences. Report this issue."
                 .to_string(),
         });

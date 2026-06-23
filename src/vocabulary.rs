@@ -234,7 +234,7 @@ fn lookup_locations(
             for sym in &syms {
                 if let Some(f) = db.file_by_id(sym.file_id)? {
                     locs.push(CodeLocation {
-                        path: f.path,
+                        path: f.path.to_string(),
                         start_line: Some(sym.start_line),
                         end_line: Some(sym.end_line),
                     });
@@ -256,7 +256,7 @@ fn check_orphan(db: &Db, target_kind: &str, target_ref: &str) -> Result<bool> {
         }
         "file" => {
             let files = db.all_files()?;
-            Ok(!files.iter().any(|f| f.path == target_ref))
+            Ok(!files.iter().any(|f| &*f.path == target_ref))
         }
         "symbol" => {
             let found = db.find_symbols_by_name(target_ref, None, 1)?;

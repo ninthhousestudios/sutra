@@ -448,7 +448,7 @@ pub fn load_rules(root: &Path) -> Result<Rules> {
 /// - Returns `None` when no `NoCycles` constraint covers this cycle.
 pub fn match_no_cycles_constraint<'a>(
     constraints: &'a [Constraint],
-    cycle_paths: &[String],
+    cycle_paths: &[&str],
 ) -> Option<&'a Constraint> {
     constraints
         .iter()

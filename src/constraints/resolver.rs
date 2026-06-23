@@ -34,7 +34,7 @@ impl ConstraintResolver {
         &mut self,
         constraints: &[Constraint],
         db: &Db,
-        path_map: &HashMap<i64, String>,
+        path_map: &HashMap<i64, &str>,
     ) -> Result<Vec<(i64, i64)>> {
         let current_gen = db.clustering_meta()?;
         let current_input_hash = compute_input_hash(constraints, path_map);
@@ -134,7 +134,7 @@ fn file_ids_for(
     Ok(ids)
 }
 
-fn compute_input_hash(constraints: &[Constraint], path_map: &HashMap<i64, String>) -> u64 {
+fn compute_input_hash(constraints: &[Constraint], path_map: &HashMap<i64, &str>) -> u64 {
     let mut hasher = DefaultHasher::new();
     let mut ids: Vec<&str> = constraints.iter().map(|c| c.id.as_str()).collect();
     ids.sort();

@@ -65,7 +65,7 @@ fn evaluate_dd(
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
 
     let all_files = db.all_files()?;
-    let path_map: HashMap<i64, String> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let path_map: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
 
     let comp_with_paths = db.active_components_with_paths()?;
     let mut file_to_component: HashMap<String, String> = HashMap::new();
@@ -87,7 +87,7 @@ fn evaluate_dd(
 
     // Dead constraint detection (Workspace and ChangedFiles scopes only)
     if !matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
-        let paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
         let component_names: Vec<&str> = comp_with_paths
             .iter()
             .map(|(_, name, _)| name.as_str())
@@ -232,13 +232,13 @@ fn evaluate_dd(
                 continue;
             }
 
-            let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-            let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
+            let from_path = path_map.get(&from_id).copied().unwrap_or("");
+            let to_path = path_map.get(&to_id).copied().unwrap_or("");
 
             if let Some(c) = constraints::find_matching_constraint(
                 &all_constraints,
-                &from_path,
-                &to_path,
+                from_path,
+                to_path,
                 &file_to_component,
                 &comp_name_to_id,
             ) {
@@ -273,19 +273,19 @@ fn evaluate_dd(
                 {
                     continue;
                 }
-                let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
-                let to_path = path_map.get(&to_id).cloned().unwrap_or_default();
+                let from_path = path_map.get(&from_id).copied().unwrap_or("");
+                let to_path = path_map.get(&to_id).copied().unwrap_or("");
                 if let Some(c) = constraints::find_matching_constraint(
                     &all_constraints,
-                    &from_path,
-                    &to_path,
+                    from_path,
+                    to_path,
                     &file_to_component,
                     &comp_name_to_id,
                 ) {
                     resolved.push(make_finding(
                         c,
-                        &from_path,
-                        &to_path,
+                        from_path,
+                        to_path,
                         &file_to_component,
                         FindingDelta::Resolved,
                     ));
@@ -302,10 +302,10 @@ fn evaluate_dd(
         {
             continue;
         }
-        let cycle_paths: Vec<String> = cycle
+        let cycle_paths: Vec<&str> = cycle
             .file_ids
             .iter()
-            .filter_map(|id| path_map.get(id).cloned())
+            .filter_map(|id| path_map.get(id).copied())
             .collect();
         let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
         findings.push(ConstraintFinding {
@@ -316,8 +316,8 @@ fn evaluate_dd(
             constraint_kind: "no_cycles".into(),
             severity: matched.map(|c| c.severity).unwrap_or(Severity::Blocking),
             provenance: matched.and_then(|c| c.provenance.clone()),
-            from_path: cycle_paths.first().cloned().unwrap_or_default(),
-            to_path: cycle_paths.last().cloned().unwrap_or_default(),
+            from_path: cycle_paths.first().unwrap_or(&"").to_string(),
+            to_path: cycle_paths.last().unwrap_or(&"").to_string(),
             component_context: None,
             detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
             delta: FindingDelta::Unknown,
@@ -350,7 +350,7 @@ fn evaluate_dd(
                 constraint_kind: "max_fan_in".into(),
                 severity: c.severity,
                 provenance: c.provenance.clone(),
-                from_path: f.path.clone(),
+                from_path: f.path.to_string(),
                 to_path: String::new(),
                 component_context: None,
                 detail: format!(

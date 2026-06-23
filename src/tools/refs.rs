@@ -37,13 +37,13 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
             let infos: Vec<CandidateInfo> = candidates
                 .iter()
                 .map(|c| CandidateInfo {
-                    qualified_name: c.qualified_name.clone(),
-                    kind: c.kind.clone(),
+                    qualified_name: c.qualified_name.to_string(),
+                    kind: c.kind.to_string(),
                     file: db
                         .file_by_id(c.file_id)
                         .ok()
                         .flatten()
-                        .map(|f| f.path)
+                        .map(|f| f.path.to_string())
                         .unwrap_or_default(),
                 })
                 .collect();
@@ -116,8 +116,8 @@ pub fn handle(db: &Db, symbol: &str, context_kind: Option<&str>) -> Result<serde
 
     if resolved_count == 0 && unresolved_count == 0 {
         result["diagnostic"] = serde_json::to_value(Diagnostic::SymbolExistsWithNoResults {
-            symbol: sym.qualified_name.clone(),
-            symbol_kind: sym.kind.clone(),
+            symbol: sym.qualified_name.to_string(),
+            symbol_kind: sym.kind.to_string(),
             tool: "sutra_refs".to_string(),
             freshness: None,
             suggestion: "The symbol exists but has no inbound references. \

@@ -93,8 +93,7 @@ pub fn compute_semantic_anchors(
     }
 
     let files = db.all_files()?;
-    let file_id_to_path: HashMap<i64, &str> =
-        files.iter().map(|f| (f.id, f.path.as_str())).collect();
+    let file_id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, &*f.path)).collect();
     let all_symbols = db.all_symbols_by_file()?;
 
     let mut component_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
@@ -131,8 +130,8 @@ pub fn compute_semantic_anchors(
             .iter()
             .filter_map(|fid| all_symbols.get(fid))
             .flatten()
-            .filter(|s| ANCHOR_KINDS.contains(&s.kind.as_str()))
-            .filter(|s| s.parent_symbol_id.is_none() || s.kind == "method")
+            .filter(|s| ANCHOR_KINDS.contains(&&*s.kind))
+            .filter(|s| s.parent_symbol_id.is_none() || &*s.kind == "method")
             .collect();
 
         if eligible.is_empty() {
@@ -175,7 +174,7 @@ pub fn compute_semantic_anchors(
                     in_degree_norm[i], pagerank_norm[i], stability_norm[i], naming_norm[i],
                 );
                 ScoredSymbol {
-                    qualified_name: sym.qualified_name.clone(),
+                    qualified_name: sym.qualified_name.to_string(),
                     score,
                     rationale,
                 }
@@ -218,7 +217,7 @@ pub fn concept_density(symbols: &[&SymbolRow], total_loc: i64) -> f64 {
     }
     let unique_kinds = symbols
         .iter()
-        .map(|s| s.kind.as_str())
+        .map(|s| &*s.kind)
         .collect::<HashSet<_>>()
         .len();
     let stem_diversity = extract_stems(symbols);
@@ -228,15 +227,17 @@ pub fn concept_density(symbols: &[&SymbolRow], total_loc: i64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn make_symbol(id: i64, short_name: &str, kind: &str) -> SymbolRow {
         SymbolRow {
             id,
             file_id: 1,
-            qualified_name: short_name.to_string(),
-            short_name: short_name.to_string(),
-            kind: kind.to_string(),
+            qualified_name: Arc::from(short_name),
+            short_name: Arc::from(short_name),
+            kind: Arc::from(kind),
             signature: None,
             signature_hash: None,
             visibility: None,

@@ -1,5 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -82,19 +83,20 @@ pub fn handle(
     let (risk, mut risk_factors) = compute_risk(direct_caller_count, files_touched);
 
     let direct_files: HashSet<i64> = direct_refs.iter().map(|r| r.file_id).collect();
-    let direct_file_paths: Vec<String> = direct_files
+    let direct_file_rows: Vec<_> = direct_files
         .iter()
-        .filter_map(|fid| db.file_by_id(*fid).ok().flatten().map(|f| f.path))
+        .filter_map(|fid| db.file_by_id(*fid).ok().flatten())
         .collect();
+    let direct_file_paths: Vec<&str> = direct_file_rows.iter().map(|f| &*f.path).collect();
 
     if direct_file_paths.is_empty() && risk == "low" {
         risk_factors.push("no external callers found".to_string());
     }
 
-    let sym_file_path = db
+    let sym_file_path: Arc<str> = db
         .file_by_id(sym.file_id)?
         .map(|f| f.path)
-        .unwrap_or_default();
+        .unwrap_or_else(|| Arc::from(""));
 
     let mut result = json!({
         "symbol": sym.qualified_name,
