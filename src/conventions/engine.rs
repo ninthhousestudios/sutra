@@ -15,8 +15,8 @@ pub struct SymbolAttrs {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Convention {
     pub id: Arc<str>,
-    pub antecedent: Vec<String>,
-    pub consequent: Vec<String>,
+    pub antecedent: Arc<[String]>,
+    pub consequent: Arc<[String]>,
     pub support: usize,
     pub confidence: f64,
     pub component_id: Option<String>,
@@ -26,8 +26,18 @@ impl From<crate::db::ConventionWithState> for Convention {
     fn from(row: crate::db::ConventionWithState) -> Self {
         Self {
             id: Arc::from(row.id),
-            antecedent: row.antecedent.split(", ").map(String::from).collect(),
-            consequent: row.consequent.split(", ").map(String::from).collect(),
+            antecedent: Arc::from(
+                row.antecedent
+                    .split(", ")
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+            ),
+            consequent: Arc::from(
+                row.consequent
+                    .split(", ")
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+            ),
             support: row.support as usize,
             confidence: row.confidence,
             component_id: row.component_id,
@@ -58,8 +68,8 @@ pub struct ConventionViolation {
     pub symbol: String,
     pub file: String,
     pub convention_id: Arc<str>,
-    pub antecedent: Vec<String>,
-    pub consequent: Vec<String>,
+    pub antecedent: Arc<[String]>,
+    pub consequent: Arc<[String]>,
     pub missing: Vec<String>,
     pub support: usize,
     pub confidence: f64,
@@ -70,8 +80,8 @@ pub struct ConventionMatch {
     pub symbol: String,
     pub file: String,
     pub convention_id: Arc<str>,
-    pub antecedent: Vec<String>,
-    pub consequent: Vec<String>,
+    pub antecedent: Arc<[String]>,
+    pub consequent: Arc<[String]>,
     pub lifecycle_state: String,
     pub support: usize,
     pub confidence: f64,
@@ -133,8 +143,8 @@ impl FcaEngine {
                 let id = Convention::compute_id(&imp.antecedent, &imp.consequent, component_id);
                 Convention {
                     id,
-                    antecedent: imp.antecedent,
-                    consequent: imp.consequent,
+                    antecedent: Arc::from(imp.antecedent),
+                    consequent: Arc::from(imp.consequent),
                     support: imp.support,
                     confidence: imp.confidence,
                     component_id: component_id.map(|s| s.to_string()),
@@ -227,9 +237,9 @@ impl FcaEngine {
                     violations.push(ConventionViolation {
                         symbol: sym.name.clone(),
                         file: sym.file.clone(),
-                        convention_id: conv.id.clone(),
-                        antecedent: conv.antecedent.clone(),
-                        consequent: conv.consequent.clone(),
+                        convention_id: Arc::clone(&conv.id),
+                        antecedent: Arc::clone(&conv.antecedent),
+                        consequent: Arc::clone(&conv.consequent),
                         missing,
                         support: conv.support,
                         confidence: conv.confidence,
@@ -273,9 +283,9 @@ impl FcaEngine {
                     matches.push(ConventionMatch {
                         symbol: sym.name.clone(),
                         file: sym.file.clone(),
-                        convention_id: conv.id.clone(),
-                        antecedent: conv.antecedent.clone(),
-                        consequent: conv.consequent.clone(),
+                        convention_id: Arc::clone(&conv.id),
+                        antecedent: Arc::clone(&conv.antecedent),
+                        consequent: Arc::clone(&conv.consequent),
                         lifecycle_state: lifecycle.to_string(),
                         support: conv.support,
                         confidence: conv.confidence,
@@ -415,9 +425,10 @@ mod tests {
         let mut engine = FcaEngine::new();
         let conventions = engine.rebuild(&symbols);
         assert!(!conventions.is_empty());
-        let found = conventions
-            .iter()
-            .any(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]);
+        let found = conventions.iter().any(|c| {
+            c.antecedent.to_vec() == vec!["kind:function"]
+                && c.consequent.to_vec() == vec!["has_sig"]
+        });
         assert!(found, "expected kind:function → has_sig");
     }
 
@@ -479,11 +490,17 @@ mod tests {
 
         let before_conf = before
             .iter()
-            .find(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"])
+            .find(|c| {
+                c.antecedent.to_vec() == vec!["kind:function"]
+                    && c.consequent.to_vec() == vec!["has_sig"]
+            })
             .map(|c| c.confidence);
         let after_conf = after
             .iter()
-            .find(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"])
+            .find(|c| {
+                c.antecedent.to_vec() == vec!["kind:function"]
+                    && c.consequent.to_vec() == vec!["has_sig"]
+            })
             .map(|c| c.confidence);
 
         match (before_conf, after_conf) {
@@ -501,9 +518,10 @@ mod tests {
 
         // Remove the one function that lacks has_sig → confidence goes to 1.0, becomes exact → disappears
         let after = engine.update_incremental(&[], &["fn_9".into()]);
-        let found = after
-            .iter()
-            .any(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"]);
+        let found = after.iter().any(|c| {
+            c.antecedent.to_vec() == vec!["kind:function"]
+                && c.consequent.to_vec() == vec!["has_sig"]
+        });
         // At 1.0 confidence it's exact, not approximate — should be gone
         assert!(!found);
     }
@@ -526,7 +544,10 @@ mod tests {
         let count_fn = |convs: &[Convention]| {
             convs
                 .iter()
-                .find(|c| c.antecedent == vec!["kind:function"] && c.consequent == vec!["has_sig"])
+                .find(|c| {
+                    c.antecedent.to_vec() == vec!["kind:function"]
+                        && c.consequent.to_vec() == vec!["has_sig"]
+                })
                 .map(|c| (c.support, c.confidence))
         };
         assert_eq!(
@@ -707,7 +728,7 @@ mod tests {
         let changed = vec![SymbolAttrs {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         }];
 
@@ -729,8 +750,8 @@ mod tests {
         let engine = setup_engine_with_conventions();
         let conv = &engine.conventions()[0];
 
-        let mut attrs = conv.antecedent.clone();
-        attrs.extend(conv.consequent.clone());
+        let mut attrs = conv.antecedent.to_vec();
+        attrs.extend(conv.consequent.iter().cloned());
         let changed = vec![SymbolAttrs {
             name: "good_symbol".into(),
             file: "src/good.rs".into(),
@@ -771,7 +792,7 @@ mod tests {
         let changed = vec![SymbolAttrs {
             name: "bad_symbol".into(),
             file: "src/bad.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         }];
 
@@ -795,7 +816,7 @@ mod tests {
         let changed = vec![SymbolAttrs {
             name: "ExemptedSymbol".into(),
             file: "src/exempt.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         }];
 
@@ -823,8 +844,8 @@ mod tests {
         let conv_a = &engine.conventions()[0];
         let conv_b = &engine.conventions()[1];
 
-        let mut attrs = conv_a.antecedent.clone();
-        for a in &conv_b.antecedent {
+        let mut attrs = conv_a.antecedent.to_vec();
+        for a in conv_b.antecedent.iter() {
             if !attrs.contains(a) {
                 attrs.push(a.clone());
             }
@@ -860,13 +881,13 @@ mod tests {
         let sym_a = SymbolAttrs {
             name: "process".into(),
             file: "src/foo.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         };
 
@@ -906,13 +927,13 @@ mod tests {
         let sym_a = SymbolAttrs {
             name: "process".into(),
             file: "src/foo.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         };
         let sym_b = SymbolAttrs {
             name: "process".into(),
             file: "src/bar.rs".into(),
-            attributes: conv.antecedent.clone(),
+            attributes: conv.antecedent.to_vec(),
             component_id: None,
         };
 
@@ -1026,16 +1047,16 @@ mod tests {
     fn dedup_removes_subsumed_component_conventions() {
         let global = vec![Convention {
             id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_sig".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_sig".into()].into(),
             support: 10,
             confidence: 0.95,
             component_id: None,
         }];
         let comp = vec![Convention {
             id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], Some("c1")),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_sig".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_sig".into()].into(),
             support: 3,
             confidence: 0.9,
             component_id: Some("c1".into()),
@@ -1051,16 +1072,16 @@ mod tests {
     fn dedup_keeps_non_subsumed_component_conventions() {
         let global = vec![Convention {
             id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_sig".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_sig".into()].into(),
             support: 10,
             confidence: 0.95,
             component_id: None,
         }];
         let comp = vec![Convention {
             id: Convention::compute_id(&["kind:struct".into()], &["has_doc".into()], Some("c1")),
-            antecedent: vec!["kind:struct".into()],
-            consequent: vec!["has_doc".into()],
+            antecedent: vec!["kind:struct".into()].into(),
+            consequent: vec!["has_doc".into()].into(),
             support: 5,
             confidence: 0.92,
             component_id: Some("c1".into()),
@@ -1077,16 +1098,16 @@ mod tests {
     fn dedup_keeps_higher_confidence_component_convention() {
         let global = vec![Convention {
             id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], None),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_sig".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_sig".into()].into(),
             support: 10,
             confidence: 0.85,
             component_id: None,
         }];
         let comp = vec![Convention {
             id: Convention::compute_id(&["kind:function".into()], &["has_sig".into()], Some("c1")),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_sig".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_sig".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: Some("c1".into()),
@@ -1105,24 +1126,24 @@ mod tests {
         engine.set_conventions(vec![
             Convention {
                 id: "global-1".into(),
-                antecedent: vec!["kind:function".into()],
-                consequent: vec!["has_sig".into()],
+                antecedent: vec!["kind:function".into()].into(),
+                consequent: vec!["has_sig".into()].into(),
                 support: 10,
                 confidence: 0.95,
                 component_id: None,
             },
             Convention {
                 id: "comp-a-1".into(),
-                antecedent: vec!["kind:function".into()],
-                consequent: vec!["has_doc".into()],
+                antecedent: vec!["kind:function".into()].into(),
+                consequent: vec!["has_doc".into()].into(),
                 support: 5,
                 confidence: 0.92,
                 component_id: Some("a".into()),
             },
             Convention {
                 id: "comp-b-1".into(),
-                antecedent: vec!["kind:function".into()],
-                consequent: vec!["naming:snake_case".into()],
+                antecedent: vec!["kind:function".into()].into(),
+                consequent: vec!["naming:snake_case".into()].into(),
                 support: 4,
                 confidence: 0.91,
                 component_id: Some("b".into()),
@@ -1158,16 +1179,16 @@ mod tests {
         engine.set_conventions(vec![
             Convention {
                 id: "global-1".into(),
-                antecedent: vec!["kind:function".into()],
-                consequent: vec!["has_sig".into()],
+                antecedent: vec!["kind:function".into()].into(),
+                consequent: vec!["has_sig".into()].into(),
                 support: 10,
                 confidence: 0.95,
                 component_id: None,
             },
             Convention {
                 id: "comp-a-1".into(),
-                antecedent: vec!["kind:function".into()],
-                consequent: vec!["has_doc".into()],
+                antecedent: vec!["kind:function".into()].into(),
+                consequent: vec!["has_doc".into()].into(),
                 support: 5,
                 confidence: 0.92,
                 component_id: Some("a".into()),
@@ -1206,8 +1227,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.set_conventions(vec![Convention {
             id: "dep-1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_old_prefix".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_old_prefix".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: None,
@@ -1234,8 +1255,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.set_conventions(vec![Convention {
             id: "forb-1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["uses_unsafe".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["uses_unsafe".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: None,
@@ -1261,8 +1282,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.set_conventions(vec![Convention {
             id: "dep-1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_old_prefix".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_old_prefix".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: None,
@@ -1286,8 +1307,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.set_conventions(vec![Convention {
             id: "conv-1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_return_type".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_return_type".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: None,
@@ -1310,8 +1331,8 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.set_conventions(vec![Convention {
             id: "dep-comp".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["has_old_prefix".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["has_old_prefix".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: Some("comp-a".into()),

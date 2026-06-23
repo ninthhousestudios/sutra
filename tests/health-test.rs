@@ -1678,8 +1678,8 @@ fn fca_conformance_basic() {
 
     let convs = vec![Convention {
         id: "c1".into(),
-        antecedent: vec!["kind:function".into(), "vis:pub".into()],
-        consequent: vec!["has_doc".into()],
+        antecedent: vec!["kind:function".into(), "vis:pub".into()].into(),
+        consequent: vec!["has_doc".into()].into(),
         support: 3,
         confidence: 1.0,
         component_id: None,
@@ -1720,8 +1720,8 @@ fn fca_conformance_no_antecedent_matches() {
 
     let convs = vec![Convention {
         id: "c1".into(),
-        antecedent: vec!["kind:struct".into()],
-        consequent: vec!["has_doc".into()],
+        antecedent: vec!["kind:struct".into()].into(),
+        consequent: vec!["has_doc".into()].into(),
         support: 3,
         confidence: 1.0,
         component_id: None,

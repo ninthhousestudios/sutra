@@ -464,8 +464,8 @@ mod tests {
     fn exemplar_selection_ranks_by_coverage_then_complexity() {
         let conv = Convention {
             id: "c1".into(),
-            antecedent: vec!["kind:function".into(), "vis:pub".into()],
-            consequent: vec!["has_doc".into()],
+            antecedent: vec!["kind:function".into(), "vis:pub".into()].into(),
+            consequent: vec!["has_doc".into()].into(),
             support: 5,
             confidence: 0.95,
             component_id: None,
@@ -526,8 +526,8 @@ mod tests {
     fn exemplar_selection_skips_symbols_without_signature() {
         let conv = Convention {
             id: "c1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["vis:pub".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["vis:pub".into()].into(),
             support: 3,
             confidence: 0.9,
             component_id: None,
@@ -676,8 +676,8 @@ mod tests {
     fn exemplar_selection_respects_component_scope() {
         let conv = Convention {
             id: "c1".into(),
-            antecedent: vec!["kind:function".into()],
-            consequent: vec!["vis:pub".into()],
+            antecedent: vec!["kind:function".into()].into(),
+            consequent: vec!["vis:pub".into()].into(),
             support: 3,
             confidence: 0.9,
             component_id: Some("comp_a".into()),
