@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use schemars::JsonSchema;
@@ -69,12 +69,14 @@ pub fn handle(
 }
 
 fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
-    let mut paths: Vec<Vec<(i64, Arc<str>)>> = Vec::new();
-    let mut cycles: Vec<(Vec<(i64, Arc<str>)>, Arc<str>)> = Vec::new();
+    let mut paths: Vec<Vec<i64>> = Vec::new();
+    let mut cycles: Vec<(Vec<i64>, i64)> = Vec::new();
     let mut visited = HashSet::new();
     visited.insert(target.id);
 
-    let mut stack: Vec<(i64, Arc<str>)> = vec![(target.id, target.qualified_name.clone())];
+    let mut stack: Vec<i64> = vec![target.id];
+    let mut names: HashMap<i64, Arc<str>> = HashMap::new();
+    names.insert(target.id, target.qualified_name.clone());
 
     dfs_callers(
         db,
@@ -82,6 +84,7 @@ fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_
         &mut visited,
         &mut paths,
         &mut cycles,
+        &mut names,
         limit,
         0,
     )?;
@@ -89,7 +92,7 @@ fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_
     let mut result: Vec<serde_json::Value> = Vec::new();
 
     for path in paths.into_iter().take(limit) {
-        let chain: Vec<&str> = path.iter().rev().map(|(_, name)| &**name).collect();
+        let chain: Vec<&str> = path.iter().rev().map(|id| &*names[id]).collect();
         result.push(json!({
             "chain": chain,
             "has_cycle": false,
@@ -99,12 +102,12 @@ fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_
 
     let remaining = limit.saturating_sub(result.len());
     for (path, cycle_to) in cycles.into_iter().take(remaining) {
-        let mut chain: Vec<&str> = path.iter().rev().map(|(_, name)| &**name).collect();
-        chain.insert(0, &cycle_to);
+        let mut chain: Vec<&str> = path.iter().rev().map(|id| &*names[id]).collect();
+        chain.insert(0, &names[&cycle_to]);
         result.push(json!({
             "chain": chain,
             "has_cycle": true,
-            "cycle_at": cycle_to,
+            "cycle_at": &*names[&cycle_to],
             "reaches_entry_point": false,
         }));
     }
@@ -114,10 +117,11 @@ fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_
 
 fn dfs_callers(
     db: &Db,
-    stack: &mut Vec<(i64, Arc<str>)>,
+    stack: &mut Vec<i64>,
     visited: &mut HashSet<i64>,
-    paths: &mut Vec<Vec<(i64, Arc<str>)>>,
-    cycles: &mut Vec<(Vec<(i64, Arc<str>)>, Arc<str>)>,
+    paths: &mut Vec<Vec<i64>>,
+    cycles: &mut Vec<(Vec<i64>, i64)>,
+    names: &mut HashMap<i64, Arc<str>>,
     limit: usize,
     depth: usize,
 ) -> Result<()> {
@@ -125,7 +129,7 @@ fn dfs_callers(
         return Ok(());
     }
 
-    let current_id = stack.last().unwrap().0;
+    let current_id = *stack.last().unwrap();
 
     let current_sym = db.symbol_by_id(current_id)?;
     if let Some(ref s) = current_sym
@@ -139,7 +143,6 @@ fn dfs_callers(
     let call_refs: Vec<_> = refs.iter().filter(|r| r.context_kind == "call").collect();
 
     if call_refs.is_empty() {
-        // No callers — this is a structural entry point
         paths.push(stack.clone());
         return Ok(());
     }
@@ -151,12 +154,13 @@ fn dfs_callers(
         }
         if let Some(caller_sym) = db.find_enclosing_symbol(r.file_id, r.line)? {
             if !visited.insert(caller_sym.id) {
-                cycles.push((stack.clone(), caller_sym.qualified_name.clone()));
+                cycles.push((stack.clone(), caller_sym.id));
                 continue;
             }
             found_any = true;
-            stack.push((caller_sym.id, caller_sym.qualified_name.clone()));
-            dfs_callers(db, stack, visited, paths, cycles, limit, depth + 1)?;
+            names.insert(caller_sym.id, caller_sym.qualified_name.clone());
+            stack.push(caller_sym.id);
+            dfs_callers(db, stack, visited, paths, cycles, names, limit, depth + 1)?;
             stack.pop();
             visited.remove(&caller_sym.id);
         }
@@ -170,12 +174,14 @@ fn dfs_callers(
 }
 
 fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
-    let mut paths: Vec<Vec<(i64, Arc<str>)>> = Vec::new();
-    let mut cycles: Vec<(Vec<(i64, Arc<str>)>, Arc<str>)> = Vec::new();
+    let mut paths: Vec<Vec<i64>> = Vec::new();
+    let mut cycles: Vec<(Vec<i64>, i64)> = Vec::new();
     let mut visited = HashSet::new();
     visited.insert(target.id);
 
-    let mut stack = vec![(target.id, target.qualified_name.clone())];
+    let mut stack = vec![target.id];
+    let mut names: HashMap<i64, Arc<str>> = HashMap::new();
+    names.insert(target.id, target.qualified_name.clone());
 
     dfs_callees(
         db,
@@ -183,6 +189,7 @@ fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde
         &mut visited,
         &mut paths,
         &mut cycles,
+        &mut names,
         limit,
         0,
     )?;
@@ -190,7 +197,7 @@ fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde
     let mut result: Vec<serde_json::Value> = Vec::new();
 
     for path in paths.into_iter().take(limit) {
-        let chain: Vec<&str> = path.iter().map(|(_, name)| &**name).collect();
+        let chain: Vec<&str> = path.iter().map(|id| &*names[id]).collect();
         result.push(json!({
             "chain": chain,
             "has_cycle": false,
@@ -200,12 +207,12 @@ fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde
 
     let remaining = limit.saturating_sub(result.len());
     for (path, cycle_to) in cycles.into_iter().take(remaining) {
-        let mut chain: Vec<&str> = path.iter().map(|(_, name)| &**name).collect();
-        chain.push(&cycle_to);
+        let mut chain: Vec<&str> = path.iter().map(|id| &*names[id]).collect();
+        chain.push(&names[&cycle_to]);
         result.push(json!({
             "chain": chain,
             "has_cycle": true,
-            "cycle_at": cycle_to,
+            "cycle_at": &*names[&cycle_to],
             "is_leaf": false,
         }));
     }
@@ -215,10 +222,11 @@ fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde
 
 fn dfs_callees(
     db: &Db,
-    stack: &mut Vec<(i64, Arc<str>)>,
+    stack: &mut Vec<i64>,
     visited: &mut HashSet<i64>,
-    paths: &mut Vec<Vec<(i64, Arc<str>)>>,
-    cycles: &mut Vec<(Vec<(i64, Arc<str>)>, Arc<str>)>,
+    paths: &mut Vec<Vec<i64>>,
+    cycles: &mut Vec<(Vec<i64>, i64)>,
+    names: &mut HashMap<i64, Arc<str>>,
     limit: usize,
     depth: usize,
 ) -> Result<()> {
@@ -226,7 +234,7 @@ fn dfs_callees(
         return Ok(());
     }
 
-    let current_id = stack.last().unwrap().0;
+    let current_id = *stack.last().unwrap();
     let current_sym = match db.symbol_by_id(current_id)? {
         Some(s) => s,
         None => {
@@ -258,11 +266,12 @@ fn dfs_callees(
         let target_id = r.target_symbol_id.unwrap();
         if let Some(callee_sym) = db.symbol_by_id(target_id)? {
             if !visited.insert(callee_sym.id) {
-                cycles.push((stack.clone(), callee_sym.qualified_name.clone()));
+                cycles.push((stack.clone(), callee_sym.id));
                 continue;
             }
-            stack.push((callee_sym.id, callee_sym.qualified_name.clone()));
-            dfs_callees(db, stack, visited, paths, cycles, limit, depth + 1)?;
+            names.insert(callee_sym.id, callee_sym.qualified_name.clone());
+            stack.push(callee_sym.id);
+            dfs_callees(db, stack, visited, paths, cycles, names, limit, depth + 1)?;
             stack.pop();
             visited.remove(&callee_sym.id);
         }
