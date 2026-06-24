@@ -31,8 +31,38 @@ configuration, constants, or global state.
 
 Everything above Layer 0 — conventions (FCA), constraints (DD), health
 (biomarkers), similarity (HRR), components, review — is language-agnostic.
-A new language only needs a parser module and an adapter registration in
-`default_registry()`.
+A new language needs three things: a parser module, an adapter registration
+in `default_registry()`, and an **import resolver** (see below).
+
+### Required: import resolver module
+
+The parser emits `Vec<ExtractedImport>` with raw path strings. These land
+in the `imports` table with `resolved_file_id = NULL`. Without a resolver
+that populates `resolved_file_id`, the DD constraint engine sees zero
+import edges — every `forbidden_dep` and `boundary` constraint is dormant,
+`sutra_deps` returns nothing, and PageRank has no import graph.
+
+Each language needs a resolver module wired into `post_parse_sequence`
+(`src/pipeline.rs`):
+
+| Language | Module | Key logic |
+|---|---|---|
+| Rust | `src/rust_imports.rs` | `crate::`, `super::`, `self::` + workspace layout |
+| Dart | `src/dart_packages.rs` | `package:` URIs via pubspec + relative `.dart` paths |
+| C | `src/c_imports.rs` | Quoted includes (relative → root → `-I` paths), `<...>` left unresolved |
+
+The pattern:
+1. Add `Db::unresolved_{lang}_imports()` — `SELECT ... WHERE resolved_file_id IS NULL AND language = '{lang}'`
+2. Create `src/{lang}_imports.rs` with `resolve_{lang}_imports(db, workspace_root) -> Result<usize>`
+3. Build `path_to_id` / `id_to_path` lookups from `db.all_files()`
+4. Resolve each import using language-specific rules, collect `(import_id, target_file_id)` pairs
+5. Call `db.batch_update_import_resolved_file_ids(&updates)`
+6. Wire into `post_parse_sequence` after the existing resolvers
+7. Add `pub mod {lang}_imports` to `src/lib.rs`
+
+This was missed for both Rust and Dart initially (sutra/119) — discovered
+when `sutra_deps` returned zero edges despite imports being parsed
+correctly. The parser alone is not enough; the resolver is load-bearing.
 
 ### Optional: FcaAttributeSource
 
@@ -103,11 +133,11 @@ non-trivial:
 - `#include "path/to/foo.h"` — project-relative. Usually resolvable if
   sutra knows the project root, which it does.
 
-**Proposed approach:** Resolve relative and project-root-relative includes.
-System includes (`<...>`) become unresolved external edges. If a project has
-a `compile_commands.json`, optionally parse it for `-I` paths to improve
-resolution. Start without `compile_commands.json` support — relative
-includes cover the majority of internal dependencies.
+**Implemented** (`src/c_imports.rs`): Resolve in order: relative to
+includer → project root → `-I`/`-isystem` paths from
+`compile_commands.json`. System includes (`<...>`) become unresolved
+external edges. See sutra/185 for planned per-TU scoping of
+compile_commands include paths.
 
 **Signatures:** `return_type function_name(param_type param, ...)`. Extract
 from the function_definition's declarator and type nodes.
@@ -148,6 +178,13 @@ Effect patterns:
 - `fopen`, `fclose`, `fread`, `fwrite`, `fprintf` → `effect:fs`
 - `socket`, `connect`, `send`, `recv` → `effect:net`
 - `printf`, `puts`, `fputs` → `effect:io`
+
+**Boundary matching:** C effect patterns use bare unqualified names, unlike
+Rust/Dart patterns which include `::` namespace prefixes. The shared effect
+matcher (`enrich_with_effects` in `src/conventions/attributes.rs`) matches
+at `::` boundaries or exact match — so `"free"` matches `free` but not
+`free_list`. Languages without namespacing must rely on this; don't add
+patterns that are common prefixes of unrelated identifiers.
 
 ### Module boundary strength
 
