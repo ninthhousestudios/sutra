@@ -567,6 +567,11 @@ fn post_parse_sequence(
         info!(count = rust_resolved, "resolved Rust import edges");
     }
 
+    let c_resolved = crate::c_imports::resolve_c_imports(db, workspace_root)?;
+    if c_resolved > 0 {
+        info!(count = c_resolved, "resolved C import edges");
+    }
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;

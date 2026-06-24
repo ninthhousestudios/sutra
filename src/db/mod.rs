@@ -1561,6 +1561,21 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Return all unresolved C imports.
+    pub fn unresolved_c_imports(&self) -> Result<Vec<(i64, i64, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT i.id, i.file_id, i.imported_path FROM imports i
+             JOIN files f ON f.id = i.file_id
+             WHERE i.resolved_file_id IS NULL
+             AND f.language = 'c'",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
     /// Unresolved imports joined with file path + language — the input for
     /// external-crate constraint checking (`(file_id, path, language, imported_path)`).
     pub fn unresolved_imports_with_files(&self) -> Result<Vec<(i64, String, String, String)>> {

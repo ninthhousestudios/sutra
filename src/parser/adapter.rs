@@ -303,10 +303,83 @@ impl FcaAttributeSource for DartAdapter {
     }
 }
 
+pub struct CAdapter;
+
+impl LanguageAdapter for CAdapter {
+    fn language_id(&self) -> &str {
+        "c"
+    }
+    fn extensions(&self) -> &[&str] {
+        &["c", "h"]
+    }
+    fn grammar(&self) -> Language {
+        tree_sitter_c::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::c::parse(ctx)
+    }
+    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
+        Some(self)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Weak
+    }
+}
+
+const C_EFFECT_PATTERNS: &[EffectPattern] = &[
+    EffectPattern {
+        attr_name: "effect:heap",
+        callee_prefixes: &["malloc", "calloc", "realloc", "free"],
+    },
+    EffectPattern {
+        attr_name: "effect:fs",
+        callee_prefixes: &["fopen", "fclose", "fread", "fwrite", "fprintf"],
+    },
+    EffectPattern {
+        attr_name: "effect:net",
+        callee_prefixes: &["socket", "connect", "send", "recv"],
+    },
+    EffectPattern {
+        attr_name: "effect:io",
+        callee_prefixes: &["printf", "puts", "fputs"],
+    },
+];
+
+impl FcaAttributeSource for CAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        let mut sa = extract_cross_language_attrs(sym, file_path)?;
+        if let Some(ref la_json) = sym.language_attrs {
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
+                Ok(map) => {
+                    for (key, val) in &map {
+                        if val.as_bool() == Some(true) {
+                            sa.attributes.push(key.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        symbol = %sym.qualified_name,
+                        file = %file_path,
+                        error = %e,
+                        "malformed language_attrs JSON, skipping language-specific attributes"
+                    );
+                }
+            }
+        }
+        Some(sa)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        C_EFFECT_PATTERNS
+    }
+}
+
 pub fn default_registry() -> LanguageRegistry {
     let mut r = LanguageRegistry::new();
     r.register(Box::new(RustAdapter));
     r.register(Box::new(DartAdapter));
+    r.register(Box::new(CAdapter));
     r
 }
 
@@ -548,7 +621,8 @@ mod tests {
         let mults = registry.boundary_multipliers();
         assert_eq!(mults.get("rust"), Some(&2.0));
         assert_eq!(mults.get("dart"), Some(&1.5));
-        assert_eq!(mults.len(), 2);
+        assert_eq!(mults.get("c"), Some(&1.0));
+        assert_eq!(mults.len(), 3);
     }
 
     #[test]
