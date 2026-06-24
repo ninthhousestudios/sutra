@@ -5,9 +5,9 @@ use tracing::debug;
 use crate::db::Db;
 use crate::error::Result;
 
-struct CompileCommands {
-    per_file: HashMap<String, Vec<String>>,
-    all_dirs: Vec<String>,
+pub struct CompileCommands {
+    pub per_file: HashMap<String, Vec<String>>,
+    pub all_dirs: Vec<String>,
 }
 
 impl CompileCommands {
@@ -71,7 +71,7 @@ pub fn resolve_c_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     Ok(resolved_count)
 }
 
-fn resolve_quoted_include(
+pub fn resolve_quoted_include(
     include_path: &str,
     file_id: i64,
     id_to_path: &HashMap<i64, &str>,
@@ -129,7 +129,7 @@ fn normalize_path(path: &Path) -> String {
     components.join("/")
 }
 
-fn parse_compile_commands(workspace_root: &Path) -> CompileCommands {
+pub fn parse_compile_commands(workspace_root: &Path) -> CompileCommands {
     let empty = CompileCommands {
         per_file: HashMap::new(),
         all_dirs: Vec::new(),
