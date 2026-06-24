@@ -397,24 +397,8 @@ fn maybe_reparse_cwd(
         Err(_) => return,
     };
 
-    let is_stale = match db.last_parse_info() {
-        Ok(Some((ts, head_commit))) => chrono::DateTime::parse_from_rfc3339(&ts)
-            .map(|dt| {
-                let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
-                if age.num_seconds() as u64 <= config.stale_threshold_sec {
-                    return false;
-                }
-                let paths = db.all_indexed_paths().unwrap_or_default();
-                sutra::freshness::workspace_has_changed(
-                    &entry.root,
-                    &ts,
-                    head_commit.as_deref(),
-                    &paths,
-                )
-            })
-            .unwrap_or(true),
-        _ => true,
-    };
+    let (_, is_stale) =
+        sutra::freshness::is_workspace_stale(&db, &entry.root, config.stale_threshold_sec);
     if !is_stale {
         return;
     }

@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde_json::json;
 
+use crate::db::Db;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     Fresh,
@@ -153,6 +155,29 @@ pub fn workspace_has_changed(
     }
 
     false
+}
+
+pub fn is_workspace_stale(
+    db: &Db,
+    workspace_root: &Path,
+    stale_threshold_sec: u64,
+) -> (Option<String>, bool) {
+    match db.last_parse_info() {
+        Ok(Some((ts, head_commit))) => {
+            let is_stale = chrono::DateTime::parse_from_rfc3339(&ts)
+                .map(|dt| {
+                    let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
+                    if age.num_seconds() as u64 <= stale_threshold_sec {
+                        return false;
+                    }
+                    let paths = db.all_indexed_paths().unwrap_or_default();
+                    workspace_has_changed(workspace_root, &ts, head_commit.as_deref(), &paths)
+                })
+                .unwrap_or(true);
+            (Some(ts), is_stale)
+        }
+        _ => (None, true),
+    }
 }
 
 pub struct FreshnessAnnotator<'a> {

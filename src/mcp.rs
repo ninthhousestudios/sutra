@@ -252,27 +252,11 @@ impl SutraServer {
     }
 
     fn freshness(&self, db: &Db, workspace_root: &Path) -> serde_json::Value {
-        let (as_of, is_stale) = match db.last_parse_info() {
-            Ok(Some((ts, head_commit))) => {
-                let is_stale = chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| {
-                        let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
-                        if age.num_seconds() as u64 <= self.config.stale_threshold_sec {
-                            return false;
-                        }
-                        let paths = db.all_indexed_paths().unwrap_or_default();
-                        crate::freshness::workspace_has_changed(
-                            workspace_root,
-                            &ts,
-                            head_commit.as_deref(),
-                            &paths,
-                        )
-                    })
-                    .unwrap_or(true);
-                (Some(ts), is_stale)
-            }
-            _ => (None, true),
-        };
+        let (as_of, is_stale) = crate::freshness::is_workspace_stale(
+            db,
+            workspace_root,
+            self.config.stale_threshold_sec,
+        );
 
         let parsing = self.parse_coord.is_locked(db.workspace_id());
 
