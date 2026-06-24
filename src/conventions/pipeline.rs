@@ -142,19 +142,21 @@ pub fn rebuild(
             .collect()
     } else {
         let mut global_engine = FcaEngine::new();
-        let global_conventions = global_engine.rebuild(&all_sym_attrs);
-        let mut all_convs = global_conventions.clone();
+        global_engine.rebuild(&all_sym_attrs);
+        let mut all_convs = global_engine.conventions().to_vec();
 
         for (comp_id, _name, comp_symbols) in &comp_symbol_groups {
             let min_support = super::component_min_support(comp_symbols.len());
             let mut comp_engine = FcaEngine::new();
-            let comp_convs = comp_engine.rebuild_with_params(
+            comp_engine.rebuild_with_params(
                 comp_symbols,
                 min_support,
                 super::MIN_CONFIDENCE,
                 Some(comp_id),
             );
-            let deduped = super::deduplicate_component_conventions(comp_convs, &global_conventions);
+            let comp_convs = comp_engine.conventions().to_vec();
+            let deduped =
+                super::deduplicate_component_conventions(comp_convs, global_engine.conventions());
             all_convs.extend(deduped);
         }
 

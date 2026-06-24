@@ -474,7 +474,7 @@ forbidden_deps = [
   { from = "src/**", to = "src/internal/*" },
 ]
 "#;
-        let mut rules = parse_rules(toml).unwrap();
+        let rules = parse_rules(toml).unwrap();
         assert_eq!(rules.constraints.forbidden_deps.len(), 2);
         assert_eq!(rules.constraints.forbidden_deps[0].from, "src/tools/*");
         assert_eq!(rules.constraints.forbidden_deps[0].to, "src/daemon.rs");
@@ -485,19 +485,19 @@ forbidden_deps = [
     #[test]
     fn parse_empty_constraints() {
         let toml = "[constraints]\n";
-        let mut rules = parse_rules(toml).unwrap();
+        let rules = parse_rules(toml).unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
     #[test]
     fn parse_missing_constraints_section() {
-        let mut rules = parse_rules("").unwrap();
+        let rules = parse_rules("").unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
     #[test]
     fn missing_file_returns_defaults() {
-        let mut rules = load_rules(Path::new("/nonexistent/path")).unwrap();
+        let rules = load_rules(Path::new("/nonexistent/path")).unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
@@ -511,7 +511,7 @@ suppress = ["a1b4c2d1", "b2c3d4e5"]
 convention = "e5f6g7h8"
 symbols = ["InternalError", "DebugHelper"]
 "#;
-        let mut rules = parse_rules(toml).unwrap();
+        let rules = parse_rules(toml).unwrap();
         assert_eq!(rules.conventions.suppress, vec!["a1b4c2d1", "b2c3d4e5"]);
         assert_eq!(rules.conventions.exempt.len(), 1);
         assert_eq!(rules.conventions.exempt[0].convention, "e5f6g7h8");
@@ -523,7 +523,7 @@ symbols = ["InternalError", "DebugHelper"]
 
     #[test]
     fn parse_missing_conventions_section() {
-        let mut rules = parse_rules("[constraints]\n").unwrap();
+        let rules = parse_rules("[constraints]\n").unwrap();
         assert!(rules.conventions.suppress.is_empty());
         assert!(rules.conventions.exempt.is_empty());
     }
@@ -539,7 +539,7 @@ forbidden_deps = [
 [conventions]
 suppress = ["abc123"]
 "#;
-        let mut rules = parse_rules(toml).unwrap();
+        let rules = parse_rules(toml).unwrap();
         assert_eq!(rules.constraints.forbidden_deps.len(), 1);
         assert_eq!(rules.conventions.suppress, vec!["abc123"]);
     }

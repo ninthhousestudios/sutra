@@ -118,7 +118,7 @@ impl FcaEngine {
         }
     }
 
-    pub fn rebuild(&mut self, symbols: &[SymbolAttrs]) -> Vec<Convention> {
+    pub fn rebuild(&mut self, symbols: &[SymbolAttrs]) {
         self.rebuild_with_params(symbols, MIN_SUPPORT, MIN_CONFIDENCE, None)
     }
 
@@ -128,10 +128,10 @@ impl FcaEngine {
         min_support: usize,
         min_confidence: f64,
         component_id: Option<&str>,
-    ) -> Vec<Convention> {
+    ) {
         let hash = Self::hash_matrix(symbols, min_support, min_confidence);
         if self.last_matrix_hash == Some(hash) {
-            return self.conventions.clone();
+            return;
         }
 
         let (ctx, _attr_names) = Self::build_context(symbols);
@@ -155,15 +155,9 @@ impl FcaEngine {
         self.context = Some(ctx);
         self.symbol_attrs = symbols.to_vec();
         self.last_matrix_hash = Some(hash);
-
-        self.conventions.clone()
     }
 
-    pub fn update_incremental(
-        &mut self,
-        added: &[SymbolAttrs],
-        removed: &[String],
-    ) -> Vec<Convention> {
+    pub fn update_incremental(&mut self, added: &[SymbolAttrs], removed: &[String]) {
         self.symbol_attrs.retain(|s| !removed.contains(&s.name));
         for sa in added {
             self.symbol_attrs.retain(|s| s.name != sa.name);
@@ -423,7 +417,8 @@ mod tests {
     fn rebuild_produces_conventions() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let conventions = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let conventions = engine.conventions();
         assert!(!conventions.is_empty());
         let found = conventions.iter().any(|c| {
             c.antecedent.to_vec() == vec!["kind:function"]
@@ -436,10 +431,18 @@ mod tests {
     fn rebuild_produces_stable_ids_across_calls() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let conv1 = engine.rebuild(&symbols);
-        let conv2 = engine.rebuild(&symbols);
-        let ids1: Vec<&str> = conv1.iter().map(|c| &*c.id).collect();
-        let ids2: Vec<&str> = conv2.iter().map(|c| &*c.id).collect();
+        engine.rebuild(&symbols);
+        let ids1: Vec<Arc<str>> = engine
+            .conventions()
+            .iter()
+            .map(|c| Arc::clone(&c.id))
+            .collect();
+        engine.rebuild(&symbols);
+        let ids2: Vec<Arc<str>> = engine
+            .conventions()
+            .iter()
+            .map(|c| Arc::clone(&c.id))
+            .collect();
         assert_eq!(ids1, ids2);
     }
 
@@ -447,12 +450,13 @@ mod tests {
     fn rebuild_skips_when_input_unchanged() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let first = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let first = engine.conventions().to_vec();
         assert!(engine.last_matrix_hash.is_some());
         let hash_after_first = engine.last_matrix_hash;
 
-        let second = engine.rebuild(&symbols);
-        assert_eq!(first, second);
+        engine.rebuild(&symbols);
+        assert_eq!(first, engine.conventions());
         assert_eq!(engine.last_matrix_hash, hash_after_first);
     }
 
@@ -477,7 +481,8 @@ mod tests {
     fn incremental_add_changes_conventions() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let before = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let before = engine.conventions().to_vec();
 
         // Add another function WITHOUT has_sig → lowers confidence
         let extra = SymbolAttrs {
@@ -486,7 +491,7 @@ mod tests {
             attributes: vec!["kind:function".into()],
             component_id: None,
         };
-        let after = engine.update_incremental(&[extra], &[]);
+        engine.update_incremental(&[extra], &[]);
 
         let before_conf = before
             .iter()
@@ -495,7 +500,8 @@ mod tests {
                     && c.consequent.to_vec() == vec!["has_sig"]
             })
             .map(|c| c.confidence);
-        let after_conf = after
+        let after_conf = engine
+            .conventions()
             .iter()
             .find(|c| {
                 c.antecedent.to_vec() == vec!["kind:function"]
@@ -517,8 +523,8 @@ mod tests {
         engine.rebuild(&symbols);
 
         // Remove the one function that lacks has_sig → confidence goes to 1.0, becomes exact → disappears
-        let after = engine.update_incremental(&[], &["fn_9".into()]);
-        let found = after.iter().any(|c| {
+        engine.update_incremental(&[], &["fn_9".into()]);
+        let found = engine.conventions().iter().any(|c| {
             c.antecedent.to_vec() == vec!["kind:function"]
                 && c.consequent.to_vec() == vec!["has_sig"]
         });
@@ -530,7 +536,8 @@ mod tests {
     fn incremental_add_is_idempotent() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let first = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let first = engine.conventions().to_vec();
 
         let extra = SymbolAttrs {
             name: "fn_0".into(),
@@ -538,8 +545,10 @@ mod tests {
             attributes: vec!["kind:function".into(), "has_sig".into()],
             component_id: None,
         };
-        let second = engine.update_incremental(std::slice::from_ref(&extra), &[]);
-        let third = engine.update_incremental(&[extra], &[]);
+        engine.update_incremental(std::slice::from_ref(&extra), &[]);
+        let second = engine.conventions().to_vec();
+        engine.update_incremental(&[extra], &[]);
+        let third = engine.conventions();
 
         let count_fn = |convs: &[Convention]| {
             convs
@@ -552,7 +561,7 @@ mod tests {
         };
         assert_eq!(
             count_fn(&second),
-            count_fn(&third),
+            count_fn(third),
             "replay should not change stats"
         );
         assert_eq!(
@@ -566,7 +575,8 @@ mod tests {
     fn realistic_codebase_produces_expected_conventions() {
         let symbols = make_realistic_symbols();
         let mut engine = FcaEngine::new();
-        let conventions = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let conventions = engine.conventions();
 
         let has = |ante: &str, cons: &str| -> bool {
             conventions.iter().any(|c| {
@@ -590,7 +600,7 @@ mod tests {
         );
 
         // All conventions should have confidence >= 0.9
-        for c in &conventions {
+        for c in conventions {
             assert!(
                 c.confidence >= 0.9,
                 "convention {:?} → {:?} has confidence {} < 0.9",
@@ -959,13 +969,13 @@ mod tests {
     fn rebuild_with_params_uses_custom_threshold() {
         let symbols = make_test_symbols();
         let mut engine_high = FcaEngine::new();
-        let convs_high = engine_high.rebuild_with_params(&symbols, 10, 0.9, None);
+        engine_high.rebuild_with_params(&symbols, 10, 0.9, None);
 
         let mut engine_low = FcaEngine::new();
-        let convs_low = engine_low.rebuild_with_params(&symbols, 2, 0.9, None);
+        engine_low.rebuild_with_params(&symbols, 2, 0.9, None);
 
         assert!(
-            convs_high.len() <= convs_low.len(),
+            engine_high.conventions().len() <= engine_low.conventions().len(),
             "higher min_support should produce fewer or equal conventions"
         );
     }
@@ -974,9 +984,10 @@ mod tests {
     fn rebuild_with_params_tags_component_id() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let convs = engine.rebuild_with_params(&symbols, 3, 0.9, Some("comp-a"));
+        engine.rebuild_with_params(&symbols, 3, 0.9, Some("comp-a"));
+        let convs = engine.conventions();
         assert!(!convs.is_empty());
-        for c in &convs {
+        for c in convs {
             assert_eq!(c.component_id.as_deref(), Some("comp-a"));
         }
     }
@@ -985,9 +996,10 @@ mod tests {
     fn rebuild_without_component_produces_global_conventions() {
         let symbols = make_test_symbols();
         let mut engine = FcaEngine::new();
-        let convs = engine.rebuild(&symbols);
+        engine.rebuild(&symbols);
+        let convs = engine.conventions();
         assert!(!convs.is_empty());
-        for c in &convs {
+        for c in convs {
             assert!(c.component_id.is_none());
         }
     }
@@ -1016,9 +1028,8 @@ mod tests {
         assert_eq!(min_support, 5);
 
         let mut engine = FcaEngine::new();
-        let convs =
-            engine.rebuild_with_params(&symbols, min_support, MIN_CONFIDENCE, Some("comp-x"));
-        let has_fn_doc = convs.iter().any(|c| {
+        engine.rebuild_with_params(&symbols, min_support, MIN_CONFIDENCE, Some("comp-x"));
+        let has_fn_doc = engine.conventions().iter().any(|c| {
             c.antecedent.contains(&"kind:function".to_string())
                 && c.consequent.contains(&"has_doc".to_string())
         });
@@ -1027,7 +1038,8 @@ mod tests {
             "component FCA should discover kind:function → has_doc"
         );
         assert!(
-            convs
+            engine
+                .conventions()
                 .iter()
                 .all(|c| c.component_id.as_deref() == Some("comp-x"))
         );
