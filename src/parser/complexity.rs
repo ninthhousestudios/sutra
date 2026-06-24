@@ -48,6 +48,24 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
             }
             _ => {}
         },
+        "c" => match kind {
+            "if_statement" | "while_statement" | "for_statement" | "do_statement" => {
+                *count += 1;
+            }
+            "case_statement" => {
+                *count += 1;
+            }
+            "switch_statement" => {
+                *count = count.saturating_sub(1);
+            }
+            "binary_expression" if is_logical_operator(node, src) => {
+                *count += 1;
+            }
+            "goto_statement" => {
+                *count += 1;
+            }
+            _ => {}
+        },
         _ => {}
     }
 
@@ -140,6 +158,13 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
             "conditional_expression" => (true, true),
             // Anonymous functions increment nesting
             "function_expression" => (false, true),
+            _ => (false, false),
+        },
+        "c" => match kind {
+            "if_statement" => (true, true),
+            "while_statement" | "for_statement" | "do_statement" => (true, true),
+            "switch_statement" => (true, false),
+            "case_statement" | "goto_statement" => (true, false),
             _ => (false, false),
         },
         _ => (false, false),
