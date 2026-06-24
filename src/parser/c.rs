@@ -1006,4 +1006,51 @@ mod tests {
             .collect();
         assert!(vars.is_empty());
     }
+
+    #[test]
+    fn inline_detected() {
+        let r = parse_c("inline int fast(void) { return 1; }");
+        let attrs = r.symbols[0].language_attrs.as_deref().unwrap();
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(attrs).unwrap();
+        assert_eq!(map.get("is_inline"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn struct_param_detected() {
+        let r = parse_c("void f(struct Point p) {}");
+        let attrs = r.symbols[0].language_attrs.as_deref().unwrap();
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(attrs).unwrap();
+        assert_eq!(
+            map.get("has_struct_param"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn cyclomatic_counts_c_constructs() {
+        let code = r#"
+int f(int x) {
+    if (x > 0) { return 1; }
+    for (int i = 0; i < x; i++) {}
+    while (x) { x--; }
+    switch (x) {
+        case 0: break;
+        case 1: break;
+    }
+    if (x > 0 && x < 10) {}
+    return 0;
+}
+"#;
+        let r = parse_c(code);
+        // base 1 + 2*if + for + while + 2*case - switch + && = 7
+        assert_eq!(r.symbols[0].cyclomatic, Some(7));
+    }
+
+    #[test]
+    fn cognitive_scores_nesting() {
+        let code = "int f(int x) { if (x > 0) { if (x < 10) { return 1; } } return 0; }";
+        let r = parse_c(code);
+        // outer if: +1 (nesting 0), inner if: +1+1 (nesting 1) = 3
+        assert_eq!(r.symbols[0].cognitive, Some(3));
+    }
 }
