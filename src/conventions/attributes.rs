@@ -134,10 +134,12 @@ pub fn enrich_with_effects(
 
     for pattern in patterns {
         if resolved.iter().any(|c| {
-            pattern
-                .callee_prefixes
-                .iter()
-                .any(|p| c.qualified_name.starts_with(p))
+            pattern.callee_prefixes.iter().any(|p| {
+                c.qualified_name.starts_with(p)
+                    && (c.qualified_name.len() == p.len()
+                        || p.ends_with("::")
+                        || c.qualified_name.as_bytes().get(p.len()) == Some(&b':'))
+            })
         }) {
             sym_attrs.attributes.push(pattern.attr_name.to_string());
         }
@@ -511,6 +513,48 @@ mod tests {
         );
         assert!(attrs.attributes.contains(&"effect:fs".to_string()));
         assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn effect_bare_name_exact_match_only() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("void cleanup()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/mem.c").unwrap();
+        let r1 = make_ref(Some(10), 3);
+        let r2 = make_ref(Some(20), 5);
+        let patterns = [EffectPattern {
+            attr_name: "effect:heap",
+            callee_prefixes: &["free", "malloc"],
+        }];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r1, &r2],
+            &|id| match id {
+                10 => Some(resolve_with("free", None)),
+                20 => Some(resolve_with("free_list", None)),
+                _ => None,
+            },
+            &patterns,
+        );
+        assert!(attrs.attributes.contains(&"effect:heap".to_string()));
+
+        // Now test that a function only calling free_list does NOT get the tag
+        let mut attrs2 = extract_cross_language_attrs(&sym, "src/mem.c").unwrap();
+        enrich_with_effects(
+            &mut attrs2,
+            &sym,
+            &[&r2],
+            &|id| (id == 20).then(|| resolve_with("free_list", None)),
+            &patterns,
+        );
+        assert!(!attrs2.attributes.contains(&"effect:heap".to_string()));
     }
 
     #[test]
