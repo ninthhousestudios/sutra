@@ -331,7 +331,7 @@ pub fn handle(
     let all_waivers = db.list_waivers(None).unwrap_or_default();
 
     // Constraint system
-    let loaded_rules = rules::load_rules(workspace_root)?;
+    let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = loaded_rules.all_constraints();
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
 

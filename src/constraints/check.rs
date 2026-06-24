@@ -62,7 +62,7 @@ fn evaluate_dd(
     workspace_root: &Path,
     scope: EvalScope,
 ) -> Result<CheckOutcome> {
-    let loaded_rules = rules::load_rules(workspace_root)?;
+    let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
 
     let all_files = db.all_files()?;
@@ -381,7 +381,7 @@ fn evaluate_raw(
 ) -> Result<CheckOutcome> {
     use rusqlite::params;
 
-    let loaded_rules = rules::load_rules(workspace_root)?;
+    let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
 
     let parse_error_findings: Vec<ConstraintFinding> = parse_errors
@@ -699,7 +699,7 @@ pub fn check_manifest_raw(
     manifest_rel_path: &str,
     content: &str,
 ) -> Result<CheckOutcome> {
-    let loaded_rules = rules::load_rules(workspace_root)?;
+    let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
     if !external::has_external_constraints(&all_constraints) {
         return Ok(CheckOutcome {
@@ -798,7 +798,7 @@ pub fn check_pubspec_raw(
 ) -> Result<CheckOutcome> {
     use rusqlite::params;
 
-    let loaded_rules = rules::load_rules(workspace_root)?;
+    let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
     if !external::has_external_constraints(&all_constraints) {
         return Ok(CheckOutcome {

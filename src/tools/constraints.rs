@@ -59,7 +59,7 @@ pub fn handle(
 fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
     use crate::constraints::constraint_coverage;
 
-    let rules = rules::load_rules(workspace_root)?;
+    let mut rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = rules.all_constraints();
     let waivers = db.get_constraint_waivers(None)?;
 

@@ -335,7 +335,7 @@ pub struct Rules {
 }
 
 impl Rules {
-    pub fn all_constraints(&self) -> (Vec<Constraint>, Vec<ConstraintParseError>) {
+    pub fn all_constraints(&mut self) -> (Vec<Constraint>, Vec<ConstraintParseError>) {
         let mut seen: HashMap<Arc<str>, usize> = HashMap::new();
         let mut out: Vec<Constraint> = Vec::new();
         let mut errors: Vec<ConstraintParseError> = Vec::new();
@@ -373,7 +373,7 @@ impl Rules {
             });
         }
 
-        for (i, raw) in self.constraint.clone().into_iter().enumerate() {
+        for (i, raw) in std::mem::take(&mut self.constraint).into_iter().enumerate() {
             let name = raw.name.clone();
             match raw.into_constraint() {
                 Ok(c) => {
@@ -474,7 +474,7 @@ forbidden_deps = [
   { from = "src/**", to = "src/internal/*" },
 ]
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         assert_eq!(rules.constraints.forbidden_deps.len(), 2);
         assert_eq!(rules.constraints.forbidden_deps[0].from, "src/tools/*");
         assert_eq!(rules.constraints.forbidden_deps[0].to, "src/daemon.rs");
@@ -485,19 +485,19 @@ forbidden_deps = [
     #[test]
     fn parse_empty_constraints() {
         let toml = "[constraints]\n";
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
     #[test]
     fn parse_missing_constraints_section() {
-        let rules = parse_rules("").unwrap();
+        let mut rules = parse_rules("").unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
     #[test]
     fn missing_file_returns_defaults() {
-        let rules = load_rules(Path::new("/nonexistent/path")).unwrap();
+        let mut rules = load_rules(Path::new("/nonexistent/path")).unwrap();
         assert!(rules.constraints.forbidden_deps.is_empty());
     }
 
@@ -511,7 +511,7 @@ suppress = ["a1b4c2d1", "b2c3d4e5"]
 convention = "e5f6g7h8"
 symbols = ["InternalError", "DebugHelper"]
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         assert_eq!(rules.conventions.suppress, vec!["a1b4c2d1", "b2c3d4e5"]);
         assert_eq!(rules.conventions.exempt.len(), 1);
         assert_eq!(rules.conventions.exempt[0].convention, "e5f6g7h8");
@@ -523,7 +523,7 @@ symbols = ["InternalError", "DebugHelper"]
 
     #[test]
     fn parse_missing_conventions_section() {
-        let rules = parse_rules("[constraints]\n").unwrap();
+        let mut rules = parse_rules("[constraints]\n").unwrap();
         assert!(rules.conventions.suppress.is_empty());
         assert!(rules.conventions.exempt.is_empty());
     }
@@ -539,7 +539,7 @@ forbidden_deps = [
 [conventions]
 suppress = ["abc123"]
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         assert_eq!(rules.constraints.forbidden_deps.len(), 1);
         assert_eq!(rules.conventions.suppress, vec!["abc123"]);
     }
@@ -556,7 +556,7 @@ to = "src/daemon.rs"
 name = "no-tool-daemon"
 provenance = "docs/adr-001.md"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
@@ -581,7 +581,7 @@ from_component = "db"
 to_component = "http"
 severity = "advisory"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
@@ -602,7 +602,7 @@ kind = "max_fan_in"
 target = "src/config.rs"
 threshold = 10
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(
@@ -622,7 +622,7 @@ threshold = 10
 kind = "no_cycles"
 scope = "src/core/"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].kind, ConstraintKind::NoCycles);
@@ -639,7 +639,7 @@ forbidden_deps = [
   { from = "src/**", to = "src/internal/*" },
 ]
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 2);
         assert_eq!(
@@ -671,7 +671,7 @@ to_component = "http"
 kind = "no_cycles"
 scope = "src/core/"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_eq!(cs.len(), 3);
         assert!(matches!(cs[0].kind, ConstraintKind::ForbiddenDep { .. }));
@@ -687,11 +687,11 @@ kind = "forbidden_dep"
 from = "a"
 to = "b"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         let id1 = &cs[0].id;
 
-        let rules2 = parse_rules(toml).unwrap();
+        let mut rules2 = parse_rules(toml).unwrap();
         let cs2 = rules2.all_constraints().0;
         assert_eq!(id1, &cs2[0].id);
     }
@@ -709,7 +709,7 @@ kind = "forbidden_dep"
 from = "a"
 to = "c"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let cs = rules.all_constraints().0;
         assert_ne!(cs[0].id, cs[1].id);
     }
@@ -782,7 +782,7 @@ severity = "informational"
 [[constraint]]
 kind = "banana"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let (valid, errors) = rules.all_constraints();
         assert!(valid.is_empty());
         assert_eq!(errors.len(), 1);
@@ -800,7 +800,7 @@ kind = "banana"
 kind = "forbidden_dep"
 from = "a"
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         let (valid, errors) = rules.all_constraints();
         assert!(valid.is_empty());
         assert_eq!(errors.len(), 1);
