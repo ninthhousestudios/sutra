@@ -49,7 +49,11 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
             _ => {}
         },
         "c" => match kind {
-            "if_statement" | "while_statement" | "for_statement" | "do_statement" => {
+            "if_statement"
+            | "while_statement"
+            | "for_statement"
+            | "do_statement"
+            | "conditional_expression" => {
                 *count += 1;
             }
             "case_statement" => {
@@ -161,7 +165,7 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
             _ => (false, false),
         },
         "c" => match kind {
-            "if_statement" => (true, true),
+            "if_statement" | "conditional_expression" => (true, true),
             "while_statement" | "for_statement" | "do_statement" => (true, true),
             "switch_statement" => (true, false),
             "case_statement" | "goto_statement" => (true, false),

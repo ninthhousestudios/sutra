@@ -102,12 +102,12 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                 }
             }
             "struct_specifier" if child.child_by_field_name("body").is_some() => {
-                if let Some(sym) = extract_struct(child, src) {
+                if let Some(sym) = extract_struct(child, src, None) {
                     symbols.push(sym);
                 }
             }
             "enum_specifier" if child.child_by_field_name("body").is_some() => {
-                if let Some(sym) = extract_enum(child, src) {
+                if let Some(sym) = extract_enum(child, src, None) {
                     symbols.push(sym);
                 }
             }
@@ -118,12 +118,12 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                     if has_name && has_body {
                         match type_node.kind() {
                             "struct_specifier" => {
-                                if let Some(sym) = extract_struct(type_node, src) {
+                                if let Some(sym) = extract_struct(type_node, src, Some(child)) {
                                     symbols.push(sym);
                                 }
                             }
                             "enum_specifier" => {
-                                if let Some(sym) = extract_enum(type_node, src) {
+                                if let Some(sym) = extract_enum(type_node, src, Some(child)) {
                                     symbols.push(sym);
                                 }
                             }
@@ -131,21 +131,19 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                         }
                     }
                 }
-                if let Some(sym) = extract_typedef(child, src) {
-                    symbols.push(sym);
-                }
+                collect_typedef_declarators(child, src, &mut symbols);
             }
             "declaration" => {
                 if let Some(type_node) = child.child_by_field_name("type") {
                     if type_node.child_by_field_name("body").is_some() {
                         match type_node.kind() {
                             "struct_specifier" => {
-                                if let Some(sym) = extract_struct(type_node, src) {
+                                if let Some(sym) = extract_struct(type_node, src, Some(child)) {
                                     symbols.push(sym);
                                 }
                             }
                             "enum_specifier" => {
-                                if let Some(sym) = extract_enum(type_node, src) {
+                                if let Some(sym) = extract_enum(type_node, src, Some(child)) {
                                     symbols.push(sym);
                                 }
                             }
@@ -154,13 +152,7 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                     }
                 }
                 if !has_specifier(child, src, "extern") {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        if find_function_declarator(declarator).is_none() {
-                            if let Some(sym) = extract_global_var(child, src, file_path) {
-                                symbols.push(sym);
-                            }
-                        }
-                    }
+                    collect_var_declarators(child, src, file_path, &mut symbols);
                 }
             }
             "preproc_function_def" => {
@@ -226,12 +218,12 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
     })
 }
 
-fn extract_struct(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
+fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(src).ok())
         .map(|s| s.to_string())?;
-    let docstring = extract_docstring(node, src);
+    let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
 
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
@@ -254,12 +246,12 @@ fn extract_struct(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
     })
 }
 
-fn extract_enum(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
+fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(src).ok())
         .map(|s| s.to_string())?;
-    let docstring = extract_docstring(node, src);
+    let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
 
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
@@ -282,9 +274,7 @@ fn extract_enum(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
     })
 }
 
-fn extract_typedef(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
-    let declarator = node.child_by_field_name("declarator")?;
-    let name = find_name_in_declarator(declarator, src)?;
+fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>) {
     let docstring = extract_docstring(node, src);
     let signature = node
         .utf8_text(src)
@@ -294,25 +284,29 @@ fn extract_typedef(node: Node, src: &[u8]) -> Option<ExtractedSymbol> {
         .as_ref()
         .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
 
-    Some(ExtractedSymbol {
-        qualified_name: name.clone(),
-        short_name: name,
-        kind: SymbolKind::TypeAlias,
-        signature,
-        signature_hash,
-        visibility: Some("pub".to_string()),
-        start_line: node.start_position().row + 1,
-        start_col: node.start_position().column,
-        end_line: node.end_position().row + 1,
-        end_col: node.end_position().column,
-        children: vec![],
-        docstring,
-        cyclomatic: None,
-        cognitive: None,
-        max_nesting: None,
-        flags: 0,
-        language_attrs: None,
-    })
+    for declarator in field_children(node, "declarator") {
+        if let Some(name) = find_name_in_declarator(declarator, src) {
+            symbols.push(ExtractedSymbol {
+                qualified_name: name.clone(),
+                short_name: name,
+                kind: SymbolKind::TypeAlias,
+                signature: signature.clone(),
+                signature_hash: signature_hash.clone(),
+                visibility: Some("pub".to_string()),
+                start_line: node.start_position().row + 1,
+                start_col: node.start_position().column,
+                end_line: node.end_position().row + 1,
+                end_col: node.end_position().column,
+                children: vec![],
+                docstring: docstring.clone(),
+                cyclomatic: None,
+                cognitive: None,
+                max_nesting: None,
+                flags: 0,
+                language_attrs: None,
+            });
+        }
+    }
 }
 
 fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
@@ -378,45 +372,69 @@ fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<Extra
     })
 }
 
-fn extract_global_var(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
-    let declarator = node.child_by_field_name("declarator")?;
-    let name = find_name_in_declarator(declarator, src)?;
-
+fn collect_var_declarators(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    symbols: &mut Vec<ExtractedSymbol>,
+) {
     let has_const = has_specifier(node, src, "const");
     let kind = if has_const {
         SymbolKind::Const
     } else {
         SymbolKind::Static
     };
-
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
-    let flags = extract_flags(file_path, &name, node);
 
-    Some(ExtractedSymbol {
-        qualified_name: name.clone(),
-        short_name: name,
-        kind,
-        signature: None,
-        signature_hash: None,
-        visibility,
-        start_line: node.start_position().row + 1,
-        start_col: node.start_position().column,
-        end_line: node.end_position().row + 1,
-        end_col: node.end_position().column,
-        children: vec![],
-        docstring,
-        cyclomatic: None,
-        cognitive: None,
-        max_nesting: None,
-        flags,
-        language_attrs: None,
-    })
+    for declarator in field_children(node, "declarator") {
+        if find_function_declarator(declarator).is_some() {
+            continue;
+        }
+        if let Some(name) = find_name_in_declarator(declarator, src) {
+            let flags = extract_flags(file_path, &name, node);
+            symbols.push(ExtractedSymbol {
+                qualified_name: name.clone(),
+                short_name: name,
+                kind,
+                signature: None,
+                signature_hash: None,
+                visibility: visibility.clone(),
+                start_line: node.start_position().row + 1,
+                start_col: node.start_position().column,
+                end_line: node.end_position().row + 1,
+                end_col: node.end_position().column,
+                children: vec![],
+                docstring: docstring.clone(),
+                cyclomatic: None,
+                cognitive: None,
+                max_nesting: None,
+                flags,
+                language_attrs: None,
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Declarator navigation
 // ---------------------------------------------------------------------------
+
+fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
+    let mut result = Vec::new();
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            if cursor.field_name() == Some(field) {
+                result.push(cursor.node());
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    result
+}
 
 fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
@@ -507,11 +525,19 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
     }
 }
 
-/// Build signature from type through end of declarator, excluding the body.
 fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
     let body = node.child_by_field_name("body")?;
-    let type_node = node.child_by_field_name("type")?;
-    let sig_bytes = &src[type_node.start_byte()..body.start_byte()];
+    let mut sig_start = node.child_by_field_name("type")?.start_byte();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.start_byte() >= sig_start {
+            break;
+        }
+        if child.kind() == "type_qualifier" {
+            sig_start = sig_start.min(child.start_byte());
+        }
+    }
+    let sig_bytes = &src[sig_start..body.start_byte()];
     let sig = std::str::from_utf8(sig_bytes).ok()?.trim();
     Some(sig.to_string())
 }
@@ -659,6 +685,9 @@ fn is_definition_name(node: Node) -> bool {
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
         "type_definition" | "parameter_declaration" | "field_declaration" | "declaration" => parent
+            .child_by_field_name("declarator")
+            .is_some_and(|d| d.id() == node.id()),
+        "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => parent
             .child_by_field_name("declarator")
             .is_some_and(|d| d.id() == node.id()),
         "labeled_statement" => parent
@@ -1052,5 +1081,89 @@ int f(int x) {
         let r = parse_c(code);
         // outer if: +1 (nesting 0), inner if: +1+1 (nesting 1) = 3
         assert_eq!(r.symbols[0].cognitive, Some(3));
+    }
+
+    #[test]
+    fn pointer_var_not_in_refs() {
+        let r = parse_c("int *ptr = 0;");
+        assert!(!r.references.iter().any(|r| r.name == "ptr"));
+    }
+
+    #[test]
+    fn array_var_not_in_refs() {
+        let r = parse_c("int arr[10];");
+        assert!(!r.references.iter().any(|r| r.name == "arr"));
+    }
+
+    #[test]
+    fn docstring_on_typedef_struct() {
+        let r = parse_c("/** A node */\ntypedef struct Node { int val; } Node;");
+        let s = r
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert!(s.docstring.as_deref().unwrap().contains("A node"));
+    }
+
+    #[test]
+    fn docstring_on_declaration_struct() {
+        let r = parse_c("/** A point */\nstruct Point { int x; int y; } origin;");
+        let s = r
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert!(s.docstring.as_deref().unwrap().contains("A point"));
+    }
+
+    #[test]
+    fn comma_separated_vars() {
+        let r = parse_c("static int a, b, c;");
+        let statics: Vec<_> = r
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Static)
+            .collect();
+        assert_eq!(statics.len(), 3);
+        let names: Vec<_> = statics.iter().map(|s| s.short_name.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+    }
+
+    #[test]
+    fn comma_separated_typedefs() {
+        let r = parse_c("typedef int Int, Integer;");
+        let aliases: Vec<_> = r
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::TypeAlias)
+            .collect();
+        assert_eq!(aliases.len(), 2);
+        let names: Vec<_> = aliases.iter().map(|s| s.short_name.as_str()).collect();
+        assert!(names.contains(&"Int"));
+        assert!(names.contains(&"Integer"));
+    }
+
+    #[test]
+    fn signature_includes_const_qualifier() {
+        let r = parse_c("const int get_val(void) { return 0; }");
+        let sig = r.symbols[0].signature.as_deref().unwrap();
+        assert!(sig.starts_with("const"));
+    }
+
+    #[test]
+    fn ternary_counted_in_cyclomatic() {
+        let r = parse_c("int f(int x) { return x > 0 ? 1 : 0; }");
+        // base 1 + ternary = 2
+        assert_eq!(r.symbols[0].cyclomatic, Some(2));
+    }
+
+    #[test]
+    fn ternary_counted_in_cognitive() {
+        let r = parse_c("int f(int x) { return x > 0 ? 1 : 0; }");
+        // ternary: +1
+        assert_eq!(r.symbols[0].cognitive, Some(1));
     }
 }
