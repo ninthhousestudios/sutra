@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
 
 use glob::{MatchOptions, Pattern};
 use schemars::JsonSchema;
