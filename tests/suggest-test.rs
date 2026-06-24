@@ -130,3 +130,33 @@ fn respects_limit() {
         suggestions.len()
     );
 }
+
+#[test]
+fn overlong_query_returns_empty() {
+    let (_dir, db) = setup_db();
+    seed_corpus(&db);
+    let long_name = "a".repeat(200);
+    assert!(suggest_symbols(&db, &long_name, 5).is_empty());
+}
+
+#[test]
+fn single_char_unicode_returns_empty() {
+    let (_dir, db) = setup_db();
+    seed_corpus(&db);
+    assert!(suggest_symbols(&db, "\u{03b2}", 5).is_empty());
+}
+
+#[test]
+fn unicode_symbol_does_not_inflate_score() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/math.rs");
+    seed_symbol(&db, fid, "alpha", "\u{03b1}", "function");
+    seed_symbol(&db, fid, "beta", "\u{03b2}", "function");
+    let suggestions = suggest_symbols(&db, "\u{03b1}\u{03b2}", 5);
+    assert!(
+        !suggestions
+            .iter()
+            .any(|s| s.contains("alpha") || s.contains("beta")),
+        "single-char Unicode symbols should not match via inflated scores: {suggestions:?}"
+    );
+}

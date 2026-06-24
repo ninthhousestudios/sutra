@@ -325,7 +325,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
     let query_short = query.rsplit("::").next().unwrap_or(query);
-    if query_short.len() < 2 {
+    let query_chars = query_short.chars().count();
+    if query_chars < 2 || query_chars > 128 {
         return vec![];
     }
     let query_qualifier = query.rsplit_once("::").map(|(prefix, _)| prefix);
@@ -339,12 +340,19 @@ pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
     let mut scored: Vec<(f64, &str)> = symbols
         .iter()
         .filter_map(|(_, qn, sn, _)| {
+            let sn_chars = sn.chars().count();
+            if sn_chars < 2 {
+                return None;
+            }
+
             let signal_edit = {
-                let dist = levenshtein(query_short, sn);
-                let max_len = query_short.len().max(sn.len());
-                if max_len == 0 {
+                let ratio =
+                    query_chars.min(sn_chars) as f64 / query_chars.max(sn_chars).max(1) as f64;
+                if ratio < 0.3 {
                     0.0
                 } else {
+                    let dist = levenshtein(query_short, sn);
+                    let max_len = query_chars.max(sn_chars);
                     1.0 - (dist as f64 / max_len as f64)
                 }
             };
@@ -364,8 +372,8 @@ pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
             };
 
             let signal_substring = if sn.contains(query_short) || query_short.contains(sn) {
-                let shorter = sn.len().min(query_short.len());
-                let longer = sn.len().max(query_short.len());
+                let shorter = query_chars.min(sn_chars);
+                let longer = query_chars.max(sn_chars);
                 if longer > 0 && shorter as f64 / longer as f64 >= 0.5 {
                     0.8
                 } else {
