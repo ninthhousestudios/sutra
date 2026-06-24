@@ -33,7 +33,7 @@ pub enum SutraError {
         next_action: String,
     },
 
-    #[error("[{tool}] not found: {kind}")]
+    #[error("[{tool}] not found: {kind}. {next_action}")]
     NotFound {
         tool: &'static str,
         kind: String,

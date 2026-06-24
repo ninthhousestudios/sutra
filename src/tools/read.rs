@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -55,7 +55,15 @@ pub fn handle(
         let next_action = if let Some(suggestion) = diagnose_symbol_input(symbol) {
             suggestion
         } else {
-            "Use sutra_find to look up the symbol name first.".to_string()
+            let suggestions = suggest_symbols(db, symbol, 5);
+            if suggestions.is_empty() {
+                "Use sutra_find to look up the symbol name first.".to_string()
+            } else {
+                format!(
+                    "Did you mean: {}? Use sutra_find to search more broadly.",
+                    suggestions.join(", ")
+                )
+            }
         };
         SutraError::NotFound {
             tool: "sutra_read",
@@ -292,6 +300,113 @@ fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
+pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
+    let query_short = query.rsplit("::").next().unwrap_or(query);
+    if query_short.len() < 2 {
+        return vec![];
+    }
+    let query_qualifier = query.rsplit_once("::").map(|(prefix, _)| prefix);
+    let query_tokens: Vec<&str> = query_short.split('_').collect();
+
+    let symbols = match db.all_symbols_summary() {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let mut scored: Vec<(f64, &str)> = symbols
+        .iter()
+        .filter_map(|(_, qn, sn, _)| {
+            let signal_edit = {
+                let dist = levenshtein(query_short, sn);
+                let max_len = query_short.len().max(sn.len());
+                if max_len == 0 {
+                    0.0
+                } else {
+                    1.0 - (dist as f64 / max_len as f64)
+                }
+            };
+
+            let signal_components = {
+                let sym_tokens: Vec<&str> = sn.split('_').collect();
+                let shared = query_tokens
+                    .iter()
+                    .filter(|t| sym_tokens.contains(t))
+                    .count();
+                let max_tokens = query_tokens.len().max(sym_tokens.len());
+                if max_tokens == 0 {
+                    0.0
+                } else {
+                    shared as f64 / max_tokens as f64
+                }
+            };
+
+            let signal_substring = if sn.contains(query_short) || query_short.contains(sn) {
+                let shorter = sn.len().min(query_short.len());
+                let longer = sn.len().max(query_short.len());
+                if longer > 0 && shorter as f64 / longer as f64 >= 0.5 {
+                    0.8
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            let mut score = signal_edit.max(signal_components).max(signal_substring);
+
+            if let Some(q) = query_qualifier {
+                if qn.starts_with(q) && qn[q.len()..].starts_with("::") {
+                    score = (score * 1.15).min(1.0);
+                }
+            }
+
+            if score >= 0.35 && qn.as_str() != query {
+                Some((score, qn.as_str()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.len().cmp(&b.1.len()))
+            .then_with(|| a.1.cmp(b.1))
+    });
+
+    let mut seen = HashSet::new();
+    scored
+        .into_iter()
+        .filter(|(_, qn)| seen.insert(*qn))
+        .take(limit)
+        .map(|(_, qn)| format!("`{qn}`"))
+        .collect()
+}
+
 fn diagnose_symbol_input(symbol: &str) -> Option<String> {
     // "review.rs::build_findings" or "check.rs::evaluate"
     if let Some(pos) = symbol.find(".rs::") {
@@ -402,5 +517,28 @@ mod tests {
     fn word_boundary_empty() {
         assert!(!word_appears_in("anything", ""));
         assert!(!word_appears_in("", "HashMap"));
+    }
+
+    #[test]
+    fn levenshtein_empty_strings() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+    }
+
+    #[test]
+    fn levenshtein_identical() {
+        assert_eq!(levenshtein("find_symbols", "find_symbols"), 0);
+    }
+
+    #[test]
+    fn levenshtein_single_edit() {
+        assert_eq!(levenshtein("find_symbls", "find_symbols"), 1);
+        assert_eq!(levenshtein("kitten", "sitten"), 1);
+    }
+
+    #[test]
+    fn levenshtein_multiple_edits() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
     }
 }
