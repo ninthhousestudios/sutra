@@ -418,6 +418,8 @@ Configure in `.claude/settings.json`:
 
 - **Rust** — full support (functions, structs, enums, traits, impls, methods, modules, consts, macros)
 - **Dart** — full support (classes, methods, functions, enums, mixins, extensions, type aliases)
+- **Python** — full support (functions, classes, methods, decorators, async/generators, module-level variables, imports with package root discovery)
+- **C** — full support (functions, structs, enums, typedefs, macros, global variables, `#include` resolution)
 
 The core model is language-agnostic. Per-language adapters handle parsing and attribute extraction; the schema (files, symbols, edges) is uniform. Adding a language requires a tree-sitter grammar and an adapter that maps AST nodes to sutra's symbol kinds.
 
