@@ -776,24 +776,42 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         return RefContextKind::Call;
     }
 
-    // Call: callee reachable through member_expression inside call_expression.
-    // Foo.named() → call_expression > member_expression > identifier
-    if pk == "member_expression" {
-        if parent
+    // Call: property side of member_expression inside call_expression.
+    // http.get() → call_expression > member_expression > identifier("get")
+    // Only the property child is the callee; the object (http) falls through.
+    if pk == "member_expression"
+        && is_property_child(node, parent)
+        && parent
             .parent()
             .is_some_and(|gp| gp.kind() == "call_expression")
-        {
-            return RefContextKind::Call;
-        }
+    {
+        return RefContextKind::Call;
     }
 
-    // Cascade call: identifier inside cascade_call_expression (..bar())
+    // Cascade call: direct child of cascade_call_expression (..bar())
     if pk == "cascade_call_expression" {
+        return RefContextKind::Call;
+    }
+
+    // Cascade chained call: property side of cascade_member_expression
+    // inside cascade_call_expression (..bar().baz())
+    if pk == "cascade_member_expression"
+        && is_property_child(node, parent)
+        && parent
+            .parent()
+            .is_some_and(|gp| gp.kind() == "cascade_call_expression")
+    {
         return RefContextKind::Call;
     }
 
     // Cascade field: identifier inside cascade_selector (..x)
     if pk == "cascade_selector" {
+        return RefContextKind::FieldAccess;
+    }
+
+    // Cascade field access: property side of cascade_member_expression
+    // not caught by the call check above (..foo().bar where bar is not called)
+    if pk == "cascade_member_expression" && is_property_child(node, parent) {
         return RefContextKind::FieldAccess;
     }
 
@@ -812,15 +830,17 @@ fn classify_ref_context(node: Node) -> RefContextKind {
     }
 
     // Field access: property side of member_expression (not already caught as Call above)
-    if pk == "member_expression"
-        && parent
-            .child_by_field_name("property")
-            .is_some_and(|p| p.id() == node.id())
-    {
+    if pk == "member_expression" && is_property_child(node, parent) {
         return RefContextKind::FieldAccess;
     }
 
     RefContextKind::Other
+}
+
+fn is_property_child(node: Node, parent: Node) -> bool {
+    parent
+        .child_by_field_name("property")
+        .is_some_and(|p| p.id() == node.id())
 }
 
 /// Walk ancestors to check if a type_identifier is the name of a new/const expression.

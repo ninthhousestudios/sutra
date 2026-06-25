@@ -778,20 +778,24 @@ void main() {
         "Foo() should be Call"
     );
 
-    let named_parts: Vec<_> = refs
+    let named_callee = refs
         .iter()
-        .filter(|r| r.line == 4 && (r.name == "Foo" || r.name == "named"))
-        .collect();
+        .find(|r| r.line == 4 && r.name == "named")
+        .unwrap();
     assert_eq!(
-        named_parts.len(),
-        2,
-        "should find both Foo and named on line 4"
+        named_callee.context_kind,
+        RefContextKind::Call,
+        "Foo.named() — named (callee) should be Call"
     );
-    assert!(
-        named_parts
-            .iter()
-            .all(|r| r.context_kind == RefContextKind::Call),
-        "Foo.named() — both Foo and named should be Call"
+
+    let named_receiver = refs
+        .iter()
+        .find(|r| r.line == 4 && r.name == "Foo")
+        .unwrap();
+    assert_eq!(
+        named_receiver.context_kind,
+        RefContextKind::Other,
+        "Foo.named() — Foo (receiver) should be Other without semantic analysis"
     );
 
     let new_foo = refs
@@ -935,5 +939,62 @@ void main() {
         field_x.context_kind,
         RefContextKind::FieldAccess,
         "f.x property should be FieldAccess"
+    );
+}
+
+#[test]
+fn ref_context_member_call_receiver() {
+    let src = r#"
+void main() {
+  var http = getClient();
+  http.get();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let receiver = refs
+        .iter()
+        .find(|r| r.name == "http" && r.line == 4)
+        .unwrap();
+    assert_eq!(
+        receiver.context_kind,
+        RefContextKind::Other,
+        "http (receiver) in http.get() should not be Call"
+    );
+
+    let callee = refs
+        .iter()
+        .find(|r| r.name == "get" && r.line == 4)
+        .unwrap();
+    assert_eq!(
+        callee.context_kind,
+        RefContextKind::Call,
+        "get (callee) in http.get() should be Call"
+    );
+}
+
+#[test]
+fn ref_context_chained_cascade() {
+    let src = r#"
+void main() {
+  Foo()..bar().baz();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let bar = refs.iter().find(|r| r.name == "bar").unwrap();
+    assert_eq!(
+        bar.context_kind,
+        RefContextKind::Call,
+        "..bar() in cascade should be Call"
+    );
+
+    let baz = refs.iter().find(|r| r.name == "baz").unwrap();
+    assert_eq!(
+        baz.context_kind,
+        RefContextKind::Call,
+        "..bar().baz() chained cascade call should be Call"
     );
 }
