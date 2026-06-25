@@ -1,4 +1,4 @@
-use sutra::parser::{self, SymbolKind, flatten_symbols};
+use sutra::parser::{self, RefContextKind, SymbolKind, flatten_symbols};
 
 #[test]
 fn test_parse_dart_class() {
@@ -753,4 +753,187 @@ class NativeBinding {
         .find(|s| s.short_name == "count")
         .expect("external static var count");
     assert_eq!(count.qualified_name, "NativeBinding::count");
+}
+
+#[test]
+fn ref_context_constructor_calls() {
+    let src = r#"
+void main() {
+  var a = Foo();
+  var b = Foo.named();
+  var c = new Foo();
+  var d = const Foo();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let foo_call = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 3)
+        .unwrap();
+    assert_eq!(
+        foo_call.context_kind,
+        RefContextKind::Call,
+        "Foo() should be Call"
+    );
+
+    let named_parts: Vec<_> = refs
+        .iter()
+        .filter(|r| r.line == 4 && (r.name == "Foo" || r.name == "named"))
+        .collect();
+    assert_eq!(
+        named_parts.len(),
+        2,
+        "should find both Foo and named on line 4"
+    );
+    assert!(
+        named_parts
+            .iter()
+            .all(|r| r.context_kind == RefContextKind::Call),
+        "Foo.named() — both Foo and named should be Call"
+    );
+
+    let new_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 5)
+        .unwrap();
+    assert_eq!(
+        new_foo.context_kind,
+        RefContextKind::Construction,
+        "new Foo() should be Construction"
+    );
+
+    let const_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 6)
+        .unwrap();
+    assert_eq!(
+        const_foo.context_kind,
+        RefContextKind::Construction,
+        "const Foo() should be Construction"
+    );
+}
+
+#[test]
+fn ref_context_cascade() {
+    let src = r#"
+void main() {
+  Foo()..x = 1;
+  Foo()..bar();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let cascade_field = refs.iter().find(|r| r.name == "x" && r.line == 3).unwrap();
+    assert_eq!(
+        cascade_field.context_kind,
+        RefContextKind::FieldAccess,
+        "..x should be FieldAccess"
+    );
+
+    let cascade_call = refs
+        .iter()
+        .find(|r| r.name == "bar" && r.line == 4)
+        .unwrap();
+    assert_eq!(
+        cascade_call.context_kind,
+        RefContextKind::Call,
+        "..bar() should be Call"
+    );
+}
+
+#[test]
+fn ref_context_generic_types() {
+    let src = r#"
+List<Foo> items = [];
+Map<String, Foo> mapping = {};
+Foo? nullable = null;
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    for name in &["List", "Foo", "Map", "String"] {
+        let type_refs: Vec<_> = refs
+            .iter()
+            .filter(|r| &r.name.as_str() == name && r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(
+            !type_refs.is_empty(),
+            "{name} should be classified as TypeUse"
+        );
+    }
+
+    let nullable_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 4)
+        .unwrap();
+    assert_eq!(
+        nullable_foo.context_kind,
+        RefContextKind::TypeUse,
+        "Foo? should be TypeUse"
+    );
+}
+
+#[test]
+fn ref_context_class_hierarchy() {
+    let src = r#"
+class Foo {}
+class Bar extends Foo {}
+class Baz implements Foo {}
+mixin Mix on Foo {}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let extends_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 3)
+        .unwrap();
+    assert_eq!(
+        extends_foo.context_kind,
+        RefContextKind::TypeUse,
+        "extends Foo should be TypeUse"
+    );
+
+    let implements_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 4)
+        .unwrap();
+    assert_eq!(
+        implements_foo.context_kind,
+        RefContextKind::TypeUse,
+        "implements Foo should be TypeUse"
+    );
+
+    let on_foo = refs
+        .iter()
+        .find(|r| r.name == "Foo" && r.line == 5)
+        .unwrap();
+    assert_eq!(
+        on_foo.context_kind,
+        RefContextKind::TypeUse,
+        "mixin on Foo should be TypeUse"
+    );
+}
+
+#[test]
+fn ref_context_member_access() {
+    let src = r#"
+class Foo { int x = 0; }
+void main() {
+  var f = Foo();
+  var v = f.x;
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let field_x = refs.iter().find(|r| r.name == "x" && r.line == 5).unwrap();
+    assert_eq!(
+        field_x.context_kind,
+        RefContextKind::FieldAccess,
+        "f.x property should be FieldAccess"
+    );
 }

@@ -759,18 +759,95 @@ fn is_definition_name(node: Node) -> bool {
 }
 
 fn classify_ref_context(node: Node) -> RefContextKind {
-    if let Some(parent) = node.parent() {
-        match parent.kind() {
-            "call_expression" => return RefContextKind::Call,
-            "library_import" | "import_specification" | "import_or_export" => {
-                return RefContextKind::Import;
-            }
-            "member_expression" => return RefContextKind::FieldAccess,
-            "type_name" | "type_identifier" => return RefContextKind::TypeUse,
-            _ => {}
+    let Some(parent) = node.parent() else {
+        return RefContextKind::Other;
+    };
+    let pk = parent.kind();
+
+    // Construction: type_identifier inside new/const expressions.
+    // new Foo()  → new_expression > type > type_identifier
+    // const Foo() → const_object_expression > type > type_identifier
+    if node.kind() == "type_identifier" && is_construction_name(node) {
+        return RefContextKind::Construction;
+    }
+
+    // Call: direct callee of call_expression
+    if pk == "call_expression" {
+        return RefContextKind::Call;
+    }
+
+    // Call: callee reachable through member_expression inside call_expression.
+    // Foo.named() → call_expression > member_expression > identifier
+    if pk == "member_expression" {
+        if parent
+            .parent()
+            .is_some_and(|gp| gp.kind() == "call_expression")
+        {
+            return RefContextKind::Call;
         }
     }
+
+    // Cascade call: identifier inside cascade_call_expression (..bar())
+    if pk == "cascade_call_expression" {
+        return RefContextKind::Call;
+    }
+
+    // Cascade field: identifier inside cascade_selector (..x)
+    if pk == "cascade_selector" {
+        return RefContextKind::FieldAccess;
+    }
+
+    // Import
+    if matches!(
+        pk,
+        "library_import" | "import_specification" | "import_or_export"
+    ) {
+        return RefContextKind::Import;
+    }
+
+    // Type use: any ancestor is a `type` node (covers generics, nullable,
+    // return types, parameter types, extends/implements/on/with clauses)
+    if has_type_ancestor(node) {
+        return RefContextKind::TypeUse;
+    }
+
+    // Field access: property side of member_expression (not already caught as Call above)
+    if pk == "member_expression"
+        && parent
+            .child_by_field_name("property")
+            .is_some_and(|p| p.id() == node.id())
+    {
+        return RefContextKind::FieldAccess;
+    }
+
     RefContextKind::Other
+}
+
+/// Walk ancestors to check if a type_identifier is the name of a new/const expression.
+/// Handles: new Foo(), const Foo(), new Foo.named(), const Foo<T>().
+fn is_construction_name(node: Node) -> bool {
+    let mut current = node;
+    while let Some(p) = current.parent() {
+        match p.kind() {
+            "new_expression" | "const_object_expression" => return true,
+            "type" | "type_arguments" => current = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Walk ancestors looking for a `type` node, which in tree-sitter-dart wraps
+/// all type contexts: annotations, generics, nullable, extends/implements/on/with.
+fn has_type_ancestor(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "type" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
