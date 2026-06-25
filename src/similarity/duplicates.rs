@@ -49,10 +49,12 @@ impl UnionFind {
 // SimHash LSH — random hyperplane hashing for cosine similarity
 // ---------------------------------------------------------------------------
 
-const LSH_K: usize = 6;
-const LSH_L: usize = 12;
+const LSH_K: usize = 10;
+const LSH_L: usize = 24;
 const LSH_SEED: u64 = 0xDEAD_BEEF_CAFE_1234;
 const BRUTE_FORCE_THRESHOLD: usize = 50;
+const MAX_BUCKET_SIZE: usize = 200;
+const MAX_GROUP_SIZE: usize = 200;
 
 struct SimHashIndex {
     tables: Vec<HashMap<u64, Vec<usize>>>,
@@ -97,7 +99,7 @@ impl SimHashIndex {
         let mut pairs = HashSet::new();
         for table in &self.tables {
             for bucket in table.values() {
-                if bucket.len() < 2 {
+                if bucket.len() < 2 || bucket.len() > MAX_BUCKET_SIZE {
                     continue;
                 }
                 for i in 0..bucket.len() {
@@ -193,14 +195,12 @@ pub fn find_pattern_families(
     // Phase 2: complete-link pruning — remove members until all pairs pass
     let mut families = Vec::new();
     for (_root, mut members) in groups {
-        if members.len() < min_group {
+        if members.len() < min_group || members.len() > MAX_GROUP_SIZE {
             continue;
         }
 
         loop {
-            let mut worst_idx = None;
-            let mut worst_min = f64::MAX;
-            let mut all_pass = true;
+            let mut failing: Vec<(usize, f64)> = Vec::new();
 
             for (mi, &a) in members.iter().enumerate() {
                 let mut min_sim = f64::MAX;
@@ -212,20 +212,25 @@ pub fn find_pattern_families(
                     min_sim = min_sim.min(sim);
                 }
                 if min_sim < threshold {
-                    all_pass = false;
-                    if min_sim < worst_min {
-                        worst_min = min_sim;
-                        worst_idx = Some(mi);
-                    }
+                    failing.push((mi, min_sim));
                 }
             }
 
-            if all_pass {
+            if failing.is_empty() {
                 break;
             }
-            if let Some(idx) = worst_idx {
+
+            // Remove the worst half of failing members per iteration
+            // (O(log G) iterations instead of O(G), without over-pruning)
+            failing.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let to_remove = (failing.len() / 2).max(1);
+            let mut remove_indices: Vec<usize> =
+                failing[..to_remove].iter().map(|&(i, _)| i).collect();
+            remove_indices.sort_unstable_by(|a, b| b.cmp(a));
+            for idx in remove_indices {
                 members.swap_remove(idx);
             }
+
             if members.len() < min_group {
                 break;
             }
