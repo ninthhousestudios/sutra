@@ -627,15 +627,15 @@ class Config {
     assert_eq!(max_retries.qualified_name, "Config::maxRetries");
 
     let name = flat.iter().find(|s| s.short_name == "name").unwrap();
-    assert_eq!(name.kind, SymbolKind::Const);
+    assert_eq!(name.kind, SymbolKind::Field);
     assert_eq!(name.qualified_name, "Config::name");
 
     let count = flat.iter().find(|s| s.short_name == "count").unwrap();
-    assert_eq!(count.kind, SymbolKind::Static);
+    assert_eq!(count.kind, SymbolKind::Field);
     assert_eq!(count.qualified_name, "Config::count");
 
     let cached = flat.iter().find(|s| s.short_name == "_cached").unwrap();
-    assert_eq!(cached.kind, SymbolKind::Const);
+    assert_eq!(cached.kind, SymbolKind::Field);
     assert_eq!(cached.qualified_name, "Config::_cached");
     assert_eq!(cached.visibility.as_deref(), Some("private"));
 }
@@ -731,21 +731,21 @@ class NativeBinding {
         .iter()
         .find(|s| s.short_name == "x")
         .expect("abstract final field x");
-    assert_eq!(x.kind, SymbolKind::Const);
+    assert_eq!(x.kind, SymbolKind::Field);
     assert_eq!(x.qualified_name, "Foo::x");
 
     let y = flat
         .iter()
         .find(|s| s.short_name == "y")
         .expect("abstract field y");
-    assert_eq!(y.kind, SymbolKind::Static);
+    assert_eq!(y.kind, SymbolKind::Field);
     assert_eq!(y.qualified_name, "Foo::y");
 
     let name = flat
         .iter()
         .find(|s| s.short_name == "name")
         .expect("external final field name");
-    assert_eq!(name.kind, SymbolKind::Const);
+    assert_eq!(name.kind, SymbolKind::Field);
     assert_eq!(name.qualified_name, "NativeBinding::name");
 
     let count = flat

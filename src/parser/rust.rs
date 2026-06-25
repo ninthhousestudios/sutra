@@ -130,8 +130,14 @@ fn collect_symbols_inner(
                     if in_cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut ctx = name_context.to_vec();
+                        ctx.push(sym.short_name.clone());
+                        sym.children = extract_field_symbols(body, src, &ctx);
+                    }
                     symbols.push(sym);
                 }
+                continue;
             }
             "enum_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Enum) {
@@ -409,6 +415,53 @@ fn extract_symbol(
         flags: 0,
         language_attrs,
     })
+}
+
+fn extract_field_symbols(body: Node, src: &[u8], name_context: &[String]) -> Vec<ExtractedSymbol> {
+    let mut fields = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "field_declaration" {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        let Ok(field_name) = name_node.utf8_text(src) else {
+            continue;
+        };
+        let qualified_name = build_qualified_name(name_context, field_name);
+        let visibility = extract_visibility(child, src);
+        let type_text = child
+            .child_by_field_name("type")
+            .and_then(|t| t.utf8_text(src).ok());
+        let signature = type_text.map(|t| format!("{field_name}: {t}"));
+        let signature_hash = signature
+            .as_ref()
+            .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
+        let docstring = extract_docstring(child, src);
+
+        fields.push(ExtractedSymbol {
+            qualified_name,
+            short_name: field_name.to_string(),
+            kind: SymbolKind::Field,
+            signature,
+            signature_hash,
+            visibility,
+            start_line: child.start_position().row + 1,
+            start_col: child.start_position().column,
+            end_line: child.end_position().row + 1,
+            end_col: child.end_position().column,
+            children: vec![],
+            docstring,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        });
+    }
+    fields
 }
 
 /// Extract an impl symbol — name is derived from the type (and optionally the trait).
@@ -989,5 +1042,47 @@ mod tests {
             !result.references.iter().any(|r| r.name == "self"),
             "self should not be extracted as a ref"
         );
+    }
+
+    #[test]
+    fn struct_fields_extracted() {
+        let src = "pub struct Config {\n    pub name: String,\n    port: u16,\n}";
+        let result = parse_rust(src, "test.rs").unwrap();
+        assert_eq!(result.symbols.len(), 1);
+        let config = &result.symbols[0];
+        assert_eq!(config.kind, SymbolKind::Struct);
+        assert_eq!(config.children.len(), 2);
+
+        let name_field = &config.children[0];
+        assert_eq!(name_field.short_name, "name");
+        assert_eq!(name_field.kind, SymbolKind::Field);
+        assert_eq!(name_field.qualified_name, "Config::name");
+        assert_eq!(name_field.signature.as_deref(), Some("name: String"));
+        assert_eq!(name_field.visibility.as_deref(), Some("pub"));
+
+        let port_field = &config.children[1];
+        assert_eq!(port_field.short_name, "port");
+        assert_eq!(port_field.kind, SymbolKind::Field);
+        assert_eq!(port_field.qualified_name, "Config::port");
+        assert_eq!(port_field.signature.as_deref(), Some("port: u16"));
+        assert_eq!(port_field.visibility, None);
+    }
+
+    #[test]
+    fn tuple_struct_no_fields() {
+        let src = "struct Wrapper(u32);";
+        let result = parse_rust(src, "test.rs").unwrap();
+        assert_eq!(result.symbols.len(), 1);
+        assert!(result.symbols[0].children.is_empty());
+    }
+
+    #[test]
+    fn nested_module_struct_fields() {
+        let src = "mod inner {\n    pub struct Point {\n        pub x: f64,\n        pub y: f64,\n    }\n}";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let flat = crate::parser::flatten_symbols(&result.symbols);
+        let x = flat.iter().find(|s| s.short_name == "x").unwrap();
+        assert_eq!(x.kind, SymbolKind::Field);
+        assert_eq!(x.qualified_name, "inner::Point::x");
     }
 }

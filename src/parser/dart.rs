@@ -319,7 +319,10 @@ fn extract_variable_symbols(
         node.children(&mut cursor).any(|c| c.kind() == kw)
     };
 
-    let kind = if has_keyword("const") || has_keyword("final") {
+    let is_instance_field = !name_context.is_empty() && !has_keyword("static");
+    let kind = if is_instance_field {
+        SymbolKind::Field
+    } else if has_keyword("const") || has_keyword("final") {
         SymbolKind::Const
     } else {
         SymbolKind::Static
@@ -506,7 +509,7 @@ fn extract_language_attrs(
                 attrs.insert("is_async".into(), true.into());
             }
         }
-        SymbolKind::Const | SymbolKind::Static => {
+        SymbolKind::Const | SymbolKind::Static | SymbolKind::Field => {
             if has_keyword(node, "const") {
                 attrs.insert("is_const".into(), true.into());
             }

@@ -67,6 +67,7 @@ pub enum SymbolKind {
     Class,
     Mixin,
     Extension,
+    Field,
 }
 
 impl SymbolKind {
@@ -86,6 +87,7 @@ impl SymbolKind {
             Self::Class => "class",
             Self::Mixin => "mixin",
             Self::Extension => "extension",
+            Self::Field => "field",
         }
     }
 }
@@ -114,6 +116,7 @@ impl std::str::FromStr for SymbolKind {
             "class" => Ok(Self::Class),
             "mixin" => Ok(Self::Mixin),
             "extension" => Ok(Self::Extension),
+            "field" => Ok(Self::Field),
             _ => Err(format!("unknown symbol kind: {s}")),
         }
     }

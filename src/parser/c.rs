@@ -225,6 +225,11 @@ fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Ex
         .map(|s| s.to_string())?;
     let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
 
+    let children = node
+        .child_by_field_name("body")
+        .map(|body| extract_struct_fields(body, src, &name))
+        .unwrap_or_default();
+
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
         short_name: name,
@@ -236,7 +241,7 @@ fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Ex
         start_col: node.start_position().column,
         end_line: node.end_position().row + 1,
         end_col: node.end_position().column,
-        children: vec![],
+        children,
         docstring,
         cyclomatic: None,
         cognitive: None,
@@ -244,6 +249,61 @@ fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Ex
         flags: 0,
         language_attrs: None,
     })
+}
+
+fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<ExtractedSymbol> {
+    let mut fields = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "field_declaration" {
+            continue;
+        }
+        let Some(field_name) = find_field_identifier(child, src) else {
+            continue;
+        };
+        let type_text = child
+            .child_by_field_name("type")
+            .and_then(|t| t.utf8_text(src).ok());
+        let signature = type_text.map(|t| format!("{t} {field_name}"));
+        let signature_hash = signature
+            .as_ref()
+            .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
+        let docstring = extract_docstring(child, src);
+
+        fields.push(ExtractedSymbol {
+            qualified_name: format!("{struct_name}::{field_name}"),
+            short_name: field_name,
+            kind: SymbolKind::Field,
+            signature,
+            signature_hash,
+            visibility: Some("pub".to_string()),
+            start_line: child.start_position().row + 1,
+            start_col: child.start_position().column,
+            end_line: child.end_position().row + 1,
+            end_col: child.end_position().column,
+            children: vec![],
+            docstring,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        });
+    }
+    fields
+}
+
+fn find_field_identifier(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "field_identifier" {
+        return node.utf8_text(src).ok().map(|s| s.to_string());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(name) = find_field_identifier(child, src) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
@@ -1166,5 +1226,49 @@ int f(int x) {
         let r = parse_c("int f(int x) { return x > 0 ? 1 : 0; }");
         // ternary: +1
         assert_eq!(r.symbols[0].cognitive, Some(1));
+    }
+
+    #[test]
+    fn struct_fields_extracted() {
+        let r = parse_c("struct Point { int x; int y; };");
+        let s = r
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(s.children.len(), 2);
+        assert_eq!(s.children[0].short_name, "x");
+        assert_eq!(s.children[0].kind, SymbolKind::Field);
+        assert_eq!(s.children[0].qualified_name, "Point::x");
+        assert_eq!(s.children[0].signature.as_deref(), Some("int x"));
+        assert_eq!(s.children[1].short_name, "y");
+        assert_eq!(s.children[1].qualified_name, "Point::y");
+    }
+
+    #[test]
+    fn struct_pointer_field_extracted() {
+        let r = parse_c("struct Node { struct Node *next; int val; };");
+        let s = r
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(s.children.len(), 2);
+        let next = s.children.iter().find(|f| f.short_name == "next").unwrap();
+        assert_eq!(next.kind, SymbolKind::Field);
+        assert_eq!(next.qualified_name, "Node::next");
+    }
+
+    #[test]
+    fn typedef_struct_fields_extracted() {
+        let r = parse_c("typedef struct Pair { int a; int b; } Pair;");
+        let s = r
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(s.children.len(), 2);
+        assert_eq!(s.children[0].short_name, "a");
+        assert_eq!(s.children[0].kind, SymbolKind::Field);
     }
 }
