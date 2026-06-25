@@ -18,6 +18,9 @@ pub struct TraceArgs {
     /// Max number of paths to return (default 10)
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Include field_access edges in addition to call edges (default false)
+    #[serde(default)]
+    pub follow_fields: Option<bool>,
 }
 use crate::error::{Result, SutraError};
 
@@ -37,6 +40,7 @@ pub fn handle(
     symbol: &str,
     direction: Option<&str>,
     limit: Option<usize>,
+    follow_fields: Option<bool>,
 ) -> Result<serde_json::Value> {
     let sym = db
         .resolve_symbol(symbol, None)?
@@ -48,11 +52,12 @@ pub fn handle(
 
     let direction = direction.unwrap_or("forward");
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
+    let follow_fields = follow_fields.unwrap_or(false);
 
     let paths = if direction == "backward" {
-        trace_backward(db, &sym, limit)?
+        trace_backward(db, &sym, limit, follow_fields)?
     } else {
-        trace_forward(db, &sym, limit)?
+        trace_forward(db, &sym, limit, follow_fields)?
     };
 
     let truncated = paths.len() >= limit;
@@ -68,7 +73,12 @@ pub fn handle(
     }))
 }
 
-fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
+fn trace_forward(
+    db: &Db,
+    target: &SymbolRow,
+    limit: usize,
+    follow_fields: bool,
+) -> Result<Vec<serde_json::Value>> {
     let mut paths: Vec<Vec<i64>> = Vec::new();
     let mut cycles: Vec<(Vec<i64>, i64)> = Vec::new();
     let mut visited = HashSet::new();
@@ -87,6 +97,7 @@ fn trace_forward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_
         &mut names,
         limit,
         0,
+        follow_fields,
     )?;
 
     let mut result: Vec<serde_json::Value> = Vec::new();
@@ -124,6 +135,7 @@ fn dfs_callers(
     names: &mut HashMap<i64, Arc<str>>,
     limit: usize,
     depth: usize,
+    follow_fields: bool,
 ) -> Result<()> {
     if paths.len() + cycles.len() >= limit || depth >= MAX_DEPTH {
         return Ok(());
@@ -140,7 +152,10 @@ fn dfs_callers(
     }
 
     let refs = db.find_refs_to_symbol(current_id)?;
-    let call_refs: Vec<_> = refs.iter().filter(|r| r.context_kind == "call").collect();
+    let call_refs: Vec<_> = refs
+        .iter()
+        .filter(|r| r.context_kind == "call" || (follow_fields && r.context_kind == "field_access"))
+        .collect();
 
     if call_refs.is_empty() {
         paths.push(stack.clone());
@@ -160,7 +175,17 @@ fn dfs_callers(
             found_any = true;
             names.insert(caller_sym.id, caller_sym.qualified_name.clone());
             stack.push(caller_sym.id);
-            dfs_callers(db, stack, visited, paths, cycles, names, limit, depth + 1)?;
+            dfs_callers(
+                db,
+                stack,
+                visited,
+                paths,
+                cycles,
+                names,
+                limit,
+                depth + 1,
+                follow_fields,
+            )?;
             stack.pop();
             visited.remove(&caller_sym.id);
         }
@@ -173,7 +198,12 @@ fn dfs_callers(
     Ok(())
 }
 
-fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde_json::Value>> {
+fn trace_backward(
+    db: &Db,
+    target: &SymbolRow,
+    limit: usize,
+    follow_fields: bool,
+) -> Result<Vec<serde_json::Value>> {
     let mut paths: Vec<Vec<i64>> = Vec::new();
     let mut cycles: Vec<(Vec<i64>, i64)> = Vec::new();
     let mut visited = HashSet::new();
@@ -192,6 +222,7 @@ fn trace_backward(db: &Db, target: &SymbolRow, limit: usize) -> Result<Vec<serde
         &mut names,
         limit,
         0,
+        follow_fields,
     )?;
 
     let mut result: Vec<serde_json::Value> = Vec::new();
@@ -229,6 +260,7 @@ fn dfs_callees(
     names: &mut HashMap<i64, Arc<str>>,
     limit: usize,
     depth: usize,
+    follow_fields: bool,
 ) -> Result<()> {
     if paths.len() + cycles.len() >= limit || depth >= MAX_DEPTH {
         return Ok(());
@@ -247,7 +279,7 @@ fn dfs_callees(
     let callees: Vec<_> = refs
         .iter()
         .filter(|r| {
-            r.context_kind == "call"
+            (r.context_kind == "call" || (follow_fields && r.context_kind == "field_access"))
                 && r.line >= current_sym.start_line
                 && r.line <= current_sym.end_line
                 && r.target_symbol_id.is_some()
@@ -271,7 +303,17 @@ fn dfs_callees(
             }
             names.insert(callee_sym.id, callee_sym.qualified_name.clone());
             stack.push(callee_sym.id);
-            dfs_callees(db, stack, visited, paths, cycles, names, limit, depth + 1)?;
+            dfs_callees(
+                db,
+                stack,
+                visited,
+                paths,
+                cycles,
+                names,
+                limit,
+                depth + 1,
+                follow_fields,
+            )?;
             stack.pop();
             visited.remove(&callee_sym.id);
         }

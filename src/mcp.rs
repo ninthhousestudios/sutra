@@ -694,6 +694,7 @@ impl SutraServer {
             &args.symbol,
             args.direction.as_deref(),
             args.limit,
+            args.follow_fields,
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))

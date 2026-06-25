@@ -7,7 +7,7 @@ pub struct ResolvedRef {
     pub original: ExtractedRef,
     pub target_symbol_id: Option<i64>,
     pub unresolved_name: Option<String>,
-    /// True when resolution was skipped (Import/FieldAccess context).
+    /// True when resolution was skipped (Import context).
     pub skipped: bool,
 }
 
@@ -31,6 +31,7 @@ fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
             "struct" | "enum" | "trait" | "type_alias" | "class" | "mixin" | "extension"
         ),
         RefContextKind::Call => matches!(symbol_kind, "function" | "method" | "macro"),
+        RefContextKind::FieldAccess => matches!(symbol_kind, "field" | "method"),
         // PatternBind, Other — can't narrow, accept any
         _ => true,
     }
@@ -43,11 +44,7 @@ fn resolve_single(
     file_imports: &[ExtractedImport],
 ) -> ResolvedRef {
     // Import refs are the `use`/`import` statement itself — not a usage.
-    // FieldAccess requires type info we don't have.
-    if matches!(
-        r.context_kind,
-        RefContextKind::Import | RefContextKind::FieldAccess
-    ) {
+    if matches!(r.context_kind, RefContextKind::Import) {
         return ResolvedRef {
             original: r.clone(),
             target_symbol_id: None,
@@ -59,7 +56,10 @@ fn resolve_single(
     let name = &r.name;
     let use_kind_filter = matches!(
         r.context_kind,
-        RefContextKind::TypeUse | RefContextKind::Call | RefContextKind::Construction
+        RefContextKind::TypeUse
+            | RefContextKind::Call
+            | RefContextKind::Construction
+            | RefContextKind::FieldAccess
     );
 
     // --- Step 1: local scope (file_symbols by short_name) ---

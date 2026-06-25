@@ -86,7 +86,7 @@ pub struct ParseSnapshot {
     pub duration_ms: i64,
     pub resolved_count: i64,
     pub unresolved_count: i64,
-    /// Refs where resolution was skipped (Import, FieldAccess contexts).
+    /// Refs where resolution was skipped (Import context).
     pub skipped_count: i64,
 }
 

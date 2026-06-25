@@ -88,7 +88,7 @@ fn setup_linear_chain() -> (tempfile::TempDir, Db) {
 #[test]
 fn forward_trace_linear_chain() {
     let (_dir, db) = setup_linear_chain();
-    let result = trace::handle(&db, "mod::helper", Some("forward"), None).unwrap();
+    let result = trace::handle(&db, "mod::helper", Some("forward"), None, None).unwrap();
 
     let paths = result["paths"].as_array().unwrap();
     assert!(!paths.is_empty(), "should find at least one path");
@@ -103,7 +103,7 @@ fn forward_trace_linear_chain() {
 #[test]
 fn backward_trace_linear_chain() {
     let (_dir, db) = setup_linear_chain();
-    let result = trace::handle(&db, "main", Some("backward"), None).unwrap();
+    let result = trace::handle(&db, "main", Some("backward"), None, None).unwrap();
 
     let paths = result["paths"].as_array().unwrap();
     assert!(!paths.is_empty(), "should find at least one path");
@@ -140,7 +140,7 @@ fn cycle_detected_and_marked() {
     db.insert_ref(fb.id, Some(alpha.id), None, 5, 0, "call")
         .unwrap();
 
-    let result = trace::handle(&db, "mod::alpha", Some("backward"), None).unwrap();
+    let result = trace::handle(&db, "mod::alpha", Some("backward"), None, None).unwrap();
     let paths = result["paths"].as_array().unwrap();
 
     let has_any_cycle = paths.iter().any(|p| p["has_cycle"].as_bool() == Some(true));
@@ -185,7 +185,7 @@ fn path_limit_respected() {
             .unwrap();
     }
 
-    let result = trace::handle(&db, "mod::target", Some("forward"), Some(3)).unwrap();
+    let result = trace::handle(&db, "mod::target", Some("forward"), Some(3), None).unwrap();
     let paths = result["paths"].as_array().unwrap();
     assert!(
         paths.len() <= 3,
@@ -199,7 +199,7 @@ fn path_limit_respected() {
 #[test]
 fn entry_point_rules_documented() {
     let (_dir, db) = setup_linear_chain();
-    let result = trace::handle(&db, "mod::helper", Some("forward"), None).unwrap();
+    let result = trace::handle(&db, "mod::helper", Some("forward"), None, None).unwrap();
 
     let rules = &result["entry_point_rules"];
     assert!(rules["name_based"]["rust"].as_array().is_some());
