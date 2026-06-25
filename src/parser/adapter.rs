@@ -375,11 +375,95 @@ impl FcaAttributeSource for CAdapter {
     }
 }
 
+pub struct PythonAdapter;
+
+impl LanguageAdapter for PythonAdapter {
+    fn language_id(&self) -> &str {
+        "python"
+    }
+    fn extensions(&self) -> &[&str] {
+        &["py"]
+    }
+    fn grammar(&self) -> Language {
+        tree_sitter_python::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::python::parse(ctx)
+    }
+    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
+        Some(self)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Weak
+    }
+}
+
+const PYTHON_EFFECT_PATTERNS: &[EffectPattern] = &[
+    EffectPattern {
+        attr_name: "effect:fs",
+        callee_prefixes: &[
+            "open",
+            "os.path",
+            "os.mkdir",
+            "os.remove",
+            "shutil",
+            "pathlib",
+        ],
+    },
+    EffectPattern {
+        attr_name: "effect:net",
+        callee_prefixes: &["requests", "urllib", "http.client", "socket", "aiohttp"],
+    },
+    EffectPattern {
+        attr_name: "effect:db",
+        callee_prefixes: &["sqlite3", "psycopg", "sqlalchemy", "pymongo", "redis"],
+    },
+    EffectPattern {
+        attr_name: "effect:io",
+        callee_prefixes: &["print", "input", "sys.stdout", "sys.stderr", "logging"],
+    },
+    EffectPattern {
+        attr_name: "effect:process",
+        callee_prefixes: &["subprocess", "os.system", "os.exec", "os.spawn"],
+    },
+];
+
+impl FcaAttributeSource for PythonAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        let mut sa = extract_cross_language_attrs(sym, file_path)?;
+        if let Some(ref la_json) = sym.language_attrs {
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
+                Ok(map) => {
+                    for (key, val) in &map {
+                        if val.as_bool() == Some(true) {
+                            sa.attributes.push(key.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        symbol = %sym.qualified_name,
+                        file = %file_path,
+                        error = %e,
+                        "malformed language_attrs JSON, skipping language-specific attributes"
+                    );
+                }
+            }
+        }
+        Some(sa)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        PYTHON_EFFECT_PATTERNS
+    }
+}
+
 pub fn default_registry() -> LanguageRegistry {
     let mut r = LanguageRegistry::new();
     r.register(Box::new(RustAdapter));
     r.register(Box::new(DartAdapter));
     r.register(Box::new(CAdapter));
+    r.register(Box::new(PythonAdapter));
     r
 }
 
@@ -440,7 +524,8 @@ mod tests {
         let dart = registry.adapter_for_language("dart").unwrap();
         assert_eq!(dart.language_id(), "dart");
 
-        assert!(registry.adapter_for_language("python").is_none());
+        let python = registry.adapter_for_language("python").unwrap();
+        assert_eq!(python.language_id(), "python");
     }
 
     #[test]
@@ -460,7 +545,7 @@ mod tests {
 
         assert!(registry.adapter_for_language("Rust").is_some());
         assert!(registry.adapter_for_language("DART").is_some());
-        assert!(registry.adapter_for_language("Python").is_none());
+        assert!(registry.adapter_for_language("Python").is_some());
 
         let exts = registry.extensions_for_languages(&["Rust".to_string()]);
         assert_eq!(exts, vec!["rs"]);
@@ -622,7 +707,8 @@ mod tests {
         assert_eq!(mults.get("rust"), Some(&2.0));
         assert_eq!(mults.get("dart"), Some(&1.5));
         assert_eq!(mults.get("c"), Some(&1.0));
-        assert_eq!(mults.len(), 3);
+        assert_eq!(mults.get("python"), Some(&1.0));
+        assert_eq!(mults.len(), 4);
     }
 
     #[test]

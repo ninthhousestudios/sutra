@@ -70,6 +70,20 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
             }
             _ => {}
         },
+        "python" => match kind {
+            "if_statement"
+            | "elif_clause"
+            | "while_statement"
+            | "for_statement"
+            | "conditional_expression"
+            | "except_clause" => {
+                *count += 1;
+            }
+            "boolean_operator" => {
+                *count += 1;
+            }
+            _ => {}
+        },
         _ => {}
     }
 
@@ -100,6 +114,9 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
     if kind == "binary_expression" && is_logical_operator(node, src) {
         *score += 1;
     }
+    if lang == "python" && kind == "boolean_operator" {
+        *score += 1;
+    }
 
     // break/continue with labels get +1
     if matches!(lang, "rust")
@@ -123,6 +140,24 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // Python elif/else: score at parent nesting to keep the chain flat
+        if lang == "python" && child.kind() == "elif_clause" {
+            *score += 1 + nesting;
+            let mut inner_cursor = child.walk();
+            for grandchild in child.children(&mut inner_cursor) {
+                walk_cognitive(grandchild, src, lang, child_nesting, score);
+            }
+            continue;
+        }
+        if lang == "python" && child.kind() == "else_clause" {
+            *score += 1;
+            let mut inner_cursor = child.walk();
+            for grandchild in child.children(&mut inner_cursor) {
+                walk_cognitive(grandchild, src, lang, child_nesting, score);
+            }
+            continue;
+        }
+
         // else-if chains: the else clause increments but the nested if does NOT
         // add nesting — it's a flat chain, not deeper nesting.
         if lang == "rust" && child.kind() == "else_clause" {
@@ -169,6 +204,14 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
             "while_statement" | "for_statement" | "do_statement" => (true, true),
             "switch_statement" => (true, false),
             "case_statement" | "goto_statement" => (true, false),
+            _ => (false, false),
+        },
+        "python" => match kind {
+            "if_statement" => (true, true),
+            "while_statement" | "for_statement" => (true, true),
+            "except_clause" => (true, true),
+            "conditional_expression" => (true, true),
+            "lambda" => (false, true),
             _ => (false, false),
         },
         _ => (false, false),
