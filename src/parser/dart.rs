@@ -720,12 +720,15 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         && !is_definition_name(node)
         && let Ok(name) = node.utf8_text(src)
     {
-        refs.push(ExtractedRef {
-            name: name.to_string(),
-            line: node.start_position().row + 1,
-            col: node.start_position().column,
-            context_kind: classify_ref_context(node),
-        });
+        let context_kind = classify_ref_context(node);
+        if context_kind != RefContextKind::Other {
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind,
+            });
+        }
     }
 
     if cursor.goto_first_child() {

@@ -662,12 +662,14 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         && let Ok(name) = node.utf8_text(src)
     {
         let context_kind = classify_ref_context(node);
-        refs.push(ExtractedRef {
-            name: name.to_string(),
-            line: node.start_position().row + 1,
-            col: node.start_position().column,
-            context_kind,
-        });
+        if context_kind != RefContextKind::Other {
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind,
+            });
+        }
     }
 
     // Method names in call position: foo.method()
@@ -983,15 +985,13 @@ mod tests {
     }
 
     #[test]
-    fn receiver_not_field_access() {
+    fn receiver_not_extracted() {
         let src = "fn go(db: Db) { db.query(); }";
         let result = parse_rust(src, "test.rs").unwrap();
-        let db_ref = result
-            .references
-            .iter()
-            .find(|r| r.name == "db")
-            .expect("receiver should be extracted");
-        assert_ne!(db_ref.context_kind, RefContextKind::FieldAccess);
+        assert!(
+            !result.references.iter().any(|r| r.name == "db"),
+            "receiver (Other) should be suppressed"
+        );
     }
 
     #[test]
@@ -1009,8 +1009,8 @@ mod tests {
         assert!(names.contains(&"b"), "b should be a Call ref");
         assert!(names.contains(&"c"), "c should be a Call ref");
         assert!(
-            result.references.iter().any(|r| r.name == "a"),
-            "receiver a should be extracted"
+            !result.references.iter().any(|r| r.name == "a"),
+            "receiver a (Other) should be suppressed"
         );
     }
 
@@ -1023,8 +1023,8 @@ mod tests {
             "plain field access should not produce a ref"
         );
         assert!(
-            result.references.iter().any(|r| r.name == "foo"),
-            "receiver in field access should be extracted"
+            !result.references.iter().any(|r| r.name == "foo"),
+            "receiver (Other) in field access should be suppressed"
         );
     }
 

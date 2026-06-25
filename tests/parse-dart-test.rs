@@ -788,14 +788,11 @@ void main() {
         "Foo.named() — named (callee) should be Call"
     );
 
-    let named_receiver = refs
-        .iter()
-        .find(|r| r.line == 4 && r.name == "Foo")
-        .unwrap();
-    assert_eq!(
-        named_receiver.context_kind,
-        RefContextKind::Other,
-        "Foo.named() — Foo (receiver) should be Other without semantic analysis"
+    assert!(
+        refs.iter()
+            .find(|r| r.line == 4 && r.name == "Foo")
+            .is_none(),
+        "Foo.named() — Foo (receiver) should be suppressed (Other refs are not extracted)"
     );
 
     let new_foo = refs
@@ -953,14 +950,11 @@ void main() {
     let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
     let refs = &result.references;
 
-    let receiver = refs
-        .iter()
-        .find(|r| r.name == "http" && r.line == 4)
-        .unwrap();
-    assert_eq!(
-        receiver.context_kind,
-        RefContextKind::Other,
-        "http (receiver) in http.get() should not be Call"
+    assert!(
+        refs.iter()
+            .find(|r| r.name == "http" && r.line == 4)
+            .is_none(),
+        "http (receiver) in http.get() should be suppressed (Other refs are not extracted)"
     );
 
     let callee = refs

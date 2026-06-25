@@ -537,12 +537,16 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     if node.kind() == "identifier" && !is_definition_name(node) {
         if let Ok(name) = node.utf8_text(src) {
             let ctx = classify_ref_context(node);
-            refs.push(ExtractedRef {
-                name: name.to_string(),
-                line: node.start_position().row + 1,
-                col: node.start_position().column,
-                context_kind: ctx,
-            });
+            if ctx == RefContextKind::Other {
+                // fall through to recurse children, but don't push this ref
+            } else {
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind: ctx,
+                });
+            }
             if ctx == RefContextKind::Call {
                 if let Some(chain) = build_dotted_call_chain(node, src) {
                     refs.push(ExtractedRef {

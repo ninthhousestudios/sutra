@@ -675,22 +675,28 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     match kind {
         "identifier" if !is_definition_name(node) => {
             if let Ok(name) = node.utf8_text(src) {
-                refs.push(ExtractedRef {
-                    name: name.to_string(),
-                    line: node.start_position().row + 1,
-                    col: node.start_position().column,
-                    context_kind: classify_ref_context(node),
-                });
+                let context_kind = classify_ref_context(node);
+                if context_kind != RefContextKind::Other {
+                    refs.push(ExtractedRef {
+                        name: name.to_string(),
+                        line: node.start_position().row + 1,
+                        col: node.start_position().column,
+                        context_kind,
+                    });
+                }
             }
         }
         "type_identifier" if !is_definition_name(node) => {
             if let Ok(name) = node.utf8_text(src) {
-                refs.push(ExtractedRef {
-                    name: name.to_string(),
-                    line: node.start_position().row + 1,
-                    col: node.start_position().column,
-                    context_kind: classify_ref_context(node),
-                });
+                let context_kind = classify_ref_context(node);
+                if context_kind != RefContextKind::Other {
+                    refs.push(ExtractedRef {
+                        name: name.to_string(),
+                        line: node.start_position().row + 1,
+                        col: node.start_position().column,
+                        context_kind,
+                    });
+                }
             }
         }
         "field_identifier" => {
