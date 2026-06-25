@@ -54,7 +54,7 @@ const LSH_L: usize = 24;
 const LSH_SEED: u64 = 0xDEAD_BEEF_CAFE_1234;
 const BRUTE_FORCE_THRESHOLD: usize = 50;
 const MAX_BUCKET_SIZE: usize = 200;
-const MAX_GROUP_SIZE: usize = 200;
+const MAX_GROUP_SIZE: usize = 1000;
 
 struct SimHashIndex {
     tables: Vec<HashMap<u64, Vec<usize>>>,
@@ -99,15 +99,31 @@ impl SimHashIndex {
         let mut pairs = HashSet::new();
         for table in &self.tables {
             for bucket in table.values() {
-                if bucket.len() < 2 || bucket.len() > MAX_BUCKET_SIZE {
+                if bucket.len() < 2 {
                     continue;
                 }
-                for i in 0..bucket.len() {
-                    for j in (i + 1)..bucket.len() {
-                        let (a, b) = if bucket[i] < bucket[j] {
-                            (bucket[i], bucket[j])
+                if bucket.len() <= MAX_BUCKET_SIZE {
+                    for i in 0..bucket.len() {
+                        for j in (i + 1)..bucket.len() {
+                            let (a, b) = if bucket[i] < bucket[j] {
+                                (bucket[i], bucket[j])
+                            } else {
+                                (bucket[j], bucket[i])
+                            };
+                            pairs.insert((a, b));
+                        }
+                    }
+                } else {
+                    // Star pattern: pair every element with the first,
+                    // giving O(B) pairs with full coverage. Union-find
+                    // transitively connects truly similar elements;
+                    // complete-link pruning rejects false positives.
+                    let hub = bucket[0];
+                    for &spoke in &bucket[1..] {
+                        let (a, b) = if hub < spoke {
+                            (hub, spoke)
                         } else {
-                            (bucket[j], bucket[i])
+                            (spoke, hub)
                         };
                         pairs.insert((a, b));
                     }
@@ -195,8 +211,36 @@ pub fn find_pattern_families(
     // Phase 2: complete-link pruning — remove members until all pairs pass
     let mut families = Vec::new();
     for (_root, mut members) in groups {
-        if members.len() < min_group || members.len() > MAX_GROUP_SIZE {
+        if members.len() < min_group {
             continue;
+        }
+
+        // For oversized groups, keep the most connected members by
+        // average similarity to all others (greedy core extraction).
+        if members.len() > MAX_GROUP_SIZE {
+            let mut avg_sims: Vec<(usize, f64)> = members
+                .iter()
+                .enumerate()
+                .map(|(mi, &a)| {
+                    let sum: f64 = members
+                        .iter()
+                        .filter(|&&b| b != a)
+                        .map(|&b| cache.get_or_compute(a, b, &normalized))
+                        .sum();
+                    (mi, sum / (members.len() - 1) as f64)
+                })
+                .collect();
+            avg_sims.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let keep: HashSet<usize> = avg_sims[..MAX_GROUP_SIZE]
+                .iter()
+                .map(|&(mi, _)| mi)
+                .collect();
+            members = members
+                .into_iter()
+                .enumerate()
+                .filter(|(mi, _)| keep.contains(mi))
+                .map(|(_, v)| v)
+                .collect();
         }
 
         loop {
@@ -220,10 +264,16 @@ pub fn find_pattern_families(
                 break;
             }
 
-            // Remove the worst half of failing members per iteration
-            // (O(log G) iterations instead of O(G), without over-pruning)
+            // Remove the worst half of failing members per iteration,
+            // but never drop below min_group in one pass
             failing.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            let to_remove = (failing.len() / 2).max(1);
+            let max_removable = members.len().saturating_sub(min_group);
+            if max_removable == 0 {
+                // At min_group with unresolved failures — group is invalid
+                members.clear();
+                break;
+            }
+            let to_remove = (failing.len() / 2).max(1).min(max_removable);
             let mut remove_indices: Vec<usize> =
                 failing[..to_remove].iter().map(|&(i, _)| i).collect();
             remove_indices.sort_unstable_by(|a, b| b.cmp(a));
@@ -362,5 +412,35 @@ mod tests {
         ];
         let families = find_pattern_families(&vectors, 0.85, 3);
         assert_eq!(families.len(), 2);
+    }
+
+    #[test]
+    fn clique_plus_outlier_preserves_family() {
+        // 3 identical vectors plus 1 random outlier — the clique must survive
+        let v = make_vec(42);
+        let outlier = make_vec(999);
+        let vectors = vec![(1, v.clone()), (2, v.clone()), (3, v.clone()), (4, outlier)];
+        let families = find_pattern_families(&vectors, 0.85, 3);
+        assert_eq!(
+            families.len(),
+            1,
+            "clique of 3 should survive with 1 outlier"
+        );
+        assert_eq!(families[0].member_symbol_ids.len(), 3);
+    }
+
+    #[test]
+    fn large_identical_family_not_dropped() {
+        // Family larger than BRUTE_FORCE_THRESHOLD should still be detected
+        let v = make_vec(42);
+        let n = 250;
+        let vectors: Vec<(i64, HrrVec)> = (0..n).map(|i| (i as i64, v.clone())).collect();
+        let families = find_pattern_families(&vectors, 0.85, 3);
+        assert_eq!(
+            families.len(),
+            1,
+            "large identical family should not be dropped"
+        );
+        assert_eq!(families[0].member_symbol_ids.len(), n);
     }
 }
