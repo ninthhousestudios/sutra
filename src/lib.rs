@@ -16,6 +16,7 @@ pub mod lessons;
 pub mod mcp;
 pub mod parser;
 pub mod pipeline;
+pub mod python_imports;
 pub mod resolver;
 pub mod rest;
 pub mod rules;

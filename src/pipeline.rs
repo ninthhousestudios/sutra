@@ -572,6 +572,11 @@ fn post_parse_sequence(
         info!(count = c_resolved, "resolved C import edges");
     }
 
+    let python_resolved = crate::python_imports::resolve_python_imports(db, workspace_root)?;
+    if python_resolved > 0 {
+        info!(count = python_resolved, "resolved Python import edges");
+    }
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;

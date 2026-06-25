@@ -325,6 +325,11 @@ pub struct ConstraintParseError {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct PythonConfig {
+    pub package_roots: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Rules {
     #[serde(default)]
     pub constraints: Constraints,
@@ -332,6 +337,8 @@ pub struct Rules {
     constraint: Vec<RawConstraint>,
     #[serde(default)]
     pub conventions: ConventionsConfig,
+    #[serde(default)]
+    pub python: Option<PythonConfig>,
 }
 
 impl Rules {
