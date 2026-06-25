@@ -596,6 +596,7 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         return RefContextKind::Other;
     };
 
+    // Call detection takes highest priority
     match parent.kind() {
         "call" => {
             if parent
@@ -618,14 +619,36 @@ fn classify_ref_context(node: Node) -> RefContextKind {
                 }) {
                     return RefContextKind::Call;
                 }
-                return RefContextKind::FieldAccess;
             }
         }
-        "type" => return RefContextKind::TypeUse,
         _ => {}
     }
 
+    // Any ancestor being a "type" node means we're inside a type annotation
+    if has_type_ancestor(node) {
+        return RefContextKind::TypeUse;
+    }
+
+    if parent.kind() == "attribute"
+        && parent
+            .child_by_field_name("attribute")
+            .is_some_and(|a| a.id() == node.id())
+    {
+        return RefContextKind::FieldAccess;
+    }
+
     RefContextKind::Other
+}
+
+fn has_type_ancestor(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "type" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -673,13 +696,45 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
 }
 
 fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
-    if let Some(module) = node.child_by_field_name("module_name") {
-        if let Ok(path) = module.utf8_text(src) {
-            imports.push(ExtractedImport {
-                raw_path: path.to_string(),
-                line: node.start_position().row + 1,
-            });
+    let module_node = node.child_by_field_name("module_name");
+    let prefix = module_node
+        .and_then(|m| m.utf8_text(src).ok())
+        .unwrap_or("");
+    let module_id = module_node.map(|m| m.id());
+    let line = node.start_position().row + 1;
+    let mut found_name = false;
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if module_id.is_some_and(|id| id == child.id()) {
+            continue;
         }
+        let name_text = match child.kind() {
+            "dotted_name" => child.utf8_text(src).ok(),
+            "aliased_import" => child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok()),
+            _ => continue,
+        };
+        if let Some(name) = name_text {
+            found_name = true;
+            let raw_path = if prefix.is_empty() {
+                name.to_string()
+            } else if prefix.bytes().all(|b| b == b'.') {
+                format!("{prefix}{name}")
+            } else {
+                format!("{prefix}.{name}")
+            };
+            imports.push(ExtractedImport { raw_path, line });
+        }
+    }
+
+    // Wildcard: `from module import *`
+    if !found_name && !prefix.is_empty() {
+        imports.push(ExtractedImport {
+            raw_path: prefix.to_string(),
+            line,
+        });
     }
 }
 
@@ -789,15 +844,61 @@ mod tests {
         assert_eq!(r.imports.len(), 3);
         assert_eq!(r.imports[0].raw_path, "os");
         assert_eq!(r.imports[1].raw_path, "sys");
-        assert_eq!(r.imports[2].raw_path, "pathlib");
+        assert_eq!(r.imports[2].raw_path, "pathlib.Path");
     }
 
     #[test]
     fn relative_import() {
         let r = parse_py("from . import utils\nfrom ..models import User\n");
         assert_eq!(r.imports.len(), 2);
-        assert_eq!(r.imports[0].raw_path, ".");
-        assert_eq!(r.imports[1].raw_path, "..models");
+        assert_eq!(r.imports[0].raw_path, ".utils");
+        assert_eq!(r.imports[1].raw_path, "..models.User");
+    }
+
+    #[test]
+    fn from_import_multi_name() {
+        let r = parse_py("from os.path import join, exists\n");
+        assert_eq!(r.imports.len(), 2);
+        assert_eq!(r.imports[0].raw_path, "os.path.join");
+        assert_eq!(r.imports[1].raw_path, "os.path.exists");
+    }
+
+    #[test]
+    fn from_import_aliased() {
+        let r = parse_py("from collections import OrderedDict as OD\n");
+        assert_eq!(r.imports.len(), 1);
+        assert_eq!(r.imports[0].raw_path, "collections.OrderedDict");
+    }
+
+    #[test]
+    fn from_import_wildcard() {
+        let r = parse_py("from os.path import *\n");
+        assert_eq!(r.imports.len(), 1);
+        assert_eq!(r.imports[0].raw_path, "os.path");
+    }
+
+    #[test]
+    fn type_use_generic_annotation() {
+        let r = parse_py("def foo(x: list[User]) -> None:\n    pass\n");
+        let type_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(type_refs.iter().any(|r| r.name == "list"));
+        assert!(type_refs.iter().any(|r| r.name == "User"));
+    }
+
+    #[test]
+    fn type_use_qualified_annotation() {
+        let r = parse_py("def foo(x: pkg.MyType) -> None:\n    pass\n");
+        let type_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(type_refs.iter().any(|r| r.name == "pkg"));
+        assert!(type_refs.iter().any(|r| r.name == "MyType"));
     }
 
     #[test]
