@@ -76,10 +76,14 @@ fn walk_cyclomatic(node: Node, src: &[u8], lang: &str, count: &mut u32) {
             | "while_statement"
             | "for_statement"
             | "conditional_expression"
-            | "except_clause" => {
+            | "except_clause"
+            | "list_comprehension"
+            | "dictionary_comprehension"
+            | "set_comprehension"
+            | "generator_expression" => {
                 *count += 1;
             }
-            "boolean_operator" => {
+            _ if is_logical_operator(node, src) => {
                 *count += 1;
             }
             _ => {}
@@ -110,11 +114,7 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
         *score += 1 + nesting;
     }
 
-    // Logical operators get +1 but no nesting penalty
-    if kind == "binary_expression" && is_logical_operator(node, src) {
-        *score += 1;
-    }
-    if lang == "python" && kind == "boolean_operator" {
+    if is_logical_operator(node, src) {
         *score += 1;
     }
 
@@ -207,10 +207,14 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
             _ => (false, false),
         },
         "python" => match kind {
-            "if_statement" => (true, true),
+            "if_statement" | "conditional_expression" => (true, true),
             "while_statement" | "for_statement" => (true, true),
-            "except_clause" => (true, true),
-            "conditional_expression" => (true, true),
+            "try_statement" => (true, true),
+            "except_clause" => (true, false),
+            "list_comprehension"
+            | "dictionary_comprehension"
+            | "set_comprehension"
+            | "generator_expression" => (true, false),
             "lambda" => (false, true),
             _ => (false, false),
         },
@@ -254,6 +258,9 @@ fn walk_nesting(node: Node, _src: &[u8], lang: &str, current_depth: u32, max_dep
 }
 
 fn is_logical_operator(node: Node, src: &[u8]) -> bool {
+    if node.kind() == "boolean_operator" {
+        return true;
+    }
     if let Some(op) = node.child_by_field_name("operator")
         && let Ok(text) = op.utf8_text(src)
     {
@@ -384,5 +391,71 @@ mod tests {
         let body = body_node(&tree);
         // closure increments nesting, if inside closure = depth 2
         assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 2);
+    }
+
+    fn parse_python_fn(src: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    fn python_body_node(tree: &tree_sitter::Tree) -> Node<'_> {
+        let root = tree.root_node();
+        let fn_def = root.child(0).unwrap();
+        fn_def.child_by_field_name("body").unwrap()
+    }
+
+    #[test]
+    fn python_cyclomatic_comprehensive() {
+        let src = "\
+def foo(items, flag):
+    for x in items:
+        if x > 0 and flag:
+            pass
+        elif x < 0 or flag:
+            pass
+    try:
+        pass
+    except ValueError:
+        pass
+    result = [x for x in items]
+";
+        let tree = parse_python_fn(src);
+        let body = python_body_node(&tree);
+        // 1(base) + 1(for) + 1(if) + 1(and) + 1(elif) + 1(or) + 1(except) + 1(list_comp) = 8
+        assert_eq!(cyclomatic(body, src.as_bytes(), "python"), 8);
+    }
+
+    #[test]
+    fn python_cognitive_nested() {
+        let src = "\
+def foo(a, b):
+    if a:
+        for x in range(b):
+            if x > 0:
+                pass
+";
+        let tree = parse_python_fn(src);
+        let body = python_body_node(&tree);
+        // if@0: +1, for@1: +2, if@2: +3 = 6
+        assert_eq!(cognitive(body, src.as_bytes(), "python"), 6);
+    }
+
+    #[test]
+    fn python_cognitive_try_except() {
+        let src = "\
+def foo():
+    try:
+        if True:
+            pass
+    except:
+        pass
+";
+        let tree = parse_python_fn(src);
+        let body = python_body_node(&tree);
+        // try@0: +1, if@1: +2, except@1(flow_break, no nesting incr): +2 = 5
+        assert_eq!(cognitive(body, src.as_bytes(), "python"), 5);
     }
 }

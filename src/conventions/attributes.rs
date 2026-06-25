@@ -145,6 +145,27 @@ pub fn enrich_with_effects(
         }
     }
 
+    for pattern in patterns {
+        if sym_attrs
+            .attributes
+            .contains(&pattern.attr_name.to_string())
+        {
+            continue;
+        }
+        if call_refs.iter().any(|r| {
+            r.target_symbol_id.is_none()
+                && r.unresolved_name.as_ref().is_some_and(|name| {
+                    pattern.callee_prefixes.iter().any(|p| {
+                        name.starts_with(p)
+                            && (name.len() == p.len()
+                                || name.as_bytes().get(p.len()) == Some(&b'.'))
+                    })
+                })
+        }) {
+            sym_attrs.attributes.push(pattern.attr_name.to_string());
+        }
+    }
+
     for callee in &resolved {
         if let Some(ref sig) = callee.signature
             && sig.contains("unsafe ")
@@ -842,5 +863,103 @@ mod tests {
         }];
         enrich_with_dart_import_effects(&mut attrs, &sym, &refs, &packages, &patterns);
         assert!(attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    fn make_unresolved_ref(name: &str, line: i64) -> RefRow {
+        RefRow {
+            id: 1,
+            file_id: 1,
+            target_symbol_id: None,
+            unresolved_name: Some(name.into()),
+            line,
+            col: 0,
+            context_kind: "call".into(),
+        }
+    }
+
+    #[test]
+    fn unresolved_ref_fallback_matches_python_effects() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("def do_stuff()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/app.py").unwrap();
+        let r1 = make_unresolved_ref("open", 3);
+        let r2 = make_unresolved_ref("requests.get", 5);
+        let r3 = make_unresolved_ref("subprocess.run", 7);
+        let patterns = [
+            EffectPattern {
+                attr_name: "effect:fs",
+                callee_prefixes: &["open"],
+            },
+            EffectPattern {
+                attr_name: "effect:net",
+                callee_prefixes: &["requests"],
+            },
+            EffectPattern {
+                attr_name: "effect:process",
+                callee_prefixes: &["subprocess"],
+            },
+        ];
+        enrich_with_effects(&mut attrs, &sym, &[&r1, &r2, &r3], &|_| None, &patterns);
+        assert!(attrs.attributes.contains(&"effect:fs".to_string()));
+        assert!(attrs.attributes.contains(&"effect:net".to_string()));
+        assert!(attrs.attributes.contains(&"effect:process".to_string()));
+    }
+
+    #[test]
+    fn unresolved_ref_fallback_dedup_with_resolved() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("def read()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/io.py").unwrap();
+        let resolved = make_ref(Some(100), 3);
+        let unresolved = make_unresolved_ref("open", 5);
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["open"],
+        }];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&resolved, &unresolved],
+            &|id| (id == 100).then(|| resolve_with("open", Some("def open()"))),
+            &patterns,
+        );
+        let count = attrs
+            .attributes
+            .iter()
+            .filter(|a| *a == "effect:fs")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unresolved_ref_fallback_respects_dot_boundary() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("def helper()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/util.py").unwrap();
+        let r = make_unresolved_ref("open_file", 3);
+        let patterns = [EffectPattern {
+            attr_name: "effect:fs",
+            callee_prefixes: &["open"],
+        }];
+        enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
+        assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
     }
 }
