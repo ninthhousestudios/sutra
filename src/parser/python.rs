@@ -536,12 +536,23 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
 
     if node.kind() == "identifier" && !is_definition_name(node) {
         if let Ok(name) = node.utf8_text(src) {
+            let ctx = classify_ref_context(node);
             refs.push(ExtractedRef {
                 name: name.to_string(),
                 line: node.start_position().row + 1,
                 col: node.start_position().column,
-                context_kind: classify_ref_context(node),
+                context_kind: ctx,
             });
+            if ctx == RefContextKind::Call {
+                if let Some(chain) = build_dotted_call_chain(node, src) {
+                    refs.push(ExtractedRef {
+                        name: chain,
+                        line: node.start_position().row + 1,
+                        col: node.start_position().column,
+                        context_kind: RefContextKind::Call,
+                    });
+                }
+            }
         }
     }
 
@@ -554,6 +565,42 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         }
         cursor.goto_parent();
     }
+}
+
+/// For `requests.get()`, the identifier `get` is the attribute field of an
+/// `attribute` node whose parent is `call`. Walk up through nested `attribute`
+/// nodes collecting the object segments to produce `"requests.get"`.
+fn build_dotted_call_chain(node: Node, src: &[u8]) -> Option<String> {
+    let attr_node = node.parent()?;
+    if attr_node.kind() != "attribute" {
+        return None;
+    }
+    if attr_node.child_by_field_name("attribute").map(|a| a.id()) != Some(node.id()) {
+        return None;
+    }
+
+    let mut segments = vec![node.utf8_text(src).ok()?];
+    let mut current = attr_node;
+    loop {
+        let object = current.child_by_field_name("object")?;
+        match object.kind() {
+            "identifier" => {
+                segments.push(object.utf8_text(src).ok()?);
+                break;
+            }
+            "attribute" => {
+                let attr_part = object.child_by_field_name("attribute")?;
+                segments.push(attr_part.utf8_text(src).ok()?);
+                current = object;
+            }
+            _ => return None,
+        }
+    }
+    if segments.len() < 2 {
+        return None;
+    }
+    segments.reverse();
+    Some(segments.join("."))
 }
 
 fn is_definition_name(node: Node) -> bool {
@@ -677,6 +724,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                     imports.push(ExtractedImport {
                         raw_path: path.to_string(),
                         line: child.start_position().row + 1,
+                        kind: "import",
                     });
                 }
             }
@@ -686,6 +734,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                         imports.push(ExtractedImport {
                             raw_path: path.to_string(),
                             line: name.start_position().row + 1,
+                            kind: "import",
                         });
                     }
                 }
@@ -725,7 +774,11 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
             } else {
                 format!("{prefix}.{name}")
             };
-            imports.push(ExtractedImport { raw_path, line });
+            imports.push(ExtractedImport {
+                raw_path,
+                line,
+                kind: "from_import",
+            });
         }
     }
 
@@ -734,6 +787,7 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
         imports.push(ExtractedImport {
             raw_path: prefix.to_string(),
             line,
+            kind: "from_import",
         });
     }
 }
@@ -1024,5 +1078,53 @@ mod tests {
         let r = parse_py(code);
         let sym = find_sym(&r, "foo");
         assert_eq!(sym.start_line, 1);
+    }
+
+    #[test]
+    fn dotted_call_emits_chain_ref() {
+        let r = parse_py("x = requests.get(url)\n");
+        let call_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(call_refs.iter().any(|r| r.name == "get"));
+        assert!(call_refs.iter().any(|r| r.name == "requests.get"));
+    }
+
+    #[test]
+    fn deep_dotted_call_emits_chain_ref() {
+        let r = parse_py("x = a.b.c()\n");
+        let call_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(call_refs.iter().any(|r| r.name == "c"));
+        assert!(call_refs.iter().any(|r| r.name == "a.b.c"));
+    }
+
+    #[test]
+    fn simple_call_no_spurious_chain() {
+        let r = parse_py("x = foo()\n");
+        let call_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(call_refs.len(), 1);
+        assert_eq!(call_refs[0].name, "foo");
+    }
+
+    #[test]
+    fn import_kind_plain_import() {
+        let r = parse_py("import os\nimport pkg.sub\n");
+        assert!(r.imports.iter().all(|i| i.kind == "import"));
+    }
+
+    #[test]
+    fn import_kind_from_import() {
+        let r = parse_py("from os.path import join\nfrom . import utils\n");
+        assert!(r.imports.iter().all(|i| i.kind == "from_import"));
     }
 }

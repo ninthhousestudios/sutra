@@ -172,6 +172,7 @@ impl std::str::FromStr for RefContextKind {
 pub struct ExtractedImport {
     pub raw_path: String,
     pub line: usize,
+    pub kind: &'static str,
 }
 
 pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {

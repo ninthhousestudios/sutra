@@ -762,6 +762,7 @@ fn collect_includes(node: Node, src: &[u8]) -> Vec<ExtractedImport> {
                     imports.push(ExtractedImport {
                         raw_path: raw_path.to_string(),
                         line: child.start_position().row + 1,
+                        kind: "import",
                     });
                 }
             }

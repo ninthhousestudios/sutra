@@ -1,0 +1,1 @@
+ALTER TABLE imports ADD COLUMN kind TEXT NOT NULL DEFAULT 'import';

@@ -778,6 +778,7 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
                 imports.push(ExtractedImport {
                     raw_path: path,
                     line,
+                    kind: "import",
                 });
             }
         }

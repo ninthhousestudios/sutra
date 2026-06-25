@@ -239,6 +239,7 @@ fn parse_single_file(
         .map(|imp| InsertImportParams {
             imported_path: &imp.raw_path,
             line: imp.line as i64,
+            kind: imp.kind,
         })
         .collect();
     let ref_params: Vec<InsertRefParams<'_>> = parse_result
@@ -325,6 +326,7 @@ fn resolve_file_refs(
         .map(|i| parser::ExtractedImport {
             raw_path: i.imported_path.clone(),
             line: i.line as usize,
+            kind: "import",
         })
         .collect();
 

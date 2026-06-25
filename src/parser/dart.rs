@@ -804,7 +804,13 @@ fn extract_import_uri(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>
     let line = node.start_position().row + 1;
     find_string_literal(node, src)
         .into_iter()
-        .for_each(|raw_path| imports.push(ExtractedImport { raw_path, line }));
+        .for_each(|raw_path| {
+            imports.push(ExtractedImport {
+                raw_path,
+                line,
+                kind: "import",
+            })
+        });
 }
 
 fn find_string_literal(node: Node, src: &[u8]) -> Vec<String> {

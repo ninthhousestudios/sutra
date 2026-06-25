@@ -211,6 +211,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0041_snapshot_head_commit.sql"),
         true,
     ),
+    (
+        "0042_import_kind",
+        include_str!("../../migrations/0042_import_kind.sql"),
+        true,
+    ),
 ];
 
 impl Db {
