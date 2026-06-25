@@ -351,6 +351,46 @@ fn cross_file_import_resolution() {
     );
 }
 
+#[test]
+fn cross_file_import_resolution_src_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = dir.path().join("src").join("mypackage");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("__init__.py"), "").unwrap();
+    std::fs::write(pkg.join("models.py"), "class User:\n    pass\n").unwrap();
+    std::fs::write(
+        pkg.join("app.py"),
+        "from mypackage.models import User\n\ndef handler(u: User):\n    pass\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_python_entry("py-src-layout", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    let snap = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    assert_eq!(snap.files_parsed, 3);
+
+    let edges = db.import_edges().unwrap();
+    let app_file = db
+        .file_by_path("src/mypackage/app.py")
+        .unwrap()
+        .expect("app.py should be indexed");
+    let models_file = db
+        .file_by_path("src/mypackage/models.py")
+        .unwrap()
+        .expect("models.py should be indexed");
+    assert!(
+        edges
+            .iter()
+            .any(|&(from, to)| from == app_file.id && to == models_file.id),
+        "app.py should have a resolved import edge to models.py in src layout, edges: {edges:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Effect detection end-to-end
 // ---------------------------------------------------------------------------
