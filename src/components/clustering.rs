@@ -129,16 +129,23 @@ pub struct ClusterResult {
     pub resolution: f64,
 }
 
-fn leiden(adj: &WeightedAdj, resolution: f64) -> ClusterResult {
+enum LeidenGraph {
+    Empty,
+    NoEdges {
+        nodes: Vec<i64>,
+    },
+    Ready {
+        nodes: Vec<i64>,
+        graph: leiden_rs::GraphData,
+    },
+}
+
+fn build_leiden_graph(adj: &WeightedAdj) -> LeidenGraph {
     let mut nodes: Vec<i64> = adj.keys().copied().collect();
     nodes.sort_unstable();
     let n = nodes.len();
     if n == 0 {
-        return ClusterResult {
-            communities: HashMap::new(),
-            modularity: 0.0,
-            resolution,
-        };
+        return LeidenGraph::Empty;
     }
 
     let id_to_idx: HashMap<i64, usize> = nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
@@ -158,42 +165,57 @@ fn leiden(adj: &WeightedAdj, resolution: f64) -> ClusterResult {
     }
 
     if !has_edges {
-        let communities = nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        return ClusterResult {
-            communities,
-            modularity: 0.0,
-            resolution,
-        };
+        return LeidenGraph::NoEdges { nodes };
     }
 
-    let graph = builder.build().unwrap();
-    let config = LeidenConfig::builder()
-        .quality(QualityType::Modularity)
-        .resolution(resolution)
-        .seed(42)
-        .build();
-
-    let output = Leiden::new(config).run(&graph).unwrap();
-    let membership = output.partition.as_slice();
-
-    let communities = nodes
-        .iter()
-        .enumerate()
-        .map(|(idx, &id)| (id, membership[idx]))
-        .collect();
-
-    ClusterResult {
-        communities,
-        modularity: output.quality,
-        resolution,
+    LeidenGraph::Ready {
+        nodes,
+        graph: builder.build().unwrap(),
     }
 }
 
-fn auto_tune(adj: &WeightedAdj) -> ClusterResult {
-    let n = adj.len();
+fn run_leiden(lg: &LeidenGraph, resolution: f64) -> ClusterResult {
+    match lg {
+        LeidenGraph::Empty => ClusterResult {
+            communities: HashMap::new(),
+            modularity: 0.0,
+            resolution,
+        },
+        LeidenGraph::NoEdges { nodes } => ClusterResult {
+            communities: nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect(),
+            modularity: 0.0,
+            resolution,
+        },
+        LeidenGraph::Ready { nodes, graph } => {
+            let config = LeidenConfig::builder()
+                .quality(QualityType::Modularity)
+                .resolution(resolution)
+                .seed(42)
+                .build();
+
+            let output = Leiden::new(config).run(graph).unwrap();
+            let membership = output.partition.as_slice();
+
+            ClusterResult {
+                communities: nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, &id)| (id, membership[idx]))
+                    .collect(),
+                modularity: output.quality,
+                resolution,
+            }
+        }
+    }
+}
+
+fn auto_tune(lg: &LeidenGraph, node_count: usize) -> ClusterResult {
     let candidates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-    let results: Vec<ClusterResult> = candidates.iter().map(|&gamma| leiden(adj, gamma)).collect();
+    let results: Vec<ClusterResult> = candidates
+        .iter()
+        .map(|&gamma| run_leiden(lg, gamma))
+        .collect();
 
     let viable: Vec<&ClusterResult> = results
         .iter()
@@ -204,7 +226,7 @@ fn auto_tune(adj: &WeightedAdj) -> ClusterResult {
             }
             let k = sizes.len();
             let max_size = sizes.values().max().copied().unwrap_or(0);
-            k >= 2 && (max_size as f64) <= 0.5 * n as f64
+            k >= 2 && (max_size as f64) <= 0.5 * node_count as f64
         })
         .collect();
 
@@ -212,9 +234,9 @@ fn auto_tune(adj: &WeightedAdj) -> ClusterResult {
         .iter()
         .max_by(|a, b| a.modularity.partial_cmp(&b.modularity).unwrap())
     {
-        leiden(adj, best.resolution)
+        run_leiden(lg, best.resolution)
     } else {
-        leiden(adj, 1.0)
+        run_leiden(lg, 1.0)
     }
 }
 
@@ -282,10 +304,11 @@ pub(super) fn run_clustering<'a>(
         return Ok(None);
     }
 
+    let lg = build_leiden_graph(&adj);
     let result = if let Some(gamma) = config.resolution {
-        leiden(&adj, gamma)
+        run_leiden(&lg, gamma)
     } else {
-        auto_tune(&adj)
+        auto_tune(&lg, adj.len())
     };
 
     let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
@@ -338,7 +361,8 @@ mod tests {
         adj.insert(5, vec![(4, 5.0), (6, 5.0)]);
         adj.insert(6, vec![(4, 5.0), (5, 5.0)]);
 
-        let result = leiden(&adj, 1.0);
+        let lg = build_leiden_graph(&adj);
+        let result = run_leiden(&lg, 1.0);
 
         let mut community_sets: HashMap<usize, Vec<i64>> = HashMap::new();
         for (&node, &comm) in &result.communities {
@@ -357,13 +381,13 @@ mod tests {
     fn test_leiden_single_node() {
         let mut adj: WeightedAdj = HashMap::new();
         adj.insert(1, vec![]);
-        let result = leiden(&adj, 1.0);
+        let lg = build_leiden_graph(&adj);
+        let result = run_leiden(&lg, 1.0);
         assert_eq!(result.communities.len(), 1);
     }
 
     #[test]
     fn test_auto_tune_picks_viable() {
-        // Two cliques with a weak bridge — auto_tune should find 2 communities
         let mut adj: WeightedAdj = HashMap::new();
         adj.insert(1, vec![(2, 10.0), (3, 10.0), (4, 0.1)]);
         adj.insert(2, vec![(1, 10.0), (3, 10.0)]);
@@ -372,7 +396,8 @@ mod tests {
         adj.insert(5, vec![(4, 10.0), (6, 10.0)]);
         adj.insert(6, vec![(4, 10.0), (5, 10.0)]);
 
-        let result = auto_tune(&adj);
+        let lg = build_leiden_graph(&adj);
+        let result = auto_tune(&lg, adj.len());
         let mut community_sets: HashMap<usize, Vec<i64>> = HashMap::new();
         for (&node, &comm) in &result.communities {
             community_sets.entry(comm).or_default().push(node);
@@ -430,9 +455,11 @@ mod tests {
             &[4, 6, 2, 5, 1, 3],
         ];
 
-        let baseline = leiden(&make_graph(orders[0]), 1.0);
+        let baseline_lg = build_leiden_graph(&make_graph(orders[0]));
+        let baseline = run_leiden(&baseline_lg, 1.0);
         for order in &orders[1..] {
-            let result = leiden(&make_graph(order), 1.0);
+            let lg = build_leiden_graph(&make_graph(order));
+            let result = run_leiden(&lg, 1.0);
             assert_eq!(
                 baseline.communities, result.communities,
                 "communities differ for insertion order {order:?}"
