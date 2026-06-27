@@ -175,6 +175,10 @@ fn build_leiden_graph(adj: &WeightedAdj) -> LeidenGraph {
 }
 
 fn run_leiden(lg: &LeidenGraph, resolution: f64) -> ClusterResult {
+    run_leiden_with(lg, resolution, QualityType::Modularity)
+}
+
+fn run_leiden_with(lg: &LeidenGraph, resolution: f64, quality: QualityType) -> ClusterResult {
     match lg {
         LeidenGraph::Empty => ClusterResult {
             communities: HashMap::new(),
@@ -188,7 +192,7 @@ fn run_leiden(lg: &LeidenGraph, resolution: f64) -> ClusterResult {
         },
         LeidenGraph::Ready { nodes, graph } => {
             let config = LeidenConfig::builder()
-                .quality(QualityType::Modularity)
+                .quality(quality)
                 .resolution(resolution)
                 .seed(42)
                 .build();
