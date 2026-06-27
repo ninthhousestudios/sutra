@@ -128,7 +128,8 @@ pub struct LouvainResult {
 }
 
 fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
-    let nodes: Vec<i64> = adj.keys().copied().collect();
+    let mut nodes: Vec<i64> = adj.keys().copied().collect();
+    nodes.sort_unstable();
     let n = nodes.len();
     if n == 0 {
         return LouvainResult {
@@ -199,7 +200,7 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
                 let sigma_c = sigma_tot.get(&c).copied().unwrap_or(0.0);
                 let gain = (ki_in - ki_in_current) / m2
                     - resolution * k[i] * (sigma_c - sigma_current) / (m2 * m2);
-                if gain > best_gain {
+                if gain > best_gain || (gain == best_gain && gain > 0.0 && c < best_comm) {
                     best_gain = gain;
                     best_comm = c;
                 }
@@ -471,5 +472,42 @@ mod tests {
         assert!(!is_test_file("src/db/mod.rs"));
         assert!(!is_test_file("src/testing_utils.rs"));
         assert!(!is_test_file("src/attestation.rs"));
+    }
+
+    #[test]
+    fn test_louvain_deterministic_across_insertion_orders() {
+        // Two cliques with a weak bridge — results must be identical
+        // regardless of HashMap insertion order.
+        let make_graph = |order: &[i64]| -> WeightedAdj {
+            let edges: HashMap<i64, Vec<(i64, f64)>> = HashMap::from([
+                (1, vec![(2, 10.0), (3, 10.0), (4, 0.1)]),
+                (2, vec![(1, 10.0), (3, 10.0)]),
+                (3, vec![(1, 10.0), (2, 10.0)]),
+                (4, vec![(5, 10.0), (6, 10.0), (1, 0.1)]),
+                (5, vec![(4, 10.0), (6, 10.0)]),
+                (6, vec![(4, 10.0), (5, 10.0)]),
+            ]);
+            let mut adj = WeightedAdj::new();
+            for &id in order {
+                adj.insert(id, edges[&id].clone());
+            }
+            adj
+        };
+
+        let orders: &[&[i64]] = &[
+            &[1, 2, 3, 4, 5, 6],
+            &[6, 5, 4, 3, 2, 1],
+            &[3, 1, 5, 2, 6, 4],
+            &[4, 6, 2, 5, 1, 3],
+        ];
+
+        let baseline = louvain(&make_graph(orders[0]), 1.0);
+        for order in &orders[1..] {
+            let result = louvain(&make_graph(order), 1.0);
+            assert_eq!(
+                baseline.communities, result.communities,
+                "communities differ for insertion order {order:?}"
+            );
+        }
     }
 }
