@@ -299,6 +299,10 @@ pub(super) fn clustering_config_hash(
         .cochange_window_days
         .unwrap_or(DEFAULT_COCHANGE_WINDOW_DAYS);
     write!(buf, "ct={ct};cw={cw};cwd={cwd};").unwrap();
+    let mcs = config
+        .max_community_size
+        .unwrap_or(super::clustering::DEFAULT_MAX_COMMUNITY_SIZE);
+    write!(buf, "mcs={mcs};").unwrap();
     buf
 }
 

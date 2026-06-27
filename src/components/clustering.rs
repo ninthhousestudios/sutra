@@ -283,7 +283,7 @@ pub(super) fn auto_name(paths: &[&str]) -> String {
     }
 }
 
-const DEFAULT_MAX_COMMUNITY_SIZE: usize = 12;
+pub(super) const DEFAULT_MAX_COMMUNITY_SIZE: usize = 12;
 
 fn split_oversized(result: &mut ClusterResult, adj: &WeightedAdj, max_size: usize) {
     let mut by_comm: HashMap<usize, Vec<i64>> = HashMap::new();
@@ -316,25 +316,45 @@ fn split_oversized(result: &mut ClusterResult, adj: &WeightedAdj, max_size: usiz
 
         let sub_lg = build_leiden_graph(&sub_adj);
 
-        // Try increasing resolutions until the largest subcommunity fits
         let candidates = [2.0, 3.0, 5.0, 8.0];
-        let mut best: Option<ClusterResult> = None;
+        let mut accepted: Option<ClusterResult> = None;
         for &gamma in &candidates {
             let sub_result = run_leiden(&sub_lg, gamma);
-            let max_sub = community_max_size(&sub_result);
-            best = Some(sub_result);
-            if max_sub <= max_size {
+            if community_count(&sub_result) <= 1 {
+                continue;
+            }
+            if community_max_size(&sub_result) <= max_size {
+                accepted = Some(sub_result);
                 break;
+            }
+            if accepted.is_none() {
+                accepted = Some(sub_result);
             }
         }
 
-        if let Some(sub_result) = best {
-            if community_count(&sub_result) > 1 {
-                for (&file_id, &sub_comm) in &sub_result.communities {
-                    result.communities.insert(file_id, next_comm + sub_comm);
+        // If Leiden couldn't split within budget, chunk deterministically
+        let accepted = match accepted {
+            Some(r) if community_max_size(&r) <= max_size => r,
+            _ => {
+                let mut sorted_members: Vec<i64> = members.clone();
+                sorted_members.sort_unstable();
+                let mut chunked = ClusterResult {
+                    communities: HashMap::new(),
+                    modularity: 0.0,
+                    resolution: 0.0,
+                };
+                for (i, &id) in sorted_members.iter().enumerate() {
+                    chunked.communities.insert(id, i / max_size);
                 }
-                next_comm += community_count(&sub_result);
+                chunked
             }
+        };
+
+        if community_count(&accepted) > 1 {
+            for (&file_id, &sub_comm) in &accepted.communities {
+                result.communities.insert(file_id, next_comm + sub_comm);
+            }
+            next_comm += community_count(&accepted);
         }
     }
 }
@@ -577,13 +597,6 @@ mod tests {
         let lg = build_leiden_graph(&adj);
         let mut result = run_leiden(&lg, 0.5);
 
-        // At low resolution, Leiden may merge into one community
-        let mut sizes: HashMap<usize, usize> = HashMap::new();
-        for &c in result.communities.values() {
-            *sizes.entry(c).or_default() += 1;
-        }
-        let max_before = *sizes.values().max().unwrap();
-
         split_oversized(&mut result, &adj, 4);
 
         let mut sizes_after: HashMap<usize, usize> = HashMap::new();
@@ -592,17 +605,14 @@ mod tests {
         }
         let max_after = *sizes_after.values().max().unwrap();
 
-        if max_before > 4 {
-            assert!(
-                max_after <= max_before,
-                "split should not increase max community size"
-            );
-            assert!(
-                sizes_after.len() > sizes.len(),
-                "split should produce more communities"
-            );
-        }
-        // All 8 nodes should still be assigned
+        assert!(
+            max_after <= 4,
+            "split must enforce max_size: got {max_after}"
+        );
+        assert!(
+            sizes_after.len() >= 2,
+            "split should produce at least 2 communities"
+        );
         assert_eq!(result.communities.len(), 8);
     }
 
@@ -649,9 +659,11 @@ mod tests {
             *sizes.entry(c).or_default() += 1;
         }
 
-        // Re-clustering at higher resolution should split the hub-spoke graph.
-        // Pure star topology may produce singletons or small groups depending on
-        // resolution, but it should at least attempt a split.
+        let max_size = *sizes.values().max().unwrap();
+        assert!(
+            max_size <= 4,
+            "hub-spoke split must enforce max_size: got {max_size}"
+        );
         assert!(sizes.len() > 1, "hub-spoke graph should be split");
         assert_eq!(result.communities.len(), 9, "all nodes still assigned");
     }

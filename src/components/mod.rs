@@ -174,4 +174,18 @@ mod tests {
         assert!(c.cochange_weight.is_none());
         assert!(c.cochange_window_days.is_none());
     }
+
+    #[test]
+    fn test_config_hash_changes_with_max_community_size() {
+        use std::collections::HashMap;
+        let empty_bm = HashMap::new();
+        let c1 = parse_config("").unwrap();
+        let c2 = parse_config("max_community_size = 8").unwrap();
+        let h1 = identity::clustering_config_hash(&empty_bm, &c1);
+        let h2 = identity::clustering_config_hash(&empty_bm, &c2);
+        assert_ne!(
+            h1, h2,
+            "changing max_community_size must change the config hash"
+        );
+    }
 }
