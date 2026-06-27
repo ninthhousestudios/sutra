@@ -67,6 +67,9 @@ regex = "1"
 # Hashing
 blake3 = "1"
 
+# Community detection
+leiden-rs = { version = "0.8.1", default-features = false }
+
 # File locking
 fs2 = "0.4"
 

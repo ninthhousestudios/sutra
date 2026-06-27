@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use leiden_rs::{GraphDataBuilder, Leiden, LeidenConfig, QualityType};
+
 use crate::db::{Db, FileRow};
 use crate::error::Result;
 use crate::graph::GraphData;
@@ -121,18 +123,18 @@ fn add_cochange_edges(
     Ok(added)
 }
 
-pub struct LouvainResult {
+pub struct ClusterResult {
     pub communities: HashMap<i64, usize>,
     pub modularity: f64,
     pub resolution: f64,
 }
 
-fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
+fn leiden(adj: &WeightedAdj, resolution: f64) -> ClusterResult {
     let mut nodes: Vec<i64> = adj.keys().copied().collect();
     nodes.sort_unstable();
     let n = nodes.len();
     if n == 0 {
-        return LouvainResult {
+        return ClusterResult {
             communities: HashMap::new(),
             modularity: 0.0,
             resolution,
@@ -141,123 +143,59 @@ fn louvain(adj: &WeightedAdj, resolution: f64) -> LouvainResult {
 
     let id_to_idx: HashMap<i64, usize> = nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
-    let mut neighbors: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-    let mut total_weight = 0.0;
+    let mut builder = GraphDataBuilder::new(n);
+    let mut has_edges = false;
     for (&node, edges) in adj {
         let i = id_to_idx[&node];
         for &(nbr, w) in edges {
             if let Some(&j) = id_to_idx.get(&nbr) {
-                neighbors[i].push((j, w));
-                total_weight += w;
+                if i < j {
+                    builder.add_edge(i, j, w).unwrap();
+                    has_edges = true;
+                }
             }
         }
     }
-    // Each undirected edge counted twice
-    total_weight /= 2.0;
 
-    if total_weight == 0.0 {
+    if !has_edges {
         let communities = nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        return LouvainResult {
+        return ClusterResult {
             communities,
             modularity: 0.0,
             resolution,
         };
     }
 
-    let mut community: Vec<usize> = (0..n).collect();
-    let mut k: Vec<f64> = vec![0.0; n];
-    for i in 0..n {
-        k[i] = neighbors[i].iter().map(|(_, w)| w).sum();
-    }
+    let graph = builder.build().unwrap();
+    let config = LeidenConfig::builder()
+        .quality(QualityType::Modularity)
+        .resolution(resolution)
+        .seed(42)
+        .build();
 
-    let m2 = 2.0 * total_weight;
+    let output = Leiden::new(config).run(&graph).unwrap();
+    let membership = output.partition.as_slice();
 
-    let mut sigma_tot: HashMap<usize, f64> = HashMap::new();
-    for j in 0..n {
-        *sigma_tot.entry(community[j]).or_default() += k[j];
-    }
-
-    let mut improved = true;
-    while improved {
-        improved = false;
-        for i in 0..n {
-            let current_comm = community[i];
-
-            let mut comm_weights: HashMap<usize, f64> = HashMap::new();
-            for &(j, w) in &neighbors[i] {
-                *comm_weights.entry(community[j]).or_default() += w;
-            }
-
-            let ki_in_current = comm_weights.get(&current_comm).copied().unwrap_or(0.0);
-            let sigma_current = sigma_tot.get(&current_comm).copied().unwrap_or(0.0) - k[i];
-
-            let mut best_comm = current_comm;
-            let mut best_gain = 0.0;
-            for (&c, &ki_in) in &comm_weights {
-                if c == current_comm {
-                    continue;
-                }
-                let sigma_c = sigma_tot.get(&c).copied().unwrap_or(0.0);
-                let gain = (ki_in - ki_in_current) / m2
-                    - resolution * k[i] * (sigma_c - sigma_current) / (m2 * m2);
-                if gain > best_gain || (gain == best_gain && gain > 0.0 && c < best_comm) {
-                    best_gain = gain;
-                    best_comm = c;
-                }
-            }
-            if best_comm != current_comm {
-                *sigma_tot.entry(current_comm).or_default() -= k[i];
-                *sigma_tot.entry(best_comm).or_default() += k[i];
-                community[i] = best_comm;
-                improved = true;
-            }
-        }
-    }
-
-    // Compute modularity
-    let mut q = 0.0;
-    for i in 0..n {
-        for &(j, w) in &neighbors[i] {
-            if community[i] == community[j] {
-                q += w - resolution * k[i] * k[j] / m2;
-            }
-        }
-    }
-    q /= m2;
-
-    // Renumber communities to dense 0..k
-    let mut remap: HashMap<usize, usize> = HashMap::new();
-    let mut next = 0;
     let communities = nodes
         .iter()
-        .map(|&id| {
-            let c = community[id_to_idx[&id]];
-            let mapped = *remap.entry(c).or_insert_with(|| {
-                let v = next;
-                next += 1;
-                v
-            });
-            (id, mapped)
-        })
+        .enumerate()
+        .map(|(idx, &id)| (id, membership[idx]))
         .collect();
 
-    LouvainResult {
+    ClusterResult {
         communities,
-        modularity: q,
+        modularity: output.quality,
         resolution,
     }
 }
 
-fn auto_tune(adj: &WeightedAdj) -> LouvainResult {
+fn auto_tune(adj: &WeightedAdj) -> ClusterResult {
     let n = adj.len();
     let candidates = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-    let results: Vec<LouvainResult> = candidates
-        .iter()
-        .map(|&gamma| louvain(adj, gamma))
-        .collect();
+    let results: Vec<ClusterResult> = candidates.iter().map(|&gamma| leiden(adj, gamma)).collect();
 
-    let viable: Vec<&LouvainResult> = results
+    let viable: Vec<&ClusterResult> = results
         .iter()
         .filter(|r| {
             let mut sizes: HashMap<usize, usize> = HashMap::new();
@@ -274,10 +212,9 @@ fn auto_tune(adj: &WeightedAdj) -> LouvainResult {
         .iter()
         .max_by(|a, b| a.modularity.partial_cmp(&b.modularity).unwrap())
     {
-        louvain(adj, best.resolution)
+        leiden(adj, best.resolution)
     } else {
-        // All degenerate — fall back to γ=1.0
-        louvain(adj, 1.0)
+        leiden(adj, 1.0)
     }
 }
 
@@ -320,7 +257,7 @@ pub(super) fn auto_name(paths: &[&str]) -> String {
     }
 }
 
-pub(super) fn build_clusters(result: &LouvainResult) -> Vec<Vec<i64>> {
+pub(super) fn build_clusters(result: &ClusterResult) -> Vec<Vec<i64>> {
     let mut by_comm: HashMap<usize, Vec<i64>> = HashMap::new();
     for (&file_id, &comm) in &result.communities {
         by_comm.entry(comm).or_default().push(file_id);
@@ -346,7 +283,7 @@ pub(super) fn run_clustering<'a>(
     }
 
     let result = if let Some(gamma) = config.resolution {
-        louvain(&adj, gamma)
+        leiden(&adj, gamma)
     } else {
         auto_tune(&adj)
     };
@@ -392,19 +329,16 @@ mod tests {
     }
 
     #[test]
-    fn test_louvain_two_cliques() {
-        // Two disconnected cliques should produce two communities
+    fn test_leiden_two_cliques() {
         let mut adj: WeightedAdj = HashMap::new();
-        // Clique A: nodes 1,2,3
         adj.insert(1, vec![(2, 5.0), (3, 5.0)]);
         adj.insert(2, vec![(1, 5.0), (3, 5.0)]);
         adj.insert(3, vec![(1, 5.0), (2, 5.0)]);
-        // Clique B: nodes 4,5,6
         adj.insert(4, vec![(5, 5.0), (6, 5.0)]);
         adj.insert(5, vec![(4, 5.0), (6, 5.0)]);
         adj.insert(6, vec![(4, 5.0), (5, 5.0)]);
 
-        let result = louvain(&adj, 1.0);
+        let result = leiden(&adj, 1.0);
 
         let mut community_sets: HashMap<usize, Vec<i64>> = HashMap::new();
         for (&node, &comm) in &result.communities {
@@ -412,21 +346,18 @@ mod tests {
         }
         assert_eq!(community_sets.len(), 2);
 
-        // Nodes in clique A should share a community
         assert_eq!(result.communities[&1], result.communities[&2]);
         assert_eq!(result.communities[&2], result.communities[&3]);
-        // Nodes in clique B should share a community
         assert_eq!(result.communities[&4], result.communities[&5]);
         assert_eq!(result.communities[&5], result.communities[&6]);
-        // Different communities
         assert_ne!(result.communities[&1], result.communities[&4]);
     }
 
     #[test]
-    fn test_louvain_single_node() {
+    fn test_leiden_single_node() {
         let mut adj: WeightedAdj = HashMap::new();
         adj.insert(1, vec![]);
-        let result = louvain(&adj, 1.0);
+        let result = leiden(&adj, 1.0);
         assert_eq!(result.communities.len(), 1);
     }
 
@@ -475,9 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn test_louvain_deterministic_across_insertion_orders() {
-        // Two cliques with a weak bridge — results must be identical
-        // regardless of HashMap insertion order.
+    fn test_leiden_deterministic_across_insertion_orders() {
         let make_graph = |order: &[i64]| -> WeightedAdj {
             let edges: HashMap<i64, Vec<(i64, f64)>> = HashMap::from([
                 (1, vec![(2, 10.0), (3, 10.0), (4, 0.1)]),
@@ -501,9 +430,9 @@ mod tests {
             &[4, 6, 2, 5, 1, 3],
         ];
 
-        let baseline = louvain(&make_graph(orders[0]), 1.0);
+        let baseline = leiden(&make_graph(orders[0]), 1.0);
         for order in &orders[1..] {
-            let result = louvain(&make_graph(order), 1.0);
+            let result = leiden(&make_graph(order), 1.0);
             assert_eq!(
                 baseline.communities, result.communities,
                 "communities differ for insertion order {order:?}"
