@@ -37,6 +37,8 @@ pub struct ComponentsConfig {
     pub cochange_weight: Option<f64>,
     #[serde(default)]
     pub cochange_window_days: Option<u32>,
+    #[serde(default)]
+    pub max_community_size: Option<usize>,
 }
 
 pub fn load_config(root: &Path) -> Result<ComponentsConfig> {

@@ -283,6 +283,75 @@ pub(super) fn auto_name(paths: &[&str]) -> String {
     }
 }
 
+const DEFAULT_MAX_COMMUNITY_SIZE: usize = 12;
+
+fn split_oversized(result: &mut ClusterResult, adj: &WeightedAdj, max_size: usize) {
+    let mut by_comm: HashMap<usize, Vec<i64>> = HashMap::new();
+    for (&file_id, &comm) in &result.communities {
+        by_comm.entry(comm).or_default().push(file_id);
+    }
+
+    let mut next_comm = result.communities.values().max().copied().unwrap_or(0) + 1;
+
+    for (_, members) in &by_comm {
+        if members.len() <= max_size {
+            continue;
+        }
+
+        let member_set: HashSet<i64> = members.iter().copied().collect();
+
+        // Extract the subgraph for this community
+        let mut sub_adj: WeightedAdj = HashMap::new();
+        for &node in members {
+            let mut edges = Vec::new();
+            if let Some(nbrs) = adj.get(&node) {
+                for &(nbr, w) in nbrs {
+                    if member_set.contains(&nbr) {
+                        edges.push((nbr, w));
+                    }
+                }
+            }
+            sub_adj.insert(node, edges);
+        }
+
+        let sub_lg = build_leiden_graph(&sub_adj);
+
+        // Try increasing resolutions until the largest subcommunity fits
+        let candidates = [2.0, 3.0, 5.0, 8.0];
+        let mut best: Option<ClusterResult> = None;
+        for &gamma in &candidates {
+            let sub_result = run_leiden(&sub_lg, gamma);
+            let max_sub = community_max_size(&sub_result);
+            best = Some(sub_result);
+            if max_sub <= max_size {
+                break;
+            }
+        }
+
+        if let Some(sub_result) = best {
+            if community_count(&sub_result) > 1 {
+                for (&file_id, &sub_comm) in &sub_result.communities {
+                    result.communities.insert(file_id, next_comm + sub_comm);
+                }
+                next_comm += community_count(&sub_result);
+            }
+        }
+    }
+}
+
+fn community_max_size(result: &ClusterResult) -> usize {
+    let mut sizes: HashMap<usize, usize> = HashMap::new();
+    for &c in result.communities.values() {
+        *sizes.entry(c).or_default() += 1;
+    }
+    sizes.values().max().copied().unwrap_or(0)
+}
+
+fn community_count(result: &ClusterResult) -> usize {
+    let comms: HashSet<usize> = result.communities.values().copied().collect();
+    comms.len()
+}
+
 pub(super) fn build_clusters(result: &ClusterResult) -> Vec<Vec<i64>> {
     let mut by_comm: HashMap<usize, Vec<i64>> = HashMap::new();
     for (&file_id, &comm) in &result.communities {
@@ -309,11 +378,16 @@ pub(super) fn run_clustering<'a>(
     }
 
     let lg = build_leiden_graph(&adj);
-    let result = if let Some(gamma) = config.resolution {
+    let mut result = if let Some(gamma) = config.resolution {
         run_leiden(&lg, gamma)
     } else {
         auto_tune(&lg, adj.len())
     };
+
+    let max_size = config
+        .max_community_size
+        .unwrap_or(DEFAULT_MAX_COMMUNITY_SIZE);
+    split_oversized(&mut result, &adj, max_size);
 
     let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
     let clusters = build_clusters(&result);
@@ -469,5 +543,116 @@ mod tests {
                 "communities differ for insertion order {order:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_split_oversized_breaks_large_community() {
+        // Two cliques of 4 connected by a weak bridge — Leiden puts them
+        // together at low resolution. With max_size=4, split should separate.
+        let mut adj: WeightedAdj = HashMap::new();
+        // Clique A: nodes 1-4, strong internal edges
+        for &a in &[1, 2, 3, 4] {
+            let mut edges = Vec::new();
+            for &b in &[1, 2, 3, 4] {
+                if a != b {
+                    edges.push((b, 10.0));
+                }
+            }
+            adj.insert(a, edges);
+        }
+        // Clique B: nodes 5-8, strong internal edges
+        for &a in &[5, 6, 7, 8] {
+            let mut edges = Vec::new();
+            for &b in &[5, 6, 7, 8] {
+                if a != b {
+                    edges.push((b, 10.0));
+                }
+            }
+            adj.insert(a, edges);
+        }
+        // Weak bridge between cliques
+        adj.get_mut(&4).unwrap().push((5, 1.0));
+        adj.get_mut(&5).unwrap().push((4, 1.0));
+
+        let lg = build_leiden_graph(&adj);
+        let mut result = run_leiden(&lg, 0.5);
+
+        // At low resolution, Leiden may merge into one community
+        let mut sizes: HashMap<usize, usize> = HashMap::new();
+        for &c in result.communities.values() {
+            *sizes.entry(c).or_default() += 1;
+        }
+        let max_before = *sizes.values().max().unwrap();
+
+        split_oversized(&mut result, &adj, 4);
+
+        let mut sizes_after: HashMap<usize, usize> = HashMap::new();
+        for &c in result.communities.values() {
+            *sizes_after.entry(c).or_default() += 1;
+        }
+        let max_after = *sizes_after.values().max().unwrap();
+
+        if max_before > 4 {
+            assert!(
+                max_after <= max_before,
+                "split should not increase max community size"
+            );
+            assert!(
+                sizes_after.len() > sizes.len(),
+                "split should produce more communities"
+            );
+        }
+        // All 8 nodes should still be assigned
+        assert_eq!(result.communities.len(), 8);
+    }
+
+    #[test]
+    fn test_split_oversized_leaves_small_communities() {
+        let mut adj: WeightedAdj = HashMap::new();
+        adj.insert(1, vec![(2, 5.0), (3, 5.0)]);
+        adj.insert(2, vec![(1, 5.0), (3, 5.0)]);
+        adj.insert(3, vec![(1, 5.0), (2, 5.0)]);
+
+        let lg = build_leiden_graph(&adj);
+        let mut result = run_leiden(&lg, 1.0);
+        let before = result.communities.clone();
+
+        split_oversized(&mut result, &adj, 10);
+
+        assert_eq!(result.communities, before);
+    }
+
+    #[test]
+    fn test_split_oversized_hub_with_spokes() {
+        // Hub node 0 connected to 8 spokes, spokes not connected to each other.
+        // This mimics the real problem (mcp.rs connected to many tools).
+        let mut adj: WeightedAdj = HashMap::new();
+        let spokes: Vec<i64> = (1..=8).collect();
+        let mut hub_edges: Vec<(i64, f64)> = Vec::new();
+        for &s in &spokes {
+            hub_edges.push((s, 5.0));
+            adj.insert(s, vec![(0, 5.0)]);
+        }
+        adj.insert(0, hub_edges);
+
+        // Force all into one community
+        let mut result = ClusterResult {
+            communities: (0..=8).map(|id| (id, 0)).collect(),
+            modularity: 0.5,
+            resolution: 1.0,
+        };
+
+        split_oversized(&mut result, &adj, 4);
+
+        let mut sizes: HashMap<usize, usize> = HashMap::new();
+        for &c in result.communities.values() {
+            *sizes.entry(c).or_default() += 1;
+        }
+
+        // Re-clustering at higher resolution should split the hub-spoke graph.
+        // Pure star topology may produce singletons or small groups depending on
+        // resolution, but it should at least attempt a split.
+        assert!(sizes.len() > 1, "hub-spoke graph should be split");
+        assert_eq!(result.communities.len(), 9, "all nodes still assigned");
     }
 }
