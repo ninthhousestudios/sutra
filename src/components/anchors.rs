@@ -107,7 +107,7 @@ pub fn compute_semantic_anchors(
     }
 
     let mut intra_in_degree: HashMap<i64, usize> = HashMap::new();
-    for &(src_file_id, target_sym_id) in &gd.all_refs {
+    for &(src_file_id, target_sym_id, _) in &gd.all_refs {
         if let Some(target_file_id) = gd.sym_to_file.get(&target_sym_id) {
             let src_comp = file_to_component.get(&src_file_id);
             let tgt_comp = file_to_component.get(target_file_id);

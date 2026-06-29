@@ -59,13 +59,13 @@ impl Db {
         Ok(rows?)
     }
 
-    pub fn all_resolved_refs(&self) -> Result<Vec<(i64, i64)>> {
+    pub fn all_resolved_refs(&self) -> Result<Vec<(i64, i64, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT file_id, target_symbol_id FROM refs WHERE target_symbol_id IS NOT NULL",
+            "SELECT file_id, target_symbol_id, context_kind FROM refs WHERE target_symbol_id IS NOT NULL",
         )?;
-        let rows: rusqlite::Result<Vec<(i64, i64)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect();
         Ok(rows?)
     }
@@ -189,7 +189,7 @@ impl Db {
         let sym_file: HashMap<i64, i64> = self.all_symbol_file_map()?.into_iter().collect();
         let refs = self.all_resolved_refs()?;
         let mut edges = HashSet::new();
-        for (src_file, target_sym) in refs {
+        for (src_file, target_sym, _) in refs {
             if let Some(&target_file) = sym_file.get(&target_sym)
                 && src_file != target_file
             {

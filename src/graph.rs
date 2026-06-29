@@ -5,15 +5,60 @@ use crate::error::Result;
 
 pub type FileGraph = HashMap<i64, HashSet<i64>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeKind {
+    Call,
+    Import,
+    TypeUse,
+    FieldAccess,
+    Reference,
+}
+
+impl EdgeKind {
+    pub fn from_context_kind(s: &str) -> Self {
+        match s {
+            "call" | "construction" => Self::Call,
+            "import" => Self::Import,
+            "type_use" => Self::TypeUse,
+            "field_access" => Self::FieldAccess,
+            _ => Self::Reference,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::Import => "import",
+            Self::TypeUse => "type_use",
+            Self::FieldAccess => "field_access",
+            Self::Reference => "reference",
+        }
+    }
+
+    pub fn clustering_weight(&self) -> f64 {
+        match self {
+            Self::Call => 1.0,
+            Self::FieldAccess => 0.8,
+            Self::TypeUse => 0.5,
+            Self::Import => 0.3,
+            Self::Reference => 0.2,
+        }
+    }
+}
+
 pub struct GraphData {
     pub sym_to_file: HashMap<i64, i64>,
-    pub all_refs: Vec<(i64, i64)>,
+    pub all_refs: Vec<(i64, i64, EdgeKind)>,
 }
 
 impl GraphData {
     pub fn load(db: &Db) -> Result<Self> {
         let sym_to_file = db.all_symbol_file_map()?.into_iter().collect();
-        let all_refs = db.all_resolved_refs()?;
+        let raw_refs = db.all_resolved_refs()?;
+        let all_refs = raw_refs
+            .into_iter()
+            .map(|(src, tgt, kind)| (src, tgt, EdgeKind::from_context_kind(&kind)))
+            .collect();
         Ok(Self {
             sym_to_file,
             all_refs,
@@ -33,7 +78,7 @@ pub fn build_file_adjacency(
         outgoing.entry(f.id).or_default();
     }
 
-    for &(src_file_id, target_sym_id) in &gd.all_refs {
+    for &(src_file_id, target_sym_id, _) in &gd.all_refs {
         if let Some(&target_file_id) = gd.sym_to_file.get(&target_sym_id)
             && target_file_id != src_file_id
         {
@@ -243,7 +288,7 @@ pub fn compute_pagerank_with_adjacency(
     db.batch_update_file_pagerank(&file_updates)?;
 
     let mut ref_counts: HashMap<i64, usize> = HashMap::new();
-    for &(_, target_sym_id) in &gd.all_refs {
+    for &(_, target_sym_id, _) in &gd.all_refs {
         *ref_counts.entry(target_sym_id).or_default() += 1;
     }
 
