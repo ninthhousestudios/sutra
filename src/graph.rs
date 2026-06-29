@@ -329,10 +329,14 @@ pub fn compute_pagerank_with_adjacency(
 pub fn find_import_sccs(edges: &[(i64, i64)]) -> Vec<Vec<i64>> {
     let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut all_nodes: HashSet<i64> = HashSet::new();
+    let mut has_self_edge: HashSet<i64> = HashSet::new();
     for &(from, to) in edges {
         adj.entry(from).or_default().push(to);
         all_nodes.insert(from);
         all_nodes.insert(to);
+        if from == to {
+            has_self_edge.insert(from);
+        }
     }
 
     let mut index_map: HashMap<i64, usize> = HashMap::new();
@@ -394,7 +398,7 @@ pub fn find_import_sccs(edges: &[(i64, i64)]) -> Vec<Vec<i64>> {
                             break;
                         }
                     }
-                    if scc.len() > 1 {
+                    if scc.len() > 1 || (scc.len() == 1 && has_self_edge.contains(&scc[0])) {
                         scc.sort();
                         sccs.push(scc);
                     }
@@ -440,9 +444,18 @@ mod scc_tests {
     }
 
     #[test]
-    fn self_loop_excluded() {
+    fn self_loop_included() {
         let edges = vec![(1, 1)];
-        assert!(find_import_sccs(&edges).is_empty());
+        let sccs = find_import_sccs(&edges);
+        assert_eq!(sccs.len(), 1);
+        assert_eq!(sccs[0], vec![1]);
+    }
+
+    #[test]
+    fn singleton_without_self_edge_excluded() {
+        let edges = vec![(1, 2)];
+        let sccs = find_import_sccs(&edges);
+        assert!(sccs.iter().all(|scc| scc.len() > 1));
     }
 
     #[test]
