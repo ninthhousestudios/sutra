@@ -790,9 +790,10 @@ fn test_fresh_db_creates_schema_migrations() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
+    let expected = Db::migration_count() as i64;
     assert_eq!(
-        count, 41,
-        "fresh DB should register all 37 existing migrations"
+        count, expected,
+        "fresh DB should register all {expected} existing migrations"
     );
 }
 
@@ -806,7 +807,11 @@ fn test_migration_reopen_is_idempotent() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 41, "reopen should not duplicate migration rows");
+    let expected = Db::migration_count() as i64;
+    assert_eq!(
+        count, expected,
+        "reopen should not duplicate migration rows"
+    );
 }
 
 #[test]

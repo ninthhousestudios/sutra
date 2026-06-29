@@ -224,6 +224,10 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
 ];
 
 impl Db {
+    pub fn migration_count() -> usize {
+        MIGRATIONS.len()
+    }
+
     pub(crate) fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock();
 
