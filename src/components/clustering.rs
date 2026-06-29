@@ -5,7 +5,7 @@ use leiden_rs::{GraphDataBuilder, Leiden, LeidenConfig, QualityType};
 
 use crate::db::{Db, FileRow};
 use crate::error::Result;
-use crate::graph::GraphData;
+use crate::graph::{EdgeKind, GraphData};
 
 use super::ComponentsConfig;
 
@@ -18,6 +18,13 @@ pub(super) fn build_weighted_adjacency(files: &[FileRow], gd: &GraphData) -> (We
             && src_file != target_file
         {
             *directed.entry((src_file, target_file)).or_default() += kind.clustering_weight();
+        }
+    }
+
+    let import_weight = EdgeKind::Import.clustering_weight();
+    for &(src, dst) in &gd.import_edges {
+        if src != dst {
+            *directed.entry((src, dst)).or_default() += import_weight;
         }
     }
 

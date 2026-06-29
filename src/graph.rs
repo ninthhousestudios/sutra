@@ -49,6 +49,7 @@ impl EdgeKind {
 pub struct GraphData {
     pub sym_to_file: HashMap<i64, i64>,
     pub all_refs: Vec<(i64, i64, EdgeKind)>,
+    pub import_edges: Vec<(i64, i64)>,
 }
 
 impl GraphData {
@@ -59,9 +60,11 @@ impl GraphData {
             .into_iter()
             .map(|(src, tgt, kind)| (src, tgt, EdgeKind::from_context_kind(&kind)))
             .collect();
+        let import_edges = db.import_edges()?;
         Ok(Self {
             sym_to_file,
             all_refs,
+            import_edges,
         })
     }
 }
@@ -90,6 +93,13 @@ pub fn build_file_adjacency(
                 .entry(src_file_id)
                 .or_default()
                 .insert(target_file_id);
+        }
+    }
+
+    for &(src, dst) in &gd.import_edges {
+        if src != dst {
+            fan_in_map.entry(dst).or_default().insert(src);
+            outgoing.entry(src).or_default().insert(dst);
         }
     }
 
@@ -222,7 +232,7 @@ pub fn compute_pagerank_with_adjacency(
         }
     }
 
-    for (src, dst) in db.import_edges()? {
+    for &(src, dst) in &gd.import_edges {
         if let (Some(&si), Some(&di)) = (id_to_idx.get(&src), id_to_idx.get(&dst))
             && si != di
         {

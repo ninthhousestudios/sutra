@@ -90,7 +90,7 @@ pub fn handle(
             .or_default()
             .insert(&r.context_kind);
     }
-    let mut direct_caller_files: Vec<serde_json::Value> = file_edge_types
+    let mut direct_caller_file_edges: Vec<serde_json::Value> = file_edge_types
         .iter()
         .filter_map(|(&fid, kinds)| {
             let path = db.file_by_id(fid).ok().flatten()?.path;
@@ -99,7 +99,12 @@ pub fn handle(
             Some(json!({"file": path, "edge_types": sorted}))
         })
         .collect();
-    direct_caller_files.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+    direct_caller_file_edges.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+
+    let direct_caller_files: Vec<&str> = direct_caller_file_edges
+        .iter()
+        .filter_map(|v| v["file"].as_str())
+        .collect();
 
     if direct_caller_files.is_empty() && risk == "low" {
         risk_factors.push("no external callers found".to_string());
@@ -121,6 +126,7 @@ pub fn handle(
         "risk": risk,
         "risk_factors": risk_factors,
         "direct_caller_files": direct_caller_files,
+        "direct_caller_file_edges": direct_caller_file_edges,
     });
 
     if let Some(ldb) = lessons_db {
