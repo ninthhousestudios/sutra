@@ -12,21 +12,19 @@ use super::ComponentsConfig;
 pub(super) type WeightedAdj = HashMap<i64, Vec<(i64, f64)>>;
 
 pub(super) fn build_weighted_adjacency(files: &[FileRow], gd: &GraphData) -> (WeightedAdj, usize) {
-    let mut directed: HashMap<(i64, i64), usize> = HashMap::new();
-    for &(src_file, target_sym) in &gd.all_refs {
+    let mut directed: HashMap<(i64, i64), f64> = HashMap::new();
+    for &(src_file, target_sym, kind) in &gd.all_refs {
         if let Some(&target_file) = gd.sym_to_file.get(&target_sym)
             && src_file != target_file
         {
-            *directed.entry((src_file, target_file)).or_default() += 1;
+            *directed.entry((src_file, target_file)).or_default() += kind.clustering_weight();
         }
     }
 
-    // Symmetrize: canonical key = (min, max)
     let mut undirected: HashMap<(i64, i64), f64> = HashMap::new();
-    for (&(a, b), &count) in &directed {
+    for (&(a, b), &weight) in &directed {
         let key = if a < b { (a, b) } else { (b, a) };
-        // weight = count * (1/ambiguity); ambiguity=1 for all resolved refs
-        *undirected.entry(key).or_default() += count as f64;
+        *undirected.entry(key).or_default() += weight;
     }
 
     let edge_count = undirected.len();
