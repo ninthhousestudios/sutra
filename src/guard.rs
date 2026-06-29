@@ -322,6 +322,55 @@ pub fn parse_proposed(rel_path: &str, proposed_content: &str) -> Option<ParseRes
     if result.parsed_ok { Some(result) } else { None }
 }
 
+pub fn is_signature_preserving(conn: &Connection, file_id: i64, result: &ParseResult) -> bool {
+    let proposed: HashMap<&str, (Option<&str>, Option<&str>)> =
+        crate::parser::flatten_symbols(&result.symbols)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.qualified_name.as_str(),
+                    (s.signature_hash.as_deref(), s.visibility.as_deref()),
+                )
+            })
+            .collect();
+
+    let mut stmt = match conn.prepare(
+        "SELECT qualified_name, signature_hash, visibility FROM symbols WHERE file_id = ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let rows = match stmt.query_map(params![file_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    for row in rows {
+        let (name, indexed_hash, indexed_vis) = match row {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        match proposed.get(name.as_str()) {
+            None => return false,
+            Some(&(proposed_hash, proposed_vis)) => {
+                if proposed_hash != indexed_hash.as_deref() {
+                    return false;
+                }
+                if proposed_vis != indexed_vis.as_deref() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Imports extracted from proposed (not-yet-written) file content.
 pub struct ProposedImports {
     /// Workspace-internal resolved edges. For languages without proposed-edge
@@ -1641,5 +1690,130 @@ innocent = { package = "arrow-core", version = "1" }
                 .map(|f| &f.to_path)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn setup_signature_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE symbols (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 file_id INTEGER NOT NULL,
+                 qualified_name TEXT NOT NULL,
+                 short_name TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 signature TEXT,
+                 signature_hash TEXT,
+                 visibility TEXT,
+                 start_line INTEGER NOT NULL DEFAULT 0,
+                 start_col INTEGER NOT NULL DEFAULT 0,
+                 end_line INTEGER NOT NULL DEFAULT 0,
+                 end_col INTEGER NOT NULL DEFAULT 0,
+                 parent_symbol_id INTEGER
+             );
+             INSERT INTO files VALUES (1, 'src/lib.rs');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_symbol(
+        conn: &Connection,
+        file_id: i64,
+        name: &str,
+        sig_hash: Option<&str>,
+        vis: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO symbols (file_id, qualified_name, short_name, kind, signature_hash, visibility)
+             VALUES (?1, ?2, ?2, 'function', ?3, ?4)",
+            params![file_id, name, sig_hash, vis],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn signature_preserving_body_local_edit() {
+        let conn = setup_signature_db();
+        insert_symbol(&conn, 1, "do_thing", Some("abc123"), Some("pub"));
+        let code = "pub fn do_thing(x: i32) -> bool {\n    x > 0\n}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        let proposed_flat = crate::parser::flatten_symbols(&parsed.symbols);
+        assert_eq!(proposed_flat.len(), 1);
+        let sym = proposed_flat[0];
+        assert_eq!(sym.qualified_name, "do_thing");
+        conn.execute(
+            "UPDATE symbols SET signature_hash = ?1, visibility = ?2 WHERE qualified_name = 'do_thing'",
+            params![sym.signature_hash, sym.visibility],
+        ).unwrap();
+        assert!(is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn signature_change_not_preserving() {
+        let conn = setup_signature_db();
+        insert_symbol(&conn, 1, "do_thing", Some("old_hash"), Some("pub"));
+        let code = "pub fn do_thing(x: i32, y: i32) -> bool {\n    x > y\n}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        assert!(!is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn visibility_change_not_preserving() {
+        let conn = setup_signature_db();
+        let code = "pub(crate) fn do_thing(x: i32) -> bool {\n    x > 0\n}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        let sym = &crate::parser::flatten_symbols(&parsed.symbols)[0];
+        // Same signature_hash but different visibility
+        insert_symbol(
+            &conn,
+            1,
+            "do_thing",
+            sym.signature_hash.as_deref(),
+            Some("pub"),
+        );
+        assert!(!is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn symbol_deleted_not_preserving() {
+        let conn = setup_signature_db();
+        insert_symbol(&conn, 1, "do_thing", Some("abc"), Some("pub"));
+        insert_symbol(&conn, 1, "helper", Some("def"), None);
+        let code = "pub fn do_thing(x: i32) -> bool {\n    x > 0\n}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        let sym = &crate::parser::flatten_symbols(&parsed.symbols)[0];
+        conn.execute(
+            "UPDATE symbols SET signature_hash = ?1, visibility = ?2 WHERE qualified_name = 'do_thing'",
+            params![sym.signature_hash, sym.visibility],
+        ).unwrap();
+        assert!(!is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn new_symbol_added_is_preserving() {
+        let conn = setup_signature_db();
+        let code = "pub fn do_thing(x: i32) -> bool {\n    x > 0\n}\nfn helper() {}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        let sym = crate::parser::flatten_symbols(&parsed.symbols)
+            .into_iter()
+            .find(|s| s.qualified_name == "do_thing")
+            .unwrap();
+        insert_symbol(
+            &conn,
+            1,
+            "do_thing",
+            sym.signature_hash.as_deref(),
+            sym.visibility.as_deref(),
+        );
+        assert!(is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn no_indexed_symbols_is_preserving() {
+        let conn = setup_signature_db();
+        let code = "fn new_thing() {}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        assert!(is_signature_preserving(&conn, 1, &parsed));
     }
 }
