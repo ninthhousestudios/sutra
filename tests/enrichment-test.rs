@@ -62,7 +62,7 @@ fn store_args(text: &str, anchors: Vec<LocationAnchor>) -> RememberArgs {
 }
 
 fn anchor(kind: &str, value: &str) -> LocationAnchor {
-    LocationAnchor {
+    LocationAnchor::Explicit {
         kind: kind.to_string(),
         value: value.to_string(),
     }
@@ -372,5 +372,48 @@ fn ambiguous_short_symbol_skips_enrichment() {
     assert!(
         cats.is_empty(),
         "no inferred categories for ambiguous symbol: {cats:?}"
+    );
+}
+
+#[test]
+fn bare_string_anchors_deserialize_and_infer_kind() {
+    let (_wd, _db, _ld, lessons_db) = setup();
+
+    // The shape a caller naturally reaches for: a list of bare strings, plus
+    // one explicit object mixed in.
+    let args: RememberArgs = serde_json::from_value(serde_json::json!({
+        "text": "shorthand anchors should just work",
+        "location_anchors": [
+            "_ExploreAppState",
+            "lib/main.dart",
+            "crate::tools::remember",
+            {"kind": "file", "value": "README"},
+        ],
+    }))
+    .expect("bare strings + object both deserialize");
+
+    let result = sutra::tools::remember::handle(&lessons_db, None, &args).unwrap();
+    let id = result["lesson_id"].as_str().unwrap();
+
+    let anchors = stored_anchors(&lessons_db, id);
+    // No '/' and no extension and no '::' → symbol
+    assert!(
+        anchors.contains(&("symbol".into(), "_ExploreAppState".into())),
+        "plain identifier inferred as symbol: {anchors:?}"
+    );
+    // Path separator → file
+    assert!(
+        anchors.contains(&("file".into(), "lib/main.dart".into())),
+        "path inferred as file: {anchors:?}"
+    );
+    // '::' qualified → symbol, never file
+    assert!(
+        anchors.contains(&("symbol".into(), "crate::tools::remember".into())),
+        "qualified name inferred as symbol: {anchors:?}"
+    );
+    // Explicit object form still honored verbatim
+    assert!(
+        anchors.contains(&("file".into(), "README".into())),
+        "explicit object anchor preserved: {anchors:?}"
     );
 }

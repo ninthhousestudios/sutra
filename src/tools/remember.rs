@@ -42,12 +42,62 @@ pub struct RememberArgs {
     pub workspace: Option<String>,
 }
 
+/// A location anchor, accepted in two forms:
+/// - a bare string (`"_ExploreAppState"`, `"lib/main.dart"`) — `kind` is
+///   inferred: values containing `/` or ending in a file extension are treated
+///   as files, everything else as symbols;
+/// - an explicit object (`{"kind": "symbol", "value": "X"}`) for full control,
+///   including the `import_pattern` and `directory` kinds.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct LocationAnchor {
-    /// Anchor type: "symbol" or "file"
-    pub kind: String,
-    /// The symbol name or file path
-    pub value: String,
+#[serde(untagged)]
+pub enum LocationAnchor {
+    /// Bare symbol name or file path; `kind` is inferred.
+    Shorthand(String),
+    /// Explicit anchor with kind and value.
+    Explicit {
+        /// Anchor type: "symbol", "file", "import_pattern", or "directory"
+        kind: String,
+        /// The symbol name or file path
+        value: String,
+    },
+}
+
+impl LocationAnchor {
+    /// The anchor value (symbol name or path), regardless of form.
+    fn value(&self) -> &str {
+        match self {
+            LocationAnchor::Shorthand(s) => s,
+            LocationAnchor::Explicit { value, .. } => value,
+        }
+    }
+
+    /// The anchor kind: explicit when given, otherwise inferred from the value.
+    fn kind_str(&self) -> &str {
+        match self {
+            LocationAnchor::Explicit { kind, .. } => kind,
+            LocationAnchor::Shorthand(s) if looks_like_file(s) => "file",
+            LocationAnchor::Shorthand(_) => "symbol",
+        }
+    }
+}
+
+/// Heuristic for bare-string anchors: a path separator or a trailing
+/// `.<ext>` (1–5 alphanumeric chars) marks a file. A `::` marks a qualified
+/// symbol, never a file.
+fn looks_like_file(s: &str) -> bool {
+    if s.contains("::") {
+        return false;
+    }
+    if s.contains('/') {
+        return true;
+    }
+    matches!(
+        s.rsplit_once('.'),
+        Some((stem, ext))
+            if !stem.is_empty()
+                && (1..=5).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    )
 }
 
 pub fn handle(
@@ -105,7 +155,7 @@ pub fn handle(
     let anchors: Vec<(AnchorKind, &str)> = anchors_raw
         .iter()
         .map(|a| {
-            let kind = match a.kind.as_str() {
+            let kind = match a.kind_str() {
                 "symbol" => AnchorKind::Symbol,
                 "file" => AnchorKind::File,
                 "import_pattern" => AnchorKind::ImportPattern,
@@ -121,7 +171,7 @@ pub fn handle(
                     });
                 }
             };
-            Ok((kind, a.value.as_str()))
+            Ok((kind, a.value()))
         })
         .collect::<Result<Vec<_>>>()?;
 

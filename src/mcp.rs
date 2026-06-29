@@ -528,7 +528,9 @@ impl SutraServer {
     }
 
     #[tool(description = "Store or cite a code-anchored lesson. \
-        Store mode: provide text + location_anchors (symbol names or file paths); \
+        Store mode: provide text + location_anchors, each either a bare string \
+        (symbol name or file path — kind is inferred) or {kind, value} where kind \
+        is symbol|file|import_pattern|directory; \
         pass workspace to auto-enrich with import-pattern anchors, directory anchors, \
         and language/technology categories from the workspace graph. \
         Cite mode: provide cite=<lesson_id> to record a citation and increase confidence; \
