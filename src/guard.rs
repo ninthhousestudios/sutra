@@ -323,49 +323,43 @@ pub fn parse_proposed(rel_path: &str, proposed_content: &str) -> Option<ParseRes
 }
 
 pub fn is_signature_preserving(conn: &Connection, file_id: i64, result: &ParseResult) -> bool {
-    let proposed: HashMap<&str, (Option<&str>, Option<&str>)> =
-        crate::parser::flatten_symbols(&result.symbols)
-            .into_iter()
-            .map(|s| {
-                (
-                    s.qualified_name.as_str(),
-                    (s.signature_hash.as_deref(), s.visibility.as_deref()),
-                )
-            })
-            .collect();
+    type Key = (String, String, Option<String>, Option<String>);
+
+    let mut proposed_keys: Vec<Key> = crate::parser::flatten_symbols(&result.symbols)
+        .into_iter()
+        .map(|s| {
+            (
+                s.qualified_name.clone(),
+                s.kind.as_str().to_string(),
+                s.signature_hash.clone(),
+                s.visibility.clone(),
+            )
+        })
+        .collect();
+    proposed_keys.sort();
 
     let mut stmt = match conn.prepare(
-        "SELECT qualified_name, signature_hash, visibility FROM symbols WHERE file_id = ?1",
+        "SELECT qualified_name, kind, signature_hash, visibility FROM symbols WHERE file_id = ?1",
     ) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let rows = match stmt.query_map(params![file_id], |row| {
+    let mut indexed_keys: Vec<Key> = match stmt.query_map(params![file_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     }) {
-        Ok(r) => r,
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
         Err(_) => return false,
     };
+    indexed_keys.sort();
 
-    for row in rows {
-        let (name, indexed_hash, indexed_vis) = match row {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-        match proposed.get(name.as_str()) {
-            None => return false,
-            Some(&(proposed_hash, proposed_vis)) => {
-                if proposed_hash != indexed_hash.as_deref() {
-                    return false;
-                }
-                if proposed_vis != indexed_vis.as_deref() {
-                    return false;
-                }
-            }
+    for indexed in &indexed_keys {
+        if !proposed_keys.contains(indexed) {
+            return false;
         }
     }
     true
@@ -1815,5 +1809,25 @@ innocent = { package = "arrow-core", version = "1" }
         let code = "fn new_thing() {}\n";
         let parsed = parse_proposed("src/lib.rs", code).unwrap();
         assert!(is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    #[test]
+    fn duplicate_kind_deleted_not_preserving() {
+        let conn = setup_signature_db();
+        // Index a struct and an impl with the same qualified_name
+        conn.execute(
+            "INSERT INTO symbols (file_id, qualified_name, short_name, kind, signature_hash, visibility)
+             VALUES (1, 'Foo', 'Foo', 'struct', NULL, 'pub')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_id, qualified_name, short_name, kind, signature_hash, visibility)
+             VALUES (1, 'Foo', 'Foo', 'impl', NULL, NULL)",
+            [],
+        ).unwrap();
+        // Proposed content only has the impl, struct deleted
+        let code = "impl Foo {\n    fn bar() {}\n}\n";
+        let parsed = parse_proposed("src/lib.rs", code).unwrap();
+        assert!(!is_signature_preserving(&conn, 1, &parsed));
     }
 }

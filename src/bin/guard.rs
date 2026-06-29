@@ -270,10 +270,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if guard::is_additive_edit(&hook.tool_input) {
-        return Ok(());
-    }
-
     if let Some(ref parsed) = parsed_result {
         if guard::is_signature_preserving(&conn, file_id, parsed) {
             eprintln!(
@@ -282,6 +278,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+    } else if guard::is_additive_edit(&hook.tool_input) {
+        return Ok(());
     }
 
     let ack_fresh = guard::ack_is_fresh(&project_root, &rel_path, cfg.ack_ttl_secs);
