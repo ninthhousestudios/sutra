@@ -119,7 +119,7 @@ fn test_delete_file_cascade() {
     let fid = seed_file(&db, "src/lib.rs");
     let sid = seed_symbol(&db, fid, "lib::foo", "foo", "function");
     db.insert_ref(fid, Some(sid), None, 5, 0, "call").unwrap();
-    db.insert_import(fid, "std::io", None, 1).unwrap();
+    db.insert_import(fid, "std::io", None, 1, "use").unwrap();
 
     db.delete_file_cascade(fid).unwrap();
 
@@ -501,8 +501,8 @@ fn test_insert_and_query_imports() {
     let (_dir, db) = setup_db();
     let fid = seed_file(&db, "src/lib.rs");
 
-    db.insert_import(fid, "std::io", None, 1).unwrap();
-    db.insert_import(fid, "std::fmt", None, 2).unwrap();
+    db.insert_import(fid, "std::io", None, 1, "use").unwrap();
+    db.insert_import(fid, "std::fmt", None, 2, "use").unwrap();
 
     let imports = db.imports_for_file(fid).unwrap();
     assert_eq!(imports.len(), 2);
@@ -518,9 +518,9 @@ fn test_import_edges() {
     let fb = seed_file(&db, "b.rs");
     let fc = seed_file(&db, "c.rs");
 
-    db.insert_import(fa, "b", Some(fb), 1).unwrap();
-    db.insert_import(fa, "c", Some(fc), 2).unwrap();
-    db.insert_import(fb, "unresolved", None, 1).unwrap();
+    db.insert_import(fa, "b", Some(fb), 1, "use").unwrap();
+    db.insert_import(fa, "c", Some(fc), 2, "use").unwrap();
+    db.insert_import(fb, "unresolved", None, 1, "use").unwrap();
 
     let mut edges = db.import_edges().unwrap();
     edges.sort();
@@ -1493,6 +1493,7 @@ fn test_replace_file_data_atomic() {
     let imports = vec![InsertImportParams {
         imported_path: "std::io",
         line: 1,
+        kind: "use",
     }];
     let refs = vec![InsertRefParams {
         unresolved_name: Some("println"),

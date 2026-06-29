@@ -2072,9 +2072,12 @@ fn component_instability_basic() {
     .unwrap();
 
     // alpha imports beta (2 edges out), beta imports alpha (1 edge out)
-    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1).unwrap();
-    db.insert_import(fc, "src/beta/b.rs", Some(fb), 1).unwrap();
-    db.insert_import(fb, "src/alpha/a.rs", Some(fa), 1).unwrap();
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use")
+        .unwrap();
+    db.insert_import(fc, "src/beta/b.rs", Some(fb), 1, "use")
+        .unwrap();
+    db.insert_import(fb, "src/alpha/a.rs", Some(fa), 1, "use")
+        .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
 
@@ -2103,7 +2106,8 @@ fn component_instability_isolated() {
         .unwrap();
 
     // Internal edge only — same component
-    db.insert_import(fa, "src/solo/b.rs", Some(fb), 1).unwrap();
+    db.insert_import(fa, "src/solo/b.rs", Some(fb), 1, "use")
+        .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
     let solo = result.get("solo").unwrap();
@@ -2125,7 +2129,8 @@ fn component_instability_fully_efferent() {
         .unwrap();
 
     // leaf → core only
-    db.insert_import(fa, "src/core/b.rs", Some(fb), 1).unwrap();
+    db.insert_import(fa, "src/core/b.rs", Some(fb), 1, "use")
+        .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
 
@@ -2259,7 +2264,8 @@ fn file_health_component_instability() {
     db.batch_insert_membership(&[("alpha".into(), fa), ("beta".into(), fb)])
         .unwrap();
 
-    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1).unwrap();
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use")
+        .unwrap();
 
     let result =
         sutra::tools::file_health::handle(&db, None, None, Some("all"), None, false).unwrap();
