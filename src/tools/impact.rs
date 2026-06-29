@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -71,6 +71,7 @@ pub fn handle(
                     frontier[depth].push(json!({
                         "symbol": &caller_sym.qualified_name,
                         "file": file_path,
+                        "edge_type": &r.context_kind,
                     }));
                 }
                 queue.push_back((caller_sym.id, depth + 1));
@@ -82,14 +83,25 @@ pub fn handle(
 
     let (risk, mut risk_factors) = compute_risk(direct_caller_count, files_touched);
 
-    let direct_files: HashSet<i64> = direct_refs.iter().map(|r| r.file_id).collect();
-    let direct_file_rows: Vec<_> = direct_files
+    let mut file_edge_types: HashMap<i64, HashSet<&str>> = HashMap::new();
+    for r in &direct_refs {
+        file_edge_types
+            .entry(r.file_id)
+            .or_default()
+            .insert(&r.context_kind);
+    }
+    let mut direct_caller_files: Vec<serde_json::Value> = file_edge_types
         .iter()
-        .filter_map(|fid| db.file_by_id(*fid).ok().flatten())
+        .filter_map(|(&fid, kinds)| {
+            let path = db.file_by_id(fid).ok().flatten()?.path;
+            let mut sorted: Vec<&str> = kinds.iter().copied().collect();
+            sorted.sort_unstable();
+            Some(json!({"file": path, "edge_types": sorted}))
+        })
         .collect();
-    let direct_file_paths: Vec<&str> = direct_file_rows.iter().map(|f| &*f.path).collect();
+    direct_caller_files.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
 
-    if direct_file_paths.is_empty() && risk == "low" {
+    if direct_caller_files.is_empty() && risk == "low" {
         risk_factors.push("no external callers found".to_string());
     }
 
@@ -103,11 +115,12 @@ pub fn handle(
         "kind": sym.kind,
         "file": sym_file_path,
         "direct_callers": direct_caller_count,
+        "direct_refs": direct_refs.len(),
         "transitive_symbols": visited_symbols.len(),
         "files_touched": files_touched,
         "risk": risk,
         "risk_factors": risk_factors,
-        "direct_caller_files": direct_file_paths,
+        "direct_caller_files": direct_caller_files,
     });
 
     if let Some(ldb) = lessons_db {

@@ -119,6 +119,7 @@ fn collect_callers(
                 "file": file_path,
                 "line": r.line,
                 "depth": d + 1,
+                "edge_type": &r.context_kind,
             }));
             if let Some(cs) = caller_sym
                 && visited.insert(cs.id)
@@ -170,6 +171,7 @@ fn collect_callees(
                     "file": callee_file,
                     "line": r.line,
                     "depth": d + 1,
+                    "edge_type": &r.context_kind,
                 }));
                 if let Some(cs) = callee_sym
                     && visited.insert(cs.id)
@@ -182,6 +184,7 @@ fn collect_callees(
                     "file": null,
                     "line": r.line,
                     "depth": d + 1,
+                    "edge_type": &r.context_kind,
                     "unresolved": true,
                 }));
             }
