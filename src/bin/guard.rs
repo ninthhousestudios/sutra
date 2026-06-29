@@ -215,12 +215,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         hot_symbols,
     };
 
+    // Parse proposed content once — reused for constraint checking and
+    // signature-preserving detection.
+    let proposed = guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path);
+    let parsed_result = proposed
+        .as_deref()
+        .and_then(|p| guard::parse_proposed(&rel_path, p));
+
     // Constraint check: try proposed-content analysis first, fall back to indexed edges
-    let constraint_findings = if let Some(proposed) =
-        guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
-    {
+    let constraint_findings = if let Some(ref parsed) = parsed_result {
         if let Some(proposed_imports) =
-            guard::extract_proposed_imports(&conn, &project_root, &rel_path, file_id, &proposed)
+            guard::extract_proposed_imports(&conn, &project_root, &rel_path, file_id, parsed)
         {
             guard::check_proposed_file_constraints(
                 &conn,

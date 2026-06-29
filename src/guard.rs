@@ -6,6 +6,7 @@ use rusqlite::{Connection, params};
 use serde::Deserialize;
 
 use crate::constraints::check::{self, CheckOutcome, EvalScope, FactsSource};
+use crate::parser::ParseResult;
 
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
@@ -315,6 +316,12 @@ fn language_from_path(path: &str) -> Option<&'static str> {
     }
 }
 
+pub fn parse_proposed(rel_path: &str, proposed_content: &str) -> Option<ParseResult> {
+    let language = language_from_path(rel_path)?;
+    let result = crate::parser::parse_file(proposed_content, language, rel_path).ok()?;
+    if result.parsed_ok { Some(result) } else { None }
+}
+
 /// Imports extracted from proposed (not-yet-written) file content.
 pub struct ProposedImports {
     /// Workspace-internal resolved edges. For languages without proposed-edge
@@ -329,14 +336,9 @@ pub fn extract_proposed_imports(
     project_root: &Path,
     rel_path: &str,
     file_id: i64,
-    proposed_content: &str,
+    result: &ParseResult,
 ) -> Option<ProposedImports> {
     let language = language_from_path(rel_path)?;
-
-    let result = crate::parser::parse_file(proposed_content, language, rel_path).ok()?;
-    if !result.parsed_ok {
-        return None;
-    }
 
     let layout = if language == "rust" {
         Some(crate::rust_imports::parse_workspace_layout(project_root))
@@ -1238,8 +1240,9 @@ name = "bad-rule-targets-member"
         )
         .unwrap();
         let content = "use axum::Router;\nuse crate::render;\nuse std::fmt;\n\nfn f() {}\n";
+        let parsed = parse_proposed("report/src/lib.rs", content).unwrap();
         let pi =
-            extract_proposed_imports(&conn, dir.path(), "report/src/lib.rs", 1, content).unwrap();
+            extract_proposed_imports(&conn, dir.path(), "report/src/lib.rs", 1, &parsed).unwrap();
         let crates: Vec<&str> = pi.externals.iter().map(|(_, c)| c.as_str()).collect();
         assert!(crates.contains(&"axum"));
         assert!(crates.contains(&"std"));
