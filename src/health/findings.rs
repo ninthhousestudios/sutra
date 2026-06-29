@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::db::Db;
@@ -41,6 +42,7 @@ pub enum BiomarkerKind {
     ConventionDrift,
     ComponentInstability,
     HrrShapeChange,
+    ImportCycle,
 }
 
 impl BiomarkerKind {
@@ -59,6 +61,7 @@ impl BiomarkerKind {
             Self::ConventionDrift => "convention_drift",
             Self::ComponentInstability => "component_instability",
             Self::HrrShapeChange => "hrr_shape_change",
+            Self::ImportCycle => "import_cycle",
         }
     }
 
@@ -69,7 +72,8 @@ impl BiomarkerKind {
             | Self::CoverageGradient
             | Self::ConventionDrift
             | Self::ComponentInstability
-            | Self::HrrShapeChange => HealthSeverity::Informational,
+            | Self::HrrShapeChange
+            | Self::ImportCycle => HealthSeverity::Informational,
             _ => HealthSeverity::Advisory,
         }
     }
@@ -89,6 +93,7 @@ impl BiomarkerKind {
             "convention_drift" => Some(Self::ConventionDrift),
             "component_instability" => Some(Self::ComponentInstability),
             "hrr_shape_change" => Some(Self::HrrShapeChange),
+            "import_cycle" => Some(Self::ImportCycle),
             _ => None,
         }
     }
@@ -157,5 +162,35 @@ pub fn compute_all_health_findings(db: &Db, workspace_root: &Path) -> Result<Vec
         workspace_root,
     )?);
     findings.extend(super::git_metrics::compute_hidden_coupling(db)?);
+    findings.extend(compute_import_cycle_membership(db)?);
+    Ok(findings)
+}
+
+fn compute_import_cycle_membership(db: &Db) -> Result<Vec<HealthFinding>> {
+    let edges = db.import_edges()?;
+    let sccs = crate::graph::find_import_sccs(&edges);
+
+    let mut scc_count: HashMap<i64, usize> = HashMap::new();
+    for scc in &sccs {
+        for &fid in scc {
+            *scc_count.entry(fid).or_default() += 1;
+        }
+    }
+
+    let findings = scc_count
+        .into_iter()
+        .map(|(file_id, count)| HealthFinding {
+            file_id,
+            symbol_id: None,
+            biomarker_kind: BiomarkerKind::ImportCycle,
+            severity: BiomarkerKind::ImportCycle.default_severity(),
+            confidence: 1.0,
+            provenance: "computed".into(),
+            metric_value: count as f64,
+            threshold: 1.0,
+            detail: format!("file participates in {count} import cycle group(s)"),
+        })
+        .collect();
+
     Ok(findings)
 }

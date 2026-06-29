@@ -13,10 +13,20 @@ pub struct DepsArgs {
     pub path: Option<String>,
     #[serde(default)]
     pub depth: Option<usize>,
+    #[serde(default)]
+    pub cycles: Option<bool>,
 }
 use crate::error::{Result, SutraError};
 
-pub fn handle(db: &Db, path: Option<&str>, depth: Option<usize>) -> Result<serde_json::Value> {
+pub fn handle(
+    db: &Db,
+    path: Option<&str>,
+    depth: Option<usize>,
+    cycles: bool,
+) -> Result<serde_json::Value> {
+    if cycles {
+        return handle_cycles(db, path);
+    }
     let depth = depth.unwrap_or(2);
 
     if let Some(path) = path {
@@ -85,4 +95,47 @@ pub fn handle(db: &Db, path: Option<&str>, depth: Option<usize>) -> Result<serde
             "total_edges": edges.len(),
         }))
     }
+}
+
+fn handle_cycles(db: &Db, path: Option<&str>) -> Result<serde_json::Value> {
+    let all_edges = db.import_edges()?;
+    let sccs = crate::graph::find_import_sccs(&all_edges);
+
+    let filter_id = if let Some(p) = path {
+        Some(
+            db.file_by_path(p)?
+                .ok_or_else(|| SutraError::NotFound {
+                    tool: "sutra_deps",
+                    kind: format!("file `{p}`"),
+                    next_action: "Check the path. Use sutra_map to list available files."
+                        .to_string(),
+                })?
+                .id,
+        )
+    } else {
+        None
+    };
+
+    let mut cycles: Vec<serde_json::Value> = Vec::new();
+    let mut files_in_cycles: HashSet<i64> = HashSet::new();
+
+    for scc in &sccs {
+        if let Some(fid) = filter_id {
+            if !scc.contains(&fid) {
+                continue;
+            }
+        }
+        let paths: Vec<_> = scc
+            .iter()
+            .filter_map(|id| db.file_by_id(*id).ok().flatten().map(|f| f.path))
+            .collect();
+        files_in_cycles.extend(scc);
+        cycles.push(json!(paths));
+    }
+
+    Ok(json!({
+        "cycles": cycles,
+        "total_sccs": cycles.len(),
+        "files_in_cycles": files_in_cycles.len(),
+    }))
 }

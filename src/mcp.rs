@@ -586,13 +586,15 @@ impl SutraServer {
     }
 
     #[tool(description = "File dependency graph from import edges. \
-        If path given, BFS from that file to depth. Otherwise returns all edges.")]
+        If path given, BFS from that file to depth. \
+        If cycles=true, detect import cycle groups (SCCs) instead of listing edges.")]
     pub async fn sutra_deps(
         &self,
         Parameters(args): Parameters<DepsArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::deps::handle(ctx.db(), args.path.as_deref(), args.depth)
+        let cycles = args.cycles.unwrap_or(false);
+        let result = tools::deps::handle(ctx.db(), args.path.as_deref(), args.depth, cycles)
             .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }

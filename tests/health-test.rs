@@ -2281,3 +2281,76 @@ fn file_health_component_instability() {
     assert_eq!(inst["ca"].as_u64().unwrap(), 0);
     assert!((inst["value"].as_f64().unwrap() - 1.0).abs() < 1e-9);
 }
+
+// --- ImportCycle biomarker ---
+
+#[test]
+fn import_cycle_fires_for_cyclic_files() {
+    let (_dir, db) = setup_db();
+    let a = seed_file(&db, "src/a.rs");
+    let b = seed_file(&db, "src/b.rs");
+    let c = seed_file(&db, "src/c.rs");
+
+    // a -> b -> c -> a (triangle cycle)
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use").unwrap();
+    db.insert_import(c, "src/a.rs", Some(a), 1, "use").unwrap();
+
+    let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
+    let cycle_findings: Vec<&HealthFinding> = findings
+        .iter()
+        .filter(|f| f.biomarker_kind == BiomarkerKind::ImportCycle)
+        .collect();
+
+    assert_eq!(cycle_findings.len(), 3);
+    let mut found_ids: Vec<i64> = cycle_findings.iter().map(|f| f.file_id).collect();
+    found_ids.sort();
+    assert_eq!(found_ids, vec![a, b, c]);
+
+    for f in &cycle_findings {
+        assert_eq!(f.severity, HealthSeverity::Informational);
+        assert_eq!(f.confidence, 1.0);
+        assert_eq!(f.metric_value, 1.0);
+        assert_eq!(f.threshold, 1.0);
+    }
+}
+
+#[test]
+fn import_cycle_absent_for_acyclic() {
+    let (_dir, db) = setup_db();
+    let a = seed_file(&db, "src/a.rs");
+    let b = seed_file(&db, "src/b.rs");
+    let c = seed_file(&db, "src/c.rs");
+
+    // a -> b -> c (no back edge)
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use").unwrap();
+
+    let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
+    let cycle_findings: Vec<&HealthFinding> = findings
+        .iter()
+        .filter(|f| f.biomarker_kind == BiomarkerKind::ImportCycle)
+        .collect();
+
+    assert!(cycle_findings.is_empty());
+}
+
+#[test]
+fn import_cycle_roundtrips_through_db() {
+    let (_dir, db) = setup_db();
+    let a = seed_file(&db, "src/a.rs");
+    let b = seed_file(&db, "src/b.rs");
+
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
+    db.insert_import(b, "src/a.rs", Some(a), 1, "use").unwrap();
+
+    let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
+    db.replace_health_findings(&findings).unwrap();
+
+    let rows = db.get_health_findings(None, Some("import_cycle")).unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(row.biomarker_kind, "import_cycle");
+        assert_eq!(row.severity, "informational");
+    }
+}

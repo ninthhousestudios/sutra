@@ -49,7 +49,9 @@ impl BiomarkerKind {
             Self::NestedComplexity | Self::FunctionHotspot | Self::BlastRadiusChurn => {
                 HealthCategory::Structural
             }
-            Self::HiddenCoupling | Self::ComponentInstability => HealthCategory::Coupling,
+            Self::HiddenCoupling | Self::ComponentInstability | Self::ImportCycle => {
+                HealthCategory::Coupling
+            }
             Self::CodeAgeVolatility | Self::HrrShapeChange => HealthCategory::Freshness,
             Self::DeadCodeRatio | Self::CoverageGradient | Self::ConventionDrift => {
                 HealthCategory::Coverage
@@ -75,6 +77,7 @@ impl BiomarkerKind {
             Self::ConventionDrift => 0.50,
             Self::ComponentInstability => 0.50,
             Self::HrrShapeChange => 0.50,
+            Self::ImportCycle => 0.50,
         }
     }
 }

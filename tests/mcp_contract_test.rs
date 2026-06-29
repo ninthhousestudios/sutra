@@ -193,7 +193,7 @@ fn test_impact_contract() {
 #[test]
 fn test_deps_contract() {
     let (_dir, db) = setup_test_db();
-    let result = deps::handle(&db, Some("src/main.rs"), None).unwrap();
+    let result = deps::handle(&db, Some("src/main.rs"), None, false).unwrap();
 
     assert!(result["nodes"].is_array(), "'nodes' must be an array");
     assert!(result["edges"].is_array(), "'edges' must be an array");
@@ -202,7 +202,7 @@ fn test_deps_contract() {
 #[test]
 fn test_deps_global_contract() {
     let (_dir, db) = setup_test_db();
-    let result = deps::handle(&db, None, None).unwrap();
+    let result = deps::handle(&db, None, None, false).unwrap();
 
     assert!(result["edges"].is_array(), "'edges' must be an array");
     assert!(

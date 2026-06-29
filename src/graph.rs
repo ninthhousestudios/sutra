@@ -325,3 +325,139 @@ pub fn compute_pagerank_with_adjacency(
 
     Ok(())
 }
+
+pub fn find_import_sccs(edges: &[(i64, i64)]) -> Vec<Vec<i64>> {
+    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut all_nodes: HashSet<i64> = HashSet::new();
+    for &(from, to) in edges {
+        adj.entry(from).or_default().push(to);
+        all_nodes.insert(from);
+        all_nodes.insert(to);
+    }
+
+    let mut index_map: HashMap<i64, usize> = HashMap::new();
+    let mut lowlink_map: HashMap<i64, usize> = HashMap::new();
+    let mut on_stack: HashSet<i64> = HashSet::new();
+    let mut stack: Vec<i64> = Vec::new();
+    let mut counter: usize = 0;
+    let mut sccs: Vec<Vec<i64>> = Vec::new();
+
+    // Frame: (node, neighbor_index). neighbor_index == 0 means first visit.
+    for &root in &all_nodes {
+        if index_map.contains_key(&root) {
+            continue;
+        }
+
+        let mut call_stack: Vec<(i64, usize)> = vec![(root, 0)];
+
+        while let Some(&mut (v, ref mut ni)) = call_stack.last_mut() {
+            if *ni == 0 && !index_map.contains_key(&v) {
+                index_map.insert(v, counter);
+                lowlink_map.insert(v, counter);
+                counter += 1;
+                stack.push(v);
+                on_stack.insert(v);
+            }
+
+            let neighbors = adj.get(&v).map(|n| n.as_slice()).unwrap_or(&[]);
+            if *ni < neighbors.len() {
+                let w = neighbors[*ni];
+                *ni += 1;
+                if !index_map.contains_key(&w) {
+                    call_stack.push((w, 0));
+                } else if on_stack.contains(&w) {
+                    let wi = index_map[&w];
+                    let vll = lowlink_map.get_mut(&v).unwrap();
+                    if wi < *vll {
+                        *vll = wi;
+                    }
+                }
+            } else {
+                let v_lowlink = lowlink_map[&v];
+                let v_index = index_map[&v];
+
+                call_stack.pop();
+
+                if let Some(&(parent, _)) = call_stack.last() {
+                    let pll = lowlink_map.get_mut(&parent).unwrap();
+                    if v_lowlink < *pll {
+                        *pll = v_lowlink;
+                    }
+                }
+
+                if v_lowlink == v_index {
+                    let mut scc = Vec::new();
+                    while let Some(w) = stack.pop() {
+                        on_stack.remove(&w);
+                        scc.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    if scc.len() > 1 {
+                        scc.sort();
+                        sccs.push(scc);
+                    }
+                }
+            }
+        }
+    }
+
+    sccs
+}
+
+#[cfg(test)]
+mod scc_tests {
+    use super::find_import_sccs;
+
+    #[test]
+    fn empty_graph() {
+        assert!(find_import_sccs(&[]).is_empty());
+    }
+
+    #[test]
+    fn acyclic() {
+        let edges = vec![(1, 2), (2, 3), (3, 4)];
+        assert!(find_import_sccs(&edges).is_empty());
+    }
+
+    #[test]
+    fn simple_cycle() {
+        let edges = vec![(1, 2), (2, 1)];
+        let sccs = find_import_sccs(&edges);
+        assert_eq!(sccs.len(), 1);
+        assert_eq!(sccs[0], vec![1, 2]);
+    }
+
+    #[test]
+    fn two_disjoint_cycles() {
+        let edges = vec![(1, 2), (2, 1), (3, 4), (4, 3)];
+        let mut sccs = find_import_sccs(&edges);
+        sccs.sort();
+        assert_eq!(sccs.len(), 2);
+        assert_eq!(sccs[0], vec![1, 2]);
+        assert_eq!(sccs[1], vec![3, 4]);
+    }
+
+    #[test]
+    fn self_loop_excluded() {
+        let edges = vec![(1, 1)];
+        assert!(find_import_sccs(&edges).is_empty());
+    }
+
+    #[test]
+    fn triangle_cycle() {
+        let edges = vec![(1, 2), (2, 3), (3, 1)];
+        let sccs = find_import_sccs(&edges);
+        assert_eq!(sccs.len(), 1);
+        assert_eq!(sccs[0], vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn cycle_with_tail() {
+        let edges = vec![(1, 2), (2, 3), (3, 2), (4, 1)];
+        let sccs = find_import_sccs(&edges);
+        assert_eq!(sccs.len(), 1);
+        assert_eq!(sccs[0], vec![2, 3]);
+    }
+}

@@ -145,14 +145,15 @@ Core finding struct all biomarkers produce. Fields: `file_id: i64`,
 `metric_value: f64`, `threshold: f64`, `detail: String`.
 
 ### BiomarkerKind (health/findings.rs)
-Enum with 13 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
-`ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`. On-demand (review-time
-via git blame): `FunctionHotspot`, `CodeAgeVolatility`. Shape-diff
-(review-time): `HrrShapeChange`. Convention drift (review-time):
-`ConventionDrift`. Component instability: `ComponentInstability`
-(computed via `health/instability.rs`, surfaced as component-level metric
-in orient + sutra_file_health, not as a per-file HealthFinding).
-Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`, `CoverageGradient`.
+Enum with 14 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
+`ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`, `ImportCycle`.
+On-demand (review-time via git blame): `FunctionHotspot`,
+`CodeAgeVolatility`. Shape-diff (review-time): `HrrShapeChange`.
+Convention drift (review-time): `ConventionDrift`. Component instability:
+`ComponentInstability` (computed via `health/instability.rs`, surfaced as
+component-level metric in orient + sutra_file_health, not as a per-file
+HealthFinding). Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`,
+`CoverageGradient`.
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
@@ -213,6 +214,7 @@ parse_workspace / parse_changed_files
               └── compute_change_entropy: file_commit_sizes + decay weighting
               └── compute_ownership_risk: file_author_commits + owners.toml aliases
               └── compute_hidden_coupling: cochange_pairs - static_file_edges
+              └── compute_import_cycle_membership: import_edges → Tarjan SCC
         └── replace_health_findings(findings) — DELETE + INSERT all
   └── record_snapshot
         └── compute_snapshot_health: scores all files via scoring::score_file
@@ -351,7 +353,7 @@ existing entropy-based drift detection.
 | 1 | Advisory | co_change_scatter, change_entropy, ownership_risk, function_hotspot | repowise ≥1.3 |
 | 2 | Advisory | nested_complexity, hidden_coupling, blast_radius_churn | repowise moderate |
 | 3 | Informational | dead_code_ratio, code_age_volatility, coverage_gradient | repowise weak |
-| Sutra | Informational | convention_drift, component_instability, hrr_shape_change | uncalibrated |
+| Sutra | Informational | convention_drift, component_instability, hrr_shape_change, import_cycle | uncalibrated |
 
 ### Health scoring (sutra/85, implemented)
 
@@ -362,7 +364,7 @@ existing entropy-based drift detection.
 |---|---|---|
 | organizational | -3.5 | co_change_scatter, change_entropy, ownership_risk |
 | structural | -2.5 | nested_complexity, function_hotspot, blast_radius_churn |
-| coupling | -2.0 | hidden_coupling, component_instability |
+| coupling | -2.0 | hidden_coupling, component_instability, import_cycle |
 | freshness | -1.5 | code_age_volatility, hrr_shape_change |
 | coverage | -2.0 | dead_code_ratio, coverage_gradient, convention_drift |
 
@@ -376,7 +378,7 @@ co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,
 nested_complexity 1.34, function_hotspot 1.16, code_age_volatility 1.10.
 Non-repowise defaults: hidden_coupling 1.00, blast_radius_churn 1.00,
 dead_code_ratio 0.80, coverage_gradient 0.80. Uncalibrated: convention_drift
-0.50, component_instability 0.50, hrr_shape_change 0.50.
+0.50, component_instability 0.50, hrr_shape_change 0.50, import_cycle 0.50.
 
 The `file_health` MCP tool returns findings + derived scores (1.0–10.0
 scale). The pipeline snapshot system also uses `scoring::score_file` —
@@ -403,7 +405,8 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
-- Integration tests: `tests/health-test.rs` (63 tests — model, threshold,
+- Unit tests: `#[cfg(test)]` in `src/graph.rs` (7 SCC tests)
+- Integration tests: `tests/health-test.rs` (69 tests — model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
   snapshot per-file/per-component storage, file health history,
@@ -414,7 +417,8 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
   threshold gating, independent paths, snapshot metric storage,
   component instability: basic, isolated, fully-efferent,
   orient health section: present with findings, absent when clean,
-  file health: component filter, component instability in scores)
+  file health: component filter, component instability in scores,
+  import cycle: cyclic fires, acyclic absent, DB roundtrip)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,
   similarity search: strip mode, embed vs strip, self-exclusion, diagnostics)
