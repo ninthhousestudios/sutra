@@ -295,7 +295,8 @@ fn evaluate_dd(
         }
     }
 
-    // Cycle detection
+    // Cycle detection — validate reported SCCs against current edges
+    let edge_set: HashSet<(i64, i64)> = edges.iter().copied().collect();
     let cycle_filter = changed_ids;
     for cycle in engine.query_cycles()? {
         if let Some(cids) = cycle_filter
@@ -309,6 +310,19 @@ fn evaluate_dd(
             .filter_map(|id| path_map.get(id).copied())
             .collect();
         if cycle_paths.len() < cycle.file_ids.len() {
+            continue;
+        }
+        let cycle_node_set: HashSet<i64> = cycle.file_ids.iter().copied().collect();
+        let has_backing = cycle.file_ids.iter().all(|&node| {
+            let has_out = edge_set
+                .iter()
+                .any(|&(s, d)| s == node && cycle_node_set.contains(&d));
+            let has_in = edge_set
+                .iter()
+                .any(|&(s, d)| d == node && cycle_node_set.contains(&s));
+            has_out && has_in
+        });
+        if !has_backing {
             continue;
         }
         let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);

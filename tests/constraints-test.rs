@@ -664,3 +664,67 @@ name = "no-module-cycles"
         cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn stale_engine_cycle_resolvable_ids_but_no_backing_edges_skipped() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    db.upsert_file("src/c.rs", "rust", "h3", 10, true).unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+    let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
+
+    // Current DB edges are acyclic: A→B, B→C (no C→A).
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use")
+        .unwrap();
+    db.insert_import(fb.id, "src/c.rs", Some(fc.id), 1, "use")
+        .unwrap();
+
+    // Engine was loaded when C→A still existed, so it reports a cycle.
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(fa.id, fb.id), (fb.id, fc.id), (fc.id, fa.id)],
+        })
+        .unwrap();
+    assert_eq!(engine.query_cycles().unwrap().len(), 1);
+
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert!(
+        cycle_findings.is_empty(),
+        "stale cycle with resolvable IDs but missing backing edge should be skipped, got: {:?}",
+        cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+}
