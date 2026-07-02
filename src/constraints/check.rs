@@ -308,6 +308,9 @@ fn evaluate_dd(
             .iter()
             .filter_map(|id| path_map.get(id).copied())
             .collect();
+        if cycle_paths.len() < cycle.file_ids.len() {
+            continue;
+        }
         let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
         findings.push(ConstraintFinding {
             constraint_id: matched
