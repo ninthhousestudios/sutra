@@ -13,10 +13,7 @@ mod migrations;
 mod similarity;
 
 pub use constraints::ConstraintWaiverRow;
-pub use conventions::{
-    ConventionHistoryRow, ConventionProposalRow, ConventionRow, ConventionSnapshotRow,
-    ConventionStateRow, ConventionWithState,
-};
+pub use conventions::{ConventionRow, ConventionSnapshotRow};
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
 
@@ -82,11 +79,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
-        name: "convention_state",
-        partition: TablePartition::Durable,
-        is_virtual: false,
-    },
-    TableMeta {
         name: "components",
         partition: TablePartition::Durable,
         is_virtual: false,
@@ -113,16 +105,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "component_clustering_meta",
-        partition: TablePartition::Durable,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "convention_history",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "convention_proposals",
         partition: TablePartition::Durable,
         is_virtual: false,
     },

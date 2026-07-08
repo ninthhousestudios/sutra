@@ -326,8 +326,7 @@ pub fn handle(
     let components_config = components::load_config(workspace_root)?;
     let cochange_threshold = components_config.cochange_threshold.unwrap_or(0.5);
 
-    let all_conventions = db.all_conventions_merged()?;
-    let all_proposals = db.pending_proposals()?;
+    let all_conventions = db.all_conventions()?;
     let all_waivers = db.list_waivers(None).unwrap_or_default();
 
     // Constraint system
@@ -403,22 +402,9 @@ pub fn handle(
             })
             .collect();
 
-        let in_scope_proposals: Vec<_> = all_proposals
-            .iter()
-            .filter(|p| conv_ids.contains(&p.convention_id.as_str()))
-            .collect();
-
-        let mut preferred = Vec::new();
-        let mut deprecated = Vec::new();
-        let mut forbidden = Vec::new();
-        let mut descriptive = Vec::new();
+        let mut observed = Vec::new();
 
         for c in &in_scope {
-            let state = if is_sketch {
-                "descriptive"
-            } else {
-                c.lifecycle_state.as_deref().unwrap_or("descriptive")
-            };
             let mut entry = json!({
                 "convention_id": c.id,
                 "antecedent": c.antecedent.split(", ").collect::<Vec<_>>(),
@@ -430,12 +416,7 @@ pub fn handle(
             if let Some(tmpl) = template_map.get(c.id.as_str()) {
                 entry["template"] = json!(tmpl);
             }
-            match state {
-                "preferred" => preferred.push(entry),
-                "deprecated" => deprecated.push(entry),
-                "forbidden" => forbidden.push(entry),
-                _ => descriptive.push(entry),
-            }
+            observed.push(entry);
         }
 
         let drift = if is_sketch {
@@ -455,28 +436,10 @@ pub fn handle(
                 json!("Component is in sketch mode — all conventions are informational only");
         }
 
-        if !preferred.is_empty() {
-            section["preferred"] = json!({
-                "guidance": "Follow these conventions. Templates show the expected signature shape.",
-                "conventions": preferred,
-            });
-        }
-        if !deprecated.is_empty() {
-            section["warnings"] = json!({
-                "guidance": "Avoid these patterns — they are being phased out.",
-                "conventions": deprecated,
-            });
-        }
-        if !forbidden.is_empty() {
-            section["anti_patterns"] = json!({
-                "guidance": "Do not use these patterns.",
-                "conventions": forbidden,
-            });
-        }
-        if !descriptive.is_empty() {
+        if !observed.is_empty() {
             section["observed_patterns"] = json!({
                 "guidance": "Observed patterns in this scope (informational only).",
-                "conventions": descriptive,
+                "conventions": observed,
             });
         }
         if let Some(drift_alert) = drift {
@@ -494,22 +457,6 @@ pub fn handle(
                             "rationale": w.rationale,
                             "waived_by": w.waived_by,
                             "waived_at": w.waived_at,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            );
-        }
-        if !in_scope_proposals.is_empty() {
-            section["pending_proposals"] = json!(
-                in_scope_proposals
-                    .iter()
-                    .map(|p| {
-                        json!({
-                            "proposal_id": p.id,
-                            "convention_id": p.convention_id,
-                            "proposed_transition": p.proposed_transition,
-                            "signal_rationale": p.signal_rationale,
-                            "created_at": p.created_at,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -837,24 +784,19 @@ mod tests {
     }
 
     #[test]
-    fn handle_preferred_with_template() {
+    fn handle_convention_with_template() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None)
-            .unwrap();
         db.upsert_convention_template("conv-1", "pub fn $NAME(&self) -> Result<$T>", &[])
             .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
-        let preferred = &orientation["preferred"]["conventions"];
-        assert_eq!(preferred.as_array().unwrap().len(), 1);
-        assert_eq!(
-            preferred[0]["template"],
-            "pub fn $NAME(&self) -> Result<$T>"
-        );
-        assert_eq!(preferred[0]["scope"], "component");
+        let patterns = &orientation["observed_patterns"]["conventions"];
+        assert_eq!(patterns.as_array().unwrap().len(), 1);
+        assert_eq!(patterns[0]["template"], "pub fn $NAME(&self) -> Result<$T>");
+        assert_eq!(patterns[0]["scope"], "component");
     }
 
     #[test]
@@ -862,56 +804,15 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "global-1", None);
-        db.set_convention_lifecycle("global-1", "preferred", None)
-            .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
-        let preferred = &orientation["preferred"]["conventions"];
-        assert_eq!(preferred[0]["scope"], "global");
+        let patterns = &orientation["observed_patterns"]["conventions"];
+        assert_eq!(patterns[0]["scope"], "global");
     }
 
     #[test]
-    fn handle_deprecated_warning() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "deprecated", None)
-            .unwrap();
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        assert!(
-            orientation["warnings"]["conventions"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 1
-        );
-        assert!(orientation.get("preferred").is_none());
-    }
-
-    #[test]
-    fn handle_forbidden_anti_pattern() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "forbidden", None)
-            .unwrap();
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        assert!(
-            orientation["anti_patterns"]["conventions"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 1
-        );
-    }
-
-    #[test]
-    fn handle_descriptive_informational_only() {
+    fn handle_observed_patterns_informational() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
@@ -929,17 +830,14 @@ mod tests {
     }
 
     #[test]
-    fn handle_sketch_mode_flattens() {
+    fn handle_sketch_mode_note() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None)
-            .unwrap();
         db.set_component_lifecycle("comp-1", "sketch").unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
         let orientation = &result["orientation"][0];
-        assert!(orientation.get("preferred").is_none());
         assert!(
             orientation["observed_patterns"]["conventions"]
                 .as_array()
@@ -995,8 +893,6 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
         insert_convention(&db, "conv-1", Some("comp-1"));
-        db.set_convention_lifecycle("conv-1", "preferred", None)
-            .unwrap();
         db.create_waiver(
             "conv-1",
             "my_func",
@@ -1012,26 +908,6 @@ mod tests {
         assert_eq!(waivers.len(), 1);
         assert_eq!(waivers[0]["convention_id"], "conv-1");
         assert_eq!(waivers[0]["rationale"], "intentional deviation");
-    }
-
-    #[test]
-    fn pending_proposals_surfaced() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
-        db.create_proposal(
-            "conv-1",
-            "descriptive -> preferred",
-            "stable high support",
-            "promote",
-        )
-        .unwrap();
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        let proposals = orientation["pending_proposals"].as_array().unwrap();
-        assert_eq!(proposals.len(), 1);
-        assert_eq!(proposals[0]["convention_id"], "conv-1");
     }
 
     fn write_rules(dir: &tempfile::TempDir, content: &str) {

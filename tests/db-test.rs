@@ -869,93 +869,6 @@ fn convention_upsert_updates_existing() {
 }
 
 #[test]
-fn test_set_convention_lifecycle() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("abc123", "kind:function", "has_sig", 42, 0.95, None)
-        .unwrap();
-
-    db.set_convention_lifecycle("abc123", "forbidden", Some("bad pattern"))
-        .unwrap();
-    let ov = db.get_convention_state("abc123").unwrap().unwrap();
-    assert_eq!(ov.lifecycle_state, "forbidden");
-    assert_eq!(ov.override_reason.as_deref(), Some("bad pattern"));
-
-    db.set_convention_lifecycle("abc123", "preferred", None)
-        .unwrap();
-    let ov = db.get_convention_state("abc123").unwrap().unwrap();
-    assert_eq!(ov.lifecycle_state, "preferred");
-    assert!(ov.override_reason.is_none());
-}
-
-#[test]
-fn test_all_conventions_merged() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
-        .unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
-        .unwrap();
-    db.set_convention_lifecycle("aaa", "deprecated", Some("outdated"))
-        .unwrap();
-
-    let merged = db.all_conventions_merged().unwrap();
-    assert_eq!(merged.len(), 2);
-
-    let aaa = merged.iter().find(|c| c.id == "aaa").unwrap();
-    assert_eq!(aaa.lifecycle_state.as_deref(), Some("deprecated"));
-
-    let bbb = merged.iter().find(|c| c.id == "bbb").unwrap();
-    assert!(bbb.lifecycle_state.is_none());
-}
-
-#[test]
-fn test_reconcile_orphaned_states() {
-    let (_dir, db) = setup_db();
-    db.set_convention_lifecycle("nonexistent", "forbidden", Some("orphan"))
-        .unwrap();
-
-    let orphans = db.reconcile_orphaned_states().unwrap();
-    assert_eq!(orphans.len(), 1);
-    assert_eq!(orphans[0].convention_id, "nonexistent");
-
-    db.upsert_convention("nonexistent", "x", "y", 5, 0.8, None)
-        .unwrap();
-    let orphans = db.reconcile_orphaned_states().unwrap();
-    assert!(orphans.is_empty());
-}
-
-#[test]
-fn test_reindex_preserves_durable_state() {
-    let (_dir, db) = setup_db();
-
-    db.upsert_convention("conv1", "kind:function", "has_sig", 10, 0.9, None)
-        .unwrap();
-    db.set_convention_lifecycle("conv1", "preferred", Some("team standard"))
-        .unwrap();
-
-    let dropped = db.reindex().unwrap();
-    assert!(!dropped.contains(&"convention_state"));
-
-    let conventions = db.all_conventions().unwrap();
-    assert!(
-        conventions.is_empty(),
-        "ephemeral conventions should be gone"
-    );
-
-    let ov = db.get_convention_state("conv1").unwrap().unwrap();
-    assert_eq!(ov.lifecycle_state, "preferred");
-    assert_eq!(ov.override_reason.as_deref(), Some("team standard"));
-
-    let orphans = db.reconcile_orphaned_states().unwrap();
-    assert_eq!(orphans.len(), 1, "override without convention is orphaned");
-
-    db.upsert_convention("conv1", "kind:function", "has_sig", 12, 0.92, None)
-        .unwrap();
-    let merged = db.all_conventions_merged().unwrap();
-    assert_eq!(merged.len(), 1);
-    assert_eq!(merged[0].lifecycle_state.as_deref(), Some("preferred"));
-}
-
-#[test]
 fn convention_delete_stale() {
     let (_dir, db) = setup_db();
     db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
@@ -974,50 +887,6 @@ fn convention_delete_stale() {
 }
 
 #[test]
-fn convention_delete_stale_preserves_stateful() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
-        .unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
-        .unwrap();
-    db.upsert_convention("ccc", "e", "f", 30, 0.99, None)
-        .unwrap();
-    db.set_convention_lifecycle("bbb", "deprecated", Some("test"))
-        .unwrap();
-
-    // bbb is not in current_ids but has convention_state → should survive
-    let deleted = db.delete_stale_conventions(&["aaa"]).unwrap();
-    assert_eq!(deleted, 1); // only ccc deleted
-    let rows = db.all_conventions().unwrap();
-    let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-    assert!(ids.contains(&"aaa"));
-    assert!(
-        ids.contains(&"bbb"),
-        "stateful convention should survive deletion"
-    );
-    assert!(!ids.contains(&"ccc"));
-}
-
-#[test]
-fn tracked_absent_conventions_identified() {
-    let (_dir, db) = setup_db();
-    db.upsert_convention("aaa", "a", "b", 10, 0.9, None)
-        .unwrap();
-    db.upsert_convention("bbb", "c", "d", 20, 0.95, None)
-        .unwrap();
-    db.set_convention_lifecycle("bbb", "deprecated", Some("test"))
-        .unwrap();
-
-    let absent = db.tracked_convention_ids_absent_from(&["aaa"]).unwrap();
-    assert_eq!(absent, vec!["bbb"]);
-
-    let absent = db
-        .tracked_convention_ids_absent_from(&["aaa", "bbb"])
-        .unwrap();
-    assert!(absent.is_empty());
-}
-
-#[test]
 fn test_table_registry_covers_all_tables() {
     let names: Vec<&str> = TABLE_REGISTRY.iter().map(|t| t.name).collect();
     assert!(names.contains(&"files"));
@@ -1027,7 +896,6 @@ fn test_table_registry_covers_all_tables() {
     assert!(names.contains(&"imports"));
     assert!(names.contains(&"snapshots"));
     assert!(names.contains(&"conventions"));
-    assert!(names.contains(&"convention_state"));
 
     for meta in TABLE_REGISTRY {
         assert!(

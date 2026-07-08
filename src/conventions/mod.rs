@@ -3,7 +3,6 @@ mod bitset;
 mod context;
 pub mod drift;
 mod engine;
-pub mod lifecycle;
 pub mod pipeline;
 pub mod templates;
 

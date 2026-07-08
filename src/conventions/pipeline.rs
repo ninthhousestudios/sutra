@@ -136,7 +136,7 @@ pub fn rebuild(
     }
 
     let all_convs: Vec<super::engine::Convention> = if fca_cache_hit {
-        db.all_conventions_merged()?
+        db.all_conventions()?
             .into_iter()
             .map(super::engine::Convention::from)
             .collect()
@@ -196,20 +196,6 @@ pub fn rebuild(
         );
     }
     let current_ids: Vec<&str> = all_convs.iter().map(|c| &*c.id).collect();
-
-    let snapshot_id = uuid::Uuid::new_v4().to_string();
-    for c in &all_convs {
-        let _ = db.record_convention_history(&c.id, c.support as i64, c.confidence, &snapshot_id);
-    }
-    if let Ok(absent) = db.tracked_convention_ids_absent_from(&current_ids) {
-        for cid in &absent {
-            let _ = db.record_convention_history(cid, 0, 0.0, &snapshot_id);
-        }
-    }
-
-    if let Ok(signals) = super::lifecycle::detect_signals(db) {
-        let _ = super::lifecycle::generate_proposals(db, signals);
-    }
 
     let _ = db.delete_stale_conventions(&current_ids);
 

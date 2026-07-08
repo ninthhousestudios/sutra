@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each convention-system landing.
 
-Last updated: 2026-06-02 (5c-9: convention-aware orient integration)
+Last updated: 2026-07-08 (sutra/231: remove lifecycle/proposal machinery)
 
 ## Module layout
 
@@ -17,36 +17,32 @@ src/conventions/
   bitset.rs         — compact bitset for FCA attribute sets
   attributes.rs     — extract_attrs_for_symbol, extract_cross_language_attrs,
                       enrich_with_effects, EffectPattern, ResolvedCallee
-  lifecycle.rs      — detect_signals, generate_proposals (N=3 trend window)
   drift.rs          — shannon_entropy, compute_attribute_distribution,
                       record_and_detect_drift, DriftAlert, DivergingAttribute
   templates.rs      — SymbolSignatureInfo, decompose_signature,
                       select_exemplars, generate_template,
                       generate_templates_for_conventions
+  pipeline.rs       — rebuild (full FCA + drift + template pipeline)
 
 src/db/
   mod.rs            — Db struct, TABLE_REGISTRY, TablePartition, reindex,
                       file/symbol/ref CRUD
-  conventions.rs    — ConventionRow, ConventionStateRow, ConventionWithState,
-                      ConventionHistoryRow, ConventionProposalRow,
-                      ConventionWaiverRow, ConventionSnapshotRow,
+  conventions.rs    — ConventionRow, ConventionWaiverRow, ConventionSnapshotRow,
                       ConventionTemplateRow,
-                      upsert/query/history/proposal/waiver/snapshot/template methods
+                      upsert/query/waiver/snapshot/template methods
   components.rs     — ComponentRow, insert/batch/active_components_with_paths,
                       anchors, aliases, component_lifecycle_state,
                       set_component_lifecycle
   migrations.rs     — MIGRATIONS array (name, sql, ephemeral_only), run_migrations
 
 src/tools/
-  review.rs         — handle (entry), build_findings (FCA rebuild + violation
-                      check + drift detection + template generation),
+  review.rs         — handle (entry), build_findings (violation check + drift),
                       compute (JSON assembly), ReviewFindings struct
-  conventions.rs    — MCP tool actions: list, violations, promote, demote,
-                      waiver CRUD, proposals
+  conventions.rs    — MCP tool actions: list, waiver CRUD
   orient.rs         — sutra_orient MCP tool: convention-aware orientation
-                      per scope. Resolves component, assembles preferred
-                      conventions + templates, warnings, drift, waivers,
-                      pending proposals. Core tier (no analysis required).
+                      per scope. Resolves component, assembles observed
+                      conventions + templates, drift, waivers.
+                      Core tier (no analysis required).
 ```
 
 ## Key types
@@ -61,8 +57,8 @@ FCA output. Fields: `id` (blake3 hash), `antecedent`, `consequent` (both `Vec<St
 
 ### ReviewFindings (review.rs)
 Aggregation passed from `build_findings` to `compute`. Fields:
-`constraint_violations`, `convention_violations`, `convention_matches`,
-`waived_violations`, `drift_alerts`.
+`constraint_violations`, `convention_violations`,
+`waived_violations`, `drift_alerts`, `convention_drift_findings`.
 
 ### DriftAlert (drift.rs)
 Fields: `component_id`, `component_name`, `entropy_old`, `entropy_new`,
@@ -72,19 +68,17 @@ Fields: `component_id`, `component_name`, `entropy_old`, `entropy_new`,
 Fields: `convention_id`, `template_text`, `exemplar_symbols: Vec<String>` (qualified names),
 `generated_at`. Queried via `Db::templates_for_conventions(&[&str])`.
 
-## Data flow: review pipeline
+## Data flow: rebuild pipeline (pipeline.rs)
 
 ```
-build_findings(db, workspace_root, changed_paths, dd_engine, registry)
-  |
-  +-- DD engine: forbidden deps + cycles --> constraint_violations
+rebuild(db, registry, workspace_root)
   |
   +-- Build all_sym_attrs + sig_info_map (all files, all symbols,
   |     extract + enrich attributes, collect signature/visibility/language_attrs)
   |
   +-- Assign component_id to each SymbolAttrs via file_to_component map
   |
-  +-- FCA rebuild:
+  +-- FCA rebuild (skip if hash matches cached):
   |     Global: FcaEngine::rebuild(all_sym_attrs)
   |     Per-component: rebuild_with_params(comp_symbols, adaptive_threshold)
   |       + deduplicate_component_conventions vs global
@@ -99,9 +93,7 @@ build_findings(db, workspace_root, changed_paths, dd_engine, registry)
   |     --> drift_alerts
   |
   +-- Convention persistence:
-  |     upsert all_convs, record_convention_history(snapshot_id)
-  |     detect_signals -> generate_proposals (lifecycle transitions)
-  |     delete stale conventions
+  |     upsert all_convs, delete stale conventions
   |
   +-- Template generation:
   |     generate_templates_for_conventions(all_convs, all_sym_attrs, sig_info_map, db)
@@ -110,16 +102,15 @@ build_findings(db, workspace_root, changed_paths, dd_engine, registry)
   |         decompose_signature (parse sig text + language_attrs)
   |         generate_template (common parts literal, varying → metavariables)
   |       upsert_convention_template, delete_orphan_templates
-  |
-  +-- Violation check:
-  |     FcaEngine::check(changed_sym_attrs) --> convention_violations
-  |     FcaEngine::check_inverse(deprecated/forbidden) --> convention_matches
-  |
-  +-- Waiver partition:
-        waivers_for_check() -> split violations into waived vs unwaived
+
+build_findings (review.rs):
+  +-- Constraint evaluation via check::evaluate
+  +-- Convention violation check: FcaEngine::check(changed_sym_attrs)
+  +-- Waiver partition: split violations into waived vs unwaived
+  --> ReviewFindings
 
 compute(db, workspace_root, changed_paths, churn, findings)
-  --> JSON with risk_score, violations, matches, waivers, drift_alerts
+  --> JSON with risk_score, violations, waivers, drift_alerts
 ```
 
 ## Database tables (convention-related)
@@ -127,14 +118,14 @@ compute(db, workspace_root, changed_paths, churn, findings)
 | Table | Partition | Migration | Purpose |
 |---|---|---|---|
 | conventions | Ephemeral | 0005+0007+0015 | FCA-discovered conventions (id, antecedent, consequent, support, confidence, component_id) |
-| convention_state | Durable | 0014 | Human-set lifecycle (convention_id, lifecycle_state, override_reason) |
-| convention_history | Ephemeral | 0016 | Per-convention support/confidence per snapshot |
-| convention_proposals | Durable | 0017+0019 | Lifecycle transition proposals (pending/accepted/dismissed) |
 | convention_waivers | Durable | 0018 | Waived violations with rationale |
 | convention_snapshots | Ephemeral | 0020 | Per-component entropy snapshots for drift detection |
 | convention_templates | Ephemeral | 0022 | Per-convention signature skeletons with exemplar symbols |
 | components | Durable | 0008+0009+0021 | Component identity, lifecycle_state (stable/sketch) |
 | component_membership | Ephemeral | 0008 | Component-to-file mapping (rebuilt on cluster) |
+
+Dropped in 0044: convention_state, convention_proposals, convention_history.
+Enforcement of naming/style rules is now via constraint rules in `.sutra/rules.toml`.
 
 Ephemeral = dropped on reindex, migration re-runs. Durable = survives reindex.
 
@@ -162,17 +153,10 @@ pub fn do_thing(&self, arg: &str) -> Result<ReturnType> {
 
 Row types: plain `#[derive(Debug, Clone)]` structs, mapped via closure or helper fn.
 
-## Convention lifecycle
-
-States: descriptive -> preferred -> deprecated -> forbidden.
-All transitions human-initiated or proposed + confirmed.
-Signals detected in `lifecycle::detect_signals` using N=3 snapshot trend window.
-Proposals stored in `convention_proposals` (pending/accepted/dismissed).
-
 ## Sketch mode (ADR-0001)
 
 Component lifecycle_state column: `stable` (default) or `sketch`.
-When sketch: conventions flatten to informational, constraints remain enforced.
+When sketch: conventions are informational only, constraints remain enforced.
 Drift detection skips sketch-mode components entirely (no snapshots recorded).
 Currently only settable via `Db::set_component_lifecycle` — no MCP tool yet.
 
@@ -211,6 +195,6 @@ Currently only settable via `Db::set_component_lifecycle` — no MCP tool yet.
 
 ## Test locations
 
-- Unit tests: `#[cfg(test)]` modules in `engine.rs`, `lifecycle.rs`, `drift.rs`, `templates.rs`
+- Unit tests: `#[cfg(test)]` modules in `engine.rs`, `drift.rs`, `templates.rs`
 - Integration tests: `tests/review-test.rs`, `tests/db-test.rs`
 - Test DB setup: `Db::open_unchecked("test", dir.path())` with tempdir

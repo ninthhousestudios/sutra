@@ -43,18 +43,6 @@ pub use crate::constraints::ConstraintFinding;
 pub use crate::conventions::ConventionViolation;
 use crate::waivers::{self, Waived};
 
-#[derive(Clone)]
-pub struct ConventionMatchFinding {
-    pub symbol: String,
-    pub file: String,
-    pub convention_id: Arc<str>,
-    pub antecedent: Arc<[String]>,
-    pub consequent: Arc<[String]>,
-    pub lifecycle_state: String,
-    pub support: usize,
-    pub confidence: f64,
-}
-
 #[derive(Default)]
 pub struct ReviewFindings {
     pub constraint_violations: Vec<ConstraintFinding>,
@@ -63,7 +51,6 @@ pub struct ReviewFindings {
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
-    pub convention_matches: Vec<ConventionMatchFinding>,
     pub waived_violations: Vec<Waived<ConventionViolation>>,
     pub drift_alerts: Vec<conventions::drift::DriftAlert>,
     pub convention_drift_findings: Vec<crate::db::HealthFindingRow>,
@@ -385,7 +372,6 @@ pub fn build_findings(
 
     // Convention check on changed symbols (conventions rebuilt at parse time)
     let mut convention_violations = Vec::new();
-    let mut convention_matches = Vec::new();
 
     let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
     let mut changed_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
@@ -446,56 +432,20 @@ pub fn build_findings(
             .map(|s| s.to_string());
     }
 
-    let merged = db.all_conventions_merged()?;
-    let all_convs: Vec<conventions::Convention> = merged
-        .iter()
-        .cloned()
+    let all_convs: Vec<conventions::Convention> = db
+        .all_conventions()?
+        .into_iter()
         .map(conventions::Convention::from)
         .collect();
 
     if !all_convs.is_empty() {
-        let mut effective_conventions = rules.conventions.clone();
-        for c in merged
-            .iter()
-            .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
-        {
-            if !effective_conventions.suppress.contains(&c.id) {
-                effective_conventions.suppress.push(c.id.clone());
-            }
-        }
+        let effective_conventions = rules.conventions.clone();
 
         let mut check_engine = FcaEngine::new();
         check_engine.set_conventions(all_convs);
 
         convention_violations
             .extend(check_engine.check(&changed_sym_attrs, &effective_conventions));
-
-        let deprecated_ids: HashSet<String> = merged
-            .iter()
-            .filter(|c| c.lifecycle_state.as_deref() == Some("deprecated"))
-            .map(|c| c.id.clone())
-            .collect();
-        let forbidden_ids: HashSet<String> = merged
-            .iter()
-            .filter(|c| c.lifecycle_state.as_deref() == Some("forbidden"))
-            .map(|c| c.id.clone())
-            .collect();
-
-        if !deprecated_ids.is_empty() || !forbidden_ids.is_empty() {
-            for m in check_engine.check_inverse(&changed_sym_attrs, &deprecated_ids, &forbidden_ids)
-            {
-                convention_matches.push(ConventionMatchFinding {
-                    symbol: m.symbol,
-                    file: m.file,
-                    convention_id: m.convention_id,
-                    antecedent: m.antecedent,
-                    consequent: m.consequent,
-                    lifecycle_state: m.lifecycle_state,
-                    support: m.support,
-                    confidence: m.confidence,
-                });
-            }
-        }
     }
 
     let waiver_map = db.waivers_for_check()?;
@@ -526,7 +476,6 @@ pub fn build_findings(
         constraint_parse_errors,
         constraint_violations_total,
         convention_violations,
-        convention_matches,
         waived_violations,
         drift_alerts,
         convention_drift_findings,
@@ -709,7 +658,6 @@ pub fn compute(
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
             "convention_violations": [],
-            "convention_matches": [],
             "waived_violations": [],
             "drift_alerts": [],
             "convention_drift": [],
@@ -840,23 +788,6 @@ pub fn compute(
             })
         })
         .collect();
-    let convention_matches_out: Vec<_> = findings
-        .convention_matches
-        .iter()
-        .map(|m| {
-            let severity = if m.lifecycle_state == "forbidden" {
-                "warning"
-            } else {
-                "advisory"
-            };
-            json!({
-                "symbol": m.symbol, "file": m.file, "convention_id": m.convention_id,
-                "antecedent": m.antecedent, "consequent": m.consequent,
-                "lifecycle_state": m.lifecycle_state, "severity": severity,
-                "support": m.support, "confidence": m.confidence,
-            })
-        })
-        .collect();
     let waived_violations_out: Vec<_> = findings
         .waived_violations
         .iter()
@@ -980,7 +911,6 @@ pub fn compute(
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
         "convention_violations": convention_violations_out,
-        "convention_matches": convention_matches_out,
         "waived_violations": waived_violations_out,
         "drift_alerts": drift_alerts_out,
         "convention_drift": convention_drift_out,

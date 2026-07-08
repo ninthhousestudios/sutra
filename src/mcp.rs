@@ -373,8 +373,8 @@ impl SutraServer {
 
     #[tool(
         description = "Convention-aware orientation for a component or file scope. \
-        Returns preferred conventions with signature templates, deprecated/forbidden \
-        warnings, drift alerts, active waivers, pending lifecycle proposals, \
+        Returns observed conventions with signature templates, \
+        drift alerts, active waivers, \
         and active constraints (with violations and constraint waivers). \
         Scope can be a component name, component ID, or file path."
     )]
@@ -395,11 +395,8 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Manage convention lifecycle and waivers. \
-        List defaults to compact mode: only non-descriptive conventions (preferred/deprecated/forbidden) \
-        plus pending proposals; pass compact=false to include all descriptive conventions. \
-        Actions: list (optional compact), accept (proposal_id), dismiss (proposal_id), \
-        set_lifecycle (convention_id, lifecycle_state, reason), \
+    #[tool(description = "Manage convention waivers. \
+        Actions: list (all conventions), \
         waive (convention_id, symbol, rationale, waived_by, optional component_id), \
         list_waivers (optional convention_id), revoke_waiver (waiver_id).")]
     pub async fn sutra_conventions(

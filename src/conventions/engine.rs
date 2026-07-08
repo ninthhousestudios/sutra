@@ -22,8 +22,8 @@ pub struct Convention {
     pub component_id: Option<String>,
 }
 
-impl From<crate::db::ConventionWithState> for Convention {
-    fn from(row: crate::db::ConventionWithState) -> Self {
+impl From<crate::db::ConventionRow> for Convention {
+    fn from(row: crate::db::ConventionRow) -> Self {
         Self {
             id: Arc::from(row.id),
             antecedent: Arc::from(
