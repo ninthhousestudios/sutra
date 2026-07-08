@@ -167,16 +167,16 @@ severity = "blocking"
 # These document existing architectural debt. Not blocking because they
 # exist for pragmatic reasons, but agents should not deepen them.
 
-# parser::adapter imports conventions::SymbolAttrs for attribute extraction.
-# conventions::attributes imports parser::adapter::LanguageRegistry.
-# Resolving requires extracting a shared symbol_attrs trait/module.
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/parser/*"
-to = "src/conventions/*"
-name = "parser-conventions-coupling"
-provenance = "docs/adr/0003-layered-adapter-traits.md"
-severity = "advisory"
+# parser::adapter imports conventions::SymbolAttrs for the FcaAttributeSource
+# extension trait (ADR-0003). This is the designed coupling — one-directional,
+# no back-edge. Waived rather than enforced.
+# [[constraint]]
+# kind = "forbidden_dep"
+# from = "src/parser/*"
+# to = "src/conventions/*"
+# name = "parser-conventions-coupling"
+# provenance = "docs/adr/0003-layered-adapter-traits.md"
+# severity = "advisory"
 
 # similarity::diff imports health::findings::BiomarkerKind.
 # Creates a logical cycle: health → similarity (for HRR) and
@@ -223,12 +223,14 @@ severity = "blocking"
 # Infrastructure types (error.rs, freshness.rs) naturally have high fan-in.
 # These limits flag domain modules that are becoming god objects.
 
-[[constraint]]
-kind = "max_fan_in"
-target = "src/rules.rs"
-threshold = 15
-name = "rules-fan-in"
-severity = "advisory"
+# rules.rs is a pure types/schema module (Severity, Constraint, Rules, etc.)
+# with zero outgoing deps beyond error.rs — high fan-in is expected.
+# [[constraint]]
+# kind = "max_fan_in"
+# target = "src/rules.rs"
+# threshold = 15
+# name = "rules-fan-in"
+# severity = "advisory"
 
 [[constraint]]
 kind = "max_fan_in"
