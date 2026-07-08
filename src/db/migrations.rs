@@ -326,9 +326,18 @@ impl Db {
     }
 
     pub(crate) fn ephemeral_migration_names() -> Vec<&'static str> {
+        // Tables dropped by 0044/0045 — skip their CREATE migrations during
+        // reindex so we don't recreate tables we just demolished.
+        const SUPERSEDED: &[&str] = &[
+            "0016_convention_history",
+            "0020_convention_snapshots",
+            "0022_convention_templates",
+            "0034_drift_metrics",
+            "0036_drift_alerts",
+        ];
         MIGRATIONS
             .iter()
-            .filter(|(_, _, ephemeral_only)| *ephemeral_only)
+            .filter(|(name, _, ephemeral_only)| *ephemeral_only && !SUPERSEDED.contains(name))
             .map(|(name, _, _)| *name)
             .collect()
     }

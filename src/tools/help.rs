@@ -316,8 +316,7 @@ Use this to understand how control flows through the codebase.",
 ```
 sutra_orient(workspace=\"myproject\", scope=\"conventions\")
 ```
-Returns preferred conventions with signature templates, anti-pattern warnings, \
-drift alerts, waivers, and pending proposals for the target scope.
+Returns preferred conventions with anti-pattern warnings for the target scope.
 
 Scope can be a component name, component ID, or a file path. \
 When given a file path, the tool resolves it to the owning component.
