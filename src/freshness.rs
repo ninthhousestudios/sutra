@@ -65,28 +65,6 @@ impl FreshnessCounts {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SearchTier {
-    Exact,
-    Fts,
-}
-
-impl SearchTier {
-    pub fn confidence(&self) -> f64 {
-        match self {
-            SearchTier::Exact => 1.0,
-            SearchTier::Fts => 0.6,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            SearchTier::Exact => "exact",
-            SearchTier::Fts => "fts",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FreshnessLevel {
@@ -103,14 +81,6 @@ impl From<FileStatus> for FreshnessLevel {
             FileStatus::Stale => FreshnessLevel::StaleIndex,
         }
     }
-}
-
-pub fn confidence_json(tier: SearchTier) -> serde_json::Value {
-    json!({
-        "score": tier.confidence(),
-        "tier": tier.label(),
-        "formula": "exact short_name match = 1.0, FTS5 prefix match = 0.6",
-    })
 }
 
 /// Check whether indexed files have actually changed since last parse.
@@ -262,16 +232,6 @@ mod tests {
         assert_eq!(j["fresh"], 2);
         assert_eq!(j["edited"], 1);
         assert_eq!(j["stale"], 1);
-    }
-
-    #[test]
-    fn confidence_exact_is_1() {
-        assert_eq!(SearchTier::Exact.confidence(), 1.0);
-    }
-
-    #[test]
-    fn confidence_fts_is_below_exact() {
-        assert!(SearchTier::Fts.confidence() < SearchTier::Exact.confidence());
     }
 
     #[test]

@@ -88,7 +88,7 @@ fn handle_inner(
     if let Some(ref ann) = annotator {
         result["_meta"] = json!({
             "freshness": ann.counts().to_json(),
-            "confidence": freshness::confidence_json(tier),
+            "confidence": tier.confidence_json(),
         });
     }
     if items.is_empty() {

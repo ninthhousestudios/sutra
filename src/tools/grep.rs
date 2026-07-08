@@ -87,7 +87,7 @@ fn handle_inner(
     if let Some(ann) = annotator {
         result["_meta"] = json!({
             "freshness": ann.finish(),
-            "confidence": freshness::confidence_json(tier),
+            "confidence": tier.confidence_json(),
         });
     }
     Ok(result)

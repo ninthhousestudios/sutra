@@ -26,6 +26,36 @@ use rusqlite::{Connection, params};
 use crate::error::{Result, SutraError};
 use crate::workspace::{self, WorkspaceEntry};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchTier {
+    Exact,
+    Fts,
+}
+
+impl SearchTier {
+    pub fn confidence(&self) -> f64 {
+        match self {
+            SearchTier::Exact => 1.0,
+            SearchTier::Fts => 0.6,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SearchTier::Exact => "exact",
+            SearchTier::Fts => "fts",
+        }
+    }
+
+    pub fn confidence_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "score": self.confidence(),
+            "tier": self.label(),
+            "formula": "exact short_name match = 1.0, FTS5 prefix match = 0.6",
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Table partition metadata
 // ---------------------------------------------------------------------------
@@ -955,8 +985,7 @@ impl Db {
         name: &str,
         kind_filter: Option<&str>,
         limit: i64,
-    ) -> Result<(Vec<SymbolRow>, crate::freshness::SearchTier)> {
-        use crate::freshness::SearchTier;
+    ) -> Result<(Vec<SymbolRow>, SearchTier)> {
         let conn = self.conn.lock();
 
         // Exact short_name match.

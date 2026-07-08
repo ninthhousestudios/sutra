@@ -5,7 +5,6 @@ use tracing::debug;
 
 use crate::db::Db;
 use crate::git;
-use crate::health::findings::{BiomarkerKind, HealthFinding};
 use crate::parser::adapter::LanguageRegistry;
 use crate::similarity::{codebook::Codebook, encoder, hrr::HrrVec};
 
@@ -311,29 +310,6 @@ fn fn_body_child_count(
     }
 }
 
-pub fn shape_changes_to_findings(changes: &[ShapeChange]) -> Vec<HealthFinding> {
-    changes
-        .iter()
-        .filter(|c| c.quadrant == DiffQuadrant::SubtleStructural)
-        .map(|c| HealthFinding {
-            file_id: c.file_id.unwrap_or(0),
-            symbol_id: c.symbol_id,
-            biomarker_kind: BiomarkerKind::HrrShapeChange,
-            severity: BiomarkerKind::HrrShapeChange.default_severity(),
-            confidence: 1.0 - c.text_delta,
-            provenance: "hrr_semantic_diff".into(),
-            metric_value: c.hrr_delta,
-            threshold: 0.15,
-            detail: format!(
-                "{}: text changed {:.0}% but structural shape changed {:.0}%",
-                c.symbol_name,
-                c.text_delta * 100.0,
-                c.hrr_delta * 100.0,
-            ),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,35 +540,6 @@ fn process(data: &[i32]) -> i32 {
             DiffQuadrant::SubtleStructural,
             "with size normalization, nested-block change should reach SubtleStructural"
         );
-    }
-
-    #[test]
-    fn test_shape_change_to_finding_filters_quadrant() {
-        let changes = vec![
-            ShapeChange {
-                file_path: "a.rs".into(),
-                symbol_name: "foo".into(),
-                symbol_id: Some(1),
-                file_id: Some(10),
-                text_delta: 0.05,
-                hrr_delta: 0.70,
-                quadrant: DiffQuadrant::SubtleStructural,
-            },
-            ShapeChange {
-                file_path: "b.rs".into(),
-                symbol_name: "bar".into(),
-                symbol_id: Some(2),
-                file_id: Some(20),
-                text_delta: 0.50,
-                hrr_delta: 0.70,
-                quadrant: DiffQuadrant::MajorRewrite,
-            },
-        ];
-        let findings = shape_changes_to_findings(&changes);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].file_id, 10);
-        assert_eq!(findings[0].biomarker_kind, BiomarkerKind::HrrShapeChange);
-        assert!((findings[0].metric_value - 0.70).abs() < 1e-9);
     }
 
     /// Generate a function with `n` statements; returns (old_source, new_source)

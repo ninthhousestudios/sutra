@@ -400,9 +400,9 @@ fn test_import_refs_skipped() {
     assert_eq!(resolved[0].unresolved_name.as_deref(), Some("HashMap"));
 }
 
-/// FieldAccess refs should be skipped (need type info).
+/// FieldAccess refs resolve against field/method symbols via kind_compatible.
 #[test]
-fn test_field_access_skipped() {
+fn test_field_access_resolves_to_method() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("len", 10, RefContextKind::FieldAccess)];
     let all_symbols = vec![sym4(1, "vec::len", "len", "method")];
@@ -411,8 +411,11 @@ fn test_field_access_skipped() {
     let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
 
     assert_eq!(resolved.len(), 1);
-    assert!(resolved[0].skipped, "FieldAccess refs should be skipped");
-    assert_eq!(resolved[0].unresolved_name.as_deref(), Some("len"));
+    assert!(
+        !resolved[0].skipped,
+        "FieldAccess refs should resolve, not skip"
+    );
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
 }
 
 /// Kind filter fallback: if no kind-compatible match, fall back to any match.
