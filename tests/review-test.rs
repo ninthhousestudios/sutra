@@ -318,8 +318,6 @@ fn risk_score_clamped_to_one() {
                 confidence: 0.95,
             })
             .collect(),
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -390,8 +388,6 @@ fn constraint_violations_appear_in_output() {
         waived_constraint_violations: vec![],
         constraint_violations_total: 2,
         convention_violations: vec![],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -438,8 +434,6 @@ fn convention_violations_appear_in_output() {
             support: 8,
             confidence: 0.95,
         }],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -464,67 +458,6 @@ fn convention_violations_appear_in_output() {
     );
     assert_eq!(cv[0]["support"].as_u64().unwrap(), 8);
     assert!((cv[0]["confidence"].as_f64().unwrap() - 0.95).abs() < f64::EPSILON);
-}
-
-#[test]
-fn waived_violations_appear_in_output() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
-
-    let findings = review::ReviewFindings {
-        constraint_violations: vec![],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
-        constraint_violations_total: 0,
-        convention_violations: vec![],
-        waived_violations: vec![Waived {
-            finding: review::ConventionViolation {
-                symbol: "core::process".into(),
-                file: "src/core.rs".into(),
-                convention_id: "abc123".into(),
-                antecedent: vec!["kind:function".into()].into(),
-                consequent: vec!["has_doc".into()].into(),
-                missing: vec!["has_doc".into()],
-                support: 8,
-                confidence: 0.95,
-            },
-            rationale: "intentional omission".into(),
-            waived_by: String::new(),
-        }],
-        drift_alerts: vec![],
-        ..Default::default()
-    };
-
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-
-    let wv = result["waived_violations"].as_array().unwrap();
-    assert_eq!(wv.len(), 1);
-    assert_eq!(wv[0]["symbol"], "core::process");
-    assert_eq!(wv[0]["waived"], true);
-    assert_eq!(wv[0]["rationale"], "intentional omission");
-    assert_eq!(wv[0]["convention_id"], "abc123");
-
-    let cv = result["convention_violations"].as_array().unwrap();
-    assert!(
-        cv.is_empty(),
-        "waived violations should not appear as regular violations"
-    );
-
-    let conv_score = result["risk_breakdown"]["convention_violations"]
-        .as_f64()
-        .unwrap();
-    assert!(
-        conv_score == 0.0,
-        "waived violations should not contribute to risk score"
-    );
 }
 
 #[test]
@@ -558,8 +491,6 @@ fn violations_are_structurally_distinct() {
             support: 5,
             confidence: 0.92,
         }],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -647,8 +578,6 @@ fn convention_violations_increase_risk_score() {
                 confidence: 0.93,
             },
         ],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -727,8 +656,6 @@ fn recommended_reads_ranks_violation_sites_first() {
             support: 5,
             confidence: 0.95,
         }],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 
@@ -896,8 +823,6 @@ fn waived_constraint_violations_appear_in_output() {
         }],
         constraint_violations_total: 1,
         convention_violations: vec![],
-        waived_violations: vec![],
-        drift_alerts: vec![],
         ..Default::default()
     };
 

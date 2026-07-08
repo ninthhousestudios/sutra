@@ -373,9 +373,9 @@ impl SutraServer {
 
     #[tool(
         description = "Convention-aware orientation for a component or file scope. \
-        Returns observed conventions with signature templates, \
-        drift alerts, active waivers, \
-        and active constraints (with violations and constraint waivers). \
+        Returns observed conventions, \
+        active constraints (with violations and constraint waivers), \
+        and health findings. \
         Scope can be a component name, component ID, or file path."
     )]
     pub async fn sutra_orient(
@@ -395,10 +395,8 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Manage convention waivers. \
-        Actions: list (all conventions), \
-        waive (convention_id, symbol, rationale, waived_by, optional component_id), \
-        list_waivers (optional convention_id), revoke_waiver (waiver_id).")]
+    #[tool(description = "List discovered conventions. \
+        Actions: list (all conventions).")]
     pub async fn sutra_conventions(
         &self,
         Parameters(args): Parameters<tools::conventions::ConventionsArgs>,

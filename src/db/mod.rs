@@ -13,7 +13,7 @@ mod migrations;
 mod similarity;
 
 pub use constraints::ConstraintWaiverRow;
-pub use conventions::{ConventionRow, ConventionSnapshotRow};
+pub use conventions::ConventionRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
 

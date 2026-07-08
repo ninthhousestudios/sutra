@@ -226,6 +226,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0044_drop_lifecycle.sql"),
         false,
     ),
+    (
+        "0045_drop_convention_drift",
+        include_str!("../../migrations/0045_drop_convention_drift.sql"),
+        false,
+    ),
 ];
 
 impl Db {

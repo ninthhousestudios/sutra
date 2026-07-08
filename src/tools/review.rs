@@ -41,7 +41,7 @@ const W_CONVENTIONS: f64 = 0.20;
 
 pub use crate::constraints::ConstraintFinding;
 pub use crate::conventions::ConventionViolation;
-use crate::waivers::{self, Waived};
+use crate::waivers::Waived;
 
 #[derive(Default)]
 pub struct ReviewFindings {
@@ -51,9 +51,6 @@ pub struct ReviewFindings {
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
     pub convention_violations: Vec<ConventionViolation>,
-    pub waived_violations: Vec<Waived<ConventionViolation>>,
-    pub drift_alerts: Vec<conventions::drift::DriftAlert>,
-    pub convention_drift_findings: Vec<crate::db::HealthFindingRow>,
 }
 
 pub fn handle(
@@ -448,27 +445,6 @@ pub fn build_findings(
             .extend(check_engine.check(&changed_sym_attrs, &effective_conventions));
     }
 
-    let waiver_map = db.waivers_for_check()?;
-    let sym_component: HashMap<(String, String), String> = changed_sym_attrs
-        .iter()
-        .filter_map(|s| {
-            s.component_id
-                .as_deref()
-                .map(|c| ((s.file.clone(), s.name.clone()), c.to_string()))
-        })
-        .collect();
-    let convention_waiver_set = waivers::ConventionWaiverSet {
-        map: waiver_map,
-        sym_component,
-    };
-    let (convention_violations, waived_violations) =
-        waivers::partition(convention_violations, &convention_waiver_set);
-
-    let drift_alerts = db.get_drift_alerts().unwrap_or_default();
-    let convention_drift_findings = db
-        .get_health_findings(None, Some("convention_drift"))
-        .unwrap_or_default();
-
     Ok(ReviewFindings {
         constraint_violations,
         resolved_constraint_violations,
@@ -476,9 +452,6 @@ pub fn build_findings(
         constraint_parse_errors,
         constraint_violations_total,
         convention_violations,
-        waived_violations,
-        drift_alerts,
-        convention_drift_findings,
     })
 }
 
@@ -658,9 +631,6 @@ pub fn compute(
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
             "convention_violations": [],
-            "waived_violations": [],
-            "drift_alerts": [],
-            "convention_drift": [],
         });
         if explain {
             result["_explain"] = json!({
@@ -788,61 +758,6 @@ pub fn compute(
             })
         })
         .collect();
-    let waived_violations_out: Vec<_> = findings
-        .waived_violations
-        .iter()
-        .map(|w| {
-            json!({
-                "symbol": w.finding.symbol, "file": w.finding.file,
-                "convention_id": w.finding.convention_id,
-                "antecedent": w.finding.antecedent, "consequent": w.finding.consequent,
-                "missing": w.finding.missing,
-                "support": w.finding.support, "confidence": w.finding.confidence,
-                "waived": true, "rationale": w.rationale,
-            })
-        })
-        .collect();
-    let drift_alerts_out: Vec<_> = findings
-        .drift_alerts
-        .iter()
-        .map(|a| {
-            let diverging: Vec<_> = a
-                .diverging_attributes
-                .iter()
-                .map(|d| {
-                    json!({
-                        "attribute": d.attribute,
-                        "old_proportion": scoring::round3(d.old_proportion),
-                        "new_proportion": scoring::round3(d.new_proportion),
-                    })
-                })
-                .collect();
-            json!({
-                "component_id": a.component_id,
-                "component_name": a.component_name,
-                "entropy_old": scoring::round3(a.entropy_old),
-                "entropy_new": scoring::round3(a.entropy_new),
-                "delta": scoring::round3(a.delta),
-                "diverging_attributes": diverging,
-            })
-        })
-        .collect();
-    let convention_drift_out: Vec<_> = findings
-        .convention_drift_findings
-        .iter()
-        .map(|f| {
-            json!({
-                "biomarker": f.biomarker_kind.as_str(),
-                "severity": f.severity.as_str(),
-                "file_id": f.file_id,
-                "metric_value": scoring::round3(f.metric_value),
-                "threshold": scoring::round3(f.threshold),
-                "provenance": &f.provenance,
-                "detail": &f.detail,
-            })
-        })
-        .collect();
-
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
     let complexity_score = scoring::normalize(
@@ -911,9 +826,6 @@ pub fn compute(
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
         "convention_violations": convention_violations_out,
-        "waived_violations": waived_violations_out,
-        "drift_alerts": drift_alerts_out,
-        "convention_drift": convention_drift_out,
         "recommended_reads": recommended_reads,
     });
     if !behavioral.is_empty() {

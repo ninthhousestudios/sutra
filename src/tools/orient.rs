@@ -9,7 +9,6 @@ use serde_json::json;
 use crate::components;
 use crate::constraints::DdEngine;
 use crate::constraints::check::{EvalScope, FactsSource};
-use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, scoring};
@@ -105,59 +104,6 @@ fn resolve_scope(db: &Db, scope: &str) -> Result<Vec<ResolvedComponent>> {
     }
 
     Ok(results)
-}
-
-fn check_drift_from_snapshots(
-    db: &Db,
-    component_id: &str,
-    component_name: &str,
-) -> Option<serde_json::Value> {
-    let snapshots = db
-        .recent_convention_snapshots(component_id, conventions::DRIFT_WINDOW)
-        .ok()?;
-    if snapshots.len() < conventions::DRIFT_WINDOW {
-        return None;
-    }
-
-    let newest = &snapshots[0];
-    let oldest = &snapshots[conventions::DRIFT_WINDOW - 1];
-    let delta = newest.entropy - oldest.entropy;
-
-    if delta <= conventions::DRIFT_THRESHOLD {
-        return None;
-    }
-
-    let entropies: Vec<f64> = snapshots.iter().rev().map(|s| s.entropy).collect();
-    let monotonic = entropies.windows(2).all(|w| w[1] >= w[0]);
-    if !monotonic {
-        return None;
-    }
-
-    let old_dist: HashMap<String, f64> =
-        serde_json::from_str(&oldest.attribute_distribution).unwrap_or_default();
-    let new_dist: HashMap<String, f64> =
-        serde_json::from_str(&newest.attribute_distribution).unwrap_or_default();
-    let diverging = conventions::find_diverging_attributes(&old_dist, &new_dist);
-
-    let diverging_out: Vec<_> = diverging
-        .iter()
-        .map(|d| {
-            json!({
-                "attribute": d.attribute,
-                "old_proportion": d.old_proportion,
-                "new_proportion": d.new_proportion,
-            })
-        })
-        .collect();
-
-    Some(json!({
-        "component_id": component_id,
-        "component_name": component_name,
-        "entropy_old": oldest.entropy,
-        "entropy_new": newest.entropy,
-        "delta": delta,
-        "diverging_attributes": diverging_out,
-    }))
 }
 
 fn constraints_for_component<'a>(
@@ -327,7 +273,6 @@ pub fn handle(
     let cochange_threshold = components_config.cochange_threshold.unwrap_or(0.5);
 
     let all_conventions = db.all_conventions()?;
-    let all_waivers = db.list_waivers(None).unwrap_or_default();
 
     // Constraint system
     let mut loaded_rules = rules::load_rules(workspace_root)?;
@@ -388,42 +333,19 @@ pub fn handle(
             .filter(|c| c.component_id.as_deref() == Some(&comp.id) || c.component_id.is_none())
             .collect();
 
-        let conv_ids: Vec<&str> = in_scope.iter().map(|c| c.id.as_str()).collect();
-        let templates = db.templates_for_conventions(&conv_ids).unwrap_or_default();
-        let template_map: HashMap<&str, &str> = templates
+        let observed: Vec<_> = in_scope
             .iter()
-            .map(|t| (t.convention_id.as_str(), t.template_text.as_str()))
-            .collect();
-        let in_scope_waivers: Vec<_> = all_waivers
-            .iter()
-            .filter(|w| {
-                conv_ids.contains(&w.convention_id.as_str())
-                    && (w.component_id == comp.id || w.component_id.is_empty())
+            .map(|c| {
+                json!({
+                    "convention_id": c.id,
+                    "antecedent": c.antecedent.split(", ").collect::<Vec<_>>(),
+                    "consequent": c.consequent.split(", ").collect::<Vec<_>>(),
+                    "support": c.support,
+                    "confidence": c.confidence,
+                    "scope": if c.component_id.is_some() { "component" } else { "global" },
+                })
             })
             .collect();
-
-        let mut observed = Vec::new();
-
-        for c in &in_scope {
-            let mut entry = json!({
-                "convention_id": c.id,
-                "antecedent": c.antecedent.split(", ").collect::<Vec<_>>(),
-                "consequent": c.consequent.split(", ").collect::<Vec<_>>(),
-                "support": c.support,
-                "confidence": c.confidence,
-                "scope": if c.component_id.is_some() { "component" } else { "global" },
-            });
-            if let Some(tmpl) = template_map.get(c.id.as_str()) {
-                entry["template"] = json!(tmpl);
-            }
-            observed.push(entry);
-        }
-
-        let drift = if is_sketch {
-            None
-        } else {
-            check_drift_from_snapshots(db, &comp.id, &comp.name)
-        };
 
         let mut section = json!({
             "component_id": comp.id,
@@ -441,26 +363,6 @@ pub fn handle(
                 "guidance": "Observed patterns in this scope (informational only).",
                 "conventions": observed,
             });
-        }
-        if let Some(drift_alert) = drift {
-            section["drift_alert"] = drift_alert;
-        }
-        if !in_scope_waivers.is_empty() {
-            section["active_waivers"] = json!(
-                in_scope_waivers
-                    .iter()
-                    .map(|w| {
-                        json!({
-                            "waiver_id": w.id,
-                            "convention_id": w.convention_id,
-                            "symbol": w.symbol_qualified_name,
-                            "rationale": w.rationale,
-                            "waived_by": w.waived_by,
-                            "waived_at": w.waived_at,
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            );
         }
 
         // Constraint section
@@ -784,22 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn handle_convention_with_template() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
-        db.upsert_convention_template("conv-1", "pub fn $NAME(&self) -> Result<$T>", &[])
-            .unwrap();
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        let patterns = &orientation["observed_patterns"]["conventions"];
-        assert_eq!(patterns.as_array().unwrap().len(), 1);
-        assert_eq!(patterns[0]["template"], "pub fn $NAME(&self) -> Result<$T>");
-        assert_eq!(patterns[0]["scope"], "component");
-    }
-
-    #[test]
     fn handle_global_convention_included() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
@@ -846,68 +732,6 @@ mod tests {
                 == 1
         );
         assert!(orientation["sketch_mode_note"].as_str().is_some());
-    }
-
-    #[test]
-    fn drift_from_snapshots_triggers_alert() {
-        let (db, _dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-
-        let dist_low = r#"{"kind:function": 0.8, "has_doc": 0.3}"#;
-        let dist_mid = r#"{"kind:function": 0.7, "has_doc": 0.4}"#;
-        let dist_high = r#"{"kind:function": 0.6, "has_doc": 0.5}"#;
-
-        db.insert_convention_snapshot("comp-1", 0.8, 10, dist_low, "h1", None, None)
-            .unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist_mid, "h2", None, None)
-            .unwrap();
-        db.insert_convention_snapshot("comp-1", 1.2, 10, dist_high, "h3", None, None)
-            .unwrap();
-
-        let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
-        assert!(alert.is_some());
-        let alert = alert.unwrap();
-        assert_eq!(alert["component_id"], "comp-1");
-        assert!(alert["delta"].as_f64().unwrap() > 0.3);
-    }
-
-    #[test]
-    fn drift_no_alert_when_stable() {
-        let (db, _dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-
-        let dist = r#"{"kind:function": 0.8}"#;
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h1", None, None)
-            .unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h2", None, None)
-            .unwrap();
-        db.insert_convention_snapshot("comp-1", 1.0, 10, dist, "h3", None, None)
-            .unwrap();
-
-        let alert = check_drift_from_snapshots(&db, "comp-1", "mycomp");
-        assert!(alert.is_none());
-    }
-
-    #[test]
-    fn waivers_in_scope() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
-        db.create_waiver(
-            "conv-1",
-            "my_func",
-            "comp-1",
-            "intentional deviation",
-            "josh",
-        )
-        .unwrap();
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        let waivers = orientation["active_waivers"].as_array().unwrap();
-        assert_eq!(waivers.len(), 1);
-        assert_eq!(waivers[0]["convention_id"], "conv-1");
-        assert_eq!(waivers[0]["rationale"], "intentional deviation");
     }
 
     fn write_rules(dir: &tempfile::TempDir, content: &str) {

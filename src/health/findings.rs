@@ -39,7 +39,6 @@ pub enum BiomarkerKind {
     DeadCodeRatio,
     CodeAgeVolatility,
     CoverageGradient,
-    ConventionDrift,
     ComponentInstability,
     HrrShapeChange,
     ImportCycle,
@@ -58,7 +57,6 @@ impl BiomarkerKind {
             Self::DeadCodeRatio => "dead_code_ratio",
             Self::CodeAgeVolatility => "code_age_volatility",
             Self::CoverageGradient => "coverage_gradient",
-            Self::ConventionDrift => "convention_drift",
             Self::ComponentInstability => "component_instability",
             Self::HrrShapeChange => "hrr_shape_change",
             Self::ImportCycle => "import_cycle",
@@ -70,7 +68,6 @@ impl BiomarkerKind {
             Self::DeadCodeRatio
             | Self::CodeAgeVolatility
             | Self::CoverageGradient
-            | Self::ConventionDrift
             | Self::ComponentInstability
             | Self::HrrShapeChange
             | Self::ImportCycle => HealthSeverity::Informational,
@@ -90,7 +87,6 @@ impl BiomarkerKind {
             "dead_code_ratio" => Some(Self::DeadCodeRatio),
             "code_age_volatility" => Some(Self::CodeAgeVolatility),
             "coverage_gradient" => Some(Self::CoverageGradient),
-            "convention_drift" => Some(Self::ConventionDrift),
             "component_instability" => Some(Self::ComponentInstability),
             "hrr_shape_change" => Some(Self::HrrShapeChange),
             "import_cycle" => Some(Self::ImportCycle),

@@ -657,10 +657,8 @@ fn post_parse_sequence(
         if conv_outcome.convention_count > 0 {
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
         }
-        db.replace_drift_alerts(&conv_outcome.drift_alerts)?;
 
-        let mut findings = crate::health::compute_all_health_findings(db, workspace_root)?;
-        findings.extend(conv_outcome.convention_drift_findings);
+        let findings = crate::health::compute_all_health_findings(db, workspace_root)?;
         if !findings.is_empty() {
             info!(count = findings.len(), "computed health findings");
         }

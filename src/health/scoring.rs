@@ -53,9 +53,7 @@ impl BiomarkerKind {
                 HealthCategory::Coupling
             }
             Self::CodeAgeVolatility | Self::HrrShapeChange => HealthCategory::Freshness,
-            Self::DeadCodeRatio | Self::CoverageGradient | Self::ConventionDrift => {
-                HealthCategory::Coverage
-            }
+            Self::DeadCodeRatio | Self::CoverageGradient => HealthCategory::Coverage,
         }
     }
 
@@ -74,7 +72,6 @@ impl BiomarkerKind {
             Self::DeadCodeRatio => 0.80,
             Self::CoverageGradient => 0.80,
             // Sutra-specific, uncalibrated
-            Self::ConventionDrift => 0.50,
             Self::ComponentInstability => 0.50,
             Self::HrrShapeChange => 0.50,
             Self::ImportCycle => 0.50,
