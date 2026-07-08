@@ -4,19 +4,14 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-06-05 (5e-11: orient + health MCP tools)
+Last updated: 2026-07-08 (sutra/232: remove drift, template, waiver subsystems)
 
 ## Module layout
 
 ```
 src/health/
   mod.rs            — re-exports from findings, git_metrics, and scoring
-  drift.rs          — Convention drift detection via FCA conformance +
-                      HRR coherence. compute_fca_conformance,
-                      compute_hrr_coherence, detect_convention_drift.
-                      Constants: FCA_DRIFT_THRESHOLD (0.10),
-                      HRR_DRIFT_THRESHOLD (0.10), MIN_COHERENCE_SYMBOLS (3).
-  findings.rs       — HealthFinding, BiomarkerKind (13 variants + from_str),
+  findings.rs       — HealthFinding, BiomarkerKind (12 variants + from_str),
                       HealthSeverity (Advisory, Informational — never Blocking,
                       + from_str), compute_nested_complexity,
                       compute_all_health_findings(db, workspace_root)
@@ -145,15 +140,14 @@ Core finding struct all biomarkers produce. Fields: `file_id: i64`,
 `metric_value: f64`, `threshold: f64`, `detail: String`.
 
 ### BiomarkerKind (health/findings.rs)
-Enum with 14 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
+Enum with 12 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
 `ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`, `ImportCycle`.
 On-demand (review-time via git blame): `FunctionHotspot`,
 `CodeAgeVolatility`. Shape-diff (review-time): `HrrShapeChange`.
-Convention drift (review-time): `ConventionDrift`. Component instability:
-`ComponentInstability` (computed via `health/instability.rs`, surfaced as
-component-level metric in orient + sutra_file_health, not as a per-file
-HealthFinding). Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`,
-`CoverageGradient`.
+Component instability: `ComponentInstability` (computed via
+`health/instability.rs`, surfaced as component-level metric in orient +
+sutra_file_health, not as a per-file HealthFinding).
+Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`, `CoverageGradient`.
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
@@ -183,7 +177,9 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
 | health_snapshot_files | Ephemeral | 0033 | Per-file health scores at each snapshot |
 | health_snapshot_components | Ephemeral | 0033 | Per-component aggregated scores at each snapshot |
-| convention_snapshots (fca_conformance, hrr_coherence cols) | Ephemeral | 0034 | Per-component drift metrics for time-series trending |
+
+Dropped in 0045: convention_snapshots (previously stored FCA conformance
+and HRR coherence metrics for drift trending).
 
 Migration 0027 is `ephemeral_only: true` — on reindex, symbols table is
 dropped and recreated by 0001, then 0027 re-runs the ALTER TABLE.
@@ -298,46 +294,7 @@ a single review invocation.
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
 - Review output ordering: constraint_violations → convention_violations →
-  health_findings → hrr_shape_changes → convention_drift → health_delta
-
-## Convention drift biomarker (health/drift.rs)
-
-Two independent detection paths, both producing `convention_drift`
-HealthFindings at review time. Computed in `build_findings` alongside
-existing entropy-based drift detection.
-
-### FCA conformance (weight 0.50, Informational)
-- Per-component fraction of symbols conforming to discovered conventions
-- `compute_fca_conformance(conventions, components)` → HashMap<comp_id, f64>
-- For each convention: count symbols matching antecedent, count those
-  also satisfying consequent. conformance = conforming / matched.
-- Global conventions checked against all components; component-scoped
-  conventions checked against their own component only.
-- Stored in `convention_snapshots.fca_conformance` (nullable REAL)
-- Finding emitted when conformance drops > `FCA_DRIFT_THRESHOLD` (0.10)
-  across `DRIFT_WINDOW` (3) monotonically non-increasing snapshots
-- Provenance: `review:fca_conformance`
-
-### HRR coherence (weight 0.50, Informational)
-- Per-component average pairwise cosine similarity of strip vectors
-- `compute_hrr_coherence(db)` → HashMap<comp_id, f64>
-- Loads strip vectors via `db.strip_vectors_by_component()` (4-table join:
-  hrr_vectors → symbols → component_membership → components)
-- Skips components with < 3 function symbols
-- Stored in `convention_snapshots.hrr_coherence` (nullable REAL)
-- Finding emitted when coherence drops > `HRR_DRIFT_THRESHOLD` (0.10)
-  across `DRIFT_WINDOW` (3) monotonically non-increasing snapshots
-- Provenance: `review:hrr_coherence`
-
-### Pipeline integration
-- Both metrics computed in `build_findings` (review.rs) after FCA rebuild
-  and before convention persistence
-- Metrics passed to `record_and_detect_drift` which stores them in
-  `convention_snapshots` alongside entropy data
-- `detect_convention_drift` compares current metrics against recent
-  snapshots and emits HealthFindings
-- Findings added to `ReviewFindings.convention_drift_findings` and
-  rendered as `"convention_drift"` in review JSON output
+  health_findings → hrr_shape_changes → health_delta
 
 ## PRD and arc context
 
@@ -353,7 +310,7 @@ existing entropy-based drift detection.
 | 1 | Advisory | co_change_scatter, change_entropy, ownership_risk, function_hotspot | repowise ≥1.3 |
 | 2 | Advisory | nested_complexity, hidden_coupling, blast_radius_churn | repowise moderate |
 | 3 | Informational | dead_code_ratio, code_age_volatility, coverage_gradient | repowise weak |
-| Sutra | Informational | convention_drift, component_instability, hrr_shape_change, import_cycle | uncalibrated |
+| Sutra | Informational | component_instability, hrr_shape_change, import_cycle | uncalibrated |
 
 ### Health scoring (sutra/85, implemented)
 
@@ -366,7 +323,7 @@ existing entropy-based drift detection.
 | structural | -2.5 | nested_complexity, function_hotspot, blast_radius_churn |
 | coupling | -2.0 | hidden_coupling, component_instability, import_cycle |
 | freshness | -1.5 | code_age_volatility, hrr_shape_change |
-| coverage | -2.0 | dead_code_ratio, coverage_gradient, convention_drift |
+| coverage | -2.0 | dead_code_ratio, coverage_gradient |
 
 Severity weights: Advisory = 1.0, Informational = 0.5.
 Proportional scaling within category when sum exceeds cap.
@@ -377,8 +334,8 @@ Calibrated biomarker weights (from repowise T0-protocol corpus):
 co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,
 nested_complexity 1.34, function_hotspot 1.16, code_age_volatility 1.10.
 Non-repowise defaults: hidden_coupling 1.00, blast_radius_churn 1.00,
-dead_code_ratio 0.80, coverage_gradient 0.80. Uncalibrated: convention_drift
-0.50, component_instability 0.50, hrr_shape_change 0.50, import_cycle 0.50.
+dead_code_ratio 0.80, coverage_gradient 0.80. Uncalibrated:
+component_instability 0.50, hrr_shape_change 0.50, import_cycle 0.50.
 
 The `file_health` MCP tool returns findings + derived scores (1.0–10.0
 scale). The pipeline snapshot system also uses `scoring::score_file` —
@@ -398,7 +355,7 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 | sutra/91 | health snapshots + per-file history | done | pipeline.rs, trend.rs, db/mod.rs |
 | sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
 | sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
-| sutra/95 | convention drift detection | done | health/drift.rs, db/conventions.rs, review.rs |
+| sutra/95 | convention drift detection | removed | dropped in sutra/232 (zero usage) |
 | sutra/96 | orient + health MCP tools | done | health/instability.rs, tools/orient.rs, tools/file_health.rs |
 
 ## Test locations
@@ -406,15 +363,13 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
 - Unit tests: `#[cfg(test)]` in `src/graph.rs` (7 SCC tests)
-- Integration tests: `tests/health-test.rs` (69 tests — model, threshold,
+- Integration tests: `tests/health-test.rs` (model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
   snapshot per-file/per-component storage, file health history,
   trend comparison with file deltas, trend history mode, blame parsing,
   HealthFinding::to_row, health delta: degradation, improvement,
   no-snapshot fallback, on-demand finding attribution,
-  convention drift: FCA conformance, HRR coherence, drop detection,
-  threshold gating, independent paths, snapshot metric storage,
   component instability: basic, isolated, fully-efferent,
   orient health section: present with findings, absent when clean,
   file health: component filter, component instability in scores,

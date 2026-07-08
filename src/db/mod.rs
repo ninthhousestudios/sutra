@@ -109,21 +109,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
-        name: "convention_waivers",
-        partition: TablePartition::Durable,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "convention_snapshots",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "convention_templates",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
         name: "constraint_waivers",
         partition: TablePartition::Durable,
         is_virtual: false,
