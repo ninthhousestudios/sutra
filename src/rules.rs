@@ -448,16 +448,29 @@ pub fn load_rules(root: &Path) -> Result<Rules> {
     parse_rules(&content)
 }
 
-/// Match a path against a constraint `scope`, which is either a glob or a
-/// directory prefix — decided per-value:
+/// Match a path against a constraint `scope`, which is either a directory
+/// prefix or a glob. The literal interpretation is tried first so real
+/// directories containing glob metacharacters (e.g. `src/app/[slug]/`) keep
+/// matching; glob matching is the fallback:
 ///
-/// - Contains glob metacharacters (`*`, `?`, `[`) → glob match with
-///   `require_literal_separator` (same options as every other glob field, so
-///   `src/*` stays within one directory level and `src/**` recurses).
-/// - Otherwise → directory-prefix match with a trailing-slash boundary:
-///   `src/core` matches `src/core/x.rs` and the exact path `src/core`, but
-///   not `src/corely.rs`.
+/// - Directory-prefix match with a trailing-slash boundary: `src/core`
+///   matches `src/core/x.rs` and the exact path `src/core`, but not
+///   `src/corely.rs`.
+/// - If that fails and the scope contains glob metacharacters (`*`, `?`,
+///   `[`) → glob match with `require_literal_separator` (same options as
+///   every other glob field, so `src/*` stays within one directory level
+///   and `src/**` recurses).
 pub fn scope_matches_path(scope: &str, path: &str) -> bool {
+    if path == scope {
+        return true;
+    }
+    let stripped = scope.strip_suffix('/').unwrap_or(scope);
+    if path
+        .strip_prefix(stripped)
+        .is_some_and(|rest| rest.starts_with('/'))
+    {
+        return true;
+    }
     if scope.contains(['*', '?', '[']) {
         let opts = glob::MatchOptions {
             require_literal_separator: true,
@@ -465,12 +478,7 @@ pub fn scope_matches_path(scope: &str, path: &str) -> bool {
         };
         return glob::Pattern::new(scope).is_ok_and(|pat| pat.matches_with(path, opts));
     }
-    if path == scope {
-        return true;
-    }
-    let stripped = scope.strip_suffix('/').unwrap_or(scope);
-    path.strip_prefix(stripped)
-        .is_some_and(|rest| rest.starts_with('/'))
+    false
 }
 
 /// Match a cycle (given as resolved paths) to the best-fitting `NoCycles` constraint.
@@ -1161,6 +1169,27 @@ crates = ["arrow-flight-*"]
     #[test]
     fn scope_invalid_glob_matches_nothing() {
         assert!(!scope_matches_path("src/[", "src/lib.rs"));
+    }
+
+    #[test]
+    fn scope_literal_bracket_directory_matches_literally() {
+        assert!(scope_matches_path(
+            "src/app/[slug]/",
+            "src/app/[slug]/page.tsx"
+        ));
+        assert!(scope_matches_path("src/app/[slug]", "src/app/[slug]"));
+        assert!(!scope_matches_path(
+            "src/app/[slug]/",
+            "src/app/other/page.tsx"
+        ));
+    }
+
+    #[test]
+    fn scope_literal_match_wins_before_glob_interpretation() {
+        // An invalid glob that names a real path still matches it literally.
+        assert!(scope_matches_path("src/[", "src/[/file.rs"));
+        // Glob fallback still applies when the literal match fails.
+        assert!(scope_matches_path("src/app/[slug]", "src/app/s"));
     }
 
     fn no_cycles_constraints(toml: &str) -> Vec<Constraint> {

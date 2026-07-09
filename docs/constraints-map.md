@@ -196,8 +196,9 @@ severity = "blocking"        # optional, defaults per kind
 name = "no-tool-daemon"      # optional, human label
 provenance = "docs/adr-001"  # optional, rationale/ADR
 scope = "src/"               # optional; directory prefix OR glob ("src/**") —
-                             # glob metacharacters trigger glob matching,
-                             # otherwise prefix with a path-boundary check
+                             # literal boundary-prefix match tried first (so
+                             # real dirs like src/app/[slug]/ work), glob
+                             # fallback when metacharacters present
 
 [[constraint]]
 kind = "boundary"
