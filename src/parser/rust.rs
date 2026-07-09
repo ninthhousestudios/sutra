@@ -840,6 +840,20 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
         return;
     }
 
+    if node.kind() == "mod_item" && node.child_by_field_name("body").is_none() {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name) = name_node.utf8_text(src) {
+                let line = node.start_position().row + 1;
+                imports.push(ExtractedImport {
+                    raw_path: format!("self::{name}"),
+                    line,
+                    kind: "mod",
+                });
+            }
+        }
+        return;
+    }
+
     if cursor.goto_first_child() {
         loop {
             walk_imports_recursive(imports, cursor, src);
@@ -1084,5 +1098,30 @@ mod tests {
         let x = flat.iter().find(|s| s.short_name == "x").unwrap();
         assert_eq!(x.kind, SymbolKind::Field);
         assert_eq!(x.qualified_name, "inner::Point::x");
+    }
+
+    #[test]
+    fn mod_declaration_extracted_as_import() {
+        let result = parse_rust("mod foo;\nmod bar;\n", "src/lib.rs").unwrap();
+        assert_eq!(result.imports.len(), 2);
+        assert_eq!(result.imports[0].raw_path, "self::foo");
+        assert_eq!(result.imports[0].kind, "mod");
+        assert_eq!(result.imports[1].raw_path, "self::bar");
+        assert_eq!(result.imports[1].kind, "mod");
+    }
+
+    #[test]
+    fn inline_mod_no_import() {
+        let result = parse_rust("mod foo { fn inner() {} }\n", "src/lib.rs").unwrap();
+        assert!(result.imports.is_empty());
+    }
+
+    #[test]
+    fn mod_and_use_both_extracted() {
+        let result = parse_rust("mod foo;\nuse crate::foo::Thing;\n", "src/lib.rs").unwrap();
+        assert_eq!(result.imports.len(), 2);
+        let kinds: Vec<&str> = result.imports.iter().map(|i| i.kind).collect();
+        assert!(kinds.contains(&"mod"));
+        assert!(kinds.contains(&"import"));
     }
 }
