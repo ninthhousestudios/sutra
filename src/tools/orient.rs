@@ -258,13 +258,13 @@ fn constraint_detail(c: &Constraint) -> String {
 fn extract_component_sym_attrs(
     db: &Db,
     component_files: &[String],
+    all_files: &[crate::db::FileRow],
     registry: &LanguageRegistry,
 ) -> Result<Vec<conventions::SymbolAttrs>> {
-    let all_files = db.all_files()?;
     let file_set: HashSet<&str> = component_files.iter().map(|s| s.as_str()).collect();
     let mut sym_attrs = Vec::new();
 
-    for f in &all_files {
+    for f in all_files {
         if !file_set.contains(&*f.path) {
             continue;
         }
@@ -408,7 +408,7 @@ pub fn handle(
                 json!("Component is in sketch mode — all conventions are informational only");
         }
 
-        let sym_attrs = extract_component_sym_attrs(db, &comp.files, registry)?;
+        let sym_attrs = extract_component_sym_attrs(db, &comp.files, &all_files, registry)?;
         let patterns = conventions::describe_patterns(&sym_attrs, Some(&comp.id), &toolchain_pairs);
         if !patterns.is_empty() {
             let pattern_json: Vec<_> = patterns

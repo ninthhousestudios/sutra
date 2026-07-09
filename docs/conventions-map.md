@@ -148,7 +148,7 @@ Informational deviations (sketch-mode components) do not contribute to risk scor
 
 | Table | Partition | Migration | Purpose |
 |---|---|---|---|
-| conventions | Ephemeral | 0005+0007+0015 | FCA-discovered conventions — persisted by pipeline.rs for orient |
+| conventions | Ephemeral | 0005+0007+0015 | FCA-discovered conventions — persisted by pipeline.rs for `sutra_conventions` list |
 | fca_cache | Ephemeral | 0040 | Hash of last FCA input to skip redundant rebuilds |
 | components | Durable | 0008+0009+0021 | Component identity, lifecycle_state (stable/sketch) |
 | component_membership | Ephemeral | 0008 | Component-to-file mapping (rebuilt on cluster) |
