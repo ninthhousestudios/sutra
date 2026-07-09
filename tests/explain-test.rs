@@ -193,7 +193,7 @@ fn review_explain_true_has_weights() {
         "complexity",
         "hotspot_overlap",
         "churn",
-        "convention_violations",
+        "deviations",
     ] {
         let w = &weights[key];
         assert!(w["weight"].is_number(), "{key} must have weight");
@@ -314,7 +314,7 @@ fn review_explain_true_empty_diff_has_explain() {
         "complexity",
         "hotspot_overlap",
         "churn",
-        "convention_violations",
+        "deviations",
     ] {
         let w = &explain["weights"][key];
         assert!(w["weight"].is_number(), "{key} must have weight");

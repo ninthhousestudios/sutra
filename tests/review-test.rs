@@ -1,5 +1,4 @@
 use std::fs;
-use std::sync::Arc;
 use std::time::Duration;
 
 use sutra::constraints::DdEngine;
@@ -82,11 +81,11 @@ fn empty_diff_returns_correct_shape() {
     assert!(breakdown["complexity_delta"].as_f64().is_some());
     assert!(breakdown["hotspot_overlap"].as_f64().is_some());
     assert!(breakdown["churn"].as_f64().is_some());
-    assert!(breakdown["convention_violations"].as_f64().is_some());
+    assert!(breakdown["deviations"].as_f64().is_some());
 
     assert_eq!(result["recommended_reads"].as_array().unwrap().len(), 0);
     assert_eq!(result["constraint_violations"].as_array().unwrap().len(), 0);
-    assert_eq!(result["convention_violations"].as_array().unwrap().len(), 0);
+    assert_eq!(result["deviations"].as_array().unwrap().len(), 0);
 }
 
 fn setup_db_with_files() -> (tempfile::TempDir, Db) {
@@ -198,7 +197,7 @@ fn risk_breakdown_sums_correctly() {
     let complexity = breakdown["complexity_delta"].as_f64().unwrap();
     let hotspot = breakdown["hotspot_overlap"].as_f64().unwrap();
     let churn_s = breakdown["churn"].as_f64().unwrap();
-    let conv = breakdown["convention_violations"].as_f64().unwrap();
+    let conv = breakdown["deviations"].as_f64().unwrap();
 
     assert!(blast > 0.0, "blast should reflect high blast_radius");
     assert!(complexity > 0.0, "complexity should reflect cognitive=20");
@@ -306,16 +305,20 @@ fn risk_score_clamped_to_one() {
         resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 0,
-        convention_violations: (0..10)
-            .map(|i| review::ConventionViolation {
+        deviations: (0..10)
+            .map(|i| review::Deviation {
                 symbol: format!("extreme_{i}::danger"),
                 file: format!("src/extreme_{i}.rs"),
-                convention_id: Arc::from(format!("c{i}")),
-                antecedent: vec!["kind:function".into()].into(),
-                consequent: vec!["has_doc".into()].into(),
+                pattern_antecedent: vec!["kind:function".into()].into(),
+                pattern_consequent: vec!["has_doc".into()].into(),
                 missing: vec!["has_doc".into()],
                 support: 5,
                 confidence: 0.95,
+                total_matching: 10,
+                conforming: 5,
+                exemplars: vec![],
+                strength: 4.75,
+                informational: false,
             })
             .collect(),
         ..Default::default()
@@ -387,7 +390,6 @@ fn constraint_violations_appear_in_output() {
         resolved_constraint_violations: vec![],
         waived_constraint_violations: vec![],
         constraint_violations_total: 2,
-        convention_violations: vec![],
         ..Default::default()
     };
 
@@ -415,24 +417,24 @@ fn constraint_violations_appear_in_output() {
 }
 
 #[test]
-fn convention_violations_appear_in_output() {
+fn deviations_appear_in_output() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
     let findings = review::ReviewFindings {
-        constraint_violations: vec![],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
-        constraint_violations_total: 0,
-        convention_violations: vec![review::ConventionViolation {
+        deviations: vec![review::Deviation {
             symbol: "core::process".into(),
             file: "src/core.rs".into(),
-            convention_id: "abc123".into(),
-            antecedent: vec!["kind:function".into(), "vis:pub".into()].into(),
-            consequent: vec!["has_doc".into()].into(),
+            pattern_antecedent: vec!["kind:function".into(), "vis:pub".into()].into(),
+            pattern_consequent: vec!["has_doc".into()].into(),
             missing: vec!["has_doc".into()],
             support: 8,
             confidence: 0.95,
+            total_matching: 10,
+            conforming: 8,
+            exemplars: vec!["helper::format".into()],
+            strength: 7.6,
+            informational: false,
         }],
         ..Default::default()
     };
@@ -447,21 +449,23 @@ fn convention_violations_appear_in_output() {
     )
     .unwrap();
 
-    let cv = result["convention_violations"].as_array().unwrap();
-    assert_eq!(cv.len(), 1);
-    assert_eq!(cv[0]["symbol"], "core::process");
-    assert_eq!(cv[0]["file"], "src/core.rs");
-    assert_eq!(cv[0]["convention_id"], "abc123");
+    let dv = result["deviations"].as_array().unwrap();
+    assert_eq!(dv.len(), 1);
+    assert_eq!(dv[0]["symbol"], "core::process");
+    assert_eq!(dv[0]["file"], "src/core.rs");
     assert_eq!(
-        cv[0]["missing"].as_array().unwrap(),
+        dv[0]["missing"].as_array().unwrap(),
         &[serde_json::json!("has_doc")]
     );
-    assert_eq!(cv[0]["support"].as_u64().unwrap(), 8);
-    assert!((cv[0]["confidence"].as_f64().unwrap() - 0.95).abs() < f64::EPSILON);
+    assert_eq!(dv[0]["support"].as_u64().unwrap(), 8);
+    assert!((dv[0]["confidence"].as_f64().unwrap() - 0.95).abs() < f64::EPSILON);
+    assert_eq!(dv[0]["evidence"], "8/10 siblings have has_doc");
+    assert!(dv[0]["exemplars"].as_array().unwrap().len() > 0);
+    assert_eq!(dv[0]["informational"], false);
 }
 
 #[test]
-fn violations_are_structurally_distinct() {
+fn constraints_and_deviations_are_structurally_distinct() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
@@ -478,18 +482,20 @@ fn violations_are_structurally_distinct() {
             detail: "forbidden dep".into(),
             delta: FindingDelta::Unknown,
         }],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
         constraint_violations_total: 1,
-        convention_violations: vec![review::ConventionViolation {
+        deviations: vec![review::Deviation {
             symbol: "core::process".into(),
             file: "src/core.rs".into(),
-            convention_id: "abc123".into(),
-            antecedent: vec!["kind:function".into()].into(),
-            consequent: vec!["has_doc".into()].into(),
+            pattern_antecedent: vec!["kind:function".into()].into(),
+            pattern_consequent: vec!["has_doc".into()].into(),
             missing: vec!["has_doc".into()],
             support: 5,
             confidence: 0.92,
+            total_matching: 8,
+            conforming: 5,
+            exemplars: vec![],
+            strength: 4.6,
+            informational: false,
         }],
         ..Default::default()
     };
@@ -512,21 +518,19 @@ fn violations_are_structurally_distinct() {
     assert!(cv["from"].is_string());
     assert!(cv["to"].is_string());
     assert!(cv["detail"].is_string());
-    assert!(cv.get("convention_id").is_none());
 
-    // Convention violations have symbol/file/convention_id/antecedent/consequent/missing
-    let fv = &result["convention_violations"].as_array().unwrap()[0];
-    assert!(fv["symbol"].is_string());
-    assert!(fv["file"].is_string());
-    assert!(fv["convention_id"].is_string());
-    assert!(fv["antecedent"].is_array());
-    assert!(fv["consequent"].is_array());
-    assert!(fv["missing"].is_array());
-    assert!(fv.get("constraint_id").is_none());
+    // Deviations have symbol/file/pattern/evidence/missing/exemplars
+    let dv = &result["deviations"].as_array().unwrap()[0];
+    assert!(dv["symbol"].is_string());
+    assert!(dv["file"].is_string());
+    assert!(dv["pattern"].is_string());
+    assert!(dv["evidence"].is_string());
+    assert!(dv["missing"].is_array());
+    assert!(dv.get("constraint_id").is_none());
 }
 
 #[test]
-fn convention_violations_increase_risk_score() {
+fn deviations_increase_risk_score() {
     let (dir, db) = setup_db_with_files();
     let changed = vec!["src/core.rs".to_string()];
 
@@ -542,40 +546,48 @@ fn convention_violations_increase_risk_score() {
     let risk_without = result_without["risk_score"].as_f64().unwrap();
 
     let findings = review::ReviewFindings {
-        constraint_violations: vec![],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
-        constraint_violations_total: 0,
-        convention_violations: vec![
-            review::ConventionViolation {
+        deviations: vec![
+            review::Deviation {
                 symbol: "core::process".into(),
                 file: "src/core.rs".into(),
-                convention_id: "c1".into(),
-                antecedent: vec!["kind:function".into()].into(),
-                consequent: vec!["has_doc".into()].into(),
+                pattern_antecedent: vec!["kind:function".into()].into(),
+                pattern_consequent: vec!["has_doc".into()].into(),
                 missing: vec!["has_doc".into()],
                 support: 5,
                 confidence: 0.95,
+                total_matching: 8,
+                conforming: 5,
+                exemplars: vec![],
+                strength: 4.75,
+                informational: false,
             },
-            review::ConventionViolation {
+            review::Deviation {
                 symbol: "core::validate".into(),
                 file: "src/core.rs".into(),
-                convention_id: "c2".into(),
-                antecedent: vec!["kind:function".into()].into(),
-                consequent: vec!["returns_result".into()].into(),
+                pattern_antecedent: vec!["kind:function".into()].into(),
+                pattern_consequent: vec!["returns_result".into()].into(),
                 missing: vec!["returns_result".into()],
                 support: 4,
                 confidence: 0.90,
+                total_matching: 6,
+                conforming: 4,
+                exemplars: vec![],
+                strength: 3.6,
+                informational: false,
             },
-            review::ConventionViolation {
+            review::Deviation {
                 symbol: "core::init".into(),
                 file: "src/core.rs".into(),
-                convention_id: "c3".into(),
-                antecedent: vec!["vis:pub".into()].into(),
-                consequent: vec!["has_doc".into()].into(),
+                pattern_antecedent: vec!["vis:pub".into()].into(),
+                pattern_consequent: vec!["has_doc".into()].into(),
                 missing: vec!["has_doc".into()],
                 support: 6,
                 confidence: 0.93,
+                total_matching: 10,
+                conforming: 6,
+                exemplars: vec![],
+                strength: 5.58,
+                informational: false,
             },
         ],
         ..Default::default()
@@ -594,16 +606,13 @@ fn convention_violations_increase_risk_score() {
 
     assert!(
         risk_with > risk_without,
-        "risk should increase with convention violations: {risk_with} > {risk_without}"
+        "risk should increase with deviations: {risk_with} > {risk_without}"
     );
 
-    let conv_score = result_with["risk_breakdown"]["convention_violations"]
+    let dev_score = result_with["risk_breakdown"]["deviations"]
         .as_f64()
         .unwrap();
-    assert!(
-        conv_score > 0.0,
-        "convention_violations signal should be > 0"
-    );
+    assert!(dev_score > 0.0, "deviations signal should be > 0");
 }
 
 #[test]
@@ -640,21 +649,21 @@ fn recommended_reads_ranks_violation_sites_first() {
         db.update_rollups(f.id, 0, 100 - i as i64).unwrap();
     }
 
-    // Consumer_3 has a convention violation — should rank first in reads
+    // Consumer_3 has a deviation — should rank first in reads
     let findings = review::ReviewFindings {
-        constraint_violations: vec![],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
-        constraint_violations_total: 0,
-        convention_violations: vec![review::ConventionViolation {
+        deviations: vec![review::Deviation {
             symbol: "consumer_3::use_hub".into(),
             file: "src/consumer_3.rs".into(),
-            convention_id: "v1".into(),
-            antecedent: vec!["kind:function".into()].into(),
-            consequent: vec!["has_doc".into()].into(),
+            pattern_antecedent: vec!["kind:function".into()].into(),
+            pattern_consequent: vec!["has_doc".into()].into(),
             missing: vec!["has_doc".into()],
             support: 5,
             confidence: 0.95,
+            total_matching: 8,
+            conforming: 5,
+            exemplars: vec![],
+            strength: 4.75,
+            informational: false,
         }],
         ..Default::default()
     };
@@ -783,17 +792,16 @@ forbidden_deps = [
     assert!(cv.detail.contains("src/ui/view.rs"));
     assert!(findings.constraint_violations_total >= 1);
 
-    // FCA: view::render is pub+function but lacks docs — if convention was established,
-    // it should appear as a violation. The convention requires 3+ support at 0.9 confidence,
-    // so with 6 documented pub functions we should get the implication.
-    // Note: FCA convention detection is probabilistic, so we check if violations are present
-    // but don't hard-fail if the FCA engine doesn't find enough support for this small corpus.
-    if !findings.convention_violations.is_empty() {
-        let v = &findings.convention_violations[0];
-        assert!(!v.symbol.is_empty());
-        assert!(!v.file.is_empty());
-        assert!(v.confidence >= 0.9);
-        assert!(v.support >= 3);
+    // FCA deviation detection: view::render is pub+function but lacks docs.
+    // With 6 documented pub functions in the corpus, the on-the-fly FCA should
+    // find the implication and report it as a deviation.
+    // Note: detection depends on component grouping, so we check opportunistically.
+    if !findings.deviations.is_empty() {
+        let d = &findings.deviations[0];
+        assert!(!d.symbol.is_empty());
+        assert!(!d.file.is_empty());
+        assert!(d.confidence >= 0.9);
+        assert!(d.support >= 3);
     }
 }
 
@@ -822,7 +830,6 @@ fn waived_constraint_violations_appear_in_output() {
             waived_by: "josh".into(),
         }],
         constraint_violations_total: 1,
-        convention_violations: vec![],
         ..Default::default()
     };
 

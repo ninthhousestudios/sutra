@@ -322,14 +322,14 @@ mod tests {
     }
 
     #[test]
-    fn approximate_implications_exclude_exact() {
+    fn approximate_implications_include_exact() {
         let ctx = convention_context();
         let impls = ctx.approximate_implications(3, 0.9);
-        // kind:struct → naming:CamelCase is exact (1.0), should NOT appear
+        // kind:struct → naming:CamelCase is exact (1.0), should now be included
         let found = impls.iter().any(|i| {
             i.antecedent == vec!["kind:struct"] && i.consequent == vec!["naming:CamelCase"]
         });
-        assert!(!found, "exact implications should be excluded");
+        assert!(found, "exact implications should be included");
     }
 
     #[test]

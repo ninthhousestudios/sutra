@@ -677,14 +677,15 @@ mod tests {
         let mut engine = FcaEngine::new();
         engine.rebuild(&symbols);
 
-        // Remove the one function that lacks has_sig → confidence goes to 1.0, becomes exact → disappears
+        // Remove the one function that lacks has_sig → confidence goes to 1.0
         engine.update_incremental(&[], &["fn_9".into()]);
-        let found = engine.conventions().iter().any(|c| {
+        let found = engine.conventions().iter().find(|c| {
             c.antecedent.to_vec() == vec!["kind:function"]
                 && c.consequent.to_vec() == vec!["has_sig"]
         });
-        // At 1.0 confidence it's exact, not approximate — should be gone
-        assert!(!found);
+        // At 1.0 confidence it should now be included
+        assert!(found.is_some());
+        assert!((found.unwrap().confidence - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
