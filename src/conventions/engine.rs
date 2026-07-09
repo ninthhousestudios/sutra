@@ -61,6 +61,29 @@ impl Convention {
         };
         Arc::from(&blake3::hash(input.as_bytes()).to_hex()[..16])
     }
+
+    pub fn is_checkable(&self, toolchain_pairs: &[crate::parser::adapter::ToolchainPair]) -> bool {
+        use super::attributes::{AttributeRole, classify_attribute};
+
+        if !self
+            .consequent
+            .iter()
+            .all(|c| classify_attribute(c) == AttributeRole::Obligation)
+        {
+            return false;
+        }
+
+        for pair in toolchain_pairs {
+            if self.consequent.len() == 1
+                && self.antecedent.iter().any(|a| a == pair.antecedent)
+                && self.consequent[0] == pair.consequent
+            {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1370,5 +1393,62 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].symbol, "old_process");
         assert_eq!(matches[0].file, "src/a.rs");
+    }
+
+    #[test]
+    fn is_checkable_excludes_tautological_convention() {
+        let conv = Convention {
+            id: Arc::from("test-tautology"),
+            antecedent: Arc::from(vec!["in:src/db".into()]),
+            consequent: Arc::from(vec!["kind:function".into()]),
+            support: 10,
+            confidence: 0.9,
+            component_id: None,
+        };
+        assert!(!conv.is_checkable(&[]));
+    }
+
+    #[test]
+    fn is_checkable_excludes_backwards_convention() {
+        let conv = Convention {
+            id: Arc::from("test-backwards"),
+            antecedent: Arc::from(vec!["has_doc".into()]),
+            consequent: Arc::from(vec!["vis:pub".into()]),
+            support: 10,
+            confidence: 0.9,
+            component_id: None,
+        };
+        assert!(!conv.is_checkable(&[]));
+    }
+
+    #[test]
+    fn is_checkable_allows_vis_pub_implies_has_doc() {
+        let conv = Convention {
+            id: Arc::from("test-valid"),
+            antecedent: Arc::from(vec!["vis:pub".into()]),
+            consequent: Arc::from(vec!["has_doc".into()]),
+            support: 10,
+            confidence: 0.9,
+            component_id: None,
+        };
+        assert!(conv.is_checkable(&[]));
+    }
+
+    #[test]
+    fn is_checkable_excludes_toolchain_enforced() {
+        use crate::parser::adapter::ToolchainPair;
+        let conv = Convention {
+            id: Arc::from("test-toolchain"),
+            antecedent: Arc::from(vec!["kind:function".into()]),
+            consequent: Arc::from(vec!["naming:snake_case".into()]),
+            support: 50,
+            confidence: 1.0,
+            component_id: None,
+        };
+        let pairs = &[ToolchainPair {
+            antecedent: "kind:function",
+            consequent: "naming:snake_case",
+        }];
+        assert!(!conv.is_checkable(pairs));
     }
 }

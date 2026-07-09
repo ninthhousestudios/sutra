@@ -65,9 +65,17 @@ impl ParserPool {
     }
 }
 
+pub struct ToolchainPair {
+    pub antecedent: &'static str,
+    pub consequent: &'static str,
+}
+
 pub trait FcaAttributeSource: Send + Sync {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;
     fn effect_patterns(&self) -> &[EffectPattern] {
+        &[]
+    }
+    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
         &[]
     }
 }
@@ -190,6 +198,33 @@ impl LanguageAdapter for RustAdapter {
     }
 }
 
+const RUST_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
+    ToolchainPair {
+        antecedent: "kind:function",
+        consequent: "naming:snake_case",
+    },
+    ToolchainPair {
+        antecedent: "kind:const",
+        consequent: "naming:SCREAMING",
+    },
+    ToolchainPair {
+        antecedent: "kind:struct",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:enum",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:trait",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:type_alias",
+        consequent: "naming:CamelCase",
+    },
+];
+
 const RUST_EFFECT_PATTERNS: &[EffectPattern] = &[
     EffectPattern {
         attr_name: "effect:fs",
@@ -233,6 +268,10 @@ impl FcaAttributeSource for RustAdapter {
     fn effect_patterns(&self) -> &[EffectPattern] {
         RUST_EFFECT_PATTERNS
     }
+
+    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
+        RUST_TOOLCHAIN_PAIRS
+    }
 }
 
 pub struct DartAdapter;
@@ -257,6 +296,25 @@ impl LanguageAdapter for DartAdapter {
         ModuleBoundaryStrength::Moderate
     }
 }
+
+const DART_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
+    ToolchainPair {
+        antecedent: "kind:class",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:mixin",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:enum",
+        consequent: "naming:CamelCase",
+    },
+    ToolchainPair {
+        antecedent: "kind:type_alias",
+        consequent: "naming:CamelCase",
+    },
+];
 
 const DART_EFFECT_PATTERNS: &[EffectPattern] = &[
     EffectPattern {
@@ -300,6 +358,10 @@ impl FcaAttributeSource for DartAdapter {
 
     fn effect_patterns(&self) -> &[EffectPattern] {
         DART_EFFECT_PATTERNS
+    }
+
+    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
+        DART_TOOLCHAIN_PAIRS
     }
 }
 

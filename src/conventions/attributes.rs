@@ -5,6 +5,25 @@ use crate::parser::adapter::LanguageRegistry;
 
 use super::engine::SymbolAttrs;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeRole {
+    Identity,
+    Obligation,
+}
+
+/// `vis:*` is Identity (antecedent-only) — it describes exposure, not a
+/// prescriptive obligation.
+pub fn classify_attribute(attr: &str) -> AttributeRole {
+    match attr {
+        "has_doc" | "is_async" | "returns_result" | "returns_option" | "returns_future" => {
+            AttributeRole::Obligation
+        }
+        a if a.starts_with("naming:") => AttributeRole::Obligation,
+        a if a.starts_with("effect:") => AttributeRole::Obligation,
+        _ => AttributeRole::Identity,
+    }
+}
+
 pub struct EffectPattern {
     pub attr_name: &'static str,
     pub callee_prefixes: &'static [&'static str],
@@ -961,5 +980,65 @@ mod tests {
         }];
         enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
         assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    #[test]
+    fn classify_identity_attributes() {
+        assert_eq!(classify_attribute("kind:function"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("kind:struct"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("vis:pub"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("vis:private"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("vis:pub_crate"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("in:src/db"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("is_method"), AttributeRole::Identity);
+        assert_eq!(classify_attribute("has_sig"), AttributeRole::Identity);
+        assert_eq!(
+            classify_attribute("complexity:high"),
+            AttributeRole::Identity
+        );
+        assert_eq!(
+            classify_attribute("complexity:zero"),
+            AttributeRole::Identity
+        );
+    }
+
+    #[test]
+    fn classify_obligation_attributes() {
+        assert_eq!(classify_attribute("has_doc"), AttributeRole::Obligation);
+        assert_eq!(
+            classify_attribute("naming:snake_case"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("naming:CamelCase"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("naming:SCREAMING"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("returns_result"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("returns_option"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(classify_attribute("is_async"), AttributeRole::Obligation);
+        assert_eq!(classify_attribute("effect:io"), AttributeRole::Obligation);
+        assert_eq!(classify_attribute("effect:db"), AttributeRole::Obligation);
+        assert_eq!(
+            classify_attribute("effect:mut_state"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("effect:unsafe_transitive"),
+            AttributeRole::Obligation
+        );
+        assert_eq!(
+            classify_attribute("returns_future"),
+            AttributeRole::Obligation
+        );
     }
 }
