@@ -191,8 +191,8 @@ violations in changed code.
 ```
 sutra_review(workspace=\"myproject\")
 ```
-The `convention_violations` section lists symbols that violate learned implications, \
-showing which attributes were expected but missing.
+The `deviations` section lists symbols that deviate from strong patterns, \
+showing which attributes were expected but missing, with counts and exemplars.
 
 ## What it detects
 - **Attribute implications** — rules like 'pub functions in this module tend to have \
@@ -286,8 +286,8 @@ sutra_parse(workspace=\"myproject\")
 sutra_tools(enable=\"analysis\")
 sutra_review(workspace=\"myproject\", diff=\"staged\")
 ```
-Look at the `convention_violations` and `constraint_violations` sections. \
-FCA-derived attribute implications and DD-constraint dependency directions are checked \
+Look at the `deviations` and `constraint_violations` sections. \
+FCA-derived pattern deviations and DD-constraint dependency directions are checked \
 against your staged changes.
 
 ## Review a branch commit-by-commit

@@ -293,7 +293,7 @@ a single review invocation.
   current per-file scores (stored findings + on-demand) vs latest snapshot
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
-- Review output ordering: constraint_violations → convention_violations →
+- Review output ordering: constraint_violations → deviations →
   health_findings → hrr_shape_changes → health_delta
 
 ## PRD and arc context
