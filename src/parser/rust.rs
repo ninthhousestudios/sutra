@@ -814,10 +814,15 @@ fn is_inside_use(node: Node) -> bool {
 
 fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
     let mut cursor = node.walk();
-    walk_imports_recursive(imports, &mut cursor, src);
+    walk_imports_recursive(imports, &mut cursor, src, &[]);
 }
 
-fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeCursor, src: &[u8]) {
+fn walk_imports_recursive(
+    imports: &mut Vec<ExtractedImport>,
+    cursor: &mut TreeCursor,
+    src: &[u8],
+    inline_mod_prefix: &[&str],
+) {
     let node = cursor.node();
 
     if node.kind() == "use_declaration" {
@@ -840,23 +845,44 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
         return;
     }
 
-    if node.kind() == "mod_item" && node.child_by_field_name("body").is_none() {
+    if node.kind() == "mod_item" {
         if let Some(name_node) = node.child_by_field_name("name") {
             if let Ok(name) = name_node.utf8_text(src) {
-                let line = node.start_position().row + 1;
-                imports.push(ExtractedImport {
-                    raw_path: format!("self::{name}"),
-                    line,
-                    kind: "mod",
-                });
+                if node.child_by_field_name("body").is_none() {
+                    let mut path = String::from("self");
+                    for seg in inline_mod_prefix {
+                        path.push_str("::");
+                        path.push_str(seg);
+                    }
+                    path.push_str("::");
+                    path.push_str(name);
+                    let line = node.start_position().row + 1;
+                    imports.push(ExtractedImport {
+                        raw_path: path,
+                        line,
+                        kind: "mod",
+                    });
+                    return;
+                }
+                let mut nested_prefix = inline_mod_prefix.to_vec();
+                nested_prefix.push(name);
+                if cursor.goto_first_child() {
+                    loop {
+                        walk_imports_recursive(imports, cursor, src, &nested_prefix);
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                    cursor.goto_parent();
+                }
+                return;
             }
         }
-        return;
     }
 
     if cursor.goto_first_child() {
         loop {
-            walk_imports_recursive(imports, cursor, src);
+            walk_imports_recursive(imports, cursor, src, inline_mod_prefix);
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -1123,5 +1149,24 @@ mod tests {
         let kinds: Vec<&str> = result.imports.iter().map(|i| i.kind).collect();
         assert!(kinds.contains(&"mod"));
         assert!(kinds.contains(&"import"));
+    }
+
+    #[test]
+    fn nested_mod_inside_inline_module() {
+        let result = parse_rust("mod outer {\n    mod inner;\n}\n", "src/lib.rs").unwrap();
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "self::outer::inner");
+        assert_eq!(result.imports[0].kind, "mod");
+    }
+
+    #[test]
+    fn deeply_nested_mod_inside_inline_modules() {
+        let result = parse_rust(
+            "mod a {\n    mod b {\n        mod c;\n    }\n}\n",
+            "src/lib.rs",
+        )
+        .unwrap();
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "self::a::b::c");
     }
 }
