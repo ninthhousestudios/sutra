@@ -728,3 +728,123 @@ name = "no-module-cycles"
         cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn cycle_within_glob_scope_attributed_to_named_constraint() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "wrapper-no-cycles"
+scope = "src/**"
+severity = "advisory"
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use")
+        .unwrap();
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use")
+        .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(fa.id, fb.id), (fb.id, fa.id)],
+        })
+        .unwrap();
+
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(cycle_findings.len(), 1);
+    assert_ne!(cycle_findings[0].constraint_id.as_ref(), "builtin:cycles");
+    assert_eq!(
+        cycle_findings[0].constraint_name.as_deref(),
+        Some("wrapper-no-cycles")
+    );
+    assert_eq!(cycle_findings[0].severity, sutra::rules::Severity::Advisory);
+}
+
+#[test]
+fn cycle_partially_outside_glob_scope_falls_back_to_builtin() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "wrapper-no-cycles"
+scope = "src/**"
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    db.upsert_file("tests/b.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("tests/b.rs").unwrap().unwrap();
+    db.insert_import(fa.id, "tests/b.rs", Some(fb.id), 1, "use")
+        .unwrap();
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use")
+        .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(1800));
+    engine
+        .ingest(DdFacts {
+            import_edges: vec![(fa.id, fb.id), (fb.id, fa.id)],
+        })
+        .unwrap();
+
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(cycle_findings.len(), 1);
+    assert_eq!(cycle_findings[0].constraint_id.as_ref(), "builtin:cycles");
+    assert!(cycle_findings[0].constraint_name.is_none());
+}

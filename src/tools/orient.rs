@@ -122,18 +122,9 @@ fn constraints_for_component<'a>(
         .iter()
         .filter(|c| {
             if let Some(scope) = &c.scope {
-                let prefix = if scope.ends_with('/') {
-                    scope.clone()
-                } else {
-                    format!("{scope}/")
-                };
-                let has_file = component_files
+                return component_files
                     .iter()
-                    .any(|f| f.starts_with(&prefix) || f == scope.as_str());
-                if !has_file {
-                    return false;
-                }
-                return true;
+                    .any(|f| crate::rules::scope_matches_path(scope, f));
             }
 
             match &c.kind {
@@ -909,6 +900,46 @@ scope = "src/db/"
         );
 
         let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
+        assert!(result["orientation"][0]["constraints"].is_null());
+    }
+
+    #[test]
+    fn no_cycles_glob_scope_in_scope_for_component() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "src/**"
+name = "wrapper-no-cycles"
+"#,
+        );
+
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
+        let active = result["orientation"][0]["constraints"]["active"]
+            .as_array()
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0]["kind"], "no_cycles");
+        assert_eq!(active[0]["scope"], "src/**");
+    }
+
+    #[test]
+    fn no_cycles_glob_scope_excluded_when_component_outside() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tests", &["tests/it.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "src/**"
+"#,
+        );
+
+        let result = handle(&db, "tests", dir.path(), None, None, &registry()).unwrap();
         assert!(result["orientation"][0]["constraints"].is_null());
     }
 

@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-06-11 (sutra/148: external signal gaps — leading ::, target deps, workspace renames, pubspec)
+Last updated: 2026-07-09 (sutra/238: scope accepts glob or prefix via rules::scope_matches_path)
 
 ## Module layout
 
@@ -47,7 +47,10 @@ src/constraints/
 src/rules.rs        — TOML parsing for .sutra/rules.toml.
                       Types: Severity, ConstraintKind, Constraint, RawConstraint,
                       Rules, Constraints, ForbiddenDep, ConventionsConfig.
-                      Functions: parse_rules, load_rules, Rules::all_constraints.
+                      Functions: parse_rules, load_rules, Rules::all_constraints,
+                      scope_matches_path (hybrid glob-or-prefix scope matching,
+                      used by match_no_cycles_constraint, constraint_coverage,
+                      orient's generic scope filter), match_no_cycles_constraint.
 
 src/db/
   constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table.
@@ -192,7 +195,9 @@ to = "src/daemon.rs"         # kind-specific
 severity = "blocking"        # optional, defaults per kind
 name = "no-tool-daemon"      # optional, human label
 provenance = "docs/adr-001"  # optional, rationale/ADR
-scope = "src/"               # optional, path prefix
+scope = "src/"               # optional; directory prefix OR glob ("src/**") —
+                             # glob metacharacters trigger glob matching,
+                             # otherwise prefix with a path-boundary check
 
 [[constraint]]
 kind = "boundary"

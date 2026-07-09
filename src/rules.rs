@@ -448,10 +448,36 @@ pub fn load_rules(root: &Path) -> Result<Rules> {
     parse_rules(&content)
 }
 
+/// Match a path against a constraint `scope`, which is either a glob or a
+/// directory prefix — decided per-value:
+///
+/// - Contains glob metacharacters (`*`, `?`, `[`) → glob match with
+///   `require_literal_separator` (same options as every other glob field, so
+///   `src/*` stays within one directory level and `src/**` recurses).
+/// - Otherwise → directory-prefix match with a trailing-slash boundary:
+///   `src/core` matches `src/core/x.rs` and the exact path `src/core`, but
+///   not `src/corely.rs`.
+pub fn scope_matches_path(scope: &str, path: &str) -> bool {
+    if scope.contains(['*', '?', '[']) {
+        let opts = glob::MatchOptions {
+            require_literal_separator: true,
+            ..glob::MatchOptions::default()
+        };
+        return glob::Pattern::new(scope).is_ok_and(|pat| pat.matches_with(path, opts));
+    }
+    if path == scope {
+        return true;
+    }
+    let stripped = scope.strip_suffix('/').unwrap_or(scope);
+    path.strip_prefix(stripped)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Match a cycle (given as resolved paths) to the best-fitting `NoCycles` constraint.
 ///
 /// - Unscoped (`scope: None`) matches all cycles.
-/// - Scoped matches only if every path in the cycle starts with the scope prefix.
+/// - Scoped matches only if every path in the cycle is within the scope
+///   (glob or directory prefix — see [`scope_matches_path`]).
 /// - When multiple constraints match, the longest (most specific) scope wins.
 /// - Returns `None` when no `NoCycles` constraint covers this cycle.
 pub fn match_no_cycles_constraint<'a>(
@@ -463,7 +489,7 @@ pub fn match_no_cycles_constraint<'a>(
         .filter(|c| matches!(c.kind, ConstraintKind::NoCycles))
         .filter(|c| match &c.scope {
             None => true,
-            Some(scope) => cycle_paths.iter().all(|p| p.starts_with(scope.as_str())),
+            Some(scope) => cycle_paths.iter().all(|p| scope_matches_path(scope, p)),
         })
         .max_by_key(|c| c.scope.as_ref().map_or(0, |s| s.len()))
 }
@@ -1103,5 +1129,94 @@ crates = ["arrow-flight-*"]
         let (valid, errors) = parse_rules(toml).unwrap().all_constraints();
         assert_eq!(valid.len(), 1);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn scope_glob_recursive_matches_nested_and_flat() {
+        assert!(scope_matches_path("src/**", "src/lib.rs"));
+        assert!(scope_matches_path("src/**", "src/core/deep/mod.rs"));
+        assert!(!scope_matches_path("src/**", "tests/lib.rs"));
+    }
+
+    #[test]
+    fn scope_glob_single_star_stays_flat() {
+        assert!(scope_matches_path("src/*.rs", "src/lib.rs"));
+        assert!(!scope_matches_path("src/*.rs", "src/core/mod.rs"));
+        assert!(scope_matches_path("src/**/*.rs", "src/core/mod.rs"));
+    }
+
+    #[test]
+    fn scope_prefix_matches_directory_contents() {
+        assert!(scope_matches_path("src/core/", "src/core/graph.rs"));
+        assert!(scope_matches_path("src/core", "src/core/graph.rs"));
+        assert!(scope_matches_path("src/core", "src/core"));
+    }
+
+    #[test]
+    fn scope_prefix_respects_path_boundary() {
+        assert!(!scope_matches_path("src/core", "src/corely.rs"));
+        assert!(!scope_matches_path("src/core/", "src/corely.rs"));
+    }
+
+    #[test]
+    fn scope_invalid_glob_matches_nothing() {
+        assert!(!scope_matches_path("src/[", "src/lib.rs"));
+    }
+
+    fn no_cycles_constraints(toml: &str) -> Vec<Constraint> {
+        parse_rules(toml).unwrap().all_constraints().0
+    }
+
+    #[test]
+    fn no_cycles_glob_scope_binds_cycle() {
+        let cs = no_cycles_constraints(
+            r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "src/**"
+"#,
+        );
+        let m = match_no_cycles_constraint(&cs, &["src/a.rs", "src/b.rs"]);
+        assert_eq!(m.map(|c| c.id.as_ref()), Some(cs[0].id.as_ref()));
+    }
+
+    #[test]
+    fn no_cycles_glob_scope_rejects_cycle_with_outside_path() {
+        let cs = no_cycles_constraints(
+            r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "src/**"
+"#,
+        );
+        assert!(match_no_cycles_constraint(&cs, &["src/a.rs", "tests/b.rs"]).is_none());
+    }
+
+    #[test]
+    fn no_cycles_longest_scope_wins_across_glob_and_prefix() {
+        let cs = no_cycles_constraints(
+            r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "src/**"
+
+[[constraint]]
+kind = "no_cycles"
+scope = "src/core/"
+"#,
+        );
+        let m = match_no_cycles_constraint(&cs, &["src/core/a.rs", "src/core/b.rs"]).unwrap();
+        assert_eq!(m.scope.as_deref(), Some("src/core/"));
+    }
+
+    #[test]
+    fn no_cycles_unscoped_matches_any_cycle() {
+        let cs = no_cycles_constraints(
+            r#"
+[[constraint]]
+kind = "no_cycles"
+"#,
+        );
+        assert!(match_no_cycles_constraint(&cs, &["src/a.rs", "vendor/b.rs"]).is_some());
     }
 }

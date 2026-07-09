@@ -77,7 +77,7 @@ to_component = "http"
 
 [[constraint]]
 kind = "no_cycles"
-scope = "src/core/"
+scope = "src/core/"   # directory prefix or glob ("src/**")
 
 [[constraint]]
 kind = "max_fan_in"

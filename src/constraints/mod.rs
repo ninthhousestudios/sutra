@@ -143,8 +143,12 @@ pub fn constraint_coverage(
                 .count()
         })
     };
-    let count_prefix =
-        |prefix: &str| -> usize { paths.iter().filter(|p| p.starts_with(prefix)).count() };
+    let count_scope = |scope: &str| -> usize {
+        paths
+            .iter()
+            .filter(|p| crate::rules::scope_matches_path(scope, p))
+            .count()
+    };
 
     let fields = match &constraint.kind {
         ConstraintKind::ForbiddenDep { from, to } => {
@@ -167,7 +171,7 @@ pub fn constraint_coverage(
         }
         ConstraintKind::NoCycles => {
             if let Some(scope) = &constraint.scope {
-                vec![("scope", count_prefix(scope))]
+                vec![("scope", count_scope(scope))]
             } else {
                 vec![("scope", paths.len())]
             }
@@ -313,5 +317,15 @@ mod tests {
         let paths = vec!["src/lib.rs"];
         let cov = constraint_coverage(&c, &paths, &[], &[]);
         assert!(cov.dead_fields().is_empty());
+    }
+
+    #[test]
+    fn coverage_no_cycles_with_glob_scope_counts_matches() {
+        let mut c = make_constraint(ConstraintKind::NoCycles);
+        c.scope = Some("src/**".into());
+        let paths = vec!["src/lib.rs", "src/core/graph.rs", "tests/it.rs"];
+        let cov = constraint_coverage(&c, &paths, &[], &[]);
+        assert!(cov.dead_fields().is_empty());
+        assert_eq!(cov.total_matched(), 2);
     }
 }
