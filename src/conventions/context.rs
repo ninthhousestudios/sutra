@@ -134,7 +134,7 @@ impl FormalContext {
                 let support_ab = both.count();
                 let confidence = support_ab as f64 / support_a as f64;
 
-                if confidence >= min_confidence && confidence < 1.0 && support_ab >= min_support {
+                if confidence >= min_confidence && support_ab >= min_support {
                     implications.push(Implication {
                         antecedent: vec![self.attribute_names[a].clone()],
                         consequent: vec![self.attribute_names[b].clone()],
@@ -152,6 +152,53 @@ impl FormalContext {
                 .then(b.support.cmp(&a.support))
         });
         implications
+    }
+
+    pub fn count_with_attrs(&self, attr_names: &[&str]) -> usize {
+        let indices: Vec<usize> = attr_names
+            .iter()
+            .filter_map(|n| self.attribute_names.iter().position(|a| a == n))
+            .collect();
+        if indices.len() != attr_names.len() || indices.is_empty() {
+            return 0;
+        }
+        let mut mask = self.attr_objects[indices[0]].clone();
+        for &i in &indices[1..] {
+            mask = mask.intersect(&self.attr_objects[i]);
+        }
+        mask.count()
+    }
+
+    pub fn exemplars_for(
+        &self,
+        antecedent_attrs: &[&str],
+        consequent_attrs: &[&str],
+        limit: usize,
+    ) -> Vec<&str> {
+        let attr_indices = |names: &[&str]| -> Vec<usize> {
+            names
+                .iter()
+                .filter_map(|n| self.attribute_names.iter().position(|a| a == n))
+                .collect()
+        };
+        let ante_idx = attr_indices(antecedent_attrs);
+        let cons_idx = attr_indices(consequent_attrs);
+        if ante_idx.len() != antecedent_attrs.len() || cons_idx.len() != consequent_attrs.len() {
+            return Vec::new();
+        }
+
+        let mut mask = self.attr_objects[ante_idx[0]].clone();
+        for &i in &ante_idx[1..] {
+            mask = mask.intersect(&self.attr_objects[i]);
+        }
+        for &i in &cons_idx {
+            mask = mask.intersect(&self.attr_objects[i]);
+        }
+
+        mask.iter()
+            .take(limit)
+            .map(|obj_idx| self.object_names[obj_idx].as_str())
+            .collect()
     }
 }
 

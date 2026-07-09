@@ -65,6 +65,7 @@ impl ParserPool {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ToolchainPair {
     pub antecedent: &'static str,
     pub consequent: &'static str,

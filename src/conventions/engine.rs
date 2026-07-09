@@ -110,9 +110,26 @@ pub struct ConventionMatch {
     pub confidence: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct Deviation {
+    pub symbol: String,
+    pub file: String,
+    pub pattern_antecedent: Arc<[String]>,
+    pub pattern_consequent: Arc<[String]>,
+    pub missing: Vec<String>,
+    pub support: usize,
+    pub confidence: f64,
+    pub total_matching: usize,
+    pub conforming: usize,
+    pub exemplars: Vec<String>,
+    pub strength: f64,
+    pub informational: bool,
+}
+
 const MIN_SUPPORT: usize = 3;
 pub const MIN_CONFIDENCE: f64 = 0.9;
 const MAX_COMPONENT_SUPPORT: usize = 20;
+const MAX_DEVIATIONS: usize = 5;
 
 pub fn component_min_support(component_size: usize) -> usize {
     ((component_size as f64 * 0.4).ceil() as usize).clamp(2, MAX_COMPONENT_SUPPORT)
@@ -405,6 +422,121 @@ pub fn deduplicate_component_conventions(
             })
         })
         .collect()
+}
+
+pub fn detect_deviations(
+    changed_sym_attrs: &[SymbolAttrs],
+    all_sym_attrs_by_component: &HashMap<String, Vec<SymbolAttrs>>,
+    orphan_sym_attrs: &[SymbolAttrs],
+    toolchain_pairs: &[crate::parser::adapter::ToolchainPair],
+    sketch_components: &HashSet<String>,
+) -> Vec<Deviation> {
+    use super::attributes::{AttributeRole, classify_attribute};
+
+    let mut all_deviations = Vec::new();
+
+    let check_group = |symbols: &[SymbolAttrs],
+                       component_id: Option<&str>,
+                       informational: bool,
+                       out: &mut Vec<Deviation>| {
+        if symbols.len() < 2 {
+            return;
+        }
+        let min_support = match component_id {
+            Some(_) => component_min_support(symbols.len()),
+            None => MIN_SUPPORT,
+        };
+        let mut engine = FcaEngine::new();
+        engine.rebuild_with_params(symbols, min_support, MIN_CONFIDENCE, component_id);
+
+        let ctx = match &engine.context {
+            Some(c) => c,
+            None => return,
+        };
+
+        for conv in engine.conventions() {
+            if !conv
+                .consequent
+                .iter()
+                .all(|c| classify_attribute(c) == AttributeRole::Obligation)
+            {
+                continue;
+            }
+            if !conv.is_checkable(toolchain_pairs) {
+                continue;
+            }
+
+            let ante_strs: Vec<&str> = conv.antecedent.iter().map(|s| s.as_str()).collect();
+            let cons_strs: Vec<&str> = conv.consequent.iter().map(|s| s.as_str()).collect();
+            let total_matching = ctx.count_with_attrs(&ante_strs);
+
+            for sym in changed_sym_attrs {
+                if sym.component_id.as_deref() != component_id {
+                    continue;
+                }
+                let attrs: HashSet<&str> = sym.attributes.iter().map(|a| a.as_str()).collect();
+                if !conv.antecedent.iter().all(|a| attrs.contains(a.as_str())) {
+                    continue;
+                }
+                let missing: Vec<String> = conv
+                    .consequent
+                    .iter()
+                    .filter(|c| !attrs.contains(c.as_str()))
+                    .cloned()
+                    .collect();
+                if missing.is_empty() {
+                    continue;
+                }
+
+                let exemplars: Vec<String> = ctx
+                    .exemplars_for(&ante_strs, &cons_strs, 3)
+                    .into_iter()
+                    .filter(|e| *e != sym.name)
+                    .take(3)
+                    .map(|s| s.to_string())
+                    .collect();
+
+                out.push(Deviation {
+                    symbol: sym.name.clone(),
+                    file: sym.file.clone(),
+                    pattern_antecedent: Arc::clone(&conv.antecedent),
+                    pattern_consequent: Arc::clone(&conv.consequent),
+                    missing,
+                    support: conv.support,
+                    confidence: conv.confidence,
+                    total_matching,
+                    conforming: conv.support,
+                    exemplars,
+                    strength: conv.support as f64 * conv.confidence,
+                    informational,
+                });
+            }
+        }
+    };
+
+    for (comp_id, symbols) in all_sym_attrs_by_component {
+        let informational = sketch_components.contains(comp_id);
+        check_group(symbols, Some(comp_id), informational, &mut all_deviations);
+    }
+
+    if !orphan_sym_attrs.is_empty() {
+        let all_symbols: Vec<SymbolAttrs> = all_sym_attrs_by_component
+            .values()
+            .flatten()
+            .chain(orphan_sym_attrs.iter())
+            .cloned()
+            .collect();
+        check_group(&all_symbols, None, false, &mut all_deviations);
+    }
+
+    all_deviations.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.support.cmp(&a.support))
+    });
+    all_deviations.truncate(MAX_DEVIATIONS);
+    all_deviations
 }
 
 #[cfg(test)]

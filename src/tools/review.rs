@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::components;
 use crate::constraints::DdEngine;
 use crate::constraints::check::{self, EvalScope, FactsSource};
-use crate::conventions::{self, FcaEngine};
+use crate::conventions;
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
@@ -40,7 +40,7 @@ const W_CHURN: f64 = 0.15;
 const W_CONVENTIONS: f64 = 0.20;
 
 pub use crate::constraints::ConstraintFinding;
-pub use crate::conventions::ConventionViolation;
+pub use crate::conventions::Deviation;
 use crate::waivers::Waived;
 
 #[derive(Default)]
@@ -50,7 +50,7 @@ pub struct ReviewFindings {
     pub waived_constraint_violations: Vec<Waived<ConstraintFinding>>,
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
-    pub convention_violations: Vec<ConventionViolation>,
+    pub deviations: Vec<Deviation>,
 }
 
 pub fn handle(
@@ -315,7 +315,7 @@ pub fn build_findings(
     shared_dd: Option<&DdEngine>,
     registry: &LanguageRegistry,
 ) -> Result<ReviewFindings> {
-    let rules = rules::load_rules(workspace_root)?;
+    let _rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
 
@@ -367,12 +367,14 @@ pub fn build_findings(
         constraint_violations.len() + waived_constraint_violations.len();
     let constraint_parse_errors = check_outcome.parse_errors;
 
-    // Convention check on changed symbols (conventions rebuilt at parse time)
-    let mut convention_violations = Vec::new();
-
+    // Deviation detection: on-the-fly FCA over component siblings
     let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
     let mut changed_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
-    for f in all_files.iter().filter(|f| changed_set.contains(&*f.path)) {
+    let mut all_sym_attrs_by_component: HashMap<String, Vec<conventions::SymbolAttrs>> =
+        HashMap::new();
+    let mut orphan_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
+
+    for f in &all_files {
         let syms = db.find_symbols_by_file(f.id)?;
         let refs = db.find_refs_in_file(f.id)?;
 
@@ -402,6 +404,7 @@ pub fn build_findings(
             None
         };
 
+        let is_changed = changed_set.contains(&*f.path);
         for s in &syms {
             if let Some(mut attrs) =
                 conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
@@ -418,32 +421,39 @@ pub fn build_findings(
                         dart_import_packages.as_ref(),
                     );
                 }
-                changed_sym_attrs.push(attrs);
+                attrs.component_id = file_to_component
+                    .get(attrs.file.as_str())
+                    .map(|s| s.to_string());
+
+                if is_changed {
+                    changed_sym_attrs.push(attrs.clone());
+                }
+
+                match &attrs.component_id {
+                    Some(cid) => all_sym_attrs_by_component
+                        .entry(cid.clone())
+                        .or_default()
+                        .push(attrs),
+                    None => orphan_sym_attrs.push(attrs),
+                }
             }
         }
     }
 
-    for sa in &mut changed_sym_attrs {
-        sa.component_id = file_to_component
-            .get(sa.file.as_str())
-            .map(|s| s.to_string());
-    }
-
-    let all_convs: Vec<conventions::Convention> = db
-        .all_conventions()?
-        .into_iter()
-        .map(conventions::Convention::from)
+    let sketch_components: HashSet<String> = comp_with_paths
+        .iter()
+        .filter(|(id, _, _)| db.component_lifecycle_state(id).ok().as_deref() == Some("sketch"))
+        .map(|(id, _, _)| id.clone())
         .collect();
 
-    if !all_convs.is_empty() {
-        let effective_conventions = rules.conventions.clone();
-
-        let mut check_engine = FcaEngine::new();
-        check_engine.set_conventions(all_convs);
-
-        convention_violations
-            .extend(check_engine.check(&changed_sym_attrs, &effective_conventions));
-    }
+    let toolchain_pairs = collect_toolchain_pairs(registry);
+    let deviations = conventions::detect_deviations(
+        &changed_sym_attrs,
+        &all_sym_attrs_by_component,
+        &orphan_sym_attrs,
+        &toolchain_pairs,
+        &sketch_components,
+    );
 
     Ok(ReviewFindings {
         constraint_violations,
@@ -451,8 +461,22 @@ pub fn build_findings(
         waived_constraint_violations,
         constraint_parse_errors,
         constraint_violations_total,
-        convention_violations,
+        deviations,
     })
+}
+
+fn collect_toolchain_pairs(
+    registry: &LanguageRegistry,
+) -> Vec<crate::parser::adapter::ToolchainPair> {
+    let mut pairs = Vec::new();
+    for lang in &["rust", "dart", "python", "c"] {
+        if let Some(adapter) = registry.adapter_for_language(lang)
+            && let Some(fca_source) = adapter.as_fca_source()
+        {
+            pairs.extend_from_slice(fca_source.toolchain_enforced_pairs());
+        }
+    }
+    pairs
 }
 
 fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel {
@@ -547,22 +571,25 @@ fn build_recommended_reads(
 ) -> Vec<serde_json::Value> {
     let mut violation_sites: Vec<(String, i64, f64)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for v in &findings.convention_violations {
-        if !seen.insert(v.file.clone()) {
+    for d in &findings.deviations {
+        if d.informational {
+            continue;
+        }
+        if !seen.insert(d.file.clone()) {
             continue;
         }
         let blast = affected_files
             .iter()
-            .find(|a| a.path == v.file)
+            .find(|a| a.path == d.file)
             .map(|a| a.blast_radius)
             .or_else(|| {
                 changed_files
                     .iter()
-                    .find(|cf| cf["path"].as_str() == Some(v.file.as_str()))
+                    .find(|cf| cf["path"].as_str() == Some(d.file.as_str()))
                     .and_then(|cf| cf["blast_radius"].as_i64())
             })
             .unwrap_or(0);
-        violation_sites.push((v.file.clone(), blast, v.confidence));
+        violation_sites.push((d.file.clone(), blast, d.confidence));
     }
     violation_sites.sort_by(|a, b| {
         b.2.partial_cmp(&a.2)
@@ -623,14 +650,14 @@ pub fn compute(
             "risk_score": 0.0,
             "risk_breakdown": {
                 "blast_radius": 0.0, "complexity_delta": 0.0,
-                "hotspot_overlap": 0.0, "churn": 0.0, "convention_violations": 0.0,
+                "hotspot_overlap": 0.0, "churn": 0.0, "deviations": 0.0,
             },
             "recommended_reads": [],
             "constraint_violations": [],
             "resolved_constraint_violations": [],
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
-            "convention_violations": [],
+            "deviations": [],
         });
         if explain {
             result["_explain"] = json!({
@@ -640,7 +667,7 @@ pub fn compute(
                     "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": 0.0, "rationale": "peak cognitive complexity in changed code" },
                     "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": 1.0, "contribution": 0.0, "rationale": "proportion of changed files that are churn hotspots" },
                     "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": 0.0, "rationale": "total recent churn across changed files" },
-                    "convention_violations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": 0.0, "rationale": "number of convention violations detected" },
+                    "deviations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": 0.0, "rationale": "number of pattern deviations detected" },
                 },
             });
         }
@@ -747,14 +774,25 @@ pub fn compute(
             })
         })
         .collect();
-    let convention_violations_out: Vec<_> = findings
-        .convention_violations
+    let deviations_out: Vec<_> = findings
+        .deviations
         .iter()
-        .map(|v| {
+        .map(|d| {
             json!({
-                "symbol": v.symbol, "file": v.file, "convention_id": v.convention_id,
-                "antecedent": v.antecedent, "consequent": v.consequent, "missing": v.missing,
-                "support": v.support, "confidence": v.confidence,
+                "symbol": d.symbol,
+                "file": d.file,
+                "pattern": format!("{} → {}",
+                    d.pattern_antecedent.join(", "),
+                    d.pattern_consequent.join(", ")),
+                "missing": d.missing,
+                "evidence": format!("{}/{} siblings have {}",
+                    d.conforming, d.total_matching,
+                    d.pattern_consequent.join(", ")),
+                "exemplars": d.exemplars,
+                "support": d.support,
+                "confidence": d.confidence,
+                "strength": scoring::round3(d.strength),
+                "informational": d.informational,
             })
         })
         .collect();
@@ -767,7 +805,12 @@ pub fn compute(
     let hotspot_ceiling = (file_count as f64).max(1.0);
     let hotspot_score = scoring::normalize(signals.hotspot_files as f64, hotspot_ceiling);
     let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
-    let convention_score = scoring::normalize(findings.convention_violations.len() as f64, 5.0);
+    let actionable_deviations = findings
+        .deviations
+        .iter()
+        .filter(|d| !d.informational)
+        .count();
+    let deviation_score = scoring::normalize(actionable_deviations as f64, 5.0);
 
     let risk_score = scoring::weighted_score(&[
         Signal {
@@ -788,7 +831,7 @@ pub fn compute(
         },
         Signal {
             weight: W_CONVENTIONS,
-            score: convention_score,
+            score: deviation_score,
         },
     ]);
 
@@ -819,13 +862,13 @@ pub fn compute(
             "complexity_delta": scoring::round3(complexity_score),
             "hotspot_overlap": scoring::round3(hotspot_score),
             "churn": scoring::round3(churn_score),
-            "convention_violations": scoring::round3(convention_score),
+            "deviations": scoring::round3(deviation_score),
         },
         "constraint_violations": constraint_violations_out,
         "resolved_constraint_violations": resolved_constraint_violations_out,
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
-        "convention_violations": convention_violations_out,
+        "deviations": deviations_out,
         "recommended_reads": recommended_reads,
     });
     if !behavioral.is_empty() {
@@ -859,7 +902,7 @@ pub fn compute(
                 "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score), "rationale": "peak cognitive complexity in changed code" },
                 "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": hotspot_ceiling, "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
                 "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score), "rationale": "total recent churn across changed files" },
-                "convention_violations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": scoring::round3(W_CONVENTIONS * convention_score), "rationale": "number of convention violations detected" },
+                "deviations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": scoring::round3(W_CONVENTIONS * deviation_score), "rationale": "number of pattern deviations detected" },
             },
         });
     }

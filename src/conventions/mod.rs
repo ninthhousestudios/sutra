@@ -11,6 +11,6 @@ pub use attributes::{
 };
 pub use context::{FormalContext, Implication};
 pub use engine::{
-    Convention, ConventionMatch, ConventionViolation, FcaEngine, MIN_CONFIDENCE, SymbolAttrs,
-    component_min_support, deduplicate_component_conventions,
+    Convention, ConventionMatch, ConventionViolation, Deviation, FcaEngine, MIN_CONFIDENCE,
+    SymbolAttrs, component_min_support, deduplicate_component_conventions, detect_deviations,
 };
