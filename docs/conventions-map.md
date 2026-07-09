@@ -4,20 +4,24 @@ Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each convention-system landing.
 
-Last updated: 2026-07-08 (sutra/232: remove drift, template, waiver subsystems)
+Last updated: 2026-07-09 (sutra/234: diff-scoped deviation report)
 
 ## Module layout
 
 ```
 src/conventions/
   mod.rs            — re-exports, module declarations
-  engine.rs         — FcaEngine, SymbolAttrs, Convention, ConventionViolation,
-                      ConventionMatch, rebuild/check/check_inverse, dedup
-  context.rs        — FormalContext, Implication, approximate_implications (FCA core)
+  engine.rs         — FcaEngine, SymbolAttrs, Convention, Deviation,
+                      ConventionViolation (legacy, used by check),
+                      rebuild/check/check_inverse, dedup,
+                      detect_deviations (on-the-fly review path)
+  context.rs        — FormalContext, Implication, approximate_implications,
+                      count_with_attrs, exemplars_for (FCA core)
   bitset.rs         — compact bitset for FCA attribute sets
   attributes.rs     — extract_attrs_for_symbol, extract_cross_language_attrs,
-                      enrich_with_effects, EffectPattern, ResolvedCallee
-  pipeline.rs       — rebuild (FCA pipeline: extract, rebuild, persist)
+                      enrich_with_effects, EffectPattern, ResolvedCallee,
+                      AttributeRole (Identity/Obligation), classify_attribute
+  pipeline.rs       — rebuild (FCA pipeline: extract, rebuild, persist to DB)
 
 src/db/
   mod.rs            — Db struct, TABLE_REGISTRY, TablePartition, reindex,
@@ -26,15 +30,14 @@ src/db/
   components.rs     — ComponentRow, insert/batch/active_components_with_paths,
                       anchors, aliases, component_lifecycle_state,
                       set_component_lifecycle
-  migrations.rs     — MIGRATIONS array (name, sql, ephemeral_only), run_migrations
 
 src/tools/
-  review.rs         — handle (entry), build_findings (violation check),
-                      compute (JSON assembly), ReviewFindings struct
+  review.rs         — handle (entry), build_findings (deviation detection),
+                      compute (JSON assembly), ReviewFindings struct,
+                      Deviation re-export
   conventions.rs    — MCP tool action: list
   orient.rs         — sutra_orient MCP tool: convention-aware orientation
-                      per scope. Resolves component, assembles observed
-                      conventions and constraints. Core tier.
+                      per scope. Still reads persisted conventions from DB.
 ```
 
 ## Key types
@@ -47,89 +50,106 @@ Attributes are strings like `kind:function`, `vis:pub`, `has_doc`, `effect:fs`, 
 FCA output. Fields: `id` (blake3 hash), `antecedent`, `consequent` (both `Vec<String>`),
 `support`, `confidence`, `component_id: Option<String>`.
 
+### Deviation (engine.rs)
+Review-time finding. Fields: `symbol`, `file`, `pattern_antecedent`, `pattern_consequent`,
+`missing`, `support`, `confidence`, `total_matching`, `conforming`, `exemplars`,
+`strength` (support × confidence), `informational` (true for sketch-mode components).
+
+### AttributeRole (attributes.rs)
+Classification: `Identity` (antecedent-only, e.g. `vis:pub`, `kind:function`) vs
+`Obligation` (consequent-checkable, e.g. `has_doc`, `returns_result`, `naming:*`, `effect:*`).
+
 ### ReviewFindings (review.rs)
 Aggregation passed from `build_findings` to `compute`. Fields:
-`constraint_violations`, `convention_violations`,
+`constraint_violations`, `deviations`,
 `waived_constraint_violations`, `constraint_parse_errors`.
 
-## Data flow: rebuild pipeline (pipeline.rs)
+## Data flow
+
+### Review-time deviation detection (build_findings → compute)
+
+```
+build_findings(db, workspace_root, changed_paths, base_revision, dd_engine, registry)
+  |
+  +-- Constraint evaluation via check::evaluate
+  |
+  +-- Extract SymbolAttrs for ALL files, grouped by component
+  |     (same enrich_all_effects pipeline as pipeline.rs)
+  |
+  +-- Identify changed symbols (subset of above)
+  |
+  +-- detect_deviations(changed_sym_attrs, all_by_component, orphans,
+  |     toolchain_pairs, sketch_components)
+  |     Per component:
+  |       1. Build FormalContext from component siblings
+  |       2. approximate_implications (includes confidence=1.0)
+  |       3. Filter: consequent must be Obligation, not toolchain-enforced
+  |       4. For each changed symbol matching antecedent but missing consequent:
+  |          → Deviation with counts, exemplars, strength
+  |     Rank by strength (support × confidence), cap at 5
+  |
+  --> ReviewFindings { constraint_violations, deviations, ... }
+
+compute(db, workspace_root, changed_paths, churn, findings)
+  --> JSON with risk_score, deviations, constraints
+```
+
+### Rebuild pipeline (pipeline.rs — persists to DB for orient)
 
 ```
 rebuild(db, registry, workspace_root)
-  |
-  +-- Build all_sym_attrs (all files, all symbols,
-  |     extract + enrich attributes)
-  |
-  +-- Assign component_id to each SymbolAttrs via file_to_component map
-  |
-  +-- FCA rebuild (skip if hash matches cached):
-  |     Global: FcaEngine::rebuild(all_sym_attrs)
-  |     Per-component: rebuild_with_params(comp_symbols, adaptive_threshold)
-  |       + deduplicate_component_conventions vs global
-  |     --> all_convs
-  |
-  +-- Convention persistence:
-  |     upsert all_convs, delete stale conventions
-
-build_findings (review.rs):
-  +-- Constraint evaluation via check::evaluate
-  +-- Convention violation check: FcaEngine::check(changed_sym_attrs)
-  --> ReviewFindings
-
-compute(db, workspace_root, changed_paths, churn, findings)
-  --> JSON with risk_score, violations, constraints
+  → FCA over all symbols (global + per-component)
+  → Persists conventions to DB (conventions table)
+  → Used by orient, NOT by review
 ```
+
+## Output contract (sutra_review JSON)
+
+The `deviations` array replaces the former `convention_violations`. Each entry:
+```json
+{
+  "symbol": "core::process",
+  "file": "src/core.rs",
+  "pattern": "kind:function, vis:pub → has_doc",
+  "missing": ["has_doc"],
+  "evidence": "8/10 siblings have has_doc",
+  "exemplars": ["helper::format", "util::parse"],
+  "support": 8,
+  "confidence": 0.95,
+  "strength": 7.6,
+  "informational": false
+}
+```
+
+`risk_breakdown.deviations` replaces `risk_breakdown.convention_violations`.
+Informational deviations (sketch-mode components) do not contribute to risk score.
 
 ## Database tables (convention-related)
 
 | Table | Partition | Migration | Purpose |
 |---|---|---|---|
-| conventions | Ephemeral | 0005+0007+0015 | FCA-discovered conventions (id, antecedent, consequent, support, confidence, component_id) |
+| conventions | Ephemeral | 0005+0007+0015 | FCA-discovered conventions — persisted by pipeline.rs for orient |
 | fca_cache | Ephemeral | 0040 | Hash of last FCA input to skip redundant rebuilds |
 | components | Durable | 0008+0009+0021 | Component identity, lifecycle_state (stable/sketch) |
 | component_membership | Ephemeral | 0008 | Component-to-file mapping (rebuilt on cluster) |
 
-Dropped in 0044: convention_state, convention_proposals, convention_history.
-Dropped in 0045: convention_waivers, convention_snapshots, convention_templates, drift_alerts.
-Enforcement of naming/style rules is now via constraint rules in `.sutra/rules.toml`.
-
-Ephemeral = dropped on reindex, migration re-runs. Durable = survives reindex.
-
-## Migration patterns
-
-- Sequential numbering: `NNNN_name.sql`
-- Register in `src/db/migrations.rs` MIGRATIONS array: `(name, sql, ephemeral_only)`
-- Add to TABLE_REGISTRY in `src/db/mod.rs` if creating a new table
-- Ephemeral tables: `ephemeral_only: true`, `TablePartition::Ephemeral`
-- Durable tables: `ephemeral_only: false`, `TablePartition::Durable`
-- ALTER TABLE on durable table: always `ephemeral_only: false`
-- Timestamps: `TEXT NOT NULL DEFAULT (datetime('now'))` in SQL, ISO-8601 via chrono in Rust
-
-## DB method patterns
-
-All methods on `impl Db` in submodules. Typical signature:
-```rust
-pub fn do_thing(&self, arg: &str) -> Result<ReturnType> {
-    let conn = self.conn.lock();
-    // conn.execute / conn.prepare + query_map
-    // Error: ? propagates rusqlite::Error via SutraError::Db
-    // Single-row not found: match QueryReturnedNoRows -> Ok(None) or default
-}
-```
-
-Row types: plain `#[derive(Debug, Clone)]` structs, mapped via closure or helper fn.
+Review no longer reads from the conventions table — deviations are computed on-the-fly.
+The conventions table survives as a cache for orient (sutra/235 will rebuild orient's
+conventions section on the deviation engine).
 
 ## Sketch mode (ADR-0001)
 
 Component lifecycle_state column: `stable` (default) or `sketch`.
-When sketch: conventions are informational only, constraints remain enforced.
-Currently only settable via `Db::set_component_lifecycle` — no MCP tool yet.
+When sketch: deviations are reported with `informational: true` and excluded from
+risk score. Constraints remain enforced regardless of sketch mode.
 
 ## FCA thresholds
 
-- Global: MIN_SUPPORT=3, MIN_CONFIDENCE=0.9
+- Global: MIN_SUPPORT=3, MIN_CONFIDENCE=0.9 (includes confidence=1.0)
 - Per-component: adaptive `max(2, ceil(component_symbol_count * 0.4))`, capped at MAX_COMPONENT_SUPPORT=20
-- Component conventions subsumed by global at equal/higher confidence are dropped
+- Direction filter: only identity→obligation implications are checkable
+- Toolchain-enforced pairs (e.g. `is_async → returns_future`) excluded via adapter declarations
+- MAX_DEVIATIONS=5 per review
 
 ## Design docs
 
@@ -142,6 +162,6 @@ Currently only settable via `Db::set_component_lifecycle` — no MCP tool yet.
 
 ## Test locations
 
-- Unit tests: `#[cfg(test)]` modules in `engine.rs`
-- Integration tests: `tests/review-test.rs`, `tests/db-test.rs`
+- Unit tests: `#[cfg(test)]` modules in `engine.rs`, `context.rs`
+- Integration tests: `tests/review-test.rs`, `tests/explain-test.rs`, `tests/db-test.rs`
 - Test DB setup: `Db::open_unchecked("test", dir.path())` with tempdir
