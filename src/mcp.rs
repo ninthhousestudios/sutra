@@ -384,12 +384,14 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
+        let registry = crate::parser::adapter::default_registry();
         let result = tools::orient::handle(
             ctx.db(),
             &args.scope,
             ctx.workspace_root(),
             Some(&dd),
             Some(&self.lessons_db),
+            &registry,
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))

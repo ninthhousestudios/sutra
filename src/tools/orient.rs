@@ -9,10 +9,12 @@ use serde_json::json;
 use crate::components;
 use crate::constraints::DdEngine;
 use crate::constraints::check::{EvalScope, FactsSource};
+use crate::conventions;
 use crate::db::{Db, HealthFindingRow};
 use crate::error::Result;
 use crate::health::{findings::BiomarkerKind, scoring};
 use crate::lessons::LessonsDb;
+use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{self, Constraint, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -253,12 +255,79 @@ fn constraint_detail(c: &Constraint) -> String {
     }
 }
 
+fn extract_component_sym_attrs(
+    db: &Db,
+    component_files: &[String],
+    registry: &LanguageRegistry,
+) -> Result<Vec<conventions::SymbolAttrs>> {
+    let all_files = db.all_files()?;
+    let file_set: HashSet<&str> = component_files.iter().map(|s| s.as_str()).collect();
+    let mut sym_attrs = Vec::new();
+
+    for f in &all_files {
+        if !file_set.contains(&*f.path) {
+            continue;
+        }
+        let syms = db.find_symbols_by_file(f.id)?;
+        let refs = db.find_refs_in_file(f.id)?;
+
+        let target_ids: Vec<i64> = refs
+            .iter()
+            .filter(|r| r.context_kind == "call")
+            .filter_map(|r| r.target_symbol_id)
+            .collect();
+        let mut callee_cache: HashMap<i64, conventions::ResolvedCallee> = HashMap::new();
+        for id in &target_ids {
+            if !callee_cache.contains_key(id)
+                && let Some(sym) = db.symbol_by_id(*id)?
+            {
+                callee_cache.insert(
+                    *id,
+                    conventions::ResolvedCallee {
+                        qualified_name: sym.qualified_name.to_string(),
+                        signature: sym.signature,
+                    },
+                );
+            }
+        }
+
+        let dart_import_packages = if f.language == "dart" {
+            conventions::dart_effect_packages(&db.imports_for_file(f.id)?)
+        } else {
+            None
+        };
+
+        for s in &syms {
+            if let Some(mut attrs) =
+                conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
+            {
+                if let Some(adapter) = registry.adapter_for_language(&f.language)
+                    && let Some(fca_source) = adapter.as_fca_source()
+                {
+                    conventions::enrich_all_effects(
+                        &mut attrs,
+                        s,
+                        &refs,
+                        &callee_cache,
+                        fca_source,
+                        dart_import_packages.as_ref(),
+                    );
+                }
+                sym_attrs.push(attrs);
+            }
+        }
+    }
+
+    Ok(sym_attrs)
+}
+
 pub fn handle(
     db: &Db,
     scope: &str,
     workspace_root: &Path,
     dd_engine: Option<&DdEngine>,
     lessons_db: Option<&LessonsDb>,
+    registry: &LanguageRegistry,
 ) -> Result<serde_json::Value> {
     let components = resolve_scope(db, scope)?;
     if components.is_empty() {
@@ -272,7 +341,7 @@ pub fn handle(
     let components_config = components::load_config(workspace_root)?;
     let cochange_threshold = components_config.cochange_threshold.unwrap_or(0.5);
 
-    let all_conventions = db.all_conventions()?;
+    let toolchain_pairs = super::review::collect_toolchain_pairs(registry);
 
     // Constraint system
     let mut loaded_rules = rules::load_rules(workspace_root)?;
@@ -328,25 +397,6 @@ pub fn handle(
     for comp in &components {
         let is_sketch = comp.lifecycle_state == "sketch";
 
-        let in_scope: Vec<_> = all_conventions
-            .iter()
-            .filter(|c| c.component_id.as_deref() == Some(&comp.id) || c.component_id.is_none())
-            .collect();
-
-        let observed: Vec<_> = in_scope
-            .iter()
-            .map(|c| {
-                json!({
-                    "convention_id": c.id,
-                    "antecedent": c.antecedent.split(", ").collect::<Vec<_>>(),
-                    "consequent": c.consequent.split(", ").collect::<Vec<_>>(),
-                    "support": c.support,
-                    "confidence": c.confidence,
-                    "scope": if c.component_id.is_some() { "component" } else { "global" },
-                })
-            })
-            .collect();
-
         let mut section = json!({
             "component_id": comp.id,
             "component_name": comp.name,
@@ -358,11 +408,24 @@ pub fn handle(
                 json!("Component is in sketch mode — all conventions are informational only");
         }
 
-        if !observed.is_empty() {
-            section["observed_patterns"] = json!({
-                "guidance": "Observed patterns in this scope (informational only).",
-                "conventions": observed,
-            });
+        let sym_attrs = extract_component_sym_attrs(db, &comp.files, registry)?;
+        let patterns = conventions::describe_patterns(&sym_attrs, Some(&comp.id), &toolchain_pairs);
+        if !patterns.is_empty() {
+            let pattern_json: Vec<_> = patterns
+                .iter()
+                .map(|p| {
+                    json!({
+                        "pattern": format!("{} → {}",
+                            p.antecedent.join(", "),
+                            p.consequent.join(", ")),
+                        "evidence": format!("{}/{} conform", p.support, p.total_matching),
+                        "support": p.support,
+                        "confidence": p.confidence,
+                        "exemplars": p.exemplars,
+                    })
+                })
+                .collect();
+            section["observed_patterns"] = json!(pattern_json);
         }
 
         // Constraint section
@@ -577,7 +640,7 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Db;
+    use crate::db::{Db, InsertSymbolParams};
 
     fn setup_db() -> (Db, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -585,22 +648,14 @@ mod tests {
         (db, dir)
     }
 
+    fn registry() -> LanguageRegistry {
+        crate::parser::adapter::default_registry()
+    }
+
     fn insert_component(db: &Db, id: &str, name: &str, files: &[&str]) {
         let paths_json = serde_json::to_string(&files).unwrap();
         let components: Vec<(String, String, String)> = vec![(id.into(), name.into(), paths_json)];
         db.batch_create_components(&components, &[]).unwrap();
-    }
-
-    fn insert_convention(db: &Db, id: &str, component_id: Option<&str>) {
-        db.upsert_convention(
-            id,
-            "kind:function",
-            "has_return_type",
-            5,
-            0.95,
-            component_id,
-        )
-        .unwrap();
     }
 
     #[test]
@@ -663,7 +718,7 @@ mod tests {
     #[test]
     fn handle_no_component_returns_error() {
         let (db, dir) = setup_db();
-        let result = handle(&db, "nonexistent", dir.path(), None, None).unwrap();
+        let result = handle(&db, "nonexistent", dir.path(), None, None, &registry()).unwrap();
         assert!(
             result["error"]
                 .as_str()
@@ -677,7 +732,7 @@ mod tests {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let orientation = &result["orientation"][0];
         assert_eq!(orientation["component_name"], "mycomp");
         assert!(orientation.get("preferred").is_none());
@@ -685,52 +740,71 @@ mod tests {
         assert!(orientation.get("observed_patterns").is_none());
     }
 
-    #[test]
-    fn handle_global_convention_included() {
-        let (db, dir) = setup_db();
-        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "global-1", None);
-
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
-        let orientation = &result["orientation"][0];
-        let patterns = &orientation["observed_patterns"]["conventions"];
-        assert_eq!(patterns[0]["scope"], "global");
+    fn insert_pub_function(db: &Db, file_id: i64, name: &str, has_doc: bool) -> i64 {
+        db.insert_symbol(&InsertSymbolParams {
+            file_id,
+            qualified_name: name,
+            short_name: name,
+            kind: "function",
+            signature: Some("fn() -> Result<()>"),
+            signature_hash: None,
+            visibility: Some("pub"),
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: if has_doc { Some("docs") } else { None },
+            cyclomatic: Some(2),
+            cognitive: Some(1),
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        })
+        .unwrap()
     }
 
     #[test]
-    fn handle_observed_patterns_informational() {
+    fn handle_observed_patterns_from_fca() {
+        let (db, dir) = setup_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "rust", "h1", 100, true)
+            .unwrap();
+        insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
+
+        for i in 0..5 {
+            insert_pub_function(&db, file_id, &format!("func_{i}"), true);
+        }
+
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
+        let orientation = &result["orientation"][0];
+        let patterns = orientation["observed_patterns"].as_array().unwrap();
+        assert!(!patterns.is_empty());
+        let first = &patterns[0];
+        assert!(first["pattern"].as_str().unwrap().contains('→'));
+        assert!(first["evidence"].as_str().unwrap().contains("conform"));
+        assert!(first["exemplars"].as_array().is_some());
+        assert!(first["support"].as_u64().unwrap() >= 2);
+    }
+
+    #[test]
+    fn handle_no_patterns_without_symbols() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let orientation = &result["orientation"][0];
-        let patterns = &orientation["observed_patterns"];
-        assert!(
-            patterns["guidance"]
-                .as_str()
-                .unwrap()
-                .contains("informational only")
-        );
-        assert_eq!(patterns["conventions"].as_array().unwrap().len(), 1);
+        assert!(orientation.get("observed_patterns").is_none());
     }
 
     #[test]
     fn handle_sketch_mode_note() {
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
-        insert_convention(&db, "conv-1", Some("comp-1"));
         db.set_component_lifecycle("comp-1", "sketch").unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let orientation = &result["orientation"][0];
-        assert!(
-            orientation["observed_patterns"]["conventions"]
-                .as_array()
-                .unwrap()
-                .len()
-                == 1
-        );
         assert!(orientation["sketch_mode_note"].as_str().is_some());
     }
 
@@ -762,7 +836,7 @@ provenance = "docs/adr-001"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0]["constraints"];
         assert!(!section.is_null());
         let active = section["active"].as_array().unwrap();
@@ -790,7 +864,7 @@ to_component = "http"
 "#,
         );
 
-        let result = handle(&db, "db", dir.path(), None, None).unwrap();
+        let result = handle(&db, "db", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let active = section["active"].as_array().unwrap();
         assert_eq!(active.len(), 1);
@@ -812,7 +886,7 @@ to = "src/config.rs"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
         let active = result["orientation"][0]["constraints"]["active"]
             .as_array()
             .unwrap();
@@ -834,7 +908,7 @@ scope = "src/db/"
 "#,
         );
 
-        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
         assert!(result["orientation"][0]["constraints"].is_null());
     }
 
@@ -871,7 +945,7 @@ name = "no-tool-daemon"
         )
         .unwrap();
 
-        let result = handle(&db, "tools", dir.path(), None, None).unwrap();
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let waivers = section["waivers"].as_array().unwrap();
         assert_eq!(waivers.len(), 1);
@@ -885,7 +959,7 @@ name = "no-tool-daemon"
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         assert!(result["orientation"][0]["constraints"].is_null());
     }
 
@@ -923,7 +997,7 @@ name = "no-tool-daemon"
         );
 
         let engine = DdEngine::new(std::time::Duration::from_secs(60));
-        let result = handle(&db, "tools", dir.path(), Some(&engine), None).unwrap();
+        let result = handle(&db, "tools", dir.path(), Some(&engine), None, &registry()).unwrap();
         let section = &result["orientation"][0]["constraints"];
         let violations = section["violations"].as_array().unwrap();
         assert_eq!(violations.len(), 1);
@@ -952,7 +1026,7 @@ to = "src/banned.rs"
 "#,
         );
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0];
         assert!(section["sketch_mode_note"].as_str().is_some());
         let active = section["constraints"]["active"].as_array().unwrap();
@@ -1010,7 +1084,7 @@ to = "src/banned.rs"
         db.insert_import(id_a, "src/c.rs", Some(id_c), 1, "import")
             .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0];
         let coupling = section["hidden_coupling"].as_array().unwrap();
 
@@ -1057,7 +1131,7 @@ to = "src/banned.rs"
         ];
         db.replace_commit_files(&commits, &pairs).unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         let section = &result["orientation"][0];
         assert!(section.get("hidden_coupling").is_none());
     }
@@ -1067,7 +1141,7 @@ to = "src/banned.rs"
         let (db, dir) = setup_db();
         insert_component(&db, "comp-1", "mycomp", &["src/lib.rs"]);
 
-        let result = handle(&db, "mycomp", dir.path(), None, None).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();
         assert!(result["orientation"][0].get("hidden_coupling").is_none());
     }
 
@@ -1086,7 +1160,7 @@ to = "src/banned.rs"
         })
         .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb)).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb), &registry()).unwrap();
         let section = &result["orientation"][0];
         let lessons = section["lessons"].as_array().unwrap();
         assert_eq!(lessons.len(), 1);
@@ -1108,7 +1182,7 @@ to = "src/banned.rs"
         })
         .unwrap();
 
-        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb)).unwrap();
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb), &registry()).unwrap();
         assert!(result["orientation"][0].get("lessons").is_none());
     }
 }

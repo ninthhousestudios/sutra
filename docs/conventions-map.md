@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each convention-system landing.
 
-Last updated: 2026-07-09 (sutra/234: diff-scoped deviation report)
+Last updated: 2026-07-09 (sutra/235: orient conventions on deviation engine)
 
 ## Module layout
 
@@ -37,7 +37,8 @@ src/tools/
                       Deviation re-export
   conventions.rs    — MCP tool action: list
   orient.rs         — sutra_orient MCP tool: convention-aware orientation
-                      per scope. Still reads persisted conventions from DB.
+                      per scope. Computes patterns on-the-fly via FcaEngine
+                      (same engine as review deviation report).
 ```
 
 ## Key types
@@ -54,6 +55,12 @@ FCA output. Fields: `id` (blake3 hash), `antecedent`, `consequent` (both `Vec<St
 Review-time finding. Fields: `symbol`, `file`, `pattern_antecedent`, `pattern_consequent`,
 `missing`, `support`, `confidence`, `total_matching`, `conforming`, `exemplars`,
 `strength` (support × confidence), `informational` (true for sketch-mode components).
+
+### ObservedPattern (engine.rs)
+Orient-time descriptive pattern. Fields: `antecedent`, `consequent` (both `Arc<[String]>`),
+`support`, `confidence`, `total_matching`, `exemplars: Vec<String>`.
+Produced by `describe_patterns()` — same FCA engine as deviations, filtered to
+identity→obligation, ranked by strength, capped at 5.
 
 ### AttributeRole (attributes.rs)
 Classification: `Identity` (antecedent-only, e.g. `vis:pub`, `kind:function`) vs
@@ -94,13 +101,26 @@ compute(db, workspace_root, changed_paths, churn, findings)
   --> JSON with risk_score, deviations, constraints
 ```
 
-### Rebuild pipeline (pipeline.rs — persists to DB for orient)
+### Orient pattern computation (orient.rs — on-the-fly)
+
+```
+extract_component_sym_attrs(db, component_files, registry)
+  → SymbolAttrs for the component's files (same extraction as review)
+
+describe_patterns(sym_attrs, component_id, toolchain_pairs)
+  → FcaEngine per component scope
+  → Filter: identity→obligation only, toolchain-enforced excluded
+  → Top 5 by strength (support × confidence)
+  → Each: pattern string, evidence (N/M conform), 1-2 exemplars
+```
+
+### Rebuild pipeline (pipeline.rs — persists to DB for sutra_conventions tool)
 
 ```
 rebuild(db, registry, workspace_root)
   → FCA over all symbols (global + per-component)
   → Persists conventions to DB (conventions table)
-  → Used by orient, NOT by review
+  → Used by sutra_conventions tool, NOT by review or orient
 ```
 
 ## Output contract (sutra_review JSON)
@@ -133,9 +153,8 @@ Informational deviations (sketch-mode components) do not contribute to risk scor
 | components | Durable | 0008+0009+0021 | Component identity, lifecycle_state (stable/sketch) |
 | component_membership | Ephemeral | 0008 | Component-to-file mapping (rebuilt on cluster) |
 
-Review no longer reads from the conventions table — deviations are computed on-the-fly.
-The conventions table survives as a cache for orient (sutra/235 will rebuild orient's
-conventions section on the deviation engine).
+Neither review nor orient reads from the conventions table — both compute on-the-fly.
+The conventions table survives for the `sutra_conventions` tool (list action).
 
 ## Sketch mode (ADR-0001)
 

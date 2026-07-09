@@ -465,7 +465,7 @@ pub fn build_findings(
     })
 }
 
-fn collect_toolchain_pairs(
+pub(crate) fn collect_toolchain_pairs(
     registry: &LanguageRegistry,
 ) -> Vec<crate::parser::adapter::ToolchainPair> {
     let mut pairs = Vec::new();
