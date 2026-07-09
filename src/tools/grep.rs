@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::db::Db;
 use crate::error::Result;
-use crate::freshness::{self, FreshnessAnnotator};
+use crate::freshness::FreshnessAnnotator;
 
 use super::ToolContext;
 
