@@ -4,7 +4,7 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers conventions with formal concept analysis, enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 37 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (surfaced as descriptive conventions in orientation and as deviations in review), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 37 MCP tools that AI coding agents (and humans) can call.
 
 The core loop: **explore** (find relevant code in one call) → **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
 
@@ -42,22 +42,11 @@ Sutra discovers components — groups of related code — via directory-structur
 
 ### 3. Convention detection (Layer 2)
 
-Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." Conventions have a lifecycle:
+Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." An identity→obligation filter separates "what things are" (structural facts) from "what they should do" (behavioral patterns worth surfacing), and toolchain-enforced patterns (e.g. `async` implying a returned future) are automatically excluded since the compiler already guarantees them.
 
-- **descriptive** — this pattern is common (auto-detected default)
-- **preferred** — this pattern should continue (human-promoted)
-- **deprecated** — this pattern exists but should fade
-- **forbidden** — do not copy this pattern
+`sutra_orient` shows the top patterns observed in a component as a descriptive "what's normal here" summary — each with a count and exemplars, no lifecycle or promotion involved. `sutra_review` checks changed code against these patterns and reports **deviations**: diff-scoped breaks from an established pattern, ranked by how strongly the pattern held.
 
-Agents are oriented with preferred conventions and warned about deprecated ones. Sutra generates **structural templates** from conventions (e.g. `pub async fn $NAME(&self, $PARAMS) -> Result<$T>`) so agents can write code that fits.
-
-**Convention drift detection** tracks entropy across snapshots — if each agent session introduces slightly different patterns, sutra alerts before the codebase diverges.
-
-#### Convention management
-
-Conventions are discovered automatically by FCA, but you control them two ways:
-
-**File-based suppression and exemption** — in `.sutra/rules.toml` (the same file that holds constraints):
+`.sutra/rules.toml` can still suppress a convention entirely or exempt specific symbols from deviation checks:
 
 ```toml
 [conventions]
@@ -68,28 +57,7 @@ convention = "e5f6g7h8"
 symbols = ["InternalError", "src/foo.rs::DebugHelper"]  # per-symbol exemptions
 ```
 
-- `suppress` — list of convention IDs to ignore entirely during `sutra_review` checks
-- `exempt` — per-convention, per-symbol exemptions. Bare names match across all files; file-qualified names (e.g. `src/foo.rs::DebugHelper`) scope to a specific file
-
-These are check-time silencing only — they don't change the convention's lifecycle state in the database.
-
-**Lifecycle management via MCP** — the `sutra_conventions` tool controls the full lifecycle:
-
-```
-sutra_conventions(action="list")
-→ all conventions with lifecycle state + pending proposals
-
-sutra_conventions(action="set_lifecycle", convention_id="<id>", lifecycle_state="preferred", reason="team consensus")
-→ manually promote/demote (descriptive → preferred → deprecated → forbidden)
-
-sutra_conventions(action="accept", proposal_id=<id>)
-→ accept an auto-generated lifecycle proposal
-
-sutra_conventions(action="waive", convention_id="<id>", symbol="src/foo.rs::process", rationale="...", waived_by="josh")
-→ grant a tracked exception (shows in review output as waived_violations)
-```
-
-Waivers differ from `rules.toml` exemptions: waivers are database-stored with rationale and attribution, and appear as `waived_violations` in review output. File-based exemptions silence findings with no audit trail.
+`sutra_conventions(action="list")` lists all discovered conventions.
 
 ### 4. Constraint enforcement (Layer 3)
 
@@ -143,7 +111,7 @@ In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from 
 
 Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time.
 
-Constraints and conventions both support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area.
+Constraints support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area.
 
 ### 5. Health metrics (Layer 4)
 
@@ -236,10 +204,10 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_read` | Read a symbol's source code with line numbers and context |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
-| `sutra_orient` | Convention-aware orientation for a component or file — preferred conventions with templates, deprecated/forbidden warnings, drift alerts, active constraints and violations, health scores, waivers |
+| `sutra_orient` | Component orientation — observed patterns with counts and exemplars, active constraints and violations, health scores and findings, hidden coupling, lessons |
 | `sutra_components` | List discovered architectural components and member files |
 | `sutra_resolve` | Resolve a vocabulary term (alias, component name, or anchor) to code locations |
-| `sutra_conventions` | Manage convention lifecycle (list, promote, deprecate, waive) and review proposals |
+| `sutra_conventions` | List discovered conventions (FCA-derived patterns) |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
 | `sutra_explore` | Structural exploration — topic query → ranked symbol map with fetch instructions and strategy hint |
 | `sutra_remember` | Write a code-anchored lesson with text and location anchors (auto-enriched with patterns and categories) |
@@ -261,7 +229,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
 | `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
-| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, convention violations/matches, health findings, HRR shape changes, convention drift, health delta, and ranks recommended reads |
+| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, deviations (pattern breaks in changed code), health findings, HRR shape changes, health delta, and ranks recommended reads |
 | `sutra_file_health` | Per-file and per-component health report with scores, active findings, category deductions, and component instability |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
@@ -288,11 +256,9 @@ One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_read`
 
 ```
 Agent: sutra_orient(scope="src/tools/review.rs")
-→ preferred conventions with signature templates
-→ deprecated patterns to avoid
+→ observed patterns (what's normal here — counts + exemplars)
 → active constraints and any current violations
 → health score and top findings
-→ pending lifecycle proposals
 ```
 
 ### Review a branch
@@ -301,10 +267,9 @@ Agent: sutra_orient(scope="src/tools/review.rs")
 Agent: sutra_review(diff="branch")
 → risk score (0.0–1.0) with per-signal breakdown
 → constraint violations (blocking/advisory)
-→ convention violations and matches (deprecated/forbidden)
+→ deviations (pattern breaks in changed code)
 → health findings and health delta vs. last snapshot
 → HRR shape changes (subtle structural shifts)
-→ convention drift alerts
 → recommended files to inspect manually
 ```
 
@@ -466,8 +431,7 @@ file changed
   → graph rollups (fan_in, blast_radius)
   → git co-change computation
   → component membership update
-  → FCA convention rebuild + lifecycle proposals
-  → template generation
+  → FCA convention rebuild
   → health finding computation
   → HRR vector encoding
   → snapshot recording (per-file + per-component health scores)
@@ -495,8 +459,8 @@ workspace files ───► tree-sitter → symbols, refs, imports
     ┌────────────────────┼────────────────────┐
     ▼                    ▼                     ▼
 FCA conventions    DD constraints         HRR vectors
-(lifecycle, drift, (forbidden deps,       (similarity,
- templates)         boundaries, cycles)    duplicates)
+(patterns,         (forbidden deps,       (similarity,
+ deviations)        boundaries, cycles)    duplicates)
     │                    │                     │
     └────────────────────┼─────────────────────┘
                          ▼
@@ -520,7 +484,7 @@ Sutra's mission is to help human-AI teams produce *coherent* software, not just 
 |---|---|---|
 | 0 | Structural facts (tree-sitter → symbols, refs, imports) | Implemented |
 | 1 | Architecture (components, hierarchy, boundaries) | Implemented (directory-based clustering; graph clustering planned) |
-| 2 | Conventions (FCA detection, lifecycle, templates, drift) | Implemented |
+| 2 | Conventions (FCA detection, deviation report) | Implemented |
 | 3 | Constraints (DD enforcement, guard, waivers) | Implemented |
 | 4 | Health (biomarkers, scoring, snapshots, trends) | Implemented |
 | 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases, orient; HRR fuzzy matching planned) |
