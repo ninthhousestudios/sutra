@@ -456,6 +456,13 @@ pub fn detect_deviations(
 
         for conv in engine.conventions() {
             if !conv
+                .antecedent
+                .iter()
+                .all(|a| classify_attribute(a) == AttributeRole::Identity)
+            {
+                continue;
+            }
+            if !conv
                 .consequent
                 .iter()
                 .all(|c| classify_attribute(c) == AttributeRole::Obligation)
@@ -529,14 +536,27 @@ pub fn detect_deviations(
         check_group(&all_symbols, None, false, &mut all_deviations);
     }
 
-    all_deviations.sort_by(|a, b| {
+    let strength_cmp = |a: &Deviation, b: &Deviation| {
         b.strength
             .partial_cmp(&a.strength)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.support.cmp(&a.support))
-    });
-    all_deviations.truncate(MAX_DEVIATIONS);
-    all_deviations
+    };
+
+    let (mut actionable, mut informational): (Vec<_>, Vec<_>) =
+        all_deviations.into_iter().partition(|d| !d.informational);
+
+    actionable.sort_by(&strength_cmp);
+    actionable.truncate(MAX_DEVIATIONS);
+
+    let remaining = MAX_DEVIATIONS.saturating_sub(actionable.len());
+    if remaining > 0 {
+        informational.sort_by(&strength_cmp);
+        informational.truncate(remaining);
+        actionable.extend(informational);
+    }
+
+    actionable
 }
 
 #[cfg(test)]
@@ -1583,5 +1603,112 @@ mod tests {
             consequent: "naming:snake_case",
         }];
         assert!(!conv.is_checkable(pairs));
+    }
+
+    #[test]
+    fn detect_deviations_excludes_obligation_antecedent() {
+        let symbols: Vec<SymbolAttrs> = (0..6)
+            .map(|i| SymbolAttrs {
+                name: format!("fn_{i}"),
+                file: "src/test.rs".into(),
+                attributes: vec![
+                    "kind:function".into(),
+                    "has_doc".into(),
+                    "returns_result".into(),
+                ],
+                component_id: Some("comp".into()),
+            })
+            .chain(std::iter::once(SymbolAttrs {
+                name: "fn_deviant".into(),
+                file: "src/test.rs".into(),
+                attributes: vec!["kind:function".into(), "has_doc".into()],
+                component_id: Some("comp".into()),
+            }))
+            .collect();
+
+        let mut by_component = HashMap::new();
+        by_component.insert("comp".into(), symbols);
+
+        let changed = vec![SymbolAttrs {
+            name: "fn_deviant".into(),
+            file: "src/test.rs".into(),
+            attributes: vec!["kind:function".into(), "has_doc".into()],
+            component_id: Some("comp".into()),
+        }];
+
+        let deviations = detect_deviations(&changed, &by_component, &[], &[], &HashSet::new());
+
+        // has_doc → returns_result would be obligation→obligation; must NOT appear
+        let has_obligation_ante = deviations.iter().any(|d| {
+            d.pattern_antecedent.iter().any(|a| {
+                crate::conventions::classify_attribute(a)
+                    == crate::conventions::AttributeRole::Obligation
+            })
+        });
+        assert!(
+            !has_obligation_ante,
+            "obligation antecedent patterns must be excluded"
+        );
+    }
+
+    #[test]
+    fn detect_deviations_actionable_not_crowded_by_sketch() {
+        let make_component = |prefix: &str, count: usize, comp: &str| -> Vec<SymbolAttrs> {
+            (0..count)
+                .map(|i| SymbolAttrs {
+                    name: format!("{prefix}_{i}"),
+                    file: format!("src/{prefix}.rs"),
+                    attributes: vec!["kind:function".into(), "vis:pub".into(), "has_doc".into()],
+                    component_id: Some(comp.into()),
+                })
+                .collect()
+        };
+
+        let mut by_component: HashMap<String, Vec<SymbolAttrs>> = HashMap::new();
+
+        let mut sketch_syms = make_component("sketch", 10, "sketch_comp");
+        sketch_syms.push(SymbolAttrs {
+            name: "sketch_deviant".into(),
+            file: "src/sketch.rs".into(),
+            attributes: vec!["kind:function".into(), "vis:pub".into()],
+            component_id: Some("sketch_comp".into()),
+        });
+        by_component.insert("sketch_comp".into(), sketch_syms);
+
+        let mut stable_syms = make_component("stable", 10, "stable_comp");
+        stable_syms.push(SymbolAttrs {
+            name: "stable_deviant".into(),
+            file: "src/stable.rs".into(),
+            attributes: vec!["kind:function".into(), "vis:pub".into()],
+            component_id: Some("stable_comp".into()),
+        });
+        by_component.insert("stable_comp".into(), stable_syms);
+
+        let changed = vec![
+            SymbolAttrs {
+                name: "sketch_deviant".into(),
+                file: "src/sketch.rs".into(),
+                attributes: vec!["kind:function".into(), "vis:pub".into()],
+                component_id: Some("sketch_comp".into()),
+            },
+            SymbolAttrs {
+                name: "stable_deviant".into(),
+                file: "src/stable.rs".into(),
+                attributes: vec!["kind:function".into(), "vis:pub".into()],
+                component_id: Some("stable_comp".into()),
+            },
+        ];
+
+        let mut sketch_set = HashSet::new();
+        sketch_set.insert("sketch_comp".into());
+
+        let deviations = detect_deviations(&changed, &by_component, &[], &[], &sketch_set);
+
+        let actionable: Vec<_> = deviations.iter().filter(|d| !d.informational).collect();
+        assert!(
+            !actionable.is_empty(),
+            "actionable deviations must not be crowded out by sketch-mode"
+        );
+        assert_eq!(actionable[0].symbol, "stable_deviant");
     }
 }
