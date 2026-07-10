@@ -4,6 +4,7 @@ use rusqlite::params;
 
 use super::Db;
 use crate::error::Result;
+use crate::rules::Severity;
 
 #[derive(Debug, Clone)]
 pub struct ConstraintWaiverRow {
@@ -69,12 +70,22 @@ const RATCHET_SELECT_COLS: &str = "id, constraint_id, name, rendered_description
      registered_at, released_at, released_by, release_rationale";
 
 fn severity_ordinal(s: &str) -> u8 {
-    match s {
-        "blocking" => 2,
-        "advisory" => 1,
-        "informational" => 0,
-        _ => 0,
-    }
+    Severity::from_str_lossy(s)
+        .map(|s| s.ordinal())
+        .unwrap_or(0)
+}
+
+pub(crate) fn active_ratchets_from_conn(conn: &rusqlite::Connection) -> Vec<ConstraintRatchetRow> {
+    let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT {RATCHET_SELECT_COLS} FROM constraint_ratchets \
+         WHERE released_at IS NULL ORDER BY registered_at"
+    )) else {
+        return Vec::new();
+    };
+    stmt.query_map([], map_ratchet_row)
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }
 
 impl Db {
@@ -218,7 +229,10 @@ impl Db {
              DO UPDATE SET
                  name = ?2,
                  rendered_description = ?3,
-                 severity_floor = ?4",
+                 severity_floor = ?4,
+                 released_at = NULL,
+                 released_by = NULL,
+                 release_rationale = NULL",
             params![constraint_id, name, rendered_description, floor],
         )?;
         Ok(())
@@ -244,14 +258,7 @@ impl Db {
 
     pub fn get_active_constraint_ratchets(&self) -> Result<Vec<ConstraintRatchetRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {RATCHET_SELECT_COLS} FROM constraint_ratchets \
-             WHERE released_at IS NULL ORDER BY registered_at"
-        ))?;
-        let rows = stmt
-            .query_map([], map_ratchet_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        Ok(active_ratchets_from_conn(&conn))
     }
 
     pub fn get_all_constraint_ratchets(&self) -> Result<Vec<ConstraintRatchetRow>> {

@@ -1541,3 +1541,30 @@ fn ratchet_get_all_includes_released() {
     assert_eq!(active.len(), 1);
     assert_eq!(&*active[0].constraint_id, "bbb22222");
 }
+
+#[test]
+fn ratchet_reregistration_after_release_reactivates() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc", "blocking")
+        .unwrap();
+    db.release_constraint_ratchet("abc12345", "josh", "no longer needed")
+        .unwrap();
+
+    let active = db.get_active_constraint_ratchets().unwrap();
+    assert_eq!(active.len(), 0, "released ratchet must not be active");
+
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc v2", "advisory")
+        .unwrap();
+
+    let active = db.get_active_constraint_ratchets().unwrap();
+    assert_eq!(active.len(), 1, "re-registered ratchet must be active");
+    let row = &active[0];
+    assert_eq!(&*row.constraint_id, "abc12345");
+    assert!(row.released_at.is_none());
+    assert!(row.released_by.is_none());
+    assert!(row.release_rationale.is_none());
+    assert_eq!(
+        row.severity_floor, "advisory",
+        "re-registration starts fresh severity floor"
+    );
+}

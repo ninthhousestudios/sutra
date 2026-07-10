@@ -212,8 +212,9 @@ impl Constraint {
                 )
             }
             ConstraintKind::ForbiddenPattern { language, query } => {
-                if query.len() > 60 {
-                    format!("forbidden_pattern({language}): {}…", &query[..60])
+                if query.chars().count() > 60 {
+                    let truncated: String = query.chars().take(60).collect();
+                    format!("forbidden_pattern({language}): {truncated}…")
                 } else {
                     format!("forbidden_pattern({language}): {query}")
                 }

@@ -7,7 +7,7 @@ use glob::{MatchOptions, Pattern};
 
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
 pub use crate::constraints::{ConstraintFinding, FindingDelta};
-use crate::db::ConstraintRatchetRow;
+use crate::db::{ConstraintRatchetRow, active_ratchets_from_conn};
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{
@@ -496,7 +496,7 @@ fn evaluate_raw(
     if !has_forbidden_or_boundary && !has_external && !has_max_fan_in && !has_patterns {
         let mut active = parse_error_findings;
         active.extend(check_ratchet_violations(
-            &get_active_ratchets_raw(conn),
+            &active_ratchets_from_conn(conn),
             &all_constraints,
         ));
         return Ok(CheckOutcome {
@@ -567,7 +567,7 @@ fn evaluate_raw(
     if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in && !has_patterns {
         let mut active = parse_error_findings;
         active.extend(check_ratchet_violations(
-            &get_active_ratchets_raw(conn),
+            &active_ratchets_from_conn(conn),
             &all_constraints,
         ));
         return Ok(CheckOutcome {
@@ -762,7 +762,7 @@ fn evaluate_raw(
 
     let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
     active.extend(check_ratchet_violations(
-        &get_active_ratchets_raw(conn),
+        &active_ratchets_from_conn(conn),
         &all_constraints,
     ));
 
@@ -842,32 +842,6 @@ fn check_ratchet_violations(
         }
     }
     findings
-}
-
-fn get_active_ratchets_raw(conn: &rusqlite::Connection) -> Vec<ConstraintRatchetRow> {
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT id, constraint_id, name, rendered_description, severity_floor, \
-         registered_at, released_at, released_by, release_rationale \
-         FROM constraint_ratchets WHERE released_at IS NULL ORDER BY registered_at",
-    ) else {
-        return Vec::new();
-    };
-    stmt.query_map([], |row| {
-        Ok(ConstraintRatchetRow {
-            id: row.get(0)?,
-            constraint_id: Arc::from(row.get::<_, String>(1)?),
-            name: row.get::<_, Option<String>>(2)?.map(Arc::from),
-            rendered_description: row.get(3)?,
-            severity_floor: row.get(4)?,
-            registered_at: row.get(5)?,
-            released_at: row.get(6)?,
-            released_by: row.get(7)?,
-            release_rationale: row.get(8)?,
-        })
-    })
-    .ok()
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
 }
 
 /// Check a manifest's findings against waivers and return a partitioned outcome.
