@@ -6,14 +6,6 @@ use crate::parser::adapter::LanguageRegistry;
 use crate::parser::{ExtractedSymbol, flatten_symbols};
 use crate::rules::{Constraint, ConstraintKind, scope_matches_path};
 
-pub struct PatternMatch {
-    pub file: String,
-    pub line: u32,
-    pub byte_range: std::ops::Range<usize>,
-    pub snippet: String,
-    pub enclosing_symbol: Option<String>,
-}
-
 pub fn check_forbidden_patterns(
     constraints: &[Constraint],
     sources: &[(&str, &str)],
