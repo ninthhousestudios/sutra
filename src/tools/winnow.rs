@@ -70,7 +70,7 @@ struct SymbolEntry {
 
 fn glob_filter(pattern: &str) -> FilePredicate {
     let pat = glob::Pattern::new(pattern).unwrap_or_else(|_| glob::Pattern::new("*").unwrap());
-    Box::new(move |file| pat.matches(&*file.path))
+    Box::new(move |file| pat.matches(&file.path))
 }
 
 fn churn_filter(churn_map: HashMap<String, u32>, min: u32) -> FilePredicate {
@@ -80,7 +80,7 @@ fn churn_filter(churn_map: HashMap<String, u32>, min: u32) -> FilePredicate {
 // --- Symbol-level predicate builders ---
 
 fn kind_filter(kind: String) -> SymbolPredicate {
-    Box::new(move |e| &*e.sym.kind == kind)
+    Box::new(move |e| *e.sym.kind == kind)
 }
 
 fn complexity_filter(min: i64) -> SymbolPredicate {

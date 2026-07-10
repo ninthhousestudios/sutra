@@ -845,39 +845,38 @@ fn walk_imports_recursive(
         return;
     }
 
-    if node.kind() == "mod_item" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(src) {
-                if node.child_by_field_name("body").is_none() {
-                    let mut path = String::from("self");
-                    for seg in inline_mod_prefix {
-                        path.push_str("::");
-                        path.push_str(seg);
-                    }
-                    path.push_str("::");
-                    path.push_str(name);
-                    let line = node.start_position().row + 1;
-                    imports.push(ExtractedImport {
-                        raw_path: path,
-                        line,
-                        kind: "mod",
-                    });
-                    return;
-                }
-                let mut nested_prefix = inline_mod_prefix.to_vec();
-                nested_prefix.push(name);
-                if cursor.goto_first_child() {
-                    loop {
-                        walk_imports_recursive(imports, cursor, src, &nested_prefix);
-                        if !cursor.goto_next_sibling() {
-                            break;
-                        }
-                    }
-                    cursor.goto_parent();
-                }
-                return;
+    if node.kind() == "mod_item"
+        && let Some(name_node) = node.child_by_field_name("name")
+        && let Ok(name) = name_node.utf8_text(src)
+    {
+        if node.child_by_field_name("body").is_none() {
+            let mut path = String::from("self");
+            for seg in inline_mod_prefix {
+                path.push_str("::");
+                path.push_str(seg);
             }
+            path.push_str("::");
+            path.push_str(name);
+            let line = node.start_position().row + 1;
+            imports.push(ExtractedImport {
+                raw_path: path,
+                line,
+                kind: "mod",
+            });
+            return;
         }
+        let mut nested_prefix = inline_mod_prefix.to_vec();
+        nested_prefix.push(name);
+        if cursor.goto_first_child() {
+            loop {
+                walk_imports_recursive(imports, cursor, src, &nested_prefix);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.goto_parent();
+        }
+        return;
     }
 
     if cursor.goto_first_child() {

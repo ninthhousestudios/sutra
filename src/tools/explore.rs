@@ -51,10 +51,7 @@ fn expand_patterns(query: &str) -> Vec<String> {
     }
 
     // CamelCase variant from multi-word queries: "import parsing" → "ImportParsing" / "ImportPars"
-    let camel_words: Vec<&str> = query
-        .split(|c: char| c == '_' || c == ' ')
-        .filter(|w| !w.is_empty())
-        .collect();
+    let camel_words: Vec<&str> = query.split(['_', ' ']).filter(|w| !w.is_empty()).collect();
     if camel_words.len() > 1 {
         let title_case = |w: &str| -> String {
             let mut chars = w.chars();
@@ -65,16 +62,16 @@ fn expand_patterns(query: &str) -> Vec<String> {
         };
         let full: String = camel_words.iter().map(|w| title_case(w)).collect();
         push(full);
-        if let Some(last) = camel_words.last() {
-            if last.len() > 4 {
-                let mut truncated: String = camel_words[..camel_words.len() - 1]
-                    .iter()
-                    .map(|w| title_case(w))
-                    .collect();
-                let trunc_last: String = last.chars().take(4).collect();
-                truncated.push_str(&title_case(&trunc_last));
-                push(truncated);
-            }
+        if let Some(last) = camel_words.last()
+            && last.len() > 4
+        {
+            let mut truncated: String = camel_words[..camel_words.len() - 1]
+                .iter()
+                .map(|w| title_case(w))
+                .collect();
+            let trunc_last: String = last.chars().take(4).collect();
+            truncated.push_str(&title_case(&trunc_last));
+            push(truncated);
         }
     }
 
@@ -147,18 +144,18 @@ fn select_strategy(
         });
     }
 
-    if let Some((top_comp, top_count)) = comp_counts.first() {
-        if *top_count as f64 / n as f64 >= 0.8 {
-            return json!({
-                "action": "explore_component",
-                "component": top_comp,
-                "rationale": format!(
-                    "{}% of results are in component '{}' — explore it directly.",
-                    (*top_count * 100) / n,
-                    top_comp
-                )
-            });
-        }
+    if let Some((top_comp, top_count)) = comp_counts.first()
+        && *top_count as f64 / n as f64 >= 0.8
+    {
+        return json!({
+            "action": "explore_component",
+            "component": top_comp,
+            "rationale": format!(
+                "{}% of results are in component '{}' — explore it directly.",
+                (*top_count * 100) / n,
+                top_comp
+            )
+        });
     }
 
     let within_2x = scores
@@ -200,19 +197,19 @@ fn collect_fan_out(
 
         if let Ok(refs) = db.find_refs_to_symbol(sid) {
             for r in refs.iter().filter(|r| r.context_kind == "call") {
-                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line) {
-                    if visited.insert(caller.id) {
-                        let next = (
-                            caller.id,
-                            caller.file_id,
-                            caller.start_line,
-                            caller.end_line,
-                            decayed,
-                            depth + 1,
-                        );
-                        fan_out_items.push((caller, decayed));
-                        queue.push_back(next);
-                    }
+                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line)
+                    && visited.insert(caller.id)
+                {
+                    let next = (
+                        caller.id,
+                        caller.file_id,
+                        caller.start_line,
+                        caller.end_line,
+                        decayed,
+                        depth + 1,
+                    );
+                    fan_out_items.push((caller, decayed));
+                    queue.push_back(next);
                 }
             }
         }
@@ -222,21 +219,20 @@ fn collect_fan_out(
                 .iter()
                 .filter(|r| r.context_kind == "call" && r.line >= start && r.line <= end)
             {
-                if let Some(target_id) = r.target_symbol_id {
-                    if let Ok(Some(callee)) = db.symbol_by_id(target_id) {
-                        if visited.insert(callee.id) {
-                            let next = (
-                                callee.id,
-                                callee.file_id,
-                                callee.start_line,
-                                callee.end_line,
-                                decayed,
-                                depth + 1,
-                            );
-                            fan_out_items.push((callee, decayed));
-                            queue.push_back(next);
-                        }
-                    }
+                if let Some(target_id) = r.target_symbol_id
+                    && let Ok(Some(callee)) = db.symbol_by_id(target_id)
+                    && visited.insert(callee.id)
+                {
+                    let next = (
+                        callee.id,
+                        callee.file_id,
+                        callee.start_line,
+                        callee.end_line,
+                        decayed,
+                        depth + 1,
+                    );
+                    fan_out_items.push((callee, decayed));
+                    queue.push_back(next);
                 }
             }
         }
@@ -259,16 +255,17 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
             for r in refs.iter().filter(|r| {
                 r.context_kind == "call" && r.line >= sym.start_line && r.line <= sym.end_line
             }) {
-                if let Some(tid) = r.target_symbol_id {
-                    if id_set.contains(&tid) && tid != sym.id {
-                        let key = (sym.id, tid);
-                        if seen.insert(key) {
-                            edges.push(json!({
-                                "from": sym.qualified_name,
-                                "to": name_by_id[&tid],
-                                "kind": "call",
-                            }));
-                        }
+                if let Some(tid) = r.target_symbol_id
+                    && id_set.contains(&tid)
+                    && tid != sym.id
+                {
+                    let key = (sym.id, tid);
+                    if seen.insert(key) {
+                        edges.push(json!({
+                            "from": sym.qualified_name,
+                            "to": name_by_id[&tid],
+                            "kind": "call",
+                        }));
                     }
                 }
             }
@@ -415,10 +412,10 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
 
     // Extend file_map with any new files from fan-out items
     for (sym, _) in &scored {
-        if !file_map.contains_key(&sym.file_id) {
-            if let Ok(Some(f)) = db.file_by_id(sym.file_id) {
-                file_map.insert(sym.file_id, f);
-            }
+        if let std::collections::hash_map::Entry::Vacant(e) = file_map.entry(sym.file_id)
+            && let Ok(Some(f)) = db.file_by_id(sym.file_id)
+        {
+            e.insert(f);
         }
     }
 
@@ -442,7 +439,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         }
     }
     let mut comp_counts: Vec<(String, usize)> = comp_count_map.into_iter().collect();
-    comp_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    comp_counts.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let scores: Vec<f64> = scored.iter().map(|(_, s)| *s).collect();
 

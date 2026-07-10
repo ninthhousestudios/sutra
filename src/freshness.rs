@@ -114,10 +114,10 @@ pub fn workspace_has_changed(
         let full = workspace_root.join(path);
         match std::fs::metadata(&full) {
             Ok(meta) => {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime > parsed_sys {
-                        return true;
-                    }
+                if let Ok(mtime) = meta.modified()
+                    && mtime > parsed_sys
+                {
+                    return true;
                 }
             }
             Err(_) => return true,

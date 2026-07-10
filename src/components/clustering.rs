@@ -134,6 +134,7 @@ pub struct ClusterResult {
     pub resolution: f64,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum LeidenGraph {
     Empty,
     NoEdges {
@@ -160,11 +161,11 @@ fn build_leiden_graph(adj: &WeightedAdj) -> LeidenGraph {
     for (&node, edges) in adj {
         let i = id_to_idx[&node];
         for &(nbr, w) in edges {
-            if let Some(&j) = id_to_idx.get(&nbr) {
-                if i < j {
-                    builder.add_edge(i, j, w).unwrap();
-                    has_edges = true;
-                }
+            if let Some(&j) = id_to_idx.get(&nbr)
+                && i < j
+            {
+                builder.add_edge(i, j, w).unwrap();
+                has_edges = true;
             }
         }
     }
@@ -298,7 +299,7 @@ fn split_oversized(result: &mut ClusterResult, adj: &WeightedAdj, max_size: usiz
 
     let mut next_comm = result.communities.values().max().copied().unwrap_or(0) + 1;
 
-    for (_, members) in &by_comm {
+    for members in by_comm.values() {
         if members.len() <= max_size {
             continue;
         }

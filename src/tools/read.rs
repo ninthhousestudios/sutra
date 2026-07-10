@@ -33,6 +33,7 @@ use crate::error::{Result, SutraError};
 
 const DEFAULT_LINE_CAP: usize = 500;
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle(
     db: &Db,
     workspace_root: &Path,
@@ -326,7 +327,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
     let query_short = query.rsplit("::").next().unwrap_or(query);
     let query_chars = query_short.chars().count();
-    if query_chars < 2 || query_chars > 128 {
+    if !(2..=128).contains(&query_chars) {
         return vec![];
     }
     let query_qualifier = query.rsplit_once("::").map(|(prefix, _)| prefix);
@@ -385,10 +386,11 @@ pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
 
             let mut score = signal_edit.max(signal_components).max(signal_substring);
 
-            if let Some(q) = query_qualifier {
-                if qn.starts_with(q) && qn[q.len()..].starts_with("::") {
-                    score = (score * 1.15).min(1.0);
-                }
+            if let Some(q) = query_qualifier
+                && qn.starts_with(q)
+                && qn[q.len()..].starts_with("::")
+            {
+                score = (score * 1.15).min(1.0);
             }
 
             if score >= 0.35 && qn.as_str() != query {

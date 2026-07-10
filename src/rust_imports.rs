@@ -235,19 +235,19 @@ pub fn normalize_to_crate_segments(
 
     // Sibling/workspace crate name prefix (e.g. `use vidya_core::query`)
     let first_segment = path.split("::").next().unwrap_or("");
-    if first_segment != own_crate {
-        if let Some(target_src) = layout.src_prefix_for_crate(first_segment) {
-            let rest = path.strip_prefix(first_segment).unwrap_or("");
-            let rest = rest.strip_prefix("::").unwrap_or("");
-            return Some(ResolvedImport {
-                segments: if rest.is_empty() {
-                    vec![]
-                } else {
-                    rest.split("::").map(String::from).collect()
-                },
-                src_prefix: target_src,
-            });
-        }
+    if first_segment != own_crate
+        && let Some(target_src) = layout.src_prefix_for_crate(first_segment)
+    {
+        let rest = path.strip_prefix(first_segment).unwrap_or("");
+        let rest = rest.strip_prefix("::").unwrap_or("");
+        return Some(ResolvedImport {
+            segments: if rest.is_empty() {
+                vec![]
+            } else {
+                rest.split("::").map(String::from).collect()
+            },
+            src_prefix: target_src,
+        });
     }
 
     if path == "super" || path.starts_with("super::") {

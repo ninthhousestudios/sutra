@@ -209,7 +209,7 @@ pub fn handle(
             }
         }
         for c in enriched_cats {
-            if !all_cats.iter().any(|&ec| ec == c.as_str()) {
+            if !all_cats.contains(&c.as_str()) {
                 all_cats.push(c.as_str());
             }
         }
@@ -288,10 +288,11 @@ fn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {
 
         let Some(file) = file_row else { continue };
 
-        if let Some((dir, _)) = file.path.rsplit_once('/') {
-            if dir.contains('/') && seen_dirs.insert(dir.to_string()) {
-                anchors.push((AnchorKind::Directory, dir.to_string()));
-            }
+        if let Some((dir, _)) = file.path.rsplit_once('/')
+            && dir.contains('/')
+            && seen_dirs.insert(dir.to_string())
+        {
+            anchors.push((AnchorKind::Directory, dir.to_string()));
         }
 
         let lang = file.language.to_lowercase();

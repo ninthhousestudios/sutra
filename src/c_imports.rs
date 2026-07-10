@@ -173,10 +173,10 @@ pub fn parse_compile_commands(workspace_root: &Path) -> CompileCommands {
                 }
             } else if let Some(dir) = tok.strip_prefix("-I") {
                 dirs.push(resolve_include_dir(dir, directory, workspace_root));
-            } else if let Some(dir) = tok.strip_prefix("-isystem") {
-                if !dir.is_empty() {
-                    dirs.push(resolve_include_dir(dir, directory, workspace_root));
-                }
+            } else if let Some(dir) = tok.strip_prefix("-isystem")
+                && !dir.is_empty()
+            {
+                dirs.push(resolve_include_dir(dir, directory, workspace_root));
             }
         }
 
@@ -210,7 +210,7 @@ fn normalize_entry_path(file: &str, directory: Option<&str>, workspace_root: &Pa
         let abs = Path::new(dir).join(file);
         return abs
             .strip_prefix(workspace_root)
-            .map(|s| normalize_path(s))
+            .map(normalize_path)
             .unwrap_or_else(|_| normalize_path(&abs));
     }
     file.to_string()
@@ -228,7 +228,7 @@ fn resolve_include_dir(dir: &str, directory: Option<&str>, workspace_root: &Path
         let abs = Path::new(base).join(dir);
         return abs
             .strip_prefix(workspace_root)
-            .map(|s| normalize_path(s))
+            .map(normalize_path)
             .unwrap_or_else(|_| normalize_path(&abs));
     }
     dir.to_string()

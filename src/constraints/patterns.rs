@@ -44,10 +44,10 @@ pub fn check_forbidden_patterns(
         let matching_exts: Vec<&str> = adapter.extensions().to_vec();
 
         for &(path, source) in sources {
-            if let Some(scope) = &constraint.scope {
-                if !scope_matches_path(scope, path) {
-                    continue;
-                }
+            if let Some(scope) = &constraint.scope
+                && !scope_matches_path(scope, path)
+            {
+                continue;
             }
 
             let has_matching_ext = matching_exts

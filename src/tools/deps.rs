@@ -120,10 +120,10 @@ fn handle_cycles(db: &Db, path: Option<&str>) -> Result<serde_json::Value> {
     let mut files_in_cycles: HashSet<i64> = HashSet::new();
 
     for scc in &sccs {
-        if let Some(fid) = filter_id {
-            if !scc.contains(&fid) {
-                continue;
-            }
+        if let Some(fid) = filter_id
+            && !scc.contains(&fid)
+        {
+            continue;
         }
         let paths: Vec<_> = scc
             .iter()

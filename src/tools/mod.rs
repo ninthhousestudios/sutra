@@ -108,11 +108,11 @@ impl ToolContext {
     }
 
     pub fn wrap(self, mut result: serde_json::Value) -> serde_json::Value {
-        if let Some(obj) = result.as_object_mut() {
-            if let Some(f_obj) = self.response_freshness.as_object() {
-                for (k, v) in f_obj {
-                    obj.insert(k.clone(), v.clone());
-                }
+        if let Some(obj) = result.as_object_mut()
+            && let Some(f_obj) = self.response_freshness.as_object()
+        {
+            for (k, v) in f_obj {
+                obj.insert(k.clone(), v.clone());
             }
         }
         result

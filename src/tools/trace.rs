@@ -126,6 +126,7 @@ fn trace_forward(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dfs_callers(
     db: &Db,
     stack: &mut Vec<i64>,
@@ -251,6 +252,7 @@ fn trace_backward(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dfs_callees(
     db: &Db,
     stack: &mut Vec<i64>,

@@ -269,10 +269,9 @@ fn extract_outgoing_edges(
                     &resolved.segments,
                     &path_ref_map,
                     &resolved.src_prefix,
-                ) {
-                    if target_id != file_id {
-                        edges.push((file_id, target_id));
-                    }
+                ) && target_id != file_id
+                {
+                    edges.push((file_id, target_id));
                 }
             }
         }
@@ -293,12 +292,11 @@ fn extract_outgoing_edges(
                 } else {
                     None
                 };
-                if let Some(path) = resolved {
-                    if let Some(&target_id) = id_map.get(path.as_str()) {
-                        if target_id != file_id {
-                            edges.push((file_id, target_id));
-                        }
-                    }
+                if let Some(path) = resolved
+                    && let Some(&target_id) = id_map.get(path.as_str())
+                    && target_id != file_id
+                {
+                    edges.push((file_id, target_id));
                 }
             }
         }

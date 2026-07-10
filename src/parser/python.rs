@@ -49,10 +49,8 @@ fn extract_flags(file_path: &str, name: &str, node: Node, src: &[u8]) -> u32 {
         flags |= FLAG_TEST;
     }
 
-    if node.kind() == "class_definition" {
-        if has_testcase_superclass(node, src) {
-            flags |= FLAG_TEST;
-        }
+    if node.kind() == "class_definition" && has_testcase_superclass(node, src) {
+        flags |= FLAG_TEST;
     }
 
     for dec_name in &collect_decorators(node, src) {
@@ -311,17 +309,16 @@ fn collect_assignment_symbols(
 fn extract_docstring_body(node: Node, src: &[u8]) -> Option<String> {
     let body = node.child_by_field_name("body")?;
     let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
-        if child.kind() == "expression_statement" {
-            let mut inner = child.walk();
-            for gc in child.children(&mut inner) {
-                if gc.kind() == "string" {
-                    let text = gc.utf8_text(src).ok()?;
-                    return Some(strip_docstring_quotes(text));
-                }
+    if let Some(child) = body.children(&mut cursor).next()
+        && child.kind() == "expression_statement"
+    {
+        let mut inner = child.walk();
+        for gc in child.children(&mut inner) {
+            if gc.kind() == "string" {
+                let text = gc.utf8_text(src).ok()?;
+                return Some(strip_docstring_quotes(text));
             }
         }
-        break;
     }
     None
 }
@@ -384,11 +381,11 @@ fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
     sig.push_str(name);
     sig.push_str(params);
 
-    if let Some(ret) = node.child_by_field_name("return_type") {
-        if let Ok(ret_text) = ret.utf8_text(src) {
-            sig.push_str(" -> ");
-            sig.push_str(ret_text);
-        }
+    if let Some(ret) = node.child_by_field_name("return_type")
+        && let Ok(ret_text) = ret.utf8_text(src)
+    {
+        sig.push_str(" -> ");
+        sig.push_str(ret_text);
     }
 
     Some(sig)
@@ -417,16 +414,16 @@ fn extract_fn_language_attrs(node: Node, src: &[u8]) -> Option<String> {
         attrs.insert("has_type_hints".into(), true.into());
     }
 
-    if let Some(ret) = node.child_by_field_name("return_type") {
-        if ret.utf8_text(src).ok() == Some("None") {
-            attrs.insert("returns_none".into(), true.into());
-        }
+    if let Some(ret) = node.child_by_field_name("return_type")
+        && ret.utf8_text(src).ok() == Some("None")
+    {
+        attrs.insert("returns_none".into(), true.into());
     }
 
-    if let Some(body) = node.child_by_field_name("body") {
-        if contains_yield(body) {
-            attrs.insert("is_generator".into(), true.into());
-        }
+    if let Some(body) = node.child_by_field_name("body")
+        && contains_yield(body)
+    {
+        attrs.insert("is_generator".into(), true.into());
     }
 
     Some(serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".into()))
@@ -471,10 +468,10 @@ fn collect_decorators(node: Node, src: &[u8]) -> Vec<String> {
                     }
                 }
                 "call" => {
-                    if let Some(func) = dec_child.child_by_field_name("function") {
-                        if let Ok(name) = func.utf8_text(src) {
-                            decorators.push(name.to_string());
-                        }
+                    if let Some(func) = dec_child.child_by_field_name("function")
+                        && let Ok(name) = func.utf8_text(src)
+                    {
+                        decorators.push(name.to_string());
                     }
                 }
                 _ => {}
@@ -534,29 +531,28 @@ fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
 fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
     let node = cursor.node();
 
-    if node.kind() == "identifier" && !is_definition_name(node) {
-        if let Ok(name) = node.utf8_text(src) {
-            let ctx = classify_ref_context(node);
-            if ctx == RefContextKind::Other {
-                // fall through to recurse children, but don't push this ref
-            } else {
-                refs.push(ExtractedRef {
-                    name: name.to_string(),
-                    line: node.start_position().row + 1,
-                    col: node.start_position().column,
-                    context_kind: ctx,
-                });
-            }
-            if ctx == RefContextKind::Call {
-                if let Some(chain) = build_dotted_call_chain(node, src) {
-                    refs.push(ExtractedRef {
-                        name: chain,
-                        line: node.start_position().row + 1,
-                        col: node.start_position().column,
-                        context_kind: RefContextKind::Call,
-                    });
-                }
-            }
+    if node.kind() == "identifier"
+        && !is_definition_name(node)
+        && let Ok(name) = node.utf8_text(src)
+    {
+        let ctx = classify_ref_context(node);
+        if ctx != RefContextKind::Other {
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind: ctx,
+            });
+        }
+        if ctx == RefContextKind::Call
+            && let Some(chain) = build_dotted_call_chain(node, src)
+        {
+            refs.push(ExtractedRef {
+                name: chain,
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind: RefContextKind::Call,
+            });
         }
     }
 
@@ -657,20 +653,18 @@ fn classify_ref_context(node: Node) -> RefContextKind {
                 return RefContextKind::Call;
             }
         }
-        "attribute" => {
+        "attribute"
             if parent
                 .child_by_field_name("attribute")
                 .is_some_and(|a| a.id() == node.id())
-            {
-                if parent.parent().is_some_and(|gp| {
+                && parent.parent().is_some_and(|gp| {
                     gp.kind() == "call"
                         && gp
                             .child_by_field_name("function")
                             .is_some_and(|f| f.id() == parent.id())
-                }) {
-                    return RefContextKind::Call;
-                }
-            }
+                }) =>
+        {
+            return RefContextKind::Call;
         }
         _ => {}
     }
@@ -733,14 +727,14 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                 }
             }
             "aliased_import" => {
-                if let Some(name) = child.child_by_field_name("name") {
-                    if let Ok(path) = name.utf8_text(src) {
-                        imports.push(ExtractedImport {
-                            raw_path: path.to_string(),
-                            line: name.start_position().row + 1,
-                            kind: "import",
-                        });
-                    }
+                if let Some(name) = child.child_by_field_name("name")
+                    && let Ok(path) = name.utf8_text(src)
+                {
+                    imports.push(ExtractedImport {
+                        raw_path: path.to_string(),
+                        line: name.start_position().row + 1,
+                        kind: "import",
+                    });
                 }
             }
             _ => {}

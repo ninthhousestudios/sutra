@@ -133,7 +133,7 @@ fn evaluate_dd(
         let unresolved = db.unresolved_imports_with_files()?;
         let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
         let crate_names = layout.all_crate_names();
-        let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+        let crate_name_refs: Vec<&str> = crate_names.to_vec();
         if let Err(msg) =
             external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
         {
@@ -295,8 +295,8 @@ fn evaluate_dd(
 
                 findings.push(make_finding(
                     c,
-                    &from_path,
-                    &to_path,
+                    from_path,
+                    to_path,
                     &file_to_component,
                     delta,
                 ));
@@ -500,7 +500,7 @@ fn evaluate_raw(
     if has_external {
         let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
         let crate_names = layout.all_crate_names();
-        let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+        let crate_name_refs: Vec<&str> = crate_names.to_vec();
         if let Err(msg) =
             external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
         {
@@ -820,7 +820,7 @@ pub fn check_manifest_raw(
 
     let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
     let crate_names = layout.all_crate_names();
-    let crate_name_refs: Vec<&str> = crate_names.iter().copied().collect();
+    let crate_name_refs: Vec<&str> = crate_names.to_vec();
 
     let is_root = manifest_rel_path == "Cargo.toml";
     let ws_renames = if is_root {

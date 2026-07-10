@@ -1355,6 +1355,7 @@ impl Db {
     }
 
     /// Atomically replace all refs for a file and clear its needs_resolution flag.
+    #[allow(clippy::type_complexity)]
     pub fn replace_refs_and_clear_resolution(
         &self,
         file_id: i64,

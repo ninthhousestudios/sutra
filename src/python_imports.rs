@@ -47,20 +47,20 @@ pub fn resolve_python_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
 }
 
 fn discover_package_roots(files: &[crate::db::FileRow], workspace_root: &Path) -> Vec<String> {
-    if let Ok(rules) = crate::rules::load_rules(workspace_root) {
-        if let Some(ref py) = rules.python {
-            if let Some(ref roots) = py.package_roots {
-                return roots.clone();
-            }
-        }
+    if let Ok(rules) = crate::rules::load_rules(workspace_root)
+        && let Some(ref py) = rules.python
+        && let Some(ref roots) = py.package_roots
+    {
+        return roots.clone();
     }
 
     let mut package_dirs: HashSet<&str> = HashSet::new();
     for f in files {
-        if f.language == "python" && f.path.ends_with("__init__.py") {
-            if let Some((dir, _)) = f.path.rsplit_once('/') {
-                package_dirs.insert(dir);
-            }
+        if f.language == "python"
+            && f.path.ends_with("__init__.py")
+            && let Some((dir, _)) = f.path.rsplit_once('/')
+        {
+            package_dirs.insert(dir);
         }
     }
 
@@ -72,16 +72,11 @@ fn discover_package_roots(files: &[crate::db::FileRow], workspace_root: &Path) -
     for &dir in &package_dirs {
         let mut topmost = dir;
         let mut current = dir;
-        loop {
-            match current.rsplit_once('/') {
-                Some((parent, _)) => {
-                    if package_dirs.contains(parent) {
-                        topmost = parent;
-                    }
-                    current = parent;
-                }
-                None => break,
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if package_dirs.contains(parent) {
+                topmost = parent;
             }
+            current = parent;
         }
         match topmost.rsplit_once('/') {
             Some((parent, _)) => {
@@ -164,9 +159,7 @@ fn resolve_relative(
     };
 
     for _ in 1..dots {
-        if parts.pop().is_none() {
-            return None;
-        }
+        parts.pop()?;
     }
 
     let base = parts.join("/");

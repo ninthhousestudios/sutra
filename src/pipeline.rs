@@ -337,6 +337,7 @@ fn resolve_file_refs(
         &extracted_imports,
     );
 
+    #[allow(clippy::type_complexity)]
     let ref_tuples: Vec<(Option<i64>, Option<&str>, i64, i64, &str)> = resolved
         .iter()
         .map(|rr| {
@@ -412,7 +413,7 @@ pub fn parse_workspace(
 
     if source_files.is_empty()
         && workspace.root.is_dir()
-        && std::fs::read_dir(&workspace.root).map_or(false, |mut d| d.next().is_some())
+        && std::fs::read_dir(&workspace.root).is_ok_and(|mut d| d.next().is_some())
     {
         warn!(
             workspace = %workspace.id,
@@ -675,6 +676,7 @@ fn post_parse_sequence(
     Ok((resolved_count, unresolved_count, skipped_count))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_snapshot(
     db: &Db,
     head_commit: Option<String>,
@@ -707,6 +709,7 @@ fn record_snapshot(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_unchanged_snapshot(
     db: &Db,
     head_commit: Option<String>,

@@ -1079,7 +1079,7 @@ impl SutraServer {
         }
         if files.is_empty()
             && entry.root.is_dir()
-            && std::fs::read_dir(&entry.root).map_or(false, |mut d| d.next().is_some())
+            && std::fs::read_dir(&entry.root).is_ok_and(|mut d| d.next().is_some())
         {
             val["warnings"] = serde_json::json!([
                 "workspace root exists but 0 files indexed — check languages config matches adapter IDs (rust, dart)"

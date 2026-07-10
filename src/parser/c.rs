@@ -134,21 +134,21 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
                 collect_typedef_declarators(child, src, &mut symbols);
             }
             "declaration" => {
-                if let Some(type_node) = child.child_by_field_name("type") {
-                    if type_node.child_by_field_name("body").is_some() {
-                        match type_node.kind() {
-                            "struct_specifier" => {
-                                if let Some(sym) = extract_struct(type_node, src, Some(child)) {
-                                    symbols.push(sym);
-                                }
+                if let Some(type_node) = child.child_by_field_name("type")
+                    && type_node.child_by_field_name("body").is_some()
+                {
+                    match type_node.kind() {
+                        "struct_specifier" => {
+                            if let Some(sym) = extract_struct(type_node, src, Some(child)) {
+                                symbols.push(sym);
                             }
-                            "enum_specifier" => {
-                                if let Some(sym) = extract_enum(type_node, src, Some(child)) {
-                                    symbols.push(sym);
-                                }
-                            }
-                            _ => {}
                         }
+                        "enum_specifier" => {
+                            if let Some(sym) = extract_enum(type_node, src, Some(child)) {
+                                symbols.push(sym);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 if !has_specifier(child, src, "extern") {
@@ -541,10 +541,10 @@ fn has_specifier(node: Node, src: &[u8], keyword: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "storage_class_specifier" | "type_qualifier" => {
-                if child.utf8_text(src).ok() == Some(keyword) {
-                    return true;
-                }
+            "storage_class_specifier" | "type_qualifier"
+                if child.utf8_text(src).ok() == Some(keyword) =>
+            {
+                return true;
             }
             _ => {}
         }
@@ -609,10 +609,11 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
         attrs.insert("returns_ptr".into(), true.into());
     }
 
-    if let Some(type_node) = node.child_by_field_name("type") {
-        if type_node.utf8_text(src).ok() == Some("void") && !has_pointer_return(declarator) {
-            attrs.insert("returns_void".into(), true.into());
-        }
+    if let Some(type_node) = node.child_by_field_name("type")
+        && type_node.utf8_text(src).ok() == Some("void")
+        && !has_pointer_return(declarator)
+    {
+        attrs.insert("returns_void".into(), true.into());
     }
 
     if has_specifier(node, src, "static") {
@@ -625,25 +626,25 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
         attrs.insert("has_const".into(), true.into());
     }
 
-    if let Some(func_decl) = find_function_declarator(declarator) {
-        if let Some(params) = func_decl.child_by_field_name("parameters") {
-            let mut pcursor = params.walk();
-            for child in params.children(&mut pcursor) {
-                if child.kind() == "variadic_parameter" {
-                    attrs.insert("is_variadic".into(), true.into());
-                }
+    if let Some(func_decl) = find_function_declarator(declarator)
+        && let Some(params) = func_decl.child_by_field_name("parameters")
+    {
+        let mut pcursor = params.walk();
+        for child in params.children(&mut pcursor) {
+            if child.kind() == "variadic_parameter" {
+                attrs.insert("is_variadic".into(), true.into());
             }
+        }
 
-            let params_text = params.utf8_text(src).unwrap_or("");
-            if params_text.contains('*') {
-                attrs.insert("takes_ptr".into(), true.into());
-            }
-            if params_text.contains("struct ") {
-                attrs.insert("has_struct_param".into(), true.into());
-            }
-            if !attrs.contains_key("has_const") && params_text.contains("const ") {
-                attrs.insert("has_const".into(), true.into());
-            }
+        let params_text = params.utf8_text(src).unwrap_or("");
+        if params_text.contains('*') {
+            attrs.insert("takes_ptr".into(), true.into());
+        }
+        if params_text.contains("struct ") {
+            attrs.insert("has_struct_param".into(), true.into());
+        }
+        if !attrs.contains_key("has_const") && params_text.contains("const ") {
+            attrs.insert("has_const".into(), true.into());
         }
     }
 
@@ -654,7 +655,7 @@ fn has_pointer_return(declarator: Node) -> bool {
     if declarator.kind() == "pointer_declarator" {
         return declarator
             .child_by_field_name("declarator")
-            .map_or(false, |d| find_function_declarator(d).is_some());
+            .is_some_and(|d| find_function_declarator(d).is_some());
     }
     false
 }
@@ -700,25 +701,24 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
             }
         }
         "field_identifier" => {
-            if let Some(parent) = node.parent() {
-                if parent.kind() == "field_expression" {
-                    if let Ok(name) = node.utf8_text(src) {
-                        let context_kind = if parent
-                            .parent()
-                            .is_some_and(|gp| gp.kind() == "call_expression")
-                        {
-                            RefContextKind::Call
-                        } else {
-                            RefContextKind::FieldAccess
-                        };
-                        refs.push(ExtractedRef {
-                            name: name.to_string(),
-                            line: node.start_position().row + 1,
-                            col: node.start_position().column,
-                            context_kind,
-                        });
-                    }
-                }
+            if let Some(parent) = node.parent()
+                && parent.kind() == "field_expression"
+                && let Ok(name) = node.utf8_text(src)
+            {
+                let context_kind = if parent
+                    .parent()
+                    .is_some_and(|gp| gp.kind() == "call_expression")
+                {
+                    RefContextKind::Call
+                } else {
+                    RefContextKind::FieldAccess
+                };
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind,
+                });
             }
         }
         _ => {}
@@ -822,16 +822,15 @@ fn collect_includes(node: Node, src: &[u8]) -> Vec<ExtractedImport> {
     let mut imports = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "preproc_include" {
-            if let Some(path_node) = child.child_by_field_name("path") {
-                if let Ok(raw_path) = path_node.utf8_text(src) {
-                    imports.push(ExtractedImport {
-                        raw_path: raw_path.to_string(),
-                        line: child.start_position().row + 1,
-                        kind: "import",
-                    });
-                }
-            }
+        if child.kind() == "preproc_include"
+            && let Some(path_node) = child.child_by_field_name("path")
+            && let Ok(raw_path) = path_node.utf8_text(src)
+        {
+            imports.push(ExtractedImport {
+                raw_path: raw_path.to_string(),
+                line: child.start_position().row + 1,
+                kind: "import",
+            });
         }
     }
     imports

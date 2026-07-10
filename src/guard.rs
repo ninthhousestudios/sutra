@@ -645,11 +645,11 @@ pub fn check_proposed_patterns(
             f.enclosing_symbol.clone(),
             f.snippet.clone(),
         );
-        if let Some(count) = disk_multiset.get_mut(&key) {
-            if *count > 0 {
-                *count -= 1;
-                continue;
-            }
+        if let Some(count) = disk_multiset.get_mut(&key)
+            && *count > 0
+        {
+            *count -= 1;
+            continue;
         }
         introduced.push(f);
     }
