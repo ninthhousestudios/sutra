@@ -726,7 +726,7 @@ pub fn compute(
         .constraint_violations
         .iter()
         .map(|v| {
-            json!({
+            let mut entry = json!({
                 "constraint_id": v.constraint_id,
                 "constraint_name": v.constraint_name,
                 "kind": v.constraint_kind,
@@ -736,7 +736,17 @@ pub fn compute(
                 "to": v.to_path,
                 "component_context": v.component_context,
                 "detail": v.detail,
-            })
+            });
+            if let Some(line) = v.line {
+                entry["line"] = json!(line);
+            }
+            if let Some(snippet) = &v.snippet {
+                entry["snippet"] = json!(snippet);
+            }
+            if let Some(sym) = &v.enclosing_symbol {
+                entry["enclosing_symbol"] = json!(sym);
+            }
+            entry
         })
         .collect();
     let resolved_constraint_violations_out: Vec<_> = findings
