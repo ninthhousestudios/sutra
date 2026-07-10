@@ -166,6 +166,9 @@ pub fn config_error_finding(msg: &str) -> ConstraintFinding {
         component_context: None,
         detail: msg.to_string(),
         delta: FindingDelta::Unknown,
+        line: None,
+        snippet: None,
+        enclosing_symbol: None,
     }
 }
 
@@ -202,6 +205,9 @@ fn make_external_finding(
         component_context: None,
         detail,
         delta: FindingDelta::Unknown,
+        line: None,
+        snippet: None,
+        enclosing_symbol: None,
     }
 }
 

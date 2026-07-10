@@ -2,6 +2,7 @@ pub mod check;
 mod engine;
 pub mod external;
 pub mod finding;
+pub mod patterns;
 mod resolver;
 mod worker;
 

@@ -14,6 +14,9 @@ pub struct ConstraintFinding {
     pub component_context: Option<String>,
     pub detail: String,
     pub delta: FindingDelta,
+    pub line: Option<u32>,
+    pub snippet: Option<String>,
+    pub enclosing_symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

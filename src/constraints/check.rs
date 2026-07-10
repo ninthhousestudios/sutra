@@ -118,6 +118,9 @@ fn evaluate_dd(
                         dead.join(", "),
                     ),
                     delta: FindingDelta::Unknown,
+                    line: None,
+                    snippet: None,
+                    enclosing_symbol: None,
                 });
             }
         }
@@ -339,6 +342,9 @@ fn evaluate_dd(
             component_context: None,
             detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
             delta: FindingDelta::Unknown,
+            line: None,
+            snippet: None,
+            enclosing_symbol: None,
         });
     }
 
@@ -376,6 +382,9 @@ fn evaluate_dd(
                     f.fan_in_files, f.path,
                 ),
                 delta: FindingDelta::Unknown,
+                line: None,
+                snippet: None,
+                enclosing_symbol: None,
             });
         }
     }
@@ -422,6 +431,9 @@ fn evaluate_raw(
                 e.error,
             ),
             delta: FindingDelta::Unknown,
+            line: None,
+            snippet: None,
+            enclosing_symbol: None,
         })
         .collect();
 
@@ -646,6 +658,9 @@ fn evaluate_raw(
                         component_context: None,
                         detail: format!("fan-in is {fan_in}, threshold is {threshold}: {path}",),
                         delta: FindingDelta::Unknown,
+                        line: None,
+                        snippet: None,
+                        enclosing_symbol: None,
                     });
                 }
             }
@@ -915,5 +930,8 @@ fn make_finding(
             delta == FindingDelta::Introduced,
         ),
         delta,
+        line: None,
+        snippet: None,
+        enclosing_symbol: None,
     }
 }

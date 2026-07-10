@@ -37,6 +37,7 @@ tower = "0.5"
 tokio-util = "0.7"
 
 # Tree-sitter (spike-verified: all three coexist)
+streaming-iterator = "0.1"
 tree-sitter = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-python = "0.25"

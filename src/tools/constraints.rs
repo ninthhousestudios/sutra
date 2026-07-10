@@ -204,7 +204,7 @@ fn handle_violations(
 }
 
 fn finding_to_json(f: &check::ConstraintFinding) -> serde_json::Value {
-    json!({
+    let mut v = json!({
         "constraint_id": f.constraint_id,
         "constraint_name": f.constraint_name,
         "constraint_kind": f.constraint_kind,
@@ -214,7 +214,17 @@ fn finding_to_json(f: &check::ConstraintFinding) -> serde_json::Value {
         "to_path": f.to_path,
         "component_context": f.component_context,
         "detail": f.detail,
-    })
+    });
+    if let Some(line) = f.line {
+        v["line"] = json!(line);
+    }
+    if let Some(snippet) = &f.snippet {
+        v["snippet"] = json!(snippet);
+    }
+    if let Some(sym) = &f.enclosing_symbol {
+        v["enclosing_symbol"] = json!(sym);
+    }
+    v
 }
 
 fn handle_waive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {

@@ -738,6 +738,9 @@ mod tests {
                 "forbidden: src/tools/foo.rs -> src/daemon.rs (rule: src/tools/* -> src/daemon.rs)"
                     .into(),
             delta: FindingDelta::Unknown,
+            line: None,
+            snippet: None,
+            enclosing_symbol: None,
         }
     }
 

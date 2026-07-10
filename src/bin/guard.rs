@@ -334,7 +334,7 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
     let mut informational = Vec::new();
 
     for v in &findings.constraint_violations {
-        let entry = serde_json::json!({
+        let mut entry = serde_json::json!({
             "constraint_id": v.constraint_id,
             "constraint_name": v.constraint_name,
             "kind": v.constraint_kind,
@@ -343,6 +343,12 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
             "to": v.to_path,
             "detail": v.detail,
         });
+        if let Some(line) = v.line {
+            entry["line"] = serde_json::json!(line);
+        }
+        if let Some(snippet) = &v.snippet {
+            entry["snippet"] = serde_json::json!(snippet);
+        }
         match v.severity {
             Severity::Blocking => blocking.push(entry),
             Severity::Advisory => advisory.push(entry),
