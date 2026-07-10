@@ -184,12 +184,25 @@ pub fn constraint_coverage(
             let total: usize = allowed_in.iter().map(|g| count_glob(g)).sum();
             vec![("allowed_in", total)]
         }
-        ConstraintKind::ForbiddenPattern { .. } => {
-            if let Some(scope) = &constraint.scope {
-                vec![("scope", count_scope(scope))]
+        ConstraintKind::ForbiddenPattern { language, .. } => {
+            let registry = crate::parser::adapter::default_registry();
+            let exts: Vec<&str> = registry
+                .adapter_for_language(language)
+                .map(|a| a.extensions().to_vec())
+                .unwrap_or_default();
+            let lang_paths: Vec<&&str> = paths
+                .iter()
+                .filter(|p| exts.iter().any(|ext| p.ends_with(&format!(".{ext}"))))
+                .collect();
+            let count = if let Some(scope) = &constraint.scope {
+                lang_paths
+                    .iter()
+                    .filter(|p| crate::rules::scope_matches_path(scope, p))
+                    .count()
             } else {
-                vec![("scope", paths.len())]
-            }
+                lang_paths.len()
+            };
+            vec![("scope", count)]
         }
     };
 

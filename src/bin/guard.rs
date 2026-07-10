@@ -272,15 +272,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         guard::check_file_constraints(&conn, &project_root, file_id)
     };
 
+    // Exclude forbidden_pattern findings — patterns are handled separately by
+    // check_proposed_patterns with introduced-only semantics. The fallback to
+    // check_file_constraints would surface pre-existing matches without that filter.
     let blocking: Vec<_> = constraint_findings
         .active
         .iter()
-        .filter(|f| f.severity == Severity::Blocking)
+        .filter(|f| f.constraint_kind != "forbidden_pattern" && f.severity == Severity::Blocking)
         .collect();
     let advisory: Vec<_> = constraint_findings
         .active
         .iter()
-        .filter(|f| f.severity != Severity::Blocking)
+        .filter(|f| f.constraint_kind != "forbidden_pattern" && f.severity != Severity::Blocking)
         .collect();
 
     for f in &advisory {

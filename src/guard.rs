@@ -687,10 +687,9 @@ pub fn format_pattern_deny(findings: &[&ConstraintFinding]) -> String {
         }
     }
     reason.push_str(
-        ". If this use is genuinely idiomatic (shared ownership, cheap copy, \
-         API requires owned), waive for this symbol via `sutra_constraints action=waive` \
-         with a rationale naming the reason. Otherwise restructure (references/lifetimes) \
-         instead of suppressing.",
+        ". If this use is intentional and justified, waive for this symbol via \
+         `sutra_constraints action=waive` with a rationale explaining why. \
+         Otherwise restructure to avoid the pattern.",
     );
     reason
 }
