@@ -366,7 +366,7 @@ language = "rust"
 query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
 name = "no-clone-driven-dev"
 provenance = "CLAUDE.md coding_discipline"
-severity = "advisory"
+severity = "blocking"
 scope = "src/"
 
 
