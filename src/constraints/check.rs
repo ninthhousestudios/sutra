@@ -554,7 +554,7 @@ fn evaluate_raw(
         }
     };
 
-    if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in {
+    if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in && !has_patterns {
         return Ok(CheckOutcome {
             active: parse_error_findings,
             parse_errors,
