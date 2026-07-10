@@ -1491,3 +1491,53 @@ fn ratchet_flag_removal_keeps_row() {
     assert!(row.is_some(), "ratchet row must survive flag removal");
     assert!(row.unwrap().released_at.is_none());
 }
+
+#[test]
+fn ratchet_double_release_returns_false() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc", "blocking")
+        .unwrap();
+
+    assert!(
+        db.release_constraint_ratchet("abc12345", "josh", "first release")
+            .unwrap()
+    );
+    assert!(
+        !db.release_constraint_ratchet("abc12345", "josh", "second release")
+            .unwrap(),
+        "double-release must return false"
+    );
+}
+
+#[test]
+fn ratchet_unknown_id_release_returns_false() {
+    let (_dir, db) = setup_db();
+    assert!(
+        !db.release_constraint_ratchet("nonexistent", "josh", "reason")
+            .unwrap(),
+        "releasing unknown id must return false"
+    );
+}
+
+#[test]
+fn ratchet_get_all_includes_released() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("aaa11111", None, "desc1", "blocking")
+        .unwrap();
+    db.upsert_constraint_ratchet("bbb22222", None, "desc2", "advisory")
+        .unwrap();
+
+    db.release_constraint_ratchet("aaa11111", "josh", "done")
+        .unwrap();
+
+    let all = db.get_all_constraint_ratchets().unwrap();
+    assert_eq!(all.len(), 2, "get_all must include released rows");
+
+    let released: Vec<_> = all.iter().filter(|r| r.released_at.is_some()).collect();
+    assert_eq!(released.len(), 1);
+    assert_eq!(&*released[0].constraint_id, "aaa11111");
+
+    let active: Vec<_> = all.iter().filter(|r| r.released_at.is_none()).collect();
+    assert_eq!(active.len(), 1);
+    assert_eq!(&*active[0].constraint_id, "bbb22222");
+}

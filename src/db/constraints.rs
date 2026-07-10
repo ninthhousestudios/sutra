@@ -254,6 +254,18 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn get_all_constraint_ratchets(&self) -> Result<Vec<ConstraintRatchetRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {RATCHET_SELECT_COLS} FROM constraint_ratchets \
+             ORDER BY registered_at"
+        ))?;
+        let rows = stmt
+            .query_map([], map_ratchet_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn release_constraint_ratchet(
         &self,
         constraint_id: &str,

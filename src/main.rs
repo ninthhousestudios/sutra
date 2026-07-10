@@ -95,6 +95,9 @@ enum Commands {
         /// Symbol name
         symbol: String,
     },
+    /// Manage constraint ratchets (CLI-only, not exposed via MCP)
+    #[command(subcommand)]
+    Ratchet(RatchetCmd),
     /// Check server and database health
     Health,
     /// Install systemd user service for sutra
@@ -131,6 +134,23 @@ enum WorkspacesCmd {
         /// Workspace identifier
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum RatchetCmd {
+    /// Release a ratcheted constraint (allows its removal or weakening)
+    Release {
+        /// Constraint ID (8-char hex from rules.toml)
+        constraint_id: String,
+        /// Why this constraint is being released
+        #[arg(long)]
+        rationale: String,
+        /// Who is releasing (defaults to git config user.name)
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// List all ratcheted constraints (active and released)
+    List,
 }
 
 #[tokio::main]
@@ -312,6 +332,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sutra::guard::uninstall()?;
             }
         },
+        Commands::Ratchet(cmd) => {
+            cmd_ratchet(&config, cmd)?;
+        }
         Commands::Health => {
             cmd_health(&config).await?;
         }
@@ -596,6 +619,84 @@ WantedBy=default.target
         println!("Enabled and started sutra.service");
     }
 
+    Ok(())
+}
+
+fn cmd_ratchet(config: &Config, cmd: RatchetCmd) -> Result<(), Box<dyn std::error::Error>> {
+    let ws_config = load_validated_workspaces(config)?;
+    let cwd = std::env::current_dir()?;
+    let cwd_str = cwd.to_string_lossy();
+    let ws = workspace::resolve_workspace(&ws_config, &cwd_str)?;
+    let db = Db::open_for_workspace(ws, &config.db_dir)?;
+
+    match cmd {
+        RatchetCmd::Release {
+            constraint_id,
+            rationale,
+            by,
+        } => {
+            let row = db.get_constraint_ratchet(&constraint_id)?;
+            match row {
+                None => {
+                    eprintln!("error: unknown constraint id '{constraint_id}'");
+                    std::process::exit(1);
+                }
+                Some(r) if r.released_at.is_some() => {
+                    eprintln!(
+                        "error: constraint '{constraint_id}' already released by {} on {}",
+                        r.released_by.as_deref().unwrap_or("unknown"),
+                        r.released_at.as_deref().unwrap_or("unknown"),
+                    );
+                    std::process::exit(1);
+                }
+                Some(r) => {
+                    let released_by = by.unwrap_or_else(|| {
+                        std::process::Command::new("git")
+                            .args(["config", "user.name"])
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8(o.stdout).ok())
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    });
+                    db.release_constraint_ratchet(&constraint_id, &released_by, &rationale)?;
+                    let label = r.name.as_deref().unwrap_or(constraint_id.as_str());
+                    println!("Released ratchet [{label}] ({constraint_id})");
+                    println!("  by: {released_by}");
+                    println!("  rationale: {rationale}");
+                }
+            }
+        }
+        RatchetCmd::List => {
+            let rows = db.get_all_constraint_ratchets()?;
+            if rows.is_empty() {
+                println!("No ratcheted constraints.");
+                return Ok(());
+            }
+            for r in &rows {
+                let label = r.name.as_deref().unwrap_or("");
+                let status = if r.released_at.is_some() {
+                    "released"
+                } else {
+                    "active"
+                };
+                println!(
+                    "{id}  {label:<24} {sev:<12} {status:<10} registered {reg}",
+                    id = r.constraint_id,
+                    sev = r.severity_floor,
+                    reg = r.registered_at,
+                );
+                if let Some(ref at) = r.released_at {
+                    println!(
+                        "        released {at} by {by}: {rationale}",
+                        by = r.released_by.as_deref().unwrap_or("unknown"),
+                        rationale = r.release_rationale.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
