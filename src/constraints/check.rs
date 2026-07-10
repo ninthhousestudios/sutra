@@ -148,6 +148,40 @@ fn evaluate_dd(
         ));
     }
 
+    // Forbidden pattern checks — read source from disk for scope-matched files.
+    // Runs before the edge-empty early return since patterns are per-file, not edge-based.
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
+    if has_patterns {
+        let scan_ids: HashSet<i64> = match &scope {
+            EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
+            EvalScope::SingleFile(id) => std::iter::once(*id).collect(),
+            EvalScope::Edges { .. } => HashSet::new(),
+            EvalScope::Workspace => all_files.iter().map(|f| f.id).collect(),
+        };
+        if !scan_ids.is_empty() {
+            let mut sources: Vec<(String, String)> = Vec::new();
+            for f in &all_files {
+                if !scan_ids.contains(&f.id) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(&*f.path)) {
+                    sources.push((f.path.to_string(), content));
+                }
+            }
+            let source_refs: Vec<(&str, &str)> = sources
+                .iter()
+                .map(|(p, c)| (p.as_str(), c.as_str()))
+                .collect();
+            findings.extend(super::patterns::check_forbidden_patterns(
+                &all_constraints,
+                &source_refs,
+                registry,
+            ));
+        }
+    }
+
     let edges = db.import_edges()?;
     if edges.is_empty() {
         let constraint_waivers = db.get_constraint_waivers(None)?;
@@ -389,39 +423,6 @@ fn evaluate_dd(
                 snippet: None,
                 enclosing_symbol: None,
             });
-        }
-    }
-
-    // Forbidden pattern checks — read source from disk for scope-matched files
-    let has_patterns = all_constraints
-        .iter()
-        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
-    if has_patterns {
-        let scan_ids: HashSet<i64> = match &scope {
-            EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
-            EvalScope::SingleFile(id) => std::iter::once(*id).collect(),
-            EvalScope::Edges { .. } => HashSet::new(),
-            EvalScope::Workspace => all_files.iter().map(|f| f.id).collect(),
-        };
-        if !scan_ids.is_empty() {
-            let mut sources: Vec<(String, String)> = Vec::new();
-            for f in &all_files {
-                if !scan_ids.contains(&f.id) {
-                    continue;
-                }
-                if let Ok(content) = std::fs::read_to_string(workspace_root.join(&*f.path)) {
-                    sources.push((f.path.to_string(), content));
-                }
-            }
-            let source_refs: Vec<(&str, &str)> = sources
-                .iter()
-                .map(|(p, c)| (p.as_str(), c.as_str()))
-                .collect();
-            findings.extend(super::patterns::check_forbidden_patterns(
-                &all_constraints,
-                &source_refs,
-                registry,
-            ));
         }
     }
 

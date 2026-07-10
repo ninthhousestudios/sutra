@@ -860,3 +860,230 @@ scope = "src/**"
     assert_eq!(cycle_findings[0].constraint_id.as_ref(), "builtin:cycles");
     assert!(cycle_findings[0].constraint_name.is_none());
 }
+
+#[test]
+fn evaluate_dd_finds_forbidden_pattern_violations() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+severity = "advisory"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "fn risky() { unsafe { core::ptr::null::<u8>().read() }; }\n",
+    )
+    .unwrap();
+    std::fs::write(src_dir.join("safe.rs"), "fn safe() { let x = 1; }\n").unwrap();
+
+    db.upsert_file("src/lib.rs", "rust", "h1", 1, true).unwrap();
+    db.upsert_file("src/safe.rs", "rust", "h2", 1, true)
+        .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let pattern_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(pattern_findings.len(), 1);
+    assert_eq!(pattern_findings[0].from_path, "src/lib.rs");
+    assert!(pattern_findings[0].line.is_some());
+    assert!(pattern_findings[0].snippet.is_some());
+}
+
+#[test]
+fn evaluate_dd_pattern_changed_files_scope_only_scans_changed() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("a.rs"), "fn a() { unsafe { }; }\n").unwrap();
+    std::fs::write(src_dir.join("b.rs"), "fn b() { unsafe { }; }\n").unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "h1", 1, true).unwrap();
+    db.upsert_file("src/b.rs", "rust", "h2", 1, true).unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+
+    let changed_ids: std::collections::HashSet<i64> = [fa.id].into_iter().collect();
+    let old_edges: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::ChangedFiles {
+            changed_ids: &changed_ids,
+            old_edges: &old_edges,
+        },
+        &registry,
+    )
+    .unwrap();
+
+    let pattern_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        pattern_findings.len(),
+        1,
+        "only src/a.rs is changed, src/b.rs should not be scanned"
+    );
+    assert_eq!(pattern_findings[0].from_path, "src/a.rs");
+}
+
+#[test]
+fn evaluate_dd_pattern_symbol_level_waiver() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "fn waived_fn() { unsafe { }; }\nfn other_fn() { unsafe { }; }\n",
+    )
+    .unwrap();
+
+    db.upsert_file("src/lib.rs", "rust", "h1", 2, true).unwrap();
+
+    let mut rules = sutra::rules::load_rules(dir.path()).unwrap();
+    let (constraints, _) = rules.all_constraints();
+    let pc = constraints
+        .iter()
+        .find(|c| {
+            matches!(
+                c.kind,
+                sutra::rules::ConstraintKind::ForbiddenPattern { .. }
+            )
+        })
+        .unwrap();
+
+    // Symbol-level waiver: only suppresses findings inside waived_fn
+    db.create_constraint_waiver(
+        &pc.id,
+        pc.name.as_deref(),
+        "src/lib.rs",
+        Some("waived_fn"),
+        "Justified unsafe in waived_fn",
+        "josh",
+    )
+    .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let active_pattern: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        active_pattern.len(),
+        1,
+        "other_fn's unsafe should remain active"
+    );
+    assert_eq!(
+        active_pattern[0].enclosing_symbol.as_deref(),
+        Some("other_fn"),
+    );
+
+    let waived_pattern: Vec<_> = outcome
+        .waived
+        .iter()
+        .filter(|w| w.finding.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        waived_pattern.len(),
+        1,
+        "waived_fn's unsafe should be waived"
+    );
+    assert_eq!(
+        waived_pattern[0].finding.enclosing_symbol.as_deref(),
+        Some("waived_fn"),
+    );
+}

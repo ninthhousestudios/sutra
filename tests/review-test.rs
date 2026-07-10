@@ -1497,3 +1497,207 @@ forbidden_deps = [
     assert!(outcome.resolved[0].from_path.contains("ui/view.rs"));
     assert!(outcome.resolved[0].to_path.contains("db/query.rs"));
 }
+
+#[test]
+fn build_findings_includes_pattern_violations() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+severity = "advisory"
+scope = "src/"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(
+        src_dir.join("core.rs"),
+        "fn process() { unsafe { std::ptr::null::<u8>().read() }; }\n",
+    )
+    .unwrap();
+    fs::write(src_dir.join("safe.rs"), "fn safe() { let x = 1; }\n").unwrap();
+
+    db.upsert_file("src/core.rs", "rust", "h1", 1, true)
+        .unwrap();
+    db.upsert_file("src/safe.rs", "rust", "h2", 1, true)
+        .unwrap();
+    db.insert_symbol(&sym(
+        db.file_by_path("src/core.rs").unwrap().unwrap().id,
+        "process",
+        "process",
+        None,
+        1,
+        1,
+        Some(1),
+    ))
+    .unwrap();
+
+    let changed = vec!["src/core.rs".to_string(), "src/safe.rs".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    let pattern_violations: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        pattern_violations.len(),
+        1,
+        "unsafe block in src/core.rs should trigger one finding"
+    );
+    assert_eq!(pattern_violations[0].from_path, "src/core.rs");
+    assert!(pattern_violations[0].line.is_some());
+    assert!(pattern_violations[0].snippet.is_some());
+
+    let safe_violations: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern" && f.from_path == "src/safe.rs")
+        .collect();
+    assert!(
+        safe_violations.is_empty(),
+        "safe.rs has no unsafe blocks, should have no pattern findings"
+    );
+}
+
+#[test]
+fn build_findings_pattern_scope_filters_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe-in-src"
+scope = "src/"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    let tests_dir = dir.path().join("tests");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::create_dir_all(&tests_dir).unwrap();
+    fs::write(src_dir.join("lib.rs"), "fn f() { unsafe { }; }\n").unwrap();
+    fs::write(tests_dir.join("test.rs"), "fn t() { unsafe { }; }\n").unwrap();
+
+    db.upsert_file("src/lib.rs", "rust", "h1", 1, true).unwrap();
+    db.upsert_file("tests/test.rs", "rust", "h2", 1, true)
+        .unwrap();
+
+    let changed = vec!["src/lib.rs".to_string(), "tests/test.rs".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    let pattern_violations: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        pattern_violations.len(),
+        1,
+        "only src/lib.rs is in scope, tests/test.rs should be excluded"
+    );
+    assert_eq!(pattern_violations[0].from_path, "src/lib.rs");
+}
+
+#[test]
+fn build_findings_pattern_waiver_suppresses_finding() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(
+        src_dir.join("ffi.rs"),
+        "fn bridge() { unsafe { libc::exit(0) }; }\n",
+    )
+    .unwrap();
+
+    db.upsert_file("src/ffi.rs", "rust", "h1", 1, true).unwrap();
+
+    // Load rules to get the constraint ID
+    let mut rules = sutra::rules::load_rules(dir.path()).unwrap();
+    let (constraints, _) = rules.all_constraints();
+    let pattern_constraint = constraints
+        .iter()
+        .find(|c| {
+            matches!(
+                c.kind,
+                sutra::rules::ConstraintKind::ForbiddenPattern { .. }
+            )
+        })
+        .unwrap();
+
+    // File-level waiver: suppresses all findings in src/ffi.rs
+    db.create_constraint_waiver(
+        &pattern_constraint.id,
+        pattern_constraint.name.as_deref(),
+        "src/ffi.rs",
+        None,
+        "FFI boundary, unsafe is required",
+        "josh",
+    )
+    .unwrap();
+
+    let changed = vec!["src/ffi.rs".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    let active_pattern: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert!(
+        active_pattern.is_empty(),
+        "file-level waiver should suppress pattern finding"
+    );
+
+    let waived_pattern: Vec<_> = findings
+        .waived_constraint_violations
+        .iter()
+        .filter(|w| w.finding.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        waived_pattern.len(),
+        1,
+        "waived pattern finding should appear in waived list"
+    );
+}
