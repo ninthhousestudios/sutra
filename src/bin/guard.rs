@@ -184,6 +184,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Build proposed content early — reused for pattern check and later analysis.
+    let proposed = guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path);
+
+    // Pattern constraint check (introduced-only) — doesn't need file_id.
+    if let Some(ref proposed_content) = proposed {
+        let pattern_outcome =
+            guard::check_proposed_patterns(&conn, &project_root, &rel_path, proposed_content);
+        let pattern_blocking: Vec<_> = pattern_outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        for f in pattern_outcome
+            .active
+            .iter()
+            .filter(|f| f.severity != Severity::Blocking)
+        {
+            eprintln!(
+                "sutra-guard: [{:?}] {} — {}",
+                f.severity, f.constraint_id, f.detail
+            );
+        }
+        if !pattern_blocking.is_empty() {
+            let reason = guard::format_pattern_deny(&pattern_blocking);
+            if let Some(json) = guard::render_stdout(
+                &guard::GuardDecision::Deny { reason },
+                hook.hook_event_name.as_deref(),
+            ) {
+                println!("{json}");
+            }
+            return Ok(());
+        }
+    }
+
     let file_row: Option<(i64, f64, i64)> = conn
         .query_row(
             "SELECT id, COALESCE(pagerank, 0.0), blast_radius FROM files WHERE path = ?1",
@@ -215,9 +249,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         hot_symbols,
     };
 
-    // Parse proposed content once — reused for constraint checking and
-    // signature-preserving detection.
-    let proposed = guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path);
     let parsed_result = proposed
         .as_deref()
         .and_then(|p| guard::parse_proposed(&rel_path, p));

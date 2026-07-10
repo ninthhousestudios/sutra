@@ -542,6 +542,151 @@ pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
     reason
 }
 
+/// Check proposed content against forbidden_pattern constraints using
+/// introduced-only semantics: deny only if the match count increased
+/// compared to the on-disk version. Waived symbols are excluded from
+/// both counts.
+pub fn check_proposed_patterns(
+    conn: &Connection,
+    project_root: &Path,
+    rel_path: &str,
+    proposed_content: &str,
+) -> CheckOutcome {
+    use crate::constraints::patterns::check_forbidden_patterns;
+    use crate::db::ConstraintWaiverRow;
+    use crate::rules::{self, ConstraintKind};
+    use crate::waivers;
+    use std::sync::Arc;
+
+    let registry = crate::parser::adapter::default_registry();
+
+    let mut loaded_rules = match rules::load_rules(project_root) {
+        Ok(r) => r,
+        Err(_) => return CheckOutcome::default(),
+    };
+    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
+    if !has_patterns {
+        return CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        };
+    }
+
+    let proposed_findings =
+        check_forbidden_patterns(&all_constraints, &[(rel_path, proposed_content)], &registry);
+    if proposed_findings.is_empty() {
+        return CheckOutcome {
+            parse_errors,
+            ..Default::default()
+        };
+    }
+
+    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
+        .prepare(
+            "SELECT id, constraint_id, constraint_name, file_path, \
+             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+             FROM constraint_waivers WHERE file_path = ?1",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![rel_path], |row| {
+                Ok(ConstraintWaiverRow {
+                    id: row.get(0)?,
+                    constraint_id: Arc::from(row.get::<_, String>(1)?),
+                    constraint_name: row.get::<_, Option<String>>(2)?.map(Arc::from),
+                    file_path: row.get(3)?,
+                    symbol_qualified_name: row.get(4)?,
+                    rationale: row.get(5)?,
+                    waived_by: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+
+    let (proposed_active, proposed_waived) =
+        waivers::partition(proposed_findings, &constraint_waivers);
+
+    if proposed_active.is_empty() {
+        return CheckOutcome {
+            waived: proposed_waived,
+            parse_errors,
+            ..Default::default()
+        };
+    }
+
+    let disk_content = std::fs::read_to_string(project_root.join(rel_path)).unwrap_or_default();
+    let disk_findings =
+        check_forbidden_patterns(&all_constraints, &[(rel_path, &disk_content)], &registry);
+    let (disk_active, _) = waivers::partition(disk_findings, &constraint_waivers);
+
+    let mut disk_counts: HashMap<Arc<str>, usize> = HashMap::new();
+    for f in &disk_active {
+        *disk_counts.entry(f.constraint_id.clone()).or_default() += 1;
+    }
+
+    let mut by_constraint: HashMap<Arc<str>, Vec<ConstraintFinding>> = HashMap::new();
+    for f in proposed_active {
+        by_constraint
+            .entry(f.constraint_id.clone())
+            .or_default()
+            .push(f);
+    }
+
+    let mut introduced = Vec::new();
+    for (cid, findings) in by_constraint {
+        let disk_count = disk_counts.get(&cid).copied().unwrap_or(0);
+        if findings.len() > disk_count {
+            introduced.extend(findings);
+        }
+    }
+
+    CheckOutcome {
+        active: introduced,
+        waived: proposed_waived,
+        parse_errors,
+        ..Default::default()
+    }
+}
+
+pub fn format_pattern_deny(findings: &[&ConstraintFinding]) -> String {
+    let mut reason = format!(
+        "STOP: {} new forbidden-pattern match(es) introduced. ",
+        findings.len()
+    );
+    for (i, f) in findings.iter().enumerate() {
+        if i > 0 {
+            reason.push_str(" | ");
+        }
+        let name = f.constraint_name.as_deref().unwrap_or("forbidden_pattern");
+        let provenance = f
+            .provenance
+            .as_deref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default();
+        reason.push_str(&format!(
+            "{name}{provenance} at {}{}",
+            f.from_path,
+            f.line.map(|l| format!(":{l}")).unwrap_or_default(),
+        ));
+        if let Some(snippet) = &f.snippet {
+            reason.push_str(&format!(": {snippet}"));
+        }
+    }
+    reason.push_str(
+        ". If this use is genuinely idiomatic (shared ownership, cheap copy, \
+         API requires owned), waive for this symbol via `sutra_constraints action=waive` \
+         with a rationale naming the reason. Otherwise restructure (references/lifetimes) \
+         instead of suppressing.",
+    );
+    reason
+}
+
 // ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
@@ -1836,5 +1981,144 @@ innocent = { package = "arrow-core", version = "1" }
         let code = "impl Foo {\n    fn bar() {}\n}\n";
         let parsed = parse_proposed("src/lib.rs", code).unwrap();
         assert!(!is_signature_preserving(&conn, 1, &parsed));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pattern guard tests
+    // -----------------------------------------------------------------------
+
+    fn setup_pattern_db(
+        rules_toml: &str,
+        files: &[(&str, &str)],
+    ) -> (Connection, tempfile::TempDir) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE constraint_waivers (\
+                id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, \
+                file_path TEXT, symbol_qualified_name TEXT, \
+                rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', \
+                created_at TEXT DEFAULT '', updated_at TEXT DEFAULT ''\
+             );",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("rules.toml"), rules_toml).unwrap();
+
+        for (path, content) in files {
+            let full = dir.path().join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(full, content).unwrap();
+        }
+
+        (conn, dir)
+    }
+
+    const CLONE_RULE: &str = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone"
+severity = "blocking"
+scope = "src/"
+provenance = "coding_discipline"
+"#;
+
+    const ADVISORY_CLONE_RULE: &str = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone"
+severity = "advisory"
+scope = "src/"
+"#;
+
+    #[test]
+    fn pattern_introduced_denied() {
+        let disk_content = "fn main() {\n    let x = 1;\n}\n";
+        let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].severity, Severity::Blocking);
+        assert!(outcome.active[0].constraint_name.as_deref() == Some("no-clone"));
+    }
+
+    #[test]
+    fn pattern_preexisting_allowed() {
+        let disk_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let proposed_content = "fn main() {\n    let x = vec![1].clone();\n    let y = 2;\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(
+            outcome.active.is_empty(),
+            "pre-existing match should be grandfathered"
+        );
+    }
+
+    #[test]
+    fn pattern_waiver_bypass_at_symbol_level() {
+        let disk_content = "fn main() {\n    let x = 1;\n}\n";
+        let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let rule_id = {
+            let mut loaded = crate::rules::load_rules(dir.path()).unwrap();
+            let (constraints, _) = loaded.all_constraints();
+            constraints
+                .iter()
+                .find(|c| c.name.as_deref() == Some("no-clone"))
+                .unwrap()
+                .id
+                .to_string()
+        };
+
+        conn.execute(
+            "INSERT INTO constraint_waivers \
+             (constraint_id, constraint_name, file_path, symbol_qualified_name, rationale, waived_by) \
+             VALUES (?1, 'no-clone', 'src/lib.rs', 'main', 'API requires owned', 'test')",
+            params![rule_id],
+        )
+        .unwrap();
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(
+            outcome.active.is_empty(),
+            "waived symbol should be excluded from both counts"
+        );
+        assert_eq!(outcome.waived.len(), 1);
+    }
+
+    #[test]
+    fn pattern_advisory_passthrough() {
+        let disk_content = "fn main() {\n    let x = 1;\n}\n";
+        let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(ADVISORY_CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].severity, Severity::Advisory);
+    }
+
+    #[test]
+    fn pattern_write_tool_new_file() {
+        let proposed_content = "fn process() {\n    let data = input.clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[]);
+
+        let outcome =
+            check_proposed_patterns(&conn, dir.path(), "src/new_file.rs", proposed_content);
+        assert_eq!(
+            outcome.active.len(),
+            1,
+            "Write to new file: all matches are introduced"
+        );
     }
 }
