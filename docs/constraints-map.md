@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-10 (sutra/240-243: forbidden_pattern kind — AST-pattern constraints via tree-sitter queries)
+Last updated: 2026-07-10 (sutra/245-248: constraint ratchet — monotonic severity floor + guard enforcement)
 
 ## Module layout
 
@@ -68,6 +68,14 @@ src/db/
   constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table.
                       get_constraint_waivers, get_constraint_waivers_for_file,
                       create/update/delete, reconcile_orphaned_constraint_waivers.
+                      ConstraintRatchetRow, ratchet registry:
+                      upsert_constraint_ratchet (monotonic floor — never lowers,
+                      clears released_at on re-registration),
+                      get_constraint_ratchet, get_active_constraint_ratchets,
+                      get_all_constraint_ratchets, release_constraint_ratchet.
+                      Helper: severity_ordinal (Severity → u8 for floor comparison),
+                      active_ratchets_from_conn (shared raw-conn accessor used by
+                      both check.rs evaluate paths).
 
 src/tools/
   review.rs         — build_findings uses ConstraintResolver +
@@ -99,10 +107,18 @@ src/guard.rs        — Lightweight per-edit constraint check.
                       when count increased. format_constraint_deny for dep-kind
                       deny messages. format_pattern_deny for pattern deny messages
                       with justification-gate guidance (waive-vs-restructure).
+                      Ratchet guard: check_proposed_rules_ratchet — compares
+                      proposed rules.toml against the ratchet registry (active
+                      ratchets only, released_at IS NULL). Detects deletion
+                      and severity-lowering. format_ratchet_deny teaches the
+                      release ceremony and strengthen-by-release-then-re-add path.
+                      RatchetViolation, RatchetViolationKind types.
 
 src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
-                      PreToolUse path: pattern check first (introduced-only,
-                      doesn't need file_id), then dep-kind check. Blocking → deny,
+                      PreToolUse path: ratchet check runs first for rules.toml
+                      edits (not an indexed file, runs before file_row bail).
+                      Then pattern check (introduced-only, doesn't need file_id),
+                      then dep-kind check. Blocking → deny,
                       advisory/informational → stderr, waived → silent.
                       Pattern findings from dep-kind fallback path filtered out
                       (handled separately with introduced-only semantics).
@@ -116,7 +132,7 @@ src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
 ### Constraint (rules.rs)
 Authored rule from `.sutra/rules.toml`. Fields: `id` (blake3 hash, 8 hex chars),
 `kind: ConstraintKind`, `severity: Severity`, `name: Option<String>`,
-`provenance: Option<String>`, `scope: Option<String>`.
+`provenance: Option<String>`, `scope: Option<String>`, `ratchet: bool`.
 
 ### ConstraintKind (rules.rs)
 Enum: `ForbiddenDep { from, to }` (glob patterns), `Boundary { from_component,
@@ -154,6 +170,23 @@ build_findings before calling `set_forbidden_pairs`.
 `{ id, constraint_id, constraint_name, file_path, symbol_qualified_name,
 rationale, waived_by, created_at, updated_at }`. Waiver lookup in review:
 match on `constraint_id` + `file_path` (either from_path or to_path).
+
+### ConstraintRatchetRow (db/constraints.rs)
+`{ id, constraint_id, name, rendered_description, severity_floor,
+registered_at, released_at, released_by, release_rationale }`.
+Ratchet semantics:
+- **Registration**: at index time when `ratchet = true` in rules.toml.
+  Upsert monotonically raises severity_floor (never lowers).
+  Re-registration after release clears released_at (reactivates).
+- **Non-waivability**: ratchet_violation findings are appended to active
+  list AFTER waiver partition — structurally bypass waivers.
+- **Guard enforcement**: check_proposed_rules_ratchet blocks rules.toml
+  edits that delete or weaken ratcheted constraints.
+- **Drift detection**: check_ratchet_violations in check::evaluate catches
+  constraints removed from rules.toml or downgraded below floor at analysis time.
+- **Release**: CLI-only ceremony (`sutra ratchet release <id> --rationale`).
+  Sets released_at + released_by + release_rationale. Released ratchets are
+  excluded from guard and drift checks (WHERE released_at IS NULL).
 
 ### DdFacts / DdDelta (mod.rs)
 `DdFacts { import_edges: Vec<(i64, i64)> }` — initial edge set.
@@ -246,9 +279,12 @@ kind = "forbidden_pattern"
 language = "rust"                # required, selects grammar
 query = '(call_expression ...)'  # required, tree-sitter S-expression
 name = "no-clone-driven-dev"
-severity = "advisory"            # kind default: advisory (heuristic)
+severity = "blocking"
 scope = "src/"                   # optional, glob-or-prefix (scope_matches_path)
 provenance = "CLAUDE.md"
+ratchet = true                   # optional, registers in ratchet registry at
+                                 # index time. Floor never lowers; removal or
+                                 # weakening requires `sutra ratchet release`.
 ```
 
 ### Old format (backward compat)
@@ -297,8 +333,13 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
 - Pattern engine: `#[cfg(test)]` in `src/constraints/patterns.rs` (9 tests — rust/dart
   match, scope filtering, language filtering, enclosing symbol, identity propagation)
-- Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (14 tests — severity
+- Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (14+ tests — severity
   filtering, waiver bypass, lightweight check, advisory passthrough, pattern
-  introduced-only, pattern waiver bypass, pattern advisory passthrough)
+  introduced-only, pattern waiver bypass, pattern advisory passthrough, ratchet
+  guard blocking + release-allows-edit)
+- Ratchet: `tests/constraints-test.rs` (4 tests — drift detection on deletion,
+  non-waivability, released-ratchet-inert, ratchet floor monotonicity);
+  `tests/db-test.rs` (ratchet_upsert_and_get);
+  `#[cfg(test)]` in `src/rules.rs` (per_constraint_ratchet_flag, defaults_false)
 - Test engine setup: `DdEngine::new(Duration::from_secs(1800))`, no DB needed
 - Test DB setup (waivers): `Db::open_unchecked("test", dir.path())` with tempdir

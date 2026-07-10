@@ -111,9 +111,10 @@ kind = "forbidden_pattern"
 language = "rust"
 query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
 name = "no-clone-driven-dev"
-severity = "advisory"
+severity = "blocking"
 scope = "src/"
 provenance = "CLAUDE.md coding_discipline"
+ratchet = true                       # monotonic: severity can never be lowered without release
 ```
 
 Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes. External-crate constraints are checked directly against unresolved import rows and workspace Cargo manifests (no DD view needed).
@@ -123,6 +124,8 @@ In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from 
 Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time. For pattern constraints, the guard uses **introduced-only** semantics: it parses both the proposed and on-disk content, and denies only if the match count increased — pre-existing matches are grandfathered.
 
 Constraints support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area. Pattern constraint waivers support symbol-level granularity: a waiver on a specific function suppresses matches inside that function only.
+
+Constraints can be **ratcheted** by adding `ratchet = true` — this registers a monotonic severity floor in a durable registry at index time. Once ratcheted, the constraint's severity can never be lowered and it cannot be removed from rules.toml without a human running `sutra ratchet release <id> --rationale "..."` first. Ratchet violations are structurally non-waivable (they bypass the waiver partition). Two enforcement layers: the guard blocks weakening edits to rules.toml in real time, and `check::evaluate` detects drift (deletion or downgrade) at analysis time.
 
 ### 5. Health metrics (Layer 4)
 
@@ -334,6 +337,8 @@ sutra_trend()                      → health changes between snapshots
 - **waived** → silent pass (from-file scoped: waiver on the importing file, not the target)
 
 An edit that removes a blocking violation is always allowed through. If the guard cannot parse the proposed content (unsupported language, syntax error), it falls back to checking the file's current indexed edges.
+
+For **ratcheted constraints**, the guard additionally intercepts edits to `.sutra/rules.toml` that would delete or lower the severity of a registered constraint. This check runs before any file-level analysis (rules.toml is not an indexed file). The deny message teaches the release ceremony (`sutra ratchet release`) and the strengthen-by-release-then-re-add pattern.
 
 Configure in `.claude/settings.json`:
 
