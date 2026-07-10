@@ -7,6 +7,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::error::{Result, SutraError};
+use crate::parser::adapter::{LanguageRegistry, default_registry};
 
 // --- Public types ---
 
@@ -45,6 +46,11 @@ pub enum ConstraintKind {
         allowed_in: Vec<String>,
         include_dev: bool,
     },
+    /// Forbid tree-sitter patterns from appearing in source files.
+    ForbiddenPattern {
+        language: String,
+        query: String,
+    },
 }
 
 impl Severity {
@@ -66,6 +72,7 @@ impl ConstraintKind {
             Self::MaxFanIn { .. } => Severity::Advisory,
             Self::ForbiddenExternal { .. } => Severity::Blocking,
             Self::ConfinedExternal { .. } => Severity::Blocking,
+            Self::ForbiddenPattern { .. } => Severity::Advisory,
         }
     }
 
@@ -77,6 +84,7 @@ impl ConstraintKind {
             Self::NoCycles => "no_cycles",
             Self::ForbiddenExternal { .. } => "forbidden_external",
             Self::ConfinedExternal { .. } => "confined_external",
+            Self::ForbiddenPattern { .. } => "forbidden_pattern",
         }
     }
 }
@@ -147,6 +155,11 @@ impl Constraint {
                 }
                 hasher.update(&[*include_dev as u8]);
             }
+            ConstraintKind::ForbiddenPattern { language, query } => {
+                hasher.update(language.as_bytes());
+                hasher.update(b"\x00");
+                hasher.update(query.as_bytes());
+            }
         }
         if let Some(s) = scope {
             hasher.update(b"\x00scope\x00");
@@ -195,10 +208,13 @@ struct RawConstraint {
     crates: Option<Vec<String>>,
     allowed_in: Option<Vec<String>>,
     include_dev: Option<bool>,
+    // forbidden_pattern
+    language: Option<String>,
+    query: Option<String>,
 }
 
 impl RawConstraint {
-    fn into_constraint(self) -> Result<Constraint> {
+    fn into_constraint(self, registry: &LanguageRegistry) -> Result<Constraint> {
         let kind = match self.kind.as_str() {
             "forbidden_dep" => {
                 let from = self.from.ok_or_else(|| {
@@ -296,6 +312,30 @@ impl RawConstraint {
                     include_dev: self.include_dev.unwrap_or(false),
                 }
             }
+            "forbidden_pattern" => {
+                let language = self.language.ok_or_else(|| {
+                    SutraError::Internal(
+                        "constraint kind 'forbidden_pattern' requires 'language' field".into(),
+                    )
+                })?;
+                let query = self.query.ok_or_else(|| {
+                    SutraError::Internal(
+                        "constraint kind 'forbidden_pattern' requires 'query' field".into(),
+                    )
+                })?;
+                let adapter = registry.adapter_for_language(&language).ok_or_else(|| {
+                    SutraError::Internal(format!(
+                        "constraint kind 'forbidden_pattern': unknown language '{language}'"
+                    ))
+                })?;
+                tree_sitter::Query::new(&adapter.grammar(), &query).map_err(|e| {
+                    SutraError::Internal(format!(
+                        "constraint kind 'forbidden_pattern': invalid query for language \
+                         '{language}': {e}"
+                    ))
+                })?;
+                ConstraintKind::ForbiddenPattern { language, query }
+            }
             other => {
                 return Err(SutraError::Internal(format!(
                     "unknown constraint kind '{other}'"
@@ -343,6 +383,7 @@ pub struct Rules {
 
 impl Rules {
     pub fn all_constraints(&mut self) -> (Vec<Constraint>, Vec<ConstraintParseError>) {
+        let registry = default_registry();
         let mut seen: HashMap<Arc<str>, usize> = HashMap::new();
         let mut out: Vec<Constraint> = Vec::new();
         let mut errors: Vec<ConstraintParseError> = Vec::new();
@@ -382,7 +423,7 @@ impl Rules {
 
         for (i, raw) in std::mem::take(&mut self.constraint).into_iter().enumerate() {
             let name = raw.name.clone();
-            match raw.into_constraint() {
+            match raw.into_constraint(&registry) {
                 Ok(c) => {
                     if let Some(&idx) = seen.get(&c.id) {
                         if out[idx].severity != c.severity {
@@ -1247,5 +1288,224 @@ kind = "no_cycles"
 "#,
         );
         assert!(match_no_cycles_constraint(&cs, &["src/a.rs", "vendor/b.rs"]).is_some());
+    }
+
+    #[test]
+    fn parse_forbidden_pattern() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+name = "no-unsafe"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let cs = rules.all_constraints().0;
+        assert_eq!(cs.len(), 1);
+        assert_eq!(
+            cs[0].kind,
+            ConstraintKind::ForbiddenPattern {
+                language: "rust".into(),
+                query: "(unsafe_block) @cap".into(),
+            }
+        );
+        assert_eq!(cs[0].severity, Severity::Advisory);
+        assert_eq!(cs[0].name.as_deref(), Some("no-unsafe"));
+    }
+
+    #[test]
+    fn forbidden_pattern_severity_default_is_advisory() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(cs[0].severity, Severity::Advisory);
+    }
+
+    #[test]
+    fn forbidden_pattern_severity_override() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+severity = "blocking"
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(cs[0].severity, Severity::Blocking);
+    }
+
+    #[test]
+    fn forbidden_pattern_requires_language() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+query = "(unsafe_block) @cap"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error.contains("requires 'language' field"),
+            "got: {}",
+            errors[0].error
+        );
+    }
+
+    #[test]
+    fn forbidden_pattern_requires_query() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error.contains("requires 'query' field"),
+            "got: {}",
+            errors[0].error
+        );
+    }
+
+    #[test]
+    fn forbidden_pattern_unknown_language_produces_error() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "brainfuck"
+query = "(something) @cap"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error.contains("unknown language 'brainfuck'"),
+            "got: {}",
+            errors[0].error
+        );
+    }
+
+    #[test]
+    fn forbidden_pattern_invalid_query_produces_error() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(not_a_real_node_type) @cap"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (valid, errors) = rules.all_constraints();
+        assert!(valid.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error.contains("invalid query"),
+            "got: {}",
+            errors[0].error
+        );
+    }
+
+    #[test]
+    fn forbidden_pattern_identity_deterministic() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let id1 = parse_rules(toml).unwrap().all_constraints().0[0].id.clone();
+        let id2 = parse_rules(toml).unwrap().all_constraints().0[0].id.clone();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn forbidden_pattern_identity_differs_for_different_query() {
+        let toml1 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let toml2 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(function_item) @cap"
+"#;
+        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn forbidden_pattern_identity_differs_for_different_language() {
+        let toml1 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(function_item) @cap"
+"#;
+        let toml2 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = "(function_definition) @cap"
+"#;
+        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn forbidden_pattern_with_scope() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+scope = "src/core"
+"#;
+        let cs = parse_rules(toml).unwrap().all_constraints().0;
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].scope.as_deref(), Some("src/core"));
+    }
+
+    #[test]
+    fn forbidden_pattern_scope_affects_identity() {
+        let toml1 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let toml2 = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+scope = "src/core"
+"#;
+        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
+            .id
+            .clone();
+        assert_ne!(id1, id2);
     }
 }

@@ -161,6 +161,7 @@ fn constraints_for_component<'a>(
                 }
                 // confinement applies everywhere outside allowed_in — always relevant
                 ConstraintKind::ConfinedExternal { .. } => true,
+                ConstraintKind::ForbiddenPattern { .. } => true,
             }
         })
         .collect()
@@ -242,6 +243,9 @@ fn constraint_detail(c: &Constraint) -> String {
                 crates.join(", "),
                 allowed_in.join(", ")
             )
+        }
+        ConstraintKind::ForbiddenPattern { language, .. } => {
+            format!("forbidden pattern ({language})")
         }
     }
 }

@@ -183,6 +183,13 @@ pub fn constraint_coverage(
             let total: usize = allowed_in.iter().map(|g| count_glob(g)).sum();
             vec![("allowed_in", total)]
         }
+        ConstraintKind::ForbiddenPattern { .. } => {
+            if let Some(scope) = &constraint.scope {
+                vec![("scope", count_scope(scope))]
+            } else {
+                vec![("scope", paths.len())]
+            }
+        }
     };
 
     ConstraintCoverage { fields }

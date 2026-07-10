@@ -107,6 +107,10 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 } => {
                     json!({ "crates": crates, "allowed_in": allowed_in, "include_dev": include_dev })
                 }
+                ConstraintKind::ForbiddenPattern {
+                    language,
+                    query,
+                } => json!({ "language": language, "query": query }),
             };
 
             let coverage = constraint_coverage(c, &paths, &component_names, &component_ids);
