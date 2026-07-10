@@ -103,15 +103,26 @@ kind = "confined_external"
 crates = ["tonic", "prost"]
 allowed_in = ["quiver-client/**"]
 name = "protos-only-in-quiver-client"
+
+# AST-pattern constraints: forbid structural patterns via tree-sitter queries.
+# Checked per-file (no DD engine). Default severity: advisory (heuristic).
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone-driven-dev"
+severity = "advisory"
+scope = "src/"
+provenance = "CLAUDE.md coding_discipline"
 ```
 
 Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes. External-crate constraints are checked directly against unresolved import rows and workspace Cargo manifests (no DD view needed).
 
 In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from `report/`) are classified as external, so `forbidden_external` / `confined_external` also express crate-to-crate seams. Dart `package:` and `dart:` imports are matched by package name; pubspec.yaml manifests are not yet checked.
 
-Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time.
+Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time. For pattern constraints, the guard uses **introduced-only** semantics: it parses both the proposed and on-disk content, and denies only if the match count increased — pre-existing matches are grandfathered.
 
-Constraints support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area.
+Constraints support **waivers** — human-granted exceptions with tracked rationale that appear in every review touching the waived area. Pattern constraint waivers support symbol-level granularity: a waiver on a specific function suppresses matches inside that function only.
 
 ### 5. Health metrics (Layer 4)
 
@@ -405,7 +416,7 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 
 | File | Purpose |
 |------|---------|
-| `rules.toml` | Architectural constraints (forbidden deps, boundaries, cycle rules, fan-in limits) |
+| `rules.toml` | Architectural constraints (forbidden deps, boundaries, cycles, fan-in, external crates, AST patterns) |
 | `aliases.toml` | Vocabulary aliases — human-readable names for components, files, and symbols (see [Layer 5](#5-vocabulary-mapping-layer-5)) |
 | `owners.toml` | Author alias mapping for ownership risk biomarker (maps agent emails to canonical human) |
 
