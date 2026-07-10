@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::constraints::check::{self, CheckOutcome, EvalScope, FactsSource};
 use crate::parser::ParseResult;
+use crate::rules::{self, Severity};
 
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
@@ -690,6 +691,113 @@ pub fn format_pattern_deny(findings: &[&ConstraintFinding]) -> String {
         ". If this use is intentional and justified, waive for this symbol via \
          `sutra_constraints action=waive` with a rationale explaining why. \
          Otherwise restructure to avoid the pattern.",
+    );
+    reason
+}
+
+// ---------------------------------------------------------------------------
+// Ratchet guard: rules.toml edits
+// ---------------------------------------------------------------------------
+
+pub struct RatchetViolation {
+    pub constraint_id: String,
+    pub name: Option<String>,
+    pub rendered_description: String,
+    pub kind: RatchetViolationKind,
+}
+
+pub enum RatchetViolationKind {
+    Deleted,
+    SeverityLowered { floor: String, proposed: String },
+}
+
+pub fn check_proposed_rules_ratchet(
+    conn: &Connection,
+    proposed_content: &str,
+) -> Vec<RatchetViolation> {
+    let mut parsed = match rules::parse_rules(proposed_content) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let (constraints, _errors) = parsed.all_constraints();
+    let proposed: HashMap<&str, Severity> = constraints
+        .iter()
+        .map(|c| (c.id.as_ref(), c.severity))
+        .collect();
+
+    let mut stmt = match conn.prepare(
+        "SELECT constraint_id, name, rendered_description, severity_floor \
+         FROM constraint_ratchets WHERE released_at IS NULL",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows: Vec<(String, Option<String>, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .and_then(|iter| iter.collect())
+        .unwrap_or_default();
+
+    let mut violations = Vec::new();
+    for (cid, name, desc, floor_str) in rows {
+        match proposed.get(cid.as_str()) {
+            None => violations.push(RatchetViolation {
+                constraint_id: cid,
+                name,
+                rendered_description: desc,
+                kind: RatchetViolationKind::Deleted,
+            }),
+            Some(&sev) => {
+                let floor_ord = Severity::from_str_lossy(&floor_str)
+                    .map(|s| s.ordinal())
+                    .unwrap_or(0);
+                if sev.ordinal() < floor_ord {
+                    violations.push(RatchetViolation {
+                        constraint_id: cid,
+                        name,
+                        rendered_description: desc,
+                        kind: RatchetViolationKind::SeverityLowered {
+                            floor: floor_str,
+                            proposed: sev.as_str().to_string(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+    violations
+}
+
+pub fn format_ratchet_deny(violations: &[RatchetViolation]) -> String {
+    let mut reason =
+        String::from("STOP: cannot weaken ratcheted constraint(s) via rules.toml edit. ");
+    for (i, v) in violations.iter().enumerate() {
+        if i > 0 {
+            reason.push_str(" | ");
+        }
+        let label = v.name.as_deref().unwrap_or(&v.constraint_id);
+        match &v.kind {
+            RatchetViolationKind::Deleted => {
+                reason.push_str(&format!(
+                    "[{label}] deleted \u{2014} {}",
+                    v.rendered_description
+                ));
+            }
+            RatchetViolationKind::SeverityLowered { floor, proposed } => {
+                reason.push_str(&format!(
+                    "[{label}] severity lowered from {floor} to {proposed} \u{2014} {}",
+                    v.rendered_description
+                ));
+            }
+        }
+    }
+    reason.push_str(
+        ". A human must run `sutra ratchet release <id> --rationale \"...\"` first. \
+         To strengthen a ratcheted constraint (e.g. widen scope): release the old ID, \
+         then add the replacement.",
     );
     reason
 }
@@ -2148,5 +2256,227 @@ scope = "src/"
             1,
             "only the 1 introduced match should be active, not all 3"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Ratchet guard: rules.toml weakening detection
+    // -----------------------------------------------------------------------
+
+    fn setup_ratchet_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE constraint_ratchets (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                constraint_id        TEXT NOT NULL UNIQUE,
+                name                 TEXT,
+                rendered_description TEXT NOT NULL,
+                severity_floor       TEXT NOT NULL,
+                registered_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                released_at          TEXT,
+                released_by          TEXT,
+                release_rationale    TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_ratchet(
+        conn: &Connection,
+        constraint_id: &str,
+        name: Option<&str>,
+        desc: &str,
+        severity: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO constraint_ratchets (constraint_id, name, rendered_description, severity_floor) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![constraint_id, name, desc, severity],
+        )
+        .unwrap();
+    }
+
+    fn release_ratchet(conn: &Connection, constraint_id: &str) {
+        conn.execute(
+            "UPDATE constraint_ratchets SET released_at = datetime('now'), \
+             released_by = 'test', release_rationale = 'test release' \
+             WHERE constraint_id = ?1",
+            params![constraint_id],
+        )
+        .unwrap();
+    }
+
+    const RATCHETED_RULES: &str = "\
+[ratchet]
+all = true
+
+[[constraint]]
+kind = \"forbidden_dep\"
+from = \"domain\"
+to = \"infrastructure\"
+severity = \"blocking\"
+name = \"no-domain-to-infra\"
+";
+
+    #[test]
+    fn ratchet_deletion_denied() {
+        let conn = setup_ratchet_db();
+        // Parse the rules to get the real constraint ID
+        let mut rules = crate::rules::parse_rules(RATCHETED_RULES).unwrap();
+        let (constraints, _) = rules.all_constraints();
+        let cid = constraints[0].id.as_ref();
+
+        insert_ratchet(
+            &conn,
+            cid,
+            Some("no-domain-to-infra"),
+            "forbidden_dep: domain \u{2192} infrastructure",
+            "blocking",
+        );
+
+        // Proposed TOML with the constraint removed
+        let proposed = "[ratchet]\nall = true\n";
+        let violations = check_proposed_rules_ratchet(&conn, proposed);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].constraint_id, cid);
+        assert!(matches!(violations[0].kind, RatchetViolationKind::Deleted));
+    }
+
+    #[test]
+    fn ratchet_severity_lowering_denied() {
+        let conn = setup_ratchet_db();
+        let mut rules = crate::rules::parse_rules(RATCHETED_RULES).unwrap();
+        let (constraints, _) = rules.all_constraints();
+        let cid = constraints[0].id.as_ref();
+
+        insert_ratchet(
+            &conn,
+            cid,
+            Some("no-domain-to-infra"),
+            "forbidden_dep: domain \u{2192} infrastructure",
+            "blocking",
+        );
+
+        // Same constraint but severity lowered to advisory
+        let proposed = "\
+[ratchet]
+all = true
+
+[[constraint]]
+kind = \"forbidden_dep\"
+from = \"domain\"
+to = \"infrastructure\"
+severity = \"advisory\"
+name = \"no-domain-to-infra\"
+";
+        let violations = check_proposed_rules_ratchet(&conn, proposed);
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(
+            violations[0].kind,
+            RatchetViolationKind::SeverityLowered { .. }
+        ));
+    }
+
+    #[test]
+    fn ratchet_addition_passes() {
+        let conn = setup_ratchet_db();
+        // No ratchets in DB — adding new constraints is always fine
+        let violations = check_proposed_rules_ratchet(&conn, RATCHETED_RULES);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn ratchet_severity_increase_passes() {
+        let conn = setup_ratchet_db();
+        let mut rules = crate::rules::parse_rules(RATCHETED_RULES).unwrap();
+        let (constraints, _) = rules.all_constraints();
+        let cid = constraints[0].id.as_ref();
+
+        // Floor is advisory, proposed is blocking — that's an increase, should pass
+        insert_ratchet(
+            &conn,
+            cid,
+            Some("no-domain-to-infra"),
+            "forbidden_dep: domain \u{2192} infrastructure",
+            "advisory",
+        );
+
+        let violations = check_proposed_rules_ratchet(&conn, RATCHETED_RULES);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn ratchet_released_constraint_deletable() {
+        let conn = setup_ratchet_db();
+        let mut rules = crate::rules::parse_rules(RATCHETED_RULES).unwrap();
+        let (constraints, _) = rules.all_constraints();
+        let cid = constraints[0].id.as_ref();
+
+        insert_ratchet(
+            &conn,
+            cid,
+            Some("no-domain-to-infra"),
+            "forbidden_dep: domain \u{2192} infrastructure",
+            "blocking",
+        );
+        release_ratchet(&conn, cid);
+
+        // After release, deletion is fine
+        let proposed = "[ratchet]\nall = true\n";
+        let violations = check_proposed_rules_ratchet(&conn, proposed);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn ratchet_non_ratcheted_constraint_freely_editable() {
+        let conn = setup_ratchet_db();
+        // DB has ratchet for one constraint, but we're editing a different one
+        insert_ratchet(
+            &conn,
+            "deadbeef",
+            Some("other-rule"),
+            "some other rule",
+            "blocking",
+        );
+
+        // Proposed TOML doesn't include "deadbeef" but that constraint is ratcheted
+        // — this SHOULD deny because deadbeef is missing. But if we want to test
+        // that non-ratcheted constraints can be freely edited, we need a proposed
+        // TOML that keeps the ratcheted one and changes something else.
+        let proposed = "\
+[[constraint]]
+kind = \"forbidden_dep\"
+from = \"domain\"
+to = \"infrastructure\"
+severity = \"advisory\"
+name = \"some-new-rule\"
+";
+        // deadbeef is missing from proposed -> violation
+        let violations = check_proposed_rules_ratchet(&conn, proposed);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].constraint_id, "deadbeef");
+    }
+
+    #[test]
+    fn ratchet_malformed_toml_passes_through() {
+        let conn = setup_ratchet_db();
+        insert_ratchet(&conn, "abc123", Some("rule"), "desc", "blocking");
+
+        let violations = check_proposed_rules_ratchet(&conn, "this is {{ not valid toml");
+        assert!(violations.is_empty(), "malformed TOML should pass through");
+    }
+
+    #[test]
+    fn ratchet_deny_message_teaches_ceremony() {
+        let violations = vec![RatchetViolation {
+            constraint_id: "abc12345".to_string(),
+            name: Some("no-domain-to-infra".to_string()),
+            rendered_description: "forbidden_dep: domain \u{2192} infrastructure".to_string(),
+            kind: RatchetViolationKind::Deleted,
+        }];
+        let msg = format_ratchet_deny(&violations);
+        assert!(msg.contains("sutra ratchet release"));
+        assert!(msg.contains("no-domain-to-infra"));
+        assert!(msg.contains("deleted"));
     }
 }

@@ -184,6 +184,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Ratchet guard: rules.toml edits checked against the constraint ratchet
+    // registry (not an indexed file, so this must run before the file_row bail).
+    if rel_path == ".sutra/rules.toml" {
+        if let Some(proposed) =
+            guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
+        {
+            let violations = guard::check_proposed_rules_ratchet(&conn, &proposed);
+            if !violations.is_empty() {
+                let reason = guard::format_ratchet_deny(&violations);
+                if let Some(json) = guard::render_stdout(
+                    &guard::GuardDecision::Deny { reason },
+                    hook.hook_event_name.as_deref(),
+                ) {
+                    println!("{json}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
     // Build proposed content early — reused for pattern check and later analysis.
     let proposed = guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path);
 
