@@ -625,25 +625,33 @@ pub fn check_proposed_patterns(
         check_forbidden_patterns(&all_constraints, &[(rel_path, &disk_content)], &registry);
     let (disk_active, _) = waivers::partition(disk_findings, &constraint_waivers);
 
-    let mut disk_counts: HashMap<Arc<str>, usize> = HashMap::new();
+    // Multiset diff by (constraint_id, enclosing_symbol, snippet) — each disk
+    // match cancels one proposed match with the same key. What remains is introduced.
+    type MatchKey = (Arc<str>, Option<String>, Option<String>);
+    let mut disk_multiset: HashMap<MatchKey, usize> = HashMap::new();
     for f in &disk_active {
-        *disk_counts.entry(f.constraint_id.clone()).or_default() += 1;
-    }
-
-    let mut by_constraint: HashMap<Arc<str>, Vec<ConstraintFinding>> = HashMap::new();
-    for f in proposed_active {
-        by_constraint
-            .entry(f.constraint_id.clone())
-            .or_default()
-            .push(f);
+        let key: MatchKey = (
+            f.constraint_id.clone(),
+            f.enclosing_symbol.clone(),
+            f.snippet.clone(),
+        );
+        *disk_multiset.entry(key).or_default() += 1;
     }
 
     let mut introduced = Vec::new();
-    for (cid, findings) in by_constraint {
-        let disk_count = disk_counts.get(&cid).copied().unwrap_or(0);
-        if findings.len() > disk_count {
-            introduced.extend(findings);
+    for f in proposed_active {
+        let key: MatchKey = (
+            f.constraint_id.clone(),
+            f.enclosing_symbol.clone(),
+            f.snippet.clone(),
+        );
+        if let Some(count) = disk_multiset.get_mut(&key) {
+            if *count > 0 {
+                *count -= 1;
+                continue;
+            }
         }
+        introduced.push(f);
     }
 
     CheckOutcome {
@@ -2119,6 +2127,27 @@ scope = "src/"
             outcome.active.len(),
             1,
             "Write to new file: all matches are introduced"
+        );
+    }
+
+    #[test]
+    fn pattern_introduced_only_reports_delta() {
+        let disk_content = "fn main() {\n\
+            \x20   let a = vec![1].clone();\n\
+            \x20   let b = vec![2].clone();\n\
+            }\n";
+        let proposed_content = "fn main() {\n\
+            \x20   let a = vec![1].clone();\n\
+            \x20   let b = vec![2].clone();\n\
+            \x20   let c = vec![3].clone();\n\
+            }\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(
+            outcome.active.len(),
+            1,
+            "only the 1 introduced match should be active, not all 3"
         );
     }
 }

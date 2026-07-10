@@ -592,10 +592,22 @@ fn evaluate_raw(
 
     use crate::db::ConstraintWaiverRow;
 
+    let single_file_path: Option<String> = match &scope {
+        EvalScope::SingleFile(file_id) => conn
+            .query_row(
+                "SELECT path FROM files WHERE id = ?1",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .ok(),
+        _ => None,
+    };
+
     let relevant_paths: HashSet<&str> = path_map
         .values()
         .map(|p| p.as_str())
         .chain(external_findings.iter().map(|f| f.from_path.as_str()))
+        .chain(single_file_path.as_deref())
         .collect();
     let constraint_waivers: Vec<ConstraintWaiverRow> = conn
         .prepare(
@@ -711,13 +723,7 @@ fn evaluate_raw(
     // Forbidden pattern checks — read source from disk for scope-matched files
     if has_patterns && !matches!(scope, EvalScope::Edges { .. }) {
         let scan_paths: Vec<String> = match &scope {
-            EvalScope::SingleFile(file_id) => {
-                let mut stmt = conn.prepare("SELECT path FROM files WHERE id = ?1")?;
-                stmt.query_row(rusqlite::params![file_id], |row| row.get(0))
-                    .ok()
-                    .into_iter()
-                    .collect()
-            }
+            EvalScope::SingleFile(_) => single_file_path.into_iter().collect(),
             _ => Vec::new(),
         };
         if !scan_paths.is_empty() {

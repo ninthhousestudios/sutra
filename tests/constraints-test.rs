@@ -1087,3 +1087,101 @@ name = "no-unsafe"
         Some("waived_fn"),
     );
 }
+
+#[test]
+fn evaluate_raw_pattern_waiver_on_edgeless_file() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("standalone.rs"),
+        "fn do_thing() { unsafe { }; }\n",
+    )
+    .unwrap();
+
+    // File exists in DB but has NO import edges
+    db.upsert_file("src/standalone.rs", "rust", "h1", 1, true)
+        .unwrap();
+
+    let mut rules = sutra::rules::load_rules(dir.path()).unwrap();
+    let (constraints, _) = rules.all_constraints();
+    let pc = constraints
+        .iter()
+        .find(|c| {
+            matches!(
+                c.kind,
+                sutra::rules::ConstraintKind::ForbiddenPattern { .. }
+            )
+        })
+        .unwrap();
+
+    db.create_constraint_waiver(
+        &pc.id,
+        pc.name.as_deref(),
+        "src/standalone.rs",
+        Some("do_thing"),
+        "justified unsafe",
+        "josh",
+    )
+    .unwrap();
+
+    let db_path = dir.path().join("test").join("index.db");
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    let file_id: i64 = conn
+        .query_row(
+            "SELECT id FROM files WHERE path = 'src/standalone.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::RawConn(&conn),
+        dir.path(),
+        EvalScope::SingleFile(file_id),
+        &registry,
+    )
+    .unwrap();
+
+    assert!(
+        outcome
+            .active
+            .iter()
+            .all(|f| f.constraint_kind != "forbidden_pattern"),
+        "waived pattern on edgeless file should not appear as active"
+    );
+    assert_eq!(
+        outcome
+            .waived
+            .iter()
+            .filter(|w| w.finding.constraint_kind == "forbidden_pattern")
+            .count(),
+        1,
+        "waived pattern should appear in waived list"
+    );
+}
