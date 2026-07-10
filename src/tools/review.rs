@@ -753,7 +753,7 @@ pub fn compute(
         .resolved_constraint_violations
         .iter()
         .map(|v| {
-            json!({
+            let mut entry = json!({
                 "constraint_id": v.constraint_id,
                 "constraint_name": v.constraint_name,
                 "kind": v.constraint_kind,
@@ -763,14 +763,24 @@ pub fn compute(
                 "to": v.to_path,
                 "component_context": v.component_context,
                 "detail": v.detail,
-            })
+            });
+            if let Some(line) = v.line {
+                entry["line"] = json!(line);
+            }
+            if let Some(snippet) = &v.snippet {
+                entry["snippet"] = json!(snippet);
+            }
+            if let Some(sym) = &v.enclosing_symbol {
+                entry["enclosing_symbol"] = json!(sym);
+            }
+            entry
         })
         .collect();
     let waived_constraint_violations_out: Vec<_> = findings
         .waived_constraint_violations
         .iter()
         .map(|v| {
-            json!({
+            let mut entry = json!({
                 "constraint_id": v.finding.constraint_id,
                 "constraint_name": v.finding.constraint_name,
                 "kind": v.finding.constraint_kind,
@@ -782,7 +792,17 @@ pub fn compute(
                 "waived": true,
                 "rationale": v.rationale,
                 "waived_by": v.waived_by,
-            })
+            });
+            if let Some(line) = v.finding.line {
+                entry["line"] = json!(line);
+            }
+            if let Some(snippet) = &v.finding.snippet {
+                entry["snippet"] = json!(snippet);
+            }
+            if let Some(sym) = &v.finding.enclosing_symbol {
+                entry["enclosing_symbol"] = json!(sym);
+            }
+            entry
         })
         .collect();
     let deviations_out: Vec<_> = findings

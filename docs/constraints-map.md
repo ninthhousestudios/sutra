@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-09 (sutra/238: scope accepts glob or prefix via rules::scope_matches_path)
+Last updated: 2026-07-10 (sutra/240-243: forbidden_pattern kind — AST-pattern constraints via tree-sitter queries)
 
 ## Module layout
 
@@ -25,14 +25,26 @@ src/constraints/
                       forbidden (i64, i64) pairs. Handles ForbiddenDep (glob)
                       + Boundary (component membership). Caches by input hash
                       + clustering generation.
+  finding.rs        — ConstraintFinding (shared finding type), FindingDelta enum
+                      (Unknown, PreExisting, Introduced, Resolved). Optional
+                      location fields: line, snippet, enclosing_symbol (populated
+                      for forbidden_pattern, None for dep-kind constraints).
+  patterns.rs       — check_forbidden_patterns: per-file tree-sitter pattern
+                      matching. Given compiled forbidden_pattern constraints and
+                      source files, runs queries and produces findings with
+                      location + enclosing symbol resolution. No DD involvement
+                      (per-file local pass, precedent: external.rs).
   check.rs          — Unified constraint evaluation. evaluate() dispatches to
                       evaluate_dd (DD-backed: review, orient, sutra_constraints
                       violations) or evaluate_raw (raw SQLite: guard hook).
-                      ConstraintFinding, CheckOutcome, EvalScope, FactsSource.
+                      CheckOutcome, EvalScope, FactsSource.
                       Covers: forbidden_dep/boundary via DD maintained view,
                       no_cycles via SCC, max_fan_in via fan_in_files rollup,
-                      external via external::check_*, dead_constraint via
-                      constraint_coverage. Waiver partition at the end.
+                      external via external::check_*, forbidden_pattern via
+                      patterns::check_forbidden_patterns, dead_constraint via
+                      constraint_coverage. Pattern scan runs before edge-empty
+                      early return (patterns are per-file, not edge-based).
+                      Waiver partition at the end.
   external.rs       — External-crate constraint checks (forbidden_external,
                       confined_external). Two signals: import (use-statement
                       paths via external_crate_of_import) and manifest (Cargo.toml
@@ -81,12 +93,19 @@ src/guard.rs        — Lightweight per-edit constraint check.
                       check_file_constraints: queries imports table + rules TOML
                       directly from read-only SQLite connection. Matches edges
                       against ForbiddenDep/Boundary constraints, checks waivers.
-                      ConstraintFinding type with severity + waived flag.
-                      format_constraint_deny for deny-reason formatting.
+                      check_proposed_patterns: introduced-only forbidden_pattern
+                      enforcement — parses proposed + disk, multiset-diffs matches
+                      by (constraint_id, enclosing_symbol, snippet), denies only
+                      when count increased. format_constraint_deny for dep-kind
+                      deny messages. format_pattern_deny for pattern deny messages
+                      with justification-gate guidance (waive-vs-restructure).
 
 src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
-                      PreToolUse path: lightweight check, blocking → deny,
+                      PreToolUse path: pattern check first (introduced-only,
+                      doesn't need file_id), then dep-kind check. Blocking → deny,
                       advisory/informational → stderr, waived → silent.
+                      Pattern findings from dep-kind fallback path filtered out
+                      (handled separately with introduced-only semantics).
                       --check-constraints mode: full build_findings with
                       ephemeral DdEngine, structured JSON output, exit code 1
                       if blocking violations exist. Supports --staged flag.
@@ -101,11 +120,15 @@ Authored rule from `.sutra/rules.toml`. Fields: `id` (blake3 hash, 8 hex chars),
 
 ### ConstraintKind (rules.rs)
 Enum: `ForbiddenDep { from, to }` (glob patterns), `Boundary { from_component,
-to_component }`, `MaxFanIn { target, threshold }`, `NoCycles`.
+to_component }`, `MaxFanIn { target, threshold }`, `NoCycles`,
+`ForbiddenExternal { from, crates, include_dev }`,
+`ConfinedExternal { crates, allowed_in, include_dev }`,
+`ForbiddenPattern { language, query }` (tree-sitter S-expression).
 
 ### Severity (rules.rs)
 Enum: `Blocking`, `Advisory`, `Informational`.
-Defaults: forbidden_dep/boundary/no_cycles → Blocking, max_fan_in → Advisory.
+Defaults: forbidden_dep/boundary/no_cycles/forbidden_external/confined_external → Blocking,
+max_fan_in/forbidden_pattern → Advisory (heuristic rules).
 
 ### Constraint identity (rules.rs)
 blake3 hash of `(kind_tag, kind-specific params, scope)`. Name and provenance
@@ -147,11 +170,15 @@ for violations caused by changed files' imports (DdDelta round-trip).
 Same fields as ConstraintViolation plus `rationale` and `waived_by`. Partitioned
 from violations using constraint_waivers DB table (parallel to convention waivers).
 
-### ConstraintFinding (guard.rs)
-Lightweight per-edit type: `{ constraint_id, name, kind, severity: Severity,
-from_path, to_path, detail, waived: bool }`. Produced by `check_file_constraints`
-which queries the imports table directly (no DD engine). Used in PreToolUse hook
-to block on Blocking severity.
+### ConstraintFinding (finding.rs)
+Shared finding type used across all evaluation paths: `{ constraint_id,
+constraint_name, constraint_kind, severity, provenance, from_path, to_path,
+component_context, detail, delta: FindingDelta, line?, snippet?,
+enclosing_symbol? }`. Location fields populated for forbidden_pattern findings,
+None for dep-kind. Produced by check::evaluate (both DD and raw paths),
+patterns::check_forbidden_patterns, and guard::check_proposed_patterns.
+FindingDelta: Unknown (pattern/raw), PreExisting/Introduced/Resolved (review
+delta labelling).
 
 ### ConstraintViolation (mod.rs, legacy)
 Legacy type from deprecated ad-hoc path: `{ from_id, to_id, rule_from, rule_to }`.
@@ -213,6 +240,15 @@ threshold = 10
 [[constraint]]
 kind = "no_cycles"
 scope = "src/core/"
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"                # required, selects grammar
+query = '(call_expression ...)'  # required, tree-sitter S-expression
+name = "no-clone-driven-dev"
+severity = "advisory"            # kind default: advisory (heuristic)
+scope = "src/"                   # optional, glob-or-prefix (scope_matches_path)
+provenance = "CLAUDE.md"
 ```
 
 ### Old format (backward compat)
@@ -259,7 +295,10 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   delta labels, enriched violation fields, compute serialization)
 - Orient constraints: `#[cfg(test)]` in `src/tools/orient.rs` (8 constraint tests — scope
   matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
-- Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (9 new tests — severity
-  filtering, waiver bypass, lightweight check with in-memory SQLite, advisory passthrough)
+- Pattern engine: `#[cfg(test)]` in `src/constraints/patterns.rs` (9 tests — rust/dart
+  match, scope filtering, language filtering, enclosing symbol, identity propagation)
+- Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (14 tests — severity
+  filtering, waiver bypass, lightweight check, advisory passthrough, pattern
+  introduced-only, pattern waiver bypass, pattern advisory passthrough)
 - Test engine setup: `DdEngine::new(Duration::from_secs(1800))`, no DB needed
 - Test DB setup (waivers): `Db::open_unchecked("test", dir.path())` with tempdir

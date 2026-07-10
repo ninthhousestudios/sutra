@@ -354,6 +354,22 @@ severity = "blocking"
 # Convention management
 # ═══════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════
+# AST-pattern constraints
+# ═══════════════════════════════════════════════════════════════════
+# Structural code patterns enforced via tree-sitter queries.
+# Default severity: advisory (heuristic — can't see intent).
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone-driven-dev"
+provenance = "CLAUDE.md coding_discipline"
+severity = "advisory"
+scope = "src/"
+
+
 [conventions]
 # Suppress tautological conventions during review.
 # These say "symbols in directory X are in directory X" — true by
