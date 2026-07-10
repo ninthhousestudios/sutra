@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use sutra::db::ConstraintRatchetRow;
 use sutra::db::{
     Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
     SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
@@ -1376,4 +1377,117 @@ fn test_snapshot_pruning() {
         1,
         "child component rows for surviving snapshot should remain"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Constraint ratchet registry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ratchet_upsert_and_get() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet(
+        "abc12345",
+        Some("no-clone"),
+        "forbidden_dep: a → b",
+        "blocking",
+    )
+    .unwrap();
+    let row = db.get_constraint_ratchet("abc12345").unwrap().unwrap();
+    assert_eq!(&*row.constraint_id, "abc12345");
+    assert_eq!(row.name.as_deref(), Some("no-clone"));
+    assert_eq!(row.rendered_description, "forbidden_dep: a → b");
+    assert_eq!(row.severity_floor, "blocking");
+    assert!(row.released_at.is_none());
+}
+
+#[test]
+fn ratchet_severity_floor_monotone_max() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("abc12345", None, "desc", "advisory")
+        .unwrap();
+    assert_eq!(
+        db.get_constraint_ratchet("abc12345")
+            .unwrap()
+            .unwrap()
+            .severity_floor,
+        "advisory"
+    );
+
+    // Increase to blocking — floor should rise
+    db.upsert_constraint_ratchet("abc12345", None, "desc", "blocking")
+        .unwrap();
+    assert_eq!(
+        db.get_constraint_ratchet("abc12345")
+            .unwrap()
+            .unwrap()
+            .severity_floor,
+        "blocking"
+    );
+
+    // Try to lower to informational — floor must NOT drop
+    db.upsert_constraint_ratchet("abc12345", None, "desc", "informational")
+        .unwrap();
+    assert_eq!(
+        db.get_constraint_ratchet("abc12345")
+            .unwrap()
+            .unwrap()
+            .severity_floor,
+        "blocking"
+    );
+}
+
+#[test]
+fn ratchet_reregistration_idempotent() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc", "blocking")
+        .unwrap();
+    let first = db.get_constraint_ratchet("abc12345").unwrap().unwrap();
+
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc", "blocking")
+        .unwrap();
+    let second = db.get_constraint_ratchet("abc12345").unwrap().unwrap();
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.severity_floor, second.severity_floor);
+}
+
+#[test]
+fn ratchet_release_and_list_active() {
+    let (_dir, db) = setup_db();
+    db.upsert_constraint_ratchet("aaa11111", None, "desc1", "blocking")
+        .unwrap();
+    db.upsert_constraint_ratchet("bbb22222", None, "desc2", "advisory")
+        .unwrap();
+
+    assert_eq!(db.get_active_constraint_ratchets().unwrap().len(), 2);
+
+    let released = db
+        .release_constraint_ratchet("aaa11111", "josh", "no longer needed")
+        .unwrap();
+    assert!(released);
+
+    let active = db.get_active_constraint_ratchets().unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(&*active[0].constraint_id, "bbb22222");
+
+    // Released row still in DB with audit trail
+    let row = db.get_constraint_ratchet("aaa11111").unwrap().unwrap();
+    assert!(row.released_at.is_some());
+    assert_eq!(row.released_by.as_deref(), Some("josh"));
+    assert_eq!(row.release_rationale.as_deref(), Some("no longer needed"));
+}
+
+#[test]
+fn ratchet_flag_removal_keeps_row() {
+    let (_dir, db) = setup_db();
+    // Register a ratchet
+    db.upsert_constraint_ratchet("abc12345", Some("rule"), "desc", "blocking")
+        .unwrap();
+
+    // Simulate flag removal by not re-registering — row must persist
+    // (registration is append-only; no deletion path exists)
+    let row = db.get_constraint_ratchet("abc12345").unwrap();
+    assert!(row.is_some(), "ratchet row must survive flag removal");
+    assert!(row.unwrap().released_at.is_none());
 }

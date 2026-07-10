@@ -231,6 +231,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0045_drop_convention_drift.sql"),
         false,
     ),
+    (
+        "0046_constraint_ratchets",
+        include_str!("../../migrations/0046_constraint_ratchets.sql"),
+        false,
+    ),
 ];
 
 impl Db {
@@ -441,6 +446,14 @@ impl Db {
                 .unwrap_or(false)
             }
             "0011_anchor_score" => Self::column_exists(conn, "semantic_anchors", "score"),
+            "0046_constraint_ratchets" => {
+                conn.query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='constraint_ratchets'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false)
+            }
             _ => false,
         }
     }

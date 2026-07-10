@@ -22,6 +22,7 @@ fn make_constraint_with_id(id: &str, kind: ConstraintKind) -> Constraint {
         name: None,
         provenance: None,
         scope: None,
+        ratchet: false,
     }
 }
 

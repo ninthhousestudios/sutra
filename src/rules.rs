@@ -61,6 +61,23 @@ impl Severity {
             Self::Informational => "informational",
         }
     }
+
+    pub fn ordinal(self) -> u8 {
+        match self {
+            Self::Informational => 0,
+            Self::Advisory => 1,
+            Self::Blocking => 2,
+        }
+    }
+
+    pub fn from_str_lossy(s: &str) -> Option<Self> {
+        match s {
+            "blocking" => Some(Self::Blocking),
+            "advisory" => Some(Self::Advisory),
+            "informational" => Some(Self::Informational),
+            _ => None,
+        }
+    }
 }
 
 impl ConstraintKind {
@@ -97,6 +114,7 @@ pub struct Constraint {
     pub name: Option<Arc<str>>,
     pub provenance: Option<Arc<str>>,
     pub scope: Option<String>,
+    pub ratchet: bool,
 }
 
 impl Constraint {
@@ -167,6 +185,45 @@ impl Constraint {
         }
         Arc::from(&hasher.finalize().to_hex()[..8])
     }
+
+    pub fn rendered_description(&self) -> String {
+        let kind_desc = match &self.kind {
+            ConstraintKind::ForbiddenDep { from, to } => {
+                format!("forbidden_dep: {from} → {to}")
+            }
+            ConstraintKind::Boundary {
+                from_component,
+                to_component,
+            } => format!("boundary: {from_component} → {to_component}"),
+            ConstraintKind::MaxFanIn { target, threshold } => {
+                format!("max_fan_in: {target} ≤ {threshold}")
+            }
+            ConstraintKind::NoCycles => "no_cycles".to_string(),
+            ConstraintKind::ForbiddenExternal { from, crates, .. } => {
+                format!("forbidden_external: {} from {from}", crates.join(", "))
+            }
+            ConstraintKind::ConfinedExternal {
+                crates, allowed_in, ..
+            } => {
+                format!(
+                    "confined_external: {} only in {}",
+                    crates.join(", "),
+                    allowed_in.join(", ")
+                )
+            }
+            ConstraintKind::ForbiddenPattern { language, query } => {
+                if query.len() > 60 {
+                    format!("forbidden_pattern({language}): {}…", &query[..60])
+                } else {
+                    format!("forbidden_pattern({language}): {query}")
+                }
+            }
+        };
+        match &self.scope {
+            Some(s) => format!("{kind_desc} [scope: {s}]"),
+            None => kind_desc,
+        }
+    }
 }
 
 fn validate_glob(field: &str, pattern: &str) -> Result<()> {
@@ -211,6 +268,8 @@ struct RawConstraint {
     // forbidden_pattern
     language: Option<String>,
     query: Option<String>,
+    // ratchet
+    ratchet: Option<bool>,
 }
 
 impl RawConstraint {
@@ -351,6 +410,7 @@ impl RawConstraint {
             name: self.name.map(Arc::from),
             provenance: self.provenance.map(Arc::from),
             scope: self.scope,
+            ratchet: self.ratchet.unwrap_or(false),
         })
     }
 }
@@ -370,6 +430,12 @@ pub struct PythonConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct RatchetConfig {
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Rules {
     #[serde(default)]
     pub constraints: Constraints,
@@ -379,6 +445,8 @@ pub struct Rules {
     pub conventions: ConventionsConfig,
     #[serde(default)]
     pub python: Option<PythonConfig>,
+    #[serde(default)]
+    pub ratchet: RatchetConfig,
 }
 
 impl Rules {
@@ -418,13 +486,16 @@ impl Rules {
                 name: None,
                 provenance: None,
                 scope: None,
+                ratchet: self.ratchet.all,
             });
         }
 
+        let ratchet_all = self.ratchet.all;
         for (i, raw) in std::mem::take(&mut self.constraint).into_iter().enumerate() {
             let name = raw.name.clone();
             match raw.into_constraint(&registry) {
-                Ok(c) => {
+                Ok(mut c) => {
+                    c.ratchet = c.ratchet || ratchet_all;
                     if let Some(&idx) = seen.get(&c.id) {
                         if out[idx].severity != c.severity {
                             warn!(id = %c.id, "duplicate constraint with different severity, keeping first");
@@ -1507,5 +1578,90 @@ scope = "src/core"
             .id
             .clone();
         assert_ne!(id1, id2);
+    }
+
+    // --- Ratchet flag parsing ---
+
+    #[test]
+    fn per_constraint_ratchet_flag() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/a"
+to = "src/b"
+ratchet = true
+"#;
+        let (constraints, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(errors.is_empty());
+        assert_eq!(constraints.len(), 1);
+        assert!(constraints[0].ratchet);
+    }
+
+    #[test]
+    fn per_constraint_ratchet_defaults_false() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/a"
+to = "src/b"
+"#;
+        let (constraints, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(errors.is_empty());
+        assert!(!constraints[0].ratchet);
+    }
+
+    #[test]
+    fn workspace_ratchet_all() {
+        let toml = r#"
+[ratchet]
+all = true
+
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/a"
+to = "src/b"
+
+[[constraint]]
+kind = "no_cycles"
+"#;
+        let (constraints, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(errors.is_empty());
+        assert_eq!(constraints.len(), 2);
+        assert!(constraints[0].ratchet);
+        assert!(constraints[1].ratchet);
+    }
+
+    #[test]
+    fn workspace_ratchet_all_applies_to_old_format() {
+        let toml = r#"
+[ratchet]
+all = true
+
+[constraints]
+forbidden_deps = [
+  { from = "src/tools/*", to = "src/daemon.rs" },
+]
+"#;
+        let (constraints, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(errors.is_empty());
+        assert!(constraints[0].ratchet);
+    }
+
+    #[test]
+    fn per_constraint_ratchet_without_workspace_all() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/a"
+to = "src/b"
+ratchet = true
+
+[[constraint]]
+kind = "no_cycles"
+"#;
+        let (constraints, errors) = parse_rules(toml).unwrap().all_constraints();
+        assert!(errors.is_empty());
+        assert!(constraints[0].ratchet);
+        assert!(!constraints[1].ratchet);
     }
 }

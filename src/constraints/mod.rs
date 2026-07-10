@@ -14,6 +14,8 @@ pub use engine::DdEngine;
 pub use finding::{ConstraintFinding, FindingDelta};
 pub use resolver::ConstraintResolver;
 
+use crate::db::Db;
+use crate::error::Result;
 use crate::rules::{Constraint, ConstraintKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +230,23 @@ pub fn format_violation_detail(
     }
 }
 
+pub fn register_ratcheted_constraints(db: &Db, constraints: &[Constraint]) -> Result<usize> {
+    let mut count = 0;
+    for c in constraints {
+        if !c.ratchet {
+            continue;
+        }
+        db.upsert_constraint_ratchet(
+            &c.id,
+            c.name.as_deref(),
+            &c.rendered_description(),
+            c.severity.as_str(),
+        )?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +260,7 @@ mod tests {
             name: Some("test-rule".into()),
             provenance: None,
             scope: None,
+            ratchet: false,
         }
     }
 

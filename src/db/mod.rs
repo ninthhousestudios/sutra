@@ -12,7 +12,7 @@ mod health;
 mod migrations;
 mod similarity;
 
-pub use constraints::ConstraintWaiverRow;
+pub use constraints::{ConstraintRatchetRow, ConstraintWaiverRow};
 pub use conventions::ConventionRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
@@ -140,6 +140,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "constraint_waivers",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "constraint_ratchets",
         partition: TablePartition::Durable,
         is_virtual: false,
     },

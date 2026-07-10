@@ -654,6 +654,14 @@ fn post_parse_sequence(
             info!(count = hrr_count, "computed HRR vectors");
         }
 
+        let mut loaded_rules = crate::rules::load_rules(workspace_root)?;
+        let (all_constraints, _parse_errors) = loaded_rules.all_constraints();
+        let ratchet_count =
+            crate::constraints::register_ratcheted_constraints(db, &all_constraints)?;
+        if ratchet_count > 0 {
+            info!(count = ratchet_count, "registered ratcheted constraints");
+        }
+
         let conv_outcome = crate::conventions::pipeline::rebuild(db, registry, workspace_root)?;
         if conv_outcome.convention_count > 0 {
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
