@@ -4,6 +4,14 @@ mod context;
 mod engine;
 pub mod pipeline;
 
+#[derive(Clone)]
+pub struct SymbolAttrs {
+    pub name: String,
+    pub file: String,
+    pub attributes: Vec<String>,
+    pub component_id: Option<String>,
+}
+
 pub use attributes::{
     AttributeRole, EffectPattern, ResolvedCallee, classify_attribute, dart_effect_packages,
     enrich_all_effects, enrich_with_dart_import_effects, enrich_with_effects,
@@ -12,6 +20,6 @@ pub use attributes::{
 pub use context::{FormalContext, Implication};
 pub use engine::{
     Convention, ConventionMatch, ConventionViolation, Deviation, FcaEngine, MIN_CONFIDENCE,
-    ObservedPattern, SymbolAttrs, component_min_support, deduplicate_component_conventions,
-    describe_patterns, detect_deviations,
+    ObservedPattern, component_min_support, deduplicate_component_conventions, describe_patterns,
+    detect_deviations,
 };

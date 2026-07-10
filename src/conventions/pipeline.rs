@@ -5,7 +5,8 @@ use crate::db::Db;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 
-use super::engine::{FcaEngine, SymbolAttrs};
+use super::SymbolAttrs;
+use super::engine::FcaEngine;
 
 pub struct RebuildOutcome {
     pub convention_count: usize,

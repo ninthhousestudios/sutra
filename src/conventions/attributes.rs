@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::db::{RefRow, SymbolRow};
 use crate::parser::adapter::LanguageRegistry;
 
-use super::engine::SymbolAttrs;
+use super::SymbolAttrs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttributeRole {

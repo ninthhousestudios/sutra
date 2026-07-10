@@ -4,13 +4,7 @@ use std::sync::Arc;
 use super::context::FormalContext;
 use crate::rules::ConventionsConfig;
 
-#[derive(Clone)]
-pub struct SymbolAttrs {
-    pub name: String,
-    pub file: String,
-    pub attributes: Vec<String>,
-    pub component_id: Option<String>,
-}
+use super::SymbolAttrs;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Convention {
