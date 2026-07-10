@@ -608,6 +608,7 @@ fn test_cycles_and_blast_radius_unchanged_with_forbidden_pairs() {
 fn stale_engine_cycle_ids_not_in_path_map_skipped() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
     use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -643,6 +644,7 @@ name = "no-module-cycles"
         .unwrap();
     assert_eq!(engine.query_cycles().unwrap().len(), 1);
 
+    let registry = default_registry();
     let outcome = evaluate(
         &FactsSource::DdBacked {
             db: &db,
@@ -650,6 +652,7 @@ name = "no-module-cycles"
         },
         dir.path(),
         EvalScope::Workspace,
+        &registry,
     )
     .unwrap();
 
@@ -669,6 +672,7 @@ name = "no-module-cycles"
 fn stale_engine_cycle_resolvable_ids_but_no_backing_edges_skipped() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
     use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -707,6 +711,7 @@ name = "no-module-cycles"
         .unwrap();
     assert_eq!(engine.query_cycles().unwrap().len(), 1);
 
+    let registry = default_registry();
     let outcome = evaluate(
         &FactsSource::DdBacked {
             db: &db,
@@ -714,6 +719,7 @@ name = "no-module-cycles"
         },
         dir.path(),
         EvalScope::Workspace,
+        &registry,
     )
     .unwrap();
 
@@ -733,6 +739,7 @@ name = "no-module-cycles"
 fn cycle_within_glob_scope_attributed_to_named_constraint() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
     use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -767,6 +774,7 @@ severity = "advisory"
         })
         .unwrap();
 
+    let registry = default_registry();
     let outcome = evaluate(
         &FactsSource::DdBacked {
             db: &db,
@@ -774,6 +782,7 @@ severity = "advisory"
         },
         dir.path(),
         EvalScope::Workspace,
+        &registry,
     )
     .unwrap();
 
@@ -795,6 +804,7 @@ severity = "advisory"
 fn cycle_partially_outside_glob_scope_falls_back_to_builtin() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
     use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -829,6 +839,7 @@ scope = "src/**"
         })
         .unwrap();
 
+    let registry = default_registry();
     let outcome = evaluate(
         &FactsSource::DdBacked {
             db: &db,
@@ -836,6 +847,7 @@ scope = "src/**"
         },
         dir.path(),
         EvalScope::Workspace,
+        &registry,
     )
     .unwrap();
 

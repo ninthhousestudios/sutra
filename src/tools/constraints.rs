@@ -164,10 +164,12 @@ fn handle_violations(
     workspace_root: &Path,
     dd_engine: Option<&DdEngine>,
 ) -> Result<serde_json::Value> {
+    let registry = crate::parser::adapter::default_registry();
     let outcome = check::evaluate(
         &FactsSource::DdBacked { db, dd_engine },
         workspace_root,
         EvalScope::Workspace,
+        &registry,
     )?;
 
     let active: Vec<_> = outcome.active.iter().map(finding_to_json).collect();

@@ -47,7 +47,10 @@ impl Waivable for ConstraintFinding {
             .find(|w| {
                 w.constraint_id == self.constraint_id
                     && w.file_path == self.from_path
-                    && w.symbol_qualified_name.is_none()
+                    && match &w.symbol_qualified_name {
+                        None => true,
+                        Some(wsym) => self.enclosing_symbol.as_deref() == Some(wsym.as_str()),
+                    }
             })
             .map(|w| WaiverMeta {
                 rationale: w.rationale.clone(),

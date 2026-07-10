@@ -356,6 +356,7 @@ pub fn handle(
         &FactsSource::DdBacked { db, dd_engine },
         workspace_root,
         EvalScope::Workspace,
+        registry,
     )
     .ok();
 

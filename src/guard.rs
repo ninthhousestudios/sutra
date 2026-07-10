@@ -473,6 +473,7 @@ pub fn check_proposed_file_constraints(
     proposed_outgoing: &[(i64, i64)],
     proposed_externals: &[(String, String)],
 ) -> CheckOutcome {
+    let registry = crate::parser::adapter::default_registry();
     let mut edges: Vec<(i64, i64)> = proposed_outgoing.to_vec();
     edges.extend(get_incoming_edges(conn, file_id));
     check::evaluate(
@@ -482,6 +483,7 @@ pub fn check_proposed_file_constraints(
             edges: &edges,
             externals: proposed_externals,
         },
+        &registry,
     )
     .unwrap_or_default()
 }
@@ -514,10 +516,12 @@ pub fn check_file_constraints(
     project_root: &Path,
     file_id: i64,
 ) -> CheckOutcome {
+    let registry = crate::parser::adapter::default_registry();
     check::evaluate(
         &FactsSource::RawConn(conn),
         project_root,
         EvalScope::SingleFile(file_id),
+        &registry,
     )
     .unwrap_or_default()
 }

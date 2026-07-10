@@ -358,6 +358,7 @@ pub fn build_findings(
             changed_ids: &changed_ids,
             old_edges: &old_edges,
         },
+        registry,
     )?;
 
     let constraint_violations = check_outcome.active;

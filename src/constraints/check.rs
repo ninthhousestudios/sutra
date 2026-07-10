@@ -8,6 +8,7 @@ use glob::{MatchOptions, Pattern};
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
 pub use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::error::Result;
+use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{
     self, Constraint, ConstraintKind, ConstraintParseError, Severity, match_no_cycles_constraint,
 };
@@ -47,12 +48,13 @@ pub fn evaluate(
     facts: &FactsSource,
     workspace_root: &Path,
     scope: EvalScope,
+    registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     match facts {
         FactsSource::DdBacked { db, dd_engine } => {
-            evaluate_dd(db, *dd_engine, workspace_root, scope)
+            evaluate_dd(db, *dd_engine, workspace_root, scope, registry)
         }
-        FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope),
+        FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope, registry),
     }
 }
 
@@ -61,6 +63,7 @@ fn evaluate_dd(
     dd_engine: Option<&DdEngine>,
     workspace_root: &Path,
     scope: EvalScope,
+    registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
@@ -389,6 +392,39 @@ fn evaluate_dd(
         }
     }
 
+    // Forbidden pattern checks — read source from disk for scope-matched files
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
+    if has_patterns {
+        let scan_ids: HashSet<i64> = match &scope {
+            EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
+            EvalScope::SingleFile(id) => std::iter::once(*id).collect(),
+            EvalScope::Edges { .. } => HashSet::new(),
+            EvalScope::Workspace => all_files.iter().map(|f| f.id).collect(),
+        };
+        if !scan_ids.is_empty() {
+            let mut sources: Vec<(String, String)> = Vec::new();
+            for f in &all_files {
+                if !scan_ids.contains(&f.id) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(&*f.path)) {
+                    sources.push((f.path.to_string(), content));
+                }
+            }
+            let source_refs: Vec<(&str, &str)> = sources
+                .iter()
+                .map(|(p, c)| (p.as_str(), c.as_str()))
+                .collect();
+            findings.extend(super::patterns::check_forbidden_patterns(
+                &all_constraints,
+                &source_refs,
+                registry,
+            ));
+        }
+    }
+
     let constraint_waivers = db.get_constraint_waivers(None)?;
     let (active, waived) = waivers::partition(findings, &constraint_waivers);
 
@@ -404,6 +440,7 @@ fn evaluate_raw(
     conn: &rusqlite::Connection,
     workspace_root: &Path,
     scope: EvalScope,
+    registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     use rusqlite::params;
 
@@ -447,7 +484,10 @@ fn evaluate_raw(
     let has_max_fan_in = all_constraints
         .iter()
         .any(|c| matches!(c.kind, rules::ConstraintKind::MaxFanIn { .. }));
-    if !has_forbidden_or_boundary && !has_external && !has_max_fan_in {
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, rules::ConstraintKind::ForbiddenPattern { .. }));
+    if !has_forbidden_or_boundary && !has_external && !has_max_fan_in && !has_patterns {
         return Ok(CheckOutcome {
             active: parse_error_findings,
             parse_errors,
@@ -664,6 +704,37 @@ fn evaluate_raw(
                     });
                 }
             }
+        }
+    }
+
+    // Forbidden pattern checks — read source from disk for scope-matched files
+    if has_patterns && !matches!(scope, EvalScope::Edges { .. }) {
+        let scan_paths: Vec<String> = match &scope {
+            EvalScope::SingleFile(file_id) => {
+                let mut stmt = conn.prepare("SELECT path FROM files WHERE id = ?1")?;
+                stmt.query_row(rusqlite::params![file_id], |row| row.get(0))
+                    .ok()
+                    .into_iter()
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        if !scan_paths.is_empty() {
+            let mut sources: Vec<(String, String)> = Vec::new();
+            for path in &scan_paths {
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
+                    sources.push((path.clone(), content));
+                }
+            }
+            let source_refs: Vec<(&str, &str)> = sources
+                .iter()
+                .map(|(p, c)| (p.as_str(), c.as_str()))
+                .collect();
+            findings.extend(super::patterns::check_forbidden_patterns(
+                &all_constraints,
+                &source_refs,
+                registry,
+            ));
         }
     }
 

@@ -1408,6 +1408,7 @@ fn degraded_findings_nullify_risk_score() {
 #[test]
 fn resolved_delta_for_removed_forbidden_edge() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::parser::adapter::default_registry;
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
@@ -1468,6 +1469,7 @@ forbidden_deps = [
     let old_edges: std::collections::HashSet<(i64, i64)> =
         [(f_view.id, f_query.id)].into_iter().collect();
 
+    let registry = default_registry();
     let outcome = evaluate(
         &FactsSource::DdBacked {
             db: &db,
@@ -1478,6 +1480,7 @@ forbidden_deps = [
             changed_ids: &changed_ids,
             old_edges: &old_edges,
         },
+        &registry,
     )
     .unwrap();
 
