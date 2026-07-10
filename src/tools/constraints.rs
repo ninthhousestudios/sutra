@@ -68,6 +68,10 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
         *waiver_counts.entry(&w.constraint_id).or_default() += 1;
     }
 
+    let ratchets = db.get_active_constraint_ratchets().unwrap_or_default();
+    let ratchet_map: HashMap<&str, &crate::db::ConstraintRatchetRow> =
+        ratchets.iter().map(|r| (&*r.constraint_id, r)).collect();
+
     let all_files = db.all_files()?;
     let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
     let comp_with_paths = db.active_components_with_paths()?;
@@ -138,11 +142,18 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                     dead_fields.join(", "),
                 ));
             }
+            if let Some(r) = ratchet_map.get(&*c.id) {
+                entry["ratcheted"] = json!(true);
+                entry["severity_floor"] = json!(&r.severity_floor);
+            }
             entry
         })
         .collect();
 
     let mut result = json!({ "constraints": constraints_out });
+    if !ratchets.is_empty() {
+        result["active_ratchet_count"] = json!(ratchets.len());
+    }
     if !constraint_parse_errors.is_empty() {
         result["parse_errors"] = json!(
             constraint_parse_errors

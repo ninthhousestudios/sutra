@@ -464,9 +464,10 @@ pub fn handle(
                     .chain(outcome.waived.iter().map(|w| &w.finding));
                 let in_scope_violations: Vec<_> = all_findings
                     .filter(|v| {
-                        constraint_ids.contains(&*v.constraint_id)
-                            && (file_set.contains(v.from_path.as_str())
-                                || file_set.contains(v.to_path.as_str()))
+                        v.constraint_kind == "ratchet_violation"
+                            || (constraint_ids.contains(&*v.constraint_id)
+                                && (file_set.contains(v.from_path.as_str())
+                                    || file_set.contains(v.to_path.as_str())))
                     })
                     .map(|v| {
                         json!({

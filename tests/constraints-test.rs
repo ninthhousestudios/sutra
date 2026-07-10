@@ -1185,3 +1185,235 @@ name = "no-unsafe"
         "waived pattern should appear in waived list"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Ratchet violation detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ratchet_violation_deletion_detected() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    // rules.toml with NO constraints — the ratcheted one is "missing"
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    // Register a ratchet for a constraint that doesn't exist in rules.toml
+    db.upsert_constraint_ratchet(
+        "abc12345",
+        Some("no-clone"),
+        "forbidden_dep: a → b",
+        "blocking",
+    )
+    .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let ratchet_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "ratchet_violation")
+        .collect();
+    assert_eq!(ratchet_findings.len(), 1);
+    assert_eq!(ratchet_findings[0].constraint_id.as_ref(), "abc12345");
+    assert_eq!(
+        ratchet_findings[0].severity,
+        sutra::rules::Severity::Blocking
+    );
+    assert!(ratchet_findings[0].detail.contains("removed or modified"));
+    assert!(ratchet_findings[0].detail.contains("forbidden_dep: a → b"));
+}
+
+#[test]
+fn ratchet_violation_severity_below_floor_detected() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/a/**"
+to = "src/b/**"
+name = "no-a-to-b"
+severity = "advisory"
+"#,
+    )
+    .unwrap();
+
+    // Ratchet was registered at "blocking" but constraint is now "advisory"
+    let mut loaded = sutra::rules::load_rules(dir.path()).unwrap();
+    let (constraints, _) = loaded.all_constraints();
+    let constraint_id = &constraints[0].id;
+    db.upsert_constraint_ratchet(
+        constraint_id,
+        Some("no-a-to-b"),
+        "forbidden_dep",
+        "blocking",
+    )
+    .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let ratchet_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "ratchet_violation")
+        .collect();
+    assert_eq!(ratchet_findings.len(), 1);
+    assert!(ratchet_findings[0].detail.contains("severity downgraded"));
+    assert!(ratchet_findings[0].detail.contains("advisory"));
+    assert!(ratchet_findings[0].detail.contains("blocking"));
+}
+
+#[test]
+fn ratchet_violation_released_row_silent() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    // Register then release the ratchet
+    db.upsert_constraint_ratchet(
+        "abc12345",
+        Some("no-clone"),
+        "forbidden_dep: a → b",
+        "blocking",
+    )
+    .unwrap();
+    db.release_constraint_ratchet("abc12345", "josh", "no longer needed")
+        .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let ratchet_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "ratchet_violation")
+        .collect();
+    assert_eq!(
+        ratchet_findings.len(),
+        0,
+        "released ratchet should not fire"
+    );
+}
+
+#[test]
+fn ratchet_violation_non_waivable() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    // Register a ratchet for a missing constraint
+    db.upsert_constraint_ratchet(
+        "abc12345",
+        Some("no-clone"),
+        "forbidden_dep: a → b",
+        "blocking",
+    )
+    .unwrap();
+
+    // Create a waiver targeting that constraint ID
+    db.create_constraint_waiver(
+        "abc12345",
+        Some("no-clone"),
+        "",
+        None,
+        "bypass attempt",
+        "agent",
+    )
+    .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let ratchet_active: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "ratchet_violation")
+        .collect();
+    assert_eq!(
+        ratchet_active.len(),
+        1,
+        "ratchet violation must not be waivable"
+    );
+
+    let ratchet_waived = outcome
+        .waived
+        .iter()
+        .filter(|w| w.finding.constraint_kind == "ratchet_violation")
+        .count();
+    assert_eq!(
+        ratchet_waived, 0,
+        "ratchet violation must never appear in waived list"
+    );
+}

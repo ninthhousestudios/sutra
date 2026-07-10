@@ -7,6 +7,7 @@ use glob::{MatchOptions, Pattern};
 
 use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
 pub use crate::constraints::{ConstraintFinding, FindingDelta};
+use crate::db::ConstraintRatchetRow;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{
@@ -185,7 +186,9 @@ fn evaluate_dd(
     let edges = db.import_edges()?;
     if edges.is_empty() {
         let constraint_waivers = db.get_constraint_waivers(None)?;
-        let (active, waived) = waivers::partition(findings, &constraint_waivers);
+        let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
+        let ratchets = db.get_active_constraint_ratchets()?;
+        active.extend(check_ratchet_violations(&ratchets, &all_constraints));
         return Ok(CheckOutcome {
             active,
             waived,
@@ -427,7 +430,9 @@ fn evaluate_dd(
     }
 
     let constraint_waivers = db.get_constraint_waivers(None)?;
-    let (active, waived) = waivers::partition(findings, &constraint_waivers);
+    let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
+    let ratchets = db.get_active_constraint_ratchets()?;
+    active.extend(check_ratchet_violations(&ratchets, &all_constraints));
 
     Ok(CheckOutcome {
         active,
@@ -489,8 +494,13 @@ fn evaluate_raw(
         .iter()
         .any(|c| matches!(c.kind, rules::ConstraintKind::ForbiddenPattern { .. }));
     if !has_forbidden_or_boundary && !has_external && !has_max_fan_in && !has_patterns {
+        let mut active = parse_error_findings;
+        active.extend(check_ratchet_violations(
+            &get_active_ratchets_raw(conn),
+            &all_constraints,
+        ));
         return Ok(CheckOutcome {
-            active: parse_error_findings,
+            active,
             parse_errors,
             ..Default::default()
         });
@@ -555,8 +565,13 @@ fn evaluate_raw(
     };
 
     if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in && !has_patterns {
+        let mut active = parse_error_findings;
+        active.extend(check_ratchet_violations(
+            &get_active_ratchets_raw(conn),
+            &all_constraints,
+        ));
         return Ok(CheckOutcome {
-            active: parse_error_findings,
+            active,
             parse_errors,
             ..Default::default()
         });
@@ -746,6 +761,10 @@ fn evaluate_raw(
     }
 
     let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
+    active.extend(check_ratchet_violations(
+        &get_active_ratchets_raw(conn),
+        &all_constraints,
+    ));
 
     let mut all_active = parse_error_findings;
     all_active.append(&mut active);
@@ -756,6 +775,99 @@ fn evaluate_raw(
         parse_errors,
         ..Default::default()
     })
+}
+
+fn check_ratchet_violations(
+    ratchets: &[ConstraintRatchetRow],
+    constraints: &[Constraint],
+) -> Vec<ConstraintFinding> {
+    let constraint_map: HashMap<&str, &Constraint> =
+        constraints.iter().map(|c| (&*c.id, c)).collect();
+
+    let mut findings = Vec::new();
+    for r in ratchets {
+        match constraint_map.get(&*r.constraint_id) {
+            None => {
+                findings.push(ConstraintFinding {
+                    constraint_id: Arc::clone(&r.constraint_id),
+                    constraint_name: r.name.as_ref().map(Arc::clone),
+                    constraint_kind: "ratchet_violation".into(),
+                    severity: Severity::Blocking,
+                    provenance: None,
+                    from_path: String::new(),
+                    to_path: String::new(),
+                    component_context: None,
+                    detail: format!(
+                        "ratcheted constraint removed or modified: {} — was: {}. \
+                         A human must run `sutra ratchet release {}` to retire it.",
+                        r.name.as_deref().unwrap_or(&r.constraint_id),
+                        r.rendered_description,
+                        r.constraint_id,
+                    ),
+                    delta: FindingDelta::Unknown,
+                    line: None,
+                    snippet: None,
+                    enclosing_symbol: None,
+                });
+            }
+            Some(c) => {
+                let floor =
+                    Severity::from_str_lossy(&r.severity_floor).unwrap_or(Severity::Informational);
+                if c.severity.ordinal() < floor.ordinal() {
+                    findings.push(ConstraintFinding {
+                        constraint_id: Arc::clone(&r.constraint_id),
+                        constraint_name: r.name.as_ref().map(Arc::clone),
+                        constraint_kind: "ratchet_violation".into(),
+                        severity: Severity::Blocking,
+                        provenance: c.provenance.as_ref().map(Arc::clone),
+                        from_path: String::new(),
+                        to_path: String::new(),
+                        component_context: None,
+                        detail: format!(
+                            "ratcheted constraint severity downgraded: {} is now {} \
+                             but floor is {}. A human must run `sutra ratchet release {}` \
+                             to retire it.",
+                            r.name.as_deref().unwrap_or(&r.constraint_id),
+                            c.severity.as_str(),
+                            r.severity_floor,
+                            r.constraint_id,
+                        ),
+                        delta: FindingDelta::Unknown,
+                        line: None,
+                        snippet: None,
+                        enclosing_symbol: None,
+                    });
+                }
+            }
+        }
+    }
+    findings
+}
+
+fn get_active_ratchets_raw(conn: &rusqlite::Connection) -> Vec<ConstraintRatchetRow> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, constraint_id, name, rendered_description, severity_floor, \
+         registered_at, released_at, released_by, release_rationale \
+         FROM constraint_ratchets WHERE released_at IS NULL ORDER BY registered_at",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([], |row| {
+        Ok(ConstraintRatchetRow {
+            id: row.get(0)?,
+            constraint_id: Arc::from(row.get::<_, String>(1)?),
+            name: row.get::<_, Option<String>>(2)?.map(Arc::from),
+            rendered_description: row.get(3)?,
+            severity_floor: row.get(4)?,
+            registered_at: row.get(5)?,
+            released_at: row.get(6)?,
+            released_by: row.get(7)?,
+            release_rationale: row.get(8)?,
+        })
+    })
+    .ok()
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
 }
 
 /// Check a manifest's findings against waivers and return a partitioned outcome.
