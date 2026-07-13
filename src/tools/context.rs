@@ -26,7 +26,9 @@ pub struct ContextArgs {
 
 const DEFAULT_BUDGET: usize = 8000;
 const DEFAULT_DEPTH: usize = 2;
+const MAX_DEPTH: usize = 4;
 const MAX_TRANSITIVE_PER_ROLE: usize = 25;
+const MAX_WALK_NODES: usize = 500;
 
 pub fn estimate_tokens(content: &str) -> usize {
     let words = content.split_whitespace().count() * 13 / 10;
@@ -70,10 +72,11 @@ fn truncate_head(content: &str, cap_tokens: usize) -> Option<(String, usize)> {
 }
 
 fn is_test_symbol(sym: &SymbolRow, file_path: &str) -> bool {
-    let name = &*sym.qualified_name;
-    name.starts_with("test_")
-        || name.starts_with("tests::")
-        || name == "tests"
+    const TEST_FLAGS: i64 = 0x03; // FLAG_TEST | FLAG_CFG_TEST
+    sym.flags & TEST_FLAGS != 0
+        || sym.qualified_name.starts_with("test_")
+        || sym.qualified_name.starts_with("tests::")
+        || *sym.qualified_name == *"tests"
         || file_path.contains("/tests/")
         || file_path.starts_with("tests/")
         || file_path.ends_with("_test.dart")
@@ -94,11 +97,14 @@ fn walk_dependencies(db: &Db, root: &SymbolRow, max_depth: usize) -> Result<Vec<
     let mut result = Vec::new();
 
     while let Some((_sid, file_id, start, end, d)) = queue.pop_front() {
-        if d >= max_depth {
+        if d >= max_depth || result.len() >= MAX_WALK_NODES {
             continue;
         }
         let refs = db.find_refs_in_file(file_id)?;
         for r in refs.iter().filter(|r| r.line >= start && r.line <= end) {
+            if result.len() >= MAX_WALK_NODES {
+                break;
+            }
             if let Some(target_id) = r.target_symbol_id {
                 if !visited.insert(target_id) {
                     continue;
@@ -138,11 +144,14 @@ fn walk_dependents(db: &Db, root_id: i64, max_depth: usize) -> Result<Vec<Neighb
     let mut result = Vec::new();
 
     while let Some((sid, d)) = queue.pop_front() {
-        if d >= max_depth {
+        if d >= max_depth || result.len() >= MAX_WALK_NODES {
             continue;
         }
         let refs = db.find_refs_to_symbol(sid)?;
         for r in &refs {
+            if result.len() >= MAX_WALK_NODES {
+                break;
+            }
             if let Some(caller_sym) = db.find_enclosing_symbol(r.file_id, r.line)? {
                 if !visited.insert(caller_sym.id) {
                     continue;
@@ -225,7 +234,7 @@ pub fn handle(
     lessons_db: Option<&LessonsDb>,
 ) -> Result<serde_json::Value> {
     let budget = token_budget.unwrap_or(DEFAULT_BUDGET);
-    let max_depth = depth.unwrap_or(DEFAULT_DEPTH);
+    let max_depth = depth.unwrap_or(DEFAULT_DEPTH).min(MAX_DEPTH);
 
     let sym = match db.resolve_symbol_diagnostic(symbol, None)? {
         ResolveResult::Unique(s) => s,
@@ -295,41 +304,51 @@ pub fn handle(
 
     // ---------------------------------------------------------------
     // 1. Target entity — full body → head-truncated (70% cap) → sig → omitted
+    //    Imports are collected separately and prepended AFTER packing so
+    //    the signature fallback is always the actual symbol signature.
     // ---------------------------------------------------------------
     let abs_path = workspace_root.join(&*file.path);
-    let target_body = if abs_path.exists() {
-        std::fs::read_to_string(&abs_path).ok().and_then(|source| {
-            let lines: Vec<&str> = source.lines().collect();
-            let start = (sym.start_line as usize).saturating_sub(1);
-            let end = std::cmp::min(sym.end_line as usize, lines.len());
-            if start >= end {
-                return None;
-            }
-            let body = lines[start..end].join("\n");
-
-            let imports = super::read::collect_relevant_imports(
-                db,
-                sym.file_id,
-                &file.path,
-                &lines,
-                start,
-                end,
-            )
-            .unwrap_or_default();
-            if imports.is_empty() {
-                Some(body)
-            } else {
-                Some(format!("{}\n\n{}", imports.join("\n"), body))
-            }
-        })
+    let (target_body, target_imports) = if abs_path.exists() {
+        std::fs::read_to_string(&abs_path)
+            .ok()
+            .and_then(|source| {
+                let lines: Vec<&str> = source.lines().collect();
+                let start = (sym.start_line as usize).saturating_sub(1);
+                let end = std::cmp::min(sym.end_line as usize, lines.len());
+                if start >= end {
+                    return None;
+                }
+                let body = lines[start..end].join("\n");
+                let imports = super::read::collect_relevant_imports(
+                    db,
+                    sym.file_id,
+                    &file.path,
+                    &lines,
+                    start,
+                    end,
+                )
+                .unwrap_or_default();
+                Some((body, imports))
+            })
+            .map_or((None, Vec::new()), |(b, i)| (Some(b), i))
     } else {
-        None
+        (None, Vec::new())
     };
 
     let target_packed = pack_target(&target_body, &sym, budget);
     match target_packed {
-        Some((content, tokens, trunc)) => {
+        Some((mut content, mut tokens, trunc)) => {
             truncated |= trunc;
+            // Prepend imports if they fit within the remaining budget
+            if !target_imports.is_empty() {
+                let import_block = target_imports.join("\n");
+                let with_imports = format!("{import_block}\n\n{content}");
+                let with_tokens = estimate_tokens(&with_imports);
+                if with_tokens <= budget {
+                    content = with_imports;
+                    tokens = with_tokens;
+                }
+            }
             context_entries.push(json!({
                 "symbol": sym.qualified_name,
                 "kind": sym.kind,
@@ -598,7 +617,11 @@ fn pack_direct_neighbor(
             included_ids.insert(n.sym.id);
         } else {
             *truncated = true;
+            tally(omitted, role, false);
         }
+    } else {
+        *truncated = true;
+        tally(omitted, role, false);
     }
 }
 
@@ -733,6 +756,16 @@ mod tests {
         let non_test = make_sym("handle");
         assert!(!is_test_symbol(&non_test, "src/lib.rs"));
         assert!(is_test_symbol(&non_test, "tests/integration.rs"));
+
+        // Parser-flagged test (FLAG_TEST = 0x01)
+        let mut flagged = make_sym("verify_output");
+        flagged.flags = 0x01;
+        assert!(is_test_symbol(&flagged, "src/lib.rs"));
+
+        // Parser-flagged cfg(test) module (FLAG_CFG_TEST = 0x02)
+        let mut cfg_test = make_sym("helper_in_test_mod");
+        cfg_test.flags = 0x02;
+        assert!(is_test_symbol(&cfg_test, "src/lib.rs"));
     }
 
     #[test]
@@ -772,5 +805,20 @@ mod tests {
         let (content, _, trunc) = pack_target(&None, &sym, 1000).unwrap();
         assert!(trunc);
         assert_eq!(content, "fn no_body(x: i32) -> bool");
+    }
+
+    #[test]
+    fn pack_target_signature_fallback_is_body_not_import() {
+        // When imports are separated, the fallback sig should be the
+        // function signature, not a use-statement. pack_target receives
+        // only the body (imports are handled by the caller).
+        let body = Some("fn handle() {\n    long_body()\n}".to_string());
+        let sym = make_sym("handle");
+        let (content, _, trunc) = pack_target(&body, &sym, 5).unwrap();
+        assert!(trunc);
+        assert!(
+            content.starts_with("fn handle()"),
+            "fallback should be the function sig, got: {content}"
+        );
     }
 }
