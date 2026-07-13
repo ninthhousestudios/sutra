@@ -628,33 +628,38 @@ pub fn diff_files(
             None => continue,
         };
 
-        let old_source = git::git_file_content_at(workspace_root, base, old_file)?;
-        let new_source = git::git_file_content_at(workspace_root, head, new_file)?;
+        let mut process = || -> Result<()> {
+            let old_source = git::git_file_content_at(workspace_root, base, old_file)?;
+            let new_source = git::git_file_content_at(workspace_root, head, new_file)?;
 
-        match (old_source, new_source) {
-            (None, None) => {}
-            (None, Some(new_src)) => {
-                let new_parse = parser::parse_file(&new_src, language, new_file)?;
-                all_unmatched_new.extend(build_unmatched(&new_parse, &new_src, new_file));
+            match (old_source, new_source) {
+                (None, None) => {}
+                (None, Some(new_src)) => {
+                    let new_parse = parser::parse_file(&new_src, language, new_file)?;
+                    all_unmatched_new.extend(build_unmatched(&new_parse, &new_src, new_file));
+                }
+                (Some(old_src), None) => {
+                    let old_parse = parser::parse_file(&old_src, language, old_file)?;
+                    all_unmatched_old.extend(build_unmatched(&old_parse, &old_src, new_file));
+                }
+                (Some(old_src), Some(new_src)) => {
+                    let old_parse = parser::parse_file(&old_src, language, old_file)?;
+                    let new_parse = parser::parse_file(&new_src, language, new_file)?;
+                    let result = classify_symbols(
+                        &old_parse, &new_parse, &old_src, &new_src, new_file, new_file,
+                    );
+                    per_file
+                        .entry(new_file.to_string())
+                        .or_default()
+                        .extend(result.changes);
+                    all_unmatched_old.extend(result.unmatched_old);
+                    all_unmatched_new.extend(result.unmatched_new);
+                }
             }
-            (Some(old_src), None) => {
-                let old_parse = parser::parse_file(&old_src, language, old_file)?;
-                all_unmatched_old.extend(build_unmatched(&old_parse, &old_src, new_file));
-            }
-            (Some(old_src), Some(new_src)) => {
-                let old_parse = parser::parse_file(&old_src, language, old_file)?;
-                let new_parse = parser::parse_file(&new_src, language, new_file)?;
-                let result = classify_symbols(
-                    &old_parse, &new_parse, &old_src, &new_src, new_file, new_file,
-                );
-                per_file
-                    .entry(new_file.to_string())
-                    .or_default()
-                    .extend(result.changes);
-                all_unmatched_old.extend(result.unmatched_old);
-                all_unmatched_new.extend(result.unmatched_new);
-            }
-        }
+            Ok(())
+        };
+        // Per-file errors don't prevent other files from being processed
+        let _ = process();
     }
 
     let resolve = resolve_renames(&all_unmatched_old, &all_unmatched_new);
