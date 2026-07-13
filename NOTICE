@@ -1,0 +1,13 @@
+Third-party code included in this project
+==========================================
+
+src/parser/structural_hash.rs
+-----------------------------
+Ported from sem (https://github.com/lukasgraf/sem)
+Original: crates/sem-core/src/utils/hash.rs
+License: MIT
+Copyright (c) sem contributors
+
+The structural hashing algorithm (AST-token-stream through xxHash64,
+skipping comment nodes, normalizing whitespace) was ported from sem's
+hash_structural_tokens / structural_hash_excluding_range functions.

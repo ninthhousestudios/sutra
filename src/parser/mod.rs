@@ -4,6 +4,7 @@ pub mod complexity;
 pub mod dart;
 pub mod python;
 pub mod rust;
+pub mod structural_hash;
 
 use crate::error::Result;
 
@@ -25,6 +26,7 @@ pub struct ExtractedSymbol {
     pub kind: SymbolKind,
     pub signature: Option<String>,
     pub signature_hash: Option<String>,
+    pub structural_hash: Option<String>,
     pub visibility: Option<String>,
     pub start_line: usize,
     pub start_col: usize,

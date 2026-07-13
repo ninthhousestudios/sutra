@@ -15,6 +15,7 @@ fn make_symbol(
         kind,
         signature: None,
         signature_hash: None,
+        structural_hash: None,
         visibility: None,
         start_line,
         start_col: 0,

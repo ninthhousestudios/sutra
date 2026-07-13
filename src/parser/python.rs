@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::parser::adapter::ParseContext;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity,
+    complexity, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -154,6 +154,11 @@ fn extract_function(
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
     let name = name_node.utf8_text(src).ok()?.to_string();
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     let (qualified_name, kind) = if let Some(cls) = class_name {
         (format!("{cls}::{name}"), SymbolKind::Method)
@@ -192,6 +197,7 @@ fn extract_function(
         kind,
         signature,
         signature_hash,
+        structural_hash: sh,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -211,6 +217,11 @@ fn extract_function(
 fn extract_class(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
     let name = name_node.utf8_text(src).ok()?.to_string();
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     let visibility = if name.starts_with('_') {
         Some("private".to_string())
@@ -235,6 +246,7 @@ fn extract_class(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
         kind: SymbolKind::Class,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -283,12 +295,19 @@ fn collect_assignment_symbols(
     let docstring = extract_docstring_from_comment(stmt, src);
     let flags = extract_flags(file_path, &name, stmt, src);
 
+    let sh = Some(structural_hash::compute(
+        stmt,
+        src,
+        Some((left.start_byte(), left.end_byte())),
+    ));
+
     symbols.push(ExtractedSymbol {
         qualified_name: name.clone(),
         short_name: name,
         kind,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility: Some("pub".to_string()),
         start_line: stmt.start_position().row + 1,
         start_col: stmt.start_position().column,

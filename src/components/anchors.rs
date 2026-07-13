@@ -240,6 +240,7 @@ mod tests {
             kind: Arc::from(kind),
             signature: None,
             signature_hash: None,
+            structural_hash: None,
             visibility: None,
             start_line: 1,
             start_col: 0,

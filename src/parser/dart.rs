@@ -13,7 +13,7 @@ pub const DART_LIFECYCLE_METHODS: &[&str] = &[
 ];
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity,
+    complexity, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -211,13 +211,15 @@ fn extract_named_symbol(
     name_context: &[String],
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
-    let short_name = node
-        .child_by_field_name("name")?
-        .utf8_text(src)
-        .ok()?
-        .to_string();
+    let name_node = node.child_by_field_name("name")?;
+    let short_name = name_node.utf8_text(src).ok()?.to_string();
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
-    build_symbol(node, src, name_context, short_name, kind, None, None)
+    build_symbol(node, src, name_context, short_name, kind, None, None, sh)
 }
 
 /// Extract a function symbol. `sig_node` carries name/params/return_type fields;
@@ -229,12 +231,14 @@ fn extract_fn_symbol(
     name_context: &[String],
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
-    let short_name = sig_node
-        .child_by_field_name("name")?
-        .utf8_text(src)
-        .ok()?
-        .to_string();
+    let name_node = sig_node.child_by_field_name("name")?;
+    let short_name = name_node.utf8_text(src).ok()?.to_string();
     let (signature, signature_hash) = build_fn_signature(sig_node, src, &short_name);
+    let sh = Some(structural_hash::compute(
+        span_node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
     build_symbol(
         span_node,
         src,
@@ -243,6 +247,7 @@ fn extract_fn_symbol(
         kind,
         signature,
         signature_hash,
+        sh,
     )
 }
 
@@ -268,12 +273,14 @@ fn extract_method_symbol(
         sig_node
     };
 
-    let short_name = inner
-        .child_by_field_name("name")?
-        .utf8_text(src)
-        .ok()?
-        .to_string();
+    let name_node = inner.child_by_field_name("name")?;
+    let short_name = name_node.utf8_text(src).ok()?.to_string();
     let (signature, signature_hash) = build_fn_signature(inner, src, &short_name);
+    let sh = Some(structural_hash::compute(
+        span_node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
     build_symbol(
         span_node,
         src,
@@ -282,6 +289,7 @@ fn extract_method_symbol(
         kind,
         signature,
         signature_hash,
+        sh,
     )
 }
 
@@ -289,12 +297,15 @@ fn extract_method_symbol(
 /// There is no `name` field — the name is the first `type_identifier` child.
 fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option<ExtractedSymbol> {
     let mut cursor = node.walk();
-    let short_name = node
+    let name_child = node
         .children(&mut cursor)
-        .find(|c| c.kind() == "type_identifier")?
-        .utf8_text(src)
-        .ok()?
-        .to_string();
+        .find(|c| c.kind() == "type_identifier")?;
+    let short_name = name_child.utf8_text(src).ok()?.to_string();
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_child.start_byte(), name_child.end_byte())),
+    ));
     build_symbol(
         node,
         src,
@@ -303,6 +314,7 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
         SymbolKind::TypeAlias,
         None,
         None,
+        sh,
     )
 }
 
@@ -372,9 +384,21 @@ fn extract_variable_symbols(
                         && let Ok(name) = ident.utf8_text(src)
                     {
                         let sig = build_sig(name);
-                        if let Some(mut sym) =
-                            build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
-                        {
+                        let sh = Some(structural_hash::compute(
+                            decl,
+                            src,
+                            Some((ident.start_byte(), ident.end_byte())),
+                        ));
+                        if let Some(mut sym) = build_symbol(
+                            decl,
+                            src,
+                            name_context,
+                            name.to_string(),
+                            kind,
+                            sig,
+                            None,
+                            sh,
+                        ) {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
                             sym.flags |= extract_flags(node, src, file_path, None);
                             symbols.push(sym);
@@ -393,9 +417,21 @@ fn extract_variable_symbols(
                         && let Ok(name) = ident.utf8_text(src)
                     {
                         let sig = build_sig(name);
-                        if let Some(mut sym) =
-                            build_symbol(decl, src, name_context, name.to_string(), kind, sig, None)
-                        {
+                        let sh = Some(structural_hash::compute(
+                            decl,
+                            src,
+                            Some((ident.start_byte(), ident.end_byte())),
+                        ));
+                        if let Some(mut sym) = build_symbol(
+                            decl,
+                            src,
+                            name_context,
+                            name.to_string(),
+                            kind,
+                            sig,
+                            None,
+                            sh,
+                        ) {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
                             sym.flags |= extract_flags(node, src, file_path, None);
                             symbols.push(sym);
@@ -411,6 +447,7 @@ fn extract_variable_symbols(
                     }
                     if let Ok(name) = child.utf8_text(src) {
                         let sig = build_sig(name);
+                        let sh = Some(structural_hash::compute(child, src, None));
                         if let Some(mut sym) = build_symbol(
                             child,
                             src,
@@ -419,6 +456,7 @@ fn extract_variable_symbols(
                             kind,
                             sig,
                             None,
+                            sh,
                         ) {
                             sym.language_attrs = extract_language_attrs(node, None, src, kind);
                             sym.flags |= extract_flags(node, src, file_path, None);
@@ -585,6 +623,7 @@ fn build_symbol(
     kind: SymbolKind,
     signature: Option<String>,
     signature_hash: Option<String>,
+    structural_hash: Option<String>,
 ) -> Option<ExtractedSymbol> {
     let qualified_name = build_qualified_name(name_context, &short_name);
 
@@ -612,6 +651,7 @@ fn build_symbol(
         kind,
         signature,
         signature_hash,
+        structural_hash,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,

@@ -248,6 +248,7 @@ pub struct SymbolRow {
     pub kind: Arc<str>,
     pub signature: Option<String>,
     pub signature_hash: Option<String>,
+    pub structural_hash: Option<String>,
     pub visibility: Option<String>,
     pub start_line: i64,
     pub start_col: i64,
@@ -270,6 +271,7 @@ pub struct InsertSymbolParams<'a> {
     pub kind: &'a str,
     pub signature: Option<&'a str>,
     pub signature_hash: Option<&'a str>,
+    pub structural_hash: Option<&'a str>,
     pub visibility: Option<&'a str>,
     pub start_line: i64,
     pub start_col: i64,
@@ -797,16 +799,17 @@ impl Db {
             let id: i64 = conn.prepare_cached(
                 "INSERT INTO symbols (
                     file_id, qualified_name, short_name, kind,
-                    signature, signature_hash, visibility,
+                    signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
                     language_attrs
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                  ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
                     short_name = excluded.short_name,
                     kind = excluded.kind,
                     signature = excluded.signature,
                     signature_hash = excluded.signature_hash,
+                    structural_hash = excluded.structural_hash,
                     visibility = excluded.visibility,
                     start_col = excluded.start_col,
                     end_line = excluded.end_line,
@@ -827,6 +830,7 @@ impl Db {
                     p.kind,
                     p.signature,
                     p.signature_hash,
+                    p.structural_hash,
                     p.visibility,
                     p.start_line,
                     p.start_col,
@@ -889,16 +893,17 @@ impl Db {
         let id: i64 = conn.query_row(
             "INSERT INTO symbols (
                 file_id, qualified_name, short_name, kind,
-                signature, signature_hash, visibility,
+                signature, signature_hash, structural_hash, visibility,
                 start_line, start_col, end_line, end_col,
                 parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
                 language_attrs
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
                 short_name = excluded.short_name,
                 kind = excluded.kind,
                 signature = excluded.signature,
                 signature_hash = excluded.signature_hash,
+                structural_hash = excluded.structural_hash,
                 visibility = excluded.visibility,
                 start_col = excluded.start_col,
                 end_line = excluded.end_line,
@@ -918,6 +923,7 @@ impl Db {
                 p.kind,
                 p.signature,
                 p.signature_hash,
+                p.structural_hash,
                 p.visibility,
                 p.start_line,
                 p.start_col,
@@ -949,7 +955,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, file_id, qualified_name, short_name, kind,
-                    signature, signature_hash, visibility,
+                    signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
                     cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -968,7 +974,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, file_id, qualified_name, short_name, kind,
-                    signature, signature_hash, visibility,
+                    signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
                     cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -1009,7 +1015,7 @@ impl Db {
             let mut stmt = match kind_filter {
                 Some(_) => conn.prepare(
                     "SELECT id, file_id, qualified_name, short_name, kind,
-                            signature, signature_hash, visibility,
+                            signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
                             cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -1019,7 +1025,7 @@ impl Db {
                 )?,
                 None => conn.prepare(
                     "SELECT id, file_id, qualified_name, short_name, kind,
-                            signature, signature_hash, visibility,
+                            signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
                             cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -1067,7 +1073,7 @@ impl Db {
             if let Some(sym) = {
                 match conn.query_row(
                     "SELECT id, file_id, qualified_name, short_name, kind,
-                            signature, signature_hash, visibility,
+                            signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
                             cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -1092,7 +1098,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, file_id, qualified_name, short_name, kind,
-                    signature, signature_hash, visibility,
+                    signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
                     cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -1109,7 +1115,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, file_id, qualified_name, short_name, kind,
-                    signature, signature_hash, visibility,
+                    signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
                     cyclomatic, cognitive, max_nesting, flags, language_attrs
@@ -2018,19 +2024,20 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
         kind: Arc::from(row.get::<_, String>(4)?),
         signature: row.get(5)?,
         signature_hash: row.get(6)?,
-        visibility: row.get(7)?,
-        start_line: row.get(8)?,
-        start_col: row.get(9)?,
-        end_line: row.get(10)?,
-        end_col: row.get(11)?,
-        parent_symbol_id: row.get(12)?,
-        docstring: row.get(13)?,
-        pagerank: row.get(14)?,
-        cyclomatic: row.get(15)?,
-        cognitive: row.get(16)?,
-        max_nesting: row.get(17)?,
-        flags: row.get(18)?,
-        language_attrs: row.get(19)?,
+        structural_hash: row.get(7)?,
+        visibility: row.get(8)?,
+        start_line: row.get(9)?,
+        start_col: row.get(10)?,
+        end_line: row.get(11)?,
+        end_col: row.get(12)?,
+        parent_symbol_id: row.get(13)?,
+        docstring: row.get(14)?,
+        pagerank: row.get(15)?,
+        cyclomatic: row.get(16)?,
+        cognitive: row.get(17)?,
+        max_nesting: row.get(18)?,
+        flags: row.get(19)?,
+        language_attrs: row.get(20)?,
     })
 }
 

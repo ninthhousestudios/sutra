@@ -32,6 +32,7 @@ fn seed_symbol(db: &Db, file_id: i64, qn: &str, sn: &str) {
         kind: "function",
         signature: None,
         signature_hash: None,
+        structural_hash: None,
         visibility: None,
         start_line: 1,
         start_col: 0,

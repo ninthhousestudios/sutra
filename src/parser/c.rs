@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::parser::adapter::ParseContext;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity,
+    complexity, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -174,8 +174,14 @@ fn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymb
 fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
     let declarator = node.child_by_field_name("declarator")?;
     let func_decl = find_function_declarator(declarator)?;
-    let name_node = func_decl.child_by_field_name("declarator")?;
-    let name = find_name_in_declarator(name_node, src)?;
+    let name_decl = func_decl.child_by_field_name("declarator")?;
+    let name = find_name_in_declarator(name_decl, src)?;
+    let name_ident = find_name_node_in_declarator(name_decl);
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        name_ident.map(|n| (n.start_byte(), n.end_byte())),
+    ));
 
     let visibility = extract_visibility(node, src);
     let docstring = extract_docstring(node, src);
@@ -203,6 +209,7 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
         kind: SymbolKind::Function,
         signature,
         signature_hash,
+        structural_hash: sh,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -220,11 +227,14 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
 }
 
 fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(src).ok())
-        .map(|s| s.to_string())?;
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?.to_string();
     let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     let children = node
         .child_by_field_name("body")
@@ -237,6 +247,7 @@ fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Ex
         kind: SymbolKind::Struct,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility: Some("pub".to_string()),
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -272,12 +283,15 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
             .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
         let docstring = extract_docstring(child, src);
 
+        let sh = Some(structural_hash::compute(child, src, None));
+
         fields.push(ExtractedSymbol {
             qualified_name: format!("{struct_name}::{field_name}"),
             short_name: field_name,
             kind: SymbolKind::Field,
             signature,
             signature_hash,
+            structural_hash: sh,
             visibility: Some("pub".to_string()),
             start_line: child.start_position().row + 1,
             start_col: child.start_position().column,
@@ -310,11 +324,14 @@ fn find_field_identifier(node: Node, src: &[u8]) -> Option<String> {
 }
 
 fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(src).ok())
-        .map(|s| s.to_string())?;
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?.to_string();
     let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
@@ -322,6 +339,7 @@ fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Extr
         kind: SymbolKind::Enum,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility: Some("pub".to_string()),
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -350,12 +368,19 @@ fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<Extract
 
     for declarator in field_children(node, "declarator") {
         if let Some(name) = find_name_in_declarator(declarator, src) {
+            let name_ident = find_name_node_in_declarator(declarator);
+            let sh = Some(structural_hash::compute(
+                node,
+                src,
+                name_ident.map(|n| (n.start_byte(), n.end_byte())),
+            ));
             symbols.push(ExtractedSymbol {
                 qualified_name: name.clone(),
                 short_name: name,
                 kind: SymbolKind::TypeAlias,
                 signature: signature.clone(),
                 signature_hash: signature_hash.clone(),
+                structural_hash: sh,
                 visibility: Some("pub".to_string()),
                 start_line: node.start_position().row + 1,
                 start_col: node.start_position().column,
@@ -375,12 +400,15 @@ fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<Extract
 }
 
 fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(src).ok())
-        .map(|s| s.to_string())?;
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?.to_string();
     let flags = extract_flags(file_path, &name, node);
     let docstring = extract_docstring(node, src);
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
@@ -388,6 +416,7 @@ fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
         kind: SymbolKind::Macro,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility: Some("pub".to_string()),
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -405,10 +434,8 @@ fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
 }
 
 fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(src).ok())
-        .map(|s| s.to_string())?;
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?.to_string();
 
     if is_header_guard(&name) {
         return None;
@@ -416,6 +443,11 @@ fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<Extra
 
     let flags = extract_flags(file_path, &name, node);
     let docstring = extract_docstring(node, src);
+    let sh = Some(structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    ));
 
     Some(ExtractedSymbol {
         qualified_name: name.clone(),
@@ -423,6 +455,7 @@ fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<Extra
         kind: SymbolKind::Const,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility: Some("pub".to_string()),
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -459,6 +492,12 @@ fn collect_var_declarators(
             continue;
         }
         if let Some(name) = find_name_in_declarator(declarator, src) {
+            let name_ident = find_name_node_in_declarator(declarator);
+            let sh = Some(structural_hash::compute(
+                node,
+                src,
+                name_ident.map(|n| (n.start_byte(), n.end_byte())),
+            ));
             let flags = extract_flags(file_path, &name, node);
             symbols.push(ExtractedSymbol {
                 qualified_name: name.clone(),
@@ -466,6 +505,7 @@ fn collect_var_declarators(
                 kind,
                 signature: None,
                 signature_hash: None,
+                structural_hash: sh,
                 visibility: visibility.clone(),
                 start_line: node.start_position().row + 1,
                 start_col: node.start_position().column,
@@ -516,6 +556,20 @@ fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
         | "function_declarator" => node
             .child_by_field_name("declarator")
             .and_then(|d| find_name_in_declarator(d, src)),
+        _ => None,
+    }
+}
+
+fn find_name_node_in_declarator(node: Node) -> Option<Node> {
+    match node.kind() {
+        "identifier" | "type_identifier" | "field_identifier" | "primitive_type" => Some(node),
+        "pointer_declarator"
+        | "array_declarator"
+        | "init_declarator"
+        | "parenthesized_declarator"
+        | "function_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(find_name_node_in_declarator),
         _ => None,
     }
 }

@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::parser::adapter::ParseContext;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
-    complexity,
+    complexity, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
 
@@ -374,6 +374,11 @@ fn extract_symbol(
 ) -> Option<ExtractedSymbol> {
     let short_name = node_name_text(node, src)?;
 
+    let name_range = node
+        .child_by_field_name("name")
+        .map(|n| (n.start_byte(), n.end_byte()));
+    let structural_hash = Some(structural_hash::compute(node, src, name_range));
+
     let qualified_name = build_qualified_name(name_context, &short_name);
 
     let visibility = extract_visibility(node, src);
@@ -402,6 +407,7 @@ fn extract_symbol(
         kind,
         signature,
         signature_hash,
+        structural_hash,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,
@@ -442,12 +448,19 @@ fn extract_field_symbols(body: Node, src: &[u8], name_context: &[String]) -> Vec
             .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
         let docstring = extract_docstring(child, src);
 
+        let sh = Some(structural_hash::compute(
+            child,
+            src,
+            Some((name_node.start_byte(), name_node.end_byte())),
+        ));
+
         fields.push(ExtractedSymbol {
             qualified_name,
             short_name: field_name.to_string(),
             kind: SymbolKind::Field,
             signature,
             signature_hash,
+            structural_hash: sh,
             visibility,
             start_line: child.start_position().row + 1,
             start_col: child.start_position().column,
@@ -478,12 +491,15 @@ fn extract_impl_symbol(node: Node, src: &[u8], name_context: &[String]) -> Optio
     let docstring = extract_docstring(node, src);
     let language_attrs = extract_language_attrs(node, src, SymbolKind::Impl);
 
+    let sh = Some(structural_hash::compute(node, src, None));
+
     Some(ExtractedSymbol {
         qualified_name,
         short_name: impl_name,
         kind: SymbolKind::Impl,
         signature: None,
         signature_hash: None,
+        structural_hash: sh,
         visibility,
         start_line: node.start_position().row + 1,
         start_col: node.start_position().column,

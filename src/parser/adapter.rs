@@ -644,6 +644,7 @@ mod tests {
             kind: kind.into(),
             signature: signature.map(Into::into),
             signature_hash: None,
+            structural_hash: None,
             visibility: visibility.map(Into::into),
             start_line: 1,
             start_col: 0,

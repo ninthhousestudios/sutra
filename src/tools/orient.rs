@@ -745,6 +745,7 @@ mod tests {
             kind: "function",
             signature: Some("fn() -> Result<()>"),
             signature_hash: None,
+            structural_hash: None,
             visibility: Some("pub"),
             start_line: 1,
             start_col: 0,

@@ -16,6 +16,7 @@ fn sym<'a>(
         kind: "function",
         signature: Some("fn()"),
         signature_hash: None,
+        structural_hash: None,
         visibility: Some("pub"),
         start_line: 1,
         start_col: 0,

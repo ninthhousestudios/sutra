@@ -67,6 +67,7 @@ regex = "1"
 
 # Hashing
 blake3 = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Community detection
 leiden-rs = { version = "0.8.1", default-features = false }

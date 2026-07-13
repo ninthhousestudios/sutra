@@ -236,6 +236,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0046_constraint_ratchets.sql"),
         false,
     ),
+    (
+        "0047_structural_hash",
+        include_str!("../../migrations/0047_structural_hash.sql"),
+        true,
+    ),
 ];
 
 impl Db {

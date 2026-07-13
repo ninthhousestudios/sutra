@@ -16,6 +16,7 @@ pub enum ChangeKind {
     Deleted,
     SignatureChanged,
     BodyChanged,
+    CosmeticChanged,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,23 +115,37 @@ pub fn classify_symbols(
                     let old_hash = body_hash(old_source, old_sym);
                     let new_hash = body_hash(new_source, new_sym);
                     if old_hash != new_hash {
-                        let cd = callee_diff(
-                            &old_parse.references,
-                            &new_parse.references,
-                            old_sym,
-                            new_sym,
-                        );
-                        let cd = if cd.added.is_empty() && cd.removed.is_empty() {
-                            None
-                        } else {
-                            Some(cd)
+                        let is_cosmetic = match (&old_sym.structural_hash, &new_sym.structural_hash)
+                        {
+                            (Some(oh), Some(nh)) => oh == nh,
+                            _ => false,
                         };
-                        changes.push(SymbolChange {
-                            symbol: name.to_string(),
-                            kind: new_sym.kind.as_str().to_string(),
-                            change: ChangeKind::BodyChanged,
-                            callee_diff: cd,
-                        });
+                        if is_cosmetic {
+                            changes.push(SymbolChange {
+                                symbol: name.to_string(),
+                                kind: new_sym.kind.as_str().to_string(),
+                                change: ChangeKind::CosmeticChanged,
+                                callee_diff: None,
+                            });
+                        } else {
+                            let cd = callee_diff(
+                                &old_parse.references,
+                                &new_parse.references,
+                                old_sym,
+                                new_sym,
+                            );
+                            let cd = if cd.added.is_empty() && cd.removed.is_empty() {
+                                None
+                            } else {
+                                Some(cd)
+                            };
+                            changes.push(SymbolChange {
+                                symbol: name.to_string(),
+                                kind: new_sym.kind.as_str().to_string(),
+                                change: ChangeKind::BodyChanged,
+                                callee_diff: cd,
+                            });
+                        }
                     }
                 }
             }
@@ -223,12 +238,24 @@ mod tests {
         start: usize,
         end: usize,
     ) -> ExtractedSymbol {
+        make_sym_full(name, kind, sig_hash, None, start, end)
+    }
+
+    fn make_sym_full(
+        name: &str,
+        kind: SymbolKind,
+        sig_hash: Option<&str>,
+        structural_hash: Option<&str>,
+        start: usize,
+        end: usize,
+    ) -> ExtractedSymbol {
         ExtractedSymbol {
             qualified_name: name.to_string(),
             short_name: name.to_string(),
             kind,
             signature: None,
             signature_hash: sig_hash.map(|s| s.to_string()),
+            structural_hash: structural_hash.map(|s| s.to_string()),
             visibility: None,
             start_line: start,
             start_col: 0,
@@ -425,6 +452,86 @@ mod tests {
         let changes = classify_symbols(&old, &new, source, new_source);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].kind, "struct");
+        assert_eq!(changes[0].change, ChangeKind::BodyChanged);
+    }
+
+    #[test]
+    fn test_cosmetic_change_reformat() {
+        let source_old = "fn calc() {\n  1 + 1\n}";
+        let source_new = "fn calc() {\n    1 + 1\n}";
+        let old = make_parse(
+            vec![make_sym_full(
+                "calc",
+                SymbolKind::Function,
+                Some("same"),
+                Some("structural_a"),
+                1,
+                3,
+            )],
+            vec![],
+        );
+        let new = make_parse(
+            vec![make_sym_full(
+                "calc",
+                SymbolKind::Function,
+                Some("same"),
+                Some("structural_a"),
+                1,
+                3,
+            )],
+            vec![],
+        );
+        let changes = classify_symbols(&old, &new, source_old, source_new);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change, ChangeKind::CosmeticChanged);
+        assert!(changes[0].callee_diff.is_none());
+    }
+
+    #[test]
+    fn test_structural_hash_differs_is_body_changed() {
+        let source_old = "fn calc() {\n  1 + 1\n}";
+        let source_new = "fn calc() {\n  2 + 2\n}";
+        let old = make_parse(
+            vec![make_sym_full(
+                "calc",
+                SymbolKind::Function,
+                Some("same"),
+                Some("structural_a"),
+                1,
+                3,
+            )],
+            vec![],
+        );
+        let new = make_parse(
+            vec![make_sym_full(
+                "calc",
+                SymbolKind::Function,
+                Some("same"),
+                Some("structural_b"),
+                1,
+                3,
+            )],
+            vec![],
+        );
+        let changes = classify_symbols(&old, &new, source_old, source_new);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change, ChangeKind::BodyChanged);
+    }
+
+    #[test]
+    fn test_cosmetic_falls_back_when_no_structural_hash() {
+        let source_old = "fn f() {\n  1\n}";
+        let source_new = "fn f() {\n    1\n}";
+        let old = make_parse(
+            vec![make_sym("f", SymbolKind::Function, Some("h"), 1, 3)],
+            vec![],
+        );
+        let new = make_parse(
+            vec![make_sym("f", SymbolKind::Function, Some("h"), 1, 3)],
+            vec![],
+        );
+        let changes = classify_symbols(&old, &new, source_old, source_new);
+        assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change, ChangeKind::BodyChanged);
     }
 }
