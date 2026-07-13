@@ -44,8 +44,8 @@ pub fn handle(
     let mut entries = Vec::with_capacity(commits.len());
     for commit in commits {
         let parent = format!("{}~1", commit.hash);
-        let changed = match git::git_diff_files(workspace_root, &parent, &commit.hash) {
-            Ok(paths) => paths,
+        let diff_entries = match git::git_diff_files(workspace_root, &parent, &commit.hash) {
+            Ok(entries) => entries,
             Err(e) => {
                 entries.push(json!({
                     "hash": commit.hash,
@@ -59,10 +59,16 @@ pub fn handle(
             }
         };
 
-        let mut file_entries = Vec::with_capacity(changed.len());
-        for path in &changed {
-            let mut entry = json!({ "path": path });
-            match symbol_diff::diff_file(workspace_root, path, &parent, &commit.hash) {
+        let mut file_entries = Vec::with_capacity(diff_entries.len());
+        for de in &diff_entries {
+            let mut entry = json!({ "path": de.path });
+            match symbol_diff::diff_file(
+                workspace_root,
+                &de.path,
+                de.old_path.as_deref(),
+                &parent,
+                &commit.hash,
+            ) {
                 Ok(sc) if !sc.is_empty() => {
                     entry["symbol_changes"] = serde_json::to_value(&sc).unwrap_or_default();
                 }

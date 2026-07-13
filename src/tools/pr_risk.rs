@@ -39,7 +39,8 @@ pub fn handle(
     let base = base.unwrap_or("HEAD~1");
     let head = head.unwrap_or("HEAD");
 
-    let changed_paths = git::git_diff_files(workspace_root, base, head)?;
+    let diff_entries = git::git_diff_files(workspace_root, base, head)?;
+    let changed_paths: Vec<String> = diff_entries.iter().map(|e| e.path.to_string()).collect();
     let churn_counts = git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?;
     let churn = ChurnMap {
         counts: churn_counts,

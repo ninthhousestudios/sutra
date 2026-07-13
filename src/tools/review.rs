@@ -76,7 +76,8 @@ pub fn handle(
         "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
-            let paths = git::git_diff_files(workspace_root, &base, "HEAD")?;
+            let entries = git::git_diff_files(workspace_root, &base, "HEAD")?;
+            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
             (paths, base, Some("HEAD".to_string()))
         }
         spec => {
@@ -85,7 +86,8 @@ pub fn handle(
             } else {
                 (format!("{spec}~1"), spec.to_string())
             };
-            let paths = git::git_diff_files(workspace_root, &base, &head)?;
+            let entries = git::git_diff_files(workspace_root, &base, &head)?;
+            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
             (paths, base, Some(head))
         }
     };

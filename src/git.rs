@@ -5,6 +5,12 @@ use std::process::Command;
 use crate::error::{Result, SutraError};
 
 #[derive(Debug, Clone)]
+pub struct DiffFileEntry {
+    pub path: String,
+    pub old_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct BlameLine {
     pub commit: String,
     pub author_time: i64,
@@ -76,11 +82,11 @@ pub struct CommitFile {
     pub path: String,
 }
 
-pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<DiffFileEntry>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["diff", "--name-only"])
+        .args(["diff", "--name-status", "-M"])
         .arg(format!("{base}..{head}"))
         .output()
         .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;
@@ -91,13 +97,26 @@ pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<V
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let files = stdout
-        .lines()
-        .map(|l| l.to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    Ok(files)
+    let mut entries = Vec::new();
+    for line in stdout.lines().filter(|l| !l.is_empty()) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        match parts.as_slice() {
+            [status, old, new] if status.starts_with('R') || status.starts_with('C') => {
+                entries.push(DiffFileEntry {
+                    path: new.to_string(),
+                    old_path: Some(old.to_string()),
+                });
+            }
+            [_status, path] => {
+                entries.push(DiffFileEntry {
+                    path: path.to_string(),
+                    old_path: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(entries)
 }
 
 pub fn git_diff_staged(workspace_root: &Path) -> Result<Vec<String>> {

@@ -364,7 +364,8 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
     } else {
         let default_branch = sutra::git::detect_default_branch(&project_root)?;
         let base = sutra::git::git_merge_base(&project_root, &default_branch)?;
-        let paths = sutra::git::git_diff_files(&project_root, &base, "HEAD")?;
+        let entries = sutra::git::git_diff_files(&project_root, &base, "HEAD")?;
+        let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
         (paths, base)
     };
 

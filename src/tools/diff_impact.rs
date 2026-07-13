@@ -28,8 +28,12 @@ pub fn handle(
     let base = base.unwrap_or("HEAD~1");
     let head = head.unwrap_or("HEAD");
 
-    let changed_paths = git::git_diff_files(workspace_root, base, head)?;
-    let signals = change_signals::gather(db, &changed_paths, &ChurnMap::default(), true)?;
+    let diff_entries = git::git_diff_files(workspace_root, base, head)?;
+    let paths: Vec<String> = diff_entries.iter().map(|e| e.path.to_string()).collect();
+    let signals = change_signals::gather(db, &paths, &ChurnMap::default(), true)?;
+
+    let symbol_changes =
+        symbol_diff::diff_files(workspace_root, &diff_entries, base, head).unwrap_or_default();
 
     let changed_files: Vec<_> = signals
         .per_file
@@ -41,14 +45,8 @@ pub fn handle(
                 .map(|s| s.qualified_name.as_str())
                 .collect();
             let mut entry = json!({ "path": f.path, "symbols": symbols });
-            match symbol_diff::diff_file(workspace_root, &f.path, base, head) {
-                Ok(sc) if !sc.is_empty() => {
-                    entry["symbol_changes"] = serde_json::to_value(&sc).unwrap_or_default();
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    entry["symbol_diff_error"] = json!(e.to_string());
-                }
+            if let Some(sc) = symbol_changes.get(&f.path).filter(|sc| !sc.is_empty()) {
+                entry["symbol_changes"] = serde_json::to_value(sc).unwrap_or_default();
             }
             entry
         })
