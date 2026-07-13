@@ -476,3 +476,95 @@ fn test_construction_prefers_struct_over_function() {
         "Construction ref should resolve to struct, not function"
     );
 }
+
+// --- Nested-scope tests (Phase 0: enclosing-scope preference) ---
+
+/// Method in impl vs same-named free function — ref inside the impl should
+/// resolve to the impl method, not the free function.
+#[test]
+fn test_scope_impl_method_over_free_function() {
+    // impl Foo (lines 1-20) { fn bar (3-5); fn baz (7-19) { bar(); } }
+    // fn bar (22-25)  — free function
+    let file_symbols = vec![
+        make_symbol("Foo", "Foo", SymbolKind::Struct, 1, 20),
+        make_symbol("Foo::bar", "bar", SymbolKind::Function, 3, 5),
+        make_symbol("Foo::baz", "baz", SymbolKind::Function, 7, 19),
+        make_symbol("bar", "bar", SymbolKind::Function, 22, 25),
+    ];
+    let refs = vec![make_ref("bar", 10, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym(1, "Foo", "Foo", "struct"),
+        sym(2, "Foo::bar", "bar", "function"),
+        sym(3, "Foo::baz", "baz", "function"),
+        sym(4, "bar", "bar", "function"),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "ref inside impl Foo should resolve to Foo::bar, not free fn bar"
+    );
+}
+
+/// Inner fn shadows outer name — ref after the inner definition should
+/// resolve to the inner fn.
+#[test]
+fn test_scope_inner_fn_shadows_outer() {
+    // fn outer (1-30) { fn helper (3-8); fn inner (10-28) { fn helper (12-17); helper(); } }
+    let file_symbols = vec![
+        make_symbol("outer", "outer", SymbolKind::Function, 1, 30),
+        make_symbol("outer::helper", "helper", SymbolKind::Function, 3, 8),
+        make_symbol("outer::inner", "inner", SymbolKind::Function, 10, 28),
+        make_symbol(
+            "outer::inner::helper",
+            "helper",
+            SymbolKind::Function,
+            12,
+            17,
+        ),
+    ];
+    let refs = vec![make_ref("helper", 20, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym(1, "outer", "outer", "function"),
+        sym(2, "outer::helper", "helper", "function"),
+        sym(3, "outer::inner", "inner", "function"),
+        sym(4, "outer::inner::helper", "helper", "function"),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(4),
+        "ref inside inner should resolve to inner::helper, not outer::helper"
+    );
+}
+
+/// Global fallback prefers same-file candidate when multiple files define the
+/// same short_name.
+#[test]
+fn test_global_fallback_same_file_preference() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("process", 10, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym_in_file(1, "other::process", "process", "function", 99),
+        sym_in_file(2, "this::process", "process", "function", 42),
+        sym_in_file(3, "third::process", "process", "function", 77),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 42);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "global fallback should prefer the candidate in the same file (file_id=42)"
+    );
+}
