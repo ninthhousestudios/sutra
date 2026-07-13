@@ -542,6 +542,111 @@ pub fn parse_workspace(
     })
 }
 
+fn entity_change_walk(db: &Db, workspace_root: &Path, max_commits: u32) -> Result<usize> {
+    use crate::db::entity_changes::EntityChangeRow;
+    use crate::tools::symbol_diff::{self, ChangeKind};
+
+    let known = db.known_entity_commit_hashes()?;
+
+    let commits = match crate::git::git_first_parent_commits(workspace_root, max_commits) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("entity walk: git rev-list failed: {e}");
+            return Ok(0);
+        }
+    };
+
+    let new_commits: Vec<_> = commits
+        .into_iter()
+        .filter(|c| !known.contains(&c.hash))
+        .collect();
+
+    if new_commits.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_changes = 0usize;
+
+    for commit in &new_commits {
+        if commit.is_merge {
+            db.insert_entity_commit_with_changes(
+                &commit.hash,
+                commit.timestamp,
+                &commit.author,
+                &[],
+            )?;
+            continue;
+        }
+
+        let changed_files = match crate::git::git_commit_changed_files(workspace_root, &commit.hash)
+        {
+            Ok(f) => f,
+            Err(_) => {
+                db.insert_entity_commit_with_changes(
+                    &commit.hash,
+                    commit.timestamp,
+                    &commit.author,
+                    &[],
+                )?;
+                continue;
+            }
+        };
+
+        let parent = format!("{}~1", commit.hash);
+        let mut changes = Vec::new();
+        let mut seen_keys: HashSet<String> = HashSet::new();
+
+        for entry in &changed_files {
+            let symbol_changes = match symbol_diff::diff_file(
+                workspace_root,
+                &entry.path,
+                entry.old_path.as_deref(),
+                &parent,
+                &commit.hash,
+            ) {
+                Ok(sc) => sc,
+                Err(_) => continue,
+            };
+
+            for sc in symbol_changes {
+                let dedup_key = format!("{}\0{}", sc.symbol, entry.path);
+                if !seen_keys.insert(dedup_key) {
+                    continue;
+                }
+
+                let change_type = match sc.change {
+                    ChangeKind::Added => "added",
+                    ChangeKind::Deleted => "deleted",
+                    ChangeKind::SignatureChanged => "signature_changed",
+                    ChangeKind::BodyChanged => "body_changed",
+                    ChangeKind::CosmeticChanged => "cosmetic_changed",
+                    ChangeKind::Renamed => "renamed",
+                    ChangeKind::Moved => "moved",
+                };
+
+                changes.push(EntityChangeRow {
+                    qualified_name: sc.symbol,
+                    kind: sc.kind,
+                    file_path: String::from(entry.path.as_str()),
+                    change_type: change_type.to_string(),
+                    old_qualified_name: sc.from_symbol,
+                    old_file_path: sc.from_file,
+                });
+            }
+        }
+
+        total_changes += changes.len();
+        db.insert_entity_commit_with_changes(
+            &commit.hash,
+            commit.timestamp,
+            &commit.author,
+            &changes,
+        )?;
+    }
+
+    Ok(total_changes)
+}
+
 fn post_parse_sequence(
     db: &Db,
     workspace_root: &Path,
@@ -637,6 +742,12 @@ fn post_parse_sequence(
                 HashMap::new()
             }
         };
+
+        match entity_change_walk(db, workspace_root, 500) {
+            Ok(count) if count > 0 => info!(count, "indexed entity changes"),
+            Ok(_) => {}
+            Err(e) => warn!("entity change walk failed: {e}"),
+        }
 
         let component_count =
             components::discover_components(db, &files, &gd, workspace_root, boundary_multipliers)?;

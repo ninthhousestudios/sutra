@@ -396,3 +396,105 @@ pub fn head_commit_hash(workspace_root: &Path) -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
+
+pub struct FirstParentCommit {
+    pub hash: String,
+    pub timestamp: i64,
+    pub author: String,
+    pub is_merge: bool,
+}
+
+pub fn git_first_parent_commits(
+    workspace_root: &Path,
+    max_commits: u32,
+) -> Result<Vec<FirstParentCommit>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "rev-list",
+            "--first-parent",
+            "--parents",
+            "--format=%at %ae",
+            "--max-count",
+        ])
+        .arg(max_commits.to_string())
+        .arg("HEAD")
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git rev-list failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git rev-list: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    let mut current_hash = String::new();
+    let mut current_is_merge = false;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("commit ") {
+            // Format: "<hash> <parent1> [<parent2> ...]"
+            let hashes: Vec<&str> = rest.split_whitespace().collect();
+            current_hash = hashes.first().unwrap_or(&"").to_string();
+            current_is_merge = hashes.len() > 2; // hash + 2+ parents
+        } else if !current_hash.is_empty() {
+            let parts: Vec<&str> = line.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                results.push(FirstParentCommit {
+                    hash: std::mem::take(&mut current_hash),
+                    timestamp: parts[0].parse().unwrap_or(0),
+                    author: parts[1].to_string(),
+                    is_merge: current_is_merge,
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+pub fn git_commit_changed_files(
+    workspace_root: &Path,
+    commit_hash: &str,
+) -> Result<Vec<DiffFileEntry>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["diff-tree", "--no-commit-id", "-r", "-M", "--name-status"])
+        .arg(commit_hash)
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git diff-tree failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git diff-tree: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries = Vec::new();
+    for line in stdout.lines().filter(|l| !l.is_empty()) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        match parts.as_slice() {
+            [status, old, new] if status.starts_with('R') || status.starts_with('C') => {
+                entries.push(DiffFileEntry {
+                    path: new.to_string(),
+                    old_path: Some(old.to_string()),
+                });
+            }
+            [_status, path] => {
+                entries.push(DiffFileEntry {
+                    path: path.to_string(),
+                    old_path: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(entries)
+}

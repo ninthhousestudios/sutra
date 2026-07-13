@@ -782,7 +782,10 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Files that historically change together with a given file in git history. \
+        description = "Entities that historically change together in git history. \
+        granularity='file' (default): file-level co-change by path. \
+        granularity='function': function-level co-change by qualified symbol name. \
+        Reports both jaccard and confidence metrics for function granularity. \
         Requires analysis tier."
     )]
     pub async fn sutra_cochange(
@@ -791,8 +794,13 @@ impl SutraServer {
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
         let ctx = self.tool_context(&args.workspace)?;
-        let result =
-            tools::cochange::handle(ctx.db(), &args.path, args.threshold).map_err(sutra_to_rmcp)?;
+        let result = tools::cochange::handle(
+            ctx.db(),
+            &args.path,
+            args.threshold,
+            args.granularity.as_deref(),
+        )
+        .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

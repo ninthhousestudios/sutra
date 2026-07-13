@@ -7,6 +7,7 @@
 mod components;
 mod constraints;
 mod conventions;
+pub(crate) mod entity_changes;
 mod graph;
 mod health;
 mod migrations;
@@ -206,6 +207,16 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "index_meta",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "entity_commits",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "entity_changes",
         partition: TablePartition::Durable,
         is_virtual: false,
     },

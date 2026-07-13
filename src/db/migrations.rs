@@ -241,6 +241,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0047_structural_hash.sql"),
         true,
     ),
+    (
+        "0048_entity_changes",
+        include_str!("../../migrations/0048_entity_changes.sql"),
+        false,
+    ),
 ];
 
 impl Db {
