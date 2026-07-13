@@ -204,7 +204,7 @@ pub fn handle(
     Ok(result)
 }
 
-fn collect_relevant_imports(
+pub(crate) fn collect_relevant_imports(
     db: &Db,
     file_id: i64,
     file_path: &str,

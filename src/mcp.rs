@@ -67,6 +67,7 @@ use crate::tools::calls::CallsArgs;
 use crate::tools::cochange::CochangeArgs;
 use crate::tools::commit_manifest::CommitManifestArgs;
 use crate::tools::components::ComponentsArgs;
+use crate::tools::context::ContextArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
@@ -518,6 +519,31 @@ impl SutraServer {
             args.full.unwrap_or(false),
             ctx.is_stale(),
             args.imports.unwrap_or(true),
+            Some(&self.lessons_db),
+        )
+        .map_err(sutra_to_rmcp)?;
+        to_compact_json(ctx.wrap(result))
+    }
+
+    #[tool(description = "Token-budgeted context packing for a symbol. \
+        Packs the target symbol + dependencies + dependents within a token budget, \
+        with graceful degradation: full body → head-truncated → signature → omitted. \
+        Priority cascade: target > direct deps > direct dependents > transitive deps > \
+        transitive dependents. Neighbors sorted by edge weight (call > field_access > \
+        type_use > import > reference) then pagerank. Tests tallied, not packed. \
+        Returns context array with role/content/tokens per entry, plus omitted counts.")]
+    pub async fn sutra_context(
+        &self,
+        Parameters(args): Parameters<ContextArgs>,
+    ) -> Result<String, ErrorData> {
+        let ctx = self.tool_context(&args.workspace)?;
+        let result = tools::context::handle(
+            ctx.db(),
+            ctx.workspace_root(),
+            &args.symbol,
+            args.token_budget,
+            args.depth,
+            ctx.is_stale(),
             Some(&self.lessons_db),
         )
         .map_err(sutra_to_rmcp)?;
