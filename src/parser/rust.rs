@@ -44,25 +44,63 @@ fn build_scope_arena(root: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Ve
         end_line: root.end_position().row + 1,
     });
 
-    build_scopes_recursive(root, src, 0, &mut arena);
-
-    for (sym_idx, sym) in symbols.iter().enumerate() {
-        let scope_idx = find_tightest_scope(&arena, sym.start_line);
-        arena[scope_idx].defs.push(sym_idx);
-    }
+    build_scopes_recursive(root, src, 0, &mut arena, symbols);
 
     arena
 }
 
-fn build_scopes_recursive(node: Node, src: &[u8], parent_idx: usize, arena: &mut Vec<Scope>) {
+/// Find the symbol index matching an AST definition node by name and line.
+fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?;
+    let line = node.start_position().row + 1;
+    symbols
+        .iter()
+        .position(|s| s.short_name == name && s.start_line == line)
+}
+
+const DEF_KINDS: &[&str] = &[
+    "function_item",
+    "function_signature_item",
+    "struct_item",
+    "enum_item",
+    "trait_item",
+    "type_item",
+    "const_item",
+    "static_item",
+    "macro_definition",
+];
+
+fn build_scopes_recursive(
+    node: Node,
+    src: &[u8],
+    parent_idx: usize,
+    arena: &mut Vec<Scope>,
+    symbols: &[&ExtractedSymbol],
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // Register definitions in the parent scope
+        if DEF_KINDS.contains(&child.kind()) {
+            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
+                arena[parent_idx].defs.push(sym_idx);
+            }
+        }
+
         match child.kind() {
             "mod_item" | "impl_item" | "trait_item" => {
                 let kind = match child.kind() {
                     "mod_item" => ScopeKind::Module,
                     _ => ScopeKind::Impl,
                 };
+                // impl_item uses "type" field not "name"
+                if child.kind() == "impl_item" {
+                    if let Some(sym_idx) = symbols.iter().position(|s| {
+                        s.start_line == child.start_position().row + 1 && s.kind == SymbolKind::Impl
+                    }) {
+                        arena[parent_idx].defs.push(sym_idx);
+                    }
+                }
                 if let Some(body) = child.child_by_field_name("body") {
                     let idx = arena.len();
                     arena.push(Scope {
@@ -73,7 +111,7 @@ fn build_scopes_recursive(node: Node, src: &[u8], parent_idx: usize, arena: &mut
                         start_line: body.start_position().row + 1,
                         end_line: body.end_position().row + 1,
                     });
-                    build_scopes_recursive(body, src, idx, arena);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
                 }
             }
             "function_item" | "function_signature_item" => {
@@ -88,7 +126,7 @@ fn build_scopes_recursive(node: Node, src: &[u8], parent_idx: usize, arena: &mut
                         end_line: body.end_position().row + 1,
                     });
                     collect_let_bindings(body, src, &mut arena[idx].bindings);
-                    build_scopes_recursive(body, src, idx, arena);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
                 }
             }
             "block" if is_nested_block(child) => {
@@ -102,10 +140,10 @@ fn build_scopes_recursive(node: Node, src: &[u8], parent_idx: usize, arena: &mut
                     end_line: child.end_position().row + 1,
                 });
                 collect_let_bindings(child, src, &mut arena[idx].bindings);
-                build_scopes_recursive(child, src, idx, arena);
+                build_scopes_recursive(child, src, idx, arena, symbols);
             }
             _ => {
-                build_scopes_recursive(child, src, parent_idx, arena);
+                build_scopes_recursive(child, src, parent_idx, arena, symbols);
             }
         }
     }
@@ -1390,5 +1428,127 @@ mod tests {
         .unwrap();
         assert_eq!(result.imports.len(), 1);
         assert_eq!(result.imports[0].raw_path, "self::a::b::c");
+    }
+
+    // ---------------------------------------------------------------
+    // Scope-aware local resolution tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn scope_resolves_fn_call_in_same_module() {
+        let src = "fn helper() {}\nfn main() { helper(); }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let call_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "helper")
+            .collect();
+        assert_eq!(call_refs.len(), 1);
+        assert_eq!(
+            call_refs[0].resolved_local_target.as_deref(),
+            Some("helper")
+        );
+    }
+
+    #[test]
+    fn scope_resolves_method_in_impl() {
+        let src = r#"
+struct Foo;
+impl Foo {
+    fn bar(&self) {}
+    fn baz(&self) { self.bar(); }
+}
+"#;
+        let result = parse_rust(src, "test.rs").unwrap();
+        // "bar" as a method call (field_identifier) should resolve to Foo::bar
+        let bar_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "bar")
+            .collect();
+        assert_eq!(bar_refs.len(), 1);
+        assert_eq!(
+            bar_refs[0].resolved_local_target.as_deref(),
+            Some("Foo::bar")
+        );
+    }
+
+    #[test]
+    fn scope_let_binding_shadows_function() {
+        let src = r#"
+fn config() -> i32 { 1 }
+fn setup() {
+    let config = 42;
+    config();
+}
+"#;
+        let result = parse_rust(src, "test.rs").unwrap();
+        let config_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "config" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(config_refs.len(), 1, "should extract config() call ref");
+        assert_eq!(
+            config_refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "let-binding should shadow the function symbol"
+        );
+    }
+
+    #[test]
+    fn scope_impl_method_over_free_function() {
+        let src = r#"
+fn process() {}
+struct Handler;
+impl Handler {
+    fn process(&self) {}
+    fn run(&self) { self.process(); }
+}
+"#;
+        let result = parse_rust(src, "test.rs").unwrap();
+        let refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "process" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some("Handler::process"),
+            "method call inside impl should resolve to impl method, not free fn"
+        );
+    }
+
+    #[test]
+    fn scope_no_hint_for_unknown_name() {
+        let src = "fn main() { unknown_func(); }";
+        let result = parse_rust(src, "test.rs").unwrap();
+        let refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "unknown_func")
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].resolved_local_target, None);
+    }
+
+    #[test]
+    fn scope_type_use_resolves_to_struct() {
+        let src = r#"
+struct MyType;
+fn process(x: MyType) {}
+"#;
+        let result = parse_rust(src, "test.rs").unwrap();
+        let type_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "MyType" && r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert_eq!(type_refs.len(), 1);
+        assert_eq!(
+            type_refs[0].resolved_local_target.as_deref(),
+            Some("MyType")
+        );
     }
 }

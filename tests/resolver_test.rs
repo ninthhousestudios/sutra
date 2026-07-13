@@ -1,6 +1,7 @@
 use sutra::db::SymbolEntry;
+use sutra::parser::rust::LOCAL_BINDING_SENTINEL;
 use sutra::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind};
-use sutra::resolver::resolve_refs;
+use sutra::resolver::{ResolutionMethod, resolve_refs};
 
 fn make_symbol(
     qualified_name: &str,
@@ -622,5 +623,138 @@ fn test_scope_same_line_range_different_symbols() {
         resolved[0].target_symbol_id,
         Some(2),
         "should prefer mod_a::FOO (inside enclosing module) over top-level FOO"
+    );
+}
+
+// ---------------------------------------------------------------
+// Scope-chain hint tests (Phase A)
+// ---------------------------------------------------------------
+
+fn make_ref_with_hint(
+    name: &str,
+    line: usize,
+    context_kind: RefContextKind,
+    hint: &str,
+) -> ExtractedRef {
+    ExtractedRef {
+        name: name.to_string(),
+        line,
+        col: 0,
+        context_kind,
+        resolved_local_target: Some(hint.to_string()),
+    }
+}
+
+#[test]
+fn test_scope_hint_short_circuits_resolution() {
+    let file_syms = vec![
+        make_symbol("process", "process", SymbolKind::Function, 1, 3),
+        make_symbol("Foo::process", "process", SymbolKind::Method, 5, 7),
+    ];
+    let all_syms = vec![
+        sym_in_file(1, "process", "process", "function", 10),
+        sym_in_file(2, "Foo::process", "process", "method", 10),
+    ];
+    // Ref with a scope hint pointing to Foo::process
+    let refs = vec![make_ref_with_hint(
+        "process",
+        6,
+        RefContextKind::Call,
+        "Foo::process",
+    )];
+    let resolved = resolve_refs(&file_syms, &refs, &all_syms, &[], 10);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "scope hint should direct resolution to Foo::process"
+    );
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::ScopeChain)
+    );
+}
+
+#[test]
+fn test_local_binding_hint_suppresses_resolution() {
+    let file_syms = vec![make_symbol("config", "config", SymbolKind::Function, 1, 3)];
+    let all_syms = vec![sym_in_file(1, "config", "config", "function", 10)];
+    let refs = vec![make_ref_with_hint(
+        "config",
+        6,
+        RefContextKind::Call,
+        LOCAL_BINDING_SENTINEL,
+    )];
+    let resolved = resolve_refs(&file_syms, &refs, &all_syms, &[], 10);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id, None,
+        "local binding sentinel should prevent cross-file resolution"
+    );
+    assert!(!resolved[0].skipped);
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::LocalBinding)
+    );
+}
+
+#[test]
+fn test_resolution_method_import() {
+    let file_syms = vec![];
+    let all_syms = vec![sym(1, "crate::util::process", "process", "function")];
+    let imports = vec![make_import("crate::util::process", 1)];
+    let refs = vec![make_ref("process", 5, RefContextKind::Call)];
+    let resolved = resolve_refs(&file_syms, &refs, &all_syms, &imports, 99);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::Import)
+    );
+}
+
+#[test]
+fn test_resolution_method_global_fallback() {
+    let file_syms = vec![];
+    let all_syms = vec![sym(1, "other::Widget", "Widget", "struct")];
+    let refs = vec![make_ref("Widget", 5, RefContextKind::TypeUse)];
+    let resolved = resolve_refs(&file_syms, &refs, &all_syms, &[], 99);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::GlobalFallback)
+    );
+}
+
+#[test]
+fn test_scope_hint_fallback_when_db_row_missing() {
+    // Hint points to a qualified_name that doesn't exist in all_symbols —
+    // should fall through to the normal resolution path.
+    let file_syms = vec![make_symbol(
+        "process",
+        "process",
+        SymbolKind::Function,
+        1,
+        3,
+    )];
+    let all_syms = vec![sym_in_file(1, "process", "process", "function", 10)];
+    let refs = vec![make_ref_with_hint(
+        "process",
+        2,
+        RefContextKind::Call,
+        "nonexistent::process",
+    )];
+    let resolved = resolve_refs(&file_syms, &refs, &all_syms, &[], 10);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(1),
+        "should fall through to normal local resolution"
+    );
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::ScopeChain),
+        "local resolution still uses scope_chain method"
     );
 }
