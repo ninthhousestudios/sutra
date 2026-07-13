@@ -76,11 +76,14 @@ fn resolve_single(
     if let Some(best) = pick_nearest_local(&local_matches, r.line, file_symbols) {
         if let Some(s) = all_symbols
             .iter()
-            .find(|s| s.qualified_name == best.qualified_name)
+            .find(|s| s.file_id == file_id && s.qualified_name == best.qualified_name)
         {
             return resolved(r, s.id);
         }
-        if let Some(s) = all_symbols.iter().find(|s| s.short_name == best.short_name) {
+        if let Some(s) = all_symbols
+            .iter()
+            .find(|s| s.file_id == file_id && s.short_name == best.short_name)
+        {
             return resolved(r, s.id);
         }
     }
@@ -201,7 +204,7 @@ fn tightest_common_scope_size(
                 && s.end_line >= ref_line
                 && s.start_line <= candidate.start_line
                 && s.end_line >= candidate.end_line
-                && !(s.start_line == candidate.start_line && s.end_line == candidate.end_line)
+                && s.qualified_name != candidate.qualified_name
         })
         .map(|s| s.end_line - s.start_line)
         .min()

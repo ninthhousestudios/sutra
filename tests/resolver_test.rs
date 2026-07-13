@@ -568,3 +568,57 @@ fn test_global_fallback_same_file_preference() {
         "global fallback should prefer the candidate in the same file (file_id=42)"
     );
 }
+
+/// Local resolution must bind to the same-file DB row, not the first global
+/// match. Regression: duplicate qualified_names across files (e.g. C static
+/// functions) would resolve to whichever row appeared first in the DB.
+#[test]
+fn test_local_binds_to_same_file_row() {
+    // Two files both define "helper". The ref is in file 42.
+    let file_symbols = vec![make_symbol("helper", "helper", SymbolKind::Function, 5, 10)];
+    let refs = vec![make_ref("helper", 8, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym_in_file(99, "helper", "helper", "function", 77), // other file, appears first
+        sym_in_file(42, "helper", "helper", "function", 42), // same file
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 42);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(42),
+        "local resolution must bind to the same-file DB row, not the first global match"
+    );
+}
+
+/// Scope ranking must not drop an enclosing scope that shares the candidate's
+/// line range but is a different symbol. Regression: single-line impl + method
+/// at the same range caused the impl to be excluded as "self".
+#[test]
+fn test_scope_same_line_range_different_symbols() {
+    // Two single-line symbols at line 5: a struct and a const inside a module (1-10).
+    // A ref at line 8 should prefer the const inside the module over an outer const.
+    let file_symbols = vec![
+        make_symbol("mod_a", "mod_a", SymbolKind::Module, 1, 10),
+        make_symbol("mod_a::FOO", "FOO", SymbolKind::Const, 5, 5),
+        make_symbol("FOO", "FOO", SymbolKind::Const, 15, 15),
+    ];
+    let refs = vec![make_ref("FOO", 8, RefContextKind::Other)];
+    let all_symbols = vec![
+        sym(1, "mod_a", "mod_a", "module"),
+        sym(2, "mod_a::FOO", "FOO", "const"),
+        sym(3, "FOO", "FOO", "const"),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "should prefer mod_a::FOO (inside enclosing module) over top-level FOO"
+    );
+}
