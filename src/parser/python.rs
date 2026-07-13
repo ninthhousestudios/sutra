@@ -201,9 +201,9 @@ fn collect_param_bindings(func_node: Node, src: &[u8], bindings: &mut Vec<(Strin
     }
 }
 
-fn collect_local_bindings(body: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
-    let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
+fn collect_local_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
         let line = child.start_position().row + 1;
         match child.kind() {
             "expression_statement" => {
@@ -218,6 +218,28 @@ fn collect_local_bindings(body: Node, src: &[u8], bindings: &mut Vec<(String, us
                 if let Some(left) = child.child_by_field_name("left") {
                     collect_binding_pattern_names(left, src, line, bindings);
                 }
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_local_bindings(body, src, bindings);
+                }
+                if let Some(alt) = child.child_by_field_name("alternative") {
+                    collect_local_bindings(alt, src, bindings);
+                }
+            }
+            "while_statement" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_local_bindings(body, src, bindings);
+                }
+                if let Some(alt) = child.child_by_field_name("alternative") {
+                    collect_local_bindings(alt, src, bindings);
+                }
+            }
+            "if_statement" => {
+                collect_local_bindings(child, src, bindings);
+            }
+            "elif_clause" | "else_clause" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_local_bindings(body, src, bindings);
+                }
             }
             "with_statement" => {
                 let mut inner = child.walk();
@@ -231,10 +253,24 @@ fn collect_local_bindings(body: Node, src: &[u8], bindings: &mut Vec<(String, us
                         }
                     }
                 }
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_local_bindings(body, src, bindings);
+                }
             }
             "try_statement" => {
                 collect_except_bindings(child, src, bindings);
+                collect_local_bindings(child, src, bindings);
             }
+            "except_clause" | "finally_clause" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_local_bindings(body, src, bindings);
+                }
+            }
+            "block" => {
+                collect_local_bindings(child, src, bindings);
+            }
+            // Stop recursing at nested function/class scopes
+            "function_definition" | "class_definition" | "decorated_definition" => {}
             _ => {}
         }
     }
@@ -374,7 +410,7 @@ struct PyTypeBinding {
 }
 
 fn collect_py_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<PyTypeBinding>) {
-    if node.kind() == "expression_statement" {
+    if node.kind() == "expression_statement" && !is_inside_class_body(node) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "assignment" {
@@ -388,6 +424,18 @@ fn collect_py_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<PyTypeBin
     for child in node.children(&mut cursor) {
         collect_py_type_bindings(child, src, bindings);
     }
+}
+
+fn is_inside_class_body(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        match n.kind() {
+            "class_definition" => return true,
+            "function_definition" => return false,
+            _ => current = n.parent(),
+        }
+    }
+    false
 }
 
 fn extract_py_type_binding(assign: Node, src: &[u8]) -> Option<PyTypeBinding> {
@@ -424,10 +472,11 @@ fn py_constructor_type(node: Node, src: &[u8]) -> Option<String> {
 fn enclosing_function_end_py(node: Node) -> Option<usize> {
     let mut current = node.parent();
     while let Some(n) = current {
-        if n.kind() == "function_definition" {
-            return Some(n.end_position().row + 1);
+        match n.kind() {
+            "function_definition" => return Some(n.end_position().row + 1),
+            "class_definition" => return None,
+            _ => current = n.parent(),
         }
-        current = n.parent();
     }
     None
 }
@@ -1794,6 +1843,72 @@ def main():
             refs[0].resolved_local_target.as_deref(),
             Some("index"),
             "decorated function should still resolve via scope chain"
+        );
+    }
+
+    #[test]
+    fn scope_binding_inside_if_block() {
+        let code = "\
+def process():
+    if True:
+        handler = get_handler()
+    handler()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "handler" && r.line == 4)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "assignment inside if block is function-wide in Python"
+        );
+    }
+
+    #[test]
+    fn scope_binding_inside_while_block() {
+        let code = "\
+def run():
+    while True:
+        conn = connect()
+    conn()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "conn" && r.line == 4)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "assignment inside while block is function-wide in Python"
+        );
+    }
+
+    #[test]
+    fn type_tracking_class_body_not_leaked() {
+        let code = "\
+class Holder:
+    c = Cache()
+
+def f():
+    c.get()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "get" && r.context_kind == RefContextKind::Call && r.line == 5)
+            .collect();
+        assert!(!refs.is_empty());
+        assert!(
+            refs[0].resolved_local_target.is_none(),
+            "class-body assignment should NOT create type binding for outer function"
         );
     }
 
