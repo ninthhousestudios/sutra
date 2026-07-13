@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use sutra::db::entity_changes::EntityChangeRow;
 use sutra::db::{CommitRow, Db};
 use sutra::git::git_commit_files;
 
@@ -353,4 +354,277 @@ fn commit_file_count_tracks_rows() {
     db.replace_commit_files(&commits, &pairs).unwrap();
 
     assert_eq!(db.commit_file_count().unwrap(), 1);
+}
+
+// --- entity-level co-change tests ---
+
+fn make_change(name: &str, kind: &str, file: &str, change_type: &str) -> EntityChangeRow {
+    EntityChangeRow {
+        qualified_name: name.into(),
+        kind: kind.into(),
+        file_path: file.into(),
+        change_type: change_type.into(),
+        old_qualified_name: None,
+        old_file_path: None,
+    }
+}
+
+#[test]
+fn entity_cochange_two_functions_across_commits() {
+    let (_dir, db) = setup_db();
+
+    // func_a and func_b co-edited in c1, c2, c3
+    // func_a also edited alone in c4
+    for (hash, ts) in [("c1", 100), ("c2", 200), ("c3", 300)] {
+        db.insert_entity_commit_with_changes(
+            hash,
+            ts,
+            "dev@test",
+            &[
+                make_change("func_a", "function", "src/a.rs", "body_changed"),
+                make_change("func_b", "function", "src/b.rs", "body_changed"),
+            ],
+        )
+        .unwrap();
+    }
+    db.insert_entity_commit_with_changes(
+        "c4",
+        400,
+        "dev@test",
+        &[make_change(
+            "func_a",
+            "function",
+            "src/a.rs",
+            "body_changed",
+        )],
+    )
+    .unwrap();
+
+    let partners = db.entity_cochange_for_symbol("func_a", 0.1).unwrap();
+    assert_eq!(partners.len(), 1, "should find func_b");
+
+    let (name, file, jaccard, confidence, shared) = &partners[0];
+    assert_eq!(name, "func_b");
+    assert_eq!(file, "src/b.rs");
+    assert_eq!(*shared, 3);
+    // jaccard = 3 / (4 + 3 - 3) = 3/4 = 0.75
+    assert!(
+        (*jaccard - 0.75).abs() < 0.01,
+        "jaccard should be ~0.75, got {jaccard}"
+    );
+    // confidence = 3 / min(4, 3) = 3/3 = 1.0
+    assert!(
+        (*confidence - 1.0).abs() < 0.01,
+        "confidence should be ~1.0, got {confidence}"
+    );
+}
+
+#[test]
+fn entity_cochange_bulk_commit_excluded_from_pairs() {
+    let (_dir, db) = setup_db();
+
+    // Create a commit with >50 entities — should be pair_ineligible
+    let mut bulk_changes: Vec<EntityChangeRow> = (0..60)
+        .map(|i| {
+            make_change(
+                &format!("sym_{i}"),
+                "function",
+                "src/big.rs",
+                "body_changed",
+            )
+        })
+        .collect();
+    // Include func_a and func_b in the bulk commit
+    bulk_changes.push(make_change(
+        "func_a",
+        "function",
+        "src/a.rs",
+        "body_changed",
+    ));
+    bulk_changes.push(make_change(
+        "func_b",
+        "function",
+        "src/b.rs",
+        "body_changed",
+    ));
+    db.insert_entity_commit_with_changes("bulk", 100, "dev@test", &bulk_changes)
+        .unwrap();
+
+    // A small commit with both func_a and func_b (pair_eligible)
+    db.insert_entity_commit_with_changes(
+        "small1",
+        200,
+        "dev@test",
+        &[
+            make_change("func_a", "function", "src/a.rs", "body_changed"),
+            make_change("func_b", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    // Another small commit
+    db.insert_entity_commit_with_changes(
+        "small2",
+        300,
+        "dev@test",
+        &[
+            make_change("func_a", "function", "src/a.rs", "body_changed"),
+            make_change("func_b", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    let partners = db.entity_cochange_for_symbol("func_a", 0.1).unwrap();
+    let entry = partners.iter().find(|(n, _, _, _, _)| n == "func_b");
+    assert!(entry.is_some(), "func_b should be a partner");
+
+    // Only 2 shared commits (bulk excluded), not 3
+    let (_, _, _, _, shared) = entry.unwrap();
+    assert_eq!(*shared, 2, "bulk commit should be excluded from pair count");
+}
+
+#[test]
+fn entity_cochange_rename_continuity() {
+    let (_dir, db) = setup_db();
+
+    // c1: old_name and partner co-edited
+    db.insert_entity_commit_with_changes(
+        "c1",
+        100,
+        "dev@test",
+        &[
+            make_change("old_name", "function", "src/a.rs", "body_changed"),
+            make_change("partner", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    // c2: old_name renamed to new_name, partner also edited
+    let mut rename_change = make_change("new_name", "function", "src/a.rs", "renamed");
+    rename_change.old_qualified_name = Some("old_name".into());
+    db.insert_entity_commit_with_changes(
+        "c2",
+        200,
+        "dev@test",
+        &[
+            rename_change,
+            make_change("partner", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    // c3: new_name and partner co-edited
+    db.insert_entity_commit_with_changes(
+        "c3",
+        300,
+        "dev@test",
+        &[
+            make_change("new_name", "function", "src/a.rs", "body_changed"),
+            make_change("partner", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    // Querying by new_name should find partner with shared=3 (includes pre-rename history)
+    let partners = db.entity_cochange_for_symbol("new_name", 0.1).unwrap();
+    let entry = partners.iter().find(|(n, _, _, _, _)| n == "partner");
+    assert!(
+        entry.is_some(),
+        "partner should appear via rename continuity"
+    );
+
+    let (_, _, _, _, shared) = entry.unwrap();
+    assert!(
+        *shared >= 2,
+        "should include pre-rename co-changes, got {shared}"
+    );
+}
+
+#[test]
+fn entity_cochange_merge_commit_no_changes() {
+    let (_dir, db) = setup_db();
+
+    // Merge commit — empty changes
+    db.insert_entity_commit_with_changes("merge1", 100, "dev@test", &[])
+        .unwrap();
+
+    assert_eq!(db.entity_commit_count().unwrap(), 1);
+    assert_eq!(db.entity_change_count().unwrap(), 0);
+}
+
+#[test]
+fn entity_cochange_idempotent_insert() {
+    let (_dir, db) = setup_db();
+
+    db.insert_entity_commit_with_changes(
+        "c1",
+        100,
+        "dev@test",
+        &[make_change(
+            "func_a",
+            "function",
+            "src/a.rs",
+            "body_changed",
+        )],
+    )
+    .unwrap();
+
+    // Re-insert same hash — should be a no-op (INSERT OR IGNORE)
+    db.insert_entity_commit_with_changes(
+        "c1",
+        100,
+        "dev@test",
+        &[make_change(
+            "func_a",
+            "function",
+            "src/a.rs",
+            "body_changed",
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(db.entity_commit_count().unwrap(), 1);
+    assert_eq!(
+        db.entity_change_count().unwrap(),
+        1,
+        "re-insert should not create duplicate entity_changes"
+    );
+}
+
+#[test]
+fn entity_cochange_requires_min_shared() {
+    let (_dir, db) = setup_db();
+
+    // Only 1 shared commit — should be excluded (shared_cnt >= 2 filter)
+    db.insert_entity_commit_with_changes(
+        "c1",
+        100,
+        "dev@test",
+        &[
+            make_change("func_a", "function", "src/a.rs", "body_changed"),
+            make_change("func_b", "function", "src/b.rs", "body_changed"),
+        ],
+    )
+    .unwrap();
+
+    let partners = db.entity_cochange_for_symbol("func_a", 0.0).unwrap();
+    assert!(
+        partners.is_empty(),
+        "single shared commit should not produce a pair"
+    );
+}
+
+#[test]
+fn known_entity_commit_hashes_returns_indexed() {
+    let (_dir, db) = setup_db();
+
+    db.insert_entity_commit_with_changes("abc123", 100, "dev@test", &[])
+        .unwrap();
+    db.insert_entity_commit_with_changes("def456", 200, "dev@test", &[])
+        .unwrap();
+
+    let known = db.known_entity_commit_hashes().unwrap();
+    assert!(known.contains("abc123"));
+    assert!(known.contains("def456"));
+    assert_eq!(known.len(), 2);
 }

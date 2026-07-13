@@ -41,6 +41,11 @@ impl Db {
             params![hash, committed_at, author],
         )?;
 
+        if conn.changes() == 0 {
+            tx.commit()?;
+            return Ok(());
+        }
+
         let pair_eligible = if changes.len() > MAX_PAIR_ENTITIES {
             0
         } else {

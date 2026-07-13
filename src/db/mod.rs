@@ -7,7 +7,7 @@
 mod components;
 mod constraints;
 mod conventions;
-pub(crate) mod entity_changes;
+pub mod entity_changes;
 mod graph;
 mod health;
 mod migrations;
