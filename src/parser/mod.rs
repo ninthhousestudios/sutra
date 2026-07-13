@@ -185,6 +185,8 @@ pub struct ExtractedImport {
     pub raw_path: String,
     pub line: usize,
     pub kind: &'static str,
+    /// Local alias (e.g. `np` for `import numpy as np`). None when unaliased.
+    pub alias: Option<String>,
 }
 
 pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {

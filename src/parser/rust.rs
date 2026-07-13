@@ -1114,6 +1114,7 @@ fn walk_imports_recursive(
                     raw_path: path,
                     line,
                     kind: "import",
+                    alias: None,
                 });
             }
         }
@@ -1137,6 +1138,7 @@ fn walk_imports_recursive(
                 raw_path: path,
                 line,
                 kind: "mod",
+                alias: None,
             });
             return;
         }

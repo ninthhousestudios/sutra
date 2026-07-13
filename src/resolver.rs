@@ -301,6 +301,22 @@ fn line_proximity_key(sym: &ExtractedSymbol, ref_line: usize) -> (bool, usize) {
     }
 }
 
+fn split_import_path(path: &str) -> Vec<&str> {
+    if path.contains("::") {
+        path.split("::").collect()
+    } else {
+        path.split('.').collect()
+    }
+}
+
+fn rfind_separator(path: &str) -> Option<(&str, usize)> {
+    if let Some(pos) = path.rfind("::") {
+        Some((&path[..pos], 2))
+    } else {
+        path.rfind('.').map(|pos| (&path[..pos], 1))
+    }
+}
+
 fn find_via_imports(
     name: &str,
     context: &RefContextKind,
@@ -314,11 +330,13 @@ fn find_via_imports(
             continue;
         }
 
+        let alias_match = imp.alias.as_deref().is_some_and(|alias| alias == name);
+
         let path = &imp.raw_path;
-        let segments: Vec<&str> = path.split("::").collect();
+        let segments = split_import_path(path);
         let last_segment = segments.last().copied().unwrap_or("");
 
-        if last_segment != name && !segments.contains(&name) {
+        if !alias_match && last_segment != name && !segments.contains(&name) {
             continue;
         }
 
@@ -328,11 +346,9 @@ fn find_via_imports(
             return Some(s.id);
         }
 
-        let import_prefix = if let Some(pos) = path.rfind("::") {
-            &path[..pos]
-        } else {
-            path.as_str()
-        };
+        let import_prefix = rfind_separator(path)
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(path.as_str());
 
         if let Some(s) = all_symbols.iter().find(|s| {
             s.short_name == name
@@ -342,12 +358,21 @@ fn find_via_imports(
             return Some(s.id);
         }
 
-        if last_segment == name
+        if (last_segment == name || alias_match)
             && let Some(s) = all_symbols.iter().find(|s| {
                 s.short_name == name && (!use_kind_filter || kind_compatible(context, &s.kind))
             })
         {
             return Some(s.id);
+        }
+
+        if alias_match {
+            if let Some(s) = all_symbols.iter().find(|s| {
+                s.short_name == last_segment
+                    && (!use_kind_filter || kind_compatible(context, &s.kind))
+            }) {
+                return Some(s.id);
+            }
         }
     }
 

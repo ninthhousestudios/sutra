@@ -1119,6 +1119,7 @@ fn extract_import_uri(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>
                 raw_path,
                 line,
                 kind: "import",
+                alias: None,
             })
         });
 }

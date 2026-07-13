@@ -1,10 +1,427 @@
 use crate::error::Result;
 use crate::parser::adapter::ParseContext;
+use crate::parser::dart::TYPE_TRACKING_PREFIX;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity, structural_hash,
 };
 use tree_sitter::{Node, TreeCursor};
+
+// ---------------------------------------------------------------------------
+// Scope arena — LEGB resolution for Python
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Module,
+    Class,
+    Function,
+}
+
+#[derive(Debug)]
+struct Scope {
+    parent: Option<usize>,
+    defs: Vec<usize>,
+    bindings: Vec<(String, usize)>,
+    kind: ScopeKind,
+    start_line: usize,
+    end_line: usize,
+}
+
+pub const LOCAL_BINDING_SENTINEL: &str = "::local_binding::";
+
+fn build_scope_arena(root: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Vec<Scope> {
+    let mut arena: Vec<Scope> = Vec::new();
+
+    arena.push(Scope {
+        parent: None,
+        defs: Vec::new(),
+        bindings: Vec::new(),
+        kind: ScopeKind::Module,
+        start_line: 1,
+        end_line: root.end_position().row + 1,
+    });
+
+    build_scopes_recursive(root, src, 0, &mut arena, symbols);
+
+    arena
+}
+
+fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?;
+    let line = node.start_position().row + 1;
+    symbols
+        .iter()
+        .position(|s| s.short_name == name && s.start_line == line)
+}
+
+fn build_scopes_recursive(
+    node: Node,
+    src: &[u8],
+    parent_idx: usize,
+    arena: &mut Vec<Scope>,
+    symbols: &[&ExtractedSymbol],
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+
+        if matches!(kind, "function_definition" | "class_definition") {
+            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
+                arena[parent_idx].defs.push(sym_idx);
+            }
+        }
+
+        match kind {
+            "function_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let idx = arena.len();
+                    arena.push(Scope {
+                        parent: Some(parent_idx),
+                        defs: Vec::new(),
+                        bindings: Vec::new(),
+                        kind: ScopeKind::Function,
+                        start_line: child.start_position().row + 1,
+                        end_line: child.end_position().row + 1,
+                    });
+                    collect_param_bindings(child, src, &mut arena[idx].bindings);
+                    collect_local_bindings(body, src, &mut arena[idx].bindings);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
+                }
+            }
+            "class_definition" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let idx = arena.len();
+                    arena.push(Scope {
+                        parent: Some(parent_idx),
+                        defs: Vec::new(),
+                        bindings: Vec::new(),
+                        kind: ScopeKind::Class,
+                        start_line: body.start_position().row + 1,
+                        end_line: body.end_position().row + 1,
+                    });
+                    build_scopes_recursive(body, src, idx, arena, symbols);
+                }
+            }
+            "decorated_definition" => {
+                let mut inner = child.walk();
+                for grandchild in child.children(&mut inner) {
+                    match grandchild.kind() {
+                        "function_definition" | "class_definition" => {
+                            build_scopes_recursive(
+                                grandchild.parent().unwrap_or(grandchild),
+                                src,
+                                parent_idx,
+                                arena,
+                                symbols,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {
+                build_scopes_recursive(child, src, parent_idx, arena, symbols);
+            }
+        }
+    }
+}
+
+fn collect_param_bindings(func_node: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return;
+    };
+    let line = func_node.start_position().row + 1;
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                if let Ok(name) = child.utf8_text(src) {
+                    bindings.push((name.to_string(), line));
+                }
+            }
+            "typed_parameter" | "typed_default_parameter" | "default_parameter" => {
+                if let Some(name_node) = child.child_by_field_name("name")
+                    && let Ok(name) = name_node.utf8_text(src)
+                {
+                    bindings.push((name.to_string(), line));
+                }
+            }
+            "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(inner) = child.named_child(0)
+                    && inner.kind() == "identifier"
+                    && let Ok(name) = inner.utf8_text(src)
+                {
+                    bindings.push((name.to_string(), line));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_local_bindings(body: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        let line = child.start_position().row + 1;
+        match child.kind() {
+            "expression_statement" => {
+                let mut inner = child.walk();
+                for grandchild in child.children(&mut inner) {
+                    if grandchild.kind() == "assignment" {
+                        collect_assignment_binding_names(grandchild, src, line, bindings);
+                    }
+                }
+            }
+            "for_statement" => {
+                if let Some(left) = child.child_by_field_name("left") {
+                    collect_binding_pattern_names(left, src, line, bindings);
+                }
+            }
+            "with_statement" => {
+                let mut inner = child.walk();
+                for item in child.children(&mut inner) {
+                    if item.kind() == "as_pattern" {
+                        if let Some(alias) = item.child_by_field_name("alias")
+                            && alias.kind() == "identifier"
+                            && let Ok(name) = alias.utf8_text(src)
+                        {
+                            bindings.push((name.to_string(), line));
+                        }
+                    }
+                }
+            }
+            "try_statement" => {
+                collect_except_bindings(child, src, bindings);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_assignment_binding_names(
+    assign: Node,
+    src: &[u8],
+    line: usize,
+    bindings: &mut Vec<(String, usize)>,
+) {
+    if let Some(left) = assign.child_by_field_name("left") {
+        collect_binding_pattern_names(left, src, line, bindings);
+    }
+}
+
+fn collect_binding_pattern_names(
+    node: Node,
+    src: &[u8],
+    line: usize,
+    bindings: &mut Vec<(String, usize)>,
+) {
+    match node.kind() {
+        "identifier" => {
+            if let Ok(name) = node.utf8_text(src)
+                && name != "_"
+            {
+                bindings.push((name.to_string(), line));
+            }
+        }
+        "tuple" | "list" | "pattern_list" | "tuple_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_binding_pattern_names(child, src, line, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_except_bindings(try_node: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let mut cursor = try_node.walk();
+    for child in try_node.children(&mut cursor) {
+        if child.kind() == "except_clause" {
+            let mut inner = child.walk();
+            for grandchild in child.children(&mut inner) {
+                if grandchild.kind() == "as_pattern" {
+                    if let Some(alias) = grandchild.child_by_field_name("alias")
+                        && alias.kind() == "identifier"
+                        && let Ok(name) = alias.utf8_text(src)
+                    {
+                        bindings.push((name.to_string(), child.start_position().row + 1));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_tightest_scope(arena: &[Scope], line: usize) -> usize {
+    let mut best = 0;
+    let mut best_size = usize::MAX;
+    for (i, scope) in arena.iter().enumerate() {
+        if line >= scope.start_line && line <= scope.end_line {
+            let size = scope.end_line - scope.start_line;
+            if size < best_size {
+                best_size = size;
+                best = i;
+            }
+        }
+    }
+    best
+}
+
+fn resolve_refs_locally(arena: &[Scope], symbols: &[&ExtractedSymbol], refs: &mut [ExtractedRef]) {
+    for r in refs.iter_mut() {
+        if matches!(r.context_kind, RefContextKind::Import) {
+            continue;
+        }
+        if r.resolved_local_target.is_some() {
+            continue;
+        }
+        let scope_idx = find_tightest_scope(arena, r.line);
+        r.resolved_local_target =
+            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line);
+    }
+}
+
+fn resolve_in_scope_chain(
+    arena: &[Scope],
+    symbols: &[&ExtractedSymbol],
+    start: usize,
+    name: &str,
+    ref_line: usize,
+) -> Option<String> {
+    let mut idx = start;
+    loop {
+        let scope = &arena[idx];
+
+        // LEGB: class scopes are skipped for bare name lookups —
+        // Python requires `self.attr` to access class members from methods.
+        if scope.kind != ScopeKind::Class {
+            if matches!(scope.kind, ScopeKind::Function)
+                && scope
+                    .bindings
+                    .iter()
+                    .any(|(b, decl_line)| b == name && ref_line >= *decl_line)
+            {
+                return Some(LOCAL_BINDING_SENTINEL.to_string());
+            }
+
+            if let Some(&sym_idx) = scope
+                .defs
+                .iter()
+                .find(|&&si| symbols[si].short_name == name)
+            {
+                return Some(symbols[sym_idx].qualified_name.to_string());
+            }
+        }
+
+        match scope.parent {
+            Some(p) => idx = p,
+            None => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constructor type tracking for Python — `x = Foo()` → x has type Foo
+// ---------------------------------------------------------------------------
+
+struct PyTypeBinding {
+    var_name: String,
+    class_name: String,
+    decl_line: usize,
+    scope_end_line: usize,
+}
+
+fn collect_py_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<PyTypeBinding>) {
+    if node.kind() == "expression_statement" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "assignment" {
+                if let Some(b) = extract_py_type_binding(child, src) {
+                    bindings.push(b);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_py_type_bindings(child, src, bindings);
+    }
+}
+
+fn extract_py_type_binding(assign: Node, src: &[u8]) -> Option<PyTypeBinding> {
+    let left = assign.child_by_field_name("left")?;
+    if left.kind() != "identifier" {
+        return None;
+    }
+    let var_name = left.utf8_text(src).ok()?;
+
+    let right = assign.child_by_field_name("right")?;
+    let class_name = py_constructor_type(right, src)?;
+
+    let scope_end = enclosing_function_end_py(assign).unwrap_or(usize::MAX);
+
+    Some(PyTypeBinding {
+        var_name: var_name.to_string(),
+        class_name,
+        decl_line: assign.start_position().row + 1,
+        scope_end_line: scope_end,
+    })
+}
+
+fn py_constructor_type(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "call" {
+        let func = node.child_by_field_name("function")?;
+        let name = func.utf8_text(src).ok()?;
+        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn enclosing_function_end_py(node: Node) -> Option<usize> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
+            return Some(n.end_position().row + 1);
+        }
+        current = n.parent();
+    }
+    None
+}
+
+fn lookup_py_receiver_type<'a>(
+    bindings: &'a [PyTypeBinding],
+    ref_line: usize,
+    receiver_name: &str,
+) -> Option<&'a str> {
+    bindings
+        .iter()
+        .filter(|b| {
+            b.var_name == receiver_name && b.decl_line < ref_line && ref_line <= b.scope_end_line
+        })
+        .max_by_key(|b| b.decl_line)
+        .map(|b| b.class_name.as_str())
+}
+
+fn extract_py_call_receiver(node: Node, src: &[u8]) -> Option<String> {
+    let parent = node.parent()?;
+    if parent.kind() == "attribute"
+        && parent
+            .child_by_field_name("attribute")
+            .is_some_and(|a| a.id() == node.id())
+    {
+        let obj = parent.child_by_field_name("object")?;
+        if obj.kind() == "identifier" {
+            return obj.utf8_text(src).ok().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let root = ctx.tree.root_node();
@@ -16,6 +433,23 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
+
+    // Phase C: scope arena + LEGB resolution
+    let flat_syms = crate::parser::flatten_symbols(&symbols);
+    let arena = build_scope_arena(root, src, &flat_syms);
+    resolve_refs_locally(&arena, &flat_syms, &mut references);
+
+    // Phase C: constructor type tracking
+    let mut type_bindings: Vec<PyTypeBinding> = Vec::new();
+    collect_py_type_bindings(root, src, &mut type_bindings);
+    for r in &mut references {
+        if r.context_kind == RefContextKind::Call
+            && let Some(recv) = &r.receiver
+            && let Some(class_name) = lookup_py_receiver_type(&type_bindings, r.line, recv)
+        {
+            r.resolved_local_target = Some(format!("{}{}", TYPE_TRACKING_PREFIX, class_name));
+        }
+    }
 
     let imports = collect_imports(root, src);
 
@@ -559,13 +993,18 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     {
         let ctx = classify_ref_context(node);
         if ctx != RefContextKind::Other {
+            let receiver = if ctx == RefContextKind::Call {
+                extract_py_call_receiver(node, src)
+            } else {
+                None
+            };
             refs.push(ExtractedRef {
                 name: name.to_string(),
                 line: node.start_position().row + 1,
                 col: node.start_position().column,
                 context_kind: ctx,
                 resolved_local_target: None,
-                receiver: None,
+                receiver,
             });
         }
         if ctx == RefContextKind::Call
@@ -749,6 +1188,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                         raw_path: path.to_string(),
                         line: child.start_position().row + 1,
                         kind: "import",
+                        alias: None,
                     });
                 }
             }
@@ -756,10 +1196,15 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                 if let Some(name) = child.child_by_field_name("name")
                     && let Ok(path) = name.utf8_text(src)
                 {
+                    let alias = child
+                        .child_by_field_name("alias")
+                        .and_then(|a| a.utf8_text(src).ok())
+                        .map(|s| s.to_string());
                     imports.push(ExtractedImport {
                         raw_path: path.to_string(),
                         line: name.start_position().row + 1,
                         kind: "import",
+                        alias,
                     });
                 }
             }
@@ -782,11 +1227,16 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
         if module_id.is_some_and(|id| id == child.id()) {
             continue;
         }
-        let name_text = match child.kind() {
-            "dotted_name" => child.utf8_text(src).ok(),
-            "aliased_import" => child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(src).ok()),
+        let (name_text, alias_text) = match child.kind() {
+            "dotted_name" => (child.utf8_text(src).ok(), None),
+            "aliased_import" => (
+                child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(src).ok()),
+                child
+                    .child_by_field_name("alias")
+                    .and_then(|a| a.utf8_text(src).ok()),
+            ),
             _ => continue,
         };
         if let Some(name) = name_text {
@@ -802,6 +1252,7 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
                 raw_path,
                 line,
                 kind: "from_import",
+                alias: alias_text.map(|s| s.to_string()),
             });
         }
     }
@@ -812,6 +1263,7 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
             raw_path: prefix.to_string(),
             line,
             kind: "from_import",
+            alias: None,
         });
     }
 }
@@ -946,6 +1398,7 @@ mod tests {
         let r = parse_py("from collections import OrderedDict as OD\n");
         assert_eq!(r.imports.len(), 1);
         assert_eq!(r.imports[0].raw_path, "collections.OrderedDict");
+        assert_eq!(r.imports[0].alias.as_deref(), Some("OD"));
     }
 
     #[test]

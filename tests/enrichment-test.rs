@@ -15,11 +15,11 @@ fn seed_file_with_imports(db: &Db) -> i64 {
     let file_id = db
         .upsert_file("src/db/mod.rs", "rust", "abc", 100, true)
         .unwrap();
-    db.insert_import(file_id, "rusqlite::params", None, 1, "use")
+    db.insert_import(file_id, "rusqlite::params", None, 1, "use", None)
         .unwrap();
-    db.insert_import(file_id, "rusqlite::Connection", None, 2, "use")
+    db.insert_import(file_id, "rusqlite::Connection", None, 2, "use", None)
         .unwrap();
-    db.insert_import(file_id, "serde_json::json", None, 3, "use")
+    db.insert_import(file_id, "serde_json::json", None, 3, "use", None)
         .unwrap();
     file_id
 }
@@ -273,9 +273,9 @@ fn dart_package_imports_enriched() {
     let file_id = db
         .upsert_file("lib/src/app.dart", "dart", "d1", 30, true)
         .unwrap();
-    db.insert_import(file_id, "package:flutter/material.dart", None, 1, "import")
+    db.insert_import(file_id, "package:flutter/material.dart", None, 1, "import", None)
         .unwrap();
-    db.insert_import(file_id, "dart:core", None, 2, "import")
+    db.insert_import(file_id, "dart:core", None, 2, "import", None)
         .unwrap();
     seed_symbol(&db, file_id, "MyApp", "MyApp");
 
@@ -305,15 +305,15 @@ fn rust_internal_imports_skipped() {
     let file_id = db
         .upsert_file("src/db/mod.rs", "rust", "h1", 50, true)
         .unwrap();
-    db.insert_import(file_id, "crate::error::Result", None, 1, "use")
+    db.insert_import(file_id, "crate::error::Result", None, 1, "use", None)
         .unwrap();
-    db.insert_import(file_id, "self::helpers::parse", None, 2, "use")
+    db.insert_import(file_id, "self::helpers::parse", None, 2, "use", None)
         .unwrap();
-    db.insert_import(file_id, "super::config::Config", None, 3, "use")
+    db.insert_import(file_id, "super::config::Config", None, 3, "use", None)
         .unwrap();
-    db.insert_import(file_id, "std::collections::HashMap", None, 4, "use")
+    db.insert_import(file_id, "std::collections::HashMap", None, 4, "use", None)
         .unwrap();
-    db.insert_import(file_id, "rusqlite::Connection", None, 5, "use")
+    db.insert_import(file_id, "rusqlite::Connection", None, 5, "use", None)
         .unwrap();
     seed_symbol(&db, file_id, "Db::open", "open");
 

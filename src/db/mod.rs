@@ -301,6 +301,7 @@ pub struct InsertImportParams<'a> {
     pub imported_path: &'a str,
     pub line: i64,
     pub kind: &'a str,
+    pub alias: Option<&'a str>,
 }
 
 pub struct InsertRefParams<'a> {
@@ -344,6 +345,7 @@ pub struct ImportRow {
     pub resolved_file_id: Option<i64>,
     pub line: i64,
     pub kind: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -886,10 +888,16 @@ impl Db {
         // Insert imports.
         for imp in imports {
             conn.prepare_cached(
-                "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind)
-                 VALUES (?1, ?2, NULL, ?3, ?4)",
+                "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
             )?
-            .execute(params![file_id, imp.imported_path, imp.line, imp.kind])?;
+            .execute(params![
+                file_id,
+                imp.imported_path,
+                imp.line,
+                imp.kind,
+                imp.alias
+            ])?;
         }
 
         // Insert refs.
@@ -1550,12 +1558,13 @@ impl Db {
         resolved_file_id: Option<i64>,
         line: i64,
         kind: &str,
+        alias: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![file_id, imported_path, resolved_file_id, line, kind],
+            "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![file_id, imported_path, resolved_file_id, line, kind, alias],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -1597,7 +1606,7 @@ impl Db {
     pub fn imports_for_file(&self, file_id: i64) -> Result<Vec<ImportRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, imported_path, resolved_file_id, line, kind
+            "SELECT id, file_id, imported_path, resolved_file_id, line, kind, alias
              FROM imports WHERE file_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<ImportRow>> =
@@ -2106,6 +2115,7 @@ fn map_import_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportRow> {
         resolved_file_id: row.get(3)?,
         line: row.get(4)?,
         kind: row.get(5)?,
+        alias: row.get(6)?,
     })
 }
 

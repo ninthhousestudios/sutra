@@ -60,6 +60,7 @@ fn make_import(raw_path: &str, line: usize) -> ExtractedImport {
         raw_path: raw_path.to_string(),
         line,
         kind: "use",
+        alias: None,
     }
 }
 

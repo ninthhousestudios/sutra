@@ -1020,8 +1020,15 @@ name = "no-tool-daemon"
             .upsert_file("src/daemon.rs", "rs", "ghi789", 50, true)
             .unwrap();
 
-        db.insert_import(review_id, "src/daemon.rs", Some(daemon_id), 1, "import")
-            .unwrap();
+        db.insert_import(
+            review_id,
+            "src/daemon.rs",
+            Some(daemon_id),
+            1,
+            "import",
+            None,
+        )
+        .unwrap();
 
         write_rules(
             &dir,
@@ -1119,7 +1126,7 @@ to = "src/banned.rs"
         db.replace_commit_files(&commits, &pairs).unwrap();
 
         // a imports c — that pair should be excluded
-        db.insert_import(id_a, "src/c.rs", Some(id_c), 1, "import")
+        db.insert_import(id_a, "src/c.rs", Some(id_c), 1, "import", None)
             .unwrap();
 
         let result = handle(&db, "mycomp", dir.path(), None, None, &registry()).unwrap();

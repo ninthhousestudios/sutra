@@ -1692,11 +1692,11 @@ fn component_instability_basic() {
     .unwrap();
 
     // alpha imports beta (2 edges out), beta imports alpha (1 edge out)
-    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use")
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use", None)
         .unwrap();
-    db.insert_import(fc, "src/beta/b.rs", Some(fb), 1, "use")
+    db.insert_import(fc, "src/beta/b.rs", Some(fb), 1, "use", None)
         .unwrap();
-    db.insert_import(fb, "src/alpha/a.rs", Some(fa), 1, "use")
+    db.insert_import(fb, "src/alpha/a.rs", Some(fa), 1, "use", None)
         .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
@@ -1726,7 +1726,7 @@ fn component_instability_isolated() {
         .unwrap();
 
     // Internal edge only — same component
-    db.insert_import(fa, "src/solo/b.rs", Some(fb), 1, "use")
+    db.insert_import(fa, "src/solo/b.rs", Some(fb), 1, "use", None)
         .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
@@ -1749,7 +1749,7 @@ fn component_instability_fully_efferent() {
         .unwrap();
 
     // leaf → core only
-    db.insert_import(fa, "src/core/b.rs", Some(fb), 1, "use")
+    db.insert_import(fa, "src/core/b.rs", Some(fb), 1, "use", None)
         .unwrap();
 
     let result = compute_component_instability(&db).unwrap();
@@ -1900,7 +1900,7 @@ fn file_health_component_instability() {
     db.batch_insert_membership(&[("alpha".into(), fa), ("beta".into(), fb)])
         .unwrap();
 
-    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use")
+    db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use", None)
         .unwrap();
 
     let result =
@@ -1928,9 +1928,9 @@ fn import_cycle_fires_for_cyclic_files() {
     let c = seed_file(&db, "src/c.rs");
 
     // a -> b -> c -> a (triangle cycle)
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
-    db.insert_import(b, "src/c.rs", Some(c), 1, "use").unwrap();
-    db.insert_import(c, "src/a.rs", Some(a), 1, "use").unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None).unwrap();
+    db.insert_import(c, "src/a.rs", Some(a), 1, "use", None).unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     let cycle_findings: Vec<&HealthFinding> = findings
@@ -1959,8 +1959,8 @@ fn import_cycle_absent_for_acyclic() {
     let c = seed_file(&db, "src/c.rs");
 
     // a -> b -> c (no back edge)
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
-    db.insert_import(b, "src/c.rs", Some(c), 1, "use").unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None).unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     let cycle_findings: Vec<&HealthFinding> = findings
@@ -1977,8 +1977,8 @@ fn import_cycle_roundtrips_through_db() {
     let a = seed_file(&db, "src/a.rs");
     let b = seed_file(&db, "src/b.rs");
 
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use").unwrap();
-    db.insert_import(b, "src/a.rs", Some(a), 1, "use").unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
+    db.insert_import(b, "src/a.rs", Some(a), 1, "use", None).unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     db.replace_health_findings(&findings).unwrap();

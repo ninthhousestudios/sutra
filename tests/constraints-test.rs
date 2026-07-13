@@ -631,7 +631,7 @@ name = "no-module-cycles"
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
     // Non-cyclic edge so edges aren't empty (would short-circuit before cycle check).
-    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use")
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use", None)
         .unwrap();
 
     // Engine loaded with stale edges forming a cycle on IDs 1,2,3
@@ -697,9 +697,9 @@ name = "no-module-cycles"
     let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
 
     // Current DB edges are acyclic: A→B, B→C (no C→A).
-    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use")
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use", None)
         .unwrap();
-    db.insert_import(fb.id, "src/c.rs", Some(fc.id), 1, "use")
+    db.insert_import(fb.id, "src/c.rs", Some(fc.id), 1, "use", None)
         .unwrap();
 
     // Engine was loaded when C→A still existed, so it reports a cycle.
@@ -762,9 +762,9 @@ severity = "advisory"
     db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
-    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use")
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use", None)
         .unwrap();
-    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use")
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use", None)
         .unwrap();
 
     let engine = DdEngine::new(Duration::from_secs(1800));
@@ -827,9 +827,9 @@ scope = "src/**"
         .unwrap();
     let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
     let fb = db.file_by_path("tests/b.rs").unwrap().unwrap();
-    db.insert_import(fa.id, "tests/b.rs", Some(fb.id), 1, "use")
+    db.insert_import(fa.id, "tests/b.rs", Some(fb.id), 1, "use", None)
         .unwrap();
-    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use")
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use", None)
         .unwrap();
 
     let engine = DdEngine::new(Duration::from_secs(1800));
