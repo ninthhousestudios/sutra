@@ -340,7 +340,9 @@ pub fn suggest_symbols(db: &Db, query: &str, limit: usize) -> Vec<String> {
 
     let mut scored: Vec<(f64, &str)> = symbols
         .iter()
-        .filter_map(|(_, qn, sn, _)| {
+        .filter_map(|s| {
+            let sn = &s.short_name;
+            let qn = &s.qualified_name;
             let sn_chars = sn.chars().count();
             if sn_chars < 2 {
                 return None;

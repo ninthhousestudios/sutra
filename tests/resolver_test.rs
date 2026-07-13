@@ -1,3 +1,4 @@
+use sutra::db::SymbolEntry;
 use sutra::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind};
 use sutra::resolver::resolve_refs;
 
@@ -20,6 +21,7 @@ fn make_symbol(
         end_line,
         end_col: 0,
         children: vec![],
+        parent_symbol_id: None,
         docstring: None,
         cyclomatic: None,
         cognitive: None,
@@ -46,8 +48,26 @@ fn make_import(raw_path: &str, line: usize) -> ExtractedImport {
     }
 }
 
-fn sym4(id: i64, qn: &str, sn: &str, kind: &str) -> (i64, String, String, String) {
-    (id, qn.to_string(), sn.to_string(), kind.to_string())
+fn sym(id: i64, qn: &str, sn: &str, kind: &str) -> SymbolEntry {
+    SymbolEntry {
+        id,
+        qualified_name: qn.to_string(),
+        short_name: sn.to_string(),
+        kind: kind.to_string(),
+        parent_symbol_id: None,
+        file_id: 0,
+    }
+}
+
+fn sym_in_file(id: i64, qn: &str, sn: &str, kind: &str, file_id: i64) -> SymbolEntry {
+    SymbolEntry {
+        id,
+        qualified_name: qn.to_string(),
+        short_name: sn.to_string(),
+        kind: kind.to_string(),
+        parent_symbol_id: None,
+        file_id,
+    }
 }
 
 /// Test 1: A local binding `let x = 1` and a ref to `x` resolves locally.
@@ -55,10 +75,10 @@ fn sym4(id: i64, qn: &str, sn: &str, kind: &str) -> (i64, String, String, String
 fn test_resolve_local_binding() {
     let file_symbols = vec![make_symbol("main::x", "x", SymbolKind::Const, 5, 5)];
     let refs = vec![make_ref("x", 10, RefContextKind::Other)];
-    let all_symbols = vec![sym4(1, "main::x", "x", "const")];
+    let all_symbols = vec![sym(1, "main::x", "x", "const")];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].target_symbol_id, Some(1));
@@ -71,12 +91,12 @@ fn test_resolve_cross_file() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Config", 15, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(10, "config::Config", "Config", "struct"),
-        sym4(20, "other::OtherStruct", "OtherStruct", "struct"),
+        sym(10, "config::Config", "Config", "struct"),
+        sym(20, "other::OtherStruct", "OtherStruct", "struct"),
     ];
     let imports = vec![make_import("config::Config", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].target_symbol_id, Some(10));
@@ -89,12 +109,12 @@ fn test_resolve_ambiguous() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Error", 20, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(100, "my_errors::Error", "Error", "struct"),
-        sym4(200, "other_errors::Error", "Error", "struct"),
+        sym(100, "my_errors::Error", "Error", "struct"),
+        sym(200, "other_errors::Error", "Error", "struct"),
     ];
     let imports = vec![make_import("my_errors::Error", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -109,10 +129,10 @@ fn test_resolve_ambiguous() {
 fn test_unresolved_external() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("HashMap", 30, RefContextKind::TypeUse)];
-    let all_symbols = vec![sym4(1, "main::main", "main", "function")];
+    let all_symbols = vec![sym(1, "main::main", "main", "function")];
     let imports = vec![make_import("std::collections::HashMap", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert!(
@@ -135,12 +155,12 @@ fn test_scope_shadowing() {
     ];
     let refs = vec![make_ref("x", 12, RefContextKind::Other)]; // after inner
     let all_symbols = vec![
-        sym4(1, "main::x", "x", "const"),
-        sym4(2, "main::inner::x", "x", "const"),
+        sym(1, "main::x", "x", "const"),
+        sym(2, "main::inner::x", "x", "const"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -155,12 +175,12 @@ fn test_global_unique_match() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Widget", 5, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(42, "ui::Widget", "Widget", "struct"),
-        sym4(43, "ui::Button", "Button", "struct"),
+        sym(42, "ui::Widget", "Widget", "struct"),
+        sym(43, "ui::Button", "Button", "struct"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].target_symbol_id, Some(42));
@@ -172,13 +192,13 @@ fn test_global_ambiguous_shortest_qn() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Node", 5, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(10, "ast::expr::deep::Node", "Node", "struct"),
-        sym4(20, "ast::Node", "Node", "struct"),
-        sym4(30, "ast::stmt::Node", "Node", "struct"),
+        sym(10, "ast::expr::deep::Node", "Node", "struct"),
+        sym(20, "ast::Node", "Node", "struct"),
+        sym(30, "ast::stmt::Node", "Node", "struct"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -192,10 +212,10 @@ fn test_global_ambiguous_shortest_qn() {
 fn test_import_chain_qualified_name() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Config", 10, RefContextKind::TypeUse)];
-    let all_symbols = vec![sym4(55, "config::Config", "Config", "struct")];
+    let all_symbols = vec![sym(55, "config::Config", "Config", "struct")];
     let imports = vec![make_import("config::Config", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -209,10 +229,10 @@ fn test_import_chain_qualified_name() {
 fn test_import_prefix_match() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("User", 10, RefContextKind::TypeUse)];
-    let all_symbols = vec![sym4(77, "models::db::User", "User", "struct")];
+    let all_symbols = vec![sym(77, "models::db::User", "User", "struct")];
     let imports = vec![make_import("models::User", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -227,15 +247,15 @@ fn test_multiple_imports_first_match_wins() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Logger", 20, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(11, "logging::Logger", "Logger", "struct"),
-        sym4(22, "tracing::Logger", "Logger", "struct"),
+        sym(11, "logging::Logger", "Logger", "struct"),
+        sym(22, "tracing::Logger", "Logger", "struct"),
     ];
     let imports = vec![
         make_import("logging::Logger", 1),
         make_import("tracing::Logger", 2),
     ];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -256,12 +276,12 @@ fn test_local_over_import() {
     )];
     let refs = vec![make_ref("Config", 8, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(1, "local::Config", "Config", "struct"),
-        sym4(2, "remote::Config", "Config", "struct"),
+        sym(1, "local::Config", "Config", "struct"),
+        sym(2, "remote::Config", "Config", "struct"),
     ];
     let imports = vec![make_import("remote::Config", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -275,10 +295,10 @@ fn test_local_over_import() {
 fn test_dart_package_import() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("MyModel", 15, RefContextKind::TypeUse)];
-    let all_symbols = vec![sym4(99, "myapp::models::MyModel", "MyModel", "class")];
+    let all_symbols = vec![sym(99, "myapp::models::MyModel", "MyModel", "class")];
     let imports = vec![make_import("package:myapp/models.dart", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -292,10 +312,10 @@ fn test_dart_package_import() {
 fn test_empty_refs() {
     let file_symbols = vec![make_symbol("mod::Foo", "Foo", SymbolKind::Struct, 1, 5)];
     let refs: Vec<ExtractedRef> = vec![];
-    let all_symbols = vec![sym4(1, "mod::Foo", "Foo", "struct")];
+    let all_symbols = vec![sym(1, "mod::Foo", "Foo", "struct")];
     let imports = vec![make_import("mod::Foo", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert!(resolved.is_empty());
 }
@@ -315,12 +335,12 @@ fn test_multiple_refs_mixed_resolution() {
         make_ref("UnknownThing", 14, RefContextKind::Other),
     ];
     let all_symbols = vec![
-        sym4(1, "app::handler", "handler", "function"),
-        sym4(2, "config::Config", "Config", "struct"),
+        sym(1, "app::handler", "handler", "function"),
+        sym(2, "config::Config", "Config", "struct"),
     ];
     let imports = vec![make_import("config::Config", 1)];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 3);
     assert_eq!(
@@ -348,12 +368,12 @@ fn test_kind_aware_type_use_prefers_struct() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Config", 10, RefContextKind::TypeUse)];
     let all_symbols = vec![
-        sym4(1, "app::Config", "Config", "function"),
-        sym4(2, "app::types::Config", "Config", "struct"),
+        sym(1, "app::Config", "Config", "function"),
+        sym(2, "app::types::Config", "Config", "struct"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -369,12 +389,12 @@ fn test_kind_aware_call_prefers_function() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("new_config", 10, RefContextKind::Call)];
     let all_symbols = vec![
-        sym4(1, "app::new_config", "new_config", "struct"),
-        sym4(2, "app::factory::new_config", "new_config", "function"),
+        sym(1, "app::new_config", "new_config", "struct"),
+        sym(2, "app::factory::new_config", "new_config", "function"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -389,10 +409,10 @@ fn test_kind_aware_call_prefers_function() {
 fn test_import_refs_skipped() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("HashMap", 1, RefContextKind::Import)];
-    let all_symbols = vec![sym4(1, "main::main", "main", "function")];
+    let all_symbols = vec![sym(1, "main::main", "main", "function")];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert!(resolved[0].skipped, "Import refs should be skipped");
@@ -405,10 +425,10 @@ fn test_import_refs_skipped() {
 fn test_field_access_resolves_to_method() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("len", 10, RefContextKind::FieldAccess)];
-    let all_symbols = vec![sym4(1, "vec::len", "len", "method")];
+    let all_symbols = vec![sym(1, "vec::len", "len", "method")];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert!(
@@ -424,10 +444,10 @@ fn test_kind_filter_fallback() {
     let file_symbols: Vec<ExtractedSymbol> = vec![];
     let refs = vec![make_ref("Config", 10, RefContextKind::Call)];
     // Only a struct named Config exists — no callable. Fallback should still resolve.
-    let all_symbols = vec![sym4(1, "app::Config", "Config", "struct")];
+    let all_symbols = vec![sym(1, "app::Config", "Config", "struct")];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -442,12 +462,12 @@ fn test_construction_prefers_struct_over_function() {
     let file_symbols = vec![];
     let refs = vec![make_ref("Config", 10, RefContextKind::Construction)];
     let all_symbols = vec![
-        sym4(1, "Config", "Config", "struct"),
-        sym4(2, "Config", "Config", "function"),
+        sym(1, "Config", "Config", "struct"),
+        sym(2, "Config", "Config", "function"),
     ];
     let imports: Vec<ExtractedImport> = vec![];
 
-    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports);
+    let resolved = resolve_refs(&file_symbols, &refs, &all_symbols, &imports, 0);
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(

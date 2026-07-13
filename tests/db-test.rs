@@ -264,18 +264,18 @@ fn test_all_symbols_summary() {
     let summary = db.all_symbols_summary().unwrap();
     assert_eq!(summary.len(), 3);
 
-    let ids: Vec<i64> = summary.iter().map(|(id, _, _, _)| *id).collect();
+    let ids: Vec<i64> = summary.iter().map(|s| s.id).collect();
     assert!(ids.contains(&id1));
     assert!(ids.contains(&id2));
     assert!(ids.contains(&id3));
 
-    let qnames: Vec<&str> = summary.iter().map(|(_, qn, _, _)| qn.as_str()).collect();
+    let qnames: Vec<&str> = summary.iter().map(|s| s.qualified_name.as_str()).collect();
     assert!(qnames.contains(&"lib::alpha"));
 
-    let snames: Vec<&str> = summary.iter().map(|(_, _, sn, _)| sn.as_str()).collect();
+    let snames: Vec<&str> = summary.iter().map(|s| s.short_name.as_str()).collect();
     assert!(snames.contains(&"beta"));
 
-    let kinds: Vec<&str> = summary.iter().map(|(_, _, _, k)| k.as_str()).collect();
+    let kinds: Vec<&str> = summary.iter().map(|s| s.kind.as_str()).collect();
     assert!(kinds.contains(&"function"));
     assert!(kinds.contains(&"struct"));
 }

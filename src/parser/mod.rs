@@ -31,6 +31,7 @@ pub struct ExtractedSymbol {
     pub end_line: usize,
     pub end_col: usize,
     pub children: Vec<ExtractedSymbol>,
+    pub parent_symbol_id: Option<i64>,
     pub docstring: Option<String>,
     pub cyclomatic: Option<u32>,
     pub cognitive: Option<u32>,

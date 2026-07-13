@@ -618,6 +618,7 @@ fn build_symbol(
         end_line: node.end_position().row + 1,
         end_col: node.end_position().column,
         children: vec![],
+        parent_symbol_id: None,
         docstring,
         cyclomatic,
         cognitive,

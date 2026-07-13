@@ -235,6 +235,7 @@ mod tests {
             end_line: end,
             end_col: 0,
             children: vec![],
+            parent_symbol_id: None,
             docstring: None,
             cyclomatic: None,
             cognitive: None,

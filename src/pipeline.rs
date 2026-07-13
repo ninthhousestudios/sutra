@@ -14,7 +14,7 @@ use crate::components;
 use crate::config::Config;
 use crate::db::{
     Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
-    SnapshotFileRow, SnapshotParams,
+    SnapshotFileRow, SnapshotParams, SymbolEntry,
 };
 use crate::error::Result;
 use crate::graph;
@@ -277,7 +277,7 @@ fn parse_single_file(
 fn resolve_file_refs(
     db: &Db,
     file_id: i64,
-    all_symbols: &[(i64, String, String, String)],
+    all_symbols: &[SymbolEntry],
 ) -> Result<(i64, i64, i64)> {
     let file_symbols_rows = db.find_symbols_by_file(file_id)?;
     let file_refs = db.find_refs_in_file(file_id)?;
@@ -302,6 +302,7 @@ fn resolve_file_refs(
             end_line: s.end_line as usize,
             end_col: s.end_col as usize,
             children: vec![],
+            parent_symbol_id: s.parent_symbol_id,
             docstring: s.docstring.clone(),
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),
@@ -335,6 +336,7 @@ fn resolve_file_refs(
         &extracted_refs,
         all_symbols,
         &extracted_imports,
+        file_id,
     );
 
     #[allow(clippy::type_complexity)]

@@ -230,6 +230,16 @@ pub struct FileRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct SymbolEntry {
+    pub id: i64,
+    pub qualified_name: String,
+    pub short_name: String,
+    pub kind: String,
+    pub parent_symbol_id: Option<i64>,
+    pub file_id: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct SymbolRow {
     pub id: i64,
     pub file_id: i64,
@@ -1215,13 +1225,22 @@ impl Db {
         Ok(rows?)
     }
 
-    /// Load all (id, qualified_name, short_name, kind) tuples in a single query.
-    pub fn all_symbols_summary(&self) -> Result<Vec<(i64, String, String, String)>> {
+    /// Load summary of every symbol: id, names, kind, parent, and file_id.
+    pub fn all_symbols_summary(&self) -> Result<Vec<SymbolEntry>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, qualified_name, short_name, kind FROM symbols")?;
-        let rows: rusqlite::Result<Vec<(i64, String, String, String)>> = stmt
+        let mut stmt = conn.prepare(
+            "SELECT id, qualified_name, short_name, kind, parent_symbol_id, file_id FROM symbols",
+        )?;
+        let rows: rusqlite::Result<Vec<SymbolEntry>> = stmt
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok(SymbolEntry {
+                    id: row.get(0)?,
+                    qualified_name: row.get(1)?,
+                    short_name: row.get(2)?,
+                    kind: row.get(3)?,
+                    parent_symbol_id: row.get(4)?,
+                    file_id: row.get(5)?,
+                })
             })?
             .collect();
         Ok(rows?)
