@@ -581,13 +581,8 @@ fn entity_change_walk(db: &Db, workspace_root: &Path, max_commits: u32) -> Resul
         let changed_files = match crate::git::git_commit_changed_files(workspace_root, &commit.hash)
         {
             Ok(f) => f,
-            Err(_) => {
-                db.insert_entity_commit_with_changes(
-                    &commit.hash,
-                    commit.timestamp,
-                    &commit.author,
-                    &[],
-                )?;
+            Err(e) => {
+                warn!(hash = %commit.hash, "entity walk: skipping commit (diff-tree failed: {e})");
                 continue;
             }
         };

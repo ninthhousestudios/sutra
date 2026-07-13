@@ -466,7 +466,14 @@ pub fn git_commit_changed_files(
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["diff-tree", "--no-commit-id", "-r", "-M", "--name-status"])
+        .args([
+            "diff-tree",
+            "--no-commit-id",
+            "--root",
+            "-r",
+            "-M",
+            "--name-status",
+        ])
         .arg(commit_hash)
         .output()
         .map_err(|e| SutraError::Internal(format!("git diff-tree failed: {e}")))?;
