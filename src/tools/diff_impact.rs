@@ -32,8 +32,7 @@ pub fn handle(
     let paths: Vec<String> = diff_entries.iter().map(|e| e.path.to_string()).collect();
     let signals = change_signals::gather(db, &paths, &ChurnMap::default(), true)?;
 
-    let symbol_changes =
-        symbol_diff::diff_files(workspace_root, &diff_entries, base, head).unwrap_or_default();
+    let diff_result = symbol_diff::diff_files(workspace_root, &diff_entries, base, head);
 
     let changed_files: Vec<_> = signals
         .per_file
@@ -45,8 +44,15 @@ pub fn handle(
                 .map(|s| s.qualified_name.as_str())
                 .collect();
             let mut entry = json!({ "path": f.path, "symbols": symbols });
-            if let Some(sc) = symbol_changes.get(&f.path).filter(|sc| !sc.is_empty()) {
+            if let Some(sc) = diff_result
+                .per_file
+                .get(&f.path)
+                .filter(|sc| !sc.is_empty())
+            {
                 entry["symbol_changes"] = serde_json::to_value(sc).unwrap_or_default();
+            }
+            if let Some(err) = diff_result.errors.get(&f.path) {
+                entry["symbol_diff_error"] = json!(err);
             }
             entry
         })

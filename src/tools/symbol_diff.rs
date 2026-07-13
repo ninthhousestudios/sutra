@@ -609,15 +609,21 @@ pub fn diff_file(
     }
 }
 
+pub struct DiffFilesResult {
+    pub per_file: HashMap<String, Vec<SymbolChange>>,
+    pub errors: HashMap<String, String>,
+}
+
 pub fn diff_files(
     workspace_root: &Path,
     entries: &[DiffFileEntry],
     base: &str,
     head: &str,
-) -> Result<HashMap<String, Vec<SymbolChange>>> {
+) -> DiffFilesResult {
     let mut all_unmatched_old: Vec<UnmatchedSymbol> = Vec::new();
     let mut all_unmatched_new: Vec<UnmatchedSymbol> = Vec::new();
     let mut per_file: HashMap<String, Vec<SymbolChange>> = HashMap::new();
+    let mut errors: HashMap<String, String> = HashMap::new();
 
     for entry in entries {
         let old_file = entry.old_path.as_deref().unwrap_or(&entry.path);
@@ -658,8 +664,9 @@ pub fn diff_files(
             }
             Ok(())
         };
-        // Per-file errors don't prevent other files from being processed
-        let _ = process();
+        if let Err(e) = process() {
+            errors.insert(new_file.to_string(), e.to_string());
+        }
     }
 
     let resolve = resolve_renames(&all_unmatched_old, &all_unmatched_new);
@@ -700,7 +707,7 @@ pub fn diff_files(
         }
     }
 
-    Ok(per_file)
+    DiffFilesResult { per_file, errors }
 }
 
 #[cfg(test)]
