@@ -615,6 +615,7 @@ fn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&st
     flags
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_symbol(
     node: Node,
     src: &[u8],
