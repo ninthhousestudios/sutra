@@ -321,6 +321,7 @@ fn resolve_file_refs(
             line: r.line as usize,
             col: r.col as usize,
             context_kind: parse_ref_context_kind(&r.context_kind),
+            resolved_local_target: None,
         })
         .collect();
 
@@ -342,7 +343,7 @@ fn resolve_file_refs(
     );
 
     #[allow(clippy::type_complexity)]
-    let ref_tuples: Vec<(Option<i64>, Option<&str>, i64, i64, &str)> = resolved
+    let ref_tuples: Vec<(Option<i64>, Option<&str>, i64, i64, &str, Option<&str>)> = resolved
         .iter()
         .map(|rr| {
             (
@@ -351,6 +352,7 @@ fn resolve_file_refs(
                 rr.original.line as i64,
                 rr.original.col as i64,
                 rr.original.context_kind.as_str(),
+                rr.resolution_method.map(|m| m.as_str()),
             )
         })
         .collect();

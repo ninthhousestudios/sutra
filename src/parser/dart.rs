@@ -769,6 +769,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 line: node.start_position().row + 1,
                 col: node.start_position().column,
                 context_kind,
+                resolved_local_target: None,
             });
         }
     }

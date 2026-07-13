@@ -246,6 +246,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0048_entity_changes.sql"),
         false,
     ),
+    (
+        "0049_resolution_method",
+        include_str!("../../migrations/0049_resolution_method.sql"),
+        true,
+    ),
 ];
 
 impl Db {

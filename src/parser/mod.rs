@@ -131,6 +131,9 @@ pub struct ExtractedRef {
     pub line: usize,
     pub col: usize,
     pub context_kind: RefContextKind,
+    /// Hint from parse-time scope resolution: qualified name of the local target.
+    /// The resolver uses this to short-circuit the local lookup step.
+    pub resolved_local_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -6,6 +6,204 @@ use crate::parser::{
 };
 use tree_sitter::{Node, TreeCursor};
 
+// ---------------------------------------------------------------------------
+// Scope arena — built at parse time, used for file-local ref resolution
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Module,
+    Impl,
+    Function,
+    Block,
+}
+
+#[derive(Debug)]
+struct Scope {
+    parent: Option<usize>,
+    /// Indices into the flat symbols slice for defs directly in this scope
+    defs: Vec<usize>,
+    /// Local let-bindings that shadow but don't resolve cross-file
+    bindings: Vec<String>,
+    kind: ScopeKind,
+    start_line: usize,
+    end_line: usize,
+}
+
+pub const LOCAL_BINDING_SENTINEL: &str = "::local_binding::";
+
+fn build_scope_arena(root: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Vec<Scope> {
+    let mut arena: Vec<Scope> = Vec::new();
+
+    arena.push(Scope {
+        parent: None,
+        defs: Vec::new(),
+        bindings: Vec::new(),
+        kind: ScopeKind::Module,
+        start_line: 1,
+        end_line: root.end_position().row + 1,
+    });
+
+    build_scopes_recursive(root, src, 0, &mut arena);
+
+    for (sym_idx, sym) in symbols.iter().enumerate() {
+        let scope_idx = find_tightest_scope(&arena, sym.start_line);
+        arena[scope_idx].defs.push(sym_idx);
+    }
+
+    arena
+}
+
+fn build_scopes_recursive(node: Node, src: &[u8], parent_idx: usize, arena: &mut Vec<Scope>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "mod_item" | "impl_item" | "trait_item" => {
+                let kind = match child.kind() {
+                    "mod_item" => ScopeKind::Module,
+                    _ => ScopeKind::Impl,
+                };
+                if let Some(body) = child.child_by_field_name("body") {
+                    let idx = arena.len();
+                    arena.push(Scope {
+                        parent: Some(parent_idx),
+                        defs: Vec::new(),
+                        bindings: Vec::new(),
+                        kind,
+                        start_line: body.start_position().row + 1,
+                        end_line: body.end_position().row + 1,
+                    });
+                    build_scopes_recursive(body, src, idx, arena);
+                }
+            }
+            "function_item" | "function_signature_item" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let idx = arena.len();
+                    arena.push(Scope {
+                        parent: Some(parent_idx),
+                        defs: Vec::new(),
+                        bindings: Vec::new(),
+                        kind: ScopeKind::Function,
+                        start_line: body.start_position().row + 1,
+                        end_line: body.end_position().row + 1,
+                    });
+                    collect_let_bindings(body, src, &mut arena[idx].bindings);
+                    build_scopes_recursive(body, src, idx, arena);
+                }
+            }
+            "block" if is_nested_block(child) => {
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    kind: ScopeKind::Block,
+                    start_line: child.start_position().row + 1,
+                    end_line: child.end_position().row + 1,
+                });
+                collect_let_bindings(child, src, &mut arena[idx].bindings);
+                build_scopes_recursive(child, src, idx, arena);
+            }
+            _ => {
+                build_scopes_recursive(child, src, parent_idx, arena);
+            }
+        }
+    }
+}
+
+fn is_nested_block(node: Node) -> bool {
+    node.parent()
+        .is_none_or(|p| !matches!(p.kind(), "function_item" | "function_signature_item"))
+}
+
+fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<String>) {
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if child.kind() == "let_declaration" {
+            if let Some(pat) = child.child_by_field_name("pattern") {
+                collect_pattern_names(pat, src, bindings);
+            }
+        }
+    }
+}
+
+fn collect_pattern_names(pat: Node, src: &[u8], names: &mut Vec<String>) {
+    match pat.kind() {
+        "identifier" => {
+            if let Ok(name) = pat.utf8_text(src) {
+                if name != "_" {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        "tuple_pattern" | "slice_pattern" | "tuple_struct_pattern" | "struct_pattern" => {
+            let mut cursor = pat.walk();
+            for child in pat.children(&mut cursor) {
+                collect_pattern_names(child, src, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn find_tightest_scope(arena: &[Scope], line: usize) -> usize {
+    let mut best = 0;
+    let mut best_size = usize::MAX;
+    for (i, scope) in arena.iter().enumerate() {
+        if line >= scope.start_line && line <= scope.end_line {
+            let size = scope.end_line - scope.start_line;
+            if size < best_size {
+                best_size = size;
+                best = i;
+            }
+        }
+    }
+    best
+}
+
+fn resolve_refs_locally(arena: &[Scope], symbols: &[&ExtractedSymbol], refs: &mut [ExtractedRef]) {
+    for r in refs.iter_mut() {
+        if matches!(r.context_kind, RefContextKind::Import) {
+            continue;
+        }
+        let scope_idx = find_tightest_scope(arena, r.line);
+        r.resolved_local_target = resolve_in_scope_chain(arena, symbols, scope_idx, &r.name);
+    }
+}
+
+fn resolve_in_scope_chain(
+    arena: &[Scope],
+    symbols: &[&ExtractedSymbol],
+    start: usize,
+    name: &str,
+) -> Option<String> {
+    let mut idx = start;
+    loop {
+        let scope = &arena[idx];
+
+        if matches!(scope.kind, ScopeKind::Function | ScopeKind::Block)
+            && scope.bindings.iter().any(|b| b == name)
+        {
+            return Some(LOCAL_BINDING_SENTINEL.to_string());
+        }
+
+        if let Some(&sym_idx) = scope
+            .defs
+            .iter()
+            .find(|&&si| symbols[si].short_name == name)
+        {
+            return Some(symbols[sym_idx].qualified_name.to_string());
+        }
+
+        match scope.parent {
+            Some(p) => idx = p,
+            None => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let root = ctx.tree.root_node();
     let parsed_ok = !root.has_error();
@@ -15,6 +213,10 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
+
+    let flat_syms = crate::parser::flatten_symbols(&symbols);
+    let arena = build_scope_arena(root, src, &flat_syms);
+    resolve_refs_locally(&arena, &flat_syms, &mut references);
 
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
@@ -687,6 +889,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 line: node.start_position().row + 1,
                 col: node.start_position().column,
                 context_kind,
+                resolved_local_target: None,
             });
         }
     }
@@ -701,6 +904,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
             line: node.start_position().row + 1,
             col: node.start_position().column,
             context_kind: RefContextKind::Call,
+            resolved_local_target: None,
         });
     }
 

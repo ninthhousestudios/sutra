@@ -1401,16 +1401,25 @@ impl Db {
     pub fn replace_refs_and_clear_resolution(
         &self,
         file_id: i64,
-        refs: &[(Option<i64>, Option<&str>, i64, i64, &str)],
+        refs: &[(Option<i64>, Option<&str>, i64, i64, &str, Option<&str>)],
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         conn.execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
-        for &(target_symbol_id, unresolved_name, line, col, context_kind) in refs {
+        for &(target_symbol_id, unresolved_name, line, col, context_kind, resolution_method) in refs
+        {
             conn.execute(
-                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![file_id, target_symbol_id, unresolved_name, line, col, context_kind],
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolution_method)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    file_id,
+                    target_symbol_id,
+                    unresolved_name,
+                    line,
+                    col,
+                    context_kind,
+                    resolution_method
+                ],
             )?;
         }
         conn.execute(

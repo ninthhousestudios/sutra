@@ -1,7 +1,27 @@
 use std::collections::HashSet;
 
 use crate::db::SymbolEntry;
+use crate::parser::rust::LOCAL_BINDING_SENTINEL;
 use crate::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionMethod {
+    ScopeChain,
+    LocalBinding,
+    Import,
+    GlobalFallback,
+}
+
+impl ResolutionMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeChain => "scope_chain",
+            Self::LocalBinding => "local_binding",
+            Self::Import => "import",
+            Self::GlobalFallback => "global_fallback",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedRef {
@@ -10,6 +30,7 @@ pub struct ResolvedRef {
     pub unresolved_name: Option<String>,
     /// True when resolution was skipped (Import context).
     pub skipped: bool,
+    pub resolution_method: Option<ResolutionMethod>,
 }
 
 pub fn resolve_refs(
@@ -24,7 +45,6 @@ pub fn resolve_refs(
         .collect()
 }
 
-/// Returns true if a symbol kind is compatible with the ref's context_kind.
 fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
     match context {
         RefContextKind::TypeUse | RefContextKind::Construction => matches!(
@@ -33,7 +53,6 @@ fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
         ),
         RefContextKind::Call => matches!(symbol_kind, "function" | "method" | "macro"),
         RefContextKind::FieldAccess => matches!(symbol_kind, "field" | "method"),
-        // PatternBind, Other — can't narrow, accept any
         _ => true,
     }
 }
@@ -45,13 +64,13 @@ fn resolve_single(
     file_imports: &[ExtractedImport],
     file_id: i64,
 ) -> ResolvedRef {
-    // Import refs are the `use`/`import` statement itself — not a usage.
     if matches!(r.context_kind, RefContextKind::Import) {
         return ResolvedRef {
             original: r.clone(),
             target_symbol_id: None,
             unresolved_name: Some(r.name.clone()),
             skipped: true,
+            resolution_method: None,
         };
     }
 
@@ -63,6 +82,25 @@ fn resolve_single(
             | RefContextKind::Construction
             | RefContextKind::FieldAccess
     );
+
+    // --- Step 0: scope-chain hint from parse-time resolution ---
+    if let Some(hint) = &r.resolved_local_target {
+        if hint == LOCAL_BINDING_SENTINEL {
+            return ResolvedRef {
+                original: r.clone(),
+                target_symbol_id: None,
+                unresolved_name: Some(name.clone()),
+                skipped: false,
+                resolution_method: Some(ResolutionMethod::LocalBinding),
+            };
+        }
+        if let Some(s) = all_symbols
+            .iter()
+            .find(|s| s.file_id == file_id && s.qualified_name == *hint)
+        {
+            return resolved(r, s.id, ResolutionMethod::ScopeChain);
+        }
+    }
 
     // --- Step 1: local scope (file_symbols by short_name) ---
     let local_matches: Vec<&ExtractedSymbol> = file_symbols
@@ -78,13 +116,13 @@ fn resolve_single(
             .iter()
             .find(|s| s.file_id == file_id && s.qualified_name == best.qualified_name)
         {
-            return resolved(r, s.id);
+            return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
         if let Some(s) = all_symbols
             .iter()
             .find(|s| s.file_id == file_id && s.short_name == best.short_name)
         {
-            return resolved(r, s.id);
+            return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
     }
 
@@ -98,7 +136,7 @@ fn resolve_single(
         file_imports,
         &mut visited,
     ) {
-        return resolved(r, id);
+        return resolved(r, id, ResolutionMethod::Import);
     }
 
     // --- Step 3: global match (all_symbols by short_name) ---
@@ -110,17 +148,16 @@ fn resolve_single(
         .collect();
 
     if global_matches.len() == 1 {
-        return resolved(r, global_matches[0].id);
+        return resolved(r, global_matches[0].id, ResolutionMethod::GlobalFallback);
     }
 
     if global_matches.len() > 1 {
-        // Prefer same-file candidates before falling back to shortest qn.
         let same_file: Vec<&&SymbolEntry> = global_matches
             .iter()
             .filter(|s| s.file_id == file_id)
             .collect();
         if same_file.len() == 1 {
-            return resolved(r, same_file[0].id);
+            return resolved(r, same_file[0].id, ResolutionMethod::GlobalFallback);
         }
 
         let pool = if same_file.len() > 1 {
@@ -129,43 +166,38 @@ fn resolve_single(
             global_matches.clone()
         };
         let best = pool.iter().min_by_key(|s| s.qualified_name.len()).unwrap();
-        return resolved(r, best.id);
+        return resolved(r, best.id, ResolutionMethod::GlobalFallback);
     }
 
-    // If kind filter produced no matches, retry without it — better to resolve
-    // imprecisely than leave unresolved.
     if use_kind_filter {
         let fallback: Vec<&SymbolEntry> = all_symbols
             .iter()
             .filter(|s| s.short_name == *name)
             .collect();
         if fallback.len() == 1 {
-            return resolved(r, fallback[0].id);
+            return resolved(r, fallback[0].id, ResolutionMethod::GlobalFallback);
         }
     }
 
-    // --- Step 4: unresolved ---
     ResolvedRef {
         original: r.clone(),
         target_symbol_id: None,
         unresolved_name: Some(name.clone()),
         skipped: false,
+        resolution_method: None,
     }
 }
 
-fn resolved(r: &ExtractedRef, id: i64) -> ResolvedRef {
+fn resolved(r: &ExtractedRef, id: i64, method: ResolutionMethod) -> ResolvedRef {
     ResolvedRef {
         original: r.clone(),
         target_symbol_id: Some(id),
         unresolved_name: None,
         skipped: false,
+        resolution_method: Some(method),
     }
 }
 
-/// Pick the best local candidate using enclosing-scope preference, then line
-/// proximity as tiebreak. Scope preference: the candidate whose tightest
-/// common enclosing scope with the ref is smallest wins — this correctly
-/// handles inner fn shadowing, impl-method vs free-function, etc.
 fn pick_nearest_local<'a>(
     candidates: &[&'a ExtractedSymbol],
     ref_line: usize,
@@ -190,8 +222,6 @@ fn pick_nearest_local<'a>(
         .copied()
 }
 
-/// Size of the tightest scope in `file_symbols` that encloses both the
-/// candidate's definition and `ref_line`. Smaller = more specific = better.
 fn tightest_common_scope_size(
     candidate: &ExtractedSymbol,
     ref_line: usize,
@@ -211,8 +241,6 @@ fn tightest_common_scope_size(
         .unwrap_or(usize::MAX)
 }
 
-/// Sort key matching the old heuristic: prefer preceding definitions (closer
-/// start_line gets lower key), then fall back to absolute distance.
 fn line_proximity_key(sym: &ExtractedSymbol, ref_line: usize) -> (bool, usize) {
     if sym.start_line <= ref_line {
         (false, ref_line - sym.start_line)
@@ -242,14 +270,12 @@ fn find_via_imports(
             continue;
         }
 
-        // Full qualified_name match
         if let Some(s) = all_symbols.iter().find(|s| s.qualified_name == *path)
             && (!use_kind_filter || kind_compatible(context, &s.kind))
         {
             return Some(s.id);
         }
 
-        // Prefix match
         let import_prefix = if let Some(pos) = path.rfind("::") {
             &path[..pos]
         } else {
@@ -264,7 +290,6 @@ fn find_via_imports(
             return Some(s.id);
         }
 
-        // Short_name fallback from import context
         if last_segment == name
             && let Some(s) = all_symbols.iter().find(|s| {
                 s.short_name == name && (!use_kind_filter || kind_compatible(context, &s.kind))

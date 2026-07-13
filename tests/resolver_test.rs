@@ -38,6 +38,7 @@ fn make_ref(name: &str, line: usize, context_kind: RefContextKind) -> ExtractedR
         line,
         col: 0,
         context_kind,
+        resolved_local_target: None,
     }
 }
 
