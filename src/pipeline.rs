@@ -13,8 +13,8 @@ use tracing::{info, warn};
 use crate::components;
 use crate::config::Config;
 use crate::db::{
-    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
-    SnapshotFileRow, SnapshotParams, SymbolEntry,
+    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
+    SnapshotComponentRow, SnapshotFileRow, SnapshotParams, SymbolEntry,
 };
 use crate::error::Result;
 use crate::graph;
@@ -281,6 +281,7 @@ fn resolve_file_refs(
     db: &Db,
     file_id: i64,
     all_symbols: &[SymbolEntry],
+    class_members: &resolver::ClassMembers<'_>,
 ) -> Result<(i64, i64, i64)> {
     let file_symbols_rows = db.find_symbols_by_file(file_id)?;
     let file_refs = db.find_refs_in_file(file_id)?;
@@ -343,24 +344,24 @@ fn resolve_file_refs(
         all_symbols,
         &extracted_imports,
         file_id,
+        class_members,
     );
 
-    #[allow(clippy::type_complexity)]
-    let ref_tuples: Vec<(Option<i64>, Option<&str>, i64, i64, &str, Option<&str>)> = resolved
+    let ref_rows: Vec<ResolvedRefRow<'_>> = resolved
         .iter()
-        .map(|rr| {
-            (
-                rr.target_symbol_id,
-                rr.unresolved_name.as_deref(),
-                rr.original.line as i64,
-                rr.original.col as i64,
-                rr.original.context_kind.as_str(),
-                rr.resolution_method.map(|m| m.as_str()),
-            )
+        .map(|rr| ResolvedRefRow {
+            target_symbol_id: rr.target_symbol_id,
+            unresolved_name: rr.unresolved_name.as_deref(),
+            line: rr.original.line as i64,
+            col: rr.original.col as i64,
+            context_kind: rr.original.context_kind.as_str(),
+            resolution_method: rr.resolution_method.map(|m| m.as_str()),
+            resolved_local_target: rr.original.resolved_local_target.as_deref(),
+            receiver: rr.original.receiver.as_deref(),
         })
         .collect();
 
-    db.replace_refs_and_clear_resolution(file_id, &ref_tuples)?;
+    db.replace_refs_and_clear_resolution(file_id, &ref_rows)?;
 
     let mut resolved_count: i64 = 0;
     let mut unresolved: i64 = 0;
@@ -659,11 +660,13 @@ fn post_parse_sequence(
     let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
+    let class_members = resolver::build_class_members(&all_db_symbols);
     let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;
     let mut skipped_count: i64 = 0;
     for &file_id in &resolution_set {
-        let (resolved, unresolved, skipped) = resolve_file_refs(db, file_id, &all_db_symbols)?;
+        let (resolved, unresolved, skipped) =
+            resolve_file_refs(db, file_id, &all_db_symbols, &class_members)?;
         resolved_count += resolved;
         unresolved_count += unresolved;
         skipped_count += skipped;

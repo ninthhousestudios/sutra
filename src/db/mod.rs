@@ -325,6 +325,17 @@ pub struct RefRow {
     pub receiver: Option<String>,
 }
 
+pub struct ResolvedRefRow<'a> {
+    pub target_symbol_id: Option<i64>,
+    pub unresolved_name: Option<&'a str>,
+    pub line: i64,
+    pub col: i64,
+    pub context_kind: &'a str,
+    pub resolution_method: Option<&'a str>,
+    pub resolved_local_target: Option<&'a str>,
+    pub receiver: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ImportRow {
     pub id: i64,
@@ -1409,28 +1420,28 @@ impl Db {
     }
 
     /// Atomically replace all refs for a file and clear its needs_resolution flag.
-    #[allow(clippy::type_complexity)]
     pub fn replace_refs_and_clear_resolution(
         &self,
         file_id: i64,
-        refs: &[(Option<i64>, Option<&str>, i64, i64, &str, Option<&str>)],
+        refs: &[ResolvedRefRow<'_>],
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         conn.execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
-        for &(target_symbol_id, unresolved_name, line, col, context_kind, resolution_method) in refs
-        {
+        for r in refs {
             conn.execute(
-                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolution_method)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolution_method, resolved_local_target, receiver)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     file_id,
-                    target_symbol_id,
-                    unresolved_name,
-                    line,
-                    col,
-                    context_kind,
-                    resolution_method
+                    r.target_symbol_id,
+                    r.unresolved_name,
+                    r.line,
+                    r.col,
+                    r.context_kind,
+                    r.resolution_method,
+                    r.resolved_local_target,
+                    r.receiver
                 ],
             )?;
         }

@@ -1121,3 +1121,68 @@ void main() {
         "factory function (lowercase callee) should not produce a type-tracking hint"
     );
 }
+
+#[test]
+fn type_tracking_scope_boundary_prevents_cross_function_leak() {
+    let src = r#"
+class Cache {
+  void get() {}
+}
+void funcA() {
+  final c = Cache();
+  c.get();
+}
+void funcB() {
+  var c = makeSomething();
+  c.get();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let get_refs: Vec<_> = refs
+        .iter()
+        .filter(|r| r.name == "get" && r.context_kind == RefContextKind::Call)
+        .collect();
+    assert_eq!(get_refs.len(), 2, "should have two c.get() refs");
+
+    let func_a_ref = get_refs.iter().find(|r| r.line == 7).unwrap();
+    assert_eq!(
+        func_a_ref.resolved_local_target.as_deref(),
+        Some("::type_tracking::Cache"),
+        "funcA's c.get() should resolve via type tracking"
+    );
+
+    let func_b_ref = get_refs.iter().find(|r| r.line == 11).unwrap();
+    assert!(
+        func_b_ref.resolved_local_target.is_none(),
+        "funcB's c.get() should NOT inherit Cache type from funcA"
+    );
+}
+
+#[test]
+fn type_tracking_named_constructor() {
+    let src = r#"
+class Repo {
+  Repo.fromDb();
+  void fetch() {}
+}
+void main() {
+  final r = Repo.fromDb();
+  r.fetch();
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/test.dart").unwrap();
+    let refs = &result.references;
+
+    let fetch_ref = refs
+        .iter()
+        .find(|r| r.name == "fetch" && r.context_kind == RefContextKind::Call)
+        .expect("r.fetch() should be a Call ref");
+
+    assert_eq!(
+        fetch_ref.resolved_local_target.as_deref(),
+        Some("::type_tracking::Repo"),
+        "named constructor Repo.fromDb() should produce type-tracking hint for Repo"
+    );
+}

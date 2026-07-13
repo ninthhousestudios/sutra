@@ -38,9 +38,9 @@ pub struct ResolvedRef {
 
 /// Maps parent_symbol_id → list of (member_short_name, member_symbol_id).
 /// Borrows short_name from `all_symbols` to avoid allocation.
-type ClassMembers<'a> = HashMap<i64, Vec<(&'a str, i64)>>;
+pub type ClassMembers<'a> = HashMap<i64, Vec<(&'a str, i64)>>;
 
-fn build_class_members(all_symbols: &[SymbolEntry]) -> ClassMembers<'_> {
+pub fn build_class_members(all_symbols: &[SymbolEntry]) -> ClassMembers<'_> {
     let mut map: ClassMembers<'_> = HashMap::new();
     for s in all_symbols {
         if let Some(parent_id) = s.parent_symbol_id {
@@ -58,8 +58,8 @@ pub fn resolve_refs(
     all_symbols: &[SymbolEntry],
     file_imports: &[ExtractedImport],
     file_id: i64,
+    class_members: &ClassMembers<'_>,
 ) -> Vec<ResolvedRef> {
-    let class_members = build_class_members(all_symbols);
     refs.iter()
         .map(|r| {
             resolve_single(

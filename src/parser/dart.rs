@@ -920,12 +920,14 @@ fn extract_call_receiver(node: Node, src: &[u8]) -> Option<String> {
 // Dart type-tracking scope — maps local variables to their constructor type
 // ---------------------------------------------------------------------------
 
-/// A (variable_name, class_name, declaration_line) triple recorded when we
-/// see `final/var/Type x = ClassName(...)` in a function body.
+/// A type binding recorded when we see `final/var/Type x = ClassName(...)`.
+/// `scope_end_line` bounds the binding to its enclosing function so that
+/// bindings from sibling functions don't leak across scope boundaries.
 struct DartTypeBinding {
     var_name: String,
     class_name: String,
     decl_line: usize,
+    scope_end_line: usize,
 }
 
 /// Walk the entire file AST and collect constructor-type bindings from every
@@ -944,34 +946,64 @@ fn collect_dart_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<DartTyp
 }
 
 fn extract_dart_type_binding(node: Node, src: &[u8]) -> Option<DartTypeBinding> {
-    // initialized_identifier has named fields: `name` (identifier) and `value` (expression).
     let name_node = node.child_by_field_name("name")?;
     let value_node = node.child_by_field_name("value")?;
 
     let var_name = name_node.utf8_text(src).ok()?.to_string();
     let decl_line = name_node.start_position().row + 1;
     let class_name = dart_constructor_type(value_node, src)?;
+    let scope_end_line = enclosing_function_end(node);
 
     Some(DartTypeBinding {
         var_name,
         class_name,
         decl_line,
+        scope_end_line,
     })
+}
+
+fn enclosing_function_end(node: Node) -> usize {
+    const FUNC_KINDS: &[&str] = &[
+        "function_body",
+        "method_declaration",
+        "function_declaration",
+        "constructor_declaration",
+    ];
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if FUNC_KINDS.contains(&parent.kind()) {
+            return parent.end_position().row + 1;
+        }
+        cur = parent;
+    }
+    usize::MAX
 }
 
 /// If `node` is a constructor-call expression, return the class name.
 /// Handles:
-///   `Cache()` → call_expression with identifier/type_identifier "Cache" (uppercase)
+///   `Cache()` → call_expression with identifier "Cache" (uppercase)
+///   `Cache.fromJson()` → call_expression with member_expression, object "Cache"
 ///   `new Cache()` → new_expression
 ///   `const Cache()` → const_object_expression
 fn dart_constructor_type(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
         "call_expression" => {
             let func = node.child_by_field_name("function")?;
-            let name = func.utf8_text(src).ok()?;
-            // Class names start with uppercase in Dart
-            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                return Some(name.to_string());
+            match func.kind() {
+                "identifier" | "type_identifier" => {
+                    let name = func.utf8_text(src).ok()?;
+                    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        return Some(name.to_string());
+                    }
+                }
+                "member_expression" => {
+                    let obj = func.child_by_field_name("object")?;
+                    let obj_name = obj.utf8_text(src).ok()?;
+                    if obj_name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        return Some(obj_name.to_string());
+                    }
+                }
+                _ => {}
             }
             None
         }
@@ -997,7 +1029,8 @@ fn find_first_type_name(node: Node, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Look up the most recently declared type for `receiver_name` before `ref_line`.
+/// Look up the most recently declared type for `receiver_name` before `ref_line`,
+/// constrained to bindings whose enclosing function scope contains `ref_line`.
 fn lookup_receiver_type<'a>(
     bindings: &'a [DartTypeBinding],
     ref_line: usize,
@@ -1005,7 +1038,9 @@ fn lookup_receiver_type<'a>(
 ) -> Option<&'a str> {
     bindings
         .iter()
-        .filter(|b| b.var_name == receiver_name && b.decl_line < ref_line)
+        .filter(|b| {
+            b.var_name == receiver_name && b.decl_line < ref_line && ref_line <= b.scope_end_line
+        })
         .max_by_key(|b| b.decl_line)
         .map(|b| b.class_name.as_str())
 }
