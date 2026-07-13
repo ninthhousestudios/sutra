@@ -283,7 +283,12 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
             .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
         let docstring = extract_docstring(child, src);
 
-        let sh = Some(structural_hash::compute(child, src, None));
+        let field_ident = find_field_identifier_node(child);
+        let sh = Some(structural_hash::compute(
+            child,
+            src,
+            field_ident.map(|n| (n.start_byte(), n.end_byte())),
+        ));
 
         fields.push(ExtractedSymbol {
             qualified_name: format!("{struct_name}::{field_name}"),
@@ -311,13 +316,17 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
 }
 
 fn find_field_identifier(node: Node, src: &[u8]) -> Option<String> {
+    find_field_identifier_node(node).and_then(|n| n.utf8_text(src).ok().map(|s| s.to_string()))
+}
+
+fn find_field_identifier_node(node: Node) -> Option<Node> {
     if node.kind() == "field_identifier" {
-        return node.utf8_text(src).ok().map(|s| s.to_string());
+        return Some(node);
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(name) = find_field_identifier(child, src) {
-            return Some(name);
+        if let Some(n) = find_field_identifier_node(child) {
+            return Some(n);
         }
     }
     None
