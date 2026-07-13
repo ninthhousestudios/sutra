@@ -80,11 +80,10 @@ fn build_scopes_recursive(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        // Register definitions in the parent scope
-        if DEF_KINDS.contains(&child.kind()) {
-            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
-                arena[parent_idx].defs.push(sym_idx);
-            }
+        if DEF_KINDS.contains(&child.kind())
+            && let Some(sym_idx) = find_symbol_for_node(child, src, symbols)
+        {
+            arena[parent_idx].defs.push(sym_idx);
         }
 
         match child.kind() {
@@ -93,13 +92,12 @@ fn build_scopes_recursive(
                     "mod_item" => ScopeKind::Module,
                     _ => ScopeKind::Impl,
                 };
-                // impl_item uses "type" field not "name"
-                if child.kind() == "impl_item" {
-                    if let Some(sym_idx) = symbols.iter().position(|s| {
+                if child.kind() == "impl_item"
+                    && let Some(sym_idx) = symbols.iter().position(|s| {
                         s.start_line == child.start_position().row + 1 && s.kind == SymbolKind::Impl
-                    }) {
-                        arena[parent_idx].defs.push(sym_idx);
-                    }
+                    })
+                {
+                    arena[parent_idx].defs.push(sym_idx);
                 }
                 if let Some(body) = child.child_by_field_name("body") {
                     let idx = arena.len();
@@ -157,10 +155,10 @@ fn is_nested_block(node: Node) -> bool {
 fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<String>) {
     let mut cursor = block.walk();
     for child in block.children(&mut cursor) {
-        if child.kind() == "let_declaration" {
-            if let Some(pat) = child.child_by_field_name("pattern") {
-                collect_pattern_names(pat, src, bindings);
-            }
+        if child.kind() == "let_declaration"
+            && let Some(pat) = child.child_by_field_name("pattern")
+        {
+            collect_pattern_names(pat, src, bindings);
         }
     }
 }
@@ -168,10 +166,10 @@ fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<String>) {
 fn collect_pattern_names(pat: Node, src: &[u8], names: &mut Vec<String>) {
     match pat.kind() {
         "identifier" => {
-            if let Ok(name) = pat.utf8_text(src) {
-                if name != "_" {
-                    names.push(name.to_string());
-                }
+            if let Ok(name) = pat.utf8_text(src)
+                && name != "_"
+            {
+                names.push(name.to_string());
             }
         }
         "tuple_pattern" | "slice_pattern" | "tuple_struct_pattern" | "struct_pattern" => {
