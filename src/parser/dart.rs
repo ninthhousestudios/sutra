@@ -27,6 +27,20 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
 
+    // Phase B: constructor type tracking — annotate method-call refs whose
+    // receiver has a known type with a type-tracking hint so the resolver can
+    // prefer the class member over an unrelated global of the same name.
+    let mut type_bindings: Vec<DartTypeBinding> = Vec::new();
+    collect_dart_type_bindings(root, src, &mut type_bindings);
+    for r in &mut references {
+        if r.context_kind == RefContextKind::Call
+            && let Some(recv) = &r.receiver
+            && let Some(class_name) = lookup_receiver_type(&type_bindings, r.line, recv)
+        {
+            r.resolved_local_target = Some(format!("{}{}", TYPE_TRACKING_PREFIX, class_name));
+        }
+    }
+
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
 
@@ -764,12 +778,18 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     {
         let context_kind = classify_ref_context(node);
         if context_kind != RefContextKind::Other {
+            let receiver = if context_kind == RefContextKind::Call {
+                extract_call_receiver(node, src)
+            } else {
+                None
+            };
             refs.push(ExtractedRef {
                 name: name.to_string(),
                 line: node.start_position().row + 1,
                 col: node.start_position().column,
                 context_kind,
                 resolved_local_target: None,
+                receiver,
             });
         }
     }
@@ -882,6 +902,115 @@ fn classify_ref_context(node: Node) -> RefContextKind {
 
     RefContextKind::Other
 }
+
+/// If `node` is the property/callee of a member_expression call (e.g. `get` in
+/// `c.get()`), return the receiver identifier text (e.g. `"c"`).
+fn extract_call_receiver(node: Node, src: &[u8]) -> Option<String> {
+    let parent = node.parent()?;
+    if parent.kind() == "member_expression" && is_property_child(node, parent) {
+        let obj = parent.child_by_field_name("object")?;
+        if obj.kind() == "identifier" || obj.kind() == "this_expression" {
+            return obj.utf8_text(src).ok().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Dart type-tracking scope — maps local variables to their constructor type
+// ---------------------------------------------------------------------------
+
+/// A (variable_name, class_name, declaration_line) triple recorded when we
+/// see `final/var/Type x = ClassName(...)` in a function body.
+struct DartTypeBinding {
+    var_name: String,
+    class_name: String,
+    decl_line: usize,
+}
+
+/// Walk the entire file AST and collect constructor-type bindings from every
+/// `initialized_identifier` or `initialized_variable_definition` whose initializer is a
+/// constructor call or `new`/`const` expression.
+fn collect_dart_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<DartTypeBinding>) {
+    if node.kind() == "initialized_identifier" || node.kind() == "initialized_variable_definition" {
+        if let Some(b) = extract_dart_type_binding(node, src) {
+            bindings.push(b);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_dart_type_bindings(child, src, bindings);
+    }
+}
+
+fn extract_dart_type_binding(node: Node, src: &[u8]) -> Option<DartTypeBinding> {
+    // initialized_identifier has named fields: `name` (identifier) and `value` (expression).
+    let name_node = node.child_by_field_name("name")?;
+    let value_node = node.child_by_field_name("value")?;
+
+    let var_name = name_node.utf8_text(src).ok()?.to_string();
+    let decl_line = name_node.start_position().row + 1;
+    let class_name = dart_constructor_type(value_node, src)?;
+
+    Some(DartTypeBinding {
+        var_name,
+        class_name,
+        decl_line,
+    })
+}
+
+/// If `node` is a constructor-call expression, return the class name.
+/// Handles:
+///   `Cache()` → call_expression with identifier/type_identifier "Cache" (uppercase)
+///   `new Cache()` → new_expression
+///   `const Cache()` → const_object_expression
+fn dart_constructor_type(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "call_expression" => {
+            let func = node.child_by_field_name("function")?;
+            let name = func.utf8_text(src).ok()?;
+            // Class names start with uppercase in Dart
+            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                return Some(name.to_string());
+            }
+            None
+        }
+        "new_expression" | "const_object_expression" => {
+            let type_node = node.child_by_field_name("type")?;
+            // type node wraps the class name; walk into it for the identifier
+            find_first_type_name(type_node, src)
+        }
+        _ => None,
+    }
+}
+
+fn find_first_type_name(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "type_identifier" || node.kind() == "identifier" {
+        return node.utf8_text(src).ok().map(|s| s.to_string());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(n) = find_first_type_name(child, src) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Look up the most recently declared type for `receiver_name` before `ref_line`.
+fn lookup_receiver_type<'a>(
+    bindings: &'a [DartTypeBinding],
+    ref_line: usize,
+    receiver_name: &str,
+) -> Option<&'a str> {
+    bindings
+        .iter()
+        .filter(|b| b.var_name == receiver_name && b.decl_line < ref_line)
+        .max_by_key(|b| b.decl_line)
+        .map(|b| b.class_name.as_str())
+}
+
+pub const TYPE_TRACKING_PREFIX: &str = "::type_tracking::";
 
 fn is_property_child(node: Node, parent: Node) -> bool {
     parent

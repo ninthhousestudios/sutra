@@ -256,6 +256,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0050_resolved_local_target.sql"),
         true,
     ),
+    (
+        "0051_ref_receiver",
+        include_str!("../../migrations/0051_ref_receiver.sql"),
+        true,
+    ),
 ];
 
 impl Db {

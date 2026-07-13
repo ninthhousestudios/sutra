@@ -775,6 +775,7 @@ mod tests {
             col: 0,
             context_kind: RefContextKind::Call,
             resolved_local_target: None,
+            receiver: None,
         }
     }
 

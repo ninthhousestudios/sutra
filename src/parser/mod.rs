@@ -134,6 +134,9 @@ pub struct ExtractedRef {
     /// Hint from parse-time scope resolution: qualified name of the local target.
     /// The resolver uses this to short-circuit the local lookup step.
     pub resolved_local_target: Option<String>,
+    /// Receiver identifier for method-call / field-access refs (e.g. `x` in `x.method()`).
+    /// Captured at parse time; used by type-tracking resolution (Phase B).
+    pub receiver: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -933,6 +933,7 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 col: node.start_position().column,
                 context_kind,
                 resolved_local_target: None,
+                receiver: None,
             });
         }
     }
@@ -942,12 +943,20 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         && is_method_call_name(node)
         && let Ok(name) = node.utf8_text(src)
     {
+        // Capture the receiver identifier from the field_expression's value child.
+        let receiver = node
+            .parent()
+            .and_then(|fe| fe.child_by_field_name("value"))
+            .filter(|v| v.kind() == "identifier" || v.kind() == "self")
+            .and_then(|v| v.utf8_text(src).ok())
+            .map(|s| s.to_string());
         refs.push(ExtractedRef {
             name: name.to_string(),
             line: node.start_position().row + 1,
             col: node.start_position().column,
             context_kind: RefContextKind::Call,
             resolved_local_target: None,
+            receiver,
         });
     }
 
@@ -1295,7 +1304,18 @@ mod tests {
         let result = parse_rust(src, "test.rs").unwrap();
         assert!(
             !result.references.iter().any(|r| r.name == "db"),
-            "receiver (Other) should be suppressed"
+            "receiver (Other) should be suppressed as a standalone ref"
+        );
+        // The receiver IS captured on the callee ref for future type-tracking use.
+        let query_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "query")
+            .expect("method call should be extracted");
+        assert_eq!(
+            query_ref.receiver.as_deref(),
+            Some("db"),
+            "receiver identifier should be captured on the callee ref"
         );
     }
 

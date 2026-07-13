@@ -252,6 +252,7 @@ fn parse_single_file(
             col: rf.col as i64,
             context_kind: rf.context_kind.as_str(),
             resolved_local_target: rf.resolved_local_target.as_deref(),
+            receiver: rf.receiver.as_deref(),
         })
         .collect();
 
@@ -323,6 +324,7 @@ fn resolve_file_refs(
             col: r.col as usize,
             context_kind: parse_ref_context_kind(&r.context_kind),
             resolved_local_target: r.resolved_local_target.clone(),
+            receiver: r.receiver.clone(),
         })
         .collect();
 

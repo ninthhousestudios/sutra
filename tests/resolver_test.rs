@@ -40,6 +40,7 @@ fn make_ref(name: &str, line: usize, context_kind: RefContextKind) -> ExtractedR
         col: 0,
         context_kind,
         resolved_local_target: None,
+        receiver: None,
     }
 }
 
@@ -642,6 +643,7 @@ fn make_ref_with_hint(
         col: 0,
         context_kind,
         resolved_local_target: Some(hint.to_string()),
+        receiver: None,
     }
 }
 
@@ -756,5 +758,85 @@ fn test_scope_hint_fallback_when_db_row_missing() {
         resolved[0].resolution_method,
         Some(ResolutionMethod::ScopeChain),
         "local resolution still uses scope_chain method"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase B: type-tracking resolution tests
+// ---------------------------------------------------------------------------
+
+fn sym_with_parent(id: i64, qn: &str, sn: &str, kind: &str, parent_id: i64) -> SymbolEntry {
+    SymbolEntry {
+        id,
+        qualified_name: qn.to_string(),
+        short_name: sn.to_string(),
+        kind: kind.to_string(),
+        parent_symbol_id: Some(parent_id),
+        file_id: 0,
+    }
+}
+
+fn make_ref_with_type_tracking(
+    name: &str,
+    line: usize,
+    class_name: &str,
+) -> ExtractedRef {
+    use sutra::parser::dart::TYPE_TRACKING_PREFIX;
+    ExtractedRef {
+        name: name.to_string(),
+        line,
+        col: 0,
+        context_kind: RefContextKind::Call,
+        resolved_local_target: Some(format!("{TYPE_TRACKING_PREFIX}{class_name}")),
+        receiver: Some("c".to_string()),
+    }
+}
+
+/// `final c = Cache(); c.get()` resolves to Cache::get rather than a
+/// same-named global function.
+#[test]
+fn test_type_tracking_resolves_to_class_member_not_global() {
+    // Two `get` symbols: a global function and Cache::get (method)
+    let all_syms = vec![
+        sym(1, "get", "get", "function"),                         // global get
+        sym(2, "Cache", "Cache", "class"),                        // the class
+        sym_with_parent(3, "Cache::get", "get", "method", 2),    // Cache.get
+    ];
+    let refs = vec![make_ref_with_type_tracking("get", 5, "Cache")];
+
+    let resolved = resolve_refs(&[], &refs, &all_syms, &[], 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(3),
+        "should resolve to Cache::get (id=3), not the global get (id=1)"
+    );
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::TypeTracking),
+        "resolution method should be TypeTracking"
+    );
+}
+
+/// When the receiver type is not in all_symbols, fall through to normal
+/// resolution (global fallback) without error.
+#[test]
+fn test_type_tracking_falls_through_when_class_absent() {
+    let all_syms = vec![sym(1, "render", "render", "function")];
+    let refs = vec![make_ref_with_type_tracking("render", 3, "Widget")];
+
+    let resolved = resolve_refs(&[], &refs, &all_syms, &[], 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(1),
+        "should fall through to global function when class is absent"
+    );
+    assert_ne!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::TypeTracking),
+        "should NOT be TypeTracking when class was not found"
     );
 }

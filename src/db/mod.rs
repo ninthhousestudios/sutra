@@ -309,6 +309,7 @@ pub struct InsertRefParams<'a> {
     pub col: i64,
     pub context_kind: &'a str,
     pub resolved_local_target: Option<&'a str>,
+    pub receiver: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +322,7 @@ pub struct RefRow {
     pub col: i64,
     pub context_kind: String,
     pub resolved_local_target: Option<String>,
+    pub receiver: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -882,8 +884,8 @@ impl Db {
         // Insert refs.
         for rf in refs {
             conn.prepare_cached(
-                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target)
-                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO refs (file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver)
+                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?
             .execute(params![
                 file_id,
@@ -891,7 +893,8 @@ impl Db {
                 rf.line,
                 rf.col,
                 rf.context_kind,
-                rf.resolved_local_target
+                rf.resolved_local_target,
+                rf.receiver
             ])?;
         }
 
@@ -1377,7 +1380,7 @@ impl Db {
     pub fn find_refs_to_symbol(&self, symbol_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target
+            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver
              FROM refs WHERE target_symbol_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<RefRow>> =
@@ -1389,7 +1392,7 @@ impl Db {
     pub fn find_refs_in_file(&self, file_id: i64) -> Result<Vec<RefRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target
+            "SELECT id, file_id, target_symbol_id, unresolved_name, line, col, context_kind, resolved_local_target, receiver
              FROM refs WHERE file_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<RefRow>> =
@@ -2080,6 +2083,7 @@ fn map_ref_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RefRow> {
         col: row.get(5)?,
         context_kind: row.get(6)?,
         resolved_local_target: row.get(7)?,
+        receiver: row.get(8)?,
     })
 }
 

@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::SymbolEntry;
+use crate::parser::dart::TYPE_TRACKING_PREFIX;
 use crate::parser::rust::LOCAL_BINDING_SENTINEL;
 use crate::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind};
 
@@ -10,6 +11,7 @@ pub enum ResolutionMethod {
     LocalBinding,
     Import,
     GlobalFallback,
+    TypeTracking,
 }
 
 impl ResolutionMethod {
@@ -19,6 +21,7 @@ impl ResolutionMethod {
             Self::LocalBinding => "local_binding",
             Self::Import => "import",
             Self::GlobalFallback => "global_fallback",
+            Self::TypeTracking => "type_tracking",
         }
     }
 }
@@ -33,6 +36,22 @@ pub struct ResolvedRef {
     pub resolution_method: Option<ResolutionMethod>,
 }
 
+/// Maps parent_symbol_id → list of (member_short_name, member_symbol_id).
+/// Borrows short_name from `all_symbols` to avoid allocation.
+type ClassMembers<'a> = HashMap<i64, Vec<(&'a str, i64)>>;
+
+fn build_class_members(all_symbols: &[SymbolEntry]) -> ClassMembers<'_> {
+    let mut map: ClassMembers<'_> = HashMap::new();
+    for s in all_symbols {
+        if let Some(parent_id) = s.parent_symbol_id {
+            map.entry(parent_id)
+                .or_default()
+                .push((s.short_name.as_str(), s.id));
+        }
+    }
+    map
+}
+
 pub fn resolve_refs(
     file_symbols: &[ExtractedSymbol],
     refs: &[ExtractedRef],
@@ -40,8 +59,18 @@ pub fn resolve_refs(
     file_imports: &[ExtractedImport],
     file_id: i64,
 ) -> Vec<ResolvedRef> {
+    let class_members = build_class_members(all_symbols);
     refs.iter()
-        .map(|r| resolve_single(r, file_symbols, all_symbols, file_imports, file_id))
+        .map(|r| {
+            resolve_single(
+                r,
+                file_symbols,
+                all_symbols,
+                file_imports,
+                file_id,
+                &class_members,
+            )
+        })
         .collect()
 }
 
@@ -63,6 +92,7 @@ fn resolve_single(
     all_symbols: &[SymbolEntry],
     file_imports: &[ExtractedImport],
     file_id: i64,
+    class_members: &ClassMembers<'_>,
 ) -> ResolvedRef {
     if matches!(r.context_kind, RefContextKind::Import) {
         return ResolvedRef {
@@ -83,7 +113,7 @@ fn resolve_single(
             | RefContextKind::FieldAccess
     );
 
-    // --- Step 0: scope-chain hint from parse-time resolution ---
+    // --- Step 0: scope-chain / type-tracking hints from parse-time resolution ---
     if let Some(hint) = &r.resolved_local_target {
         if hint == LOCAL_BINDING_SENTINEL {
             return ResolvedRef {
@@ -94,6 +124,28 @@ fn resolve_single(
                 resolution_method: Some(ResolutionMethod::LocalBinding),
             };
         }
+
+        // Type-tracking hint: "::type_tracking::ClassName" — look up ClassName.{name}
+        // in the class_members map built from parent_symbol_id chains.
+        if let Some(class_name) = hint.strip_prefix(TYPE_TRACKING_PREFIX) {
+            let class_syms: Vec<&SymbolEntry> = all_symbols
+                .iter()
+                .filter(|s| {
+                    s.short_name == class_name
+                        && matches!(s.kind.as_str(), "class" | "mixin" | "extension" | "struct")
+                })
+                .collect();
+            for class_sym in class_syms {
+                if let Some(members) = class_members.get(&class_sym.id) {
+                    if let Some(&(_, member_id)) = members.iter().find(|(n, _)| *n == name.as_str())
+                    {
+                        return resolved(r, member_id, ResolutionMethod::TypeTracking);
+                    }
+                }
+            }
+            // Type found but member not in DB — fall through to standard resolution.
+        }
+
         if let Some(s) = all_symbols
             .iter()
             .find(|s| s.file_id == file_id && s.qualified_name == *hint)
