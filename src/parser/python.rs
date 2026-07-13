@@ -56,6 +56,69 @@ fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) ->
         .position(|s| s.short_name == name && s.start_line == line)
 }
 
+fn find_symbol_for_decorated(
+    dec_node: Node,
+    src: &[u8],
+    symbols: &[&ExtractedSymbol],
+) -> Option<usize> {
+    let mut cursor = dec_node.walk();
+    for child in dec_node.children(&mut cursor) {
+        if matches!(child.kind(), "function_definition" | "class_definition") {
+            let name_node = child.child_by_field_name("name")?;
+            let name = name_node.utf8_text(src).ok()?;
+            let dec_line = dec_node.start_position().row + 1;
+            return symbols
+                .iter()
+                .position(|s| s.short_name == name && s.start_line == dec_line);
+        }
+    }
+    None
+}
+
+fn add_function_scope(
+    func_node: Node,
+    src: &[u8],
+    parent_idx: usize,
+    arena: &mut Vec<Scope>,
+    symbols: &[&ExtractedSymbol],
+) {
+    if let Some(body) = func_node.child_by_field_name("body") {
+        let idx = arena.len();
+        arena.push(Scope {
+            parent: Some(parent_idx),
+            defs: Vec::new(),
+            bindings: Vec::new(),
+            kind: ScopeKind::Function,
+            start_line: func_node.start_position().row + 1,
+            end_line: func_node.end_position().row + 1,
+        });
+        collect_param_bindings(func_node, src, &mut arena[idx].bindings);
+        collect_local_bindings(body, src, &mut arena[idx].bindings);
+        build_scopes_recursive(body, src, idx, arena, symbols);
+    }
+}
+
+fn add_class_scope(
+    class_node: Node,
+    src: &[u8],
+    parent_idx: usize,
+    arena: &mut Vec<Scope>,
+    symbols: &[&ExtractedSymbol],
+) {
+    if let Some(body) = class_node.child_by_field_name("body") {
+        let idx = arena.len();
+        arena.push(Scope {
+            parent: Some(parent_idx),
+            defs: Vec::new(),
+            bindings: Vec::new(),
+            kind: ScopeKind::Class,
+            start_line: body.start_position().row + 1,
+            end_line: body.end_position().row + 1,
+        });
+        build_scopes_recursive(body, src, idx, arena, symbols);
+    }
+}
+
 fn build_scopes_recursive(
     node: Node,
     src: &[u8],
@@ -75,47 +138,24 @@ fn build_scopes_recursive(
 
         match kind {
             "function_definition" => {
-                if let Some(body) = child.child_by_field_name("body") {
-                    let idx = arena.len();
-                    arena.push(Scope {
-                        parent: Some(parent_idx),
-                        defs: Vec::new(),
-                        bindings: Vec::new(),
-                        kind: ScopeKind::Function,
-                        start_line: child.start_position().row + 1,
-                        end_line: child.end_position().row + 1,
-                    });
-                    collect_param_bindings(child, src, &mut arena[idx].bindings);
-                    collect_local_bindings(body, src, &mut arena[idx].bindings);
-                    build_scopes_recursive(body, src, idx, arena, symbols);
-                }
+                add_function_scope(child, src, parent_idx, arena, symbols);
             }
             "class_definition" => {
-                if let Some(body) = child.child_by_field_name("body") {
-                    let idx = arena.len();
-                    arena.push(Scope {
-                        parent: Some(parent_idx),
-                        defs: Vec::new(),
-                        bindings: Vec::new(),
-                        kind: ScopeKind::Class,
-                        start_line: body.start_position().row + 1,
-                        end_line: body.end_position().row + 1,
-                    });
-                    build_scopes_recursive(body, src, idx, arena, symbols);
-                }
+                add_class_scope(child, src, parent_idx, arena, symbols);
             }
             "decorated_definition" => {
-                let mut inner = child.walk();
-                for grandchild in child.children(&mut inner) {
+                let dec_node = child;
+                if let Some(sym_idx) = find_symbol_for_decorated(dec_node, src, symbols) {
+                    arena[parent_idx].defs.push(sym_idx);
+                }
+                let mut inner = dec_node.walk();
+                for grandchild in dec_node.children(&mut inner) {
                     match grandchild.kind() {
-                        "function_definition" | "class_definition" => {
-                            build_scopes_recursive(
-                                grandchild.parent().unwrap_or(grandchild),
-                                src,
-                                parent_idx,
-                                arena,
-                                symbols,
-                            );
+                        "function_definition" => {
+                            add_function_scope(grandchild, src, parent_idx, arena, symbols);
+                        }
+                        "class_definition" => {
+                            add_class_scope(grandchild, src, parent_idx, arena, symbols);
                         }
                         _ => {}
                     }
@@ -1730,6 +1770,30 @@ def process():
         assert_eq!(
             item_refs[0].resolved_local_target.as_deref(),
             Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_decorated_function_resolves() {
+        let code = "\
+@app.route('/')
+def index():
+    pass
+
+def main():
+    index()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "index" && r.line == 6)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some("index"),
+            "decorated function should still resolve via scope chain"
         );
     }
 
