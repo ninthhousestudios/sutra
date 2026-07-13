@@ -441,6 +441,7 @@ mod tests {
             line,
             col: 0,
             context_kind: "call".into(),
+            resolved_local_target: None,
         }
     }
 
@@ -728,6 +729,7 @@ mod tests {
             line,
             col: 0,
             context_kind: context_kind.into(),
+            resolved_local_target: None,
         }
     }
 
@@ -894,6 +896,7 @@ mod tests {
             line,
             col: 0,
             context_kind: "call".into(),
+            resolved_local_target: None,
         }
     }
 

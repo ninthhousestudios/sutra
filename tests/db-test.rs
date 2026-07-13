@@ -1230,6 +1230,7 @@ fn test_replace_file_data_atomic() {
         line: 3,
         col: 4,
         context_kind: "call",
+        resolved_local_target: None,
     }];
 
     let (file_id, sym_count) = db

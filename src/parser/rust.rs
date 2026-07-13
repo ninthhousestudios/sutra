@@ -23,8 +23,8 @@ struct Scope {
     parent: Option<usize>,
     /// Indices into the flat symbols slice for defs directly in this scope
     defs: Vec<usize>,
-    /// Local let-bindings that shadow but don't resolve cross-file
-    bindings: Vec<String>,
+    /// Local let-bindings: (name, declaration_line). Only shadows refs after the declaration.
+    bindings: Vec<(String, usize)>,
     kind: ScopeKind,
     start_line: usize,
     end_line: usize,
@@ -152,30 +152,31 @@ fn is_nested_block(node: Node) -> bool {
         .is_none_or(|p| !matches!(p.kind(), "function_item" | "function_signature_item"))
 }
 
-fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<String>) {
+fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
     let mut cursor = block.walk();
     for child in block.children(&mut cursor) {
         if child.kind() == "let_declaration"
             && let Some(pat) = child.child_by_field_name("pattern")
         {
-            collect_pattern_names(pat, src, bindings);
+            let decl_line = child.start_position().row + 1;
+            collect_pattern_names(pat, src, decl_line, bindings);
         }
     }
 }
 
-fn collect_pattern_names(pat: Node, src: &[u8], names: &mut Vec<String>) {
+fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(String, usize)>) {
     match pat.kind() {
         "identifier" => {
             if let Ok(name) = pat.utf8_text(src)
                 && name != "_"
             {
-                names.push(name.to_string());
+                names.push((name.to_string(), line));
             }
         }
         "tuple_pattern" | "slice_pattern" | "tuple_struct_pattern" | "struct_pattern" => {
             let mut cursor = pat.walk();
             for child in pat.children(&mut cursor) {
-                collect_pattern_names(child, src, names);
+                collect_pattern_names(child, src, line, names);
             }
         }
         _ => {}
@@ -203,7 +204,8 @@ fn resolve_refs_locally(arena: &[Scope], symbols: &[&ExtractedSymbol], refs: &mu
             continue;
         }
         let scope_idx = find_tightest_scope(arena, r.line);
-        r.resolved_local_target = resolve_in_scope_chain(arena, symbols, scope_idx, &r.name);
+        r.resolved_local_target =
+            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line);
     }
 }
 
@@ -212,13 +214,18 @@ fn resolve_in_scope_chain(
     symbols: &[&ExtractedSymbol],
     start: usize,
     name: &str,
+    ref_line: usize,
 ) -> Option<String> {
     let mut idx = start;
     loop {
         let scope = &arena[idx];
 
+        // Let-bindings only shadow refs that appear on or after the declaration line.
         if matches!(scope.kind, ScopeKind::Function | ScopeKind::Block)
-            && scope.bindings.iter().any(|b| b == name)
+            && scope
+                .bindings
+                .iter()
+                .any(|(b, decl_line)| b == name && ref_line >= *decl_line)
         {
             return Some(LOCAL_BINDING_SENTINEL.to_string());
         }
@@ -1547,6 +1554,29 @@ fn process(x: MyType) {}
         assert_eq!(
             type_refs[0].resolved_local_target.as_deref(),
             Some("MyType")
+        );
+    }
+
+    #[test]
+    fn scope_use_before_let_not_shadowed() {
+        let src = r#"
+fn config() -> i32 { 1 }
+fn setup() {
+    config();
+    let config = 42;
+}
+"#;
+        let result = parse_rust(src, "test.rs").unwrap();
+        let config_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "config" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(config_refs.len(), 1, "should extract config() call ref");
+        assert_eq!(
+            config_refs[0].resolved_local_target.as_deref(),
+            Some("config"),
+            "call before let should resolve to the function, not be shadowed"
         );
     }
 }
