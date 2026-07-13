@@ -848,3 +848,77 @@ fn test_type_tracking_falls_through_when_class_absent() {
         "should NOT be TypeTracking when class was not found"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase C: import alias resolution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_import_alias_resolves_via_alias_name() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("np", 5, RefContextKind::Call)];
+    let all_symbols = vec![sym(42, "numpy", "numpy", "function")];
+    let imports = vec![ExtractedImport {
+        raw_path: "numpy".to_string(),
+        line: 1,
+        kind: "import",
+        alias: Some("np".to_string()),
+    }];
+
+    let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(42),
+        "`np` should resolve to `numpy` via alias"
+    );
+    assert_eq!(
+        resolved[0].resolution_method,
+        Some(ResolutionMethod::Import)
+    );
+}
+
+#[test]
+fn test_dot_separated_import_resolves() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("Path", 5, RefContextKind::TypeUse)];
+    let all_symbols = vec![sym(42, "pathlib.Path", "Path", "class")];
+    let imports = vec![ExtractedImport {
+        raw_path: "pathlib.Path".to_string(),
+        line: 1,
+        kind: "from_import",
+        alias: None,
+    }];
+
+    let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(42),
+        "dot-separated Python import should resolve"
+    );
+}
+
+#[test]
+fn test_from_import_alias_resolves() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("OD", 5, RefContextKind::Construction)];
+    let all_symbols = vec![sym(42, "collections.OrderedDict", "OrderedDict", "class")];
+    let imports = vec![ExtractedImport {
+        raw_path: "collections.OrderedDict".to_string(),
+        line: 1,
+        kind: "from_import",
+        alias: Some("OD".to_string()),
+    }];
+
+    let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(42),
+        "`OD` should resolve to `OrderedDict` via from-import alias"
+    );
+}

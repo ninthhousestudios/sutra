@@ -1604,4 +1604,218 @@ mod tests {
         let r = parse_py("from os.path import join\nfrom . import utils\n");
         assert!(r.imports.iter().all(|i| i.kind == "from_import"));
     }
+
+    // -----------------------------------------------------------------------
+    // Phase C: LEGB scope resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scope_local_binding_shadows_call() {
+        let code = "\
+def foo():
+    handler = get_handler()
+    handler()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "handler" && r.line == 3)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_param_binding_used_as_call() {
+        let code = "\
+def greet(formatter):
+    formatter()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "formatter" && r.line == 2)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_class_not_visible_as_call_in_method() {
+        let code = "\
+class Foo:
+    handler = None
+    def method(self):
+        handler()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "handler" && r.line == 4)
+            .collect();
+        assert!(!refs.is_empty(), "handler() should emit a Call ref");
+        assert!(
+            refs[0].resolved_local_target.is_none(),
+            "bare `handler` in method should NOT resolve through class scope"
+        );
+    }
+
+    #[test]
+    fn scope_module_level_function_resolves() {
+        let code = "\
+def helper():
+    pass
+
+def main():
+    helper()
+";
+        let r = parse_py(code);
+        let helper_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "helper" && r.line == 5)
+            .collect();
+        assert_eq!(helper_refs.len(), 1);
+        assert_eq!(
+            helper_refs[0].resolved_local_target.as_deref(),
+            Some("helper")
+        );
+    }
+
+    #[test]
+    fn scope_nested_function_call_from_enclosing() {
+        let code = "\
+def outer():
+    callback = make_callback()
+    def inner():
+        callback()
+";
+        let r = parse_py(code);
+        let refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "callback" && r.line == 4)
+            .collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "enclosing scope binding should resolve (LEGB 'E')"
+        );
+    }
+
+    #[test]
+    fn scope_for_loop_target_binding() {
+        let code = "\
+def process():
+    for item in items:
+        item()
+";
+        let r = parse_py(code);
+        let item_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "item" && r.line == 3)
+            .collect();
+        assert_eq!(item_refs.len(), 1);
+        assert_eq!(
+            item_refs[0].resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase C: import alias tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn import_alias_captured() {
+        let r = parse_py("import numpy as np\n");
+        assert_eq!(r.imports.len(), 1);
+        assert_eq!(r.imports[0].raw_path, "numpy");
+        assert_eq!(r.imports[0].alias.as_deref(), Some("np"));
+    }
+
+    #[test]
+    fn from_import_alias_captured() {
+        let r = parse_py("from datetime import datetime as dt\n");
+        assert_eq!(r.imports.len(), 1);
+        assert_eq!(r.imports[0].raw_path, "datetime.datetime");
+        assert_eq!(r.imports[0].alias.as_deref(), Some("dt"));
+    }
+
+    #[test]
+    fn unaliased_import_has_no_alias() {
+        let r = parse_py("import os\nfrom sys import argv\n");
+        assert!(r.imports.iter().all(|i| i.alias.is_none()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase C: constructor type tracking tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn constructor_type_tracking_sets_hint() {
+        let code = "\
+def main():
+    c = Client()
+    c.get()
+";
+        let r = parse_py(code);
+        let get_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "get" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(!get_refs.is_empty(), "should have a call ref for 'get'");
+        let get_ref = &get_refs[0];
+        assert_eq!(get_ref.receiver.as_deref(), Some("c"));
+        assert_eq!(
+            get_ref.resolved_local_target.as_deref(),
+            Some("::type_tracking::Client"),
+            "constructor type tracking should set TYPE_TRACKING_PREFIX hint"
+        );
+    }
+
+    #[test]
+    fn constructor_type_tracking_lowercase_not_constructor() {
+        let code = "\
+def main():
+    x = factory()
+    x.run()
+";
+        let r = parse_py(code);
+        let run_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "run" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(!run_refs.is_empty());
+        assert!(
+            run_refs[0].resolved_local_target.is_none(),
+            "lowercase factory() should NOT set type tracking hint"
+        );
+    }
+
+    #[test]
+    fn receiver_captured_for_method_call() {
+        let code = "x.method()\n";
+        let r = parse_py(code);
+        let method_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.name == "method" && r.context_kind == RefContextKind::Call)
+            .collect();
+        assert_eq!(method_refs.len(), 1);
+        assert_eq!(method_refs[0].receiver.as_deref(), Some("x"));
+    }
 }
