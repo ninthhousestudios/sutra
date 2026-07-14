@@ -278,14 +278,33 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
 
 pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
     // Priority 0: alias resolution — check .sutra/aliases.toml, component names, anchor names
+    // Filter out orphan matches (targets that no longer exist) and fall through if nothing valid
     let alias_matches = vocabulary::resolve(db, query).unwrap_or_default();
-    if !alias_matches.is_empty() {
+    let valid_aliases: Vec<_> = alias_matches.iter().filter(|m| !m.orphan).collect();
+    if !valid_aliases.is_empty() {
+        let budget = budget.max(1) as usize;
         let mut items = Vec::new();
-        for m in &alias_matches {
+        for m in &valid_aliases {
+            if items.len() >= budget {
+                break;
+            }
             for loc in &m.locations {
+                if items.len() >= budget {
+                    break;
+                }
                 let lines = match (loc.start_line, loc.end_line) {
                     (Some(s), Some(e)) => e - s + 1,
                     _ => 10,
+                };
+                let fetch = if matches!(
+                    m.target_kind.as_str(),
+                    "symbol" | "function" | "struct" | "method"
+                ) {
+                    format!("sutra_read(symbol='{}')", m.target_ref)
+                } else if m.target_kind == "component" {
+                    format!("sutra_map(workspace='...', component='{}')", m.target_ref)
+                } else {
+                    format!("sutra_read(file='{}')", loc.path)
                 };
                 items.push(json!({
                     "symbol": &m.target_ref,
@@ -295,37 +314,34 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                     "component": &m.component_id,
                     "reason": format!("alias:{}", m.source),
                     "estimated_tokens": lines * 4,
-                    "fetch": if m.target_kind == "symbol" || m.target_kind == "function" || m.target_kind == "struct" || m.target_kind == "method" {
-                        format!("sutra_read(symbol='{}')", m.target_ref)
-                    } else if m.target_kind == "component" {
-                        format!("sutra_map(workspace='...', component='{}')", m.target_ref)
-                    } else {
-                        format!("sutra_read(file='{}')", loc.path)
-                    },
+                    "fetch": fetch,
                 }));
             }
         }
-        let total_tokens: i64 = items
-            .iter()
-            .filter_map(|i| i["estimated_tokens"].as_i64())
-            .sum();
-        let n = items.len();
-        return Ok(json!({
-            "items": items,
-            "edges": [],
-            "strategy": {
-                "action": if n <= 3 { "read_all" } else { "read_top_n" },
-                "n": n.min(3),
-                "rationale": format!("Alias/vocabulary match for '{}' — {} location(s) found.", query, n),
-            },
-            "summary": {
-                "total_items": n,
-                "direct_matches": n,
-                "fan_out_items": 0,
-                "components_touched": items.iter().filter_map(|i| i["component"].as_str()).collect::<HashSet<_>>().len(),
-                "total_estimated_tokens": total_tokens,
-            },
-        }));
+        if !items.is_empty() {
+            let total_tokens: i64 = items
+                .iter()
+                .filter_map(|i| i["estimated_tokens"].as_i64())
+                .sum();
+            let n = items.len();
+            return Ok(json!({
+                "items": items,
+                "edges": [],
+                "strategy": {
+                    "action": if n <= 3 { "read_all" } else { "read_top_n" },
+                    "n": n.min(3),
+                    "rationale": format!("Alias/vocabulary match for '{}' — {} location(s) found.", query, n),
+                },
+                "summary": {
+                    "total_items": n,
+                    "direct_matches": n,
+                    "fan_out_items": 0,
+                    "components_touched": items.iter().filter_map(|i| i["component"].as_str()).collect::<HashSet<_>>().len(),
+                    "total_estimated_tokens": total_tokens,
+                },
+            }));
+        }
+        // All alias matches were orphans or had no locations — fall through to symbol search
     }
 
     // Qualified-name detection: query containing :: falls through to exact lookup

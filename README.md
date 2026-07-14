@@ -21,7 +21,7 @@ cargo install --path .
 sutra serve --stdio
 ```
 
-Workspaces are registered automatically when an agent calls `sutra_status` with a path, or explicitly:
+Workspaces are registered automatically when an agent calls `sutra_workspace` with a path, or explicitly:
 
 ```bash
 sutra workspaces add myproject /path/to/project rust
@@ -170,10 +170,10 @@ Three sections map terms to different target kinds:
 - **`[file]`** — maps a human name to a file path
 - **`[symbol]`** — maps a human name to a symbol name
 
-Aliases are synced to the database during workspace indexing. Use `sutra_resolve` to look up any term:
+Aliases are synced to the database during workspace indexing. `sutra_explore` resolves them as its first priority tier:
 
 ```
-Agent: sutra_resolve(query="being detail cards")
+Agent: sutra_explore(query="being detail cards")
 → alias match: component "being_detail"
 → file locations for all member files
 ```
@@ -209,29 +209,25 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 
 | Tool | Purpose |
 |---|---|
-| `sutra_status` | Register a workspace and check freshness |
+| `sutra_workspace` | Register workspace, check freshness, reparse, and manage tool tiers |
 | `sutra_health` | Per-workspace file/symbol counts, parse errors, staleness |
 | `sutra_map` | Project file skeleton ranked by importance (symbol count + fan-in + blast radius) |
 | `sutra_outline` | File symbol table of contents — all symbols with kinds, line ranges, signatures |
-| `sutra_find` | Jump to a symbol definition by name (exact + FTS5 fuzzy) |
+| `sutra_explore` | Structural exploration — resolves aliases, qualified names, and fuzzy queries → ranked symbol map with fetch instructions and strategy hint |
 | `sutra_grep` | Search indexed symbols by name pattern (FTS5-backed) |
 | `sutra_read` | Read a symbol's source code with line numbers and context |
+| `sutra_context` | Token-budgeted context packing — symbol + deps + dependents within a budget |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
 | `sutra_orient` | Component orientation — observed patterns with counts and exemplars, active constraints and violations, health scores and findings, hidden coupling, lessons |
 | `sutra_components` | List discovered architectural components and member files |
-| `sutra_resolve` | Resolve a vocabulary term (alias, component name, or anchor) to code locations |
 | `sutra_conventions` | List discovered conventions (FCA-derived patterns) |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
-| `sutra_explore` | Structural exploration — topic query → ranked symbol map with fetch instructions and strategy hint |
 | `sutra_remember` | Write a code-anchored lesson with text and location anchors (auto-enriched with patterns and categories) |
 | `sutra_lessons` | Query lessons — FTS5 text search with structured filters (category, symbol, verified status, project) |
-| `sutra_parse` | Trigger a workspace reparse |
-| `sutra_tools` | Enable/disable tool tiers |
-| `sutra_add_root` | Register a workspace root and start indexing |
 | `sutra_help` | Agent-oriented help and workflow recipes |
 
-### Analysis (enable via `sutra_tools`)
+### Analysis (enable via `sutra_workspace`)
 
 | Tool | Purpose |
 |---|---|
@@ -247,8 +243,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_file_health` | Per-file and per-component health report with scores, active findings, category deductions, and component instability |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
-| `sutra_duplicates` | Near-duplicate function detection via HRR strip vector clustering into pattern families |
-| `sutra_similar` | Find structurally similar functions — strip mode (AST shape) or embed mode (structure + naming) |
+| `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
 | `sutra_trend` | Health trend — compare two snapshots with per-file/per-component deltas, or query a file's score history over time |
 | `sutra_commit_manifest` | Manifest of symbols and files changed in a commit or range |
 
@@ -290,7 +285,7 @@ Agent: sutra_review(diff="branch")
 ### Investigate a symbol
 
 ```
-sutra_find(name="parse_rules")     → definition location
+sutra_explore(query="parse_rules")  → definition location
 sutra_impact(symbol="parse_rules") → blast radius and risk level
 sutra_calls(symbol="parse_rules")  → who calls it, what it calls
 sutra_refs(symbol="parse_rules")   → every usage site
@@ -324,7 +319,7 @@ Agent: sutra_remember(cite="01J...", source_tasks=["sutra/180"])
 sutra_file_health()                → worst files with findings and scores
 sutra_hotspots()                   → riskiest files (churn × blast radius × complexity)
 sutra_dead()                       → unreferenced symbols and files
-sutra_duplicates()                 → near-duplicate function families
+sutra_similar()                    → near-duplicate function families
 sutra_trend()                      → health changes between snapshots
 ```
 

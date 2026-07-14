@@ -38,8 +38,9 @@ pub struct HelpArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorkspaceToolArgs {
-    /// Absolute path to workspace root. Required for status and reparse actions.
-    pub path: String,
+    /// Absolute path to workspace root. Required for status and reparse actions; omit for tier-only operations.
+    #[serde(default)]
+    pub path: Option<String>,
     /// Action: "status" (default, register + return health/counts) or "reparse" (synchronous reparse)
     #[serde(default)]
     pub action: Option<String>,
@@ -903,7 +904,35 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<WorkspaceToolArgs>,
     ) -> Result<String, ErrorData> {
-        if args.enable.is_some() || args.disable.is_some() {
+        let has_tier_change = args.enable.is_some() || args.disable.is_some();
+
+        // Tier-only call (no path): toggle tiers and return tier status
+        if args.path.is_none() {
+            if has_tier_change {
+                tools::tools_meta::handle(
+                    &self.analysis_enabled,
+                    args.enable.as_deref(),
+                    args.disable.as_deref(),
+                    false,
+                );
+            }
+            return to_compact_json(tools::tools_meta::handle(
+                &self.analysis_enabled,
+                None,
+                None,
+                true,
+            ));
+        }
+
+        let path = args.path.as_deref().unwrap();
+        let action = args.action.as_deref().unwrap_or("status");
+
+        let (ws_id, entry, _) = self.register_workspace(path, args.languages)?;
+        let entry = Arc::new(entry);
+        let db = self.get_db(&ws_id)?;
+
+        // Apply tier changes after successful workspace registration
+        if has_tier_change {
             tools::tools_meta::handle(
                 &self.analysis_enabled,
                 args.enable.as_deref(),
@@ -911,12 +940,6 @@ impl SutraServer {
                 false,
             );
         }
-
-        let action = args.action.as_deref().unwrap_or("status");
-
-        let (ws_id, entry, _) = self.register_workspace(&args.path, args.languages)?;
-        let entry = Arc::new(entry);
-        let db = self.get_db(&ws_id)?;
 
         match action {
             "status" => {
@@ -961,10 +984,6 @@ impl SutraServer {
                     val["warnings"] = serde_json::json!([
                         "workspace root exists but 0 files indexed — check languages config matches adapter IDs (rust, dart)"
                     ]);
-                }
-                if args.enable.is_some() || args.disable.is_some() {
-                    val["tiers"] =
-                        tools::tools_meta::handle(&self.analysis_enabled, None, None, true);
                 }
                 to_compact_json(val)
             }
