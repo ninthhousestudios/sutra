@@ -246,7 +246,7 @@ pub fn handle(
                     queried_kind: None,
                     indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
                     freshness: None,
-                    suggestion: "Use sutra_find to search by partial name, \
+                    suggestion: "Use sutra_explore to search by partial name, \
                                  or sutra_grep for a text search.".to_string(),
                 }).unwrap(),
             }));
@@ -282,7 +282,7 @@ pub fn handle(
         .ok_or_else(|| crate::error::SutraError::NotFound {
             tool: "sutra_context",
             kind: format!("file for symbol `{symbol}`"),
-            next_action: "Run sutra_parse to refresh.".to_string(),
+            next_action: "Run sutra_workspace(action=\"reparse\") to refresh.".to_string(),
         })?;
     let file_path = file.path.to_string();
 
@@ -292,7 +292,7 @@ pub fn handle(
             "file": file_path,
             "token_budget": budget,
             "refused": "content withheld: index is stale",
-            "next_action": "Run sutra_parse to refresh, then retry.",
+            "next_action": "Run sutra_workspace(action=\"reparse\") to refresh, then retry.",
         }));
     }
 

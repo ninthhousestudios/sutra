@@ -67,7 +67,7 @@ pub fn handle(db: &Db, workspace_root: &Path, symbol: &str) -> Result<serde_json
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_provenance",
             kind: format!("symbol `{symbol}`"),
-            next_action: "Check the symbol name and try sutra_find to search.".into(),
+            next_action: "Check the symbol name and try sutra_explore to search.".into(),
         })?;
 
     let file = db
@@ -75,7 +75,7 @@ pub fn handle(db: &Db, workspace_root: &Path, symbol: &str) -> Result<serde_json
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_provenance",
             kind: format!("file for symbol `{symbol}`"),
-            next_action: "The symbol's file is missing from the index. Run sutra_parse.".into(),
+            next_action: "The symbol's file is missing from the index. Run sutra_workspace with action=\"reparse\".".into(),
         })?;
 
     let commits = git_log_follow(workspace_root, &file.path)?;

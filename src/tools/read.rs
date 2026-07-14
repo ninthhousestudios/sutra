@@ -58,10 +58,10 @@ pub fn handle(
         } else {
             let suggestions = suggest_symbols(db, symbol, 5);
             if suggestions.is_empty() {
-                "Use sutra_find to look up the symbol name first.".to_string()
+                "Use sutra_explore to look up the symbol name first.".to_string()
             } else {
                 format!(
-                    "Did you mean: {}? Use sutra_find to search more broadly.",
+                    "Did you mean: {}? Use sutra_explore to search more broadly.",
                     suggestions.join(", ")
                 )
             }
@@ -78,7 +78,7 @@ pub fn handle(
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_read",
             kind: format!("file for symbol `{symbol}`"),
-            next_action: "The file may have been deleted. Run sutra_parse to refresh.".to_string(),
+            next_action: "The file may have been deleted. Run sutra_workspace(action=\"reparse\") to refresh.".to_string(),
         })?;
 
     let abs_path = workspace_root.join(&*file.path);
@@ -117,7 +117,7 @@ pub fn handle(
             "kind": sym.kind,
             "signature": sym.signature,
             "refused": "content withheld: index is stale",
-            "next_action": "Run sutra_parse to refresh, then retry.",
+            "next_action": "Run sutra_workspace(action=\"reparse\") to refresh, then retry.",
         }));
     }
 

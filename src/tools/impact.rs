@@ -33,7 +33,7 @@ pub fn handle(
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_impact",
             kind: format!("symbol `{symbol}`"),
-            next_action: "Use sutra_find to look up the symbol name first.".to_string(),
+            next_action: "Use sutra_explore to look up the symbol name first.".to_string(),
         })?;
 
     let direct_refs = db.find_refs_to_symbol(sym.id)?;

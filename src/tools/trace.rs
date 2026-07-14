@@ -47,7 +47,7 @@ pub fn handle(
         .ok_or_else(|| SutraError::NotFound {
             tool: "sutra_trace",
             kind: format!("symbol `{symbol}`"),
-            next_action: "Use sutra_find to look up the symbol name first.".into(),
+            next_action: "Use sutra_explore to look up the symbol name first.".into(),
         })?;
 
     let direction = direction.unwrap_or("forward");
