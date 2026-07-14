@@ -9,7 +9,6 @@ pub mod conventions;
 pub mod dead;
 pub mod deps;
 pub mod diff_impact;
-pub mod duplicates;
 pub mod explore;
 pub mod file_health;
 pub mod find;

@@ -16,7 +16,7 @@ fn valid_topic_returns_focused_content() {
     let result = help::handle(Some("quickstart")).unwrap();
     assert_eq!(result["topic"].as_str().unwrap(), "quickstart");
     let content = result["content"].as_str().unwrap();
-    assert!(content.contains("sutra_status"));
+    assert!(content.contains("sutra_workspace"));
     assert!(content.contains("sutra_map"));
 }
 

@@ -41,9 +41,9 @@ pub fn handle(
             "tiers": {
                 "core": {
                     "enabled": true,
-                    "tools": ["sutra_health", "sutra_map", "sutra_outline", "sutra_find",
+                    "tools": ["sutra_health", "sutra_map", "sutra_outline", "sutra_explore",
                               "sutra_grep", "sutra_read", "sutra_impact", "sutra_deps",
-                              "sutra_parse", "sutra_tools", "sutra_components", "sutra_orient",
+                              "sutra_workspace", "sutra_components", "sutra_orient",
                               "sutra_similar"],
                 },
                 "analysis": {

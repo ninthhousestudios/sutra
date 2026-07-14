@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::vocabulary;
 
 const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "method", "enum"];
 
@@ -276,7 +277,58 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
 }
 
 pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
-    // Qualified-name detection: query containing :: falls through to sutra_find behavior
+    // Priority 0: alias resolution — check .sutra/aliases.toml, component names, anchor names
+    let alias_matches = vocabulary::resolve(db, query).unwrap_or_default();
+    if !alias_matches.is_empty() {
+        let mut items = Vec::new();
+        for m in &alias_matches {
+            for loc in &m.locations {
+                let lines = match (loc.start_line, loc.end_line) {
+                    (Some(s), Some(e)) => e - s + 1,
+                    _ => 10,
+                };
+                items.push(json!({
+                    "symbol": &m.target_ref,
+                    "file": &loc.path,
+                    "kind": &m.target_kind,
+                    "lines": lines,
+                    "component": &m.component_id,
+                    "reason": format!("alias:{}", m.source),
+                    "estimated_tokens": lines * 4,
+                    "fetch": if m.target_kind == "symbol" || m.target_kind == "function" || m.target_kind == "struct" || m.target_kind == "method" {
+                        format!("sutra_read(symbol='{}')", m.target_ref)
+                    } else if m.target_kind == "component" {
+                        format!("sutra_map(workspace='...', component='{}')", m.target_ref)
+                    } else {
+                        format!("sutra_read(file='{}')", loc.path)
+                    },
+                }));
+            }
+        }
+        let total_tokens: i64 = items
+            .iter()
+            .filter_map(|i| i["estimated_tokens"].as_i64())
+            .sum();
+        let n = items.len();
+        return Ok(json!({
+            "items": items,
+            "edges": [],
+            "strategy": {
+                "action": if n <= 3 { "read_all" } else { "read_top_n" },
+                "n": n.min(3),
+                "rationale": format!("Alias/vocabulary match for '{}' — {} location(s) found.", query, n),
+            },
+            "summary": {
+                "total_items": n,
+                "direct_matches": n,
+                "fan_out_items": 0,
+                "components_touched": items.iter().filter_map(|i| i["component"].as_str()).collect::<HashSet<_>>().len(),
+                "total_estimated_tokens": total_tokens,
+            },
+        }));
+    }
+
+    // Qualified-name detection: query containing :: falls through to exact lookup
     if query.contains("::") {
         let (symbols, _tier) = db.find_symbols_by_name_tiered(query, None, 1)?;
         if symbols.is_empty() {

@@ -37,26 +37,21 @@ pub struct HelpArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct WorkspaceArgs {
-    pub workspace: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AddRootArgs {
-    /// Absolute path to the workspace root directory
+pub struct WorkspaceToolArgs {
+    /// Absolute path to workspace root. Required for status and reparse actions.
     pub path: String,
+    /// Action: "status" (default, register + return health/counts) or "reparse" (synchronous reparse)
+    #[serde(default)]
+    pub action: Option<String>,
     /// Languages to index (default: ["rust", "dart"])
     #[serde(default)]
     pub languages: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct StatusArgs {
-    /// Absolute path to the workspace root directory
-    pub path: String,
-    /// Languages to index (default: ["rust", "dart"])
+    /// Tier names to enable (e.g. ["analysis"])
     #[serde(default)]
-    pub languages: Option<Vec<String>>,
+    pub enable: Option<Vec<String>>,
+    /// Tier names to disable (e.g. ["analysis"])
+    #[serde(default)]
+    pub disable: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,10 +66,8 @@ use crate::tools::context::ContextArgs;
 use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
-use crate::tools::duplicates::DuplicatesArgs;
 use crate::tools::explore::ExploreArgs;
 use crate::tools::file_health::FileHealthArgs;
-use crate::tools::find::FindArgs;
 use crate::tools::grep::GrepArgs;
 use crate::tools::hotspots::HotspotsArgs;
 use crate::tools::impact::ImpactArgs;
@@ -85,10 +78,8 @@ use crate::tools::provenance::ProvenanceArgs;
 use crate::tools::read::ReadArgs;
 use crate::tools::refs::RefsArgs;
 use crate::tools::remember::RememberArgs;
-use crate::tools::resolve::ResolveArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::similar::SimilarArgs;
-use crate::tools::tools_meta::ToolsMetaArgs;
 use crate::tools::trace::TraceArgs;
 use crate::tools::trend::TrendArgs;
 use crate::tools::winnow::WinnowArgs;
@@ -194,7 +185,7 @@ impl SutraServer {
         {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_tools with enable: [\"analysis\"] first."
+                "Analysis tier not enabled. Call sutra_workspace with enable=[\"analysis\"] first."
                     .to_string(),
                 None,
             ));
@@ -430,41 +421,6 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(
-        description = "Resolve a vocabulary term to code locations. Searches aliases \
-        (from .sutra/aliases.toml), component names, and semantic anchor names. \
-        Returns matches in priority order with orphan detection."
-    )]
-    pub async fn sutra_resolve(
-        &self,
-        Parameters(args): Parameters<ResolveArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::resolve::handle(ctx.db(), &args.query).map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Jump to a symbol definition by name. Three-tier search: \
-        exact short_name, exact qualified_name, then FTS5 fuzzy. \
-        Returns compact results by default; pass detail=true for signatures and visibility."
-    )]
-    pub async fn sutra_find(
-        &self,
-        Parameters(args): Parameters<FindArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::find::handle_ctx(
-            &ctx,
-            &args.name,
-            args.kind.as_deref(),
-            args.limit,
-            args.detail.unwrap_or(false),
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
     #[tool(description = "Search indexed symbols by name pattern. \
         FTS5-backed search across symbol names, signatures, and docstrings. \
         Returns compact results by default; pass detail=true for signatures and docstrings.")]
@@ -485,7 +441,8 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Explore a topic in the codebase. Returns a ranked list of matching \
+        description = "Explore a topic in the codebase. Resolves aliases (.sutra/aliases.toml), \
+        qualified names (Foo::bar), and fuzzy queries. Returns a ranked list of matching \
         symbols with literal sutra_read fetch instructions and a strategy recommendation. \
         One call replaces iterative map/outline/grep exploration."
     )]
@@ -620,56 +577,6 @@ impl SutraServer {
         let result = tools::deps::handle(ctx.db(), args.path.as_deref(), args.depth, cycles)
             .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Trigger a workspace reparse. Use after editing files to get \
-        fresh results from other tools."
-    )]
-    pub async fn sutra_parse(
-        &self,
-        Parameters(args): Parameters<WorkspaceArgs>,
-    ) -> Result<String, ErrorData> {
-        let ws = self.resolve_workspace(&args.workspace)?;
-        let ws_root = ws.root.clone();
-        let db = self.get_db(&args.workspace)?;
-        let lock = self.parse_coord.lock_for(&args.workspace);
-        let _guard = lock.lock().await;
-        let config = Arc::clone(&self.config);
-        let db_bg = Arc::clone(&db);
-        let result = tokio::task::spawn_blocking(move || {
-            let cancel = AtomicBool::new(false);
-            let registry = crate::parser::adapter::default_registry();
-            tools::parse::handle(&ws, &db_bg, &config, &cancel, &registry)
-        })
-        .await
-        .map_err(|e| {
-            ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
-                format!("parse task panicked: {e}"),
-                None,
-            )
-        })?
-        .map_err(sutra_to_rmcp)?;
-        self.wrap_response(&db, &ws_root, result)
-    }
-
-    #[tool(
-        description = "Manage tool tiers. Enable or disable the analysis tier \
-        (sutra_refs, sutra_calls, sutra_diff_impact, sutra_commit_manifest, sutra_cochange, sutra_review). \
-        Use list=true to see available tiers and their status."
-    )]
-    pub async fn sutra_tools(
-        &self,
-        Parameters(args): Parameters<ToolsMetaArgs>,
-    ) -> Result<String, ErrorData> {
-        let result = tools::tools_meta::handle(
-            &self.analysis_enabled,
-            args.enable.as_deref(),
-            args.disable.as_deref(),
-            args.list.unwrap_or(false),
-        );
-        to_compact_json(result)
     }
 
     #[tool(description = "All usages of a symbol across the codebase. \
@@ -964,26 +871,11 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Near-duplicate function detection via structural similarity of HRR strip \
-        vectors. Returns pattern families — groups of 3+ functions with near-identical AST \
-        structure. Configurable similarity threshold (default 0.85) and minimum group size \
-        (default 3)."
-    )]
-    pub async fn sutra_duplicates(
-        &self,
-        Parameters(args): Parameters<DuplicatesArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::duplicates::handle(ctx.db(), args.threshold, args.min_group)
-            .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
         description = "Find structurally similar functions using HRR vector similarity. \
-            Mode 'strip' (default) finds functions with the same AST shape regardless of \
-            identifier names — useful for finding copy-paste variants. Mode 'embed' finds \
-            functions similar in both structure and naming."
+            With symbol: finds functions similar to it. Mode 'strip' (default) matches AST shape \
+            regardless of identifiers; mode 'embed' matches structure and naming. \
+            Without symbol: finds all near-duplicate pattern families (groups of 3+ functions \
+            with near-identical AST structure)."
     )]
     pub async fn sutra_similar(
         &self,
@@ -992,134 +884,120 @@ impl SutraServer {
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::similar::handle(
             ctx.db(),
-            &args.symbol,
+            args.symbol.as_deref(),
             args.mode.as_deref(),
             args.limit,
             args.threshold,
+            args.min_group,
         )
         .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Register a workspace root and start indexing. \
-        Derives a workspace id from the directory name. If the workspace is already \
-        registered, triggers a reparse. Parsing runs in the background — other \
-        tools become available as soon as the parse completes.")]
-    pub async fn sutra_add_root(
+    #[tool(description = "Workspace lifecycle and tier management. \
+            Actions: 'status' (default — register workspace, return health/counts/freshness), \
+            'reparse' (register + synchronous reparse). \
+            Tier management: pass enable/disable to toggle tool tiers (e.g. enable=[\"analysis\"] \
+            for sutra_refs, sutra_calls, sutra_review, etc.).")]
+    pub async fn sutra_workspace(
         &self,
-        Parameters(args): Parameters<AddRootArgs>,
+        Parameters(args): Parameters<WorkspaceToolArgs>,
     ) -> Result<String, ErrorData> {
-        let (ws_id, entry, already_exists) = self.register_workspace(&args.path, args.languages)?;
+        if args.enable.is_some() || args.disable.is_some() {
+            tools::tools_meta::handle(
+                &self.analysis_enabled,
+                args.enable.as_deref(),
+                args.disable.as_deref(),
+                false,
+            );
+        }
 
-        let lock = self.parse_coord.lock_for(&ws_id);
-        let Ok(guard) = lock.clone().try_lock_owned() else {
-            return to_compact_json(serde_json::json!({
-                "workspace": ws_id,
-                "root": entry.root.display().to_string(),
-                "status": "parse already in progress",
-            }));
-        };
+        let action = args.action.as_deref().unwrap_or("status");
 
-        let db = self.get_db(&ws_id)?;
-        let config = Arc::clone(&self.config);
-        let dd_engines = Arc::clone(&self.dd_engines);
-        let ws_id_bg = ws_id.clone();
-        let entry_bg = entry.clone();
-        tokio::spawn(async move {
-            let _guard = guard;
-            let result = tokio::task::spawn_blocking(move || {
-                let cancel = std::sync::atomic::AtomicBool::new(false);
-                let registry = crate::parser::adapter::default_registry();
-                crate::pipeline::parse_workspace(&entry_bg, &db, &config, &cancel, &registry)
-            })
-            .await;
-            match result {
-                Ok(Ok(snap)) => {
-                    if let Some(engine) = dd_engines.lock().get(&ws_id_bg) {
-                        engine.invalidate();
-                    }
-                    tracing::info!(
-                        "add_root parse complete for {}: {}/{} files changed, {} symbols in {}ms",
-                        ws_id_bg,
-                        snap.files_parsed,
-                        snap.files_walked,
-                        snap.symbols_extracted,
-                        snap.duration_ms
-                    );
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("add_root parse failed for {}: {e}", ws_id_bg);
-                }
-                Err(e) => {
-                    tracing::error!("add_root parse panicked for {}: {e}", ws_id_bg);
-                }
-            }
-        });
-
-        let status = if already_exists {
-            "exists, reparsing"
-        } else {
-            "registered, parsing"
-        };
-        to_compact_json(serde_json::json!({
-            "workspace": ws_id,
-            "root": entry.root.display().to_string(),
-            "languages": entry.languages,
-            "status": status,
-        }))
-    }
-
-    #[tool(description = "Register a workspace and return its status. \
-        Returns status, freshness, file/symbol counts.")]
-    pub async fn sutra_status(
-        &self,
-        Parameters(args): Parameters<StatusArgs>,
-    ) -> Result<String, ErrorData> {
         let (ws_id, entry, _) = self.register_workspace(&args.path, args.languages)?;
-
+        let entry = Arc::new(entry);
         let db = self.get_db(&ws_id)?;
 
-        let needs_parse = db.last_parse_time().ok().flatten().is_none();
-        if needs_parse {
-            let entry_bg = entry.clone();
-            let db_bg = Arc::clone(&db);
-            let config_bg = Arc::clone(&self.config);
-            let _ = tokio::task::spawn_blocking(move || {
-                let cancel = AtomicBool::new(false);
-                let registry = crate::parser::adapter::default_registry();
-                crate::pipeline::parse_workspace(&entry_bg, &db_bg, &config_bg, &cancel, &registry)
-            })
-            .await;
-        }
+        match action {
+            "status" => {
+                let needs_parse = db.last_parse_time().ok().flatten().is_none();
+                if needs_parse {
+                    let entry_bg = Arc::clone(&entry);
+                    let db_bg = Arc::clone(&db);
+                    let config_bg = Arc::clone(&self.config);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let cancel = AtomicBool::new(false);
+                        let registry = crate::parser::adapter::default_registry();
+                        crate::pipeline::parse_workspace(
+                            &entry_bg, &db_bg, &config_bg, &cancel, &registry,
+                        )
+                    })
+                    .await;
+                }
 
-        let files = db.all_files().unwrap_or_default();
-        let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
-        let total_symbols: i64 = sym_counts.values().sum();
-        let freshness = self.freshness(&db, &entry.root);
+                let files = db.all_files().unwrap_or_default();
+                let sym_counts = db.symbol_counts_by_file().unwrap_or_default();
+                let total_symbols: i64 = sym_counts.values().sum();
+                let freshness = self.freshness(&db, &entry.root);
 
-        let status = if files.is_empty() { "empty" } else { "ready" };
+                let status = if files.is_empty() { "empty" } else { "ready" };
 
-        let mut val = serde_json::json!({
-            "workspace": ws_id,
-            "root": entry.root.display().to_string(),
-            "status": status,
-            "last_parse": freshness["as_of"],
-            "is_stale": freshness["is_stale"],
-            "files": files.len(),
-            "symbols": total_symbols,
-        });
-        if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
-            val["parsing_in_progress"] = serde_json::Value::Bool(true);
+                let mut val = serde_json::json!({
+                    "workspace": ws_id,
+                    "root": entry.root.display().to_string(),
+                    "status": status,
+                    "last_parse": freshness["as_of"],
+                    "is_stale": freshness["is_stale"],
+                    "files": files.len(),
+                    "symbols": total_symbols,
+                });
+                if freshness.get("parsing_in_progress") == Some(&serde_json::Value::Bool(true)) {
+                    val["parsing_in_progress"] = serde_json::Value::Bool(true);
+                }
+                if files.is_empty()
+                    && entry.root.is_dir()
+                    && std::fs::read_dir(&entry.root).is_ok_and(|mut d| d.next().is_some())
+                {
+                    val["warnings"] = serde_json::json!([
+                        "workspace root exists but 0 files indexed — check languages config matches adapter IDs (rust, dart)"
+                    ]);
+                }
+                if args.enable.is_some() || args.disable.is_some() {
+                    val["tiers"] =
+                        tools::tools_meta::handle(&self.analysis_enabled, None, None, true);
+                }
+                to_compact_json(val)
+            }
+            "reparse" => {
+                let ws_root = entry.root.as_path().to_owned();
+                let lock = self.parse_coord.lock_for(&ws_id);
+                let _guard = lock.lock().await;
+                let config = Arc::clone(&self.config);
+                let db_bg = Arc::clone(&db);
+                let result = tokio::task::spawn_blocking(move || {
+                    let cancel = AtomicBool::new(false);
+                    let registry = crate::parser::adapter::default_registry();
+                    tools::parse::handle(&entry, &db_bg, &config, &cancel, &registry)
+                })
+                .await
+                .map_err(|e| {
+                    ErrorData::new(
+                        rmcp::model::ErrorCode(crate::error::codes::INTERNAL_ERROR),
+                        format!("parse task panicked: {e}"),
+                        None,
+                    )
+                })?
+                .map_err(sutra_to_rmcp)?;
+                self.wrap_response(&db, &ws_root, result)
+            }
+            other => Err(ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                format!(
+                    "unknown action: \"{other}\". Valid actions: \"status\" (default), \"reparse\"."
+                ),
+                None,
+            )),
         }
-        if files.is_empty()
-            && entry.root.is_dir()
-            && std::fs::read_dir(&entry.root).is_ok_and(|mut d| d.next().is_some())
-        {
-            val["warnings"] = serde_json::json!([
-                "workspace root exists but 0 files indexed — check languages config matches adapter IDs (rust, dart)"
-            ]);
-        }
-        to_compact_json(val)
     }
 }
 

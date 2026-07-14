@@ -280,8 +280,15 @@ fn similar_search_strip_mode() {
     )]);
     parse(&f);
 
-    let result =
-        sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0)).unwrap();
+    let result = sutra::tools::similar::handle(
+        &f.db,
+        Some("alpha"),
+        Some("strip"),
+        Some(10),
+        Some(0.0),
+        None,
+    )
+    .unwrap();
     let matches = result["matches"].as_array().unwrap();
     assert!(
         !matches.is_empty(),
@@ -309,10 +316,24 @@ fn similar_search_embed_mode_lower_than_strip() {
     )]);
     parse(&f);
 
-    let strip_result =
-        sutra::tools::similar::handle(&f.db, "alpha", Some("strip"), Some(10), Some(0.0)).unwrap();
-    let embed_result =
-        sutra::tools::similar::handle(&f.db, "alpha", Some("embed"), Some(10), Some(0.0)).unwrap();
+    let strip_result = sutra::tools::similar::handle(
+        &f.db,
+        Some("alpha"),
+        Some("strip"),
+        Some(10),
+        Some(0.0),
+        None,
+    )
+    .unwrap();
+    let embed_result = sutra::tools::similar::handle(
+        &f.db,
+        Some("alpha"),
+        Some("embed"),
+        Some(10),
+        Some(0.0),
+        None,
+    )
+    .unwrap();
 
     let strip_sim = strip_result["matches"][0]["similarity"].as_f64().unwrap();
     let embed_sim = embed_result["matches"][0]["similarity"].as_f64().unwrap();
@@ -329,9 +350,15 @@ fn similar_search_excludes_self() {
     let f = setup(&[("src/lib.rs", "pub fn only_one(x: i32) -> i32 { x + 1 }\n")]);
     parse(&f);
 
-    let result =
-        sutra::tools::similar::handle(&f.db, "only_one", Some("strip"), Some(10), Some(0.0))
-            .unwrap();
+    let result = sutra::tools::similar::handle(
+        &f.db,
+        Some("only_one"),
+        Some("strip"),
+        Some(10),
+        Some(0.0),
+        None,
+    )
+    .unwrap();
     let matches = result["matches"].as_array().unwrap();
     assert!(
         matches.is_empty(),
@@ -344,8 +371,15 @@ fn similar_search_unknown_symbol() {
     let f = setup(&[("src/lib.rs", "pub fn exists() {}\n")]);
     parse(&f);
 
-    let result =
-        sutra::tools::similar::handle(&f.db, "does_not_exist", Some("strip"), None, None).unwrap();
+    let result = sutra::tools::similar::handle(
+        &f.db,
+        Some("does_not_exist"),
+        Some("strip"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(
         result.get("diagnostic").is_some(),
         "unknown symbol should return a diagnostic"
@@ -364,7 +398,8 @@ fn similar_search_non_function_symbol() {
     parse(&f);
 
     let result =
-        sutra::tools::similar::handle(&f.db, "MyStruct", Some("strip"), None, None).unwrap();
+        sutra::tools::similar::handle(&f.db, Some("MyStruct"), Some("strip"), None, None, None)
+            .unwrap();
     assert!(
         result.get("diagnostic").is_some(),
         "struct symbol should return a diagnostic about function-only search"
@@ -386,7 +421,8 @@ fn operator_discrimination() {
     let _vecs = load_vectors(&f.db);
     // Use sutra_similar to find matches for "add" — sub and mul should not be ~1.0
     let result =
-        sutra::tools::similar::handle(&f.db, "add", Some("strip"), Some(10), Some(0.0)).unwrap();
+        sutra::tools::similar::handle(&f.db, Some("add"), Some("strip"), Some(10), Some(0.0), None)
+            .unwrap();
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "should find matches for add");
 

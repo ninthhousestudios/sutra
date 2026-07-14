@@ -11,20 +11,38 @@ use crate::similarity::search;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimilarArgs {
     pub workspace: String,
-    /// Symbol name to find similar functions for
-    pub symbol: String,
+    /// Symbol name to find similar functions for. Omit to find all near-duplicate pattern families.
+    #[serde(default)]
+    pub symbol: Option<String>,
     /// Similarity mode: "strip" (structural shape only, default) or "embed" (structure + identifiers)
     #[serde(default)]
     pub mode: Option<String>,
-    /// Maximum number of results (default: 10)
+    /// Maximum number of results (default: 10 for symbol mode, all for duplicates mode)
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Minimum similarity threshold 0.0-1.0 (default: 0.3)
+    /// Minimum similarity threshold 0.0-1.0 (default: 0.3 for symbol mode, 0.85 for duplicates mode)
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Minimum group size for duplicate detection (default: 3). Only used when symbol is omitted.
+    #[serde(default)]
+    pub min_group: Option<usize>,
 }
 
 pub fn handle(
+    db: &Db,
+    symbol: Option<&str>,
+    mode: Option<&str>,
+    limit: Option<usize>,
+    threshold: Option<f64>,
+    min_group: Option<usize>,
+) -> Result<serde_json::Value> {
+    match symbol {
+        Some(sym) => handle_similar(db, sym, mode, limit, threshold),
+        None => handle_duplicates(db, threshold, min_group),
+    }
+}
+
+fn handle_similar(
     db: &Db,
     symbol: &str,
     mode: Option<&str>,
@@ -54,7 +72,7 @@ pub fn handle(
                     queried_kind: None,
                     indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
                     freshness: None,
-                    suggestion: "Use sutra_find to search by partial name, \
+                    suggestion: "Use sutra_explore to search by partial name, \
                                  or sutra_grep for a text search.".to_string(),
                 }).unwrap(),
             }));
@@ -101,7 +119,7 @@ pub fn handle(
                 "symbol": sym.qualified_name,
                 "mode": mode,
                 "diagnostic": "No HRR vector found for this symbol. \
-                               Try reparsing the workspace with sutra_add_root.",
+                               Try reparsing the workspace.",
             }));
         }
     };
@@ -149,5 +167,67 @@ pub fn handle(
         "total": matches.len(),
         "threshold": threshold,
         "limit": limit,
+    }))
+}
+
+fn handle_duplicates(
+    db: &Db,
+    threshold: Option<f64>,
+    min_group: Option<usize>,
+) -> Result<serde_json::Value> {
+    let threshold = threshold.unwrap_or(0.85);
+    let min_group = min_group.unwrap_or(3);
+
+    let vectors = db.load_all_strip_vectors()?;
+    let families =
+        crate::similarity::duplicates::find_pattern_families(&vectors, threshold, min_group);
+
+    if families.is_empty() {
+        return Ok(json!({
+            "families": [],
+            "total": 0,
+            "threshold": threshold,
+            "min_group": min_group,
+        }));
+    }
+
+    let sym_ids: Vec<i64> = families
+        .iter()
+        .flat_map(|f| &f.member_symbol_ids)
+        .copied()
+        .collect();
+    let sym_meta = db.symbols_by_ids(&sym_ids)?;
+
+    let family_json: Vec<serde_json::Value> = families
+        .iter()
+        .enumerate()
+        .map(|(i, fam)| {
+            let members: Vec<serde_json::Value> = fam
+                .member_symbol_ids
+                .iter()
+                .filter_map(|&sid| {
+                    sym_meta.iter().find(|s| s.id == sid).map(|s| {
+                        json!({
+                            "symbol": &s.qualified_name,
+                            "file": &s.file_path,
+                            "lines": format!("{}-{}", s.start_line, s.end_line),
+                        })
+                    })
+                })
+                .collect();
+            json!({
+                "family_id": i + 1,
+                "member_count": fam.member_symbol_ids.len(),
+                "avg_similarity": (fam.avg_similarity * 1000.0).round() / 1000.0,
+                "members": members,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "families": family_json,
+        "total": families.len(),
+        "threshold": threshold,
+        "min_group": min_group,
     }))
 }

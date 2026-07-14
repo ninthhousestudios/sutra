@@ -17,7 +17,7 @@ const TOPICS: &[Topic] = &[
 
 1. Register your workspace:
    ```
-   sutra_status(path=\"/absolute/path/to/project\")
+   sutra_workspace(path=\"/absolute/path/to/project\")
    ```
 
 2. Browse the codebase:
@@ -28,7 +28,7 @@ const TOPICS: &[Topic] = &[
 
 3. Find a symbol:
    ```
-   sutra_find(workspace=\"myproject\", name=\"handle_request\")
+   sutra_explore(workspace=\"myproject\", query=\"handle_request\")
    ```
 
 4. Read its source:
@@ -43,7 +43,7 @@ const TOPICS: &[Topic] = &[
 
 6. After editing, reparse:
    ```
-   sutra_parse(workspace=\"myproject\")
+   sutra_workspace(path=\"/absolute/path/to/project\", action=\"reparse\")
    ```",
     },
     Topic {
@@ -56,16 +56,16 @@ A workspace is a project root directory. Sutra indexes each workspace independen
 
 ## Register a workspace
 ```
-sutra_status(path=\"/home/user/project\")
+sutra_workspace(path=\"/home/user/project\")
 ```
 This registers the workspace (deriving an ID from the directory name) and returns \
 file/symbol counts and parse freshness.
 
 ## Force reparse
 ```
-sutra_add_root(path=\"/home/user/project\")
+sutra_workspace(path=\"/home/user/project\", action=\"reparse\")
 ```
-Re-registers and triggers a fresh parse. Use after major changes (branch switch, rebase).
+Re-registers and triggers a synchronous reparse. Use after major changes (branch switch, rebase).
 
 ## Check health
 ```
@@ -126,9 +126,9 @@ Similar composite score but includes volume signals and per-symbol risk breakdow
 
 ## Find a symbol by name
 ```
-sutra_find(workspace=\"myproject\", name=\"Config\")
+sutra_explore(workspace=\"myproject\", query=\"Config\")
 ```
-Three-tier search: exact short name → exact qualified name → FTS5 fuzzy.
+Resolves aliases, qualified names, and fuzzy queries. Returns ranked matches with fetch instructions.
 
 ## Search by pattern
 ```
@@ -165,17 +165,16 @@ The `is_stale` flag warns you that symbol data may not reflect current code.
 
 ## Fix staleness
 ```
-sutra_parse(workspace=\"myproject\")
+sutra_workspace(path=\"/home/user/project\", action=\"reparse\")
 ```
-Triggers a reparse. After it completes, subsequent queries return fresh data.
+Triggers a synchronous reparse. After it completes, subsequent queries return fresh data.
 
 ## Check workspace freshness
 ```
-sutra_status(path=\"/home/user/project\")
+sutra_workspace(path=\"/home/user/project\")
 ```
-Returns the last parse time and whether the workspace is stale.
-
-Returns per-workspace file counts, symbol counts, parse errors, and staleness.",
+Returns the last parse time and whether the workspace is stale, \
+plus file/symbol counts and parse errors.",
     },
     Topic {
         name: "conventions",
@@ -216,30 +215,30 @@ satisfies the antecedent but lacks the consequent attributes, it's flagged.",
 ## \"workspace not found\"
 The workspace hasn't been registered yet. Register it:
 ```
-sutra_status(path=\"/absolute/path/to/project\")
+sutra_workspace(path=\"/absolute/path/to/project\")
 ```
 
 ## \"analysis tier required\"
 Some tools (sutra_refs, sutra_calls, sutra_review, etc.) require the analysis tier. \
 Enable it:
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/absolute/path/to/project\", enable=[\"analysis\"])
 ```
 
 ## Stale results
 Files changed since last parse. Reparse:
 ```
-sutra_parse(workspace=\"myproject\")
+sutra_workspace(path=\"/absolute/path/to/project\", action=\"reparse\")
 ```
 
-## Empty results from sutra_map or sutra_find
+## Empty results from sutra_map or sutra_explore
 The workspace may not have been parsed yet, or the language isn't indexed. \
 Check status:
 ```
-sutra_status(path=\"/absolute/path/to/project\")
+sutra_workspace(path=\"/absolute/path/to/project\")
 ```
 By default sutra indexes Rust and Dart. Pass `languages=[\"rust\", \"python\"]` \
-to `sutra_status` to index other languages.
+to `sutra_workspace` to index other languages.
 
 ## Parse errors
 ```
@@ -256,7 +255,7 @@ files are syntactically valid.",
 
 ## Review my current diff
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_review(workspace=\"myproject\")
 ```
 Returns risk score, changed symbols, transitive impact, convention violations, \
@@ -264,7 +263,7 @@ and recommended reads sorted by review priority.
 
 ## Find callers and affected tests for a function
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_calls(workspace=\"myproject\", symbol=\"handle_request\", direction=\"callers\", depth=2)
 sutra_refs(workspace=\"myproject\", symbol=\"handle_request\", context_kind=\"call\")
 sutra_winnow(workspace=\"myproject\", calls_to=\"handle_request\", file_glob=\"tests/**\")
@@ -274,16 +273,16 @@ sutra_winnow(workspace=\"myproject\", calls_to=\"handle_request\", file_glob=\"t
 
 ## Explain why a result is stale
 ```
-sutra_status(path=\"/absolute/path/to/project\")
+sutra_workspace(path=\"/absolute/path/to/project\")
 ```
 Check `is_stale` and `last_parse`. If stale, files changed after the last parse. Fix with:
 ```
-sutra_parse(workspace=\"myproject\")
+sutra_workspace(path=\"/absolute/path/to/project\", action=\"reparse\")
 ```
 
 ## Check whether a change violates local conventions
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_review(workspace=\"myproject\", diff=\"staged\")
 ```
 Look at the `deviations` and `constraint_violations` sections. \
@@ -292,7 +291,7 @@ against your staged changes.
 
 ## Review a branch commit-by-commit
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_commit_manifest(workspace=\"myproject\")
 ```
 Returns per-commit entries with changed files and symbol-level change classifications \
@@ -301,7 +300,7 @@ was split into separate commits. Pass `base` and `head` for a custom range.
 
 ## Trace a path between two symbols
 ```
-sutra_tools(enable=\"analysis\")
+sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_trace(workspace=\"myproject\", symbol=\"target_function\", direction=\"forward\")
 ```
 `direction=forward` traces from entry points to the symbol. \
