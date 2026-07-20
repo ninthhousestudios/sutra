@@ -6,8 +6,15 @@ use tracing::debug;
 use crate::db::Db;
 use crate::error::Result;
 
-const EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
-const INDEX_FILES: &[&str] = &["index.ts", "index.tsx", "index.js", "index.jsx"];
+const EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
+const INDEX_FILES: &[&str] = &[
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "index.mjs",
+    "index.cjs",
+];
 
 pub fn resolve_js_imports(db: &Db, _workspace_root: &Path) -> Result<usize> {
     let unresolved = db.unresolved_js_ts_imports()?;
@@ -62,7 +69,7 @@ fn resolve_relative(
         None => "",
     };
 
-    let resolved = resolve_path_segments(raw_path, dir);
+    let resolved = resolve_path_segments(raw_path, dir)?;
     let candidate = resolved.as_str();
 
     if has_js_extension(candidate) {
@@ -90,7 +97,7 @@ fn resolve_relative(
     None
 }
 
-fn resolve_path_segments(raw_path: &str, dir: &str) -> String {
+fn resolve_path_segments(raw_path: &str, dir: &str) -> Option<String> {
     let mut parts: Vec<&str> = if dir.is_empty() {
         Vec::new()
     } else {
@@ -101,19 +108,24 @@ fn resolve_path_segments(raw_path: &str, dir: &str) -> String {
         match segment {
             "." => {}
             ".." => {
-                parts.pop();
+                if parts.pop().is_none() {
+                    return None;
+                }
             }
             s => parts.push(s),
         }
     }
 
-    parts.join("/")
+    Some(parts.join("/"))
 }
 
 fn has_js_extension(path: &str) -> bool {
     matches!(
         path.rsplit_once('.'),
-        Some((_, "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"))
+        Some((
+            _,
+            "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts"
+        ))
     )
 }
 
@@ -123,13 +135,25 @@ mod tests {
 
     #[test]
     fn test_resolve_path_segments() {
-        assert_eq!(resolve_path_segments("./utils", "src"), "src/utils");
+        assert_eq!(
+            resolve_path_segments("./utils", "src"),
+            Some("src/utils".into())
+        );
         assert_eq!(
             resolve_path_segments("../lib/foo", "src/app"),
-            "src/lib/foo"
+            Some("src/lib/foo".into())
         );
-        assert_eq!(resolve_path_segments("./bar", ""), "bar");
-        assert_eq!(resolve_path_segments("../../top", "a/b/c"), "a/top");
+        assert_eq!(resolve_path_segments("./bar", ""), Some("bar".into()));
+        assert_eq!(
+            resolve_path_segments("../../top", "a/b/c"),
+            Some("a/top".into())
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_segments_above_root() {
+        assert_eq!(resolve_path_segments("../../utils", "src"), None);
+        assert_eq!(resolve_path_segments("../foo", ""), None);
     }
 
     #[test]
@@ -137,6 +161,8 @@ mod tests {
         assert!(has_js_extension("foo.js"));
         assert!(has_js_extension("foo.tsx"));
         assert!(has_js_extension("foo.mjs"));
+        assert!(has_js_extension("foo.mts"));
+        assert!(has_js_extension("foo.cts"));
         assert!(!has_js_extension("foo"));
         assert!(!has_js_extension("foo.py"));
     }
