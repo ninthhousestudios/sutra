@@ -931,6 +931,8 @@ fn build_scopes_recursive(
         match child.kind() {
             "function_declaration"
             | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
             | "method_definition"
             | "arrow_function" => {
                 let body = child
@@ -1033,6 +1035,8 @@ fn is_nested_block(node: Node) -> bool {
             p.kind(),
             "function_declaration"
                 | "generator_function_declaration"
+                | "function_expression"
+                | "generator_function"
                 | "method_definition"
                 | "arrow_function"
                 | "catch_clause"
@@ -1088,10 +1092,10 @@ fn collect_var_bindings(node: Node, src: &[u8], scope_idx: usize, arena: &mut Ve
             for decl in child.children(&mut dc) {
                 if decl.kind() == "variable_declarator" {
                     if let Some(name_node) = decl.child_by_field_name("name") {
-                        if name_node.kind() == "identifier" {
-                            if let Ok(name) = name_node.utf8_text(src) {
-                                arena[hoist_target].hoisted_bindings.push(name.to_string());
-                            }
+                        let mut names = Vec::new();
+                        collect_pattern_names(name_node, src, 0, &mut names);
+                        for (name, _) in names {
+                            arena[hoist_target].hoisted_bindings.push(name);
                         }
                     }
                 }
@@ -1102,6 +1106,8 @@ fn collect_var_bindings(node: Node, src: &[u8], scope_idx: usize, arena: &mut Ve
             child.kind(),
             "function_declaration"
                 | "generator_function_declaration"
+                | "function_expression"
+                | "generator_function"
                 | "arrow_function"
                 | "method_definition"
                 | "class_declaration"
@@ -1258,6 +1264,11 @@ pub(super) fn resolve_refs_locally(
 ) {
     for r in refs.iter_mut() {
         if matches!(r.context_kind, RefContextKind::Import) {
+            continue;
+        }
+        // Don't resolve member-access property names through lexical scope —
+        // `api.get()` should not resolve `get` to a local `const get = ...`.
+        if r.receiver.is_some() || matches!(r.context_kind, RefContextKind::FieldAccess) {
             continue;
         }
         let scope_idx = find_tightest_scope(arena, r.line);
@@ -2367,5 +2378,121 @@ greet();
             "call to locally defined function should resolve"
         );
         assert_eq!(greet_ref.resolved_local_target.as_deref(), Some("greet"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Codex review regression tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scope_function_expression_boundary() {
+        let result = parse_js(
+            r#"
+const f = function(a) {
+    var x = 1;
+    return a + x;
+};
+"#,
+        );
+        // Param `a` and var `x` should resolve inside the function expression
+        let a_ref = result.references.iter().find(|r| r.name == "a").unwrap();
+        assert_eq!(
+            a_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "function expression param should resolve"
+        );
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert_eq!(
+            x_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "var inside function expression should resolve"
+        );
+    }
+
+    #[test]
+    fn scope_function_expression_var_not_hoisted_outside() {
+        let result = parse_js(
+            r#"
+function outer() {
+    const f = function() { var inner = 1; };
+    return inner;
+}
+"#,
+        );
+        // `inner` ref in outer should NOT resolve — var is hoisted to function expression, not outer
+        let inner_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "inner")
+            .unwrap();
+        assert!(
+            inner_ref.resolved_local_target.is_none(),
+            "var inside function expression should not leak to enclosing scope"
+        );
+    }
+
+    #[test]
+    fn member_call_not_lexically_resolved() {
+        let result = parse_js(
+            r#"
+const get = () => {};
+api.get();
+"#,
+        );
+        // The `get` in `api.get()` is a property_identifier with receiver `api`.
+        // It should NOT resolve to the local `const get`.
+        let get_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "get")
+            .collect();
+        let method_ref = get_refs
+            .iter()
+            .find(|r| r.receiver.is_some())
+            .expect("should find method call ref with receiver");
+        assert!(
+            method_ref.resolved_local_target.is_none(),
+            "member property should not resolve through lexical scope"
+        );
+    }
+
+    #[test]
+    fn field_access_not_lexically_resolved() {
+        let result = parse_js(
+            r#"
+const name = 'local';
+const x = obj.name;
+"#,
+        );
+        let field_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "name" && r.context_kind == RefContextKind::FieldAccess)
+            .unwrap();
+        assert!(
+            field_ref.resolved_local_target.is_none(),
+            "field access should not resolve through lexical scope"
+        );
+    }
+
+    #[test]
+    fn destructured_var_hoisted() {
+        let result = parse_js(
+            r#"
+function foo() {
+    console.log(x);
+    if (true) {
+        var { x } = obj;
+    }
+}
+"#,
+        );
+        let x_refs: Vec<_> = result.references.iter().filter(|r| r.name == "x").collect();
+        assert!(
+            x_refs
+                .iter()
+                .any(|r| r.resolved_local_target.as_deref() == Some(LOCAL_BINDING_SENTINEL)),
+            "destructured var {{x}} should be hoisted to function scope"
+        );
     }
 }
