@@ -19,6 +19,10 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let mut references = Vec::new();
     collect_references(&mut references, root, src);
 
+    let flat_syms = crate::parser::flatten_symbols(&symbols);
+    let arena = build_scope_arena(root, src, &flat_syms);
+    resolve_refs_locally(&arena, &flat_syms, &mut references);
+
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
 
@@ -817,6 +821,502 @@ fn build_method_signature(
 }
 
 // ---------------------------------------------------------------------------
+// Scope arena — JavaScript scoping (var hoisting, let/const TDZ, function hoisting)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScopeKind {
+    Module,
+    Function,
+    Block,
+    Class,
+}
+
+#[derive(Debug)]
+pub(super) struct Scope {
+    parent: Option<usize>,
+    defs: Vec<usize>,
+    /// Block-scoped bindings (let/const): (name, decl_line). Subject to TDZ.
+    bindings: Vec<(String, usize)>,
+    /// Var/function-hoisted bindings: (name, _). Visible from scope start.
+    hoisted_bindings: Vec<String>,
+    kind: ScopeKind,
+    start_line: usize,
+    end_line: usize,
+}
+
+pub(super) const LOCAL_BINDING_SENTINEL: &str = "::local_binding::";
+
+pub(super) fn build_scope_arena(
+    root: Node,
+    src: &[u8],
+    symbols: &[&ExtractedSymbol],
+) -> Vec<Scope> {
+    let mut arena: Vec<Scope> = Vec::new();
+
+    arena.push(Scope {
+        parent: None,
+        defs: Vec::new(),
+        bindings: Vec::new(),
+        hoisted_bindings: Vec::new(),
+        kind: ScopeKind::Module,
+        start_line: 1,
+        end_line: root.end_position().row + 1,
+    });
+
+    collect_block_bindings(root, src, &mut arena[0].bindings);
+    collect_var_bindings(root, src, 0, &mut arena);
+    build_scopes_recursive(root, src, 0, &mut arena, symbols);
+
+    arena
+}
+
+const JS_DEF_KINDS: &[&str] = &[
+    "function_declaration",
+    "generator_function_declaration",
+    "class_declaration",
+];
+
+fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node.utf8_text(src).ok()?;
+    let line = node.start_position().row + 1;
+    symbols
+        .iter()
+        .position(|s| s.short_name == name && s.start_line == line)
+}
+
+fn find_hoist_target(arena: &[Scope], from: usize) -> usize {
+    let mut idx = from;
+    loop {
+        if matches!(arena[idx].kind, ScopeKind::Module | ScopeKind::Function) {
+            return idx;
+        }
+        match arena[idx].parent {
+            Some(p) => idx = p,
+            None => return idx,
+        }
+    }
+}
+
+fn build_scopes_recursive(
+    node: Node,
+    src: &[u8],
+    parent_idx: usize,
+    arena: &mut Vec<Scope>,
+    symbols: &[&ExtractedSymbol],
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        // Register symbol defs in current scope
+        if JS_DEF_KINDS.contains(&child.kind()) {
+            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
+                arena[parent_idx].defs.push(sym_idx);
+            }
+        }
+
+        // Also register function declarations as hoisted bindings so they resolve
+        // throughout the enclosing function/module scope (not just after decl).
+        if child.kind() == "function_declaration"
+            || child.kind() == "generator_function_declaration"
+        {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(src) {
+                    let hoist_target = find_hoist_target(arena, parent_idx);
+                    arena[hoist_target].hoisted_bindings.push(name.to_string());
+                }
+            }
+        }
+
+        match child.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "method_definition"
+            | "arrow_function" => {
+                let body = child
+                    .child_by_field_name("body")
+                    .or_else(|| child.child_by_field_name("consequence"));
+                if let Some(body) = body {
+                    let idx = arena.len();
+                    arena.push(Scope {
+                        parent: Some(parent_idx),
+                        defs: Vec::new(),
+                        bindings: Vec::new(),
+                        hoisted_bindings: Vec::new(),
+                        kind: ScopeKind::Function,
+                        start_line: child.start_position().row + 1,
+                        end_line: child.end_position().row + 1,
+                    });
+                    collect_param_bindings(child, src, &mut arena[idx].bindings);
+                    collect_block_bindings(body, src, &mut arena[idx].bindings);
+                    collect_var_bindings(body, src, idx, arena);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
+                }
+            }
+            "class_body" => {
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    hoisted_bindings: Vec::new(),
+                    kind: ScopeKind::Class,
+                    start_line: child.start_position().row + 1,
+                    end_line: child.end_position().row + 1,
+                });
+                build_scopes_recursive(child, src, idx, arena, symbols);
+            }
+            "statement_block" if is_nested_block(child) => {
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    hoisted_bindings: Vec::new(),
+                    kind: ScopeKind::Block,
+                    start_line: child.start_position().row + 1,
+                    end_line: child.end_position().row + 1,
+                });
+                collect_block_bindings(child, src, &mut arena[idx].bindings);
+                collect_var_bindings(child, src, idx, arena);
+                build_scopes_recursive(child, src, idx, arena, symbols);
+            }
+            "catch_clause" => {
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    hoisted_bindings: Vec::new(),
+                    kind: ScopeKind::Block,
+                    start_line: child.start_position().row + 1,
+                    end_line: child.end_position().row + 1,
+                });
+                if let Some(param) = child.child_by_field_name("parameter") {
+                    let decl_line = param.start_position().row + 1;
+                    collect_pattern_names(param, src, decl_line, &mut arena[idx].bindings);
+                }
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_block_bindings(body, src, &mut arena[idx].bindings);
+                    collect_var_bindings(body, src, idx, arena);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
+                }
+            }
+            "for_statement" | "for_in_statement" => {
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    hoisted_bindings: Vec::new(),
+                    kind: ScopeKind::Block,
+                    start_line: child.start_position().row + 1,
+                    end_line: child.end_position().row + 1,
+                });
+                collect_for_bindings(child, src, &mut arena[idx].bindings);
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_block_bindings(body, src, &mut arena[idx].bindings);
+                    collect_var_bindings(body, src, idx, arena);
+                    build_scopes_recursive(body, src, idx, arena, symbols);
+                }
+            }
+            _ => {
+                build_scopes_recursive(child, src, parent_idx, arena, symbols);
+            }
+        }
+    }
+}
+
+fn is_nested_block(node: Node) -> bool {
+    node.parent().is_none_or(|p| {
+        !matches!(
+            p.kind(),
+            "function_declaration"
+                | "generator_function_declaration"
+                | "method_definition"
+                | "arrow_function"
+                | "catch_clause"
+                | "for_statement"
+                | "for_in_statement"
+        )
+    })
+}
+
+/// Collect let/const declarations from direct children of a block.
+fn collect_block_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
+            && is_block_scoped_declaration(child, src)
+        {
+            let decl_line = child.start_position().row + 1;
+            let mut dc = child.walk();
+            for decl in child.children(&mut dc) {
+                if decl.kind() == "variable_declarator" {
+                    if let Some(name) = decl.child_by_field_name("name") {
+                        collect_pattern_names(name, src, decl_line, bindings);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_block_scoped_declaration(node: Node, src: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Ok(text) = child.utf8_text(src) {
+            match text {
+                "let" | "const" => return true,
+                "var" => return false,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Collect var declarations recursively, hoisting them to the nearest function/module scope.
+fn collect_var_bindings(node: Node, src: &[u8], scope_idx: usize, arena: &mut Vec<Scope>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
+            && !is_block_scoped_declaration(child, src)
+        {
+            let hoist_target = find_hoist_target(arena, scope_idx);
+            let mut dc = child.walk();
+            for decl in child.children(&mut dc) {
+                if decl.kind() == "variable_declarator" {
+                    if let Some(name_node) = decl.child_by_field_name("name") {
+                        if name_node.kind() == "identifier" {
+                            if let Ok(name) = name_node.utf8_text(src) {
+                                arena[hoist_target].hoisted_bindings.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Recurse into nested blocks but NOT into function boundaries
+        if !matches!(
+            child.kind(),
+            "function_declaration"
+                | "generator_function_declaration"
+                | "arrow_function"
+                | "method_definition"
+                | "class_declaration"
+        ) && child.kind() != "lexical_declaration"
+            && child.kind() != "variable_declaration"
+        {
+            collect_var_bindings(child, src, scope_idx, arena);
+        }
+    }
+}
+
+fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    // Single-param arrow: `x => ...`
+    if let Some(param) = func.child_by_field_name("parameter") {
+        if param.kind() == "identifier" {
+            if let Ok(name) = param.utf8_text(src) {
+                bindings.push((name.to_string(), func.start_position().row + 1));
+            }
+        }
+    }
+
+    let Some(params) = func.child_by_field_name("parameters") else {
+        return;
+    };
+    let decl_line = params.start_position().row + 1;
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                if let Ok(name) = child.utf8_text(src) {
+                    bindings.push((name.to_string(), decl_line));
+                }
+            }
+            "assignment_pattern" => {
+                if let Some(left) = child.child_by_field_name("left") {
+                    collect_pattern_names(left, src, decl_line, bindings);
+                }
+            }
+            "rest_pattern" => {
+                let mut rc = child.walk();
+                for inner in child.children(&mut rc) {
+                    if inner.kind() == "identifier" {
+                        if let Ok(name) = inner.utf8_text(src) {
+                            bindings.push((name.to_string(), decl_line));
+                        }
+                    }
+                }
+            }
+            "object_pattern" | "array_pattern" => {
+                collect_pattern_names(child, src, decl_line, bindings);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(String, usize)>) {
+    match pat.kind() {
+        "identifier" => {
+            if let Ok(name) = pat.utf8_text(src)
+                && name != "_"
+            {
+                names.push((name.to_string(), line));
+            }
+        }
+        "object_pattern" | "array_pattern" => {
+            let mut cursor = pat.walk();
+            for child in pat.children(&mut cursor) {
+                collect_pattern_names(child, src, line, names);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = pat.child_by_field_name("left") {
+                collect_pattern_names(left, src, line, names);
+            }
+        }
+        "shorthand_property_identifier_pattern" => {
+            if let Ok(name) = pat.utf8_text(src)
+                && name != "_"
+            {
+                names.push((name.to_string(), line));
+            }
+        }
+        "rest_pattern" => {
+            let mut cursor = pat.walk();
+            for child in pat.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    if let Ok(name) = child.utf8_text(src) {
+                        names.push((name.to_string(), line));
+                    }
+                }
+            }
+        }
+        "pair_pattern" => {
+            if let Some(value) = pat.child_by_field_name("value") {
+                collect_pattern_names(value, src, line, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect for-loop let/const bindings (e.g. `for (let i = 0; ...)` or `for (const x of ...)`).
+fn collect_for_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        // for (let i = 0; ...) — lexical_declaration or variable_declaration
+        if (child.kind() == "lexical_declaration" || child.kind() == "variable_declaration")
+            && is_block_scoped_declaration(child, src)
+        {
+            let decl_line = child.start_position().row + 1;
+            let mut dc = child.walk();
+            for decl in child.children(&mut dc) {
+                if decl.kind() == "variable_declarator" {
+                    if let Some(name) = decl.child_by_field_name("name") {
+                        collect_pattern_names(name, src, decl_line, bindings);
+                    }
+                }
+            }
+        }
+        // for (const x of ...) — the left side
+        if child.kind() == "identifier"
+            && node
+                .child_by_field_name("left")
+                .is_some_and(|l| l.id() == child.id())
+        {
+            let decl_line = child.start_position().row + 1;
+            if let Ok(name) = child.utf8_text(src) {
+                bindings.push((name.to_string(), decl_line));
+            }
+        }
+    }
+}
+
+pub(super) fn find_tightest_scope(arena: &[Scope], line: usize) -> usize {
+    let mut best = 0;
+    let mut best_size = usize::MAX;
+    for (i, scope) in arena.iter().enumerate() {
+        if line >= scope.start_line && line <= scope.end_line {
+            let size = scope.end_line - scope.start_line;
+            if size < best_size {
+                best_size = size;
+                best = i;
+            }
+        }
+    }
+    best
+}
+
+pub(super) fn resolve_refs_locally(
+    arena: &[Scope],
+    symbols: &[&ExtractedSymbol],
+    refs: &mut [ExtractedRef],
+) {
+    for r in refs.iter_mut() {
+        if matches!(r.context_kind, RefContextKind::Import) {
+            continue;
+        }
+        let scope_idx = find_tightest_scope(arena, r.line);
+        r.resolved_local_target =
+            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line);
+    }
+}
+
+pub(super) fn resolve_in_scope_chain(
+    arena: &[Scope],
+    symbols: &[&ExtractedSymbol],
+    start: usize,
+    name: &str,
+    ref_line: usize,
+) -> Option<String> {
+    let mut idx = start;
+    loop {
+        let scope = &arena[idx];
+
+        // Block-scoped bindings (let/const): TDZ — only resolve at/after decl line.
+        if matches!(
+            scope.kind,
+            ScopeKind::Function | ScopeKind::Block | ScopeKind::Module
+        ) && scope
+            .bindings
+            .iter()
+            .any(|(b, decl_line)| b == name && ref_line >= *decl_line)
+        {
+            return Some(LOCAL_BINDING_SENTINEL.to_string());
+        }
+
+        // Symbol defs (functions, classes, etc.) — checked before hoisted bindings
+        // so function declarations resolve to their qualified name.
+        if let Some(&sym_idx) = scope
+            .defs
+            .iter()
+            .find(|&&si| symbols[si].short_name == name)
+        {
+            return Some(symbols[sym_idx].qualified_name.to_string());
+        }
+
+        // Hoisted bindings (var, function declarations): visible from scope start.
+        if matches!(scope.kind, ScopeKind::Function | ScopeKind::Module)
+            && scope.hoisted_bindings.iter().any(|b| b == name)
+        {
+            return Some(LOCAL_BINDING_SENTINEL.to_string());
+        }
+
+        // Class scopes: skip for bare name lookups (JS requires `this.prop`)
+        // But we still check defs above for class-level declarations
+
+        match scope.parent {
+            Some(p) => idx = p,
+            None => return None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reference extraction
 // ---------------------------------------------------------------------------
 
@@ -834,16 +1334,14 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 && let Ok(name) = node.utf8_text(src)
             {
                 let ctx = classify_ref_context(node);
-                if ctx != RefContextKind::Other {
-                    refs.push(ExtractedRef {
-                        name: name.to_string(),
-                        line: node.start_position().row + 1,
-                        col: node.start_position().column,
-                        context_kind: ctx,
-                        resolved_local_target: None,
-                        receiver: None,
-                    });
-                }
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind: ctx,
+                    resolved_local_target: None,
+                    receiver: None,
+                });
             }
         }
         "property_identifier" => {
@@ -1616,5 +2114,258 @@ class Config {
         assert_eq!(result.imports[0].raw_path, "polyfill");
         assert_eq!(result.imports[0].kind, "es_import");
         assert!(result.imports[0].alias.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Scope resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scope_basic_let_const() {
+        let result = parse_js(
+            r#"
+const x = 1;
+function foo() {
+    return x;
+}
+"#,
+        );
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert_eq!(
+            x_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_var_hoisting() {
+        let result = parse_js(
+            r#"
+function foo() {
+    x = 1;
+    if (true) {
+        var x = 2;
+    }
+    return x;
+}
+"#,
+        );
+        // Both refs to x should resolve — var is hoisted to function scope
+        let x_refs: Vec<_> = result.references.iter().filter(|r| r.name == "x").collect();
+        for r in &x_refs {
+            assert_eq!(
+                r.resolved_local_target.as_deref(),
+                Some(LOCAL_BINDING_SENTINEL),
+                "var x should be hoisted — ref at line {} should resolve",
+                r.line
+            );
+        }
+    }
+
+    #[test]
+    fn scope_let_vs_var() {
+        let result = parse_js(
+            r#"
+function foo() {
+    if (true) {
+        let y = 1;
+        return y;
+    }
+}
+"#,
+        );
+        let y_ref = result.references.iter().find(|r| r.name == "y").unwrap();
+        assert_eq!(
+            y_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_tdz() {
+        let result = parse_js(
+            r#"
+function foo() {
+    console.log(x);
+    let x = 1;
+}
+"#,
+        );
+        // The ref to x on line 3 is before the let on line 4 — should NOT resolve (TDZ)
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert!(
+            x_ref.resolved_local_target.is_none(),
+            "ref before let declaration should not resolve (TDZ)"
+        );
+    }
+
+    #[test]
+    fn scope_function_hoisting() {
+        let result = parse_js(
+            r#"
+function outer() {
+    const x = inner();
+    function inner() { return 42; }
+}
+"#,
+        );
+        let inner_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "inner" && r.context_kind == RefContextKind::Call)
+            .unwrap();
+        assert!(
+            inner_ref.resolved_local_target.is_some(),
+            "function declaration should be hoisted and resolve before its position"
+        );
+    }
+
+    #[test]
+    fn scope_shadowing() {
+        let result = parse_js(
+            r#"
+var x = 'outer';
+function foo() {
+    let x = 'inner';
+    return x;
+}
+"#,
+        );
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert_eq!(
+            x_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "inner let x should shadow outer var x"
+        );
+    }
+
+    #[test]
+    fn scope_catch_clause() {
+        let result = parse_js(
+            r#"
+try {
+    throw new Error();
+} catch (err) {
+    console.log(err);
+}
+"#,
+        );
+        let err_ref = result.references.iter().find(|r| r.name == "err").unwrap();
+        assert_eq!(
+            err_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "catch parameter should be scoped to catch block"
+        );
+    }
+
+    #[test]
+    fn scope_for_loop_let() {
+        let result = parse_js(
+            r#"
+for (let i = 0; i < 10; i++) {
+    console.log(i);
+}
+"#,
+        );
+        let i_refs: Vec<_> = result.references.iter().filter(|r| r.name == "i").collect();
+        assert!(!i_refs.is_empty(), "should find refs to loop variable i");
+        for r in &i_refs {
+            assert_eq!(
+                r.resolved_local_target.as_deref(),
+                Some(LOCAL_BINDING_SENTINEL),
+                "for-loop let i should resolve within loop"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_arrow_function() {
+        let result = parse_js(
+            r#"
+const greet = (name) => {
+    const msg = 'hi ' + name;
+    return msg;
+};
+"#,
+        );
+        let name_ref = result.references.iter().find(|r| r.name == "name").unwrap();
+        assert_eq!(
+            name_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+        let msg_ref = result.references.iter().find(|r| r.name == "msg").unwrap();
+        assert_eq!(
+            msg_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn scope_class_method() {
+        let result = parse_js(
+            r#"
+class Foo {
+    bar(x) {
+        return x + 1;
+    }
+}
+"#,
+        );
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert_eq!(
+            x_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "method param should resolve inside method"
+        );
+    }
+
+    #[test]
+    fn scope_unresolved_ref() {
+        let result = parse_js("function foo() { return bar(); }");
+        let bar_ref = result.references.iter().find(|r| r.name == "bar").unwrap();
+        assert!(
+            bar_ref.resolved_local_target.is_none(),
+            "ref to undefined bar should not resolve"
+        );
+    }
+
+    #[test]
+    fn scope_nested_functions() {
+        let result = parse_js(
+            r#"
+function outer() {
+    const x = 1;
+    function inner() {
+        return x;
+    }
+}
+"#,
+        );
+        let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
+        assert_eq!(
+            x_ref.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL),
+            "inner function should see outer's const via scope chain"
+        );
+    }
+
+    #[test]
+    fn scope_function_def_resolves() {
+        let result = parse_js(
+            r#"
+function greet() { return 'hi'; }
+greet();
+"#,
+        );
+        let greet_ref = result
+            .references
+            .iter()
+            .find(|r| r.name == "greet" && r.context_kind == RefContextKind::Call)
+            .unwrap();
+        assert!(
+            greet_ref.resolved_local_target.is_some(),
+            "call to locally defined function should resolve"
+        );
+        assert_eq!(greet_ref.resolved_local_target.as_deref(), Some("greet"));
     }
 }
