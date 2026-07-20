@@ -119,7 +119,7 @@ ratchet = true                       # monotonic: severity can never be lowered 
 
 Constraints are checked via a differential dataflow engine — a timely dataflow worker maintains views over the import graph, so cycle detection, forbidden dependency violations, and blast radius queries update incrementally as code changes. External-crate constraints are checked directly against unresolved import rows and workspace Cargo manifests (no DD view needed).
 
-In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from `report/`) are classified as external, so `forbidden_external` / `confined_external` also express crate-to-crate seams. Dart `package:` and `dart:` imports are matched by package name; pubspec.yaml manifests are not yet checked.
+In a multi-crate Cargo workspace, sibling-crate imports (`use server::…` from `report/`) are classified as external, so `forbidden_external` / `confined_external` also express crate-to-crate seams. Dart `package:` and `dart:` imports are matched by package name; pubspec.yaml manifests are not yet checked. JS/TS bare specifiers (`react`, `@angular/core`) are treated as external; `node_modules` is not traversed.
 
 Each constraint has a **severity** (blocking, advisory, informational). The **guard binary** (`sutra-guard`) runs as a Claude Code `PreToolUse` hook and blocks edits that introduce blocking violations in real time. For pattern constraints, the guard uses **introduced-only** semantics: it parses both the proposed and on-disk content, and denies only if the match count increased — pre-existing matches are grandfathered.
 
@@ -395,7 +395,11 @@ Configure in `.claude/settings.json`:
 - **Rust** — full support (functions, structs, enums, traits, impls, methods, modules, consts, macros)
 - **Dart** — full support (classes, methods, functions, enums, mixins, extensions, type aliases)
 - **Python** — full support (functions, classes, methods, decorators, async/generators, module-level variables, imports with package root discovery)
+- **JavaScript** — full support (functions, arrow functions, classes, methods, generators, ES imports, CommonJS require, dynamic imports, re-exports, JSX component refs, effect detection)
+- **TypeScript** — full support (all JS features plus interfaces, type aliases, enums, generics, access modifiers, decorators, ambient declarations, TSX)
 - **C** — full support (functions, structs, enums, typedefs, macros, global variables, `#include` resolution)
+
+JS and TS share an import system — cross-file import resolution handles relative imports with Node-style extension guessing (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`) and index file resolution (`./dir` → `./dir/index.ts`). Bare specifiers (`react`, `@angular/core`) are left unresolved since `node_modules` is out-of-tree.
 
 The core model is language-agnostic. Per-language adapters handle parsing and attribute extraction; the schema (files, symbols, edges) is uniform. Adding a language requires a tree-sitter grammar and an adapter that maps AST nodes to sutra's symbol kinds.
 
