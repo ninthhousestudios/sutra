@@ -702,10 +702,18 @@ pub(super) fn is_test_file(path: &str) -> bool {
         || lower.ends_with(".test.jsx")
         || lower.ends_with(".test.mjs")
         || lower.ends_with(".test.cjs")
+        || lower.ends_with(".test.ts")
+        || lower.ends_with(".test.tsx")
+        || lower.ends_with(".test.mts")
+        || lower.ends_with(".test.cts")
         || lower.ends_with(".spec.js")
         || lower.ends_with(".spec.jsx")
         || lower.ends_with(".spec.mjs")
         || lower.ends_with(".spec.cjs")
+        || lower.ends_with(".spec.ts")
+        || lower.ends_with(".spec.tsx")
+        || lower.ends_with(".spec.mts")
+        || lower.ends_with(".spec.cts")
         || lower.contains("__tests__/")
         || lower.contains("__tests__\\")
 }
@@ -1415,13 +1423,20 @@ fn is_definition_name(node: Node) -> bool {
         return false;
     };
     match parent.kind() {
-        "function_declaration" | "generator_function_declaration" | "class_declaration" => parent
+        "function_declaration"
+        | "generator_function_declaration"
+        | "class_declaration"
+        | "abstract_class_declaration"
+        | "enum_declaration"
+        | "internal_module"
+        | "interface_declaration"
+        | "type_alias_declaration" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
         "variable_declarator" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
-        "method_definition" => parent
+        "method_definition" | "abstract_method_definition" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
         "formal_parameters" => true,
