@@ -174,10 +174,20 @@ pub fn enrich_with_effects(
         if call_refs.iter().any(|r| {
             r.target_symbol_id.is_none()
                 && r.unresolved_name.as_ref().is_some_and(|name| {
-                    pattern.callee_prefixes.iter().any(|p| {
-                        name.starts_with(p)
-                            && (name.len() == p.len()
-                                || name.as_bytes().get(p.len()) == Some(&b'.'))
+                    let qualified;
+                    let candidates: &[&str] = if let Some(ref recv) = r.receiver {
+                        qualified = format!("{recv}.{name}");
+                        &[&qualified, name.as_str()]
+                    } else {
+                        &[name.as_str()]
+                    };
+                    candidates.iter().any(|candidate| {
+                        pattern.callee_prefixes.iter().any(|p| {
+                            candidate.starts_with(p)
+                                && (candidate.len() == p.len()
+                                    || p.ends_with('.')
+                                    || candidate.as_bytes().get(p.len()) == Some(&b'.'))
+                        })
                     })
                 })
         }) {
@@ -987,6 +997,142 @@ mod tests {
         }];
         enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
         assert!(!attrs.attributes.contains(&"effect:fs".to_string()));
+    }
+
+    fn make_unresolved_ref_with_receiver(name: &str, receiver: &str, line: i64) -> RefRow {
+        RefRow {
+            id: 1,
+            file_id: 1,
+            target_symbol_id: None,
+            unresolved_name: Some(name.into()),
+            line,
+            col: 0,
+            context_kind: "call".into(),
+            resolved_local_target: None,
+            receiver: Some(receiver.into()),
+        }
+    }
+
+    #[test]
+    fn js_effect_receiver_qualified_matching() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("function handler()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/app.js").unwrap();
+        let r_console = make_unresolved_ref_with_receiver("log", "console", 3);
+        let r_doc = make_unresolved_ref_with_receiver("querySelector", "document", 5);
+        let r_fetch = make_unresolved_ref("fetch", 7);
+        let r_axios = make_unresolved_ref_with_receiver("get", "axios", 9);
+        let patterns = [
+            EffectPattern {
+                attr_name: "effect:console",
+                callee_prefixes: &["console.log", "console.error"],
+            },
+            EffectPattern {
+                attr_name: "effect:dom",
+                callee_prefixes: &["document.", "window."],
+            },
+            EffectPattern {
+                attr_name: "effect:net",
+                callee_prefixes: &["fetch", "axios."],
+            },
+        ];
+        enrich_with_effects(
+            &mut attrs,
+            &sym,
+            &[&r_console, &r_doc, &r_fetch, &r_axios],
+            &|_| None,
+            &patterns,
+        );
+        assert!(attrs.attributes.contains(&"effect:console".to_string()));
+        assert!(attrs.attributes.contains(&"effect:dom".to_string()));
+        assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn js_effect_receiver_no_false_positive() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("function helper()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/util.js").unwrap();
+        // `myObj.log()` should NOT match `console.log`
+        let r = make_unresolved_ref_with_receiver("log", "myObj", 3);
+        let patterns = [EffectPattern {
+            attr_name: "effect:console",
+            callee_prefixes: &["console.log"],
+        }];
+        enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
+        assert!(!attrs.attributes.contains(&"effect:console".to_string()));
+    }
+
+    #[test]
+    fn js_effect_process_exit_via_receiver() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("function shutdown()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/cli.js").unwrap();
+        let r = make_unresolved_ref_with_receiver("exit", "process", 3);
+        let patterns = [EffectPattern {
+            attr_name: "effect:process",
+            callee_prefixes: &["process.exit"],
+        }];
+        enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
+        assert!(attrs.attributes.contains(&"effect:process".to_string()));
+    }
+
+    #[test]
+    fn js_effect_bare_fetch_without_receiver() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("function loadData()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/api.js").unwrap();
+        let r = make_unresolved_ref("fetch", 3);
+        let patterns = [EffectPattern {
+            attr_name: "effect:net",
+            callee_prefixes: &["fetch"],
+        }];
+        enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
+        assert!(attrs.attributes.contains(&"effect:net".to_string()));
+    }
+
+    #[test]
+    fn js_effect_then_via_receiver() {
+        let sym = make_symbol(
+            "function",
+            Some("pub"),
+            Some("function chain()"),
+            None,
+            Some(1),
+            0,
+        );
+        let mut attrs = extract_cross_language_attrs(&sym, "src/async.js").unwrap();
+        let r = make_unresolved_ref_with_receiver("then", "promise", 3);
+        let patterns = [EffectPattern {
+            attr_name: "effect:async",
+            callee_prefixes: &["Promise", "then"],
+        }];
+        enrich_with_effects(&mut attrs, &sym, &[&r], &|_| None, &patterns);
+        assert!(attrs.attributes.contains(&"effect:async".to_string()));
     }
 
     #[test]

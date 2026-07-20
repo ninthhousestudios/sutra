@@ -551,7 +551,7 @@ const JS_EFFECT_PATTERNS: &[EffectPattern] = &[
     },
     EffectPattern {
         attr_name: "effect:net",
-        callee_prefixes: &["fetch(", "XMLHttpRequest", "axios."],
+        callee_prefixes: &["fetch", "XMLHttpRequest", "axios."],
     },
     EffectPattern {
         attr_name: "effect:fs",
@@ -567,7 +567,7 @@ const JS_EFFECT_PATTERNS: &[EffectPattern] = &[
     },
     EffectPattern {
         attr_name: "effect:async",
-        callee_prefixes: &["await", "Promise", ".then("],
+        callee_prefixes: &["Promise", "then"],
     },
 ];
 
