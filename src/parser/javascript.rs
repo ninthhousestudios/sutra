@@ -1,7 +1,10 @@
 use crate::error::Result;
 use crate::parser::adapter::ParseContext;
-use crate::parser::{ExtractedSymbol, ParseResult, SymbolKind, complexity, structural_hash};
-use tree_sitter::Node;
+use crate::parser::{
+    ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
+    complexity, structural_hash,
+};
+use tree_sitter::{Node, TreeCursor};
 
 pub(super) const FLAG_TEST: u32 = 0x01;
 
@@ -13,12 +16,18 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
 
     let symbols = collect_symbols(root, src, file_path);
 
+    let mut references = Vec::new();
+    collect_references(&mut references, root, src);
+
+    let mut imports = Vec::new();
+    collect_imports(&mut imports, root, src);
+
     Ok(ParseResult {
         file_path: file_path.to_string(),
         language: "javascript".to_string(),
         symbols,
-        references: Vec::new(),
-        imports: Vec::new(),
+        references,
+        imports,
         parsed_ok,
         line_count: std::str::from_utf8(src)
             .map(|s| s.lines().count())
@@ -808,6 +817,304 @@ fn build_method_signature(
 }
 
 // ---------------------------------------------------------------------------
+// Reference extraction
+// ---------------------------------------------------------------------------
+
+pub(super) fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
+    let mut cursor = node.walk();
+    walk_refs_recursive(refs, &mut cursor, src);
+}
+
+fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
+    let node = cursor.node();
+
+    match node.kind() {
+        "identifier" => {
+            if !is_definition_name(node)
+                && let Ok(name) = node.utf8_text(src)
+            {
+                let ctx = classify_ref_context(node);
+                if ctx != RefContextKind::Other {
+                    refs.push(ExtractedRef {
+                        name: name.to_string(),
+                        line: node.start_position().row + 1,
+                        col: node.start_position().column,
+                        context_kind: ctx,
+                        resolved_local_target: None,
+                        receiver: None,
+                    });
+                }
+            }
+        }
+        "property_identifier" => {
+            if let Some(parent) = node.parent()
+                && parent.kind() == "member_expression"
+                && let Ok(name) = node.utf8_text(src)
+            {
+                let is_call = parent
+                    .parent()
+                    .is_some_and(|gp| gp.kind() == "call_expression");
+                let receiver = parent
+                    .child_by_field_name("object")
+                    .filter(|o| o.kind() == "identifier")
+                    .and_then(|o| o.utf8_text(src).ok())
+                    .map(|s| s.to_string());
+
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind: if is_call {
+                        RefContextKind::Call
+                    } else {
+                        RefContextKind::FieldAccess
+                    },
+                    resolved_local_target: None,
+                    receiver,
+                });
+            }
+        }
+        "shorthand_property_identifier" => {
+            // `{ foo }` in an object literal — a value reference.
+            if let Ok(name) = node.utf8_text(src) {
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind: RefContextKind::Other,
+                    resolved_local_target: None,
+                    receiver: None,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    if cursor.goto_first_child() {
+        loop {
+            walk_refs_recursive(refs, cursor, src);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
+}
+
+fn is_definition_name(node: Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "function_declaration" | "generator_function_declaration" | "class_declaration" => parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id()),
+        "variable_declarator" => parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id()),
+        "method_definition" => parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id()),
+        "formal_parameters" => true,
+        "required_parameter" | "optional_parameter" => parent
+            .child_by_field_name("pattern")
+            .is_some_and(|n| n.id() == node.id()),
+        "assignment_pattern" => parent
+            .child_by_field_name("left")
+            .is_some_and(|n| n.id() == node.id()),
+        "for_in_statement" | "for_statement" => parent
+            .child_by_field_name("left")
+            .is_some_and(|n| n.id() == node.id()),
+        "catch_clause" => parent
+            .child_by_field_name("parameter")
+            .is_some_and(|n| n.id() == node.id()),
+        "import_specifier" => parent
+            .child_by_field_name("alias")
+            .or_else(|| parent.child_by_field_name("name"))
+            .is_some_and(|n| n.id() == node.id()),
+        "import_clause" | "namespace_import" => true,
+        "shorthand_property_identifier_pattern" => true,
+        "pair_pattern" => parent
+            .child_by_field_name("value")
+            .is_some_and(|n| n.id() == node.id()),
+        "arrow_function" => parent
+            .child_by_field_name("parameter")
+            .is_some_and(|n| n.id() == node.id()),
+        _ => false,
+    }
+}
+
+fn classify_ref_context(node: Node) -> RefContextKind {
+    let Some(parent) = node.parent() else {
+        return RefContextKind::Other;
+    };
+
+    match parent.kind() {
+        "call_expression" => {
+            if parent
+                .child_by_field_name("function")
+                .is_some_and(|f| f.id() == node.id())
+            {
+                return RefContextKind::Call;
+            }
+        }
+        "new_expression" => {
+            if parent
+                .child_by_field_name("constructor")
+                .is_some_and(|c| c.id() == node.id())
+            {
+                return RefContextKind::Construction;
+            }
+        }
+        "jsx_self_closing_element" | "jsx_opening_element" | "jsx_closing_element" => {
+            if parent
+                .child_by_field_name("name")
+                .is_some_and(|n| n.id() == node.id())
+            {
+                return RefContextKind::Construction;
+            }
+        }
+        _ => {}
+    }
+
+    if matches!(
+        parent.kind(),
+        "import_specifier" | "namespace_import" | "import_clause"
+    ) {
+        return RefContextKind::Import;
+    }
+
+    RefContextKind::Other
+}
+
+// ---------------------------------------------------------------------------
+// Import extraction
+// ---------------------------------------------------------------------------
+
+pub(super) fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
+    let mut cursor = node.walk();
+    walk_imports_recursive(imports, &mut cursor, src);
+}
+
+fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeCursor, src: &[u8]) {
+    let node = cursor.node();
+
+    match node.kind() {
+        "import_statement" => {
+            extract_es_import(node, src, imports);
+            return;
+        }
+        "export_statement" => {
+            if let Some(source) = node.child_by_field_name("source")
+                && let Some(path) = extract_string_content(source, src)
+            {
+                imports.push(ExtractedImport {
+                    raw_path: path,
+                    line: node.start_position().row + 1,
+                    kind: "re_export",
+                    alias: None,
+                });
+            }
+        }
+        "call_expression" => {
+            extract_require_or_dynamic_import(node, src, imports);
+        }
+        _ => {}
+    }
+
+    if cursor.goto_first_child() {
+        loop {
+            walk_imports_recursive(imports, cursor, src);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
+}
+
+fn extract_es_import(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
+    let Some(source) = node.child_by_field_name("source") else {
+        return;
+    };
+    let Some(raw_path) = extract_string_content(source, src) else {
+        return;
+    };
+    let line = node.start_position().row + 1;
+
+    let mut alias = None;
+    let mut cursor = node.walk();
+    for clause in node
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "import_clause")
+    {
+        let mut cc = clause.walk();
+        for child in clause.children(&mut cc) {
+            match child.kind() {
+                "namespace_import" => {
+                    if let Some(name) = child.child_by_field_name("name").or_else(|| {
+                        let mut nc = child.walk();
+                        child.children(&mut nc).find(|n| n.kind() == "identifier")
+                    }) {
+                        alias = name.utf8_text(src).ok().map(|s| s.to_string());
+                    }
+                }
+                "identifier" => {
+                    alias = child.utf8_text(src).ok().map(|s| s.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    imports.push(ExtractedImport {
+        raw_path,
+        line,
+        kind: "es_import",
+        alias,
+    });
+}
+
+fn extract_require_or_dynamic_import(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
+    let Some(func) = node.child_by_field_name("function") else {
+        return;
+    };
+    let Ok(func_name) = func.utf8_text(src) else {
+        return;
+    };
+
+    let kind = match func_name {
+        "require" => "require",
+        "import" => "dynamic_import",
+        _ => return,
+    };
+
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cursor = args.walk();
+    for child in args.children(&mut cursor) {
+        if (child.kind() == "string" || child.kind() == "template_string")
+            && let Some(path) = extract_string_content(child, src)
+        {
+            imports.push(ExtractedImport {
+                raw_path: path,
+                line: node.start_position().row + 1,
+                kind,
+                alias: None,
+            });
+            return;
+        }
+    }
+}
+
+fn extract_string_content(node: Node, src: &[u8]) -> Option<String> {
+    let text = node.utf8_text(src).ok()?;
+    let trimmed = text.trim_matches(|c| c == '\'' || c == '"' || c == '`');
+    Some(trimmed.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1173,5 +1480,141 @@ class Config {
         let attrs: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(field.language_attrs.as_ref().unwrap()).unwrap();
         assert_eq!(attrs.get("static"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn function_call_refs() {
+        let result = parse_js("function foo() {} function bar() { foo(); }");
+        let call_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(
+            call_refs.iter().any(|r| r.name == "foo"),
+            "should find call ref to foo"
+        );
+        assert!(
+            !result.references.iter().any(|r| r.name == "bar"),
+            "bar is a def, not a ref"
+        );
+    }
+
+    #[test]
+    fn method_call_refs() {
+        let result = parse_js("const x = obj.method();");
+        let call_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Call)
+            .collect();
+        assert!(
+            call_refs
+                .iter()
+                .any(|r| r.name == "method" && r.receiver.as_deref() == Some("obj"))
+        );
+    }
+
+    #[test]
+    fn member_access_refs() {
+        let result = parse_js("const x = obj.field;");
+        let field_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::FieldAccess)
+            .collect();
+        assert!(field_refs.iter().any(|r| r.name == "field"));
+    }
+
+    #[test]
+    fn constructor_refs() {
+        let result = parse_js("const x = new Foo();");
+        let ctor_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::Construction)
+            .collect();
+        assert!(ctor_refs.iter().any(|r| r.name == "Foo"));
+    }
+
+    #[test]
+    fn es_import_extraction() {
+        let result = parse_js("import { foo, bar } from 'module-name';");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "module-name");
+        assert_eq!(result.imports[0].kind, "es_import");
+    }
+
+    #[test]
+    fn es_default_import() {
+        let result = parse_js("import foo from 'module-name';");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "module-name");
+        assert_eq!(result.imports[0].alias.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn es_namespace_import() {
+        let result = parse_js("import * as ns from 'module-name';");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].alias.as_deref(), Some("ns"));
+    }
+
+    #[test]
+    fn require_import() {
+        let result = parse_js("const x = require('module-name');");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "module-name");
+        assert_eq!(result.imports[0].kind, "require");
+    }
+
+    #[test]
+    fn dynamic_import() {
+        let result = parse_js("const x = import('module-name');");
+        let dyn_imports: Vec<_> = result
+            .imports
+            .iter()
+            .filter(|i| i.kind == "dynamic_import")
+            .collect();
+        assert_eq!(dyn_imports.len(), 1);
+        assert_eq!(dyn_imports[0].raw_path, "module-name");
+    }
+
+    #[test]
+    fn re_export() {
+        let result = parse_js("export { foo } from 'module-name';");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].kind, "re_export");
+        assert_eq!(result.imports[0].raw_path, "module-name");
+    }
+
+    #[test]
+    fn jsx_component_ref() {
+        let result = parse_js("function App() { return <Foo />; }");
+        let refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.name == "Foo")
+            .collect();
+        assert!(!refs.is_empty(), "should find JSX component ref");
+    }
+
+    #[test]
+    fn definition_names_not_in_refs() {
+        let result = parse_js("function myFunc(param) { const x = 1; class MyClass {} }");
+        let ref_names: Vec<_> = result.references.iter().map(|r| r.name.as_str()).collect();
+        assert!(!ref_names.contains(&"myFunc"), "function name is a def");
+        assert!(!ref_names.contains(&"param"), "param is a def");
+        assert!(!ref_names.contains(&"x"), "variable name is a def");
+        assert!(!ref_names.contains(&"MyClass"), "class name is a def");
+    }
+
+    #[test]
+    fn side_effect_import() {
+        let result = parse_js("import 'polyfill';");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].raw_path, "polyfill");
+        assert_eq!(result.imports[0].kind, "es_import");
+        assert!(result.imports[0].alias.is_none());
     }
 }
