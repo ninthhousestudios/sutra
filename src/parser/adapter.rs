@@ -536,8 +536,63 @@ impl LanguageAdapter for JsAdapter {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::javascript::parse(ctx)
     }
+    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
+        Some(self)
+    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
+    }
+}
+
+const JS_EFFECT_PATTERNS: &[EffectPattern] = &[
+    EffectPattern {
+        attr_name: "effect:dom",
+        callee_prefixes: &["document.", "window.", "globalThis."],
+    },
+    EffectPattern {
+        attr_name: "effect:net",
+        callee_prefixes: &["fetch(", "XMLHttpRequest", "axios."],
+    },
+    EffectPattern {
+        attr_name: "effect:fs",
+        callee_prefixes: &["fs.", "readFile", "writeFile"],
+    },
+    EffectPattern {
+        attr_name: "effect:process",
+        callee_prefixes: &["process.exit", "process.env"],
+    },
+    EffectPattern {
+        attr_name: "effect:console",
+        callee_prefixes: &["console.log", "console.error"],
+    },
+    EffectPattern {
+        attr_name: "effect:async",
+        callee_prefixes: &["await", "Promise", ".then("],
+    },
+];
+
+const JS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
+    ToolchainPair {
+        antecedent: "async",
+        consequent: "await",
+    },
+    ToolchainPair {
+        antecedent: "export",
+        consequent: "import",
+    },
+];
+
+impl FcaAttributeSource for JsAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        extract_cross_language_attrs(sym, file_path)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        JS_EFFECT_PATTERNS
+    }
+
+    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
+        JS_TOOLCHAIN_PAIRS
     }
 }
 
@@ -557,8 +612,44 @@ impl LanguageAdapter for TsAdapter {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::typescript::parse(ctx)
     }
+    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
+        Some(self)
+    }
     fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
         ModuleBoundaryStrength::Moderate
+    }
+}
+
+const TS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
+    ToolchainPair {
+        antecedent: "async",
+        consequent: "await",
+    },
+    ToolchainPair {
+        antecedent: "export",
+        consequent: "import",
+    },
+    ToolchainPair {
+        antecedent: "interface",
+        consequent: "implements",
+    },
+    ToolchainPair {
+        antecedent: "@deprecated",
+        consequent: "@deprecated",
+    },
+];
+
+impl FcaAttributeSource for TsAdapter {
+    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+        extract_cross_language_attrs(sym, file_path)
+    }
+
+    fn effect_patterns(&self) -> &[EffectPattern] {
+        JS_EFFECT_PATTERNS
+    }
+
+    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
+        TS_TOOLCHAIN_PAIRS
     }
 }
 
