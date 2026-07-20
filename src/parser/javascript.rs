@@ -521,6 +521,9 @@ pub(super) fn handle_export(
             "function_declaration" | "generator_function_declaration" => {
                 if let Some(mut sym) = extract_function(child, src, file_path, name_context) {
                     sym.visibility = Some(vis.to_string());
+                    if sym.docstring.is_none() {
+                        sym.docstring = extract_jsdoc(node, src);
+                    }
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx: Vec<&str> = name_context.to_vec();
                         ctx.push(&sym.short_name);
@@ -532,6 +535,9 @@ pub(super) fn handle_export(
             "class_declaration" => {
                 if let Some(mut sym) = extract_class(child, src, file_path, name_context) {
                     sym.visibility = Some(vis.to_string());
+                    if sym.docstring.is_none() {
+                        sym.docstring = extract_jsdoc(node, src);
+                    }
                     symbols.push(sym);
                 }
             }
@@ -544,6 +550,32 @@ pub(super) fn handle_export(
                     Some(vis),
                     symbols,
                 );
+                if let Some(last) = symbols.last_mut() {
+                    if last.docstring.is_none() {
+                        last.docstring = extract_jsdoc(node, src);
+                    }
+                }
+            }
+            "export_clause" => {
+                if node.child_by_field_name("source").is_some() {
+                    return;
+                }
+                for spec in child.named_children(&mut child.walk()) {
+                    if spec.kind() != "export_specifier" {
+                        continue;
+                    }
+                    let local_name = spec
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(src).ok());
+                    if let Some(name) = local_name {
+                        for sym in symbols.iter_mut().rev() {
+                            if sym.short_name == name {
+                                sym.visibility = Some("export".to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1037,6 +1069,89 @@ describe("math", function() {
             serde_json::from_str(sym.language_attrs.as_ref().unwrap()).unwrap();
         assert_eq!(attrs.get("arrow"), Some(&serde_json::Value::Bool(true)));
         assert_eq!(attrs.get("async"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn named_export_clause() {
+        let result = parse_js(
+            r#"
+function foo() { return 1; }
+const bar = 42;
+export { foo, bar };
+"#,
+        );
+        let foo = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "foo")
+            .unwrap();
+        assert_eq!(foo.visibility, Some("export".to_string()));
+        let bar = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "bar")
+            .unwrap();
+        assert_eq!(bar.visibility, Some("export".to_string()));
+    }
+
+    #[test]
+    fn named_export_does_not_affect_reexports() {
+        let result = parse_js(r#"export { x } from './other';"#);
+        assert!(result.symbols.is_empty());
+    }
+
+    #[test]
+    fn jsdoc_on_exported_function() {
+        let result = parse_js(
+            r#"
+/** Greets the user. */
+export function greet(name) { return `hi ${name}`; }
+"#,
+        );
+        let sym = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "greet")
+            .unwrap();
+        assert_eq!(sym.visibility, Some("export".to_string()));
+        assert!(sym.docstring.is_some());
+        assert!(sym.docstring.as_ref().unwrap().contains("Greets the user"));
+    }
+
+    #[test]
+    fn jsdoc_on_exported_const_arrow() {
+        let result = parse_js(
+            r#"
+/** Handles requests. */
+export const handler = async (req) => {};
+"#,
+        );
+        let sym = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "handler")
+            .unwrap();
+        assert_eq!(sym.visibility, Some("export".to_string()));
+        assert!(sym.docstring.is_some());
+        assert!(sym.docstring.as_ref().unwrap().contains("Handles requests"));
+    }
+
+    #[test]
+    fn jsdoc_on_exported_class() {
+        let result = parse_js(
+            r#"
+/** A widget. */
+export class Widget {}
+"#,
+        );
+        let sym = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "Widget")
+            .unwrap();
+        assert_eq!(sym.visibility, Some("export".to_string()));
+        assert!(sym.docstring.is_some());
+        assert!(sym.docstring.as_ref().unwrap().contains("A widget"));
     }
 
     #[test]
