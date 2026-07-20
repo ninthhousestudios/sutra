@@ -521,12 +521,55 @@ impl FcaAttributeSource for PythonAdapter {
     }
 }
 
+pub struct JsAdapter;
+
+impl LanguageAdapter for JsAdapter {
+    fn language_id(&self) -> &str {
+        "javascript"
+    }
+    fn extensions(&self) -> &[&str] {
+        &["js", "jsx", "mjs", "cjs"]
+    }
+    fn grammar(&self) -> Language {
+        tree_sitter_javascript::LANGUAGE.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::javascript::parse(ctx)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Moderate
+    }
+}
+
+pub struct TsAdapter;
+
+impl LanguageAdapter for TsAdapter {
+    fn language_id(&self) -> &str {
+        "typescript"
+    }
+    fn extensions(&self) -> &[&str] {
+        &["ts", "tsx", "mts", "cts"]
+    }
+    fn grammar(&self) -> Language {
+        // TSX grammar is a superset of TS — handles both correctly
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    }
+    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
+        super::typescript::parse(ctx)
+    }
+    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {
+        ModuleBoundaryStrength::Moderate
+    }
+}
+
 pub fn default_registry() -> LanguageRegistry {
     let mut r = LanguageRegistry::new();
     r.register(Box::new(RustAdapter));
     r.register(Box::new(DartAdapter));
     r.register(Box::new(CAdapter));
     r.register(Box::new(PythonAdapter));
+    r.register(Box::new(JsAdapter));
+    r.register(Box::new(TsAdapter));
     r
 }
 
@@ -772,7 +815,9 @@ mod tests {
         assert_eq!(mults.get("dart"), Some(&1.5));
         assert_eq!(mults.get("c"), Some(&1.0));
         assert_eq!(mults.get("python"), Some(&1.0));
-        assert_eq!(mults.len(), 4);
+        assert_eq!(mults.get("javascript"), Some(&1.5));
+        assert_eq!(mults.get("typescript"), Some(&1.5));
+        assert_eq!(mults.len(), 6);
     }
 
     #[test]

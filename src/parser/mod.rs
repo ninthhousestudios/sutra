@@ -2,9 +2,11 @@ pub mod adapter;
 pub mod c;
 pub mod complexity;
 pub mod dart;
+pub mod javascript;
 pub mod python;
 pub mod rust;
 pub mod structural_hash;
+pub mod typescript;
 
 use crate::error::Result;
 
