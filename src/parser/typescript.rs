@@ -109,10 +109,15 @@ fn collect_symbols_inner(
                     symbols.push(sym);
                 }
             }
-            "internal_module" => {
+            "module" | "internal_module" => {
                 if let Some(sym) = extract_namespace(child, src, file_path, name_context) {
                     symbols.push(sym);
                 }
+            }
+            "ambient_declaration" => {
+                let mut inner =
+                    collect_ambient_declaration(child, src, file_path, name_context, None);
+                symbols.append(&mut inner);
             }
             _ => {
                 symbols.extend(collect_symbols_inner(child, src, file_path, name_context));
@@ -781,7 +786,7 @@ fn handle_export(
                     symbols.push(sym);
                 }
             }
-            "internal_module" => {
+            "module" | "internal_module" => {
                 if let Some(mut sym) = extract_namespace(child, src, file_path, name_context) {
                     sym.visibility = Some(vis.to_string());
                     symbols.push(sym);
@@ -823,9 +828,127 @@ fn handle_export(
                     }
                 }
             }
+            "ambient_declaration" => {
+                let mut inner =
+                    collect_ambient_declaration(child, src, file_path, name_context, Some(vis));
+                symbols.append(&mut inner);
+            }
             _ => {}
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ambient declaration (declare ...) unwrapping
+// ---------------------------------------------------------------------------
+
+fn collect_ambient_declaration(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    name_context: &[&str],
+    export_vis: Option<&str>,
+) -> Vec<ExtractedSymbol> {
+    let mut symbols = Vec::new();
+    for child in node.named_children(&mut node.walk()) {
+        let mut sym = match child.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                javascript::extract_function(child, src, file_path, name_context)
+            }
+            "function_signature" => extract_function_signature(child, src, file_path, name_context),
+            "class_declaration" => extract_class(child, src, file_path, name_context, false),
+            "abstract_class_declaration" => {
+                extract_class(child, src, file_path, name_context, true)
+            }
+            "interface_declaration" => extract_interface(child, src, file_path, name_context),
+            "type_alias_declaration" => extract_type_alias(child, src, file_path, name_context),
+            "enum_declaration" => extract_enum(child, src, file_path, name_context),
+            "module" | "internal_module" => extract_namespace(child, src, file_path, name_context),
+            "lexical_declaration" | "variable_declaration" => {
+                javascript::extract_variable_declarators(
+                    child,
+                    src,
+                    file_path,
+                    name_context,
+                    export_vis,
+                    &mut symbols,
+                );
+                None
+            }
+            _ => None,
+        };
+        if let Some(ref mut s) = sym {
+            if let Some(vis) = export_vis {
+                s.visibility = Some(vis.to_string());
+            }
+            inject_declare_attr(s);
+            symbols.push(sym.unwrap());
+        }
+    }
+    for s in &mut symbols {
+        inject_declare_attr(s);
+    }
+    symbols
+}
+
+fn inject_declare_attr(sym: &mut ExtractedSymbol) {
+    let mut attrs: serde_json::Map<String, serde_json::Value> = sym
+        .language_attrs
+        .as_ref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    if attrs.contains_key("declare") {
+        return;
+    }
+    attrs.insert("declare".into(), true.into());
+    sym.language_attrs = javascript::attrs_to_json(&attrs);
+}
+
+fn extract_function_signature(
+    node: Node,
+    src: &[u8],
+    file_path: &str,
+    name_context: &[&str],
+) -> Option<ExtractedSymbol> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = javascript::node_text(name_node, src);
+    let qualified_name = javascript::build_qualified_name(name_context, &name);
+    let docstring = javascript::extract_jsdoc(node, src);
+    let flags = javascript::extract_flags(node, src, file_path);
+    let struct_hash = structural_hash::compute(
+        node,
+        src,
+        Some((name_node.start_byte(), name_node.end_byte())),
+    );
+    let sig = node.child_by_field_name("parameters").and_then(|params| {
+        let params_text = params.utf8_text(src).ok()?;
+        Some(format!("function {name}{params_text}"))
+    });
+    let sig_hash = sig
+        .as_ref()
+        .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
+
+    Some(ExtractedSymbol {
+        qualified_name,
+        short_name: name,
+        kind: SymbolKind::Function,
+        signature: sig,
+        signature_hash: sig_hash,
+        structural_hash: Some(struct_hash),
+        visibility: None,
+        start_line: node.start_position().row + 1,
+        start_col: node.start_position().column,
+        end_line: node.end_position().row + 1,
+        end_col: node.end_position().column,
+        children: Vec::new(),
+        parent_symbol_id: None,
+        docstring,
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags,
+        language_attrs: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -943,8 +1066,14 @@ fn walk_type_import_markers(cursor: &mut TreeCursor, src: &[u8], imports: &mut [
         "import_statement" => {
             if has_type_keyword(node, src) {
                 let line = node.start_position().row + 1;
+                let path = node
+                    .child_by_field_name("source")
+                    .and_then(|s| javascript::extract_string_content(s, src));
                 for imp in imports.iter_mut() {
-                    if imp.line == line && imp.kind == "es_import" {
+                    if imp.line == line
+                        && imp.kind == "es_import"
+                        && path.as_ref().is_some_and(|p| p == &imp.raw_path)
+                    {
                         imp.kind = "type_import";
                     }
                 }
@@ -952,11 +1081,17 @@ fn walk_type_import_markers(cursor: &mut TreeCursor, src: &[u8], imports: &mut [
             return;
         }
         "export_statement" => {
-            if node.child_by_field_name("source").is_some() && has_type_keyword(node, src) {
-                let line = node.start_position().row + 1;
-                for imp in imports.iter_mut() {
-                    if imp.line == line && imp.kind == "re_export" {
-                        imp.kind = "type_re_export";
+            if let Some(source) = node.child_by_field_name("source") {
+                if has_type_keyword(node, src) {
+                    let line = node.start_position().row + 1;
+                    let path = javascript::extract_string_content(source, src);
+                    for imp in imports.iter_mut() {
+                        if imp.line == line
+                            && imp.kind == "re_export"
+                            && path.as_ref().is_some_and(|p| p == &imp.raw_path)
+                        {
+                            imp.kind = "type_re_export";
+                        }
                     }
                 }
             }
@@ -1391,5 +1526,57 @@ mod tests {
             !type_refs.iter().any(|r| r.name == "Bar"),
             "Bar definition should not appear as ref"
         );
+    }
+
+    // -- Codex review fixes ---------------------------------------------------
+
+    #[test]
+    fn module_declaration() {
+        let result = parse_ts(
+            "module Foo {
+                function bar() {}
+            }",
+        );
+        assert_eq!(result.symbols.len(), 1);
+        let ns = &result.symbols[0];
+        assert_eq!(ns.short_name, "Foo");
+        assert_eq!(ns.kind, SymbolKind::Module);
+        assert_eq!(ns.children.len(), 1);
+        assert_eq!(ns.children[0].qualified_name, "Foo::bar");
+    }
+
+    #[test]
+    fn export_declare_class() {
+        let result = parse_ts("export declare class Foo {}");
+        assert_eq!(result.symbols.len(), 1);
+        let cls = &result.symbols[0];
+        assert_eq!(cls.short_name, "Foo");
+        assert_eq!(cls.kind, SymbolKind::Class);
+        assert_eq!(cls.visibility.as_deref(), Some("export"));
+        let attrs: serde_json::Value =
+            serde_json::from_str(cls.language_attrs.as_ref().unwrap()).unwrap();
+        assert_eq!(attrs["declare"], true);
+    }
+
+    #[test]
+    fn declare_function_signature() {
+        let result = parse_ts("declare function foo(): void;");
+        assert_eq!(result.symbols.len(), 1);
+        let f = &result.symbols[0];
+        assert_eq!(f.short_name, "foo");
+        assert_eq!(f.kind, SymbolKind::Function);
+        let attrs: serde_json::Value =
+            serde_json::from_str(f.language_attrs.as_ref().unwrap()).unwrap();
+        assert_eq!(attrs["declare"], true);
+    }
+
+    #[test]
+    fn same_line_mixed_imports() {
+        let result = parse_ts("import type { Foo } from 'a'; import { Bar } from 'b';");
+        assert_eq!(result.imports.len(), 2);
+        let type_imp = result.imports.iter().find(|i| i.raw_path == "a").unwrap();
+        let value_imp = result.imports.iter().find(|i| i.raw_path == "b").unwrap();
+        assert_eq!(type_imp.kind, "type_import");
+        assert_eq!(value_imp.kind, "es_import");
     }
 }

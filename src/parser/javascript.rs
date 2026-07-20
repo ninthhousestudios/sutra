@@ -1429,8 +1429,10 @@ fn is_definition_name(node: Node) -> bool {
         | "abstract_class_declaration"
         | "enum_declaration"
         | "internal_module"
+        | "module"
         | "interface_declaration"
-        | "type_alias_declaration" => parent
+        | "type_alias_declaration"
+        | "function_signature" => parent
             .child_by_field_name("name")
             .is_some_and(|n| n.id() == node.id()),
         "variable_declarator" => parent
@@ -1632,7 +1634,7 @@ fn extract_require_or_dynamic_import(node: Node, src: &[u8], imports: &mut Vec<E
     }
 }
 
-fn extract_string_content(node: Node, src: &[u8]) -> Option<String> {
+pub(super) fn extract_string_content(node: Node, src: &[u8]) -> Option<String> {
     let text = node.utf8_text(src).ok()?;
     let trimmed = text.trim_matches(|c| c == '\'' || c == '"' || c == '`');
     Some(trimmed.to_string())
