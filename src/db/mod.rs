@@ -1661,6 +1661,23 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Return all unresolved JS/TS imports.
+    pub fn unresolved_js_ts_imports(&self) -> Result<Vec<(i64, i64, String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT i.id, i.file_id, i.imported_path, i.kind FROM imports i
+             JOIN files f ON f.id = i.file_id
+             WHERE i.resolved_file_id IS NULL
+             AND f.language IN ('javascript', 'typescript')",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64, String, String)>> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect();
+        Ok(rows?)
+    }
+
     /// Return all unresolved C imports.
     pub fn unresolved_c_imports(&self) -> Result<Vec<(i64, i64, String)>> {
         let conn = self.conn.lock();

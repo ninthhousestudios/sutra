@@ -446,6 +446,20 @@ fn ts_cross_file_import_resolution() {
         paths.contains(&"./models"),
         "service.ts should have import of ./models, got: {paths:?}"
     );
+
+    let models_file = db
+        .file_by_path("models.ts")
+        .unwrap()
+        .expect("models.ts should be indexed");
+    let resolved_import = imports
+        .iter()
+        .find(|i| i.imported_path == "./models")
+        .expect("should have ./models import");
+    assert_eq!(
+        resolved_import.resolved_file_id,
+        Some(models_file.id),
+        "./models should resolve to models.ts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -499,4 +513,88 @@ fn mixed_js_ts_workspace() {
         .collect();
     assert_eq!(js_files.len(), 1, "expected 1 JS file");
     assert_eq!(ts_files.len(), 2, "expected 2 TS files (.ts + .tsx)");
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: mixed JS/TS cross-imports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mixed_js_ts_cross_import_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("utils.ts"),
+        "export function greet(name: string): string { return `Hi ${name}`; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "import { greet } from './utils';\nconsole.log(greet('world'));\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry {
+        id: "mixed-cross".to_string(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["javascript".to_string(), "typescript".to_string()],
+    };
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let utils_file = db.file_by_path("utils.ts").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./utils")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(utils_file.id),
+        ".js file importing from .ts should resolve cross-language"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: index.ts resolution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ts_import_index_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("lib")).unwrap();
+    std::fs::write(
+        dir.path().join("lib/index.ts"),
+        "export const VERSION = '1.0';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("main.ts"),
+        "import { VERSION } from './lib';\nconsole.log(VERSION);\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_ts_entry("ts-index", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let main_file = db.file_by_path("main.ts").unwrap().unwrap();
+    let index_file = db.file_by_path("lib/index.ts").unwrap().unwrap();
+    let imports = db.imports_for_file(main_file.id).unwrap();
+    let imp = imports.iter().find(|i| i.imported_path == "./lib").unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(index_file.id),
+        "./lib should resolve to lib/index.ts"
+    );
 }

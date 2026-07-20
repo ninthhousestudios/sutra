@@ -694,6 +694,11 @@ fn post_parse_sequence(
         info!(count = python_resolved, "resolved Python import edges");
     }
 
+    let js_resolved = crate::js_imports::resolve_js_imports(db, workspace_root)?;
+    if js_resolved > 0 {
+        info!(count = js_resolved, "resolved JS/TS import edges");
+    }
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;

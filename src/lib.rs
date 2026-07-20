@@ -12,6 +12,7 @@ pub mod git;
 pub mod graph;
 pub mod guard;
 pub mod health;
+pub mod js_imports;
 pub mod lessons;
 pub mod mcp;
 pub mod parser;

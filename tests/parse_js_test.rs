@@ -442,6 +442,20 @@ fn js_cross_file_import_resolution() {
         paths.contains(&"./utils"),
         "app.js should have import of ./utils, got: {paths:?}"
     );
+
+    let utils_file = db
+        .file_by_path("utils.js")
+        .unwrap()
+        .expect("utils.js should be indexed");
+    let resolved_import = imports
+        .iter()
+        .find(|i| i.imported_path == "./utils")
+        .expect("should have ./utils import");
+    assert_eq!(
+        resolved_import.resolved_file_id,
+        Some(utils_file.id),
+        "./utils should resolve to utils.js"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -560,5 +574,230 @@ function App() {
     assert!(
         ref_names.contains(&"Header"),
         "missing JSX ref to Header: {ref_names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: extension guessing priority
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_import_extension_guessing_priority() {
+    let dir = tempfile::tempdir().unwrap();
+    // Both .ts and .js exist — .ts should win (higher priority)
+    std::fs::write(dir.path().join("helper.ts"), "export const x = 1;\n").unwrap();
+    std::fs::write(dir.path().join("helper.js"), "export const x = 2;\n").unwrap();
+    std::fs::write(dir.path().join("app.js"), "import { x } from './helper';\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry {
+        id: "ext-priority".to_string(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["javascript".to_string(), "typescript".to_string()],
+    };
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let helper_ts = db.file_by_path("helper.ts").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./helper")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(helper_ts.id),
+        ".ts should take priority over .js"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: index file resolution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_import_index_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("components")).unwrap();
+    std::fs::write(
+        dir.path().join("components/index.js"),
+        "export { Button } from './Button';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "import { Button } from './components';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_js_entry("index-resolve", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let index_file = db.file_by_path("components/index.js").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./components")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(index_file.id),
+        "./components should resolve to components/index.js"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: bare specifiers stay unresolved
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_bare_specifier_not_resolved() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "import React from 'react';\nimport { map } from 'lodash';\nimport { Injectable } from '@angular/core';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_js_entry("bare-spec", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    for imp in &imports {
+        assert_eq!(
+            imp.resolved_file_id, None,
+            "bare specifier '{}' should not resolve",
+            imp.imported_path
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: re-export edges
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_reexport_creates_edge() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("math.js"),
+        "export function add(a, b) { return a + b; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("index.js"),
+        "export { add } from './math';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_js_entry("reexport", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let index_file = db.file_by_path("index.js").unwrap().unwrap();
+    let math_file = db.file_by_path("math.js").unwrap().unwrap();
+    let imports = db.imports_for_file(index_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./math")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(math_file.id),
+        "re-export should create resolved edge"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: side-effect imports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_side_effect_import_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("polyfill.js"), "// side effects\n").unwrap();
+    std::fs::write(dir.path().join("app.js"), "import './polyfill';\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_js_entry("side-effect", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let polyfill_file = db.file_by_path("polyfill.js").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./polyfill")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(polyfill_file.id),
+        "side-effect import should resolve"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution: explicit extension resolves directly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn js_explicit_extension_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.mjs"), "export const x = 1;\n").unwrap();
+    std::fs::write(
+        dir.path().join("app.js"),
+        "import { x } from './lib.mjs';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_js_entry("explicit-ext", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("app.js").unwrap().unwrap();
+    let lib_file = db.file_by_path("lib.mjs").unwrap().unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "./lib.mjs")
+        .unwrap();
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(lib_file.id),
+        "explicit .mjs extension should resolve directly"
     );
 }
