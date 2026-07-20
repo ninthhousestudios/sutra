@@ -81,6 +81,30 @@ pub trait FcaAttributeSource: Send + Sync {
     }
 }
 
+fn extract_attrs_with_language_bools(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
+    let mut sa = extract_cross_language_attrs(sym, file_path)?;
+    if let Some(ref la_json) = sym.language_attrs {
+        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
+            Ok(map) => {
+                for (key, val) in &map {
+                    if val.as_bool() == Some(true) {
+                        sa.attributes.push(key.to_owned());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    symbol = %sym.qualified_name,
+                    file = %file_path,
+                    error = %e,
+                    "malformed language_attrs JSON, skipping language-specific attributes"
+                );
+            }
+        }
+    }
+    Some(sa)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleBoundaryStrength {
     Strong,
@@ -243,27 +267,7 @@ const RUST_EFFECT_PATTERNS: &[EffectPattern] = &[
 
 impl FcaAttributeSource for RustAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        let mut sa = extract_cross_language_attrs(sym, file_path)?;
-        if let Some(ref la_json) = sym.language_attrs {
-            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
-                Ok(map) => {
-                    for (key, val) in &map {
-                        if val.as_bool() == Some(true) {
-                            sa.attributes.push(key.clone());
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        symbol = %sym.qualified_name,
-                        file = %file_path,
-                        error = %e,
-                        "malformed language_attrs JSON, skipping language-specific attributes"
-                    );
-                }
-            }
-        }
-        Some(sa)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -334,27 +338,7 @@ const DART_EFFECT_PATTERNS: &[EffectPattern] = &[
 
 impl FcaAttributeSource for DartAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        let mut sa = extract_cross_language_attrs(sym, file_path)?;
-        if let Some(ref la_json) = sym.language_attrs {
-            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
-                Ok(map) => {
-                    for (key, val) in &map {
-                        if val.as_bool() == Some(true) {
-                            sa.attributes.push(key.clone());
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        symbol = %sym.qualified_name,
-                        file = %file_path,
-                        error = %e,
-                        "malformed language_attrs JSON, skipping language-specific attributes"
-                    );
-                }
-            }
-        }
-        Some(sa)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -410,27 +394,7 @@ const C_EFFECT_PATTERNS: &[EffectPattern] = &[
 
 impl FcaAttributeSource for CAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        let mut sa = extract_cross_language_attrs(sym, file_path)?;
-        if let Some(ref la_json) = sym.language_attrs {
-            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
-                Ok(map) => {
-                    for (key, val) in &map {
-                        if val.as_bool() == Some(true) {
-                            sa.attributes.push(key.clone());
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        symbol = %sym.qualified_name,
-                        file = %file_path,
-                        error = %e,
-                        "malformed language_attrs JSON, skipping language-specific attributes"
-                    );
-                }
-            }
-        }
-        Some(sa)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -493,27 +457,7 @@ const PYTHON_EFFECT_PATTERNS: &[EffectPattern] = &[
 
 impl FcaAttributeSource for PythonAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        let mut sa = extract_cross_language_attrs(sym, file_path)?;
-        if let Some(ref la_json) = sym.language_attrs {
-            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {
-                Ok(map) => {
-                    for (key, val) in &map {
-                        if val.as_bool() == Some(true) {
-                            sa.attributes.push(key.clone());
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        symbol = %sym.qualified_name,
-                        file = %file_path,
-                        error = %e,
-                        "malformed language_attrs JSON, skipping language-specific attributes"
-                    );
-                }
-            }
-        }
-        Some(sa)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -571,20 +515,14 @@ const JS_EFFECT_PATTERNS: &[EffectPattern] = &[
     },
 ];
 
-const JS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
-    ToolchainPair {
-        antecedent: "async",
-        consequent: "await",
-    },
-    ToolchainPair {
-        antecedent: "export",
-        consequent: "import",
-    },
-];
+const JS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[ToolchainPair {
+    antecedent: "async",
+    consequent: "await",
+}];
 
 impl FcaAttributeSource for JsAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_cross_language_attrs(sym, file_path)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -620,28 +558,14 @@ impl LanguageAdapter for TsAdapter {
     }
 }
 
-const TS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[
-    ToolchainPair {
-        antecedent: "async",
-        consequent: "await",
-    },
-    ToolchainPair {
-        antecedent: "export",
-        consequent: "import",
-    },
-    ToolchainPair {
-        antecedent: "interface",
-        consequent: "implements",
-    },
-    ToolchainPair {
-        antecedent: "@deprecated",
-        consequent: "@deprecated",
-    },
-];
+const TS_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[ToolchainPair {
+    antecedent: "async",
+    consequent: "await",
+}];
 
 impl FcaAttributeSource for TsAdapter {
     fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {
-        extract_cross_language_attrs(sym, file_path)
+        extract_attrs_with_language_bools(sym, file_path)
     }
 
     fn effect_patterns(&self) -> &[EffectPattern] {
@@ -933,5 +857,66 @@ mod tests {
         assert!(names.contains(&"effect:fs"));
         assert!(names.contains(&"effect:net"));
         assert!(names.contains(&"effect:db"));
+    }
+
+    #[test]
+    fn js_extract_attributes_surfaces_language_bools() {
+        let js = JsAdapter;
+        let fca = js.as_fca_source().unwrap();
+        let sym = make_test_symbol_row(
+            "function",
+            Some("export"),
+            Some("async function fetchData()"),
+            Some(r#"{"async":true,"await":true}"#),
+        );
+        let attrs = fca.extract_attributes(&sym, "src/api.js").unwrap();
+        assert!(attrs.attributes.contains(&"async".to_string()));
+        assert!(attrs.attributes.contains(&"await".to_string()));
+        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
+    }
+
+    #[test]
+    fn ts_extract_attributes_surfaces_language_bools() {
+        let ts = TsAdapter;
+        let fca = ts.as_fca_source().unwrap();
+        let sym = make_test_symbol_row(
+            "method",
+            None,
+            Some("async getData(): Promise<Data>"),
+            Some(r#"{"async":true,"readonly":true}"#),
+        );
+        let attrs = fca.extract_attributes(&sym, "src/service.ts").unwrap();
+        assert!(attrs.attributes.contains(&"async".to_string()));
+        assert!(attrs.attributes.contains(&"readonly".to_string()));
+    }
+
+    #[test]
+    fn js_async_await_toolchain_pair_matches() {
+        let js = JsAdapter;
+        let fca = js.as_fca_source().unwrap();
+        let pairs = fca.toolchain_enforced_pairs();
+        let async_await = pairs
+            .iter()
+            .find(|p| p.antecedent == "async")
+            .expect("async→await pair should exist");
+        assert_eq!(async_await.consequent, "await");
+    }
+
+    #[test]
+    fn export_visibility_maps_to_vis_pub() {
+        let js = JsAdapter;
+        let fca = js.as_fca_source().unwrap();
+        let sym = make_test_symbol_row("function", Some("export"), Some("function init()"), None);
+        let attrs = fca.extract_attributes(&sym, "src/app.js").unwrap();
+        assert!(attrs.attributes.contains(&"vis:pub".to_string()));
+
+        let sym_default = make_test_symbol_row(
+            "function",
+            Some("export default"),
+            Some("function main()"),
+            None,
+        );
+        let attrs_default = fca.extract_attributes(&sym_default, "src/main.js").unwrap();
+        assert!(attrs_default.attributes.contains(&"vis:pub".to_string()));
     }
 }

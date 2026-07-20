@@ -58,7 +58,9 @@ pub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<
     attributes.push(format!("kind:{}", sym.kind));
 
     match sym.visibility.as_deref() {
-        Some("pub") => attributes.push("vis:pub".into()),
+        Some("pub") | Some("export") | Some("export default") => {
+            attributes.push("vis:pub".into());
+        }
         Some("pub(crate)") => attributes.push("vis:pub_crate".into()),
         _ => attributes.push("vis:private".into()),
     }

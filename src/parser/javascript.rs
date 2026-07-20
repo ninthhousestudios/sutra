@@ -114,6 +114,9 @@ pub(super) fn extract_function(
     }
 
     let body = node.child_by_field_name("body");
+    if body_has_node_kind(body, "await_expression") {
+        attrs.insert("await".into(), true.into());
+    }
     let (cyc, cog, nesting) = complexity_triple(body, src);
 
     let sig = build_fn_signature(node, src, &name, is_async, is_generator);
@@ -278,6 +281,9 @@ pub(super) fn extract_method(
     }
 
     let body = node.child_by_field_name("body");
+    if body_has_node_kind(body, "await_expression") {
+        attrs.insert("await".into(), true.into());
+    }
     let (cyc, cog, nesting) = complexity_triple(body, src);
 
     let sig = build_method_signature(
@@ -427,6 +433,9 @@ pub(super) fn extract_variable_declarators(
                 a.insert("async".into(), true.into());
             }
             let body = arrow.child_by_field_name("body");
+            if body_has_node_kind(body, "await_expression") {
+                a.insert("await".into(), true.into());
+            }
             let (c, co, n) = complexity_triple(body, src);
             let s = build_arrow_signature(arrow, src, &name, is_async);
             let sh = s
@@ -445,6 +454,9 @@ pub(super) fn extract_variable_declarators(
                 a.insert("generator".into(), true.into());
             }
             let body = fn_node.child_by_field_name("body");
+            if body_has_node_kind(body, "await_expression") {
+                a.insert("await".into(), true.into());
+            }
             let (c, co, n) = complexity_triple(body, src);
             let s = build_fn_signature(fn_node, src, &name, is_async, is_gen);
             let sh = s
@@ -614,6 +626,41 @@ pub(super) fn build_qualified_name(name_context: &[&str], name: &str) -> String 
 pub(super) fn has_keyword(node: Node, src: &[u8], keyword: &str) -> bool {
     node.children(&mut node.walk())
         .any(|c| !c.is_named() && c.utf8_text(src) == Ok(keyword))
+}
+
+pub(super) fn body_has_node_kind(body: Option<Node>, kind: &str) -> bool {
+    let Some(root) = body else { return false };
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == kind {
+            return true;
+        }
+        // Don't descend into nested function scopes
+        if node != root
+            && matches!(
+                node.kind(),
+                "function_declaration"
+                    | "generator_function_declaration"
+                    | "function"
+                    | "generator_function"
+                    | "arrow_function"
+                    | "method_definition"
+            )
+        {
+            continue;
+        }
+        cursor.reset(node);
+        if cursor.goto_first_child() {
+            loop {
+                stack.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub(super) fn complexity_triple(
@@ -1701,6 +1748,46 @@ mod tests {
         let attrs: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(sym.language_attrs.as_ref().unwrap()).unwrap();
         assert_eq!(attrs.get("async"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn async_function_with_await_attr() {
+        let result =
+            parse_js("async function fetchData(url) { const r = await fetch(url); return r; }");
+        let sym = &result.symbols[0];
+        let attrs: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(sym.language_attrs.as_ref().unwrap()).unwrap();
+        assert_eq!(attrs.get("async"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(attrs.get("await"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn async_function_without_await() {
+        let result = parse_js("async function noAwait() { return 42; }");
+        let sym = &result.symbols[0];
+        let attrs: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(sym.language_attrs.as_ref().unwrap()).unwrap();
+        assert_eq!(attrs.get("async"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(attrs.get("await"), None);
+    }
+
+    #[test]
+    fn await_not_leaked_from_nested_function() {
+        let result = parse_js(
+            "async function outer() { async function inner() { await fetch(); } return 1; }",
+        );
+        let outer = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "outer")
+            .unwrap();
+        let attrs: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(outer.language_attrs.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            attrs.get("await"),
+            None,
+            "await in inner should not leak to outer"
+        );
     }
 
     #[test]
