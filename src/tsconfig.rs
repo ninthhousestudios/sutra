@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Debug, Default)]
 pub struct TsConfig {
     pub base_url: Option<String>,
-    pub paths: HashMap<String, Vec<String>>,
+    pub paths: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Deserialize, Default)]
@@ -21,7 +21,7 @@ struct RawTsConfig {
 struct RawCompilerOptions {
     #[serde(rename = "baseUrl")]
     base_url: Option<String>,
-    paths: Option<HashMap<String, Vec<String>>>,
+    paths: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl TsConfig {
@@ -45,7 +45,14 @@ impl TsConfig {
         }
 
         let content = std::fs::read_to_string(path).ok()?;
-        let raw: RawTsConfig = serde_json::from_str(&content).ok()?;
+        let stripped = strip_jsonc(&content);
+        let raw: RawTsConfig = match serde_json::from_str(&stripped) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(?path, %e, "failed to parse tsconfig");
+                return None;
+            }
+        };
 
         let config_dir = path.parent()?;
 
@@ -74,8 +81,14 @@ impl TsConfig {
                 };
                 base.base_url = Some(normalized);
             }
-            if let Some(paths) = opts.paths {
-                base.paths = paths;
+            if let Some(paths_map) = opts.paths {
+                base.paths = paths_map
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        let targets: Vec<String> = serde_json::from_value(v).ok()?;
+                        Some((k, targets))
+                    })
+                    .collect();
             }
         }
 
@@ -88,7 +101,7 @@ impl TsConfig {
         path_to_id: &HashMap<&str, i64>,
         try_resolve: &dyn Fn(&str, &HashMap<&str, i64>) -> Option<i64>,
     ) -> Option<i64> {
-        for (pattern, targets) in &self.paths {
+        for (pattern, targets) in self.paths.iter() {
             if let Some(captured) = match_pattern(pattern, specifier) {
                 for target in targets {
                     let substituted = target.replace('*', captured);
@@ -116,6 +129,74 @@ impl TsConfig {
             _ => relative.to_string(),
         }
     }
+}
+
+fn strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                out.push('"');
+                while let Some(sc) = chars.next() {
+                    out.push(sc);
+                    if sc == '\\' {
+                        if let Some(esc) = chars.next() {
+                            out.push(esc);
+                        }
+                    } else if sc == '"' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                chars.next();
+                for lc in chars.by_ref() {
+                    if lc == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                loop {
+                    match chars.next() {
+                        Some('*') if chars.peek() == Some(&'/') => {
+                            chars.next();
+                            break;
+                        }
+                        Some('\n') => out.push('\n'),
+                        Some(_) => {}
+                        None => break,
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    // Strip trailing commas before } and ]
+    let mut result = String::with_capacity(out.len());
+    let bytes = out.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b',' {
+            let mut j = i + 1;
+            while j < len
+                && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n' || bytes[j] == b'\r')
+            {
+                j += 1;
+            }
+            if j < len && (bytes[j] == b'}' || bytes[j] == b']') {
+                i += 1;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
 }
 
 fn match_pattern<'a>(pattern: &str, specifier: &'a str) -> Option<&'a str> {
@@ -170,7 +251,7 @@ mod tests {
         let cfg = TsConfig::load(dir.path()).unwrap();
         assert_eq!(cfg.base_url.unwrap(), "");
         assert_eq!(cfg.paths.len(), 2);
-        assert_eq!(cfg.paths["@/*"], vec!["src/*"]);
+        assert!(cfg.paths.iter().any(|(k, v)| k == "@/*" && v == &["src/*"]));
     }
 
     #[test]
@@ -201,7 +282,7 @@ mod tests {
         assert_eq!(cfg.base_url.unwrap(), "");
         // Child paths override parent paths entirely (TS behavior)
         assert_eq!(cfg.paths.len(), 1);
-        assert!(cfg.paths.contains_key("@app/*"));
+        assert!(cfg.paths.iter().any(|(k, _)| k == "@app/*"));
     }
 
     #[test]
@@ -226,11 +307,7 @@ mod tests {
     fn test_resolve_specifier() {
         let cfg = TsConfig {
             base_url: Some("src".to_string()),
-            paths: {
-                let mut m = HashMap::new();
-                m.insert("@/*".to_string(), vec!["*".to_string()]);
-                m
-            },
+            paths: vec![("@/*".to_string(), vec!["*".to_string()])],
         };
 
         let mut path_to_id = HashMap::new();
@@ -248,7 +325,7 @@ mod tests {
     fn test_base_url_without_paths() {
         let cfg = TsConfig {
             base_url: Some("src".to_string()),
-            paths: HashMap::new(),
+            paths: Vec::new(),
         };
 
         let mut path_to_id = HashMap::new();
@@ -260,5 +337,44 @@ mod tests {
 
         let result = cfg.resolve_specifier("utils/helper.ts", &path_to_id, &try_resolve);
         assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn test_strip_jsonc() {
+        let input = r#"{
+            // This is a comment
+            "key": "value", // trailing comment
+            "arr": [1, 2, 3,], // trailing comma
+            /* block
+               comment */
+            "obj": { "a": 1, },
+        }"#;
+        let stripped = strip_jsonc(input);
+        let parsed: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(parsed["key"], "value");
+        assert_eq!(parsed["arr"][2], 3);
+        assert_eq!(parsed["obj"]["a"], 1);
+    }
+
+    #[test]
+    fn test_load_jsonc_tsconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{
+                // TypeScript configuration
+                "compilerOptions": {
+                    "baseUrl": ".",
+                    "paths": {
+                        "@/*": ["src/*"], // path alias
+                    },
+                },
+            }"#,
+        )
+        .unwrap();
+
+        let cfg = TsConfig::load(dir.path()).unwrap();
+        assert_eq!(cfg.base_url.unwrap(), "");
+        assert_eq!(cfg.paths.len(), 1);
     }
 }
