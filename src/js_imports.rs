@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::tsconfig::TsConfig;
 
 const EXTENSIONS: &[&str] = &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 const INDEX_FILES: &[&str] = &[
@@ -16,7 +17,7 @@ const INDEX_FILES: &[&str] = &[
     "index.cjs",
 ];
 
-pub fn resolve_js_imports(db: &Db, _workspace_root: &Path) -> Result<usize> {
+pub fn resolve_js_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
     let unresolved = db.unresolved_js_ts_imports()?;
     if unresolved.is_empty() {
         return Ok(0);
@@ -25,14 +26,18 @@ pub fn resolve_js_imports(db: &Db, _workspace_root: &Path) -> Result<usize> {
     let all_files = db.all_files()?;
     let path_to_id: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
     let id_to_path: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
+    let tsconfig = TsConfig::load(workspace_root);
 
     let mut updates = Vec::new();
     for (import_id, file_id, raw_path, _kind) in &unresolved {
-        if !is_relative(raw_path) {
-            continue;
-        }
+        let resolved = if is_relative(raw_path) {
+            resolve_relative(raw_path, *file_id, &id_to_path, &path_to_id)
+        } else if let Some(ref cfg) = tsconfig {
+            cfg.resolve_specifier(raw_path, &path_to_id, &try_resolve_candidate)
+        } else {
+            None
+        };
 
-        let resolved = resolve_relative(raw_path, *file_id, &id_to_path, &path_to_id);
         if let Some(target_id) = resolved {
             if target_id != *file_id {
                 updates.push((*import_id, target_id));
@@ -53,25 +58,7 @@ pub fn resolve_js_imports(db: &Db, _workspace_root: &Path) -> Result<usize> {
     Ok(resolved_count)
 }
 
-fn is_relative(path: &str) -> bool {
-    path.starts_with("./") || path.starts_with("../")
-}
-
-fn resolve_relative(
-    raw_path: &str,
-    file_id: i64,
-    id_to_path: &HashMap<i64, &str>,
-    path_to_id: &HashMap<&str, i64>,
-) -> Option<i64> {
-    let file_path = *id_to_path.get(&file_id)?;
-    let dir = match file_path.rsplit_once('/') {
-        Some((d, _)) => d,
-        None => "",
-    };
-
-    let resolved = resolve_path_segments(raw_path, dir)?;
-    let candidate = resolved.as_str();
-
+fn try_resolve_candidate(candidate: &str, path_to_id: &HashMap<&str, i64>) -> Option<i64> {
     if has_js_extension(candidate) {
         return path_to_id.get(candidate).copied();
     }
@@ -95,6 +82,26 @@ fn resolve_relative(
     }
 
     None
+}
+
+fn is_relative(path: &str) -> bool {
+    path.starts_with("./") || path.starts_with("../")
+}
+
+fn resolve_relative(
+    raw_path: &str,
+    file_id: i64,
+    id_to_path: &HashMap<i64, &str>,
+    path_to_id: &HashMap<&str, i64>,
+) -> Option<i64> {
+    let file_path = *id_to_path.get(&file_id)?;
+    let dir = match file_path.rsplit_once('/') {
+        Some((d, _)) => d,
+        None => "",
+    };
+
+    let resolved = resolve_path_segments(raw_path, dir)?;
+    try_resolve_candidate(&resolved, path_to_id)
 }
 
 fn resolve_path_segments(raw_path: &str, dir: &str) -> Option<String> {

@@ -598,3 +598,120 @@ fn ts_import_index_resolution() {
         "./lib should resolve to lib/index.ts"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Import resolution: tsconfig paths aliases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tsconfig_path_alias_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/components")).unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["src/*"],
+                    "@components/*": ["src/components/*"]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/components/Button.ts"),
+        "export class Button {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/app.ts"),
+        "import { Button } from '@components/Button';\nimport { Button as B2 } from '@/components/Button';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_ts_entry("tsconfig-paths", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let app_file = db.file_by_path("src/app.ts").unwrap().unwrap();
+    let button_file = db
+        .file_by_path("src/components/Button.ts")
+        .unwrap()
+        .unwrap();
+    let imports = db.imports_for_file(app_file.id).unwrap();
+
+    let imp1 = imports
+        .iter()
+        .find(|i| i.imported_path == "@components/Button")
+        .expect("should find @components/Button import");
+    assert_eq!(
+        imp1.resolved_file_id,
+        Some(button_file.id),
+        "@components/Button should resolve via tsconfig paths"
+    );
+
+    let imp2 = imports
+        .iter()
+        .find(|i| i.imported_path == "@/components/Button")
+        .expect("should find @/components/Button import");
+    assert_eq!(
+        imp2.resolved_file_id,
+        Some(button_file.id),
+        "@/components/Button should resolve via tsconfig paths"
+    );
+}
+
+#[test]
+fn tsconfig_base_url_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/utils")).unwrap();
+    std::fs::write(
+        dir.path().join("tsconfig.json"),
+        r#"{
+            "compilerOptions": {
+                "baseUrl": "src"
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/utils/helper.ts"),
+        "export function help() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/main.ts"),
+        "import { help } from 'utils/helper';\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_ts_entry("tsconfig-baseurl", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let registry = default_registry();
+
+    pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+
+    let main_file = db.file_by_path("src/main.ts").unwrap().unwrap();
+    let helper_file = db.file_by_path("src/utils/helper.ts").unwrap().unwrap();
+    let imports = db.imports_for_file(main_file.id).unwrap();
+
+    let imp = imports
+        .iter()
+        .find(|i| i.imported_path == "utils/helper")
+        .expect("should find utils/helper import");
+    assert_eq!(
+        imp.resolved_file_id,
+        Some(helper_file.id),
+        "bare specifier should resolve via baseUrl"
+    );
+}
