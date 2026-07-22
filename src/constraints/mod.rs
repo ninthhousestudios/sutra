@@ -190,7 +190,7 @@ pub fn constraint_coverage(
             let registry = crate::parser::adapter::default_registry();
             let exts: Vec<&str> = registry
                 .adapter_for_language(language)
-                .map(|a| a.extensions().to_vec())
+                .map(|a| a.pattern_extensions().to_vec())
                 .unwrap_or_default();
             let lang_paths: Vec<&&str> = paths
                 .iter()

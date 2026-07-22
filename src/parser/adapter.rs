@@ -124,7 +124,15 @@ impl ModuleBoundaryStrength {
 
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
+    /// Extensions this adapter indexes: parsed into symbols, imports and rollups.
     fn extensions(&self) -> &[&str];
+    /// Extensions eligible for `forbidden_pattern` matching. Superset of
+    /// `extensions()`; the extras are parsed for constraint evaluation only and
+    /// never enter the symbol graph (e.g. Python `.pyi` stubs, which would
+    /// otherwise double-count every symbol their `.py` sibling declares).
+    fn pattern_extensions(&self) -> &[&str] {
+        self.extensions()
+    }
     fn grammar(&self) -> Language;
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult>;
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
@@ -184,6 +192,22 @@ impl LanguageRegistry {
                     .any(|l| l.eq_ignore_ascii_case(a.language_id()))
             })
             .flat_map(|a| a.extensions().iter().copied())
+            .collect()
+    }
+
+    /// Extensions that are pattern-eligible but never indexed. These files are
+    /// invisible to the symbol graph, so constraint evaluation has to find them
+    /// on disk rather than through the files table.
+    pub fn pattern_only_extensions(&self) -> Vec<&str> {
+        self.adapters
+            .iter()
+            .flat_map(|a| {
+                let indexed = a.extensions();
+                a.pattern_extensions()
+                    .iter()
+                    .copied()
+                    .filter(move |ext| !indexed.contains(ext))
+            })
             .collect()
     }
 
@@ -410,6 +434,9 @@ impl LanguageAdapter for PythonAdapter {
     }
     fn extensions(&self) -> &[&str] {
         &["py"]
+    }
+    fn pattern_extensions(&self) -> &[&str] {
+        &["py", "pyi"]
     }
     fn grammar(&self) -> Language {
         tree_sitter_python::LANGUAGE.into()

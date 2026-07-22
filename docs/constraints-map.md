@@ -34,6 +34,11 @@ src/constraints/
                       source files, runs queries and produces findings with
                       location + enclosing symbol resolution. No DD involvement
                       (per-file local pass, precedent: external.rs).
+                      File eligibility uses LanguageAdapter::pattern_extensions()
+                      (superset of extensions()), so unindexed stub files match.
+                      scan_pattern_only_files walks the workspace for extensions
+                      that are pattern-eligible but never indexed (.pyi today) —
+                      they have no file row, so check.rs finds them on disk.
   check.rs          — Unified constraint evaluation. evaluate() dispatches to
                       evaluate_dd (DD-backed: review, orient, sutra_constraints
                       violations) or evaluate_raw (raw SQLite: guard hook).

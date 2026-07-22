@@ -891,7 +891,10 @@ fn record_unchanged_snapshot(
 
 /// Recursively walk `root` and collect files with matching extensions.
 /// Skips hidden dirs and known build output directories.
-fn walk_source_files(root: &Path, allowed_extensions: &[&str]) -> Vec<std::path::PathBuf> {
+pub(crate) fn walk_source_files(
+    root: &Path,
+    allowed_extensions: &[&str],
+) -> Vec<std::path::PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 

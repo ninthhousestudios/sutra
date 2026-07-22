@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 
@@ -5,6 +7,24 @@ use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::parser::adapter::LanguageRegistry;
 use crate::parser::{ExtractedSymbol, flatten_symbols};
 use crate::rules::{Constraint, ConstraintKind, scope_matches_path};
+
+/// Walk the workspace for files that are pattern-eligible but never indexed
+/// (e.g. Python `.pyi` stubs) and return their workspace-relative paths, sorted.
+///
+/// These files have no row in the files table by design — indexing them would
+/// double-count symbols their `.py` sibling already declares — so constraint
+/// evaluation discovers them on disk instead.
+pub fn scan_pattern_only_files(root: &Path, registry: &LanguageRegistry) -> Vec<String> {
+    let exts = registry.pattern_only_extensions();
+    if exts.is_empty() {
+        return Vec::new();
+    }
+    crate::pipeline::walk_source_files(root, &exts)
+        .iter()
+        .filter_map(|p| p.strip_prefix(root).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
 
 pub fn check_forbidden_patterns(
     constraints: &[Constraint],
@@ -41,7 +61,7 @@ pub fn check_forbidden_patterns(
             continue;
         }
 
-        let matching_exts: Vec<&str> = adapter.extensions().to_vec();
+        let matching_exts: Vec<&str> = adapter.pattern_extensions().to_vec();
 
         for &(path, source) in sources {
             if let Some(scope) = &constraint.scope
@@ -298,6 +318,75 @@ void risky() {
         assert_eq!(findings[0].from_path, "lib/src/app.dart");
         assert_eq!(findings[0].line, Some(4));
         assert!(findings[0].snippet.as_deref().unwrap().contains("throw"));
+    }
+
+    /// Real stub text from pyswisseph-rs `python/swisseph_rs/azalt.pyi` (c4f527e),
+    /// with `RETURN` standing in for the return annotation. `-> Never` is the
+    /// form that broke mypy's class-callable inference (pyswisseph-rs/30);
+    /// `-> Self` is what shipped.
+    fn azalt_stub(ret: &str) -> String {
+        format!(
+            "from typing import Never, Self, final\n\
+             \n\
+             @final\n\
+             class RefracDir:\n    \
+             TRUE_TO_APP: RefracDir\n    \
+             APP_TO_TRUE: RefracDir\n    \
+             def __new__(cls, _: Never, /) -> {ret}: ...\n\
+             \n\
+             def refrac(inalt: float, dir: RefracDir) -> float: ...\n"
+        )
+    }
+
+    fn new_returns_never_constraints() -> Vec<Constraint> {
+        pattern_constraints(
+            r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '''
+(function_definition
+  name: (identifier) @_name (#eq? @_name "__new__")
+  return_type: (type (identifier) @_ret) (#eq? @_ret "Never")) @match
+'''
+name = "no-new-returning-never"
+"#,
+        )
+    }
+
+    #[test]
+    fn python_stub_new_returning_never_detected() {
+        let cs = new_returns_never_constraints();
+        let registry = default_registry();
+        let source = azalt_stub("Never");
+        let findings =
+            check_forbidden_patterns(&cs, &[("python/swisseph_rs/azalt.pyi", &source)], &registry);
+        assert_eq!(findings.len(), 1, "findings: {findings:#?}");
+        assert_eq!(findings[0].from_path, "python/swisseph_rs/azalt.pyi");
+        assert!(findings[0].snippet.as_deref().unwrap().contains("__new__"));
+    }
+
+    #[test]
+    fn python_stub_new_returning_self_is_clean() {
+        let cs = new_returns_never_constraints();
+        let registry = default_registry();
+        let source = azalt_stub("Self");
+        let findings =
+            check_forbidden_patterns(&cs, &[("python/swisseph_rs/azalt.pyi", &source)], &registry);
+        assert!(findings.is_empty(), "findings: {findings:#?}");
+    }
+
+    /// `.pyi` is pattern-eligible but must stay out of the index — a stub
+    /// declares the same symbols as its `.py` sibling, so indexing it would
+    /// double-count every symbol in the graph.
+    #[test]
+    fn pyi_is_pattern_eligible_but_not_indexed() {
+        let registry = default_registry();
+        let python = registry.adapter_for_language("python").unwrap();
+        assert!(!python.extensions().contains(&"pyi"));
+        assert!(python.pattern_extensions().contains(&"pyi"));
+        assert!(registry.adapter_for_extension("pyi").is_none());
+        assert_eq!(registry.pattern_only_extensions(), vec!["pyi"]);
     }
 
     #[test]

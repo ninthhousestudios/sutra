@@ -923,6 +923,84 @@ severity = "advisory"
     assert!(pattern_findings[0].snippet.is_some());
 }
 
+/// `.pyi` stubs are never indexed (they would double-count the symbols their
+/// `.py` sibling declares), so workspace-scope evaluation has to find them on
+/// disk. Rollups stay clean because no file row is created for them.
+#[test]
+fn evaluate_dd_finds_pattern_violations_in_unindexed_pyi_stubs() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '''
+(function_definition
+  name: (identifier) @_name (#eq? @_name "__new__")
+  return_type: (type (identifier) @_ret) (#eq? @_ret "Never")) @match
+'''
+name = "no-new-returning-never"
+severity = "advisory"
+"#,
+    )
+    .unwrap();
+
+    let pkg_dir = dir.path().join("python/swisseph_rs");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(
+        pkg_dir.join("azalt.pyi"),
+        "from typing import Never, final\n\n@final\nclass RefracDir:\n    \
+         TRUE_TO_APP: RefracDir\n    def __new__(cls, _: Never, /) -> Never: ...\n",
+    )
+    .unwrap();
+    std::fs::write(pkg_dir.join("azalt.py"), "class RefracDir:\n    pass\n").unwrap();
+
+    // Only the .py is indexed — the stub has no file row.
+    db.upsert_file("python/swisseph_rs/azalt.py", "python", "h1", 1, true)
+        .unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let pattern_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(pattern_findings.len(), 1, "findings: {:#?}", outcome.active);
+    assert_eq!(
+        pattern_findings[0].from_path,
+        "python/swisseph_rs/azalt.pyi"
+    );
+
+    // The rule matches a real file, so it must not be reported as inert.
+    let dead: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "dead_constraint")
+        .collect();
+    assert!(dead.is_empty(), "dead findings: {dead:#?}");
+}
+
 #[test]
 fn evaluate_dd_pattern_changed_files_scope_only_scans_changed() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};

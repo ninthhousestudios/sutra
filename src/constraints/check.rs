@@ -90,9 +90,20 @@ fn evaluate_dd(
     let mut findings = Vec::new();
     let mut resolved = Vec::new();
 
+    // Pattern-eligible but unindexed files (e.g. Python .pyi stubs) live only on
+    // disk, so they have to be walked for. Skipped for the per-file/edge scopes,
+    // which are driven by a caller-supplied path.
+    let stub_paths: Vec<String> =
+        if matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
+            Vec::new()
+        } else {
+            constraints::patterns::scan_pattern_only_files(workspace_root, registry)
+        };
+
     // Dead constraint detection (Workspace and ChangedFiles scopes only)
     if !matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
-        let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
+        let mut paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
+        paths.extend(stub_paths.iter().map(|p| p.as_str()));
         let component_names: Vec<&str> = comp_with_paths
             .iter()
             .map(|(_, name, _)| name.as_str())
@@ -161,7 +172,11 @@ fn evaluate_dd(
             EvalScope::Edges { .. } => HashSet::new(),
             EvalScope::Workspace => all_files.iter().map(|f| f.id).collect(),
         };
-        if !scan_ids.is_empty() {
+        // Stub files have no id, so they can't be scoped by changed_ids —
+        // scan them in workspace audits only. Edit-time enforcement for stubs
+        // comes from the guard's path-driven check_proposed_patterns.
+        let scan_stubs = matches!(scope, EvalScope::Workspace);
+        if !scan_ids.is_empty() || (scan_stubs && !stub_paths.is_empty()) {
             let mut sources: Vec<(String, String)> = Vec::new();
             for f in &all_files {
                 if !scan_ids.contains(&f.id) {
@@ -169,6 +184,13 @@ fn evaluate_dd(
                 }
                 if let Ok(content) = std::fs::read_to_string(workspace_root.join(&*f.path)) {
                     sources.push((f.path.to_string(), content));
+                }
+            }
+            if scan_stubs {
+                for path in &stub_paths {
+                    if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
+                        sources.push((path.clone(), content));
+                    }
                 }
             }
             let source_refs: Vec<(&str, &str)> = sources
