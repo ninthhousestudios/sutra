@@ -230,7 +230,17 @@ pub fn lessons_for_proposed(
         return None;
     }
 
-    let ldb = crate::lessons::LessonsDb::open(&sutra_db_dir()).ok()?;
+    // `open_existing`, never `open`: this runs inside a blocking PreToolUse
+    // hook on every write. It must not create the store, migrate it, archive
+    // decayed rows, or wait 5s on a lock — see the doc comment there. A `None`
+    // here (no store yet) costs one `exists()` and nothing else, which is what
+    // keeps zero-match writes off the sqlite path entirely.
+    let ldb = crate::lessons::LessonsDb::open_existing(
+        &sutra_db_dir(),
+        crate::lessons::GUARD_BUSY_TIMEOUT_MS,
+        crate::lessons::GUARD_CANDIDATE_SCAN_LIMIT,
+    )
+    .ok()??;
 
     let imports: Vec<&str> = parsed
         .map(|p| p.imports.iter().map(|i| i.raw_path.as_str()).collect())

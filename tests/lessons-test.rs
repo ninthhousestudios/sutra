@@ -2065,3 +2065,140 @@ fn lesson_surfaces_when_any_of_its_language_tags_matches() {
         .lessons;
     assert_eq!(results.len(), 1, "language tags are OR-ed, not AND-ed");
 }
+
+// ---------------------------------------------------------------------------
+// Guard path: open_existing (sutra/282)
+//
+// These cover the guard's latency contract, not its output. The guard runs as
+// a blocking PreToolUse hook on every Edit/Write, so "does no work" is the
+// property under test — an advisory feature must never be able to stall or
+// mutate anything on the edit path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn open_existing_returns_none_and_creates_nothing_when_absent() {
+    let dir = tempdir().unwrap();
+    let nested = dir.path().join("does-not-exist-yet");
+
+    let opened = LessonsDb::open_existing(
+        &nested,
+        sutra::lessons::GUARD_BUSY_TIMEOUT_MS,
+        sutra::lessons::GUARD_CANDIDATE_SCAN_LIMIT,
+    )
+    .unwrap();
+
+    assert!(opened.is_none(), "absent store must not open");
+    // The zero-match write path hinges on this: no directory, no empty schema,
+    // no side effect from merely editing a file in a project that has no
+    // lessons yet.
+    assert!(!nested.exists(), "guard must not create the lessons dir");
+}
+
+#[test]
+fn open_existing_does_not_update_last_surfaced() {
+    let dir = tempdir().unwrap();
+    let id = {
+        let db = LessonsDb::open(dir.path()).unwrap();
+        db.store(&StoreLessonParams {
+            text: "Guard-surfaced lesson",
+            anchors: &[(AnchorKind::Symbol, "guard_target")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap()
+    };
+
+    let guard_db = LessonsDb::open_existing(
+        dir.path(),
+        sutra::lessons::GUARD_BUSY_TIMEOUT_MS,
+        sutra::lessons::GUARD_CANDIDATE_SCAN_LIMIT,
+    )
+    .unwrap()
+    .expect("store exists");
+
+    let lessons = guard_db
+        .query_for_context(&symbol_ctx("guard_target", None))
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 1, "read-only handle still surfaces");
+    assert_eq!(lessons[0].id, id);
+
+    let conn = guard_db.conn_for_test();
+    let after: Option<String> = conn
+        .query_row(
+            "SELECT last_surfaced FROM lessons WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        after.is_none(),
+        "guard handle must not take the write lock to record surfacing"
+    );
+}
+
+#[test]
+fn open_existing_rejects_writes_at_the_sqlite_level() {
+    let dir = tempdir().unwrap();
+    {
+        let db = LessonsDb::open(dir.path()).unwrap();
+        db.store(&StoreLessonParams {
+            text: "anything",
+            anchors: &[(AnchorKind::Symbol, "x")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    }
+
+    let guard_db = LessonsDb::open_existing(dir.path(), 250, 256)
+        .unwrap()
+        .unwrap();
+    let conn = guard_db.conn_for_test();
+    // query_only backstops the Rust-side read_only flag: a write added to a
+    // shared query path later must fail here rather than silently succeed.
+    let err = conn.execute("UPDATE lessons SET confidence = 9", []);
+    assert!(err.is_err(), "query_only must reject writes");
+}
+
+#[test]
+fn guard_candidate_scan_is_bounded() {
+    let dir = tempdir().unwrap();
+    {
+        let db = LessonsDb::open(dir.path()).unwrap();
+        // More directory-anchored lessons than the guard's scan cap, all of
+        // which match the file being written.
+        for i in 0..(sutra::lessons::GUARD_CANDIDATE_SCAN_LIMIT + 20) {
+            db.store(&StoreLessonParams {
+                text: &format!("bulk lesson {i}"),
+                anchors: &[(AnchorKind::Directory, "src")],
+                categories: &[],
+                source_task_ids: &[],
+                project_origin: None,
+            })
+            .unwrap();
+        }
+    }
+
+    let guard_db = LessonsDb::open_existing(dir.path(), 250, 8)
+        .unwrap()
+        .unwrap();
+    let ctx = MatchContext {
+        symbol_name: "",
+        file_path: Some("src/guard.rs"),
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    };
+    let found = guard_db.query_for_context(&ctx).unwrap();
+    // Scan capped at 8 rows, so at most 8 lessons can be considered — far
+    // below the ~276 that match. Without the LIMIT this loads every anchor.
+    assert!(
+        found.lessons.len() + found.omitted <= 8,
+        "expected bounded scan, got {} surfaced + {} omitted",
+        found.lessons.len(),
+        found.omitted
+    );
+}

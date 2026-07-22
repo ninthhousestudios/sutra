@@ -13,7 +13,27 @@ use crate::error::{Result, SutraError};
 
 pub struct LessonsDb {
     conn: Mutex<Connection>,
+    /// Read-only handles suppress surfacing bookkeeping (`last_surfaced`).
+    /// Set by [`LessonsDb::open_existing`]; see its docs for why.
+    read_only: bool,
+    /// Cap on rows scanned by the Phase 2 anchor sweep. Unbounded by default;
+    /// tightened on the guard path, which runs inside a blocking hook.
+    candidate_limit: i64,
 }
+
+/// No cap — the default for owning callers (`sutra_read`, `sutra_impact`,
+/// `sutra_orient`), which preserves their existing behaviour exactly.
+const CANDIDATE_SCAN_UNBOUNDED: i64 = i64::MAX;
+
+/// Phase 2 scan cap for the guard. Anchor rows are ordered verified-then-
+/// confidence first, so truncation drops the least useful candidates.
+pub const GUARD_CANDIDATE_SCAN_LIMIT: i64 = 256;
+
+/// `busy_timeout` for the guard's handle. The installed PreToolUse hook budget
+/// is 3000ms; a purely advisory lookup must not be able to consume it, so this
+/// is an order of magnitude below that rather than the 5000ms the owning
+/// handle uses (which could exceed the hook budget on its own).
+pub const GUARD_BUSY_TIMEOUT_MS: u32 = 250;
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -50,10 +70,55 @@ impl LessonsDb {
         )?;
         let db = Self {
             conn: Mutex::new(conn),
+            read_only: false,
+            candidate_limit: CANDIDATE_SCAN_UNBOUNDED,
         };
         db.run_migrations()?;
         let _ = db.archive_decayed(90 * 86400);
         Ok(db)
+    }
+
+    /// Open an existing store for reading only, or `Ok(None)` if there is none.
+    ///
+    /// For callers on a latency-critical, non-owning path — currently the
+    /// PreToolUse guard hook, which fires on every Edit/Write. It differs from
+    /// [`LessonsDb::open`] in four ways, each load-bearing:
+    ///
+    /// - **No creation.** A missing `lessons.db` yields `None` instead of
+    ///   materialising a directory and an empty schema. A hook that fires on
+    ///   every write must not create state as a side effect.
+    /// - **No migrations, no decay-archiving.** Both are writes; neither is
+    ///   this caller's job. A stale schema simply makes queries fail, and the
+    ///   guard treats a failed lookup as "no lessons".
+    /// - **`query_only`.** Enforces at the sqlite level what `read_only` asks
+    ///   for at the Rust level, so a future write added to a shared query path
+    ///   fails loudly here rather than silently taking the write lock inside a
+    ///   blocking hook.
+    /// - **Short `busy_timeout` and a bounded candidate scan.** See
+    ///   [`GUARD_BUSY_TIMEOUT_MS`] and [`GUARD_CANDIDATE_SCAN_LIMIT`].
+    ///
+    /// `journal_mode` is deliberately not set: it is a write on a fresh db and
+    /// pointless on an existing one, which already carries its own mode.
+    pub fn open_existing(
+        db_dir: &Path,
+        busy_timeout_ms: u32,
+        candidate_limit: i64,
+    ) -> Result<Option<Self>> {
+        let db_path = db_dir.join("lessons.db");
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(&format!(
+            "PRAGMA busy_timeout = {busy_timeout_ms};\
+             PRAGMA foreign_keys = ON;\
+             PRAGMA query_only = ON;"
+        ))?;
+        Ok(Some(Self {
+            conn: Mutex::new(conn),
+            read_only: true,
+            candidate_limit,
+        }))
     }
 
     fn run_migrations(&self) -> Result<()> {
@@ -350,9 +415,11 @@ impl LessonsDb {
                  JOIN anchors a ON a.lesson_id = l.id
                  WHERE a.kind IN ('file', 'import_pattern', 'directory')
                    AND l.archived = 0
-                   AND (l.project_origin IS NULL OR l.project_origin = ?1 OR ?1 IS NULL)",
+                   AND (l.project_origin IS NULL OR l.project_origin = ?1 OR ?1 IS NULL)
+                 ORDER BY l.verified DESC, l.confidence DESC
+                 LIMIT ?2",
             )?;
-            let mut rows = stmt.query(params![ctx.project])?;
+            let mut rows = stmt.query(params![ctx.project, self.candidate_limit])?;
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
                 let anchor_kind: String = row.get(6)?;
@@ -462,7 +529,12 @@ impl LessonsDb {
         let omitted = total.saturating_sub(CONTEXT_SURFACING_CAP);
         lessons.truncate(CONTEXT_SURFACING_CAP);
 
-        if !lessons.is_empty() {
+        // Surfacing bookkeeping is a write, and the guard's handle is inside a
+        // blocking PreToolUse hook — it must not contend for the write lock.
+        // The cost is that guard-only surfacing does not refresh decay timers;
+        // that is the right trade, since an advisory nudge is not evidence the
+        // lesson was read.
+        if !lessons.is_empty() && !self.read_only {
             let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             conn.execute(
