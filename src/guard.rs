@@ -412,19 +412,31 @@ pub fn build_proposed_content(
     }
 }
 
-fn language_from_path(path: &str) -> Option<&'static str> {
-    if path.ends_with(".rs") {
-        Some("rust")
-    } else if path.ends_with(".dart") {
-        Some("dart")
-    } else {
-        None
-    }
+/// Language for a path, derived from the registered adapters' extension map.
+///
+/// Deliberately not a literal. This previously hardcoded rust/dart, which made
+/// `parse_proposed` return `None` for every other extension — so the guard
+/// extracted no imports, and `import_pattern` lesson anchors could never match
+/// for a new Python, TypeScript, JavaScript, or C file. sutra/280 replaced the
+/// identical hardcoded pair in the lessons language filter while this one sat
+/// twelve lines from the code it was fixing; deriving both from the adapters
+/// keeps them from drifting apart again.
+///
+/// Widening this also puts the guard's other `parse_proposed` consumers —
+/// proposed-content constraint analysis and `is_signature_preserving` — onto
+/// these languages. That is the contract Rust and Dart files already had, and
+/// every widened extension belongs to a fully indexed adapter, so it is a
+/// consistency fix rather than new behaviour.
+fn language_from_path(path: &str) -> Option<String> {
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    crate::parser::adapter::default_registry()
+        .adapter_for_extension(ext)
+        .map(|a| a.language_id().to_string())
 }
 
 pub fn parse_proposed(rel_path: &str, proposed_content: &str) -> Option<ParseResult> {
     let language = language_from_path(rel_path)?;
-    let result = crate::parser::parse_file(proposed_content, language, rel_path).ok()?;
+    let result = crate::parser::parse_file(proposed_content, &language, rel_path).ok()?;
     if result.parsed_ok { Some(result) } else { None }
 }
 
@@ -503,7 +515,7 @@ pub fn extract_proposed_imports(
     for import in &result.imports {
         if let Some(name) = crate::constraints::external::external_crate_of_import(
             &import.raw_path,
-            language,
+            &language,
             &crate_names,
         ) {
             externals.push((rel_path.to_string(), name));
@@ -1048,6 +1060,54 @@ mod tests {
     use super::*;
     use crate::constraints::FindingDelta;
     use crate::rules::Severity;
+
+    #[test]
+    fn language_from_path_covers_every_registered_adapter() {
+        // Pinned against the registry rather than a literal list: if an adapter
+        // is added and this fails, the fix is to extend the expectation, not to
+        // re-hardcode the mapping.
+        for (path, want) in [
+            ("src/lib.rs", "rust"),
+            ("lib/main.dart", "dart"),
+            ("src/parse.c", "c"),
+            ("src/parse.h", "c"),
+            ("app/models.py", "python"),
+            ("web/index.js", "javascript"),
+            ("web/App.jsx", "javascript"),
+            ("web/index.ts", "typescript"),
+            ("web/App.tsx", "typescript"),
+        ] {
+            assert_eq!(
+                language_from_path(path).as_deref(),
+                Some(want),
+                "{path} should map to {want}"
+            );
+        }
+        assert_eq!(language_from_path("README.md"), None);
+        assert_eq!(language_from_path("Makefile"), None);
+        // .pyi is pattern-eligible but not indexed (sutra/275) — the Python
+        // adapter does not claim it, and the guard must not either.
+        assert_eq!(language_from_path("stubs/foo.pyi"), None);
+    }
+
+    #[test]
+    fn parse_proposed_extracts_imports_beyond_rust_and_dart() {
+        let py = parse_proposed("app/models.py", "import os\nfrom django.db import models\n")
+            .expect("python content should parse");
+        let py_imports: Vec<&str> = py.imports.iter().map(|i| i.raw_path.as_str()).collect();
+        assert!(
+            py_imports.iter().any(|i| i.contains("django")),
+            "expected a django import, got {py_imports:?}"
+        );
+
+        let ts = parse_proposed("web/app.ts", "import { z } from 'zod';\n")
+            .expect("typescript content should parse");
+        let ts_imports: Vec<&str> = ts.imports.iter().map(|i| i.raw_path.as_str()).collect();
+        assert!(
+            ts_imports.iter().any(|i| i.contains("zod")),
+            "expected a zod import, got {ts_imports:?}"
+        );
+    }
 
     fn surfaced(id: &str, text: &str) -> crate::lessons::SurfacedLesson {
         crate::lessons::SurfacedLesson {

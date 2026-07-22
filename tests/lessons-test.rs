@@ -2202,3 +2202,87 @@ fn guard_candidate_scan_is_bounded() {
         found.omitted
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard path: import_pattern anchors reach non-Rust/Dart greenfield files
+// (sutra/283)
+//
+// This is the chain sutra/276 promised and a hardcoded rust/dart language map
+// silently broke: proposed content -> parse_proposed -> imports ->
+// import_pattern anchor match. Exercised for Python and TypeScript, which
+// previously produced no imports at all and so could never match.
+// ---------------------------------------------------------------------------
+
+fn import_ctx<'a>(file_path: &'a str, imports: &'a [&'a str]) -> MatchContext<'a> {
+    MatchContext {
+        symbol_name: "",
+        file_path: Some(file_path),
+        imports,
+        project: None,
+        workspace_languages: &[],
+    }
+}
+
+#[test]
+fn import_pattern_surfaces_for_greenfield_python() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Django models need explicit db_table on shared schemas",
+            anchors: &[(AnchorKind::ImportPattern, "django*")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let parsed = sutra::guard::parse_proposed(
+        "app/models.py",
+        "import os\nfrom django.db import models\n\nclass Thing(models.Model):\n    pass\n",
+    )
+    .expect("python parses");
+    let imports: Vec<&str> = parsed.imports.iter().map(|i| i.raw_path.as_str()).collect();
+
+    let lessons = db
+        .query_for_context(&import_ctx("app/models.py", &imports))
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        lessons.len(),
+        1,
+        "django import_pattern anchor should match, got imports {imports:?}"
+    );
+    assert_eq!(lessons[0].id, id);
+}
+
+#[test]
+fn import_pattern_surfaces_for_greenfield_typescript() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Parse zod schemas at the boundary, not per-call",
+            anchors: &[(AnchorKind::ImportPattern, "zod*")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let parsed = sutra::guard::parse_proposed(
+        "web/app.ts",
+        "import { z } from 'zod';\nexport const S = z.object({});\n",
+    )
+    .expect("typescript parses");
+    let imports: Vec<&str> = parsed.imports.iter().map(|i| i.raw_path.as_str()).collect();
+
+    let lessons = db
+        .query_for_context(&import_ctx("web/app.ts", &imports))
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        lessons.len(),
+        1,
+        "zod import_pattern anchor should match, got imports {imports:?}"
+    );
+    assert_eq!(lessons[0].id, id);
+}
