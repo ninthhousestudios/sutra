@@ -82,8 +82,49 @@ impl LessonsDb {
             candidate_limit: CANDIDATE_SCAN_UNBOUNDED,
         };
         db.run_migrations()?;
+        db.normalize_stored_categories()?;
         let _ = db.archive_decayed(90 * 86400);
         Ok(db)
+    }
+
+    /// Bring stored category tags back in step with the current language
+    /// dictionary.
+    ///
+    /// Migration 0007 froze its rewrite list at the names known when it shipped,
+    /// and a migration's content hash makes it unamendable afterwards. A name the
+    /// dictionary learns *later* — a new parser adapter, a new alias — would
+    /// therefore sit in the table unprefixed forever, and would be wrong in two
+    /// directions at once: invisible to the Phase 3 filter, so it leaks into
+    /// every workspace, and unreachable through `category=<name>`, which
+    /// normalises its argument and so looks for the prefixed form.
+    ///
+    /// Running the live [`normalize_category`] on open ties stored tags to the
+    /// dictionary as it is now rather than as it was at migration time. Topic
+    /// tags normalise to themselves, so this rewrites only language claims and
+    /// settles to a no-op.
+    fn normalize_stored_categories(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        let renames: Vec<(String, String)> = conn
+            .prepare("SELECT DISTINCT tag FROM categories")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|tag| {
+                let normalized = normalize_category(&tag);
+                (normalized != tag).then_some((tag, normalized))
+            })
+            .collect();
+
+        for (old, new) in renames {
+            // OR REPLACE for the same reason migration 0007 uses it: a lesson
+            // holding both `java` and `lang:java` collides on
+            // UNIQUE(lesson_id, tag), and the row to keep is the prefixed one.
+            conn.execute(
+                "UPDATE OR REPLACE categories SET tag = ?1 WHERE tag = ?2",
+                params![new, old],
+            )?;
+        }
+        Ok(())
     }
 
     /// Open an existing store for reading only, or `Ok(None)` if there is none.
@@ -290,23 +331,18 @@ const LANGUAGE_ALIASES: &[(&str, &str)] = &[
     ("tsx", "typescript"),
     ("js", "javascript"),
     ("jsx", "javascript"),
-    ("node", "javascript"),
     ("py", "python"),
     ("python3", "python"),
     ("golang", "go"),
     ("cpp", "c++"),
     ("cxx", "c++"),
     ("csharp", "c#"),
-    ("cs", "c#"),
     ("objc", "objective-c"),
-    ("sh", "shell"),
-    ("bash", "shell"),
-    ("zsh", "shell"),
     ("kt", "kotlin"),
     ("rb", "ruby"),
 ];
 
-/// Bare tags recognised as language claims without a `lang:` prefix.
+/// Bare tags auto-recognised as language claims without a `lang:` prefix.
 ///
 /// A superset of the adapter language ids: a lesson can legitimately be about a
 /// language sutra cannot parse, and tagging it should still keep it out of
@@ -314,6 +350,18 @@ const LANGUAGE_ALIASES: &[(&str, &str)] = &[
 /// dynamically so a new adapter needs no entry here, and `remember::enrich`
 /// seeds from `file.language` — exactly an adapter's `language_id` — so sutra's
 /// own writes are always recognised.
+///
+/// The line for inclusion is "could a workspace *be* this language", not "is
+/// this a language". Names that normally appear as auxiliary files inside a
+/// repo written in something else — sql, html, css, shell — are deliberately
+/// left out, because auto-claiming them is not a narrowing but a disappearance:
+/// no indexed workspace reports those languages, so the lesson would surface
+/// nowhere at all. That failure is quieter than the leak this namespace exists
+/// to fix. `remember::enrich` also emits `sql` as a *technology* tag (from the
+/// `sqlx` import), so claiming it would have silently buried every lesson
+/// anchored to sqlx-importing code. See `known_languages_do_not_claim_tech_tags`.
+///
+/// Anyone who genuinely means the language can still write `lang:sql`.
 static KNOWN_LANGUAGES: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
     let mut set: HashSet<String> = crate::parser::adapter::default_registry()
         .language_ids()
@@ -340,10 +388,6 @@ static KNOWN_LANGUAGES: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLo
         "perl",
         "julia",
         "ocaml",
-        "shell",
-        "sql",
-        "html",
-        "css",
     ] {
         set.insert(name.to_string());
     }

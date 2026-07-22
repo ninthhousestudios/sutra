@@ -365,3 +365,28 @@ fn import_root(imported_path: &str) -> &str {
         _ => root,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::IMPORT_TECH_MAP;
+    use crate::lessons::{LANG_TAG_PREFIX, normalize_category};
+
+    /// Enrichment writes technology tags automatically, so a technology name
+    /// that `normalize_category` reads as a language claim is not a mislabel —
+    /// it silently scopes the lesson to a language no workspace reports, and it
+    /// surfaces nowhere. `sqlx` -> `sql` is the live instance: `sql` was briefly
+    /// in KNOWN_LANGUAGES, which would have buried every lesson anchored to
+    /// sqlx-importing code.
+    #[test]
+    fn known_languages_do_not_claim_tech_tags() {
+        for &(import, tech) in IMPORT_TECH_MAP {
+            let normalized = normalize_category(tech);
+            assert!(
+                !normalized.starts_with(LANG_TAG_PREFIX),
+                "tech tag `{tech}` (from import `{import}`) normalizes to `{normalized}`, \
+                 which scopes the lesson to a language instead of a topic — drop it from \
+                 KNOWN_LANGUAGES/LANGUAGE_ALIASES"
+            );
+        }
+    }
+}

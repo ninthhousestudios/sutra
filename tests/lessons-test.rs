@@ -1461,6 +1461,110 @@ fn language_tags_remain_reachable_by_name() {
     assert_eq!(db.search(&by_query).unwrap().len(), 1, "query=rust");
 }
 
+/// Rows written before a language entered the dictionary are rewritten on open.
+///
+/// Migration 0007's rewrite list is frozen and cannot be amended once applied,
+/// so a bare tag it never knew about would otherwise stay unprefixed forever —
+/// wrong in both directions at once: invisible to the language filter (leaks
+/// everywhere) and unreachable through `category=`, which normalises its
+/// argument.
+#[test]
+fn stored_tags_predating_the_dictionary_are_normalized_on_open() {
+    let dir = tempdir().unwrap();
+    let id = {
+        let db = LessonsDb::open(dir.path()).unwrap();
+        let id = db
+            .store(&StoreLessonParams {
+                text: "Java equals/hashCode contract",
+                anchors: &[(AnchorKind::Symbol, "equals")],
+                categories: &[],
+                source_task_ids: &[],
+                project_origin: None,
+            })
+            .unwrap();
+        // Bypass the writer to simulate a row from before `java` was known.
+        db.conn_for_test()
+            .execute(
+                "INSERT INTO categories (lesson_id, tag) VALUES (?1, 'java')",
+                [&id],
+            )
+            .unwrap();
+        id
+    };
+
+    let db = LessonsDb::open(dir.path()).unwrap();
+    let tags: Vec<String> = db
+        .conn_for_test()
+        .prepare("SELECT tag FROM categories WHERE lesson_id = ?1")
+        .unwrap()
+        .query_map([&id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(tags, vec!["lang:java".to_string()], "rewritten on open");
+
+    let rust_ws = vec!["rust".to_string()];
+    assert!(
+        db.query_for_context(&lang_ctx("equals", &rust_ws))
+            .unwrap()
+            .lessons
+            .is_empty(),
+        "migrated java lesson must not leak into a rust workspace"
+    );
+
+    let by_name = LessonsSearchParams {
+        category: Some("java"),
+        ..search_params()
+    };
+    assert_eq!(
+        db.search(&by_name).unwrap().len(),
+        1,
+        "still reachable by the name it was written with"
+    );
+}
+
+/// Technology tags that happen to name a data language stay topic tags.
+///
+/// `remember::enrich` emits `sql` automatically from the `sqlx` import, so
+/// auto-claiming it as a language would bury every lesson anchored to
+/// sqlx-importing code in no workspace at all.
+#[test]
+fn ambiguous_tech_names_are_not_language_claims() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Index the join column before it is filtered on",
+        anchors: &[(AnchorKind::Symbol, "run_query")],
+        categories: &["sql"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Window function frame defaults differ across engines",
+        anchors: &[(AnchorKind::Symbol, "run_query")],
+        categories: &["lang:sql"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("run_query", &rust_ws))
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        results.len(),
+        1,
+        "bare `sql` stays a topic tag: {results:?}"
+    );
+    assert!(
+        results[0].text.contains("Index the join"),
+        "surviving lesson: {:?}",
+        results[0].text
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Citation lifecycle
 // ---------------------------------------------------------------------------
