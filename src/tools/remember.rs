@@ -25,7 +25,13 @@ pub struct RememberArgs {
     /// Project slug where the lesson was discovered
     #[serde(default)]
     pub project_origin: Option<String>,
-    /// Category tags (e.g. ["rust", "sqlite", "concurrency"])
+    /// Category tags (e.g. ["rust", "sqlite", "concurrency"]).
+    ///
+    /// A tag naming a language marks the lesson as language-specific and keeps
+    /// it out of workspaces in other languages. Common names and shorthands
+    /// ("python", "py", "golang") are recognised automatically; prefix anything
+    /// else with `lang:` (e.g. "lang:nim") to make the claim explicit. All other
+    /// tags are topic tags and surface in every workspace.
     #[serde(default)]
     pub categories: Option<Vec<String>>,
     /// Cite an existing lesson by ID. Records a citation and increases confidence.

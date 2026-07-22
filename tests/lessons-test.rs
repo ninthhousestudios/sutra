@@ -1357,6 +1357,110 @@ fn category_filtering_with_multiple_language_lessons() {
     assert!(!results.iter().any(|l| l.text.contains("Rust concurrency")));
 }
 
+/// A shorthand for a language sutra *does* have an adapter for is folded onto
+/// the canonical name at write time, so it filters exactly like the full name.
+/// Before the `lang:` namespace these tags were unrecognised, which made the
+/// lesson read as language-neutral and leak into every workspace.
+#[test]
+fn alias_language_tags_filter_like_their_canonical_name() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Python mutable default argument trap",
+        anchors: &[(AnchorKind::Symbol, "handler")],
+        categories: &["py"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let rust_ws = vec!["rust".to_string()];
+    assert!(
+        db.query_for_context(&lang_ctx("handler", &rust_ws))
+            .unwrap()
+            .lessons
+            .is_empty(),
+        "`py` lesson must not leak into a rust workspace"
+    );
+
+    let py_ws = vec!["python".to_string()];
+    assert_eq!(
+        db.query_for_context(&lang_ctx("handler", &py_ws))
+            .unwrap()
+            .lessons
+            .len(),
+        1,
+        "`py` lesson should surface in a python workspace"
+    );
+}
+
+/// A language sutra has no adapter for is still a language claim: it belongs in
+/// no indexed workspace, and specifically not in all of them.
+#[test]
+fn unsupported_language_tags_do_not_leak() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Go slice aliasing gotcha",
+        anchors: &[(AnchorKind::Symbol, "append_all")],
+        categories: &["golang"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    // Not in any dictionary — the explicit prefix carries the claim.
+    db.store(&StoreLessonParams {
+        text: "Nim destructor ordering",
+        anchors: &[(AnchorKind::Symbol, "append_all")],
+        categories: &["lang:nim"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    for ws in [vec!["rust".to_string()], vec!["dart".to_string()]] {
+        assert!(
+            db.query_for_context(&lang_ctx("append_all", &ws))
+                .unwrap()
+                .lessons
+                .is_empty(),
+            "unsupported-language lesson must not surface in {ws:?}"
+        );
+    }
+}
+
+/// The `lang:` prefix is storage syntax, not part of the tag's name: both the
+/// explicit `category=` filter and the search category tier must see through it.
+#[test]
+fn language_tags_remain_reachable_by_name() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Ownership rules for temporaries",
+        anchors: &[(AnchorKind::Symbol, "borrow")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let by_name = LessonsSearchParams {
+        category: Some("rust"),
+        ..search_params()
+    };
+    assert_eq!(db.search(&by_name).unwrap().len(), 1, "category=rust");
+
+    let by_alias = LessonsSearchParams {
+        category: Some("rs"),
+        ..search_params()
+    };
+    assert_eq!(db.search(&by_alias).unwrap().len(), 1, "category=rs");
+
+    // Category tier: the query names the tag but not any word of the prose.
+    let by_query = LessonsSearchParams {
+        query: Some("rust"),
+        ..search_params()
+    };
+    assert_eq!(db.search(&by_query).unwrap().len(), 1, "query=rust");
+}
+
 // ---------------------------------------------------------------------------
 // Citation lifecycle
 // ---------------------------------------------------------------------------
@@ -2558,7 +2662,9 @@ fn symbol_anchor_outranks_directory_anchor() {
     assert_eq!(lessons[0].id, narrow);
 
     // And it survives a cap of one, which is the point of the ranking.
-    let capped = db.query_for_context_capped(&ctx, 1, sutra::lessons::Surfacing::Record).unwrap();
+    let capped = db
+        .query_for_context_capped(&ctx, 1, sutra::lessons::Surfacing::Record)
+        .unwrap();
     assert_eq!(capped.lessons[0].id, narrow);
     assert_eq!(capped.omitted, 1);
 }

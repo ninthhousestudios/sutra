@@ -57,6 +57,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0006_category_tag_index",
         include_str!("lessons/sql/lessons_category_tag_index.sql"),
     ),
+    (
+        "0007_lang_tag_namespace",
+        include_str!("lessons/sql/lessons_lang_tag_namespace.sql"),
+    ),
 ];
 
 impl LessonsDb {
@@ -235,10 +239,13 @@ impl LessonsDb {
             )?;
         }
 
+        // Normalised here rather than at read time: language claims must be
+        // syntactically identifiable in the table itself, so the Phase 3 filter
+        // never has to guess whether an unfamiliar tag names a language.
         for tag in params.categories {
             tx.execute(
                 "INSERT OR IGNORE INTO categories (lesson_id, tag) VALUES (?1, ?2)",
-                params![id, tag],
+                params![id, normalize_category(tag)],
             )?;
         }
 
@@ -258,26 +265,123 @@ impl LessonsDb {
 // Query
 // ---------------------------------------------------------------------------
 
-/// Category tags that name a language, derived from the registered adapters
-/// rather than a literal. `remember::enrich` seeds language categories from
-/// `file.language` (lowercased), which is exactly an adapter's `language_id`,
-/// so the two sets stay aligned as adapters are added.
+/// Marks a category tag as a *language claim* rather than a topic tag.
 ///
-/// This must cover every supported language, not just the ones sutra itself is
-/// written in: the Phase 3 filter only *excludes* a lesson whose language tags
-/// are recognised as language tags. An unrecognised tag makes `lang_tags` empty
-/// and the lesson passes unconditionally, so a missing entry here means
-/// wrong-language lessons leak into unrelated workspaces.
-static LANGUAGE_CATEGORIES: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
-    crate::parser::adapter::default_registry()
+/// Recognition is syntactic, not dictionary-based: the Phase 3 filter asks
+/// "does this tag carry the prefix", never "is this string a language I know
+/// about". A `lang:` tag naming a language sutra has no adapter for therefore
+/// matches no workspace and stays out of all of them, which is the correct
+/// answer — the alternative (an unrecognised name reading as language-neutral)
+/// is how wrong-language lessons leaked into unrelated workspaces before.
+///
+/// The prefix is applied by [`normalize_category`] at write time, so the
+/// recognition dictionary lives on the *writer*, where a miss mislabels one
+/// tag, instead of on the filter, where a miss was a silent leak.
+pub const LANG_TAG_PREFIX: &str = "lang:";
+
+/// Shorthands and alternate spellings folded onto a canonical language name.
+///
+/// Convenience only. A name absent from this table but written with an explicit
+/// `lang:` prefix is still honoured as a language claim; a bare name absent
+/// from both this table and [`KNOWN_LANGUAGES`] degrades to a topic tag.
+const LANGUAGE_ALIASES: &[(&str, &str)] = &[
+    ("rs", "rust"),
+    ("ts", "typescript"),
+    ("tsx", "typescript"),
+    ("js", "javascript"),
+    ("jsx", "javascript"),
+    ("node", "javascript"),
+    ("py", "python"),
+    ("python3", "python"),
+    ("golang", "go"),
+    ("cpp", "c++"),
+    ("cxx", "c++"),
+    ("csharp", "c#"),
+    ("cs", "c#"),
+    ("objc", "objective-c"),
+    ("sh", "shell"),
+    ("bash", "shell"),
+    ("zsh", "shell"),
+    ("kt", "kotlin"),
+    ("rb", "ruby"),
+];
+
+/// Bare tags recognised as language claims without a `lang:` prefix.
+///
+/// A superset of the adapter language ids: a lesson can legitimately be about a
+/// language sutra cannot parse, and tagging it should still keep it out of
+/// workspaces that are not in that language. Adapter ids are folded in
+/// dynamically so a new adapter needs no entry here, and `remember::enrich`
+/// seeds from `file.language` — exactly an adapter's `language_id` — so sutra's
+/// own writes are always recognised.
+static KNOWN_LANGUAGES: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
+    let mut set: HashSet<String> = crate::parser::adapter::default_registry()
         .language_ids()
         .iter()
         .map(|id| id.to_lowercase())
-        .collect()
+        .collect();
+    for name in [
+        "go",
+        "java",
+        "kotlin",
+        "swift",
+        "ruby",
+        "php",
+        "c++",
+        "c#",
+        "objective-c",
+        "scala",
+        "haskell",
+        "elixir",
+        "erlang",
+        "clojure",
+        "zig",
+        "lua",
+        "perl",
+        "julia",
+        "ocaml",
+        "shell",
+        "sql",
+        "html",
+        "css",
+    ] {
+        set.insert(name.to_string());
+    }
+    set.extend(LANGUAGE_ALIASES.iter().map(|(alias, _)| alias.to_string()));
+    set.extend(LANGUAGE_ALIASES.iter().map(|(_, canon)| canon.to_string()));
+    set
 });
 
-fn is_language_category(cat: &str) -> bool {
-    LANGUAGE_CATEGORIES.contains(&cat.to_lowercase())
+fn canonical_language(name: &str) -> String {
+    let lowered = name.trim().to_lowercase();
+    LANGUAGE_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == lowered)
+        .map(|(_, canon)| (*canon).to_string())
+        .unwrap_or(lowered)
+}
+
+/// Canonicalise a category tag on the way into the store.
+///
+/// A language claim — explicitly prefixed, or a bare name recognised as one —
+/// becomes `lang:<canonical>`. Everything else is a topic tag and is left
+/// exactly as written, since topic tags are matched verbatim by the search
+/// category tier and by `sutra_lessons(category=...)`.
+pub fn normalize_category(tag: &str) -> String {
+    let trimmed = tag.trim();
+    let lowered = trimmed.to_lowercase();
+    if let Some(rest) = lowered.strip_prefix(LANG_TAG_PREFIX) {
+        return format!("{LANG_TAG_PREFIX}{}", canonical_language(rest));
+    }
+    if KNOWN_LANGUAGES.contains(&lowered) {
+        return format!("{LANG_TAG_PREFIX}{}", canonical_language(&lowered));
+    }
+    trimmed.to_string()
+}
+
+/// The language a tag claims, or `None` for a topic tag.
+fn language_claim(tag: &str) -> Option<&str> {
+    tag.strip_prefix(LANG_TAG_PREFIX)
 }
 
 pub struct MatchContext<'a> {
@@ -524,32 +628,25 @@ impl LessonsDb {
             drop(rows);
             drop(stmt);
 
-            // Lowercased on both sides: `is_language_category` matches
-            // case-insensitively, so an exact-match membership test here would
-            // recognise a "Rust" tag as a language and then fail to match the
-            // workspace's "rust", dropping the lesson.
+            // Lowercased on both sides: stored language claims are canonical
+            // lowercase (see `normalize_category`), and a workspace language
+            // arrives however the adapter spelled it.
             let ws_lang_set: HashSet<String> = ctx
                 .workspace_languages
                 .iter()
-                .map(|s| s.to_lowercase())
+                .map(|s| canonical_language(s))
                 .collect();
 
             lessons.retain(|l| {
                 let Some(cats) = cat_map.get(&l.id) else {
                     return true;
                 };
-                if cats.is_empty() {
+                let mut lang_tags = cats.iter().filter_map(|c| language_claim(c)).peekable();
+                // No language claim at all → topic-only, relevant everywhere.
+                if lang_tags.peek().is_none() {
                     return true;
                 }
-                let lang_tags: Vec<String> = cats
-                    .iter()
-                    .filter(|c| is_language_category(c))
-                    .map(|c| c.to_lowercase())
-                    .collect();
-                if lang_tags.is_empty() {
-                    return true;
-                }
-                lang_tags.iter().any(|t| ws_lang_set.contains(t))
+                lang_tags.any(|t| ws_lang_set.contains(t))
             });
         }
 
@@ -694,9 +791,12 @@ fn tags_matching_query(all_tags: &[String], query: &str) -> Vec<String> {
     all_tags
         .iter()
         .filter(|tag| {
+            // The `lang:` marker is storage syntax, not part of the tag's
+            // name — a query for "rust" must still hit `lang:rust`.
             let lowered = tag.to_lowercase();
+            let lowered = language_claim(&lowered).unwrap_or(&lowered);
             tokens.iter().any(|t| {
-                lowered == *t || lowered.split(['-', '_', '.']).any(|seg| seg == t.as_str())
+                lowered == t.as_str() || lowered.split(['-', '_', '.']).any(|seg| seg == t.as_str())
             })
         })
         .cloned()
@@ -753,7 +853,9 @@ impl SearchFilters {
         if let Some(cat) = params.category {
             f.joins.push_str(" JOIN categories c ON c.lesson_id = l.id");
             f.conditions.push(format!("c.tag = ?{}", f.next_idx));
-            f.binds.push(cat.to_string());
+            // Normalised the same way as on write, so `category="py"` still
+            // finds the lesson stored as `lang:python`.
+            f.binds.push(normalize_category(cat));
             f.next_idx += 1;
         }
 

@@ -134,7 +134,7 @@ fn symbol_anchor_enriches_imports_directory_language() {
 
     let cats = stored_categories(&lessons_db, id);
     assert!(
-        cats.contains(&"rust".to_string()),
+        cats.contains(&"lang:rust".to_string()),
         "language category: {cats:?}"
     );
     assert!(
@@ -165,7 +165,7 @@ fn file_anchor_enriches_directory_and_language() {
     assert!(anchors.contains(&("file".into(), "lib/src/widgets/button.dart".into())));
 
     let cats = stored_categories(&lessons_db, id);
-    assert!(cats.contains(&"dart".to_string()));
+    assert!(cats.contains(&"lang:dart".to_string()));
 }
 
 #[test]
@@ -186,13 +186,13 @@ fn explicit_categories_preserved_alongside_enriched() {
         "explicit preserved"
     );
     assert!(
-        cats.contains(&"rust".to_string()),
-        "explicit rust not duplicated"
+        cats.contains(&"lang:rust".to_string()),
+        "explicit rust normalized, not duplicated"
     );
     assert!(cats.contains(&"sqlite".to_string()), "enriched tech added");
     // "rust" should appear exactly once
     assert_eq!(
-        cats.iter().filter(|c| c.as_str() == "rust").count(),
+        cats.iter().filter(|c| c.as_str() == "lang:rust").count(),
         1,
         "no duplicate categories"
     );
@@ -302,7 +302,7 @@ fn dart_package_imports_enriched() {
     );
 
     let cats = stored_categories(&lessons_db, id);
-    assert!(cats.contains(&"dart".to_string()));
+    assert!(cats.contains(&"lang:dart".to_string()));
     assert!(cats.contains(&"flutter".to_string()));
 }
 

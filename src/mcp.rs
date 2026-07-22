@@ -514,6 +514,8 @@ impl SutraServer {
         is symbol|file|import_pattern|directory; \
         pass workspace to auto-enrich with import-pattern anchors, directory anchors, \
         and language/technology categories from the workspace graph. \
+        A category naming a language scopes the lesson to workspaces in that language \
+        (shorthands like py/ts/golang are recognised; prefix anything else with lang:). \
         Cite mode: provide cite=<lesson_id> to record a citation and increase confidence; \
         when confidence reaches the threshold the lesson becomes verified. \
         Anti-verify: provide cite + anti_verify=true to flag a lesson as wrong (decreases confidence).")]
