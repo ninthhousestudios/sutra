@@ -1986,3 +1986,82 @@ fn stale_when_anchor_deleted() {
         "deleted anchor should be marked stale, not treated as current"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 language-category filtering beyond the formerly hardcoded rust/dart
+// ---------------------------------------------------------------------------
+
+fn store_tagged(db: &LessonsDb, symbol: &str, categories: &[&str]) {
+    db.store(&StoreLessonParams {
+        text: "tagged lesson",
+        anchors: &[(AnchorKind::Symbol, symbol)],
+        categories,
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+}
+
+#[test]
+fn language_tag_outside_the_formerly_hardcoded_pair_is_filtered() {
+    let (_dir, db) = setup_lessons_db();
+    store_tagged(&db, "shared_name", &["python"]);
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("shared_name", &rust_ws))
+        .unwrap()
+        .lessons;
+    assert!(
+        results.is_empty(),
+        "a python-tagged lesson must not surface in a rust-only workspace; \
+         while the language set was hardcoded to rust/dart it leaked through, \
+         because `python` was not recognised as a language tag at all and so \
+         the lesson was treated as language-neutral"
+    );
+}
+
+#[test]
+fn rust_tag_filtered_out_of_a_python_workspace() {
+    let (_dir, db) = setup_lessons_db();
+    store_tagged(&db, "shared_name", &["rust"]);
+
+    let python_ws = vec!["python".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("shared_name", &python_ws))
+        .unwrap()
+        .lessons;
+    assert!(results.is_empty());
+}
+
+#[test]
+fn language_tag_matches_workspace_case_insensitively() {
+    let (_dir, db) = setup_lessons_db();
+    store_tagged(&db, "shared_name", &["Rust"]);
+
+    let rust_ws = vec!["rust".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("shared_name", &rust_ws))
+        .unwrap()
+        .lessons;
+    assert_eq!(
+        results.len(),
+        1,
+        "`Rust` is recognised as a language tag case-insensitively, so the \
+         workspace membership test must be case-insensitive too, or the lesson \
+         is dropped from its own language's workspace"
+    );
+}
+
+#[test]
+fn lesson_surfaces_when_any_of_its_language_tags_matches() {
+    let (_dir, db) = setup_lessons_db();
+    store_tagged(&db, "shared_name", &["rust", "dart"]);
+
+    let dart_ws = vec!["dart".to_string()];
+    let results = db
+        .query_for_context(&lang_ctx("shared_name", &dart_ws))
+        .unwrap()
+        .lessons;
+    assert_eq!(results.len(), 1, "language tags are OR-ed, not AND-ed");
+}

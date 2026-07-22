@@ -189,12 +189,26 @@ impl LessonsDb {
 // Query
 // ---------------------------------------------------------------------------
 
-const KNOWN_LANGUAGE_CATEGORIES: &[&str] = &["rust", "dart"];
+/// Category tags that name a language, derived from the registered adapters
+/// rather than a literal. `remember::enrich` seeds language categories from
+/// `file.language` (lowercased), which is exactly an adapter's `language_id`,
+/// so the two sets stay aligned as adapters are added.
+///
+/// This must cover every supported language, not just the ones sutra itself is
+/// written in: the Phase 3 filter only *excludes* a lesson whose language tags
+/// are recognised as language tags. An unrecognised tag makes `lang_tags` empty
+/// and the lesson passes unconditionally, so a missing entry here means
+/// wrong-language lessons leak into unrelated workspaces.
+static LANGUAGE_CATEGORIES: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
+    crate::parser::adapter::default_registry()
+        .language_ids()
+        .iter()
+        .map(|id| id.to_lowercase())
+        .collect()
+});
 
 fn is_language_category(cat: &str) -> bool {
-    KNOWN_LANGUAGE_CATEGORIES
-        .iter()
-        .any(|&lc| lc.eq_ignore_ascii_case(cat))
+    LANGUAGE_CATEGORIES.contains(&cat.to_lowercase())
 }
 
 pub struct MatchContext<'a> {
@@ -373,8 +387,15 @@ impl LessonsDb {
             drop(rows);
             drop(stmt);
 
-            let ws_lang_set: HashSet<&str> =
-                ctx.workspace_languages.iter().map(|s| s.as_str()).collect();
+            // Lowercased on both sides: `is_language_category` matches
+            // case-insensitively, so an exact-match membership test here would
+            // recognise a "Rust" tag as a language and then fail to match the
+            // workspace's "rust", dropping the lesson.
+            let ws_lang_set: HashSet<String> = ctx
+                .workspace_languages
+                .iter()
+                .map(|s| s.to_lowercase())
+                .collect();
 
             lessons.retain(|l| {
                 let Some(cats) = cat_map.get(&l.id) else {
@@ -383,10 +404,10 @@ impl LessonsDb {
                 if cats.is_empty() {
                     return true;
                 }
-                let lang_tags: Vec<&str> = cats
+                let lang_tags: Vec<String> = cats
                     .iter()
                     .filter(|c| is_language_category(c))
-                    .map(|c| c.as_str())
+                    .map(|c| c.to_lowercase())
                     .collect();
                 if lang_tags.is_empty() {
                     return true;

@@ -170,6 +170,11 @@ impl LanguageRegistry {
         self.adapters.push(adapter);
     }
 
+    /// Language ids of every registered adapter, in registration order.
+    pub fn language_ids(&self) -> Vec<&str> {
+        self.adapters.iter().map(|a| a.language_id()).collect()
+    }
+
     pub fn adapter_for_extension(&self, ext: &str) -> Option<&dyn LanguageAdapter> {
         self.ext_map
             .get(ext)
