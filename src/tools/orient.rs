@@ -596,8 +596,13 @@ pub fn handle(
                 };
                 // Uncapped per file: the cap belongs to the merged set below,
                 // and a per-file cap would make `lessons_omitted` a per-file
-                // number dressed up as a component-wide one.
-                let cl = ldb.query_for_context_capped(&ctx, usize::MAX)?;
+                // number dressed up as a component-wide one. Deferred, because
+                // only what survives that cap was actually surfaced.
+                let cl = ldb.query_for_context_capped(
+                    &ctx,
+                    usize::MAX,
+                    crate::lessons::Surfacing::Deferred,
+                )?;
                 for lesson in cl.lessons {
                     if seen_ids.insert(lesson.id.clone()) {
                         comp_lessons.push(lesson);
@@ -616,6 +621,8 @@ pub fn handle(
                 });
                 let omitted = comp_lessons.len().saturating_sub(ORIENT_LESSON_CAP);
                 comp_lessons.truncate(ORIENT_LESSON_CAP);
+                let emitted: Vec<&str> = comp_lessons.iter().map(|l| l.id.as_str()).collect();
+                ldb.mark_surfaced(&emitted)?;
                 let resolver = super::remember::build_hash_resolver(db);
                 let _ = ldb.apply_staleness(&mut comp_lessons, &resolver);
                 section["lessons"] = serde_json::to_value(&comp_lessons).unwrap_or_default();
@@ -1263,6 +1270,52 @@ to = "src/banned.rs"
         // 8 distinct lessons merged, 5 emitted — the omitted count is the
         // component-wide remainder, not a per-file one.
         assert_eq!(section["lessons_omitted"], json!(8 - ORIENT_LESSON_CAP));
+    }
+
+    #[test]
+    fn orient_does_not_refresh_decay_timers_for_omitted_lessons() {
+        let (db, dir) = setup_db();
+        let files: Vec<String> = (0..4).map(|i| format!("src/f{i}.rs")).collect();
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        insert_component(&db, "comp-1", "mycomp", &refs);
+
+        let ldb = crate::lessons::LessonsDb::open(dir.path()).unwrap();
+        let ids: Vec<String> = (0..8)
+            .map(|i| {
+                ldb.store(&crate::lessons::StoreLessonParams {
+                    text: &format!("Directory lesson {i}"),
+                    anchors: &[(crate::lessons::AnchorKind::Directory, "src")],
+                    categories: &[],
+                    source_task_ids: &[],
+                    project_origin: None,
+                })
+                .unwrap()
+            })
+            .collect();
+
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb), &registry()).unwrap();
+        let emitted: HashSet<&str> = result["orientation"][0]["lessons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(emitted.len(), ORIENT_LESSON_CAP);
+
+        // `last_surfaced` is evidence a lesson was shown, and archive_decayed
+        // spares anything recently surfaced. A lesson the cap dropped was never
+        // shown, so it must stay archiveable.
+        for id in &ids {
+            let surfaced = ldb.last_surfaced(id).unwrap();
+            if emitted.contains(id.as_str()) {
+                assert!(surfaced.is_some(), "emitted lesson {id} should be marked");
+            } else {
+                assert!(
+                    surfaced.is_none(),
+                    "omitted lesson {id} must not have its decay timer refreshed"
+                );
+            }
+        }
     }
 
     #[test]

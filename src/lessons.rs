@@ -290,6 +290,21 @@ pub struct MatchContext<'a> {
 
 const CONTEXT_SURFACING_CAP: usize = 10;
 
+/// Whether a context query refreshes the decay timers of what it returns.
+///
+/// `last_surfaced` is evidence that a lesson was put in front of someone, and
+/// [`LessonsDb::archive_decayed`] spares anything recently surfaced. A caller
+/// that narrows the result set further after the query must not let the query
+/// record on its behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surfacing {
+    /// Everything returned is being shown; record it.
+    Record,
+    /// The caller will cap further and call [`LessonsDb::mark_surfaced`] with
+    /// what it actually emits.
+    Deferred,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextLessons {
     pub lessons: Vec<SurfacedLesson>,
@@ -396,22 +411,26 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
 
 impl LessonsDb {
     pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
-        self.query_for_context_capped(ctx, CONTEXT_SURFACING_CAP)
+        self.query_for_context_capped(ctx, CONTEXT_SURFACING_CAP, Surfacing::Record)
     }
 
-    /// As `query_for_context`, but with a caller-supplied cap.
+    /// As `query_for_context`, but with a caller-supplied cap and control over
+    /// surfacing bookkeeping.
     ///
     /// Callers that merge several contexts (orient walks every file in a
     /// component) need the complete per-context set before they can cap the
     /// merged set honestly — a per-context cap makes their `omitted` count a
-    /// lie. Pass `usize::MAX` for that, then cap the merged set. Note the
-    /// surfacing bookkeeping below marks everything returned, so a raised cap
-    /// marks lessons the caller may still drop; same trade the guard already
-    /// makes with `GUARD_LESSON_CAP`.
+    /// lie. Such a caller passes `usize::MAX` with [`Surfacing::Deferred`],
+    /// caps the merged set itself, then calls [`LessonsDb::mark_surfaced`]
+    /// with what it actually emitted. Recording here instead would refresh the
+    /// decay timer of every candidate the query touched, which is how a broad
+    /// directory-anchored lesson stays unarchivable forever without ever being
+    /// shown to anyone.
     pub fn query_for_context_capped(
         &self,
         ctx: &MatchContext<'_>,
         cap: usize,
+        surfacing: Surfacing,
     ) -> Result<ContextLessons> {
         let conn = self.conn.lock();
 
@@ -595,23 +614,39 @@ impl LessonsDb {
         let omitted = total.saturating_sub(cap);
         lessons.truncate(cap);
 
-        // Surfacing bookkeeping is a write, and the guard's handle is inside a
-        // blocking PreToolUse hook — it must not contend for the write lock.
-        // The cost is that guard-only surfacing does not refresh decay timers;
-        // that is the right trade, since an advisory nudge is not evidence the
-        // lesson was read.
-        if !lessons.is_empty() && !self.read_only {
+        if surfacing == Surfacing::Record {
             let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
-            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conn.execute(
-                &format!(
-                    "UPDATE lessons SET last_surfaced = datetime('now') WHERE id IN ({placeholders})"
-                ),
-                rusqlite::params_from_iter(ids.iter()),
-            )?;
+            Self::mark_surfaced_locked(&conn, &ids, self.read_only)?;
         }
 
         Ok(ContextLessons { lessons, omitted })
+    }
+
+    /// Record that these lessons were actually put in front of someone.
+    ///
+    /// For callers that used [`Surfacing::Deferred`]; see the note there.
+    pub fn mark_surfaced(&self, ids: &[&str]) -> Result<()> {
+        let conn = self.conn.lock();
+        Self::mark_surfaced_locked(&conn, ids, self.read_only)
+    }
+
+    /// Surfacing bookkeeping is a write, and the guard's handle is inside a
+    /// blocking PreToolUse hook — it must not contend for the write lock. The
+    /// cost is that guard-only surfacing does not refresh decay timers; that is
+    /// the right trade, since an advisory nudge is not evidence the lesson was
+    /// read.
+    fn mark_surfaced_locked(conn: &Connection, ids: &[&str], read_only: bool) -> Result<()> {
+        if ids.is_empty() || read_only {
+            return Ok(());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        conn.execute(
+            &format!(
+                "UPDATE lessons SET last_surfaced = datetime('now') WHERE id IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(ids.iter()),
+        )?;
+        Ok(())
     }
 }
 
@@ -1018,6 +1053,20 @@ impl LessonsDb {
 impl LessonsDb {
     /// Archive unverified lessons that haven't been cited or surfaced within
     /// `window_secs` seconds. Returns the number of lessons archived.
+    /// When this lesson was last put in front of someone, or `None` if never.
+    pub fn last_surfaced(&self, lesson_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let value = conn
+            .query_row(
+                "SELECT last_surfaced FROM lessons WHERE id = ?1",
+                params![lesson_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten();
+        Ok(value)
+    }
+
     pub fn archive_decayed(&self, window_secs: i64) -> Result<usize> {
         let conn = self.conn.lock();
         let changed = conn.execute(

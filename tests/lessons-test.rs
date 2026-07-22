@@ -819,6 +819,94 @@ fn generic_query_words_do_not_pull_in_categories() {
 }
 
 #[test]
+fn every_filter_at_once_binds_correctly_in_both_tiers() {
+    // Each tier allocates its own bind slots before the shared filter block,
+    // and `verified` adds a condition with no bind — a slot mismatch there
+    // binds the wrong value silently rather than erroring, so exercise the
+    // fully-loaded combination in both tiers.
+    let (_dir, db) = setup_lessons_db();
+    let wanted_text = db
+        .store(&StoreLessonParams {
+            text: "sqlite busy_timeout is per connection",
+            anchors: &[(AnchorKind::Symbol, "open_store")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: Some("ourproj"),
+        })
+        .unwrap();
+    let wanted_category = db
+        .store(&StoreLessonParams {
+            text: "Nothing in this prose matches the query at all",
+            anchors: &[(AnchorKind::Symbol, "open_store")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: Some("ourproj"),
+        })
+        .unwrap();
+    // Decoys, each differing from the wanted pair in exactly one filtered
+    // dimension: wrong project, wrong symbol anchor, wrong category, unverified.
+    db.store(&StoreLessonParams {
+        text: "sqlite busy_timeout is per connection",
+        anchors: &[(AnchorKind::Symbol, "open_store")],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: Some("otherproj"),
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "sqlite busy_timeout is per connection",
+        anchors: &[(AnchorKind::Symbol, "other_symbol")],
+        categories: &["sqlite"],
+        source_task_ids: &[],
+        project_origin: Some("ourproj"),
+    })
+    .unwrap();
+    db.store(&StoreLessonParams {
+        text: "sqlite busy_timeout is per connection",
+        anchors: &[(AnchorKind::Symbol, "open_store")],
+        categories: &["ffi"],
+        source_task_ids: &[],
+        project_origin: Some("ourproj"),
+    })
+    .unwrap();
+    let unverified = db
+        .store(&StoreLessonParams {
+            text: "sqlite busy_timeout is per connection",
+            anchors: &[(AnchorKind::Symbol, "open_store")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: Some("ourproj"),
+        })
+        .unwrap();
+
+    // Distinct task ids: citations are idempotent per task, so citing twice
+    // with the same one leaves confidence at 1 and never crosses the
+    // verification threshold.
+    for id in [&wanted_text, &wanted_category] {
+        db.cite(id, Some("t1"), None).unwrap();
+        db.cite(id, Some("t2"), None).unwrap();
+    }
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("sqlite busy_timeout"),
+            category: Some("sqlite"),
+            symbol: Some("open_store"),
+            verified: Some(true),
+            project: Some("ourproj"),
+            ..search_params()
+        })
+        .unwrap();
+
+    let ids: Vec<&str> = results.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![wanted_text.as_str(), wanted_category.as_str()],
+        "every filter must apply to both tiers; {unverified} is the unverified decoy"
+    );
+}
+
+#[test]
 fn fts5_ranking_prefers_better_match() {
     let (_dir, db) = setup_lessons_db();
     db.store(&StoreLessonParams {
@@ -2470,7 +2558,7 @@ fn symbol_anchor_outranks_directory_anchor() {
     assert_eq!(lessons[0].id, narrow);
 
     // And it survives a cap of one, which is the point of the ranking.
-    let capped = db.query_for_context_capped(&ctx, 1).unwrap();
+    let capped = db.query_for_context_capped(&ctx, 1, sutra::lessons::Surfacing::Record).unwrap();
     assert_eq!(capped.lessons[0].id, narrow);
     assert_eq!(capped.omitted, 1);
 }
