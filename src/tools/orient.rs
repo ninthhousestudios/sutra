@@ -611,6 +611,7 @@ pub fn handle(
                 comp_lessons.sort_by(|a, b| {
                     b.verified
                         .cmp(&a.verified)
+                        .then(b.specificity.cmp(&a.specificity))
                         .then(b.confidence.cmp(&a.confidence))
                 });
                 let omitted = comp_lessons.len().saturating_sub(ORIENT_LESSON_CAP);

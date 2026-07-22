@@ -2286,3 +2286,86 @@ fn import_pattern_surfaces_for_greenfield_typescript() {
     );
     assert_eq!(lessons[0].id, id);
 }
+
+#[test]
+fn symbol_anchor_outranks_directory_anchor() {
+    let (_dir, db) = setup_lessons_db();
+    let broad = db
+        .store(&StoreLessonParams {
+            text: "Everything under src is a bit fiddly",
+            anchors: &[(AnchorKind::Directory, "src")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    let narrow = db
+        .store(&StoreLessonParams {
+            text: "refresh_index must not swallow the error",
+            anchors: &[(AnchorKind::Symbol, "refresh_index")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    // Confidence alone would put the directory lesson first — specificity is
+    // what has to overrule it.
+    db.cite(&broad, None, None).unwrap();
+
+    let ctx = MatchContext {
+        symbol_name: "refresh_index",
+        file_path: Some("src/index.rs"),
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    };
+
+    let lessons = db.query_for_context(&ctx).unwrap().lessons;
+    assert_eq!(lessons.len(), 2);
+    assert_eq!(lessons[0].id, narrow);
+
+    // And it survives a cap of one, which is the point of the ranking.
+    let capped = db.query_for_context_capped(&ctx, 1).unwrap();
+    assert_eq!(capped.lessons[0].id, narrow);
+    assert_eq!(capped.omitted, 1);
+}
+
+#[test]
+fn specificity_counts_only_the_anchors_that_matched() {
+    let (_dir, db) = setup_lessons_db();
+    // Carries a symbol anchor, but that anchor does not match this context —
+    // it surfaces on the directory anchor and must be ranked as such.
+    db.store(&StoreLessonParams {
+        text: "Broad lesson with an unrelated symbol anchor",
+        anchors: &[
+            (AnchorKind::Symbol, "some_other_fn"),
+            (AnchorKind::Directory, "src"),
+        ],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+    let file_anchored = db
+        .store(&StoreLessonParams {
+            text: "src/index.rs re-exports are load-bearing",
+            anchors: &[(AnchorKind::File, "src/index.rs")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let lessons = db
+        .query_for_context(&MatchContext {
+            symbol_name: "unrelated",
+            file_path: Some("src/index.rs"),
+            imports: &[],
+            project: None,
+            workspace_languages: &[],
+        })
+        .unwrap()
+        .lessons;
+    assert_eq!(lessons.len(), 2);
+    assert_eq!(lessons[0].id, file_anchored);
+}

@@ -302,6 +302,31 @@ pub struct SurfacedLesson {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale: Option<bool>,
+    /// How narrowly this lesson's *matching* anchors bind to the query context
+    /// (see `anchor_specificity`). Ranking input only — never serialized, and
+    /// meaningless outside the context query that produced it.
+    #[serde(skip)]
+    pub specificity: u8,
+}
+
+/// Rank an anchor by how narrowly it binds to a single piece of code.
+///
+/// A lesson anchored to one symbol is nearly always more relevant to the
+/// caller's context than one anchored to a whole directory, yet both compete
+/// for the same cap slots. Ranking by this lets the cap be tightened without
+/// dropping the lesson that actually mattered.
+///
+/// File anchors straddle the range: `src/lessons.rs` is as narrow as it gets,
+/// but `src/**/*.rs` is broader than an import pattern — so a glob file anchor
+/// is scored below one.
+fn anchor_specificity(kind: &str, value: &str) -> u8 {
+    match kind {
+        "symbol" => 4,
+        "file" if !value.contains(['*', '?', '[']) => 3,
+        "import_pattern" => 2,
+        "file" => 1,
+        _ => 0,
+    }
 }
 
 const GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
@@ -357,6 +382,7 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
         project_origin: row.get(4)?,
         created_at: row.get(5)?,
         stale: None,
+        specificity: 0,
     })
 }
 
@@ -534,11 +560,26 @@ impl LessonsDb {
             }
         }
 
-        // Sort verified-first before applying cap so verified lessons always
-        // take priority slots.
+        // Score by the anchors that actually matched this context — not every
+        // anchor on the lesson. A lesson anchored to both a symbol and a
+        // directory is only symbol-specific when it surfaced via the symbol.
+        for l in &mut lessons {
+            l.specificity = matched_anchors
+                .get(&l.id)
+                .into_iter()
+                .flatten()
+                .filter_map(|key| key.split_once(':'))
+                .map(|(kind, value)| anchor_specificity(kind, value))
+                .max()
+                .unwrap_or(0);
+        }
+
+        // Sort before applying the cap so the priority slots go to verified,
+        // then narrowly-anchored, then high-confidence lessons.
         lessons.sort_by(|a, b| {
             b.verified
                 .cmp(&a.verified)
+                .then(b.specificity.cmp(&a.specificity))
                 .then(b.confidence.cmp(&a.confidence))
         });
 

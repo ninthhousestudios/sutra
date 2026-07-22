@@ -1118,6 +1118,7 @@ mod tests {
             project_origin: None,
             created_at: "2026-01-01".into(),
             stale: None,
+            specificity: 0,
         }
     }
 
