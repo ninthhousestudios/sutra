@@ -714,7 +714,7 @@ fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
                 kind: "function",
                 signature: Some(&format!("fn {sn}()")),
                 signature_hash: None,
-        structural_hash: None,
+                structural_hash: None,
                 visibility: Some("pub"),
                 start_line: *start,
                 start_col: 0,

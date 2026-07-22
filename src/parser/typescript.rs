@@ -801,10 +801,10 @@ fn handle_export(
                     Some(vis),
                     symbols,
                 );
-                if let Some(last) = symbols.last_mut() {
-                    if last.docstring.is_none() {
-                        last.docstring = javascript::extract_jsdoc(node, src);
-                    }
+                if let Some(last) = symbols.last_mut()
+                    && last.docstring.is_none()
+                {
+                    last.docstring = javascript::extract_jsdoc(node, src);
                 }
             }
             "export_clause" => {
@@ -977,12 +977,12 @@ fn collect_decorators(
 ) {
     let mut decorators = Vec::new();
     for child in node.children(&mut node.walk()) {
-        if child.kind() == "decorator" {
-            if let Ok(text) = child.utf8_text(src) {
-                let name = text.trim_start_matches('@');
-                let name = name.split('(').next().unwrap_or(name);
-                decorators.push(serde_json::Value::String(name.to_string()));
-            }
+        if child.kind() == "decorator"
+            && let Ok(text) = child.utf8_text(src)
+        {
+            let name = text.trim_start_matches('@');
+            let name = name.split('(').next().unwrap_or(name);
+            decorators.push(serde_json::Value::String(name.to_string()));
         }
     }
     if !decorators.is_empty() {
@@ -1002,26 +1002,27 @@ fn collect_type_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8])
 fn walk_type_refs(cursor: &mut TreeCursor, src: &[u8], refs: &mut Vec<ExtractedRef>) {
     let node = cursor.node();
 
-    if node.kind() == "type_identifier" && !is_type_definition(node) {
-        if let Ok(name) = node.utf8_text(src) {
-            let receiver = node.parent().and_then(|p| {
-                if p.kind() == "nested_type_identifier" {
-                    p.child_by_field_name("module")
-                        .and_then(|m| m.utf8_text(src).ok())
-                        .map(|s| s.to_string())
-                } else {
-                    None
-                }
-            });
-            refs.push(ExtractedRef {
-                name: name.to_string(),
-                line: node.start_position().row + 1,
-                col: node.start_position().column,
-                context_kind: RefContextKind::TypeUse,
-                resolved_local_target: None,
-                receiver,
-            });
-        }
+    if node.kind() == "type_identifier"
+        && !is_type_definition(node)
+        && let Ok(name) = node.utf8_text(src)
+    {
+        let receiver = node.parent().and_then(|p| {
+            if p.kind() == "nested_type_identifier" {
+                p.child_by_field_name("module")
+                    .and_then(|m| m.utf8_text(src).ok())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        });
+        refs.push(ExtractedRef {
+            name: name.to_string(),
+            line: node.start_position().row + 1,
+            col: node.start_position().column,
+            context_kind: RefContextKind::TypeUse,
+            resolved_local_target: None,
+            receiver,
+        });
     }
 
     if cursor.goto_first_child() {
@@ -1081,17 +1082,17 @@ fn walk_type_import_markers(cursor: &mut TreeCursor, src: &[u8], imports: &mut [
             return;
         }
         "export_statement" => {
-            if let Some(source) = node.child_by_field_name("source") {
-                if has_type_keyword(node, src) {
-                    let line = node.start_position().row + 1;
-                    let path = javascript::extract_string_content(source, src);
-                    for imp in imports.iter_mut() {
-                        if imp.line == line
-                            && imp.kind == "re_export"
-                            && path.as_ref().is_some_and(|p| p == &imp.raw_path)
-                        {
-                            imp.kind = "type_re_export";
-                        }
+            if let Some(source) = node.child_by_field_name("source")
+                && has_type_keyword(node, src)
+            {
+                let line = node.start_position().row + 1;
+                let path = javascript::extract_string_content(source, src);
+                for imp in imports.iter_mut() {
+                    if imp.line == line
+                        && imp.kind == "re_export"
+                        && path.as_ref().is_some_and(|p| p == &imp.raw_path)
+                    {
+                        imp.kind = "type_re_export";
                     }
                 }
             }

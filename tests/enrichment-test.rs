@@ -273,8 +273,15 @@ fn dart_package_imports_enriched() {
     let file_id = db
         .upsert_file("lib/src/app.dart", "dart", "d1", 30, true)
         .unwrap();
-    db.insert_import(file_id, "package:flutter/material.dart", None, 1, "import", None)
-        .unwrap();
+    db.insert_import(
+        file_id,
+        "package:flutter/material.dart",
+        None,
+        1,
+        "import",
+        None,
+    )
+    .unwrap();
     db.insert_import(file_id, "dart:core", None, 2, "import", None)
         .unwrap();
     seed_symbol(&db, file_id, "MyApp", "MyApp");

@@ -765,7 +765,7 @@ forbidden_deps = [
             kind: "function",
             signature: Some("fn documented_fn()"),
             signature_hash: None,
-        structural_hash: None,
+            structural_hash: None,
             visibility: Some("pub"),
             start_line: 1,
             start_col: 0,
@@ -783,8 +783,15 @@ forbidden_deps = [
     }
 
     // Import edge: view.rs -> query.rs (triggers forbidden dep)
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
+    db.insert_import(
+        f_view.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
 
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
@@ -925,10 +932,24 @@ forbidden_deps = [
         .unwrap();
 
     // view.rs imports query.rs (forbidden), lib.rs imports query.rs (not forbidden)
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
-    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
+    db.insert_import(
+        f_view.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
+    db.insert_import(
+        f_lib.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
 
     // Only view.rs is changed — its forbidden import should be detected as introduced
     let changed = vec!["src/ui/view.rs".to_string()];
@@ -992,8 +1013,15 @@ forbidden_deps = [
     ))
     .unwrap();
 
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
+    db.insert_import(
+        f_view.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
 
     // Create a constraint waiver for this specific violation
     let (constraints, _parse_errors) = sutra::rules::load_rules(dir.path())
@@ -1056,7 +1084,7 @@ fn convention_pipeline_persists_conventions_to_db() {
             kind: "function",
             signature: sig,
             signature_hash: None,
-        structural_hash: None,
+            structural_hash: None,
             visibility: Some("pub"),
             start_line: 1,
             start_col: 0,
@@ -1118,8 +1146,15 @@ forbidden_deps = [
         .unwrap();
     let f_view = db.file_by_path("src/ui/view.rs").unwrap().unwrap();
     let f_query = db.file_by_path("src/db/query.rs").unwrap().unwrap();
-    db.insert_import(f_view.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
+    db.insert_import(
+        f_view.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
 
     // Create a shared engine, ingest, then invalidate it
     let shared = DdEngine::new(Duration::from_secs(600));
@@ -1464,8 +1499,15 @@ forbidden_deps = [
         .unwrap();
 
     // Current DB: only lib.rs -> query.rs (allowed). The forbidden view.rs -> query.rs was removed.
-    db.insert_import(f_lib.id, "src/db/query.rs", Some(f_query.id), 1, "use", None)
-        .unwrap();
+    db.insert_import(
+        f_lib.id,
+        "src/db/query.rs",
+        Some(f_query.id),
+        1,
+        "use",
+        None,
+    )
+    .unwrap();
 
     // old_edges records that view.rs previously imported query.rs (forbidden)
     let changed_ids: std::collections::HashSet<i64> = [f_view.id].into_iter().collect();

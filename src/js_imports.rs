@@ -38,10 +38,10 @@ pub fn resolve_js_imports(db: &Db, workspace_root: &Path) -> Result<usize> {
             None
         };
 
-        if let Some(target_id) = resolved {
-            if target_id != *file_id {
-                updates.push((*import_id, target_id));
-            }
+        if let Some(target_id) = resolved
+            && target_id != *file_id
+        {
+            updates.push((*import_id, target_id));
         }
     }
 
@@ -115,9 +115,7 @@ fn resolve_path_segments(raw_path: &str, dir: &str) -> Option<String> {
         match segment {
             "." => {}
             ".." => {
-                if parts.pop().is_none() {
-                    return None;
-                }
+                parts.pop()?;
             }
             s => parts.push(s),
         }

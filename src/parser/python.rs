@@ -130,10 +130,10 @@ fn build_scopes_recursive(
     for child in node.children(&mut cursor) {
         let kind = child.kind();
 
-        if matches!(kind, "function_definition" | "class_definition") {
-            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
-                arena[parent_idx].defs.push(sym_idx);
-            }
+        if matches!(kind, "function_definition" | "class_definition")
+            && let Some(sym_idx) = find_symbol_for_node(child, src, symbols)
+        {
+            arena[parent_idx].defs.push(sym_idx);
         }
 
         match kind {
@@ -244,13 +244,12 @@ fn collect_local_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, us
             "with_statement" => {
                 let mut inner = child.walk();
                 for item in child.children(&mut inner) {
-                    if item.kind() == "as_pattern" {
-                        if let Some(alias) = item.child_by_field_name("alias")
-                            && alias.kind() == "identifier"
-                            && let Ok(name) = alias.utf8_text(src)
-                        {
-                            bindings.push((name.to_string(), line));
-                        }
+                    if item.kind() == "as_pattern"
+                        && let Some(alias) = item.child_by_field_name("alias")
+                        && alias.kind() == "identifier"
+                        && let Ok(name) = alias.utf8_text(src)
+                    {
+                        bindings.push((name.to_string(), line));
                     }
                 }
                 if let Some(body) = child.child_by_field_name("body") {
@@ -317,13 +316,12 @@ fn collect_except_bindings(try_node: Node, src: &[u8], bindings: &mut Vec<(Strin
         if child.kind() == "except_clause" {
             let mut inner = child.walk();
             for grandchild in child.children(&mut inner) {
-                if grandchild.kind() == "as_pattern" {
-                    if let Some(alias) = grandchild.child_by_field_name("alias")
-                        && alias.kind() == "identifier"
-                        && let Ok(name) = alias.utf8_text(src)
-                    {
-                        bindings.push((name.to_string(), child.start_position().row + 1));
-                    }
+                if grandchild.kind() == "as_pattern"
+                    && let Some(alias) = grandchild.child_by_field_name("alias")
+                    && alias.kind() == "identifier"
+                    && let Ok(name) = alias.utf8_text(src)
+                {
+                    bindings.push((name.to_string(), child.start_position().row + 1));
                 }
             }
         }
@@ -413,10 +411,10 @@ fn collect_py_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<PyTypeBin
     if node.kind() == "expression_statement" && !is_inside_class_body(node) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "assignment" {
-                if let Some(b) = extract_py_type_binding(child, src) {
-                    bindings.push(b);
-                }
+            if child.kind() == "assignment"
+                && let Some(b) = extract_py_type_binding(child, src)
+            {
+                bindings.push(b);
             }
         }
     }

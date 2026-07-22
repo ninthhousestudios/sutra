@@ -1928,9 +1928,12 @@ fn import_cycle_fires_for_cyclic_files() {
     let c = seed_file(&db, "src/c.rs");
 
     // a -> b -> c -> a (triangle cycle)
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
-    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None).unwrap();
-    db.insert_import(c, "src/a.rs", Some(a), 1, "use", None).unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None)
+        .unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None)
+        .unwrap();
+    db.insert_import(c, "src/a.rs", Some(a), 1, "use", None)
+        .unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     let cycle_findings: Vec<&HealthFinding> = findings
@@ -1959,8 +1962,10 @@ fn import_cycle_absent_for_acyclic() {
     let c = seed_file(&db, "src/c.rs");
 
     // a -> b -> c (no back edge)
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
-    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None).unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None)
+        .unwrap();
+    db.insert_import(b, "src/c.rs", Some(c), 1, "use", None)
+        .unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     let cycle_findings: Vec<&HealthFinding> = findings
@@ -1977,8 +1982,10 @@ fn import_cycle_roundtrips_through_db() {
     let a = seed_file(&db, "src/a.rs");
     let b = seed_file(&db, "src/b.rs");
 
-    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None).unwrap();
-    db.insert_import(b, "src/a.rs", Some(a), 1, "use", None).unwrap();
+    db.insert_import(a, "src/b.rs", Some(b), 1, "use", None)
+        .unwrap();
+    db.insert_import(b, "src/a.rs", Some(a), 1, "use", None)
+        .unwrap();
 
     let findings = compute_all_health_findings(&db, _dir.path()).unwrap();
     db.replace_health_findings(&findings).unwrap();

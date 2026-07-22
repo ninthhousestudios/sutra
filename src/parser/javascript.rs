@@ -507,14 +507,13 @@ pub(super) fn extract_variable_declarators(
             language_attrs: lang_attrs,
         };
 
-        if is_arrow || is_fn_expr {
-            if let Some(v) = value {
-                if let Some(body) = v.child_by_field_name("body") {
-                    let mut ctx: Vec<&str> = name_context.to_vec();
-                    ctx.push(&sym.short_name);
-                    sym.children = collect_symbols_inner(body, src, file_path, &ctx);
-                }
-            }
+        if (is_arrow || is_fn_expr)
+            && let Some(v) = value
+            && let Some(body) = v.child_by_field_name("body")
+        {
+            let mut ctx: Vec<&str> = name_context.to_vec();
+            ctx.push(&sym.short_name);
+            sym.children = collect_symbols_inner(body, src, file_path, &ctx);
         }
 
         symbols.push(sym);
@@ -575,10 +574,10 @@ pub(super) fn handle_export(
                     Some(vis),
                     symbols,
                 );
-                if let Some(last) = symbols.last_mut() {
-                    if last.docstring.is_none() {
-                        last.docstring = extract_jsdoc(node, src);
-                    }
+                if let Some(last) = symbols.last_mut()
+                    && last.docstring.is_none()
+                {
+                    last.docstring = extract_jsdoc(node, src);
                 }
             }
             "export_clause" => {
@@ -768,21 +767,15 @@ pub(super) fn is_test_file(path: &str) -> bool {
 pub(super) fn is_inside_test_call(node: Node, src: &[u8]) -> bool {
     let mut current = node.parent();
     while let Some(p) = current {
-        if p.kind() == "call_expression" {
-            if let Some(func) = p.child_by_field_name("function") {
-                let name = func.utf8_text(src).unwrap_or("");
-                if matches!(
-                    name,
-                    "describe"
-                        | "it"
-                        | "test"
-                        | "beforeEach"
-                        | "afterEach"
-                        | "beforeAll"
-                        | "afterAll"
-                ) {
-                    return true;
-                }
+        if p.kind() == "call_expression"
+            && let Some(func) = p.child_by_field_name("function")
+        {
+            let name = func.utf8_text(src).unwrap_or("");
+            if matches!(
+                name,
+                "describe" | "it" | "test" | "beforeEach" | "afterEach" | "beforeAll" | "afterAll"
+            ) {
+                return true;
             }
         }
         current = p.parent();
@@ -964,23 +957,21 @@ fn build_scopes_recursive(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         // Register symbol defs in current scope
-        if JS_DEF_KINDS.contains(&child.kind()) {
-            if let Some(sym_idx) = find_symbol_for_node(child, src, symbols) {
-                arena[parent_idx].defs.push(sym_idx);
-            }
+        if JS_DEF_KINDS.contains(&child.kind())
+            && let Some(sym_idx) = find_symbol_for_node(child, src, symbols)
+        {
+            arena[parent_idx].defs.push(sym_idx);
         }
 
         // Also register function declarations as hoisted bindings so they resolve
         // throughout the enclosing function/module scope (not just after decl).
-        if child.kind() == "function_declaration"
-            || child.kind() == "generator_function_declaration"
+        if (child.kind() == "function_declaration"
+            || child.kind() == "generator_function_declaration")
+            && let Some(name_node) = child.child_by_field_name("name")
+            && let Ok(name) = name_node.utf8_text(src)
         {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(src) {
-                    let hoist_target = find_hoist_target(arena, parent_idx);
-                    arena[hoist_target].hoisted_bindings.push(name.to_string());
-                }
-            }
+            let hoist_target = find_hoist_target(arena, parent_idx);
+            arena[hoist_target].hoisted_bindings.push(name.to_string());
         }
 
         match child.kind() {
@@ -1111,10 +1102,10 @@ fn collect_block_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, u
             let decl_line = child.start_position().row + 1;
             let mut dc = child.walk();
             for decl in child.children(&mut dc) {
-                if decl.kind() == "variable_declarator" {
-                    if let Some(name) = decl.child_by_field_name("name") {
-                        collect_pattern_names(name, src, decl_line, bindings);
-                    }
+                if decl.kind() == "variable_declarator"
+                    && let Some(name) = decl.child_by_field_name("name")
+                {
+                    collect_pattern_names(name, src, decl_line, bindings);
                 }
             }
         }
@@ -1145,13 +1136,13 @@ fn collect_var_bindings(node: Node, src: &[u8], scope_idx: usize, arena: &mut Ve
             let hoist_target = find_hoist_target(arena, scope_idx);
             let mut dc = child.walk();
             for decl in child.children(&mut dc) {
-                if decl.kind() == "variable_declarator" {
-                    if let Some(name_node) = decl.child_by_field_name("name") {
-                        let mut names = Vec::new();
-                        collect_pattern_names(name_node, src, 0, &mut names);
-                        for (name, _) in names {
-                            arena[hoist_target].hoisted_bindings.push(name);
-                        }
+                if decl.kind() == "variable_declarator"
+                    && let Some(name_node) = decl.child_by_field_name("name")
+                {
+                    let mut names = Vec::new();
+                    collect_pattern_names(name_node, src, 0, &mut names);
+                    for (name, _) in names {
+                        arena[hoist_target].hoisted_bindings.push(name);
                     }
                 }
             }
@@ -1176,12 +1167,11 @@ fn collect_var_bindings(node: Node, src: &[u8], scope_idx: usize, arena: &mut Ve
 
 fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, usize)>) {
     // Single-param arrow: `x => ...`
-    if let Some(param) = func.child_by_field_name("parameter") {
-        if param.kind() == "identifier" {
-            if let Ok(name) = param.utf8_text(src) {
-                bindings.push((name.to_string(), func.start_position().row + 1));
-            }
-        }
+    if let Some(param) = func.child_by_field_name("parameter")
+        && param.kind() == "identifier"
+        && let Ok(name) = param.utf8_text(src)
+    {
+        bindings.push((name.to_string(), func.start_position().row + 1));
     }
 
     let Some(params) = func.child_by_field_name("parameters") else {
@@ -1204,10 +1194,10 @@ fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, us
             "rest_pattern" => {
                 let mut rc = child.walk();
                 for inner in child.children(&mut rc) {
-                    if inner.kind() == "identifier" {
-                        if let Ok(name) = inner.utf8_text(src) {
-                            bindings.push((name.to_string(), decl_line));
-                        }
+                    if inner.kind() == "identifier"
+                        && let Ok(name) = inner.utf8_text(src)
+                    {
+                        bindings.push((name.to_string(), decl_line));
                     }
                 }
             }
@@ -1249,10 +1239,10 @@ fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(St
         "rest_pattern" => {
             let mut cursor = pat.walk();
             for child in pat.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    if let Ok(name) = child.utf8_text(src) {
-                        names.push((name.to_string(), line));
-                    }
+                if child.kind() == "identifier"
+                    && let Ok(name) = child.utf8_text(src)
+                {
+                    names.push((name.to_string(), line));
                 }
             }
         }
@@ -1276,10 +1266,10 @@ fn collect_for_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, usiz
             let decl_line = child.start_position().row + 1;
             let mut dc = child.walk();
             for decl in child.children(&mut dc) {
-                if decl.kind() == "variable_declarator" {
-                    if let Some(name) = decl.child_by_field_name("name") {
-                        collect_pattern_names(name, src, decl_line, bindings);
-                    }
+                if decl.kind() == "variable_declarator"
+                    && let Some(name) = decl.child_by_field_name("name")
+                {
+                    collect_pattern_names(name, src, decl_line, bindings);
                 }
             }
         }
@@ -1539,13 +1529,12 @@ fn classify_ref_context(node: Node) -> RefContextKind {
                 return RefContextKind::Construction;
             }
         }
-        "jsx_self_closing_element" | "jsx_opening_element" | "jsx_closing_element" => {
+        "jsx_self_closing_element" | "jsx_opening_element" | "jsx_closing_element"
             if parent
                 .child_by_field_name("name")
-                .is_some_and(|n| n.id() == node.id())
-            {
-                return RefContextKind::Construction;
-            }
+                .is_some_and(|n| n.id() == node.id()) =>
+        {
+            return RefContextKind::Construction;
         }
         _ => {}
     }

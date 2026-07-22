@@ -68,7 +68,7 @@ pub fn resolve_refs(
                 all_symbols,
                 file_imports,
                 file_id,
-                &class_members,
+                class_members,
             )
         })
         .collect()
@@ -136,11 +136,10 @@ fn resolve_single(
                 })
                 .collect();
             for class_sym in class_syms {
-                if let Some(members) = class_members.get(&class_sym.id) {
-                    if let Some(&(_, member_id)) = members.iter().find(|(n, _)| *n == name.as_str())
-                    {
-                        return resolved(r, member_id, ResolutionMethod::TypeTracking);
-                    }
+                if let Some(members) = class_members.get(&class_sym.id)
+                    && let Some(&(_, member_id)) = members.iter().find(|(n, _)| *n == name.as_str())
+                {
+                    return resolved(r, member_id, ResolutionMethod::TypeTracking);
                 }
             }
             // Type found but member not in DB — fall through to standard resolution.
@@ -366,13 +365,13 @@ fn find_via_imports(
             return Some(s.id);
         }
 
-        if alias_match {
-            if let Some(s) = all_symbols.iter().find(|s| {
+        if alias_match
+            && let Some(s) = all_symbols.iter().find(|s| {
                 s.short_name == last_segment
                     && (!use_kind_filter || kind_compatible(context, &s.kind))
-            }) {
-                return Some(s.id);
-            }
+            })
+        {
+            return Some(s.id);
         }
     }
 

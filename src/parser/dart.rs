@@ -934,10 +934,10 @@ struct DartTypeBinding {
 /// `initialized_identifier` or `initialized_variable_definition` whose initializer is a
 /// constructor call or `new`/`const` expression.
 fn collect_dart_type_bindings(node: Node, src: &[u8], bindings: &mut Vec<DartTypeBinding>) {
-    if node.kind() == "initialized_identifier" || node.kind() == "initialized_variable_definition" {
-        if let Some(b) = extract_dart_type_binding(node, src) {
-            bindings.push(b);
-        }
+    if (node.kind() == "initialized_identifier" || node.kind() == "initialized_variable_definition")
+        && let Some(b) = extract_dart_type_binding(node, src)
+    {
+        bindings.push(b);
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
