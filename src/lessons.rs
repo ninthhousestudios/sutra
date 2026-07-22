@@ -200,7 +200,7 @@ fn is_language_category(cat: &str) -> bool {
 pub struct MatchContext<'a> {
     pub symbol_name: &'a str,
     pub file_path: Option<&'a str>,
-    pub imports: &'a [String],
+    pub imports: &'a [&'a str],
     pub project: Option<&'a str>,
     pub workspace_languages: &'a [String],
 }

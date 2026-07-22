@@ -336,10 +336,7 @@ fn import_pattern_matches_imports() {
     })
     .unwrap();
 
-    let imports_hit = vec![
-        "rusqlite::params".to_string(),
-        "serde_json::json".to_string(),
-    ];
+    let imports_hit = vec!["rusqlite::params", "serde_json::json"];
     let hit = db
         .query_for_context(&MatchContext {
             symbol_name: "irrelevant",
@@ -353,7 +350,7 @@ fn import_pattern_matches_imports() {
     assert_eq!(hit.len(), 1);
     assert!(hit[0].text.contains("rusqlite pitfall"));
 
-    let imports_miss = vec!["serde_json::json".to_string()];
+    let imports_miss = vec!["serde_json::json"];
     let miss = db
         .query_for_context(&MatchContext {
             symbol_name: "irrelevant",
@@ -379,7 +376,7 @@ fn import_pattern_matches_dart_package_imports() {
     })
     .unwrap();
 
-    let dart_imports = vec!["package:flutter/material.dart".to_string()];
+    let dart_imports = vec!["package:flutter/material.dart"];
     let hit = db
         .query_for_context(&MatchContext {
             symbol_name: "irrelevant",
@@ -396,7 +393,7 @@ fn import_pattern_matches_dart_package_imports() {
         "flutter::* should match package:flutter/material.dart"
     );
 
-    let miss_imports = vec!["package:provider/provider.dart".to_string()];
+    let miss_imports = vec!["package:provider/provider.dart"];
     let miss = db
         .query_for_context(&MatchContext {
             symbol_name: "irrelevant",
@@ -525,7 +522,7 @@ fn no_false_positives_across_kinds() {
     .unwrap();
 
     // Context that matches none of the above
-    let imports = vec!["serde::Serialize".to_string()];
+    let imports = vec!["serde::Serialize"];
     let results = db
         .query_for_context(&MatchContext {
             symbol_name: "unrelated",

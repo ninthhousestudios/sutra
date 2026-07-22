@@ -207,6 +207,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Build proposed content early — reused for pattern check and later analysis.
     let proposed = guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path);
 
+    // Parsed before the file_row bail below: for a brand-new file there is no
+    // indexed row, and that greenfield case is exactly the one lessons need to
+    // reach. parse_proposed depends only on path + content, not on file_id.
+    let parsed_result = proposed
+        .as_deref()
+        .and_then(|p| guard::parse_proposed(&rel_path, p));
+
     // Pattern constraint check (introduced-only) — doesn't need file_id.
     if let Some(ref proposed_content) = proposed {
         let pattern_outcome =
@@ -247,6 +254,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok();
 
     let Some((file_id, pagerank, blast_radius)) = file_row else {
+        // Not indexed — a new file. No blast radius to check, but lessons
+        // anchored by directory / file glob / import pattern still apply.
+        emit_lessons(
+            &conn,
+            &project_root,
+            &rel_path,
+            parsed_result.as_ref(),
+            hook.hook_event_name.as_deref(),
+        );
         return Ok(());
     };
 
@@ -268,10 +284,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         blast_radius,
         hot_symbols,
     };
-
-    let parsed_result = proposed
-        .as_deref()
-        .and_then(|p| guard::parse_proposed(&rel_path, p));
 
     // Constraint check: try proposed-content analysis first, fall back to indexed edges
     let constraint_findings = if let Some(ref parsed) = parsed_result {
@@ -330,20 +342,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "sutra-guard: body-local edit to {} — skipping blast-radius check",
                 rel_path
             );
+            emit_lessons(
+                &conn,
+                &project_root,
+                &rel_path,
+                parsed_result.as_ref(),
+                hook.hook_event_name.as_deref(),
+            );
             return Ok(());
         }
     } else if guard::is_additive_edit(&hook.tool_input) {
+        emit_lessons(
+            &conn,
+            &project_root,
+            &rel_path,
+            parsed_result.as_ref(),
+            hook.hook_event_name.as_deref(),
+        );
         return Ok(());
     }
 
     let ack_fresh = guard::ack_is_fresh(&project_root, &rel_path, cfg.ack_ttl_secs);
     let decision = guard::evaluate(&facts, &cfg, ack_fresh);
 
+    // A PreToolUse hook emits at most one JSON object, so a deny takes the
+    // channel and lessons wait for the retry after the agent acks.
     if let Some(json) = guard::render_stdout(&decision, hook.hook_event_name.as_deref()) {
         println!("{json}");
+    } else {
+        emit_lessons(
+            &conn,
+            &project_root,
+            &rel_path,
+            parsed_result.as_ref(),
+            hook.hook_event_name.as_deref(),
+        );
     }
 
     Ok(())
+}
+
+/// Look up and emit lessons on the advisory channel. Called only from paths
+/// that did not deny, so a denied write never pays to open lessons.db. Falls
+/// back to stderr for harnesses without a structured advisory field.
+fn emit_lessons(
+    conn: &Connection,
+    project_root: &std::path::Path,
+    rel_path: &str,
+    parsed: Option<&sutra::parser::ParseResult>,
+    event_name: Option<&str>,
+) {
+    let Some(note) = guard::lessons_for_proposed(conn, project_root, rel_path, parsed) else {
+        return;
+    };
+    match guard::render_advisory_stdout(&note, event_name) {
+        Some(json) => println!("{json}"),
+        None => eprintln!("sutra-guard: {note}"),
+    }
 }
 
 fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error>> {

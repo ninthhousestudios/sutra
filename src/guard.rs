@@ -196,6 +196,101 @@ pub fn render_stdout(decision: &GuardDecision, event_name: Option<&str>) -> Opti
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lessons surfacing (advisory)
+// ---------------------------------------------------------------------------
+
+/// Max lessons surfaced on a single write. Deliberately tighter than
+/// `lessons::CONTEXT_SURFACING_CAP` — the guard fires on every edit, so its
+/// budget is a per-write nudge, not a report.
+pub const GUARD_LESSON_CAP: usize = 2;
+
+pub fn lessons_disabled() -> bool {
+    std::env::var("SUTRA_GUARD_LESSONS_DISABLE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+/// Look up lessons anchored to the file being written.
+///
+/// This is the only surfacing path that reaches greenfield code: the other
+/// three (`sutra_read`, `sutra_impact`, `sutra_orient`) key off a symbol or an
+/// already-indexed scope, neither of which exists yet when a new file is being
+/// written. Here the proposed content supplies the imports, so `import_pattern`
+/// anchors match before the code below them is written.
+///
+/// Returns a rendered advisory block, or `None` when nothing matches.
+pub fn lessons_for_proposed(
+    conn: &Connection,
+    project_root: &Path,
+    rel_path: &str,
+    parsed: Option<&ParseResult>,
+) -> Option<String> {
+    if lessons_disabled() {
+        return None;
+    }
+
+    let ldb = crate::lessons::LessonsDb::open(&sutra_db_dir()).ok()?;
+
+    let imports: Vec<&str> = parsed
+        .map(|p| p.imports.iter().map(|i| i.raw_path.as_str()).collect())
+        .unwrap_or_default();
+
+    let ws_langs: Vec<String> = conn
+        .prepare("SELECT DISTINCT language FROM files")
+        .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+        .unwrap_or_default();
+
+    let ctx = crate::lessons::MatchContext {
+        symbol_name: "",
+        file_path: Some(rel_path),
+        imports: &imports,
+        project: project_root.file_name().and_then(|n| n.to_str()),
+        workspace_languages: &ws_langs,
+    };
+
+    let found = ldb.query_for_context(&ctx).ok()?;
+    if found.lessons.is_empty() {
+        return None;
+    }
+    Some(format_lesson_advisory(&found))
+}
+
+fn format_lesson_advisory(found: &crate::lessons::ContextLessons) -> String {
+    let mut out = String::from("sutra lessons anchored to this file (advisory, not blocking):\n");
+    for l in found.lessons.iter().take(GUARD_LESSON_CAP) {
+        out.push_str(&format!("- {} [{}]\n", l.text, l.id));
+    }
+    // `omitted` counts what the store already dropped at its own cap; add what
+    // this tighter per-write cap drops on top.
+    let omitted = found.omitted + found.lessons.len().saturating_sub(GUARD_LESSON_CAP);
+    if omitted > 0 {
+        out.push_str(&format!(
+            "({omitted} more matched — `sutra_lessons(query=...)` for the rest)\n"
+        ));
+    }
+    out.push_str("If one of these applies, cite it: `sutra_remember(cite=\"<id>\")`.");
+    out
+}
+
+/// Render an advisory note for the model. Unlike `render_stdout` this never
+/// denies — it rides the PreToolUse `additionalContext` channel so the agent
+/// sees the lesson while the write still proceeds.
+pub fn render_advisory_stdout(note: &str, event_name: Option<&str>) -> Option<String> {
+    if event_name == Some("BeforeTool") {
+        return None;
+    }
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": note,
+            }
+        })
+        .to_string(),
+    )
+}
+
 pub fn workspace_id_from_path(root: &Path) -> String {
     root.file_name()
         .and_then(|n| n.to_str())
@@ -943,6 +1038,50 @@ mod tests {
     use super::*;
     use crate::constraints::FindingDelta;
     use crate::rules::Severity;
+
+    fn surfaced(id: &str, text: &str) -> crate::lessons::SurfacedLesson {
+        crate::lessons::SurfacedLesson {
+            id: id.into(),
+            text: text.into(),
+            verified: true,
+            confidence: 1,
+            project_origin: None,
+            created_at: "2026-01-01".into(),
+            stale: None,
+        }
+    }
+
+    #[test]
+    fn advisory_caps_lessons_and_counts_both_omission_sources() {
+        // 4 matched here + 3 already dropped at the store's own cap.
+        let found = crate::lessons::ContextLessons {
+            lessons: (0..4).map(|i| surfaced(&i.to_string(), "note")).collect(),
+            omitted: 3,
+        };
+        let out = format_lesson_advisory(&found);
+        assert_eq!(out.matches("- note [").count(), GUARD_LESSON_CAP);
+        // 3 from the store + 2 dropped by the tighter per-write cap.
+        assert!(out.contains("(5 more matched"), "{out}");
+    }
+
+    #[test]
+    fn advisory_omits_more_line_when_nothing_dropped() {
+        let found = crate::lessons::ContextLessons {
+            lessons: vec![surfaced("a", "only")],
+            omitted: 0,
+        };
+        let out = format_lesson_advisory(&found);
+        assert!(!out.contains("more matched"), "{out}");
+    }
+
+    #[test]
+    fn advisory_never_denies() {
+        let json = render_advisory_stdout("note", Some("PreToolUse")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["additionalContext"], "note");
+        assert!(v["hookSpecificOutput"]["permissionDecision"].is_null());
+        assert!(v["decision"].is_null());
+    }
 
     #[test]
     fn additive_append() {

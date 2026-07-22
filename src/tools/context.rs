@@ -495,11 +495,12 @@ pub fn handle(
             .into_iter()
             .map(|i| i.imported_path)
             .collect();
+        let import_refs: Vec<&str> = import_paths.iter().map(String::as_str).collect();
         let ws_langs = db.distinct_languages().unwrap_or_default();
         let ctx = crate::lessons::MatchContext {
             symbol_name: &sym.qualified_name,
             file_path: Some(&file_path),
-            imports: &import_paths,
+            imports: &import_refs,
             project: project_slug,
             workspace_languages: &ws_langs,
         };
