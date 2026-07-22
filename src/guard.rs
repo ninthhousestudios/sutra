@@ -1119,6 +1119,7 @@ mod tests {
             created_at: "2026-01-01".into(),
             stale: None,
             specificity: 0,
+            match_kind: None,
         }
     }
 

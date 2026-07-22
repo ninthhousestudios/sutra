@@ -7,7 +7,8 @@ use crate::lessons::{LessonsDb, LessonsSearchParams};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LessonsArgs {
-    /// Full-text search query
+    /// Search query. Matches lesson text (FTS5) and category tags — phrase it
+    /// as the work you are about to do ("sqlite migration", "golden testing").
     #[serde(default)]
     pub query: Option<String>,
     /// Filter by category tag

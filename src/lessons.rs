@@ -53,6 +53,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_metadata",
         include_str!("lessons/sql/lessons_metadata.sql"),
     ),
+    (
+        "0006_category_tag_index",
+        include_str!("lessons/sql/lessons_category_tag_index.sql"),
+    ),
 ];
 
 impl LessonsDb {
@@ -307,6 +311,9 @@ pub struct SurfacedLesson {
     /// meaningless outside the context query that produced it.
     #[serde(skip)]
     pub specificity: u8,
+    /// Set by `search` only — see `MatchKind`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_kind: Option<MatchKind>,
 }
 
 /// Rank an anchor by how narrowly it binds to a single piece of code.
@@ -383,6 +390,7 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
         created_at: row.get(5)?,
         stale: None,
         specificity: 0,
+        match_kind: None,
     })
 }
 
@@ -621,6 +629,58 @@ fn quote_fts5_query(raw: &str) -> String {
         .join(" ")
 }
 
+/// Words too generic to be a useful intent signal. Short tokens are dropped
+/// wholesale below; these are the ones long enough to survive that.
+const TAG_QUERY_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "with", "when", "how", "not", "use", "using", "into", "from", "that",
+    "this", "what", "why", "does", "should",
+];
+
+/// Split a free-text query into candidate category tokens.
+fn tag_query_tokens(query: &str) -> Vec<String> {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(|t| t.to_lowercase())
+        .filter(|t| !TAG_QUERY_STOPWORDS.contains(&t.as_str()))
+        .collect()
+}
+
+/// Which of the store's category tags a free-text query is asking about.
+///
+/// Matching is per-segment so a query of "golden testing" reaches the
+/// `golden-testing` tag. Deliberately generous: category hits rank below text
+/// hits, so a loose match costs a tail slot rather than a top one.
+fn tags_matching_query(all_tags: &[String], query: &str) -> Vec<String> {
+    let tokens = tag_query_tokens(query);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    all_tags
+        .iter()
+        .filter(|tag| {
+            let lowered = tag.to_lowercase();
+            tokens.iter().any(|t| {
+                lowered == *t || lowered.split(['-', '_', '.']).any(|seg| seg == t.as_str())
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Why a lesson appeared in a search result. Absent outside search, where the
+/// anchor match is the whole story.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchKind {
+    /// Full-text hit on the lesson's own prose.
+    Text,
+    /// The query named one of the lesson's category tags. Categories describe
+    /// what you are about to do rather than where the code lives, so this is
+    /// the tier that works on greenfield code with no anchors to match.
+    Category,
+}
+
 pub struct LessonsSearchParams<'a> {
     pub query: Option<&'a str>,
     pub category: Option<&'a str>,
@@ -631,82 +691,199 @@ pub struct LessonsSearchParams<'a> {
     pub limit: usize,
 }
 
-impl LessonsDb {
-    pub fn search(&self, params: &LessonsSearchParams<'_>) -> Result<Vec<SurfacedLesson>> {
-        let conn = self.conn.lock();
+/// The filters that apply to every search tier, built once so the text and
+/// category passes cannot drift apart.
+struct SearchFilters {
+    joins: String,
+    conditions: Vec<String>,
+    binds: Vec<String>,
+    next_idx: usize,
+}
 
-        let mut sql = String::from(
-            "SELECT DISTINCT l.id, l.text, l.verified, l.confidence, \
-             l.project_origin, l.created_at FROM lessons l",
-        );
-        let mut conditions: Vec<String> = if params.include_archived {
-            vec![]
-        } else {
-            vec!["l.archived = 0".to_string()]
+impl SearchFilters {
+    /// `start_idx` is the first free bind slot; tiers reserve their own
+    /// placeholders before these.
+    fn build(params: &LessonsSearchParams<'_>, start_idx: usize) -> Self {
+        let mut f = SearchFilters {
+            joins: String::new(),
+            conditions: if params.include_archived {
+                vec![]
+            } else {
+                vec!["l.archived = 0".to_string()]
+            },
+            binds: Vec::new(),
+            next_idx: start_idx,
         };
-        let mut bind_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        let mut param_idx = 0usize;
-
-        let has_fts = params.query.is_some();
-
-        if let Some(q) = params.query {
-            sql.push_str(" JOIN lessons_fts ON lessons_fts.rowid = l.rowid");
-            param_idx += 1;
-            conditions.push(format!("lessons_fts MATCH ?{param_idx}"));
-            let safe_q = quote_fts5_query(q);
-            bind_values.push(Box::new(safe_q));
-        }
 
         if let Some(cat) = params.category {
-            sql.push_str(" JOIN categories c ON c.lesson_id = l.id");
-            param_idx += 1;
-            conditions.push(format!("c.tag = ?{param_idx}"));
-            bind_values.push(Box::new(cat.to_string()));
+            f.joins.push_str(" JOIN categories c ON c.lesson_id = l.id");
+            f.conditions.push(format!("c.tag = ?{}", f.next_idx));
+            f.binds.push(cat.to_string());
+            f.next_idx += 1;
         }
 
         if let Some(sym) = params.symbol {
-            sql.push_str(" JOIN anchors a ON a.lesson_id = l.id");
-            param_idx += 1;
-            conditions.push(format!("a.kind = 'symbol' AND a.value = ?{param_idx}"));
-            bind_values.push(Box::new(sym.to_string()));
+            f.joins.push_str(" JOIN anchors a ON a.lesson_id = l.id");
+            f.conditions
+                .push(format!("a.kind = 'symbol' AND a.value = ?{}", f.next_idx));
+            f.binds.push(sym.to_string());
+            f.next_idx += 1;
         }
 
         if let Some(true) = params.verified {
-            conditions.push("l.verified = 1".to_string());
+            f.conditions.push("l.verified = 1".to_string());
         }
 
         if let Some(proj) = params.project {
-            param_idx += 1;
-            conditions.push(format!(
-                "(l.project_origin IS NULL OR l.project_origin = ?{param_idx})"
+            f.conditions.push(format!(
+                "(l.project_origin IS NULL OR l.project_origin = ?{})",
+                f.next_idx
             ));
-            bind_values.push(Box::new(proj.to_string()));
+            f.binds.push(proj.to_string());
+            f.next_idx += 1;
         }
 
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
+        f
+    }
+
+    /// Append the shared conditions to a tier that has already opened its own
+    /// `WHERE`.
+    fn append_to(&self, sql: &mut String) {
+        for cond in &self.conditions {
+            sql.push_str(" AND ");
+            sql.push_str(cond);
         }
+    }
+}
 
-        if has_fts {
-            sql.push_str(" ORDER BY rank");
-        } else {
-            sql.push_str(" ORDER BY l.verified DESC, l.confidence DESC");
+const SEARCH_COLUMNS: &str = "SELECT DISTINCT l.id, l.text, l.verified, l.confidence, \
+                              l.project_origin, l.created_at FROM lessons l";
+
+impl LessonsDb {
+    /// Search in two tiers: full text over the lesson's own prose, then the
+    /// category index for what the query named by intent rather than wording.
+    ///
+    /// The category tier is what makes the store usable at plan time — tags
+    /// like `sqlite` or `golden-testing` describe the work about to be done,
+    /// so they match before any of the code a lesson is anchored to exists.
+    /// Text hits always come first; category-only hits fill the tail, and each
+    /// result carries the tier that produced it.
+    pub fn search(&self, params: &LessonsSearchParams<'_>) -> Result<Vec<SurfacedLesson>> {
+        let conn = self.conn.lock();
+        let limit = params.limit as i64;
+
+        let Some(q) = params.query else {
+            let filters = SearchFilters::build(params, 1);
+            let mut sql = format!("{SEARCH_COLUMNS}{}", filters.joins);
+            if !filters.conditions.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&filters.conditions.join(" AND "));
+            }
+            sql.push_str(&format!(
+                " ORDER BY l.verified DESC, l.confidence DESC LIMIT ?{}",
+                filters.next_idx
+            ));
+
+            let mut refs = to_sql_refs(&filters.binds);
+            refs.push(&limit);
+            return query_lessons(&conn, &sql, &refs, None);
+        };
+
+        // Tier 1: full text.
+        let filters = SearchFilters::build(params, 2);
+        let mut sql = format!(
+            "{SEARCH_COLUMNS} JOIN lessons_fts ON lessons_fts.rowid = l.rowid{} \
+             WHERE lessons_fts MATCH ?1",
+            filters.joins
+        );
+        filters.append_to(&mut sql);
+        sql.push_str(&format!(" ORDER BY rank LIMIT ?{}", filters.next_idx));
+
+        let fts_query = quote_fts5_query(q);
+        let mut refs: Vec<&dyn rusqlite::types::ToSql> = vec![&fts_query];
+        refs.extend(to_sql_refs(&filters.binds));
+        refs.push(&limit);
+        let mut lessons = query_lessons(&conn, &sql, &refs, MatchKind::Text)?;
+
+        // Tier 2: categories, filling only the slots the text tier left.
+        let remaining = (params.limit.saturating_sub(lessons.len())) as i64;
+        if remaining == 0 {
+            return Ok(lessons);
         }
-
-        param_idx += 1;
-        sql.push_str(&format!(" LIMIT ?{param_idx}"));
-        bind_values.push(Box::new(params.limit as i64));
-
-        let mut stmt = conn.prepare(&sql)?;
-        let refs: Vec<&dyn rusqlite::types::ToSql> =
-            bind_values.iter().map(|b| b.as_ref()).collect();
-        let lessons: Vec<SurfacedLesson> = stmt
-            .query_map(refs.as_slice(), map_surfaced_lesson)?
+        let all_tags: Vec<String> = conn
+            .prepare("SELECT DISTINCT tag FROM categories")?
+            .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        let hit_tags = tags_matching_query(&all_tags, q);
+        if hit_tags.is_empty() {
+            return Ok(lessons);
+        }
 
+        let by_category = {
+            let seen: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();
+            let filters = SearchFilters::build(params, 1 + hit_tags.len() + seen.len());
+            let mut sql = format!(
+                "{SEARCH_COLUMNS} JOIN categories ct ON ct.lesson_id = l.id{} WHERE ct.tag IN ({})",
+                filters.joins,
+                placeholders(1, hit_tags.len()),
+            );
+            if !seen.is_empty() {
+                sql.push_str(&format!(
+                    " AND l.id NOT IN ({})",
+                    placeholders(1 + hit_tags.len(), seen.len())
+                ));
+            }
+            filters.append_to(&mut sql);
+            sql.push_str(&format!(
+                " ORDER BY l.verified DESC, l.confidence DESC LIMIT ?{}",
+                filters.next_idx
+            ));
+
+            let mut refs = to_sql_refs(&hit_tags);
+            refs.extend(seen.iter().map(|s| s as &dyn rusqlite::types::ToSql));
+            refs.extend(to_sql_refs(&filters.binds));
+            refs.push(&remaining);
+            query_lessons(&conn, &sql, &refs, MatchKind::Category)?
+        };
+
+        lessons.extend(by_category);
         Ok(lessons)
     }
+}
+
+/// `?n, ?n+1, ...` for `count` bind slots starting at `start`.
+fn placeholders(start: usize, count: usize) -> String {
+    (start..start + count)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn to_sql_refs(values: &[String]) -> Vec<&dyn rusqlite::types::ToSql> {
+    values
+        .iter()
+        .map(|v| v as &dyn rusqlite::types::ToSql)
+        .collect()
+}
+
+fn query_lessons(
+    conn: &Connection,
+    sql: &str,
+    binds: &[&dyn rusqlite::types::ToSql],
+    kind: impl Into<Option<MatchKind>>,
+) -> Result<Vec<SurfacedLesson>> {
+    let kind = kind.into();
+    let mut stmt = conn.prepare(sql)?;
+    let lessons = stmt
+        .query_map(binds, map_surfaced_lesson)?
+        .map(|r| {
+            r.map(|mut l| {
+                l.match_kind = kind;
+                l
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(lessons)
 }
 
 // ---------------------------------------------------------------------------

@@ -674,6 +674,151 @@ fn fts5_text_search() {
 }
 
 #[test]
+fn query_matches_category_tags_not_only_text() {
+    let (_dir, db) = setup_lessons_db();
+    // Says nothing about sqlite in its prose — the tag is the only handle.
+    let tagged = db
+        .store(&StoreLessonParams {
+            text: "Bump user_version in the same transaction as the DDL",
+            anchors: &[(AnchorKind::Symbol, "migrate")],
+            categories: &["sqlite", "golden-testing"],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("sqlite migration"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, tagged);
+
+    // Multi-word tags are reachable per segment.
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("golden testing"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, tagged);
+}
+
+#[test]
+fn text_matches_rank_above_category_matches_and_are_labelled() {
+    let (_dir, db) = setup_lessons_db();
+    let by_category = db
+        .store(&StoreLessonParams {
+            text: "Bump user_version in the same transaction as the DDL",
+            anchors: &[(AnchorKind::Symbol, "migrate")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    let by_text = db
+        .store(&StoreLessonParams {
+            text: "sqlite busy_timeout has to be set per connection",
+            anchors: &[(AnchorKind::Symbol, "open")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    // Confidence would otherwise float the category-only lesson to the top.
+    db.cite(&by_category, None, None).unwrap();
+    db.cite(&by_category, None, None).unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("sqlite"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].id, by_text);
+    assert_eq!(results[1].id, by_category);
+
+    let kinds: Vec<String> = results
+        .iter()
+        .map(|l| serde_json::to_value(l).unwrap()["match_kind"].to_string())
+        .collect();
+    assert_eq!(kinds, vec!["\"text\"", "\"category\""]);
+}
+
+#[test]
+fn category_tier_respects_filters_and_limit() {
+    let (_dir, db) = setup_lessons_db();
+    for i in 0..3 {
+        db.store(&StoreLessonParams {
+            text: &format!("Untagged prose {i}"),
+            anchors: &[(AnchorKind::Symbol, "irrelevant")],
+            categories: &["ffi"],
+            source_task_ids: &[],
+            project_origin: Some("otherproj"),
+        })
+        .unwrap();
+    }
+    let ours = db
+        .store(&StoreLessonParams {
+            text: "Untagged prose ours",
+            anchors: &[(AnchorKind::Symbol, "irrelevant")],
+            categories: &["ffi"],
+            source_task_ids: &[],
+            project_origin: Some("ourproj"),
+        })
+        .unwrap();
+
+    // Project scoping must apply to the category tier too, not just to text.
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("ffi"),
+            project: Some("ourproj"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, ours);
+
+    // And the limit bounds the two tiers together.
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("ffi"),
+            limit: 2,
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn generic_query_words_do_not_pull_in_categories() {
+    let (_dir, db) = setup_lessons_db();
+    db.store(&StoreLessonParams {
+        text: "Some lesson about nothing in particular",
+        anchors: &[(AnchorKind::Symbol, "irrelevant")],
+        categories: &["the", "concurrency"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("the a of"),
+            ..search_params()
+        })
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "stopwords and short tokens must not reach the category tier"
+    );
+}
+
+#[test]
 fn fts5_ranking_prefers_better_match() {
     let (_dir, db) = setup_lessons_db();
     db.store(&StoreLessonParams {

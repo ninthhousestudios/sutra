@@ -532,7 +532,10 @@ impl SutraServer {
 
     #[tool(
         description = "Search stored lessons by text (FTS5) and/or structured filters \
-        (category, symbol anchor, verified). Returns matching lessons ranked by relevance."
+        (category, symbol anchor, verified). A query also matches category tags, so \
+        intent-shaped lookups work before the code exists — sutra_lessons(query=\"sqlite \
+        migration\") finds lessons tagged `sqlite` even when they never say the word. \
+        Text hits rank first; each result carries the match_kind that produced it."
     )]
     pub async fn sutra_lessons(
         &self,
