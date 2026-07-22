@@ -348,6 +348,13 @@ pub fn build_findings(
         }
     }
 
+    // Changed stubs have no file row, so they never make it into changed_ids.
+    let changed_pattern_only_paths: Vec<String> = changed_paths
+        .iter()
+        .filter(|p| crate::constraints::patterns::is_pattern_only_path(p, registry))
+        .cloned()
+        .collect();
+
     let check_outcome = check::evaluate(
         &FactsSource::DdBacked {
             db,
@@ -357,6 +364,7 @@ pub fn build_findings(
         EvalScope::ChangedFiles {
             changed_ids: &changed_ids,
             old_edges: &old_edges,
+            changed_pattern_only_paths: &changed_pattern_only_paths,
         },
         registry,
     )?;

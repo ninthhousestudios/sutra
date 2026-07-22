@@ -16,7 +16,9 @@ src/constraints/
                       Shared helpers: find_matching_constraint,
                       build_component_context, format_violation_detail,
                       constraint_coverage (per-field glob/component match counts
-                      for dead constraint detection).
+                      for dead constraint detection; takes pattern_only_paths as
+                      a separate arg — unindexed stubs count for
+                      forbidden_pattern only, never for dep-kind globs).
   engine.rs         — DdEngine (Cold/Loaded/Warm state machine), public API:
                       ingest, update, set_forbidden_pairs, query_violations,
                       query_cycles, query_blast_radius[_all], evict_if_idle.
@@ -38,7 +40,14 @@ src/constraints/
                       (superset of extensions()), so unindexed stub files match.
                       scan_pattern_only_files walks the workspace for extensions
                       that are pattern-eligible but never indexed (.pyi today) —
-                      they have no file row, so check.rs finds them on disk.
+                      they have no file row, so check.rs finds them on disk
+                      (gated on has_patterns; the walk is O(repo files)).
+                      is_pattern_only_path classifies a single path, used by
+                      review.rs to keep changed stubs alive across the
+                      path→file_id reduction. Stub scan sources by scope:
+                      Workspace → every stub on disk, ChangedFiles →
+                      EvalScope's changed_pattern_only_paths, SingleFile/Edges →
+                      none (guard covers those via check_proposed_patterns).
   check.rs          — Unified constraint evaluation. evaluate() dispatches to
                       evaluate_dd (DD-backed: review, orient, sutra_constraints
                       violations) or evaluate_raw (raw SQLite: guard hook).

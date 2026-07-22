@@ -74,6 +74,23 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
 
     let all_files = db.all_files()?;
     let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
+
+    // Unindexed stubs are absent from the files table, so a stub-only pattern
+    // rule would report zero coverage and be flagged inert — contradicting the
+    // violations action, which does scan them.
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
+    let stub_paths: Vec<String> = if has_patterns {
+        crate::constraints::patterns::scan_pattern_only_files(
+            workspace_root,
+            &crate::parser::adapter::default_registry(),
+        )
+    } else {
+        Vec::new()
+    };
+    let stub_path_refs: Vec<&str> = stub_paths.iter().map(|p| p.as_str()).collect();
+
     let comp_with_paths = db.active_components_with_paths()?;
     let component_names: Vec<&str> = comp_with_paths
         .iter()
@@ -117,7 +134,13 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
                 } => json!({ "language": language, "query": query }),
             };
 
-            let coverage = constraint_coverage(c, &paths, &component_names, &component_ids);
+            let coverage = constraint_coverage(
+                c,
+                &paths,
+                &stub_path_refs,
+                &component_names,
+                &component_ids,
+            );
             let coverage_fields: serde_json::Map<String, serde_json::Value> = coverage
                 .fields
                 .iter()
@@ -288,4 +311,91 @@ fn handle_unwaive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> 
     }
 
     Ok(json!({ "revoked": waiver_id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `list` and `violations` must agree on what a rule covers. Stubs are
+    /// unindexed, so a stub-only pattern rule has zero rows in the files table —
+    /// counting only those would flag an actively-firing rule as inert and invite
+    /// someone to delete it.
+    #[test]
+    fn stub_only_pattern_rule_is_not_reported_inert() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '(function_definition) @match'
+name = "stub-only-rule"
+scope = "**/*.pyi"
+"#,
+        )
+        .unwrap();
+
+        let pkg = dir.path().join("python");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("api.pyi"), "def f() -> int: ...\n").unwrap();
+
+        let out = handle_list(&db, dir.path()).unwrap();
+        let entry = &out["constraints"][0];
+        assert_eq!(entry["matched_file_count"]["scope"], 1);
+        assert!(
+            entry.get("warning").is_none(),
+            "stub-only rule wrongly flagged inert: {entry:#?}"
+        );
+    }
+
+    /// The inert warning must still fire when there is genuinely nothing to match.
+    #[test]
+    fn pattern_rule_with_no_files_is_reported_inert() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '(function_definition) @match'
+name = "stub-only-rule"
+scope = "**/*.pyi"
+"#,
+        )
+        .unwrap();
+
+        let out = handle_list(&db, dir.path()).unwrap();
+        let entry = &out["constraints"][0];
+        assert_eq!(entry["matched_file_count"]["scope"], 0);
+        assert!(entry.get("warning").is_some());
+    }
+
+    /// Stub paths are pattern-only: letting a dep-kind glob count one would mask
+    /// a forbidden_dep rule that can never fire (stubs have no imports).
+    #[test]
+    fn stub_paths_do_not_count_toward_dep_constraint_coverage() {
+        use crate::constraints::constraint_coverage;
+        use crate::rules::parse_rules;
+
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "python/**"
+to = "src/**"
+"#;
+        let c = &parse_rules(toml).unwrap().all_constraints().0[0];
+        let cov = constraint_coverage(c, &[], &["python/api.pyi"], &[], &[]);
+        assert_eq!(cov.total_matched(), 0);
+    }
 }

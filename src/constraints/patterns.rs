@@ -26,6 +26,16 @@ pub fn scan_pattern_only_files(root: &Path, registry: &LanguageRegistry) -> Vec<
         .collect()
 }
 
+/// True when `path` has an extension that is pattern-eligible but never indexed.
+/// Callers that work from a changed-path list (review) use this to keep stubs
+/// visible, since stubs have no file id to travel with.
+pub fn is_pattern_only_path(path: &str, registry: &LanguageRegistry) -> bool {
+    registry
+        .pattern_only_extensions()
+        .iter()
+        .any(|ext| path.ends_with(&format!(".{ext}")))
+}
+
 pub fn check_forbidden_patterns(
     constraints: &[Constraint],
     sources: &[(&str, &str)],

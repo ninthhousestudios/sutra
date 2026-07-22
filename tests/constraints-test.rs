@@ -1048,6 +1048,7 @@ name = "no-unsafe"
         EvalScope::ChangedFiles {
             changed_ids: &changed_ids,
             old_edges: &old_edges,
+            changed_pattern_only_paths: &[],
         },
         &registry,
     )

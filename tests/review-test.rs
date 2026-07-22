@@ -698,6 +698,114 @@ fn recommended_reads_ranks_violation_sites_first() {
     assert_eq!(rr[0]["violation_site"], true);
 }
 
+/// A changed `.pyi` stub has no file row, so it never reaches `changed_ids`.
+/// Review must still pattern-check it — this is the CI-facing enforcement path
+/// for the exact files (public API stubs) the feature exists to govern.
+#[test]
+fn build_findings_checks_changed_pyi_stub() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '''
+(function_definition
+  name: (identifier) @_name (#eq? @_name "__new__")
+  return_type: (type (identifier) @_ret) (#eq? @_ret "Never")) @match
+'''
+name = "no-new-returning-never"
+severity = "blocking"
+"#,
+    )
+    .unwrap();
+
+    let pkg = dir.path().join("python/swisseph_rs");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(
+        pkg.join("azalt.pyi"),
+        "from typing import Never, final\n\n@final\nclass RefracDir:\n    \
+         TRUE_TO_APP: RefracDir\n    def __new__(cls, _: Never, /) -> Never: ...\n",
+    )
+    .unwrap();
+
+    // The stub is deliberately never indexed — no upsert_file for it.
+    let changed = vec!["python/swisseph_rs/azalt.pyi".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    let pattern: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|v| v.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        pattern.len(),
+        1,
+        "changed .pyi should be pattern-checked: {:#?}",
+        findings.constraint_violations
+    );
+    assert_eq!(pattern[0].from_path, "python/swisseph_rs/azalt.pyi");
+}
+
+/// The counterpart: an unchanged stub must not be dragged into a review.
+#[test]
+fn build_findings_ignores_unchanged_pyi_stub() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "python"
+query = '''
+(function_definition
+  name: (identifier) @_name (#eq? @_name "__new__")
+  return_type: (type (identifier) @_ret) (#eq? @_ret "Never")) @match
+'''
+name = "no-new-returning-never"
+severity = "blocking"
+"#,
+    )
+    .unwrap();
+
+    let pkg = dir.path().join("python/swisseph_rs");
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(
+        pkg.join("azalt.pyi"),
+        "from typing import Never, final\n\nclass RefracDir:\n    \
+         def __new__(cls, _: Never, /) -> Never: ...\n",
+    )
+    .unwrap();
+    fs::write(pkg.join("other.py"), "def f():\n    pass\n").unwrap();
+    db.upsert_file("python/swisseph_rs/other.py", "python", "h1", 20, true)
+        .unwrap();
+
+    let changed = vec!["python/swisseph_rs/other.py".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    assert!(
+        findings
+            .constraint_violations
+            .iter()
+            .all(|v| v.constraint_kind != "forbidden_pattern"),
+        "unchanged stub must not be scanned: {:#?}",
+        findings.constraint_violations
+    );
+}
+
 // ── Integration test: build_findings exercises real DD + FCA path ────
 
 #[test]
@@ -1524,6 +1632,7 @@ forbidden_deps = [
         EvalScope::ChangedFiles {
             changed_ids: &changed_ids,
             old_edges: &old_edges,
+            changed_pattern_only_paths: &[],
         },
         &registry,
     )

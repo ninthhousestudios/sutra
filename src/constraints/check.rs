@@ -28,6 +28,10 @@ pub enum EvalScope<'a> {
     ChangedFiles {
         changed_ids: &'a HashSet<i64>,
         old_edges: &'a HashSet<(i64, i64)>,
+        /// Changed files that are pattern-eligible but unindexed (`.pyi` stubs).
+        /// They have no id, so they can't ride along in `changed_ids` — without
+        /// them a changed stub is invisible to review-scoped pattern checks.
+        changed_pattern_only_paths: &'a [String],
     },
     SingleFile(i64),
     Edges {
@@ -90,20 +94,25 @@ fn evaluate_dd(
     let mut findings = Vec::new();
     let mut resolved = Vec::new();
 
+    let has_patterns = all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
+
     // Pattern-eligible but unindexed files (e.g. Python .pyi stubs) live only on
-    // disk, so they have to be walked for. Skipped for the per-file/edge scopes,
-    // which are driven by a caller-supplied path.
+    // disk, so they have to be walked for. Gated on has_patterns — nothing else
+    // consumes these paths, and the walk is O(repo files) on every review.
+    // Skipped for the per-file/edge scopes, which are driven by a caller-supplied path.
     let stub_paths: Vec<String> =
-        if matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
+        if !has_patterns || matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
             Vec::new()
         } else {
             constraints::patterns::scan_pattern_only_files(workspace_root, registry)
         };
+    let stub_path_refs: Vec<&str> = stub_paths.iter().map(|p| p.as_str()).collect();
 
     // Dead constraint detection (Workspace and ChangedFiles scopes only)
     if !matches!(scope, EvalScope::SingleFile(_) | EvalScope::Edges { .. }) {
-        let mut paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
-        paths.extend(stub_paths.iter().map(|p| p.as_str()));
+        let paths: Vec<&str> = all_files.iter().map(|f| &*f.path).collect();
         let component_names: Vec<&str> = comp_with_paths
             .iter()
             .map(|(_, name, _)| name.as_str())
@@ -113,8 +122,13 @@ fn evaluate_dd(
             .map(|(id, _, _)| id.as_str())
             .collect();
         for c in &all_constraints {
-            let coverage =
-                constraints::constraint_coverage(c, &paths, &component_names, &component_ids);
+            let coverage = constraints::constraint_coverage(
+                c,
+                &paths,
+                &stub_path_refs,
+                &component_names,
+                &component_ids,
+            );
             let dead = coverage.dead_fields();
             if !dead.is_empty() {
                 findings.push(ConstraintFinding {
@@ -162,9 +176,6 @@ fn evaluate_dd(
 
     // Forbidden pattern checks — read source from disk for scope-matched files.
     // Runs before the edge-empty early return since patterns are per-file, not edge-based.
-    let has_patterns = all_constraints
-        .iter()
-        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
     if has_patterns {
         let scan_ids: HashSet<i64> = match &scope {
             EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
@@ -172,11 +183,19 @@ fn evaluate_dd(
             EvalScope::Edges { .. } => HashSet::new(),
             EvalScope::Workspace => all_files.iter().map(|f| f.id).collect(),
         };
-        // Stub files have no id, so they can't be scoped by changed_ids —
-        // scan them in workspace audits only. Edit-time enforcement for stubs
-        // comes from the guard's path-driven check_proposed_patterns.
-        let scan_stubs = matches!(scope, EvalScope::Workspace);
-        if !scan_ids.is_empty() || (scan_stubs && !stub_paths.is_empty()) {
+        // Stub files have no id, so the scope's id set can't carry them: a
+        // workspace audit takes every stub on disk, a review takes the ones the
+        // caller reports as changed. Matches the indexed-file contract, where a
+        // changed file is scanned whole rather than diffed for introduced matches.
+        let scan_stub_paths: &[String] = match &scope {
+            EvalScope::Workspace => &stub_paths,
+            EvalScope::ChangedFiles {
+                changed_pattern_only_paths,
+                ..
+            } => changed_pattern_only_paths,
+            _ => &[],
+        };
+        if !scan_ids.is_empty() || !scan_stub_paths.is_empty() {
             let mut sources: Vec<(String, String)> = Vec::new();
             for f in &all_files {
                 if !scan_ids.contains(&f.id) {
@@ -186,11 +205,9 @@ fn evaluate_dd(
                     sources.push((f.path.to_string(), content));
                 }
             }
-            if scan_stubs {
-                for path in &stub_paths {
-                    if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
-                        sources.push((path.clone(), content));
-                    }
+            for path in scan_stub_paths {
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
+                    sources.push((path.clone(), content));
                 }
             }
             let source_refs: Vec<(&str, &str)> = sources
@@ -250,6 +267,7 @@ fn evaluate_dd(
             EvalScope::ChangedFiles {
                 old_edges,
                 changed_ids,
+                ..
             } => {
                 let current_changed_edges: HashSet<(i64, i64)> = edges
                     .iter()
