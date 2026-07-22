@@ -17,6 +17,12 @@ use crate::lessons::LessonsDb;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{self, Constraint, ConstraintKind};
 
+/// Max lessons surfaced per component section. Tighter than
+/// `lessons::CONTEXT_SURFACING_CAP` because orient's scope is a whole
+/// component, not one symbol — every directory-anchored lesson in the tree
+/// matches, and orient is already the widest response sutra emits.
+const ORIENT_LESSON_CAP: usize = 5;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OrientArgs {
     pub workspace: String,
@@ -588,7 +594,10 @@ pub fn handle(
                     project: project_slug,
                     workspace_languages: &ws_langs,
                 };
-                let cl = ldb.query_for_context(&ctx)?;
+                // Uncapped per file: the cap belongs to the merged set below,
+                // and a per-file cap would make `lessons_omitted` a per-file
+                // number dressed up as a component-wide one.
+                let cl = ldb.query_for_context_capped(&ctx, usize::MAX)?;
                 for lesson in cl.lessons {
                     if seen_ids.insert(lesson.id.clone()) {
                         comp_lessons.push(lesson);
@@ -596,9 +605,22 @@ pub fn handle(
                 }
             }
             if !comp_lessons.is_empty() {
+                // Per-file results arrive sorted, but the merge interleaves
+                // them — re-sort so the cap keeps the verified/high-confidence
+                // lessons rather than whichever file happened to come first.
+                comp_lessons.sort_by(|a, b| {
+                    b.verified
+                        .cmp(&a.verified)
+                        .then(b.confidence.cmp(&a.confidence))
+                });
+                let omitted = comp_lessons.len().saturating_sub(ORIENT_LESSON_CAP);
+                comp_lessons.truncate(ORIENT_LESSON_CAP);
                 let resolver = super::remember::build_hash_resolver(db);
                 let _ = ldb.apply_staleness(&mut comp_lessons, &resolver);
                 section["lessons"] = serde_json::to_value(&comp_lessons).unwrap_or_default();
+                if omitted > 0 {
+                    section["lessons_omitted"] = json!(omitted);
+                }
             }
         }
 
@@ -1210,6 +1232,36 @@ to = "src/banned.rs"
         let lessons = section["lessons"].as_array().unwrap();
         assert_eq!(lessons.len(), 1);
         assert!(lessons[0]["text"].as_str().unwrap().contains("re-exports"));
+    }
+
+    #[test]
+    fn orient_caps_merged_component_lessons() {
+        let (db, dir) = setup_db();
+        let files: Vec<String> = (0..4).map(|i| format!("src/f{i}.rs")).collect();
+        let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        insert_component(&db, "comp-1", "mycomp", &refs);
+
+        let ldb = crate::lessons::LessonsDb::open(dir.path()).unwrap();
+        // Directory-anchored: every one of these matches every file in the
+        // component, so a per-file cap would let 4x through.
+        for i in 0..8 {
+            ldb.store(&crate::lessons::StoreLessonParams {
+                text: &format!("Directory lesson {i}"),
+                anchors: &[(crate::lessons::AnchorKind::Directory, "src")],
+                categories: &[],
+                source_task_ids: &[],
+                project_origin: None,
+            })
+            .unwrap();
+        }
+
+        let result = handle(&db, "mycomp", dir.path(), None, Some(&ldb), &registry()).unwrap();
+        let section = &result["orientation"][0];
+        let lessons = section["lessons"].as_array().unwrap();
+        assert_eq!(lessons.len(), ORIENT_LESSON_CAP);
+        // 8 distinct lessons merged, 5 emitted — the omitted count is the
+        // component-wide remainder, not a per-file one.
+        assert_eq!(section["lessons_omitted"], json!(8 - ORIENT_LESSON_CAP));
     }
 
     #[test]

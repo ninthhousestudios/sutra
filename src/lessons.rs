@@ -362,6 +362,23 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
 
 impl LessonsDb {
     pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
+        self.query_for_context_capped(ctx, CONTEXT_SURFACING_CAP)
+    }
+
+    /// As `query_for_context`, but with a caller-supplied cap.
+    ///
+    /// Callers that merge several contexts (orient walks every file in a
+    /// component) need the complete per-context set before they can cap the
+    /// merged set honestly — a per-context cap makes their `omitted` count a
+    /// lie. Pass `usize::MAX` for that, then cap the merged set. Note the
+    /// surfacing bookkeeping below marks everything returned, so a raised cap
+    /// marks lessons the caller may still drop; same trade the guard already
+    /// makes with `GUARD_LESSON_CAP`.
+    pub fn query_for_context_capped(
+        &self,
+        ctx: &MatchContext<'_>,
+        cap: usize,
+    ) -> Result<ContextLessons> {
         let conn = self.conn.lock();
 
         let mut seen = HashSet::new();
@@ -526,8 +543,8 @@ impl LessonsDb {
         });
 
         let total = lessons.len();
-        let omitted = total.saturating_sub(CONTEXT_SURFACING_CAP);
-        lessons.truncate(CONTEXT_SURFACING_CAP);
+        let omitted = total.saturating_sub(cap);
+        lessons.truncate(cap);
 
         // Surfacing bookkeeping is a write, and the guard's handle is inside a
         // blocking PreToolUse hook — it must not contend for the write lock.
