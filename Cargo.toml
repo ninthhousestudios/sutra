@@ -85,3 +85,10 @@ crossbeam-channel = "0.5"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+indexing_slicing = "warn"
