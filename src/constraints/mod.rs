@@ -42,6 +42,48 @@ pub struct DdDelta {
     pub removed_edges: Vec<(i64, i64)>,
 }
 
+/// Whether a path glob deliberately aims at test code. A rule written for
+/// `tests/**` must still fire there, so path-based test exclusion steps aside
+/// when the author already said "tests" — otherwise it would go silently inert.
+/// A glob that merely happens to cover tests (`**/*.rs`, or no glob at all)
+/// does not count; that rule wants the default exclusion.
+///
+/// `is_test_path` is the classifier to consult: a single adapter's, when the
+/// constraint names a language (forbidden_pattern), or the whole registry's,
+/// when it does not (dep, cycle, external).
+pub fn glob_targets_tests(glob: &str, is_test_path: &dyn Fn(&str) -> bool) -> bool {
+    // Only the literal prefix says where the rule points: in `tests/**` the
+    // glob widens what matches inside `tests/`, it does not move the target.
+    let literal_prefix = glob.split(['*', '?', '[']).next().unwrap_or("");
+    if literal_prefix.is_empty() {
+        return false;
+    }
+    // A directory glob may be written with or without its trailing slash, and
+    // the path classifiers only recognise `tests` as a *directory* component.
+    let as_dir = format!("{}/", literal_prefix.trim_end_matches('/'));
+    is_test_path(literal_prefix) || is_test_path(&as_dir)
+}
+
+/// Whether a constraint aims itself at test code, through its scope or through
+/// whichever of its own path globs name the code the rule fires *on*.
+///
+/// `confined_external`'s `allowed_in` is deliberately excluded: it is an
+/// allowlist, so `allowed_in = ["tests/**"]` says test usage is permitted — the
+/// opposite of aiming the rule at tests. Component-named kinds (boundary) and
+/// crate-named kinds carry no path of their own and rest on scope alone.
+pub fn constraint_targets_tests(c: &Constraint, is_test_path: &dyn Fn(&str) -> bool) -> bool {
+    let own_globs: &[&str] = match &c.kind {
+        ConstraintKind::ForbiddenDep { from, to } => &[from, to],
+        ConstraintKind::ForbiddenExternal { from, .. } => &[from],
+        _ => &[],
+    };
+    c.scope
+        .as_deref()
+        .into_iter()
+        .chain(own_globs.iter().copied())
+        .any(|g| glob_targets_tests(g, is_test_path))
+}
+
 pub fn find_matching_constraint<'a>(
     constraints: &'a [Constraint],
     from_path: &str,

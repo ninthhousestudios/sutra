@@ -64,6 +64,22 @@ pub fn evaluate(
     }
 }
 
+/// Ids of the constraints that aim themselves at test code, so path-based test
+/// exclusion must step aside for them (sutra/296). Borrowed from the slice: the
+/// set lives no longer than the constraints it describes.
+fn test_directed_ids(constraints: &[Constraint]) -> HashSet<&str> {
+    constraints
+        .iter()
+        .filter(|c| {
+            constraints::constraint_targets_tests(
+                c,
+                &crate::parser::adapter::any_language_is_test_path,
+            )
+        })
+        .map(|c| c.id.as_ref())
+        .collect()
+}
+
 fn evaluate_dd(
     db: &crate::db::Db,
     dd_engine: Option<&DdEngine>,
@@ -266,6 +282,13 @@ fn evaluate_dd(
     let mut resolver = ConstraintResolver::new();
     let pairs = resolver.resolve(&all_constraints, db, &path_map)?;
 
+    // A rule that aims itself at a test path — `forbidden_dep from = "tests/**"`,
+    // a `no_cycles` scoped there — must still fire on the test-only edges it was
+    // written for. Test exclusion steps aside for it, the same escape hatch
+    // forbidden_pattern already honours (sutra/296). Computed once: the
+    // classifier is path-only, so it cannot vary per edge.
+    let test_directed = test_directed_ids(&all_constraints);
+
     if !pairs.is_empty() {
         engine.set_forbidden_pairs(pairs)?;
         let current_violations = engine.query_violations()?;
@@ -333,7 +356,10 @@ fn evaluate_dd(
                 &file_to_component,
                 &comp_name_to_id,
             ) {
-                if !c.include_tests && !production_edges.contains(&(from_id, to_id)) {
+                if !c.include_tests
+                    && !test_directed.contains(c.id.as_ref())
+                    && !production_edges.contains(&(from_id, to_id))
+                {
                     continue;
                 }
                 let delta = if delta_available {
@@ -381,6 +407,7 @@ fn evaluate_dd(
                     // gone from the graph entirely is a genuine resolution and
                     // must still be reported.
                     if !c.include_tests
+                        && !test_directed.contains(c.id.as_ref())
                         && edge_set.contains(&(from_id, to_id))
                         && !production_edges.contains(&(from_id, to_id))
                     {
@@ -433,30 +460,31 @@ fn evaluate_dd(
         // release build. Re-run SCC detection over production edges only and
         // report whatever genuine sub-cycles survive — nothing, when the whole
         // loop was test wiring (sutra/290).
-        let reported: Vec<Vec<&str>> = if matched.is_some_and(|c| c.include_tests) {
-            vec![cycle_paths]
-        } else {
-            super::worker::compute_sccs(&cycle_node_set, &production_edges)
-                .into_iter()
-                // A singleton SCC is a real cycle only when the file imports
-                // itself. `has_backing` already established that self-edge
-                // exists; what remains is whether production backs it.
-                .filter(|scc| {
-                    scc.len() > 1
-                        || scc
-                            .iter()
-                            .next()
-                            .is_some_and(|&id| production_edges.contains(&(id, id)))
-                })
-                .map(|scc| {
-                    let mut ids: Vec<i64> = scc.into_iter().collect();
-                    ids.sort_unstable();
-                    ids.iter()
-                        .filter_map(|id| path_map.get(id).copied())
-                        .collect()
-                })
-                .collect()
-        };
+        let reported: Vec<Vec<&str>> =
+            if matched.is_some_and(|c| c.include_tests || test_directed.contains(c.id.as_ref())) {
+                vec![cycle_paths]
+            } else {
+                super::worker::compute_sccs(&cycle_node_set, &production_edges)
+                    .into_iter()
+                    // A singleton SCC is a real cycle only when the file imports
+                    // itself. `has_backing` already established that self-edge
+                    // exists; what remains is whether production backs it.
+                    .filter(|scc| {
+                        scc.len() > 1
+                            || scc
+                                .iter()
+                                .next()
+                                .is_some_and(|&id| production_edges.contains(&(id, id)))
+                    })
+                    .map(|scc| {
+                        let mut ids: Vec<i64> = scc.into_iter().collect();
+                        ids.sort_unstable();
+                        ids.iter()
+                            .filter_map(|id| path_map.get(id).copied())
+                            .collect()
+                    })
+                    .collect()
+            };
 
         for paths in reported {
             findings.push(ConstraintFinding {

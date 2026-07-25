@@ -76,7 +76,10 @@ pub fn check_forbidden_patterns(
         }
 
         let matching_exts: Vec<&str> = adapter.pattern_extensions().to_vec();
-        let scope_is_test_directed = scope_targets_tests(constraint.scope.as_deref(), adapter);
+        let scope_is_test_directed = constraint
+            .scope
+            .as_deref()
+            .is_some_and(|s| super::glob_targets_tests(s, &|p| adapter.is_test_path(p)));
 
         for &(path, source) in sources {
             if let Some(scope) = &constraint.scope
@@ -168,30 +171,6 @@ pub fn check_forbidden_patterns(
         }
     }
     findings
-}
-
-/// Whether a constraint's own scope deliberately aims at test code. A rule
-/// written for `tests/**` must still fire there, so path-based test exclusion
-/// steps aside when the author already said "tests" — otherwise it would go
-/// silently inert. A scope that merely happens to cover tests (`**/*.rs`, or no
-/// scope at all) does not count; that rule wants the default exclusion.
-fn scope_targets_tests(
-    scope: Option<&str>,
-    adapter: &dyn crate::parser::adapter::LanguageAdapter,
-) -> bool {
-    let Some(scope) = scope else {
-        return false;
-    };
-    // Only the literal prefix says where the rule points: in `tests/**` the
-    // glob widens what matches inside `tests/`, it does not move the target.
-    let literal_prefix = scope.split(['*', '?', '[']).next().unwrap_or("");
-    if literal_prefix.is_empty() {
-        return false;
-    }
-    // A directory scope may be written with or without its trailing slash, and
-    // the path classifiers only recognise `tests` as a *directory* component.
-    let as_dir = format!("{}/", literal_prefix.trim_end_matches('/'));
-    adapter.is_test_path(literal_prefix) || adapter.is_test_path(&as_dir)
 }
 
 fn extract_symbols_for_enclosing(
@@ -405,12 +384,18 @@ fn helper() {
     #[test]
     fn scope_targets_tests_only_for_test_directed_scopes() {
         let registry = default_registry();
-        let rust = registry.adapter_for_language("rust").unwrap();
+        let rust = registry
+            .adapter_for_language("rust")
+            .expect("invariant: default registry always carries a rust adapter");
+        let is_test = |p: &str| rust.is_test_path(p);
         for scope in ["tests", "tests/", "tests/**", "crates/core/tests/**"] {
-            assert!(scope_targets_tests(Some(scope), rust), "{scope}");
+            assert!(super::super::glob_targets_tests(scope, &is_test), "{scope}");
         }
-        for scope in [None, Some("src/**"), Some("**/*.rs"), Some("src/")] {
-            assert!(!scope_targets_tests(scope, rust), "{scope:?}");
+        for scope in ["src/**", "**/*.rs", "src/"] {
+            assert!(
+                !super::super::glob_targets_tests(scope, &is_test),
+                "{scope}"
+            );
         }
     }
 

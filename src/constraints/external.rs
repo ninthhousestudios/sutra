@@ -93,27 +93,46 @@ pub fn match_external<'a>(
     crate_name: &str,
     is_dev: bool,
 ) -> Option<&'a Constraint> {
-    constraints.iter().find(|c| match &c.kind {
-        ConstraintKind::ForbiddenExternal {
-            from,
-            crates,
-            include_dev,
-        } => {
-            (!is_dev || *include_dev)
-                && path_matches(from, from_path)
-                && crate_matches(crates, crate_name)
-        }
-        ConstraintKind::ConfinedExternal {
-            crates,
-            allowed_in,
-            include_dev,
-        } => {
-            (!is_dev || *include_dev)
-                && crate_matches(crates, crate_name)
-                && !allowed_in.iter().any(|a| path_matches(a, from_path))
-        }
-        _ => false,
-    })
+    match_external_where(constraints, from_path, crate_name, is_dev, &|_| true)
+}
+
+/// `match_external` restricted to constraints the caller considers applicable.
+///
+/// Matching is first-match — exactly one constraint reports per `(file, crate)`
+/// — so applicability has to be part of *matching*, not a filter after it.
+/// Filtering afterwards lets a broad rule win the match and then discard the
+/// item, shadowing a narrower rule that would have fired (sutra/296).
+pub fn match_external_where<'a>(
+    constraints: &'a [Constraint],
+    from_path: &str,
+    crate_name: &str,
+    is_dev: bool,
+    applicable: &dyn Fn(&Constraint) -> bool,
+) -> Option<&'a Constraint> {
+    constraints
+        .iter()
+        .filter(|c| applicable(c))
+        .find(|c| match &c.kind {
+            ConstraintKind::ForbiddenExternal {
+                from,
+                crates,
+                include_dev,
+            } => {
+                (!is_dev || *include_dev)
+                    && path_matches(from, from_path)
+                    && crate_matches(crates, crate_name)
+            }
+            ConstraintKind::ConfinedExternal {
+                crates,
+                allowed_in,
+                include_dev,
+            } => {
+                (!is_dev || *include_dev)
+                    && crate_matches(crates, crate_name)
+                    && !allowed_in.iter().any(|a| path_matches(a, from_path))
+            }
+            _ => false,
+        })
 }
 
 pub fn has_external_constraints(constraints: &[Constraint]) -> bool {
@@ -217,19 +236,31 @@ fn make_external_finding(
 /// from parsed proposed content (guard side).
 ///
 /// A crate reached only from `#[cfg(test)]` code is not a production dependency,
-/// so test items are skipped unless the constraint that matched them opts in
-/// with `include_tests` (sutra/294).
+/// so test items are matched only against constraints that want them: those
+/// opting in with `include_tests` (sutra/294), and those aiming themselves at a
+/// test path via `from` or `scope` (sutra/296).
 pub fn check_import_items(
     constraints: &[Constraint],
     items: &[(String, String, bool)],
 ) -> Vec<ConstraintFinding> {
     let mut findings = Vec::new();
     let mut seen: std::collections::HashSet<(String, &str)> = std::collections::HashSet::new();
+    let wants_tests: std::collections::HashSet<&str> = constraints
+        .iter()
+        .filter(|c| {
+            c.include_tests
+                || super::constraint_targets_tests(
+                    c,
+                    &crate::parser::adapter::any_language_is_test_path,
+                )
+        })
+        .map(|c| c.id.as_ref())
+        .collect();
     for (from_path, crate_name, is_test) in items {
-        if let Some(c) = match_external(constraints, from_path, crate_name, false) {
-            if *is_test && !c.include_tests {
-                continue;
-            }
+        let applicable = |c: &Constraint| !*is_test || wants_tests.contains(c.id.as_ref());
+        if let Some(c) =
+            match_external_where(constraints, from_path, crate_name, false, &applicable)
+        {
             // one finding per (file, crate), not per use-statement
             if seen.insert((from_path.clone(), crate_name.as_str())) {
                 findings.push(make_external_finding(c, from_path, crate_name, false));
@@ -907,6 +938,106 @@ include_tests = true
         let findings = check_import_items(&cs, &items);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].from_path, "report/src/render.rs");
+    }
+
+    // --- test-directed escape hatch and rule-order shadowing (sutra/296) ---
+
+    #[test]
+    fn external_rule_aimed_at_tests_fires_without_include_tests() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "tests/**"
+crates = ["axum"]
+name = "no-axum-in-integration-tests"
+"#,
+        );
+        assert!(!cs[0].include_tests);
+        let items = vec![("tests/api.rs".to_string(), "axum".to_string(), true)];
+        assert_eq!(
+            check_import_items(&cs, &items).len(),
+            1,
+            "a rule written for tests/ must not be muted by test-scope exclusion"
+        );
+    }
+
+    #[test]
+    fn confined_external_allowed_in_tests_is_not_test_directed() {
+        // `allowed_in` is an allowlist, not a target: naming tests/ there says
+        // test usage is permitted, so it must not opt the rule into test scope.
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["axum"]
+allowed_in = ["tests/**"]
+"#,
+        );
+        let items = vec![("src/lib.rs".to_string(), "axum".to_string(), true)];
+        assert!(
+            check_import_items(&cs, &items).is_empty(),
+            "allowed_in must not act as a test-directed escape hatch"
+        );
+    }
+
+    #[test]
+    fn broad_rule_does_not_shadow_a_narrower_include_tests_rule() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "**"
+crates = ["axum"]
+name = "broad-default"
+
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum"]
+name = "report-includes-tests"
+include_tests = true
+"#,
+        );
+        let items = vec![("report/src/lib.rs".to_string(), "axum".to_string(), true)];
+        let findings = check_import_items(&cs, &items);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the opt-in rule must be reached even though a broad rule matches first"
+        );
+        assert_eq!(
+            findings[0].constraint_name.as_deref(),
+            Some("report-includes-tests")
+        );
+    }
+
+    #[test]
+    fn applicability_matching_does_not_multiply_findings_for_production_items() {
+        // Overlapping rules still report once per (file, crate) — restricting
+        // *matching* by applicability must not turn first-match into all-match.
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "**"
+crates = ["axum"]
+name = "broad-default"
+
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum"]
+name = "narrower"
+"#,
+        );
+        let items = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
+        let findings = check_import_items(&cs, &items);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].constraint_name.as_deref(),
+            Some("broad-default")
+        );
     }
 
     // --- import rename resolution ---

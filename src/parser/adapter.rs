@@ -274,6 +274,11 @@ impl LanguageRegistry {
             .collect()
     }
 
+    /// Whether any registered language's conventions mark `path` as test scope.
+    pub fn any_is_test_path(&self, path: &str) -> bool {
+        self.adapters.iter().any(|a| a.is_test_path(path))
+    }
+
     pub fn boundary_multipliers(&self) -> HashMap<String, f64> {
         self.adapters
             .iter()
@@ -688,6 +693,20 @@ impl FcaAttributeSource for TsAdapter {
     fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {
         TS_TOOLCHAIN_PAIRS
     }
+}
+
+/// Registry for path-only queries that arrive without a language in hand.
+static PATH_REGISTRY: std::sync::OnceLock<LanguageRegistry> = std::sync::OnceLock::new();
+
+/// Whether any registered language's conventions mark `path` as test scope.
+///
+/// Dependency, cycle and external rules are not written against one grammar — a
+/// `tests/**` glob spans every language in the workspace — so the test-directed
+/// escape hatch asks the whole registry rather than a single adapter (sutra/296).
+pub fn any_language_is_test_path(path: &str) -> bool {
+    PATH_REGISTRY
+        .get_or_init(default_registry)
+        .any_is_test_path(path)
 }
 
 pub fn default_registry() -> LanguageRegistry {

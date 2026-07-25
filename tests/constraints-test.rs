@@ -1884,3 +1884,179 @@ fn ratchet_violation_non_waivable() {
         "ratchet violation must never appear in waived list"
     );
 }
+
+// --- test-directed escape hatch for dep and cycle rules (sutra/296) ---
+
+/// Run `rules` against a two-file test-only cycle under `tests/`, end to end.
+/// The importing files are test targets by path, so their imports carry
+/// `is_test = true` — the shape a rule aimed at `tests/**` has to survive.
+fn test_dir_cycle_details(rules: &str) -> Vec<String> {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), rules).unwrap();
+
+    db.upsert_file("tests/a.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("tests/b.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let fa = db.file_by_path("tests/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("tests/b.rs").unwrap().unwrap();
+
+    db.insert_import_with_scope(fa.id, "tests/b.rs", Some(fb.id), 1, "use", None, true)
+        .unwrap();
+    db.insert_import_with_scope(fb.id, "tests/a.rs", Some(fa.id), 1, "use", None, true)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .map(|f| f.detail.clone())
+        .collect()
+}
+
+#[test]
+fn no_cycles_scoped_to_tests_fires_without_include_tests() {
+    let details = test_dir_cycle_details(
+        r#"
+[[constraint]]
+kind = "no_cycles"
+scope = "tests/**"
+name = "no-cycles-in-integration-tests"
+"#,
+    );
+    assert_eq!(
+        details.len(),
+        1,
+        "a no_cycles rule scoped to tests/ must not be muted by test-scope exclusion, got: {details:?}"
+    );
+}
+
+#[test]
+fn unscoped_no_cycles_still_ignores_a_test_only_cycle() {
+    // The negative direction: widening the escape hatch must not turn the
+    // default exclusion off for rules that never mentioned tests.
+    let details = test_dir_cycle_details(
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    );
+    assert!(
+        details.is_empty(),
+        "an unscoped rule keeps the default test exclusion, got: {details:?}"
+    );
+}
+
+/// Run `rules` against a single `tests/a.rs -> src/daemon.rs` edge whose import
+/// is test-scoped, plus one production edge so the graph is non-empty.
+fn test_dir_dep_details(rules: &str) -> Vec<String> {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), rules).unwrap();
+
+    for (path, hash) in [
+        ("tests/a.rs", "h1"),
+        ("src/daemon.rs", "h2"),
+        ("src/other.rs", "h3"),
+    ] {
+        db.upsert_file(path, "rust", hash, 10, true).unwrap();
+    }
+    let ta = db.file_by_path("tests/a.rs").unwrap().unwrap();
+    let daemon = db.file_by_path("src/daemon.rs").unwrap().unwrap();
+    let other = db.file_by_path("src/other.rs").unwrap().unwrap();
+
+    db.insert_import_with_scope(
+        ta.id,
+        "src/daemon.rs",
+        Some(daemon.id),
+        1,
+        "use",
+        None,
+        true,
+    )
+    .unwrap();
+    db.insert_import(ta.id, "src/other.rs", Some(other.id), 2, "use", None)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_dep")
+        .map(|f| f.detail.clone())
+        .collect()
+}
+
+#[test]
+fn forbidden_dep_from_tests_fires_without_include_tests() {
+    let details = test_dir_dep_details(
+        r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "tests/**"
+to = "src/daemon.rs"
+name = "tests-must-not-touch-daemon"
+"#,
+    );
+    assert_eq!(
+        details.len(),
+        1,
+        "a forbidden_dep written for tests/ must not be muted by test-scope exclusion, got: {details:?}"
+    );
+}
+
+#[test]
+fn forbidden_dep_not_aimed_at_tests_still_ignores_test_edges() {
+    let details = test_dir_dep_details(
+        r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "**"
+to = "src/daemon.rs"
+name = "nobody-touches-daemon"
+"#,
+    );
+    assert!(
+        details.is_empty(),
+        "a rule that never mentioned tests keeps the default exclusion, got: {details:?}"
+    );
+}

@@ -353,11 +353,24 @@ directory says "not production code" without saying "every symbol under it is a
 test", so wiring directories into symbol flags would overreach — python.rs, c.rs
 and javascript.rs each keep both functions for that reason.
 
-The escape hatch is the rule's own scope: `scope = "tests/**"` keeps firing
+The escape hatch is the rule's own path globs: `scope = "tests/**"` keeps firing
 inside `tests/`, because a rule aimed at test code would otherwise go silently
-inert. Only the scope's *literal prefix* counts (`patterns::scope_targets_tests`)
+inert. Only a glob's *literal prefix* counts (`constraints::glob_targets_tests`)
 — `**/*.rs` and an unscoped rule both want the default exclusion. `include_tests
 = true` remains the way to cover production and tests at once.
+
+`constraints::constraint_targets_tests` decides which globs a kind puts in play
+(sutra/296): `scope` always, plus `forbidden_dep`'s `from`/`to` and
+`forbidden_external`'s `from`. `confined_external`'s `allowed_in` is deliberately
+excluded — it is an allowlist, so naming `tests/**` there says test usage is
+*permitted*, the opposite of aiming the rule at tests. Component-named kinds
+(`boundary`) carry no path of their own and rest on scope alone.
+
+Which classifier answers `is_test_path` depends on what the constraint knows:
+`forbidden_pattern` names a language, so it asks that adapter; dep, cycle and
+external rules span the workspace, so they ask
+`adapter::any_language_is_test_path` (true when *any* registered adapter says
+so). A `tests/**` glob is not written against one grammar.
 
 **Edge flag (dep kinds).** `imports.is_test` (migration 0053) is set at parse
 time: `rust::parse` tests each import's line against the line ranges, and
@@ -374,18 +387,26 @@ contract only.
 - `forbidden_dep`/`boundary`: skip when the pair is absent from
   `production_import_edges`. The Resolved-delta path skips only when the pair
   is still present but now test-only; a pair gone from the graph entirely is a
-  genuine resolution and is still reported.
+  genuine resolution and is still reported. Both skips step aside for a
+  test-directed constraint (`check.rs::test_directed_ids`, computed once per
+  evaluation — the classifier is path-only, so it cannot vary per edge).
 - `no_cycles`: re-runs `worker::compute_sccs` over production edges restricted
   to the reported cycle's nodes and emits the surviving sub-SCCs. A
   pure-production cycle round-trips unchanged (both paths sort node ids), a
   test-only cycle disappears, a mixed cycle narrows to its real core. Singleton
   SCCs survive only when production backs a self-edge: a self-import reaches
   `no_cycles` as a one-node SCC, so filtering all singletons would drop a real
-  cycle (sutra/294).
+  cycle (sutra/294). A cycle whose matched rule is test-directed is reported
+  whole, without the production narrowing.
 - `forbidden_external`/`confined_external`: `is_test` rides along on
-  `db::UnresolvedImport` and `check_import_items` skips a test item unless the
-  constraint that matched it sets `include_tests` (sutra/294). Manifest-derived
-  findings are unaffected — `[dev-dependencies]` is already its own axis via
+  `db::UnresolvedImport`, and `check_import_items` matches a test item only
+  against constraints that want it — `include_tests` (sutra/294) or
+  test-directed (sutra/296). Applicability is part of *matching*
+  (`match_external_where`), not a filter after it: external matching is
+  first-match, so filtering afterwards would let a broad rule win the match and
+  then discard the item, shadowing a narrower rule that would have fired
+  (sutra/296). Findings stay one per `(file, crate)`. Manifest-derived findings
+  are unaffected — `[dev-dependencies]` is already its own axis via
   `include_dev`.
 - Guard *edge* paths (`evaluate_raw`, `guard::proposed edges`,
   `get_incoming_edges`) drop test edges unconditionally rather than honouring
