@@ -153,6 +153,64 @@ fn dir_contains(dir: &str, path: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+/// How far into `dir` an `allowed_in` pattern can reach.
+struct Reach {
+    /// The pattern can match at least one path inside `dir`.
+    inside: bool,
+    /// A `**` gives the pattern a match *directly* inside `dir` at any depth, so
+    /// no nested package can claim the path exclusively.
+    at_any_depth: bool,
+}
+
+impl Reach {
+    const OUTSIDE: Reach = Reach {
+        inside: false,
+        at_any_depth: false,
+    };
+}
+
+/// Whether a path glob can match inside `dir`, decided component by component.
+///
+/// Prefix arithmetic on the glob's literal head is not enough: for
+/// `crates/*/src/db.rs` the literal head is `crates/`, which no package directory
+/// equals, so a literal-prefix rule assigns the path to the workspace root while
+/// leaving the member that actually holds it unowned — exactly inverting the
+/// exemption. Aligning components resolves the wildcard segment against real
+/// package directories instead.
+fn pattern_reach(pattern: &str, dir: &str) -> Reach {
+    let pat: Vec<&str> = pattern
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    let mut next = 0;
+    for component in dir.split('/').filter(|c| !c.is_empty()) {
+        match pat.get(next) {
+            // The pattern is shallower than the directory: it names something
+            // above this package, never inside it.
+            None => return Reach::OUTSIDE,
+            Some(&"**") => {
+                return Reach {
+                    inside: true,
+                    at_any_depth: true,
+                };
+            }
+            Some(glob) => {
+                if !Pattern::new(glob)
+                    .ok()
+                    .is_some_and(|p| p.matches(component))
+                {
+                    return Reach::OUTSIDE;
+                }
+                next += 1;
+            }
+        }
+    }
+    Reach {
+        inside: true,
+        at_any_depth: matches!(pat.get(next), Some(&"**")),
+    }
+}
+
 /// Whether the package declaring `manifest_rel_path` owns at least one of the
 /// confinement paths — i.e. `allowed_in` points at that package's own sources.
 ///
@@ -162,10 +220,12 @@ fn dir_contains(dir: &str, path: &str) -> bool {
 /// a non-owning manifest, which is the case it was written for — crate A
 /// declaring a dependency only crate B may use.
 ///
-/// `package_dirs` lists every package directory in the workspace so the deepest
-/// declaring package wins: a path inside a nested member belongs to that member,
-/// not to the enclosing root package. Pass an empty slice when the sibling set
-/// is unknown; ownership then falls back to plain containment.
+/// `package_dirs` lists every package directory in the workspace, so a nested
+/// package the pattern also reaches takes the path instead of the enclosing one.
+/// Ambiguity resolves toward *not* owning: wrongly exempting a manifest silently
+/// disables a blocking rule, while wrongly reporting one is visible and waivable.
+/// Pass an empty slice when the package set is unknown; ownership then rests on
+/// containment alone.
 fn manifest_owns_confinement(
     manifest_rel_path: &str,
     allowed_in: &[String],
@@ -173,26 +233,54 @@ fn manifest_owns_confinement(
 ) -> bool {
     let own_dir = manifest_dir(manifest_rel_path);
     allowed_in.iter().any(|pattern| {
-        let target = super::glob_literal_prefix(pattern);
-        // A pattern with no literal prefix (`**`) names no package.
-        if target.is_empty() || !dir_contains(own_dir, target) {
+        let reach = pattern_reach(pattern, own_dir);
+        if !reach.inside {
             return false;
         }
-        !package_dirs
-            .iter()
-            .any(|d| d.len() > own_dir.len() && dir_contains(d, target))
+        // `**` reaches this package's own files whatever else it also covers.
+        if reach.at_any_depth {
+            return true;
+        }
+        !package_dirs.iter().any(|nested| {
+            nested.len() > own_dir.len()
+                && dir_contains(own_dir, nested)
+                && pattern_reach(pattern, nested).inside
+        })
     })
 }
 
-/// Manifest paths (`report/Cargo.toml`) reduced to package directories,
-/// with the root manifest becoming `""`.
-pub fn package_dirs_of(manifest_paths: &[String]) -> Vec<&str> {
+/// Manifest paths (`report/Cargo.toml`) reduced to the package directories that
+/// hold them, with the root manifest becoming `""`. Deduplicated and sorted.
+pub fn package_dirs_of<'a>(manifest_paths: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
     manifest_paths
-        .iter()
-        .map(|p| manifest_dir(p))
+        .into_iter()
+        .map(manifest_dir)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// Package directories for the manifest kind matching `manifest_rel_path`,
+/// including that path itself — a proposed manifest may not be on disk yet.
+///
+/// Shared by the guard and the index so both derive the same package layout.
+/// Deriving the guard's view from `[workspace].members` instead let a nested
+/// non-member package shift ownership between the two, so the guard would allow
+/// an edit the next audit reported.
+pub fn package_dirs_including(root: &Path, manifest_rel_path: &str) -> Vec<String> {
+    let project_files = scan_project_files(root);
+    let mut paths: Vec<String> = if manifest_rel_path.ends_with("pubspec.yaml") {
+        project_files.pubspecs
+    } else {
+        project_files.manifests
+    }
+    .into_iter()
+    .map(|(rel, _)| rel)
+    .collect();
+    if !paths.iter().any(|p| p == manifest_rel_path) {
+        paths.push(manifest_rel_path.to_string());
+    }
+    paths
 }
 
 pub fn has_external_constraints(constraints: &[Constraint]) -> bool {
@@ -637,18 +725,8 @@ pub fn check_workspace_externals(
         }
         items.extend(extra);
     }
-    let manifest_paths: Vec<String> = project_files
-        .manifests
-        .iter()
-        .map(|(rel, _)| rel.clone())
-        .collect();
-    let cargo_dirs = package_dirs_of(&manifest_paths);
-    let pubspec_paths: Vec<String> = project_files
-        .pubspecs
-        .iter()
-        .map(|(rel, _)| rel.clone())
-        .collect();
-    let pubspec_dirs = package_dirs_of(&pubspec_paths);
+    let cargo_dirs = package_dirs_of(project_files.manifests.iter().map(|(rel, _)| rel.as_str()));
+    let pubspec_dirs = package_dirs_of(project_files.pubspecs.iter().map(|(rel, _)| rel.as_str()));
     let mut findings = check_import_items(constraints, &items);
     for (rel_path, content) in &project_files.manifests {
         findings.extend(check_manifest(
@@ -1073,7 +1151,11 @@ name = "no-sqlite-at-all"
     }
 
     #[test]
-    fn workspace_wide_allowed_in_glob_grants_no_ownership() {
+    fn leading_double_star_reaches_every_package_including_the_declarer() {
+        // `**/client.rs` permits a client.rs anywhere, including in the
+        // declaring package — so its manifest is exempt. Reading only the
+        // literal prefix (empty here) would call that "no package" and recreate
+        // the unsatisfiable rule this fix exists to remove.
         let cs = constraints_from(
             r#"
 [[constraint]]
@@ -1083,12 +1165,116 @@ allowed_in = ["**/client.rs"]
 "#,
         );
         let manifest = "[dependencies]\ntonic = \"0.12\"\n";
-        let findings = check_manifest(&cs, "Cargo.toml", manifest, None, &[""]);
-        assert_eq!(
-            findings.len(),
-            1,
-            "a pattern with no literal prefix names no package"
+        assert!(check_manifest(&cs, "Cargo.toml", manifest, None, &[""]).is_empty());
+        assert!(
+            check_manifest(&cs, "server/Cargo.toml", manifest, None, &["", "server"]).is_empty(),
+            "a member's own client.rs is permitted too"
         );
+    }
+
+    #[test]
+    fn wildcard_member_segment_resolves_to_the_member_not_the_root() {
+        // `crates/*/src/db.rs` has literal head `crates/`, which is no package
+        // directory. Prefix arithmetic hands ownership to the root (exempting a
+        // manifest that should report) and leaves the member that actually holds
+        // the path unowned (reporting a manifest that can never be fixed) —
+        // exactly inverted. Component alignment resolves `*` to `api`.
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["rusqlite"]
+allowed_in = ["crates/*/src/db.rs"]
+"#,
+        );
+        let manifest = "[dependencies]\nrusqlite = \"0.32\"\n";
+        let dirs = ["", "crates/api"];
+        assert_eq!(
+            check_manifest(&cs, "Cargo.toml", manifest, None, &dirs).len(),
+            1,
+            "the root does not own a path confined to a member"
+        );
+        assert!(
+            check_manifest(&cs, "crates/api/Cargo.toml", manifest, None, &dirs).is_empty(),
+            "the member the wildcard resolves to owns the path"
+        );
+        assert_eq!(
+            check_manifest(&cs, "crates/cli/Cargo.toml", manifest, None, &dirs).len(),
+            0,
+            "any crates/* member matches the wildcard segment"
+        );
+    }
+
+    #[test]
+    fn sibling_dir_with_a_shared_name_prefix_is_not_confused_for_a_parent() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic"]
+allowed_in = ["report/src/**"]
+"#,
+        );
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let dirs = ["", "report", "report-core"];
+        assert_eq!(
+            check_manifest(&cs, "report-core/Cargo.toml", manifest, None, &dirs).len(),
+            1,
+            "report-core is a sibling of report, not its owner"
+        );
+        assert!(check_manifest(&cs, "report/Cargo.toml", manifest, None, &dirs).is_empty());
+    }
+
+    #[test]
+    fn nested_package_takes_ownership_from_its_parent_package() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic"]
+allowed_in = ["server/nested/src/rpc.rs"]
+"#,
+        );
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let dirs = ["", "server", "server/nested"];
+        assert_eq!(
+            check_manifest(&cs, "server/Cargo.toml", manifest, None, &dirs).len(),
+            1
+        );
+        assert!(check_manifest(&cs, "server/nested/Cargo.toml", manifest, None, &dirs).is_empty());
+    }
+
+    #[test]
+    fn allowed_in_naming_the_package_dir_itself_is_ownership() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic"]
+allowed_in = ["server"]
+"#,
+        );
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let dirs = ["", "server"];
+        assert!(check_manifest(&cs, "server/Cargo.toml", manifest, None, &dirs).is_empty());
+        assert_eq!(
+            check_manifest(&cs, "Cargo.toml", manifest, None, &dirs).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn leading_dot_slash_in_allowed_in_still_grants_ownership() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["rusqlite"]
+allowed_in = ["./src/db.rs"]
+"#,
+        );
+        let manifest = "[dependencies]\nrusqlite = \"0.32\"\n";
+        assert!(check_manifest(&cs, "Cargo.toml", manifest, None, &[""]).is_empty());
     }
 
     #[test]
@@ -1111,12 +1297,16 @@ allowed_in = ["lib/net/**"]
 
     #[test]
     fn package_dirs_of_reduces_manifest_paths() {
-        let paths = vec![
-            "Cargo.toml".to_string(),
-            "server/Cargo.toml".to_string(),
-            "crates/report/Cargo.toml".to_string(),
+        let paths = [
+            "Cargo.toml",
+            "server/Cargo.toml",
+            "crates/report/Cargo.toml",
+            "server/Cargo.toml",
         ];
-        assert_eq!(package_dirs_of(&paths), vec!["", "crates/report", "server"]);
+        assert_eq!(
+            package_dirs_of(paths.iter().copied()),
+            vec!["", "crates/report", "server"]
+        );
     }
 
     // --- import items dedup ---

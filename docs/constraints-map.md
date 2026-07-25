@@ -72,8 +72,18 @@ src/constraints/
                       package that owns an allowed_in path (manifest_owns_
                       confinement, sutra/291) — otherwise a single-crate rule is
                       unsatisfiable, since Cargo.toml is never in allowed_in.
-                      Ownership takes the deepest package_dirs_of entry, and the
-                      skip is applied as match applicability, not a post-filter.
+                      Ownership is decided by component-wise glob alignment
+                      (pattern_reach), not literal-prefix arithmetic: for
+                      crates/*/src/db.rs the literal head crates/ is no package,
+                      so a prefix rule exempts the root and still blocks the
+                      member — inverted. A nested package the pattern also
+                      reaches takes the path; a leading ** reaches every package
+                      including the declarer; ambiguity resolves to NOT owning,
+                      since a wrong exemption silently disables a blocking rule.
+                      Guard and index both derive package dirs from disk
+                      (package_dirs_including) — a members-derived guard view
+                      disagreed with the index on nested non-member packages.
+                      The skip is match applicability, not a post-filter.
   worker.rs         — timely/DD worker thread, Command/Response enums,
                       WorkerHandle, spawn_worker, run_worker (dataflow +
                       command loop), Kosaraju SCC

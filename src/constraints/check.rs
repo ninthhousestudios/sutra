@@ -1044,20 +1044,11 @@ pub fn check_manifest_raw(
         Some(&ws_renames)
     };
 
-    // Confinement ownership needs the workspace's package layout (sutra/291):
-    // the root manifest plus every declared member.
-    let mut manifest_paths = vec!["Cargo.toml".to_string()];
-    if let Some(root) = root_content {
-        manifest_paths.extend(
-            external::workspace_member_manifests(workspace_root, root)
-                .into_iter()
-                .map(|(rel, _)| rel),
-        );
-    }
-    if !manifest_paths.iter().any(|p| p == manifest_rel_path) {
-        manifest_paths.push(manifest_rel_path.to_string());
-    }
-    let package_dirs = external::package_dirs_of(&manifest_paths);
+    // Confinement ownership needs the workspace's package layout (sutra/291),
+    // discovered the same way the index does it so the guard predicts what the
+    // next audit will report.
+    let manifest_paths = external::package_dirs_including(workspace_root, manifest_rel_path);
+    let package_dirs = external::package_dirs_of(manifest_paths.iter().map(String::as_str));
 
     let mut findings = external::check_manifest(
         &all_constraints,
@@ -1149,15 +1140,8 @@ pub fn check_pubspec_raw(
 
     // Same package layout the index side uses, so guard and audit agree on
     // confinement ownership (sutra/291).
-    let mut pubspec_paths: Vec<String> = external::scan_project_files(workspace_root)
-        .pubspecs
-        .into_iter()
-        .map(|(rel, _)| rel)
-        .collect();
-    if !pubspec_paths.iter().any(|p| p == pubspec_rel_path) {
-        pubspec_paths.push(pubspec_rel_path.to_string());
-    }
-    let package_dirs = external::package_dirs_of(&pubspec_paths);
+    let pubspec_paths = external::package_dirs_including(workspace_root, pubspec_rel_path);
+    let package_dirs = external::package_dirs_of(pubspec_paths.iter().map(String::as_str));
 
     let findings =
         external::check_pubspec(&all_constraints, pubspec_rel_path, content, &package_dirs);
@@ -1254,5 +1238,103 @@ fn make_finding(
         line: None,
         snippet: None,
         enclosing_symbol: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Workspace with a root package declaring `rusqlite` and a nested package
+    /// that is NOT a declared `[workspace].members` entry — the shape where a
+    /// members-derived package layout and a disk-derived one disagree.
+    fn nested_non_member_workspace(allowed_in: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".sutra")).unwrap();
+        std::fs::write(
+            root.join(".sutra/rules.toml"),
+            format!(
+                "[[constraint]]\nkind = \"confined_external\"\n\
+                 crates = [\"rusqlite\"]\nallowed_in = [{allowed_in}]\n\
+                 severity = \"blocking\"\nname = \"sqlite-confined\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"top\"\n\n[dependencies]\nrusqlite = \"0.32\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("vendor/client")).unwrap();
+        std::fs::write(
+            root.join("vendor/client/Cargo.toml"),
+            "[package]\nname = \"client\"\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn waiver_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, \
+             constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, \
+             rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', \
+             created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Findings the index would report for the root manifest, via the public
+    /// workspace entry point.
+    fn index_root_findings(workspace_root: &Path) -> usize {
+        let mut loaded = rules::load_rules(workspace_root).unwrap();
+        let (cs, _) = loaded.all_constraints();
+        external::check_workspace_externals(&cs, workspace_root, &[], None, &[])
+            .into_iter()
+            .filter(|f| f.from_path == "Cargo.toml")
+            .count()
+    }
+
+    fn guard_root_findings(conn: &rusqlite::Connection, workspace_root: &Path) -> usize {
+        let content = std::fs::read_to_string(workspace_root.join("Cargo.toml")).unwrap();
+        check_manifest_raw(conn, workspace_root, "Cargo.toml", &content)
+            .unwrap()
+            .active
+            .into_iter()
+            .filter(|f| f.from_path == "Cargo.toml")
+            .count()
+    }
+
+    #[test]
+    fn guard_and_index_agree_when_a_nested_non_member_owns_the_confinement() {
+        // A nested package outside `[workspace].members` is invisible to a
+        // members-derived layout: the guard would hand ownership to the root and
+        // exempt the dependency the index still reports (sutra/291 review).
+        let dir = nested_non_member_workspace("\"vendor/client/src/**\"");
+        let conn = waiver_conn();
+        let index = index_root_findings(dir.path());
+        let guard = guard_root_findings(&conn, dir.path());
+        assert_eq!(
+            (guard, index),
+            (1, 1),
+            "the root does not own vendor/client's confinement, and both sides must say so"
+        );
+    }
+
+    #[test]
+    fn guard_and_index_agree_when_the_declaring_package_owns_the_confinement() {
+        let dir = nested_non_member_workspace("\"src/db.rs\"");
+        let conn = waiver_conn();
+        assert_eq!(
+            (
+                guard_root_findings(&conn, dir.path()),
+                index_root_findings(dir.path())
+            ),
+            (0, 0),
+            "the root owns src/db.rs, so its own manifest entry is exempt on both sides"
+        );
     }
 }
