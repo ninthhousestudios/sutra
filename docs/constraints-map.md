@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-25 (sutra/290: test-scope exclusion — `#[cfg(test)]` code no longer evaluated by default)
+Last updated: 2026-07-25 (sutra/292: test-scope exclusion extended to whole-file test targets — Rust `tests/`/`benches/`, all Dart test code)
 
 ## Module layout
 
@@ -310,7 +310,7 @@ include_tests = false            # optional, default false. See "Test scope".
 ## Test scope (sutra/290)
 
 Test-only code is excluded from every constraint kind unless the constraint
-sets `include_tests = true`. Two independent mechanisms, one flag:
+sets `include_tests = true`. Three independent mechanisms, one flag:
 
 **Line ranges (pattern kinds).** `LanguageAdapter::test_line_ranges(ctx)`
 returns 1-based inclusive ranges; default impl is empty, so a language opts in
@@ -327,10 +327,30 @@ than silently muted. `patterns.rs` caches ranges per
 path across the per-constraint loop and drops matches falling inside them.
 `adapter::line_in_ranges` is the shared containment check.
 
+**Test paths (all kinds, sutra/292).** A whole-file test target carries no
+attribute for line ranges to find, so `LanguageAdapter::is_test_path(path)`
+classifies by convention: Rust `tests/`/`benches/`, Dart `test/`,
+`integration_test/`, `*_test.dart`. Default impl is `false` — other languages
+have their own `is_test_file` helpers for flags, deliberately not wired to
+constraints yet. `adapter::path_has_dir_segment` matches a *directory*
+component anywhere in the path (so a monorepo's `crates/core/tests/` counts)
+and never the file name, keeping `src/tests.rs` production. `patterns.rs` skips
+such a file wholesale.
+
+The escape hatch is the rule's own scope: `scope = "tests/**"` keeps firing
+inside `tests/`, because a rule aimed at test code would otherwise go silently
+inert. Only the scope's *literal prefix* counts (`patterns::scope_targets_tests`)
+— `**/*.rs` and an unscoped rule both want the default exclusion. `include_tests
+= true` remains the way to cover production and tests at once.
+
 **Edge flag (dep kinds).** `imports.is_test` (migration 0053) is set at parse
-time in `rust::parse` by testing each import's line against the same ranges.
+time: `rust::parse` tests each import's line against the line ranges, and
+`ParserPool::parse_with` flags every import in a file whose path `is_test_path`
+— which is what gives Dart and Rust integration tests their edge behaviour.
 `db::production_import_edges()` returns the pairs backed by at least one
-non-test import.
+non-test import. Note that `Graph::import_edges()` (pagerank, impact, blast
+radius) is deliberately unfiltered — test exclusion is a constraint-evaluation
+contract only.
 
 - `check.rs::evaluate_dd` keeps the DD graph whole — blast radius and SCC
   discovery both want the full picture — and filters at *finding* time, which
@@ -358,16 +378,18 @@ non-test import.
   *externals* do carry the flag: the parser has already computed it, so
   per-constraint fidelity there costs nothing.
 
-Known gap: Rust integration tests (`tests/*.rs`) carry no `cfg(test)`
-attribute and are not detected. Scope rules to `src/`. Dart's `test/` layout
-and `@visibleForTesting` are unimplemented — `test_line_ranges` is the hook.
+Known gap: Dart's `@visibleForTesting` (a production symbol reserved for test
+use) has no equivalent — only path classification applies there. Python, C and
+JS/TS still report inside their test files: their `is_test_file` helpers feed
+symbol flags, not `is_test_path`.
 
 Migration 0053 defaults `is_test = 0`, and the column is only ever written at
 parse time — but the pipeline skips a file whose stored `content_hash` still
 matches disk, so an older index would have kept the old edge behaviour
 indefinitely. Migration 0054 clears `content_hash` on Rust files, forcing one
-reparse that repopulates `is_test` (sutra/293). Pattern kinds read from disk and
-take effect immediately.
+reparse that repopulates `is_test` (sutra/293). Migration 0055 does the same for
+Rust *and* Dart when path classification landed (sutra/292). Pattern kinds read
+from disk and take effect immediately.
 
 ### Old format (backward compat)
 ```toml

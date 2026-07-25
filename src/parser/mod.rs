@@ -189,8 +189,10 @@ pub struct ExtractedImport {
     pub kind: &'static str,
     /// Local alias (e.g. `np` for `import numpy as np`). None when unaliased.
     pub alias: Option<String>,
-    /// Import sits in test-only code (Rust `#[cfg(test)]`). Such edges are
-    /// excluded from constraint evaluation by default — see `include_tests`.
+    /// Import sits in test-only code — either an attribute-gated region
+    /// (Rust `#[cfg(test)]`) or a whole-file test target (Rust `tests/`, Dart
+    /// `test/`). Such edges are excluded from constraint evaluation by default
+    /// — see `include_tests`.
     pub is_test: bool,
 }
 

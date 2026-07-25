@@ -56,7 +56,18 @@ impl ParserPool {
             tree: &tree,
             file_path,
         };
-        adapter.parse(&ctx)
+        let mut result = adapter.parse(&ctx)?;
+
+        // A whole-file test target (Rust `tests/`, Dart `test/`) carries no
+        // per-item attribute for an adapter's `test_line_ranges` to find, so
+        // path is the only signal that its imports are not production
+        // dependencies (sutra/292).
+        if adapter.is_test_path(file_path) {
+            for imp in &mut result.imports {
+                imp.is_test = true;
+            }
+        }
+        Ok(result)
     }
 
     #[cfg(test)]
@@ -131,6 +142,18 @@ pub fn line_in_ranges(ranges: &[(u32, u32)], line: u32) -> bool {
         .any(|&(start, end)| line >= start && line <= end)
 }
 
+/// True when a *directory* component of `path` equals `dir`. Matches both a
+/// root-level `dir/...` and a nested `packages/foo/dir/...`, since indexed
+/// paths are relative to the workspace root and a monorepo buries each crate's
+/// or package's test target one level down. The final component is excluded so
+/// a source file literally named `test` is not mistaken for a test directory.
+pub fn path_has_dir_segment(path: &str, dir: &str) -> bool {
+    let Some((parent, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    parent.split('/').any(|seg| seg == dir)
+}
+
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
     /// Extensions this adapter indexes: parsed into symbols, imports and rollups.
@@ -151,6 +174,16 @@ pub trait LanguageAdapter: Send + Sync {
     /// overriding rather than by accident.
     fn test_line_ranges(&self, _ctx: &ParseContext) -> Vec<(u32, u32)> {
         Vec::new()
+    }
+    /// Whether `path` is test code in its entirety by convention — Rust's
+    /// `tests/` and `benches/` targets, Dart's `test/` directory and
+    /// `_test.dart` files. These carry no per-item attribute, so
+    /// [`LanguageAdapter::test_line_ranges`] cannot see them. Constraint
+    /// evaluation skips such files unless the rule sets `include_tests = true`
+    /// or scopes itself into a test path. Default: false, so a language opts in
+    /// by overriding rather than by accident.
+    fn is_test_path(&self, _path: &str) -> bool {
+        false
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         None
@@ -264,6 +297,9 @@ impl LanguageAdapter for RustAdapter {
     fn test_line_ranges(&self, ctx: &ParseContext) -> Vec<(u32, u32)> {
         super::rust::test_line_ranges(ctx)
     }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::rust::is_test_path(path)
+    }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
     }
@@ -342,6 +378,9 @@ impl LanguageAdapter for DartAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::dart::parse(ctx)
+    }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::dart::is_test_path(path)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)

@@ -1106,6 +1106,15 @@ fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
 // Test-scope detection
 // ---------------------------------------------------------------------------
 
+/// Whether `path` is a cargo test or bench target. Files under a crate's
+/// `tests/` or `benches/` directory are compiled only for those targets and
+/// carry no `#[cfg(test)]` attribute of their own, so nothing in
+/// [`test_line_ranges`] can see them (sutra/292).
+pub fn is_test_path(path: &str) -> bool {
+    crate::parser::adapter::path_has_dir_segment(path, "tests")
+        || crate::parser::adapter::path_has_dir_segment(path, "benches")
+}
+
 /// 1-based inclusive line ranges covering `#[cfg(test)]` items and `#[test]`
 /// functions. Ranges start at the attribute, not the item, so an attribute-line
 /// match is attributed to test scope too.
@@ -1407,6 +1416,35 @@ mod tests {
         assert!(flagged.contains(&("crate::prod_dep", false)));
         assert!(flagged.contains(&("crate::test_only_dep", true)));
         assert!(flagged.contains(&("crate::another_test_dep", true)));
+    }
+
+    #[test]
+    fn imports_in_an_integration_test_target_are_flagged() {
+        // No `#[cfg(test)]` anywhere: the whole file is the test target, so
+        // only the path says so (sutra/292).
+        let src = "use my_crate::thing;\n\n#[test]\nfn works() {}\n";
+        let result = parse_rust(src, "tests/integration.rs").unwrap();
+        assert!(
+            result.imports.iter().all(|i| i.is_test),
+            "{:?}",
+            result.imports
+        );
+
+        let prod = parse_rust(src, "src/lib.rs").unwrap();
+        assert!(
+            prod.imports.iter().all(|i| !i.is_test),
+            "a top-level import in src/ stays production"
+        );
+    }
+
+    #[test]
+    fn is_test_path_matches_cargo_targets_only() {
+        assert!(is_test_path("tests/integration.rs"));
+        assert!(is_test_path("crates/core/tests/integration.rs"));
+        assert!(is_test_path("benches/throughput.rs"));
+        assert!(!is_test_path("src/lib.rs"));
+        assert!(!is_test_path("src/tests.rs"));
+        assert!(!is_test_path("tests.rs"));
     }
 
     #[test]

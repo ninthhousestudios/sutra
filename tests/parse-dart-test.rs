@@ -74,6 +74,33 @@ import 'dart:async';
 }
 
 #[test]
+fn test_dart_test_file_imports_flagged_by_path() {
+    let src = r#"
+import 'package:flutter_test/flutter_test.dart';
+import 'package:my_app/main.dart';
+"#;
+    for path in [
+        "test/widget_test.dart",
+        "packages/ui/test/widget_test.dart",
+        "lib/src/thing_test.dart",
+        "integration_test/app_test.dart",
+    ] {
+        let result = parser::parse_file(src, "dart", path).unwrap();
+        assert!(
+            !result.imports.is_empty() && result.imports.iter().all(|i| i.is_test),
+            "{path}: expected all imports flagged test, got {:?}",
+            result.imports
+        );
+    }
+
+    let prod = parser::parse_file(src, "dart", "lib/main.dart").unwrap();
+    assert!(
+        prod.imports.iter().all(|i| !i.is_test),
+        "lib/ imports stay production"
+    );
+}
+
+#[test]
 fn test_parse_dart_mixin() {
     let src = r#"
 mixin Swimming {

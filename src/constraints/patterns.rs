@@ -76,6 +76,7 @@ pub fn check_forbidden_patterns(
         }
 
         let matching_exts: Vec<&str> = adapter.pattern_extensions().to_vec();
+        let scope_is_test_directed = scope_targets_tests(constraint.scope.as_deref(), adapter);
 
         for &(path, source) in sources {
             if let Some(scope) = &constraint.scope
@@ -88,6 +89,14 @@ pub fn check_forbidden_patterns(
                 .iter()
                 .any(|ext| path.ends_with(&format!(".{ext}")));
             if !has_matching_ext {
+                continue;
+            }
+
+            // Whole-file test targets (Rust `tests/`, Dart `test/`) have no
+            // attribute for `test_line_ranges` to find, so they are excluded by
+            // path — unless the rule opted in, or aimed itself at tests
+            // (sutra/292).
+            if !constraint.include_tests && !scope_is_test_directed && adapter.is_test_path(path) {
                 continue;
             }
 
@@ -159,6 +168,30 @@ pub fn check_forbidden_patterns(
         }
     }
     findings
+}
+
+/// Whether a constraint's own scope deliberately aims at test code. A rule
+/// written for `tests/**` must still fire there, so path-based test exclusion
+/// steps aside when the author already said "tests" — otherwise it would go
+/// silently inert. A scope that merely happens to cover tests (`**/*.rs`, or no
+/// scope at all) does not count; that rule wants the default exclusion.
+fn scope_targets_tests(
+    scope: Option<&str>,
+    adapter: &dyn crate::parser::adapter::LanguageAdapter,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    // Only the literal prefix says where the rule points: in `tests/**` the
+    // glob widens what matches inside `tests/`, it does not move the target.
+    let literal_prefix = scope.split(['*', '?', '[']).next().unwrap_or("");
+    if literal_prefix.is_empty() {
+        return false;
+    }
+    // A directory scope may be written with or without its trailing slash, and
+    // the path classifiers only recognise `tests` as a *directory* component.
+    let as_dir = format!("{}/", literal_prefix.trim_end_matches('/'));
+    adapter.is_test_path(literal_prefix) || adapter.is_test_path(&as_dir)
 }
 
 fn extract_symbols_for_enclosing(
@@ -301,6 +334,110 @@ mod tests {
 "#;
         let findings = check_forbidden_patterns(&cs, &[("src/lib.rs", source)], &registry);
         assert_eq!(findings.len(), 2);
+    }
+
+    const UNSAFE_RULE: &str = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+name = "no-unsafe"
+"#;
+
+    const UNSAFE_SOURCE: &str = r#"
+fn helper() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+"#;
+
+    #[test]
+    fn rust_integration_test_target_excluded_by_path() {
+        let cs = pattern_constraints(UNSAFE_RULE);
+        let registry = default_registry();
+        for path in [
+            "tests/integration.rs",
+            "tests/helpers/fixture.rs",
+            "crates/core/tests/integration.rs",
+            "benches/throughput.rs",
+        ] {
+            let findings = check_forbidden_patterns(&cs, &[(path, UNSAFE_SOURCE)], &registry);
+            assert!(
+                findings.is_empty(),
+                "{path} is a test target, got {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_exclusion_does_not_swallow_production_lookalikes() {
+        let cs = pattern_constraints(UNSAFE_RULE);
+        let registry = default_registry();
+        for path in ["src/lib.rs", "src/tests.rs", "src/attest/mod.rs"] {
+            let findings = check_forbidden_patterns(&cs, &[(path, UNSAFE_SOURCE)], &registry);
+            assert_eq!(findings.len(), 1, "{path} is production, got {findings:?}");
+        }
+    }
+
+    #[test]
+    fn include_tests_opt_in_restores_test_target_matches() {
+        let toml = format!("{UNSAFE_RULE}include_tests = true\n");
+        let cs = pattern_constraints(&toml);
+        let registry = default_registry();
+        let findings =
+            check_forbidden_patterns(&cs, &[("tests/integration.rs", UNSAFE_SOURCE)], &registry);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn test_scoped_rule_still_fires_in_its_own_scope() {
+        let toml = format!("{UNSAFE_RULE}scope = \"tests/**\"\n");
+        let cs = pattern_constraints(&toml);
+        let registry = default_registry();
+        let findings =
+            check_forbidden_patterns(&cs, &[("tests/integration.rs", UNSAFE_SOURCE)], &registry);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a rule aimed at tests/ must not be muted by test-path exclusion"
+        );
+    }
+
+    #[test]
+    fn scope_targets_tests_only_for_test_directed_scopes() {
+        let registry = default_registry();
+        let rust = registry.adapter_for_language("rust").unwrap();
+        for scope in ["tests", "tests/", "tests/**", "crates/core/tests/**"] {
+            assert!(scope_targets_tests(Some(scope), rust), "{scope}");
+        }
+        for scope in [None, Some("src/**"), Some("**/*.rs"), Some("src/")] {
+            assert!(!scope_targets_tests(scope, rust), "{scope:?}");
+        }
+    }
+
+    #[test]
+    fn dart_test_files_excluded_by_path() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+query = "(assignment_expression) @cap"
+name = "no-assign"
+"#;
+        let cs = pattern_constraints(toml);
+        let registry = default_registry();
+        let source = "void main() { var x = 0; x = 1; }\n";
+        let prod = check_forbidden_patterns(&cs, &[("lib/widget.dart", source)], &registry);
+        assert_eq!(prod.len(), 1, "production dart still reports");
+        for path in [
+            "test/widget_test.dart",
+            "test/support/fixture.dart",
+            "packages/ui/test/widget_test.dart",
+            "lib/src/thing_test.dart",
+            "integration_test/app_test.dart",
+        ] {
+            let findings = check_forbidden_patterns(&cs, &[(path, source)], &registry);
+            assert!(findings.is_empty(), "{path} is test code, got {findings:?}");
+        }
     }
 
     #[test]

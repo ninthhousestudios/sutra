@@ -1655,7 +1655,11 @@ name = "protos-confined"
             Some("protos-confined")
         );
 
-        let allowed = vec![("quiver-client/src/lib.rs".to_string(), "tonic".to_string(), false)];
+        let allowed = vec![(
+            "quiver-client/src/lib.rs".to_string(),
+            "tonic".to_string(),
+            false,
+        )];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &allowed);
         assert!(outcome.active.is_empty());
     }

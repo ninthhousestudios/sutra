@@ -51,8 +51,10 @@ impl Db {
     }
 
     /// Import edges backed by at least one non-test import. A pair reachable
-    /// only from `#[cfg(test)]` code is absent — constraint evaluation uses
-    /// this to avoid reporting dependencies a release build never has.
+    /// only from test code — `#[cfg(test)]` regions, or a whole-file test
+    /// target like `tests/` or Dart's `test/` — is absent; constraint
+    /// evaluation uses this to avoid reporting dependencies a release build
+    /// never has.
     pub fn production_import_edges(&self) -> Result<std::collections::HashSet<(i64, i64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(

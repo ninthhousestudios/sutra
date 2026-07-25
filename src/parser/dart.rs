@@ -595,6 +595,16 @@ fn has_annotation(node: Node, src: &[u8], name: &str) -> bool {
     })
 }
 
+/// Whether `path` is Dart test code by convention. Dart has no attribute
+/// equivalent to `#[cfg(test)]` — a package's tests live under `test/` (or
+/// `integration_test/`) and are named `*_test.dart` — so path is the only
+/// signal test scope has (sutra/292).
+pub fn is_test_path(path: &str) -> bool {
+    path.ends_with("_test.dart")
+        || crate::parser::adapter::path_has_dir_segment(path, "test")
+        || crate::parser::adapter::path_has_dir_segment(path, "integration_test")
+}
+
 fn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&str>) -> u32 {
     let mut flags = 0u32;
 
@@ -605,7 +615,7 @@ fn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&st
         flags |= FLAG_TEST;
     }
 
-    if file_path.ends_with("_test.dart") || file_path.starts_with("test/") {
+    if is_test_path(file_path) {
         flags |= FLAG_CFG_TEST;
     }
 
