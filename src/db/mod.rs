@@ -240,6 +240,19 @@ pub struct FileRow {
     pub pagerank: Option<f64>,
 }
 
+/// An import row the resolver could not point at a workspace file — the input
+/// for external-crate constraint checking. `is_test` lets a rule skip a crate
+/// reached only from `#[cfg(test)]` code unless it sets `include_tests`
+/// (sutra/294).
+#[derive(Debug, Clone)]
+pub struct UnresolvedImport {
+    pub file_id: i64,
+    pub path: String,
+    pub language: String,
+    pub imported_path: String,
+    pub is_test: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct SymbolEntry {
     pub id: i64,
@@ -1724,17 +1737,23 @@ impl Db {
     }
 
     /// Unresolved imports joined with file path + language — the input for
-    /// external-crate constraint checking (`(file_id, path, language, imported_path)`).
-    pub fn unresolved_imports_with_files(&self) -> Result<Vec<(i64, String, String, String)>> {
+    /// external-crate constraint checking.
+    pub fn unresolved_imports_with_files(&self) -> Result<Vec<UnresolvedImport>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT i.file_id, f.path, f.language, i.imported_path FROM imports i
+            "SELECT i.file_id, f.path, f.language, i.imported_path, i.is_test FROM imports i
              JOIN files f ON f.id = i.file_id
              WHERE i.resolved_file_id IS NULL",
         )?;
-        let rows: rusqlite::Result<Vec<(i64, String, String, String)>> = stmt
+        let rows: rusqlite::Result<Vec<UnresolvedImport>> = stmt
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok(UnresolvedImport {
+                    file_id: row.get(0)?,
+                    path: row.get(1)?,
+                    language: row.get(2)?,
+                    imported_path: row.get(3)?,
+                    is_test: row.get(4)?,
+                })
             })?
             .collect();
         Ok(rows?)

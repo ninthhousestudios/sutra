@@ -340,13 +340,23 @@ non-test import.
   is still present but now test-only; a pair gone from the graph entirely is a
   genuine resolution and is still reported.
 - `no_cycles`: re-runs `worker::compute_sccs` over production edges restricted
-  to the reported cycle's nodes and emits the surviving sub-SCCs (size > 1).
-  A pure-production cycle round-trips unchanged (both paths sort node ids), a
-  test-only cycle disappears, a mixed cycle narrows to its real core.
-- Guard paths (`evaluate_raw`, `guard::proposed edges`, `get_incoming_edges`)
-  drop test edges unconditionally rather than honouring `include_tests` — the
-  review path still enforces that case, and an edit-time deny on test wiring is
-  the exact failure sutra/290 was filed for.
+  to the reported cycle's nodes and emits the surviving sub-SCCs. A
+  pure-production cycle round-trips unchanged (both paths sort node ids), a
+  test-only cycle disappears, a mixed cycle narrows to its real core. Singleton
+  SCCs survive only when production backs a self-edge: a self-import reaches
+  `no_cycles` as a one-node SCC, so filtering all singletons would drop a real
+  cycle (sutra/294).
+- `forbidden_external`/`confined_external`: `is_test` rides along on
+  `db::UnresolvedImport` and `check_import_items` skips a test item unless the
+  constraint that matched it sets `include_tests` (sutra/294). Manifest-derived
+  findings are unaffected — `[dev-dependencies]` is already its own axis via
+  `include_dev`.
+- Guard *edge* paths (`evaluate_raw`, `guard::proposed edges`,
+  `get_incoming_edges`) drop test edges unconditionally rather than honouring
+  `include_tests` — the review path still enforces that case, and an edit-time
+  deny on test wiring is the exact failure sutra/290 was filed for. Guard
+  *externals* do carry the flag: the parser has already computed it, so
+  per-constraint fidelity there costs nothing.
 
 Known gap: Rust integration tests (`tests/*.rs`) carry no `cfg(test)`
 attribute and are not detected. Scope rules to `src/`. Dart's `test/` layout

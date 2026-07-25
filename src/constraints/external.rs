@@ -15,6 +15,7 @@ use std::sync::Arc;
 use glob::{MatchOptions, Pattern};
 
 use crate::constraints::{ConstraintFinding, FindingDelta};
+use crate::db::UnresolvedImport;
 use crate::rules::{Constraint, ConstraintKind, Severity};
 
 /// Extract the external crate/package name from a raw import path, or `None`
@@ -211,17 +212,24 @@ fn make_external_finding(
     }
 }
 
-/// Check a batch of `(from_path, crate_name)` import items against external
-/// constraints. Items come from unresolved import rows (index side) or from
-/// parsed proposed content (guard side).
+/// Check a batch of `(from_path, crate_name, is_test)` import items against
+/// external constraints. Items come from unresolved import rows (index side) or
+/// from parsed proposed content (guard side).
+///
+/// A crate reached only from `#[cfg(test)]` code is not a production dependency,
+/// so test items are skipped unless the constraint that matched them opts in
+/// with `include_tests` (sutra/294).
 pub fn check_import_items(
     constraints: &[Constraint],
-    items: &[(String, String)],
+    items: &[(String, String, bool)],
 ) -> Vec<ConstraintFinding> {
     let mut findings = Vec::new();
     let mut seen: std::collections::HashSet<(String, &str)> = std::collections::HashSet::new();
-    for (from_path, crate_name) in items {
+    for (from_path, crate_name, is_test) in items {
         if let Some(c) = match_external(constraints, from_path, crate_name, false) {
+            if *is_test && !c.include_tests {
+                continue;
+            }
             // one finding per (file, crate), not per use-statement
             if seen.insert((from_path.clone(), crate_name.as_str())) {
                 findings.push(make_external_finding(c, from_path, crate_name, false));
@@ -461,27 +469,30 @@ fn walk_project_files(root: &Path, dir: &Path, depth: usize, out: &mut ProjectFi
 }
 
 /// Index-side external check: unresolved import rows + workspace manifests.
-/// `unresolved` rows are `(file_id, file_path, language, imported_path)`.
+/// `unresolved` rows come straight from `Db::unresolved_imports_with_files`.
 /// `changed_ids` (review scope) filters import findings to changed files;
 /// manifest findings always pass (manifests are not indexed files).
 pub fn check_workspace_externals(
     constraints: &[Constraint],
     workspace_root: &Path,
-    unresolved: &[(i64, String, String, String)],
+    unresolved: &[UnresolvedImport],
     changed_ids: Option<&std::collections::HashSet<i64>>,
     workspace_crate_names: &[&str],
 ) -> Vec<ConstraintFinding> {
     if !has_external_constraints(constraints) {
         return Vec::new();
     }
-    let mut items: Vec<(String, String)> = Vec::new();
-    for (file_id, file_path, language, imported_path) in unresolved {
-        if changed_ids.is_some_and(|ids| !ids.contains(file_id)) {
+    let mut items: Vec<(String, String, bool)> = Vec::new();
+    for import in unresolved {
+        if changed_ids.is_some_and(|ids| !ids.contains(&import.file_id)) {
             continue;
         }
-        if let Some(name) = external_crate_of_import(imported_path, language, workspace_crate_names)
-        {
-            items.push((file_path.clone(), name));
+        if let Some(name) = external_crate_of_import(
+            &import.imported_path,
+            &import.language,
+            workspace_crate_names,
+        ) {
+            items.push((import.path.clone(), name, import.is_test));
         }
     }
     let project_files = scan_project_files(workspace_root);
@@ -498,9 +509,9 @@ pub fn check_workspace_externals(
     };
     if !ws_renames.is_empty() {
         let mut extra = Vec::new();
-        for (path, name) in &items {
+        for (path, name, is_test) in &items {
             if let Some(real) = ws_renames.get(name) {
-                extra.push((path.clone(), real.clone()));
+                extra.push((path.clone(), real.clone(), *is_test));
             }
         }
         items.extend(extra);
@@ -839,12 +850,63 @@ crates = ["arrow-core"]
     fn one_finding_per_file_crate_pair() {
         let cs = constraints_from(FORBID);
         let items = vec![
-            ("report/src/lib.rs".to_string(), "axum".to_string()),
-            ("report/src/lib.rs".to_string(), "axum".to_string()),
-            ("report/src/render.rs".to_string(), "axum".to_string()),
+            ("report/src/lib.rs".to_string(), "axum".to_string(), false),
+            ("report/src/lib.rs".to_string(), "axum".to_string(), false),
+            (
+                "report/src/render.rs".to_string(),
+                "axum".to_string(),
+                false,
+            ),
         ];
         let findings = check_import_items(&cs, &items);
         assert_eq!(findings.len(), 2);
+    }
+
+    // --- test scope (sutra/294) ---
+
+    #[test]
+    fn crate_used_only_from_test_scope_is_not_a_violation() {
+        let cs = constraints_from(FORBID);
+        let items = vec![("report/src/lib.rs".to_string(), "axum".to_string(), true)];
+        let findings = check_import_items(&cs, &items);
+        assert!(
+            findings.is_empty(),
+            "a crate reached only from #[cfg(test)] is not a production dependency, got: {:?}",
+            findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn include_tests_opt_in_restores_external_test_finding() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum"]
+name = "report-stays-pure"
+include_tests = true
+"#,
+        );
+        assert!(cs[0].include_tests);
+        let items = vec![("report/src/lib.rs".to_string(), "axum".to_string(), true)];
+        assert_eq!(check_import_items(&cs, &items).len(), 1);
+    }
+
+    #[test]
+    fn production_use_of_same_crate_still_reported_alongside_test_use() {
+        let cs = constraints_from(FORBID);
+        let items = vec![
+            ("report/src/lib.rs".to_string(), "axum".to_string(), true),
+            (
+                "report/src/render.rs".to_string(),
+                "axum".to_string(),
+                false,
+            ),
+        ];
+        let findings = check_import_items(&cs, &items);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].from_path, "report/src/render.rs");
     }
 
     // --- import rename resolution ---
@@ -859,7 +921,11 @@ from = "server/src/**"
 crates = ["arrow-core"]
 "#,
         );
-        let items = vec![("server/src/main.rs".to_string(), "innocent".to_string())];
+        let items = vec![(
+            "server/src/main.rs".to_string(),
+            "innocent".to_string(),
+            false,
+        )];
         let findings_without = check_import_items(&cs, &items);
         assert!(findings_without.is_empty(), "alias alone should not match");
 
@@ -867,9 +933,9 @@ crates = ["arrow-core"]
         let ws_renames =
             std::collections::HashMap::from([("innocent".to_string(), "arrow-core".to_string())]);
         let mut extra = Vec::new();
-        for (path, name) in &resolved_items {
+        for (path, name, is_test) in &resolved_items {
             if let Some(real) = ws_renames.get(name) {
-                extra.push((path.clone(), real.clone()));
+                extra.push((path.clone(), real.clone(), *is_test));
             }
         }
         resolved_items.extend(extra);

@@ -36,8 +36,9 @@ pub enum EvalScope<'a> {
     SingleFile(i64),
     Edges {
         edges: &'a [(i64, i64)],
-        /// Proposed `(from_path, crate_name)` external imports (guard side).
-        externals: &'a [(String, String)],
+        /// Proposed `(from_path, crate_name, is_test)` external imports
+        /// (guard side).
+        externals: &'a [(String, String, bool)],
     },
 }
 
@@ -437,7 +438,16 @@ fn evaluate_dd(
         } else {
             super::worker::compute_sccs(&cycle_node_set, &production_edges)
                 .into_iter()
-                .filter(|scc| scc.len() > 1)
+                // A singleton SCC is a real cycle only when the file imports
+                // itself. `has_backing` already established that self-edge
+                // exists; what remains is whether production backs it.
+                .filter(|scc| {
+                    scc.len() > 1
+                        || scc
+                            .iter()
+                            .next()
+                            .is_some_and(|&id| production_edges.contains(&(id, id)))
+                })
                 .map(|scc| {
                     let mut ids: Vec<i64> = scc.into_iter().collect();
                     ids.sort_unstable();
@@ -600,21 +610,21 @@ fn evaluate_raw(
         match &scope {
             EvalScope::SingleFile(file_id) => {
                 let mut stmt = conn.prepare(
-                    "SELECT f.path, f.language, i.imported_path FROM imports i \
+                    "SELECT f.path, f.language, i.imported_path, i.is_test FROM imports i \
                      JOIN files f ON f.id = i.file_id \
                      WHERE i.file_id = ?1 AND i.resolved_file_id IS NULL",
                 )?;
-                let rows: Vec<(String, String, String)> = stmt
+                let rows: Vec<(String, String, String, bool)> = stmt
                     .query_map(params![file_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                     })?
                     .filter_map(|r| r.ok())
                     .collect();
-                let items: Vec<(String, String)> = rows
+                let items: Vec<(String, String, bool)> = rows
                     .iter()
-                    .filter_map(|(path, lang, imp)| {
+                    .filter_map(|(path, lang, imp, is_test)| {
                         external::external_crate_of_import(imp, lang, &crate_name_refs)
-                            .map(|c| (path.clone(), c))
+                            .map(|c| (path.clone(), c, *is_test))
                     })
                     .collect();
                 external_findings.extend(external::check_import_items(&all_constraints, &items));

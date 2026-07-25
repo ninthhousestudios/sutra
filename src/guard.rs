@@ -488,8 +488,11 @@ pub struct ProposedImports {
     /// Workspace-internal resolved edges. For languages without proposed-edge
     /// support (dart), falls back to the file's currently indexed outgoing edges.
     pub edges: Vec<(i64, i64)>,
-    /// External `(from_path, crate_name)` imports for external-crate constraints.
-    pub externals: Vec<(String, String)>,
+    /// External `(from_path, crate_name, is_test)` imports for external-crate
+    /// constraints. Unlike `edges`, the test flag is carried through rather than
+    /// dropped: the parser has already computed it, so honouring per-constraint
+    /// `include_tests` here costs nothing (sutra/294).
+    pub externals: Vec<(String, String, bool)>,
 }
 
 pub fn extract_proposed_imports(
@@ -518,7 +521,7 @@ pub fn extract_proposed_imports(
             &language,
             &crate_names,
         ) {
-            externals.push((rel_path.to_string(), name));
+            externals.push((rel_path.to_string(), name, import.is_test));
         }
     }
 
@@ -596,7 +599,7 @@ pub fn check_proposed_file_constraints(
     project_root: &Path,
     file_id: i64,
     proposed_outgoing: &[(i64, i64)],
-    proposed_externals: &[(String, String)],
+    proposed_externals: &[(String, String, bool)],
 ) -> CheckOutcome {
     let registry = crate::parser::adapter::default_registry();
     let mut edges: Vec<(i64, i64)> = proposed_outgoing.to_vec();
@@ -1626,7 +1629,7 @@ name = "protos-confined"
     #[test]
     fn proposed_external_import_denied() {
         let (conn, dir) = setup_external_db();
-        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string())];
+        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
         let blocking: Vec<_> = outcome
             .active
@@ -1644,7 +1647,7 @@ name = "protos-confined"
     #[test]
     fn proposed_confined_external_denied_outside_allowed_paths() {
         let (conn, dir) = setup_external_db();
-        let externals = vec![("server/src/main.rs".to_string(), "tonic".to_string())];
+        let externals = vec![("server/src/main.rs".to_string(), "tonic".to_string(), false)];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &externals);
         assert_eq!(outcome.active.len(), 1);
         assert_eq!(
@@ -1652,7 +1655,7 @@ name = "protos-confined"
             Some("protos-confined")
         );
 
-        let allowed = vec![("quiver-client/src/lib.rs".to_string(), "tonic".to_string())];
+        let allowed = vec![("quiver-client/src/lib.rs".to_string(), "tonic".to_string(), false)];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &allowed);
         assert!(outcome.active.is_empty());
     }
@@ -1670,7 +1673,7 @@ name = "protos-confined"
     #[test]
     fn external_waiver_suppresses() {
         let (conn, dir) = setup_external_db();
-        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string())];
+        let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
         let constraint_id = outcome.active[0].constraint_id.clone();
 
@@ -1771,7 +1774,7 @@ name = "bad-rule-targets-member"
         let parsed = parse_proposed("report/src/lib.rs", content).unwrap();
         let pi =
             extract_proposed_imports(&conn, dir.path(), "report/src/lib.rs", 1, &parsed).unwrap();
-        let crates: Vec<&str> = pi.externals.iter().map(|(_, c)| c.as_str()).collect();
+        let crates: Vec<&str> = pi.externals.iter().map(|(_, c, _)| c.as_str()).collect();
         assert!(crates.contains(&"axum"));
         assert!(crates.contains(&"std"));
         assert!(!crates.iter().any(|c| *c == "crate" || *c == "render"));

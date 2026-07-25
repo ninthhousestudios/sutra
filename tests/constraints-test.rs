@@ -844,6 +844,154 @@ name = "no-tool-daemon"
     );
 }
 
+/// Run a `forbidden_external` rule against a single unresolved import of `axum`
+/// at the given scope, end to end through the index. Covers the plumbing —
+/// `is_test` reaching the external check from the imports table (sutra/294).
+fn external_findings_for_scope(import_is_test: bool, rules: &str) -> Vec<String> {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), rules).unwrap();
+
+    db.upsert_file("report/src/lib.rs", "rust", "h1", 10, true)
+        .unwrap();
+    let f = db.file_by_path("report/src/lib.rs").unwrap().unwrap();
+    db.insert_import_with_scope(f.id, "axum::Router", None, 1, "use", None, import_is_test)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_external")
+        .map(|f| f.detail.clone())
+        .collect()
+}
+
+const EXTERNAL_RULE: &str = r#"
+[[constraint]]
+kind = "forbidden_external"
+from = "report/**"
+crates = ["axum"]
+name = "report-stays-pure"
+"#;
+
+#[test]
+fn cfg_test_only_external_crate_not_reported() {
+    let details = external_findings_for_scope(true, EXTERNAL_RULE);
+    assert!(
+        details.is_empty(),
+        "a crate used only under #[cfg(test)] is not a production dependency, got: {details:?}"
+    );
+}
+
+#[test]
+fn production_external_crate_still_reported() {
+    let details = external_findings_for_scope(false, EXTERNAL_RULE);
+    assert_eq!(details.len(), 1, "got: {details:?}");
+}
+
+#[test]
+fn include_tests_opt_in_restores_external_finding() {
+    let rules = format!("{EXTERNAL_RULE}include_tests = true\n");
+    let details = external_findings_for_scope(true, &rules);
+    assert_eq!(details.len(), 1, "got: {details:?}");
+}
+
+/// Build a one-file workspace whose only import is a self-import, and return
+/// the no_cycles findings. A self-edge reaches `no_cycles` as a single-node SCC,
+/// which the production-edge narrowing must not discard wholesale (sutra/294).
+fn self_loop_cycle_details(import_is_test: bool) -> Vec<String> {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/solo.rs", "rust", "h1", 10, true)
+        .unwrap();
+    let solo = db.file_by_path("src/solo.rs").unwrap().unwrap();
+    db.insert_import_with_scope(
+        solo.id,
+        "src/solo.rs",
+        Some(solo.id),
+        1,
+        "use",
+        None,
+        import_is_test,
+    )
+    .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .map(|f| f.detail.clone())
+        .collect()
+}
+
+#[test]
+fn production_self_loop_cycle_survives_narrowing() {
+    let details = self_loop_cycle_details(false);
+    assert_eq!(
+        details.len(),
+        1,
+        "a production self-import is a genuine one-node cycle, got: {details:?}"
+    );
+    assert!(details[0].contains("src/solo.rs"));
+}
+
+#[test]
+fn test_only_self_loop_cycle_suppressed() {
+    let details = self_loop_cycle_details(true);
+    assert!(
+        details.is_empty(),
+        "self-import from test scope is not a production cycle, got: {details:?}"
+    );
+}
+
 #[test]
 fn stale_engine_cycle_ids_not_in_path_map_skipped() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
