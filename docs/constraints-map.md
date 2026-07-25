@@ -316,10 +316,14 @@ sets `include_tests = true`. Two independent mechanisms, one flag:
 returns 1-based inclusive ranges; default impl is empty, so a language opts in
 by overriding. `parser::rust::test_line_ranges` walks for `attribute_item`
 siblings marking `#[cfg(test)]` / `#[test]` / `#[tokio::test]` and spans from
-the attribute line through the end of the item it annotates. Deliberately
-conservative: `cfg(not(test))` and any `cfg` containing a string literal
-(`feature = "test-helpers"`) are read as production, so a misparse leaves a
-rule over-reporting rather than silently muted. `patterns.rs` caches ranges per
+the attribute line through the end of the item it annotates. `cfg` predicates
+are evaluated structurally by `cfg_predicate_is_test` (sutra/293), asking one
+question: does the predicate hold *only* in a test build? `test` and
+`all(test, ..)` do; `any(test, ..)` does not (a sibling operand can hold in
+release), nor does any `not(..)`, `feature = "test-helpers"`, or `cfg_attr(test,
+..)` — which gates a nested *attribute*, not the item. Everything unrecognised
+falls through to production, so a misparse leaves a rule over-reporting rather
+than silently muted. `patterns.rs` caches ranges per
 path across the per-constraint loop and drops matches falling inside them.
 `adapter::line_in_ranges` is the shared containment check.
 
@@ -348,9 +352,12 @@ Known gap: Rust integration tests (`tests/*.rs`) carry no `cfg(test)`
 attribute and are not detected. Scope rules to `src/`. Dart's `test/` layout
 and `@visibleForTesting` are unimplemented — `test_line_ranges` is the hook.
 
-Migration 0053 defaults `is_test = 0`, so a workspace indexed before this
-landed keeps the old edge behaviour until reparsed. Pattern kinds read from
-disk and take effect immediately.
+Migration 0053 defaults `is_test = 0`, and the column is only ever written at
+parse time — but the pipeline skips a file whose stored `content_hash` still
+matches disk, so an older index would have kept the old edge behaviour
+indefinitely. Migration 0054 clears `content_hash` on Rust files, forcing one
+reparse that repopulates `is_test` (sutra/293). Pattern kinds read from disk and
+take effect immediately.
 
 ### Old format (backward compat)
 ```toml

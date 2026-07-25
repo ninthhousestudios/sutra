@@ -1139,7 +1139,7 @@ fn collect_test_ranges(node: Node, src: &[u8], out: &mut Vec<(u32, u32)>) {
 
 /// Whether an `attribute_item` marks what follows as test-only. Recognises
 /// `#[test]` (and namespaced variants like `#[tokio::test]`) plus `cfg`
-/// predicates naming a bare `test` token.
+/// predicates that hold only under `cfg(test)`.
 fn attribute_marks_test(node: Node, src: &[u8]) -> bool {
     let Ok(text) = node.utf8_text(src) else {
         return false;
@@ -1151,29 +1151,96 @@ fn attribute_marks_test(node: Node, src: &[u8]) -> bool {
         .trim_end_matches(']')
         .trim();
 
-    if inner.rsplit("::").next().map(str::trim) == Some("test") {
+    // `#[test]`, `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`.
+    let (path, args) = split_call(inner);
+    if path.rsplit("::").next().map(str::trim) == Some("test") {
         return true;
     }
 
-    let Some(predicate) = inner.strip_prefix("cfg") else {
-        return false;
-    };
-    // `cfg(not(test))` inverts the meaning; bail rather than misclassify
-    // production code as tests. Same for anything inside a string literal,
-    // where `test` is a feature name, not the built-in cfg.
-    if predicate.contains("not(") || predicate.contains('"') {
+    // Only a bare `cfg(..)` gates the item out of a release build. `cfg_attr`
+    // conditionally applies *another* attribute and leaves the item itself in
+    // every build, so `#[cfg_attr(test, derive(PartialEq))] struct Config` is
+    // production code (sutra/293).
+    if path.trim() != "cfg" {
         return false;
     }
-    contains_bare_token(predicate, "test")
+    args.is_some_and(cfg_predicate_is_test)
 }
 
-fn contains_bare_token(haystack: &str, token: &str) -> bool {
-    haystack.match_indices(token).any(|(idx, _)| {
-        let before = haystack[..idx].chars().next_back();
-        let after = haystack[idx + token.len()..].chars().next();
-        let boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        boundary(before) && boundary(after)
-    })
+/// Whether a `cfg` predicate holds *only* in a test build — i.e. the annotated
+/// item does not exist in a release build.
+///
+/// Sound in the safe direction: anything not provably test-only is treated as
+/// production, so a predicate this cannot read causes a rule to over-report
+/// rather than silently mute itself.
+fn cfg_predicate_is_test(predicate: &str) -> bool {
+    let (head, args) = split_call(predicate.trim());
+    match (head.trim(), args) {
+        ("test", None) => true,
+        // `all(..)` holds only when every operand does, so a single test
+        // operand confines the item to test builds.
+        ("all", Some(inner)) => split_predicates(inner)
+            .iter()
+            .any(|p| cfg_predicate_is_test(p)),
+        // `any(..)` still holds in a release build unless every operand is
+        // itself test-only.
+        ("any", Some(inner)) => {
+            let operands = split_predicates(inner);
+            !operands.is_empty() && operands.iter().all(|p| cfg_predicate_is_test(p))
+        }
+        // `not(test)` is production by definition, and no other negation can be
+        // proven test-only. Same for `feature = "..."`, `unix`, and friends.
+        _ => false,
+    }
+}
+
+/// Split `name(args)` into its path and the text between the outermost
+/// parentheses. A bare `name` yields `(name, None)`.
+fn split_call(text: &str) -> (&str, Option<&str>) {
+    let trimmed = text.trim_end();
+    match trimmed.find('(') {
+        Some(open) if trimmed.ends_with(')') => (
+            &trimmed[..open],
+            Some(&trimmed[open + 1..trimmed.len() - 1]),
+        ),
+        _ => (trimmed, None),
+    }
+}
+
+/// Split a `cfg` operand list on commas that sit outside nested parentheses and
+/// string literals, so `all(test, feature = "a,b")` yields two operands.
+fn split_predicates(list: &str) -> Vec<&str> {
+    let mut operands = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in list.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                operands.push(list[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = list[start..].trim();
+    if !tail.is_empty() {
+        operands.push(tail);
+    }
+    operands
 }
 
 fn walk_imports_recursive(
@@ -1355,6 +1422,61 @@ mod tests {
             file_path: "src/lib.rs",
         };
         assert_eq!(test_line_ranges(&ctx), vec![(2, 5)]);
+    }
+
+    fn ranges_for(src: &str) -> Vec<(u32, u32)> {
+        let adapter = RustAdapter;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&adapter.grammar()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let ctx = ParseContext {
+            source: src.as_bytes(),
+            tree: &tree,
+            file_path: "src/lib.rs",
+        };
+        test_line_ranges(&ctx)
+    }
+
+    #[test]
+    fn cfg_attr_test_stays_production() {
+        // `cfg_attr` applies another attribute conditionally; the item itself
+        // exists in every build, so muting it would hide production matches.
+        assert!(
+            ranges_for("#[cfg_attr(test, derive(PartialEq))]\nstruct Config {}\n").is_empty(),
+            "cfg_attr(test, ..) must not mark the item test-only"
+        );
+    }
+
+    #[test]
+    fn negated_test_cfg_stays_production_regardless_of_spacing() {
+        for src in [
+            "#[cfg(not(test))]\nfn prod() {}\n",
+            "#[cfg(not (test))]\nfn prod() {}\n",
+            "#[cfg(all(unix, not(test)))]\nfn prod() {}\n",
+        ] {
+            assert!(ranges_for(src).is_empty(), "should stay production: {src}");
+        }
+    }
+
+    #[test]
+    fn cfg_predicate_combinators() {
+        // `all(test, ..)` cannot hold outside a test build.
+        assert!(!ranges_for("#[cfg(all(test, unix))]\nmod t {}\n").is_empty());
+        // `any(test, ..)` still holds in a release build when a sibling
+        // operand does, so the item is production.
+        assert!(ranges_for("#[cfg(any(test, unix))]\nmod t {}\n").is_empty());
+        assert!(!ranges_for("#[cfg(any(test, all(test, unix)))]\nmod t {}\n").is_empty());
+        // A feature literally named "test" is not the built-in cfg.
+        assert!(ranges_for("#[cfg(feature = \"test\")]\nmod t {}\n").is_empty());
+        // Commas inside a string literal must not split the operand list.
+        assert!(ranges_for("#[cfg(all(feature = \"a,b\", unix))]\nmod t {}\n").is_empty());
+    }
+
+    #[test]
+    fn test_attribute_with_arguments_is_test_scope() {
+        assert!(
+            !ranges_for("#[tokio::test(flavor = \"multi_thread\")]\nasync fn t() {}\n").is_empty()
+        );
     }
 
     #[test]

@@ -826,6 +826,40 @@ fn test_migration_reopen_is_idempotent() {
 }
 
 #[test]
+fn test_is_test_backfill_forces_rust_reparse() {
+    // An index built before `imports.is_test` existed keeps every cfg(test)
+    // import marked production, because the pipeline skips a file whose stored
+    // content_hash still matches disk. 0054 clears the hash on Rust files so
+    // exactly one reparse repopulates the column (sutra/293).
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+        db.upsert_file("src/lib.rs", "rust", "hash-from-old-index", 10, true)
+            .unwrap();
+        db.upsert_file("lib/app.dart", "dart", "dart-hash", 10, true)
+            .unwrap();
+        let conn = db.conn_for_test();
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE name = '0054_reparse_rust_for_is_test'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rust = db.file_by_path("src/lib.rs").unwrap().unwrap();
+    assert_eq!(
+        rust.content_hash, "",
+        "Rust files must be invalidated so is_test is repopulated on reparse"
+    );
+    let dart = db.file_by_path("lib/app.dart").unwrap().unwrap();
+    assert_eq!(
+        dart.content_hash, "dart-hash",
+        "only Rust carries cfg(test) scope; other languages must not be re-parsed"
+    );
+}
+
+#[test]
 fn test_migration_hash_mismatch_errors() {
     let dir = tempfile::tempdir().unwrap();
     {
