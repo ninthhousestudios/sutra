@@ -1028,21 +1028,44 @@ pub fn check_manifest_raw(
     let crate_name_refs: Vec<&str> = crate_names.to_vec();
 
     let is_root = manifest_rel_path == "Cargo.toml";
-    let ws_renames = if is_root {
-        external::workspace_dep_renames(content)
+    let on_disk_root = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok();
+    // The proposed content is the truth for the manifest under edit.
+    let root_content: Option<&str> = if is_root {
+        Some(content)
     } else {
-        std::fs::read_to_string(workspace_root.join("Cargo.toml"))
-            .ok()
-            .map(|c| external::workspace_dep_renames(&c))
-            .unwrap_or_default()
+        on_disk_root.as_deref()
     };
+    let ws_renames = root_content
+        .map(external::workspace_dep_renames)
+        .unwrap_or_default();
     let renames = if ws_renames.is_empty() {
         None
     } else {
         Some(&ws_renames)
     };
-    let mut findings =
-        external::check_manifest(&all_constraints, manifest_rel_path, content, renames);
+
+    // Confinement ownership needs the workspace's package layout (sutra/291):
+    // the root manifest plus every declared member.
+    let mut manifest_paths = vec!["Cargo.toml".to_string()];
+    if let Some(root) = root_content {
+        manifest_paths.extend(
+            external::workspace_member_manifests(workspace_root, root)
+                .into_iter()
+                .map(|(rel, _)| rel),
+        );
+    }
+    if !manifest_paths.iter().any(|p| p == manifest_rel_path) {
+        manifest_paths.push(manifest_rel_path.to_string());
+    }
+    let package_dirs = external::package_dirs_of(&manifest_paths);
+
+    let mut findings = external::check_manifest(
+        &all_constraints,
+        manifest_rel_path,
+        content,
+        renames,
+        &package_dirs,
+    );
     if let Err(msg) =
         external::validate_no_external_targeting_members(&all_constraints, &crate_name_refs)
     {
@@ -1056,9 +1079,9 @@ pub fn check_manifest_raw(
     // constrained package in members that use `workspace = true`.
     // Only surfaces *newly introduced* findings (not pre-existing violations).
     if is_root && !ws_renames.is_empty() {
-        let old_renames = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
-            .ok()
-            .map(|c| external::workspace_dep_renames(&c))
+        let old_renames = on_disk_root
+            .as_deref()
+            .map(external::workspace_dep_renames)
             .unwrap_or_default();
         if ws_renames != old_renames {
             let old_rename_ref = if old_renames.is_empty() {
@@ -1074,6 +1097,7 @@ pub fn check_manifest_raw(
                     &member_rel,
                     &member_content,
                     old_rename_ref,
+                    &package_dirs,
                 );
                 let old_keys: std::collections::HashSet<(&str, &str)> = old_findings
                     .iter()
@@ -1084,6 +1108,7 @@ pub fn check_manifest_raw(
                     &member_rel,
                     &member_content,
                     renames,
+                    &package_dirs,
                 )
                 .into_iter()
                 .filter(|f| !old_keys.contains(&(&*f.constraint_id, f.to_path.as_str())))
@@ -1122,7 +1147,20 @@ pub fn check_pubspec_raw(
         });
     }
 
-    let findings = external::check_pubspec(&all_constraints, pubspec_rel_path, content);
+    // Same package layout the index side uses, so guard and audit agree on
+    // confinement ownership (sutra/291).
+    let mut pubspec_paths: Vec<String> = external::scan_project_files(workspace_root)
+        .pubspecs
+        .into_iter()
+        .map(|(rel, _)| rel)
+        .collect();
+    if !pubspec_paths.iter().any(|p| p == pubspec_rel_path) {
+        pubspec_paths.push(pubspec_rel_path.to_string());
+    }
+    let package_dirs = external::package_dirs_of(&pubspec_paths);
+
+    let findings =
+        external::check_pubspec(&all_constraints, pubspec_rel_path, content, &package_dirs);
     if findings.is_empty() {
         return Ok(CheckOutcome {
             parse_errors,

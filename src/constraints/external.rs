@@ -135,6 +135,66 @@ pub fn match_external_where<'a>(
         })
 }
 
+/// Directory holding a manifest, `""` for the workspace-root manifest.
+fn manifest_dir(manifest_rel_path: &str) -> &str {
+    match manifest_rel_path.rfind('/') {
+        Some(i) => &manifest_rel_path[..i],
+        None => "",
+    }
+}
+
+/// Whether `path` lies under `dir`. The empty dir is the workspace root and
+/// contains everything.
+fn dir_contains(dir: &str, path: &str) -> bool {
+    if dir.is_empty() {
+        return true;
+    }
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Whether the package declaring `manifest_rel_path` owns at least one of the
+/// confinement paths — i.e. `allowed_in` points at that package's own sources.
+///
+/// For such a package the manifest entry is *how* the dependency reaches those
+/// files, so flagging it makes the constraint unsatisfiable: `Cargo.toml` can
+/// never itself be listed in `allowed_in` (sutra/291). The signal stays live for
+/// a non-owning manifest, which is the case it was written for — crate A
+/// declaring a dependency only crate B may use.
+///
+/// `package_dirs` lists every package directory in the workspace so the deepest
+/// declaring package wins: a path inside a nested member belongs to that member,
+/// not to the enclosing root package. Pass an empty slice when the sibling set
+/// is unknown; ownership then falls back to plain containment.
+fn manifest_owns_confinement(
+    manifest_rel_path: &str,
+    allowed_in: &[String],
+    package_dirs: &[&str],
+) -> bool {
+    let own_dir = manifest_dir(manifest_rel_path);
+    allowed_in.iter().any(|pattern| {
+        let target = super::glob_literal_prefix(pattern);
+        // A pattern with no literal prefix (`**`) names no package.
+        if target.is_empty() || !dir_contains(own_dir, target) {
+            return false;
+        }
+        !package_dirs
+            .iter()
+            .any(|d| d.len() > own_dir.len() && dir_contains(d, target))
+    })
+}
+
+/// Manifest paths (`report/Cargo.toml`) reduced to package directories,
+/// with the root manifest becoming `""`.
+pub fn package_dirs_of(manifest_paths: &[String]) -> Vec<&str> {
+    manifest_paths
+        .iter()
+        .map(|p| manifest_dir(p))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub fn has_external_constraints(constraints: &[Constraint]) -> bool {
     constraints.iter().any(|c| {
         matches!(
@@ -344,20 +404,44 @@ pub fn workspace_dep_renames(root_content: &str) -> std::collections::HashMap<St
     map
 }
 
+/// Applicability predicate for manifest checks: a `confined_external` whose
+/// `allowed_in` names this package's own sources does not apply to the package's
+/// own dependency declaration (sutra/291).
+///
+/// Expressed as applicability rather than a post-filter because external
+/// matching is first-match — filtering afterwards would let the exempt rule win
+/// the match and shadow a narrower rule that should have fired (sutra/296).
+fn manifest_applicable<'p>(
+    manifest_rel_path: &'p str,
+    package_dirs: &'p [&'p str],
+) -> impl Fn(&Constraint) -> bool + 'p {
+    move |c: &Constraint| match &c.kind {
+        ConstraintKind::ConfinedExternal { allowed_in, .. } => {
+            !manifest_owns_confinement(manifest_rel_path, allowed_in, package_dirs)
+        }
+        _ => true,
+    }
+}
+
 /// Check one Cargo manifest's declared dependencies against external constraints.
 /// `manifest_rel_path` (e.g. `report/Cargo.toml`) is what `from`/`allowed_in`
-/// globs match against.
+/// globs match against. `package_dirs` is every package directory in the
+/// workspace (see `manifest_owns_confinement`); an empty slice is acceptable.
 pub fn check_manifest(
     constraints: &[Constraint],
     manifest_rel_path: &str,
     content: &str,
     ws_renames: Option<&std::collections::HashMap<String, String>>,
+    package_dirs: &[&str],
 ) -> Vec<ConstraintFinding> {
     let (normal, dev) = cargo_manifest_deps(content, ws_renames);
+    let applicable = manifest_applicable(manifest_rel_path, package_dirs);
     let mut findings = Vec::new();
     for (names, is_dev) in [(&normal, false), (&dev, true)] {
         for name in names {
-            if let Some(c) = match_external(constraints, manifest_rel_path, name, is_dev) {
+            if let Some(c) =
+                match_external_where(constraints, manifest_rel_path, name, is_dev, &applicable)
+            {
                 findings.push(make_external_finding(c, manifest_rel_path, name, true));
             }
         }
@@ -393,16 +477,22 @@ pub fn pubspec_deps(content: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// Check one pubspec.yaml's declared dependencies against external constraints.
+/// `package_dirs` carries the same confinement-ownership role as in
+/// `check_manifest`.
 pub fn check_pubspec(
     constraints: &[Constraint],
     pubspec_rel_path: &str,
     content: &str,
+    package_dirs: &[&str],
 ) -> Vec<ConstraintFinding> {
     let (normal, dev) = pubspec_deps(content);
+    let applicable = manifest_applicable(pubspec_rel_path, package_dirs);
     let mut findings = Vec::new();
     for (names, is_dev) in [(&normal, false), (&dev, true)] {
         for name in names {
-            if let Some(c) = match_external(constraints, pubspec_rel_path, name, is_dev) {
+            if let Some(c) =
+                match_external_where(constraints, pubspec_rel_path, name, is_dev, &applicable)
+            {
                 findings.push(make_external_finding(c, pubspec_rel_path, name, true));
             }
         }
@@ -547,12 +637,30 @@ pub fn check_workspace_externals(
         }
         items.extend(extra);
     }
+    let manifest_paths: Vec<String> = project_files
+        .manifests
+        .iter()
+        .map(|(rel, _)| rel.clone())
+        .collect();
+    let cargo_dirs = package_dirs_of(&manifest_paths);
+    let pubspec_paths: Vec<String> = project_files
+        .pubspecs
+        .iter()
+        .map(|(rel, _)| rel.clone())
+        .collect();
+    let pubspec_dirs = package_dirs_of(&pubspec_paths);
     let mut findings = check_import_items(constraints, &items);
     for (rel_path, content) in &project_files.manifests {
-        findings.extend(check_manifest(constraints, rel_path, content, renames));
+        findings.extend(check_manifest(
+            constraints,
+            rel_path,
+            content,
+            renames,
+            &cargo_dirs,
+        ));
     }
     for (rel_path, content) in &project_files.pubspecs {
-        findings.extend(check_pubspec(constraints, rel_path, content));
+        findings.extend(check_pubspec(constraints, rel_path, content, &pubspec_dirs));
     }
     findings
 }
@@ -766,12 +874,12 @@ cc = "1"
     fn manifest_check_flags_forbidden_dep() {
         let cs = constraints_from(FORBID);
         let manifest = "[dependencies]\naxum = \"0.8\"\n";
-        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None);
+        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None, &[]);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].to_path, "crate:axum");
         assert!(findings[0].detail.contains("manifest dependency"));
 
-        let clean = check_manifest(&cs, "server/Cargo.toml", manifest, None);
+        let clean = check_manifest(&cs, "server/Cargo.toml", manifest, None, &[]);
         assert!(clean.is_empty());
     }
 
@@ -785,7 +893,7 @@ crates = ["arrow-core"]
 "#,
         );
         let manifest = "[dependencies]\ninnocent = { package = \"arrow-core\", version = \"1\" }\n";
-        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, None);
+        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, None, &[]);
         assert_eq!(findings.len(), 1);
     }
 
@@ -793,7 +901,7 @@ crates = ["arrow-core"]
     fn manifest_dev_deps_exempt_by_default() {
         let cs = constraints_from(FORBID);
         let manifest = "[dev-dependencies]\naxum = \"0.8\"\n";
-        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None);
+        let findings = check_manifest(&cs, "report/Cargo.toml", manifest, None, &[]);
         assert!(findings.is_empty());
     }
 
@@ -871,8 +979,144 @@ crates = ["arrow-core"]
         let renames =
             std::collections::HashMap::from([("innocent".to_string(), "arrow-core".to_string())]);
         let manifest = "[dependencies]\ninnocent = { workspace = true }\n";
-        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, Some(&renames));
+        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, Some(&renames), &[]);
         assert_eq!(findings.len(), 1);
+    }
+
+    // --- confinement ownership (sutra/291) ---
+
+    const CONFINE_SINGLE: &str = r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["rusqlite"]
+allowed_in = ["src/db.rs", "src/error.rs"]
+name = "sqlite-single-point-of-contact"
+"#;
+
+    #[test]
+    fn single_crate_manifest_is_exempt_from_own_confinement() {
+        let cs = constraints_from(CONFINE_SINGLE);
+        let manifest = "[package]\nname = \"yojana\"\n\n[dependencies]\nrusqlite = \"0.32\"\n";
+        let findings = check_manifest(&cs, "Cargo.toml", manifest, None, &[""]);
+        assert!(
+            findings.is_empty(),
+            "the declaring package's own manifest can never appear in allowed_in, \
+             so flagging it makes the constraint unsatisfiable, got: {:?}",
+            findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn confinement_import_signal_survives_manifest_exemption() {
+        // The exemption is manifest-only: a use-statement outside allowed_in is
+        // still the violation the rule exists to catch.
+        let cs = constraints_from(CONFINE_SINGLE);
+        let items = vec![("src/server.rs".to_string(), "rusqlite".to_string(), false)];
+        assert_eq!(check_import_items(&cs, &items).len(), 1);
+        let allowed = vec![("src/db.rs".to_string(), "rusqlite".to_string(), false)];
+        assert!(check_import_items(&cs, &allowed).is_empty());
+    }
+
+    #[test]
+    fn non_owning_workspace_member_manifest_still_flagged() {
+        let cs = constraints_from(CONFINE);
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let dirs = ["", "quiver-client", "server"];
+        let findings = check_manifest(&cs, "server/Cargo.toml", manifest, None, &dirs);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a member declaring a dependency confined to another member is the \
+             case the manifest signal was written for"
+        );
+        assert_eq!(findings[0].to_path, "crate:tonic");
+
+        let owner = check_manifest(&cs, "quiver-client/Cargo.toml", manifest, None, &dirs);
+        assert!(owner.is_empty(), "the owning member is exempt");
+    }
+
+    #[test]
+    fn root_package_not_exempt_when_a_member_owns_the_confinement_path() {
+        // The root dir contains everything, so ownership goes to the deepest
+        // package declaring the path — otherwise the root would swallow it.
+        let cs = constraints_from(CONFINE);
+        let manifest = "[package]\nname = \"top\"\n\n[dependencies]\ntonic = \"0.12\"\n";
+        let findings = check_manifest(&cs, "Cargo.toml", manifest, None, &["", "quiver-client"]);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn exempt_confinement_does_not_shadow_a_forbidden_external_rule() {
+        // Matching is first-match: the exempt confined rule must step out of the
+        // way rather than win the match and discard the finding (sutra/296).
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["rusqlite"]
+allowed_in = ["src/db.rs"]
+name = "confine-sqlite"
+
+[[constraint]]
+kind = "forbidden_external"
+crates = ["rusqlite"]
+name = "no-sqlite-at-all"
+"#,
+        );
+        let manifest = "[dependencies]\nrusqlite = \"0.32\"\n";
+        let findings = check_manifest(&cs, "Cargo.toml", manifest, None, &[""]);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].constraint_name.as_deref(),
+            Some("no-sqlite-at-all")
+        );
+    }
+
+    #[test]
+    fn workspace_wide_allowed_in_glob_grants_no_ownership() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["tonic"]
+allowed_in = ["**/client.rs"]
+"#,
+        );
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        let findings = check_manifest(&cs, "Cargo.toml", manifest, None, &[""]);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a pattern with no literal prefix names no package"
+        );
+    }
+
+    #[test]
+    fn single_package_pubspec_is_exempt_from_own_confinement() {
+        let cs = constraints_from(
+            r#"
+[[constraint]]
+kind = "confined_external"
+crates = ["http"]
+allowed_in = ["lib/net/**"]
+"#,
+        );
+        let pubspec = "name: my_app\n\ndependencies:\n  http: ^1.0.0\n";
+        assert!(check_pubspec(&cs, "pubspec.yaml", pubspec, &[""]).is_empty());
+        assert_eq!(
+            check_pubspec(&cs, "other/pubspec.yaml", pubspec, &["", "other"]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn package_dirs_of_reduces_manifest_paths() {
+        let paths = vec![
+            "Cargo.toml".to_string(),
+            "server/Cargo.toml".to_string(),
+            "crates/report/Cargo.toml".to_string(),
+        ];
+        assert_eq!(package_dirs_of(&paths), vec!["", "crates/report", "server"]);
     }
 
     // --- import items dedup ---
@@ -1113,7 +1357,7 @@ crates = ["arrow_core"]
 "#,
         );
         let pubspec = "name: my_app\n\ndependencies:\n  arrow_core: ^2.0.0\n";
-        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec);
+        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec, &[]);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].detail.contains("manifest dependency"));
     }
@@ -1129,7 +1373,7 @@ crates = ["mockito"]
 "#,
         );
         let pubspec = "name: my_app\n\ndev_dependencies:\n  mockito: ^5.0.0\n";
-        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec);
+        let findings = check_pubspec(&cs, "my_app/pubspec.yaml", pubspec, &[]);
         assert!(findings.is_empty());
     }
 

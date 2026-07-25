@@ -42,6 +42,16 @@ pub struct DdDelta {
     pub removed_edges: Vec<(i64, i64)>,
 }
 
+/// The literal prefix of a path glob — everything before the first
+/// metacharacter. `tests/**` -> `tests/`, `src/db.rs` -> itself, `**/*.rs` -> ``.
+/// This is where a glob *points*; the metacharacters only widen what it covers.
+pub fn glob_literal_prefix(glob: &str) -> &str {
+    match glob.find(['*', '?', '[']) {
+        Some(i) => &glob[..i],
+        None => glob,
+    }
+}
+
 /// Whether a path glob deliberately aims at test code. A rule written for
 /// `tests/**` must still fire there, so path-based test exclusion steps aside
 /// when the author already said "tests" — otherwise it would go silently inert.
@@ -54,7 +64,7 @@ pub struct DdDelta {
 pub fn glob_targets_tests(glob: &str, is_test_path: &dyn Fn(&str) -> bool) -> bool {
     // Only the literal prefix says where the rule points: in `tests/**` the
     // glob widens what matches inside `tests/`, it does not move the target.
-    let literal_prefix = glob.split(['*', '?', '[']).next().unwrap_or("");
+    let literal_prefix = glob_literal_prefix(glob);
     if literal_prefix.is_empty() {
         return false;
     }

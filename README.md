@@ -97,7 +97,9 @@ crates = ["axum", "sqlx"]
 name = "report-stays-pure"
 
 # Confinement: these crates may ONLY be imported from the listed paths.
-# allowed_in = [] bans them everywhere.
+# allowed_in = [] bans them everywhere. The manifest signal skips the package
+# that owns an allowed_in path — declaring a dependency for your own confined
+# module is not a violation; a sibling crate declaring it still is.
 [[constraint]]
 kind = "confined_external"
 crates = ["tonic", "prost"]

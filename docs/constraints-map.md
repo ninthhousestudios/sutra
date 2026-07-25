@@ -68,6 +68,12 @@ src/constraints/
                       workspace_dep_renames resolves workspace=true aliases.
                       scan_project_files walks for Cargo.toml + pubspec.yaml.
                       check_workspace_externals is the index-side entry point.
+                      confined_external's manifest signal is skipped for the
+                      package that owns an allowed_in path (manifest_owns_
+                      confinement, sutra/291) — otherwise a single-crate rule is
+                      unsatisfiable, since Cargo.toml is never in allowed_in.
+                      Ownership takes the deepest package_dirs_of entry, and the
+                      skip is applied as match applicability, not a post-filter.
   worker.rs         — timely/DD worker thread, Command/Response enums,
                       WorkerHandle, spawn_worker, run_worker (dataflow +
                       command loop), Kosaraju SCC
