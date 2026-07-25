@@ -223,6 +223,10 @@ fn evaluate_dd(
     }
 
     let edges = db.import_edges()?;
+    // Edges a release build can actually see. The DD graph stays whole (blast
+    // radius and cycle discovery both want the full picture); test-only edges
+    // are filtered out at finding time so `include_tests` stays per-constraint.
+    let production_edges = db.production_import_edges()?;
     if edges.is_empty() {
         let constraint_waivers = db.get_constraint_waivers(None)?;
         let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
@@ -235,6 +239,8 @@ fn evaluate_dd(
             parse_errors,
         });
     }
+
+    let edge_set: HashSet<(i64, i64)> = edges.iter().copied().collect();
 
     let ephemeral;
     let engine: &DdEngine = if let Some(e) = dd_engine {
@@ -326,6 +332,9 @@ fn evaluate_dd(
                 &file_to_component,
                 &comp_name_to_id,
             ) {
+                if !c.include_tests && !production_edges.contains(&(from_id, to_id)) {
+                    continue;
+                }
                 let delta = if delta_available {
                     if baseline_set.contains(&(from_id, to_id)) {
                         FindingDelta::PreExisting
@@ -366,6 +375,16 @@ fn evaluate_dd(
                     &file_to_component,
                     &comp_name_to_id,
                 ) {
+                    // A pair still present but now test-only was never
+                    // reported active, so it has nothing to resolve. A pair
+                    // gone from the graph entirely is a genuine resolution and
+                    // must still be reported.
+                    if !c.include_tests
+                        && edge_set.contains(&(from_id, to_id))
+                        && !production_edges.contains(&(from_id, to_id))
+                    {
+                        continue;
+                    }
                     resolved.push(make_finding(
                         c,
                         from_path,
@@ -379,7 +398,6 @@ fn evaluate_dd(
     }
 
     // Cycle detection — validate reported SCCs against current edges
-    let edge_set: HashSet<(i64, i64)> = edges.iter().copied().collect();
     let cycle_filter = changed_ids;
     for cycle in engine.query_cycles()? {
         if let Some(cids) = cycle_filter
@@ -409,23 +427,46 @@ fn evaluate_dd(
             continue;
         }
         let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
-        findings.push(ConstraintFinding {
-            constraint_id: matched
-                .map(|c| c.id.clone())
-                .unwrap_or_else(|| "builtin:cycles".into()),
-            constraint_name: matched.and_then(|c| c.name.clone()),
-            constraint_kind: "no_cycles".into(),
-            severity: matched.map(|c| c.severity).unwrap_or(Severity::Blocking),
-            provenance: matched.and_then(|c| c.provenance.clone()),
-            from_path: cycle_paths.first().unwrap_or(&"").to_string(),
-            to_path: cycle_paths.last().unwrap_or(&"").to_string(),
-            component_context: None,
-            detail: format!("import cycle: {}", cycle_paths.join(" -> ")),
-            delta: FindingDelta::Unknown,
-            line: None,
-            snippet: None,
-            enclosing_symbol: None,
-        });
+
+        // A cycle held together by `#[cfg(test)]` imports does not exist in a
+        // release build. Re-run SCC detection over production edges only and
+        // report whatever genuine sub-cycles survive — nothing, when the whole
+        // loop was test wiring (sutra/290).
+        let reported: Vec<Vec<&str>> = if matched.is_some_and(|c| c.include_tests) {
+            vec![cycle_paths]
+        } else {
+            super::worker::compute_sccs(&cycle_node_set, &production_edges)
+                .into_iter()
+                .filter(|scc| scc.len() > 1)
+                .map(|scc| {
+                    let mut ids: Vec<i64> = scc.into_iter().collect();
+                    ids.sort_unstable();
+                    ids.iter()
+                        .filter_map(|id| path_map.get(id).copied())
+                        .collect()
+                })
+                .collect()
+        };
+
+        for paths in reported {
+            findings.push(ConstraintFinding {
+                constraint_id: matched
+                    .map(|c| c.id.clone())
+                    .unwrap_or_else(|| "builtin:cycles".into()),
+                constraint_name: matched.and_then(|c| c.name.clone()),
+                constraint_kind: "no_cycles".into(),
+                severity: matched.map(|c| c.severity).unwrap_or(Severity::Blocking),
+                provenance: matched.and_then(|c| c.provenance.clone()),
+                from_path: paths.first().unwrap_or(&"").to_string(),
+                to_path: paths.last().unwrap_or(&"").to_string(),
+                component_context: None,
+                detail: format!("import cycle: {}", paths.join(" -> ")),
+                delta: FindingDelta::Unknown,
+                line: None,
+                snippet: None,
+                enclosing_symbol: None,
+            });
+        }
     }
 
     // MaxFanIn evaluation
@@ -590,7 +631,7 @@ fn evaluate_raw(
             let mut stmt = conn.prepare(
                 "SELECT file_id, resolved_file_id FROM imports \
                  WHERE (file_id = ?1 OR resolved_file_id = ?1) \
-                 AND resolved_file_id IS NOT NULL",
+                 AND resolved_file_id IS NOT NULL AND is_test = 0",
             )?;
             stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .filter_map(|r| r.ok())

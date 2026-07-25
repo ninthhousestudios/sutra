@@ -302,6 +302,7 @@ pub struct InsertImportParams<'a> {
     pub line: i64,
     pub kind: &'a str,
     pub alias: Option<&'a str>,
+    pub is_test: bool,
 }
 
 pub struct InsertRefParams<'a> {
@@ -346,6 +347,8 @@ pub struct ImportRow {
     pub line: i64,
     pub kind: String,
     pub alias: Option<String>,
+    /// Import sits in test-only code (Rust `#[cfg(test)]`).
+    pub is_test: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -888,15 +891,16 @@ impl Db {
         // Insert imports.
         for imp in imports {
             conn.prepare_cached(
-                "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+                "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias, is_test)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6)",
             )?
             .execute(params![
                 file_id,
                 imp.imported_path,
                 imp.line,
                 imp.kind,
-                imp.alias
+                imp.alias,
+                imp.is_test
             ])?;
         }
 
@@ -1550,7 +1554,7 @@ impl Db {
     // imports
     // -----------------------------------------------------------------------
 
-    /// Insert an import row. Returns the new row id.
+    /// Insert a production-scope import row. Returns the new row id.
     pub fn insert_import(
         &self,
         file_id: i64,
@@ -1560,11 +1564,37 @@ impl Db {
         kind: &str,
         alias: Option<&str>,
     ) -> Result<i64> {
+        self.insert_import_with_scope(
+            file_id,
+            imported_path,
+            resolved_file_id,
+            line,
+            kind,
+            alias,
+            false,
+        )
+    }
+
+    /// Insert an import row, stating whether it sits in test-only code.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the imports table columns; a params struct here would only wrap the same flat row"
+    )]
+    pub fn insert_import_with_scope(
+        &self,
+        file_id: i64,
+        imported_path: &str,
+        resolved_file_id: Option<i64>,
+        line: i64,
+        kind: &str,
+        alias: Option<&str>,
+        is_test: bool,
+    ) -> Result<i64> {
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![file_id, imported_path, resolved_file_id, line, kind, alias],
+            "INSERT INTO imports (file_id, imported_path, resolved_file_id, line, kind, alias, is_test)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![file_id, imported_path, resolved_file_id, line, kind, alias, is_test],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -1606,7 +1636,7 @@ impl Db {
     pub fn imports_for_file(&self, file_id: i64) -> Result<Vec<ImportRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, file_id, imported_path, resolved_file_id, line, kind, alias
+            "SELECT id, file_id, imported_path, resolved_file_id, line, kind, alias, is_test
              FROM imports WHERE file_id = ?1",
         )?;
         let rows: rusqlite::Result<Vec<ImportRow>> =
@@ -2133,6 +2163,7 @@ fn map_import_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImportRow> {
         line: row.get(4)?,
         kind: row.get(5)?,
         alias: row.get(6)?,
+        is_test: row.get(7)?,
     })
 }
 

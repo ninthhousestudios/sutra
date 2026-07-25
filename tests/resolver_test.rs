@@ -61,6 +61,7 @@ fn make_import(raw_path: &str, line: usize) -> ExtractedImport {
         line,
         kind: "use",
         alias: None,
+        is_test: false,
     }
 }
 
@@ -863,6 +864,7 @@ fn test_import_alias_resolves_via_alias_name() {
         line: 1,
         kind: "import",
         alias: Some("np".to_string()),
+        is_test: false,
     }];
 
     let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
@@ -889,6 +891,7 @@ fn test_dot_separated_import_resolves() {
         line: 1,
         kind: "from_import",
         alias: None,
+        is_test: false,
     }];
 
     let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
@@ -911,6 +914,7 @@ fn test_from_import_alias_resolves() {
         line: 1,
         kind: "from_import",
         alias: Some("OD".to_string()),
+        is_test: false,
     }];
 
     let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);

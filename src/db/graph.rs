@@ -50,6 +50,21 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Import edges backed by at least one non-test import. A pair reachable
+    /// only from `#[cfg(test)]` code is absent — constraint evaluation uses
+    /// this to avoid reporting dependencies a release build never has.
+    pub fn production_import_edges(&self) -> Result<std::collections::HashSet<(i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT file_id, resolved_file_id FROM imports \
+             WHERE resolved_file_id IS NOT NULL AND is_test = 0",
+        )?;
+        let rows: rusqlite::Result<std::collections::HashSet<(i64, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
     pub fn all_symbol_file_map(&self) -> Result<Vec<(i64, i64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, file_id FROM symbols")?;

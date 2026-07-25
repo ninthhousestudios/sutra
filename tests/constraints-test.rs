@@ -605,6 +605,246 @@ fn test_cycles_and_blast_radius_unchanged_with_forbidden_pairs() {
 }
 
 #[test]
+fn cfg_test_only_cycle_not_reported() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/arc.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("src/task.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let fa = db.file_by_path("src/arc.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/task.rs").unwrap().unwrap();
+
+    // Both legs of the cycle live inside `#[cfg(test)] mod tests` — the shape
+    // that made yojana report a blocking cycle that no release build has.
+    db.insert_import_with_scope(fa.id, "src/task.rs", Some(fb.id), 197, "use", None, true)
+        .unwrap();
+    db.insert_import_with_scope(fb.id, "src/arc.rs", Some(fa.id), 432, "use", None, true)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert!(
+        cycle_findings.is_empty(),
+        "test-only cycle should not be reported, got: {:?}",
+        cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn production_cycle_still_reported_alongside_test_edges() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    )
+    .unwrap();
+
+    for (path, hash) in [("src/a.rs", "h1"), ("src/b.rs", "h2")] {
+        db.upsert_file(path, "rust", hash, 10, true).unwrap();
+    }
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+
+    db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use", None)
+        .unwrap();
+    db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use", None)
+        .unwrap();
+    // A redundant test-scope import must not mask the genuine cycle.
+    db.insert_import_with_scope(fa.id, "src/b.rs", Some(fb.id), 90, "use", None, true)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(cycle_findings.len(), 1);
+    assert!(cycle_findings[0].detail.contains("src/a.rs"));
+    assert!(cycle_findings[0].detail.contains("src/b.rs"));
+}
+
+#[test]
+fn include_tests_opt_in_restores_test_only_cycle() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+include_tests = true
+"#,
+    )
+    .unwrap();
+
+    db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+    db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+
+    db.insert_import_with_scope(fa.id, "src/b.rs", Some(fb.id), 1, "use", None, true)
+        .unwrap();
+    db.insert_import_with_scope(fb.id, "src/a.rs", Some(fa.id), 1, "use", None, true)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(cycle_findings.len(), 1);
+}
+
+#[test]
+fn cfg_test_only_forbidden_dep_not_reported() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/tools/*"
+to = "src/daemon.rs"
+name = "no-tool-daemon"
+"#,
+    )
+    .unwrap();
+
+    for (path, hash) in [
+        ("src/tools/thing.rs", "h1"),
+        ("src/daemon.rs", "h2"),
+        ("src/other.rs", "h3"),
+    ] {
+        db.upsert_file(path, "rust", hash, 10, true).unwrap();
+    }
+    let tool = db.file_by_path("src/tools/thing.rs").unwrap().unwrap();
+    let daemon = db.file_by_path("src/daemon.rs").unwrap().unwrap();
+    let other = db.file_by_path("src/other.rs").unwrap().unwrap();
+
+    db.insert_import_with_scope(
+        tool.id,
+        "src/daemon.rs",
+        Some(daemon.id),
+        200,
+        "use",
+        None,
+        true,
+    )
+    .unwrap();
+    // Unrelated production edge so the edge set isn't empty.
+    db.insert_import(tool.id, "src/other.rs", Some(other.id), 1, "use", None)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let dep_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_dep")
+        .collect();
+    assert!(
+        dep_findings.is_empty(),
+        "test-only dependency should not violate a production rule, got: {:?}",
+        dep_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn stale_engine_cycle_ids_not_in_path_map_skipped() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
     use sutra::db::Db;

@@ -281,7 +281,10 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
 }
 
 // Kosaraju's algorithm for SCC detection on the subgraph of cycle-participating nodes.
-fn compute_sccs(cycle_nodes: &HashSet<i64>, edges: &HashSet<(i64, i64)>) -> Vec<HashSet<i64>> {
+pub(crate) fn compute_sccs(
+    cycle_nodes: &HashSet<i64>,
+    edges: &HashSet<(i64, i64)>,
+) -> Vec<HashSet<i64>> {
     let mut forward: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut reverse: HashMap<i64, Vec<i64>> = HashMap::new();
 

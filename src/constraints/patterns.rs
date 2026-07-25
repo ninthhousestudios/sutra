@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 
 use crate::constraints::{ConstraintFinding, FindingDelta};
-use crate::parser::adapter::LanguageRegistry;
+use crate::parser::adapter::{LanguageRegistry, ParseContext, line_in_ranges};
 use crate::parser::{ExtractedSymbol, flatten_symbols};
 use crate::rules::{Constraint, ConstraintKind, scope_matches_path};
 
@@ -55,6 +56,9 @@ pub fn check_forbidden_patterns(
     }
 
     let mut findings = Vec::new();
+    // Test-only line ranges are a property of (file, language), not of the
+    // constraint, so they survive across the per-constraint loop.
+    let mut test_ranges: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
     for &(constraint, lang, query_str) in &pattern_constraints {
         let adapter = match registry.adapter_for_language(lang) {
             Some(a) => a,
@@ -94,6 +98,22 @@ pub fn check_forbidden_patterns(
 
             let symbols = extract_symbols_for_enclosing(adapter, source, path);
 
+            // Test code exercises the very constructs production rules forbid
+            // (`.unwrap()` in assertions, clones in fixtures). Matches inside
+            // it are excluded unless the rule opts in (sutra/290).
+            let skip_ranges: &[(u32, u32)] = if constraint.include_tests {
+                &[]
+            } else {
+                test_ranges.entry(path).or_insert_with(|| {
+                    let ctx = ParseContext {
+                        source: source.as_bytes(),
+                        tree: &tree,
+                        file_path: path,
+                    };
+                    adapter.test_line_ranges(&ctx)
+                })
+            };
+
             let mut cursor = QueryCursor::new();
             let mut matches = cursor.matches(&compiled, tree.root_node(), source.as_bytes());
             while let Some(m) = matches.next() {
@@ -103,6 +123,9 @@ pub fn check_forbidden_patterns(
                 let node = capture.node;
                 let start = node.start_position();
                 let line = (start.row + 1) as u32;
+                if line_in_ranges(skip_ranges, line) {
+                    continue;
+                }
                 let byte_range = node.byte_range();
                 let snippet = source
                     .get(byte_range.clone())
@@ -216,6 +239,125 @@ fn dangerous() {
         assert!(findings[0].snippet.as_deref().unwrap().contains("unsafe"));
         assert_eq!(findings[0].severity, Severity::Advisory);
         assert_eq!(findings[0].constraint_name.as_deref(), Some("no-unsafe"));
+    }
+
+    #[test]
+    fn cfg_test_module_excluded_by_default() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+name = "no-unsafe"
+"#;
+        let cs = pattern_constraints(toml);
+        let registry = default_registry();
+        let source = r#"
+fn prod() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        unsafe { std::ptr::null::<u8>().read() };
+    }
+}
+"#;
+        let findings = check_forbidden_patterns(&cs, &[("src/lib.rs", source)], &registry);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the production match should survive"
+        );
+        assert_eq!(findings[0].line, Some(3));
+    }
+
+    #[test]
+    fn include_tests_opt_in_restores_test_matches() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+name = "no-unsafe"
+include_tests = true
+"#;
+        let cs = pattern_constraints(toml);
+        assert!(cs[0].include_tests);
+        let registry = default_registry();
+        let source = r#"
+fn prod() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+
+#[cfg(test)]
+mod tests {
+    fn t() {
+        unsafe { std::ptr::null::<u8>().read() };
+    }
+}
+"#;
+        let findings = check_forbidden_patterns(&cs, &[("src/lib.rs", source)], &registry);
+        assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn bare_test_attribute_on_free_function_excluded() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let cs = pattern_constraints(toml);
+        let registry = default_registry();
+        let source = r#"
+#[test]
+fn standalone() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+
+#[tokio::test]
+async fn async_case() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+
+fn prod() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+"#;
+        let findings = check_forbidden_patterns(&cs, &[("src/lib.rs", source)], &registry);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, Some(13));
+    }
+
+    #[test]
+    fn cfg_not_test_stays_production() {
+        let toml = r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = "(unsafe_block) @cap"
+"#;
+        let cs = pattern_constraints(toml);
+        let registry = default_registry();
+        // `not(test)` and a `test`-named feature are both production code —
+        // misreading either would silently mute a real rule.
+        let source = r#"
+#[cfg(not(test))]
+fn only_in_release() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+
+#[cfg(feature = "test-helpers")]
+fn feature_gated() {
+    unsafe { std::ptr::null::<u8>().read() };
+}
+"#;
+        let findings = check_forbidden_patterns(&cs, &[("src/lib.rs", source)], &registry);
+        assert_eq!(findings.len(), 2);
     }
 
     #[test]

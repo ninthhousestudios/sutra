@@ -189,6 +189,9 @@ pub struct ExtractedImport {
     pub kind: &'static str,
     /// Local alias (e.g. `np` for `import numpy as np`). None when unaliased.
     pub alias: Option<String>,
+    /// Import sits in test-only code (Rust `#[cfg(test)]`). Such edges are
+    /// excluded from constraint evaluation by default — see `include_tests`.
+    pub is_test: bool,
 }
 
 pub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {

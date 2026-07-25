@@ -908,6 +908,7 @@ fn collect_includes(node: Node, src: &[u8]) -> Vec<ExtractedImport> {
                 line: child.start_position().row + 1,
                 kind: "import",
                 alias: None,
+                is_test: false,
             });
         }
     }

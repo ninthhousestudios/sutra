@@ -115,6 +115,12 @@ pub struct Constraint {
     pub provenance: Option<Arc<str>>,
     pub scope: Option<String>,
     pub ratchet: bool,
+    /// Opt in to evaluating test-only code (Rust `#[cfg(test)]` items and the
+    /// imports inside them). Off by default: test code exercises the very
+    /// patterns production rules forbid, so including it drowns real signal.
+    /// Excluded from constraint identity — toggling it must not orphan waivers
+    /// or ratchet registrations.
+    pub include_tests: bool,
 }
 
 impl Constraint {
@@ -271,6 +277,8 @@ struct RawConstraint {
     query: Option<String>,
     // ratchet
     ratchet: Option<bool>,
+    // test-code opt-in
+    include_tests: Option<bool>,
 }
 
 impl RawConstraint {
@@ -412,6 +420,7 @@ impl RawConstraint {
             provenance: self.provenance.map(Arc::from),
             scope: self.scope,
             ratchet: self.ratchet.unwrap_or(false),
+            include_tests: self.include_tests.unwrap_or(false),
         })
     }
 }
@@ -488,6 +497,7 @@ impl Rules {
                 provenance: None,
                 scope: None,
                 ratchet: self.ratchet.all,
+                include_tests: false,
             });
         }
 

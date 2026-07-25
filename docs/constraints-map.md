@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-10 (sutra/245-248: constraint ratchet — monotonic severity floor + guard enforcement)
+Last updated: 2026-07-25 (sutra/290: test-scope exclusion — `#[cfg(test)]` code no longer evaluated by default)
 
 ## Module layout
 
@@ -34,7 +34,9 @@ src/constraints/
   patterns.rs       — check_forbidden_patterns: per-file tree-sitter pattern
                       matching. Given compiled forbidden_pattern constraints and
                       source files, runs queries and produces findings with
-                      location + enclosing symbol resolution. No DD involvement
+                      location + enclosing symbol resolution. Matches inside
+                      test-only line ranges are dropped unless the constraint
+                      sets include_tests (see "Test scope"). No DD involvement
                       (per-file local pass, precedent: external.rs).
                       File eligibility uses LanguageAdapter::pattern_extensions()
                       (superset of extensions()), so unindexed stub files match.
@@ -146,7 +148,8 @@ src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
 ### Constraint (rules.rs)
 Authored rule from `.sutra/rules.toml`. Fields: `id` (blake3 hash, 8 hex chars),
 `kind: ConstraintKind`, `severity: Severity`, `name: Option<String>`,
-`provenance: Option<String>`, `scope: Option<String>`, `ratchet: bool`.
+`provenance: Option<String>`, `scope: Option<String>`, `ratchet: bool`,
+`include_tests: bool`.
 
 ### ConstraintKind (rules.rs)
 Enum: `ForbiddenDep { from, to }` (glob patterns), `Boundary { from_component,
@@ -162,8 +165,10 @@ max_fan_in/forbidden_pattern → Advisory (heuristic rules).
 
 ### Constraint identity (rules.rs)
 blake3 hash of `(kind_tag, kind-specific params, scope)`. Name and provenance
-are excluded — name is an alias for human reference, not identity. Truncated
-to 8 hex chars, matching convention ID style.
+are excluded — name is an alias for human reference, not identity. `ratchet`
+and `include_tests` are excluded too: they modulate enforcement, and toggling
+them must not orphan waivers or ratchet registrations. Truncated to 8 hex
+chars, matching convention ID style.
 
 ### DdEngine (engine.rs)
 State machine: `Cold` → `Loaded { edges, forbidden_pairs }` → `Warm { handle,
@@ -299,7 +304,53 @@ provenance = "CLAUDE.md"
 ratchet = true                   # optional, registers in ratchet registry at
                                  # index time. Floor never lowers; removal or
                                  # weakening requires `sutra ratchet release`.
+include_tests = false            # optional, default false. See "Test scope".
 ```
+
+## Test scope (sutra/290)
+
+Test-only code is excluded from every constraint kind unless the constraint
+sets `include_tests = true`. Two independent mechanisms, one flag:
+
+**Line ranges (pattern kinds).** `LanguageAdapter::test_line_ranges(ctx)`
+returns 1-based inclusive ranges; default impl is empty, so a language opts in
+by overriding. `parser::rust::test_line_ranges` walks for `attribute_item`
+siblings marking `#[cfg(test)]` / `#[test]` / `#[tokio::test]` and spans from
+the attribute line through the end of the item it annotates. Deliberately
+conservative: `cfg(not(test))` and any `cfg` containing a string literal
+(`feature = "test-helpers"`) are read as production, so a misparse leaves a
+rule over-reporting rather than silently muted. `patterns.rs` caches ranges per
+path across the per-constraint loop and drops matches falling inside them.
+`adapter::line_in_ranges` is the shared containment check.
+
+**Edge flag (dep kinds).** `imports.is_test` (migration 0053) is set at parse
+time in `rust::parse` by testing each import's line against the same ranges.
+`db::production_import_edges()` returns the pairs backed by at least one
+non-test import.
+
+- `check.rs::evaluate_dd` keeps the DD graph whole — blast radius and SCC
+  discovery both want the full picture — and filters at *finding* time, which
+  is what keeps `include_tests` per-constraint rather than per-graph.
+- `forbidden_dep`/`boundary`: skip when the pair is absent from
+  `production_import_edges`. The Resolved-delta path skips only when the pair
+  is still present but now test-only; a pair gone from the graph entirely is a
+  genuine resolution and is still reported.
+- `no_cycles`: re-runs `worker::compute_sccs` over production edges restricted
+  to the reported cycle's nodes and emits the surviving sub-SCCs (size > 1).
+  A pure-production cycle round-trips unchanged (both paths sort node ids), a
+  test-only cycle disappears, a mixed cycle narrows to its real core.
+- Guard paths (`evaluate_raw`, `guard::proposed edges`, `get_incoming_edges`)
+  drop test edges unconditionally rather than honouring `include_tests` — the
+  review path still enforces that case, and an edit-time deny on test wiring is
+  the exact failure sutra/290 was filed for.
+
+Known gap: Rust integration tests (`tests/*.rs`) carry no `cfg(test)`
+attribute and are not detected. Scope rules to `src/`. Dart's `test/` layout
+and `@visibleForTesting` are unimplemented — `test_line_ranges` is the hook.
+
+Migration 0053 defaults `is_test = 0`, so a workspace indexed before this
+landed keeps the old edge behaviour until reparsed. Pattern kinds read from
+disk and take effect immediately.
 
 ### Old format (backward compat)
 ```toml
@@ -345,8 +396,13 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   delta labels, enriched violation fields, compute serialization)
 - Orient constraints: `#[cfg(test)]` in `src/tools/orient.rs` (8 constraint tests — scope
   matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
-- Pattern engine: `#[cfg(test)]` in `src/constraints/patterns.rs` (9 tests — rust/dart
-  match, scope filtering, language filtering, enclosing symbol, identity propagation)
+- Pattern engine: `#[cfg(test)]` in `src/constraints/patterns.rs` (13 tests — rust/dart
+  match, scope filtering, language filtering, enclosing symbol, identity propagation,
+  cfg(test) exclusion, include_tests opt-in, bare #[test] attrs, cfg(not(test)) safety)
+- Test scope, edge side: `tests/constraints-test.rs` (4 tests — test-only cycle
+  suppressed, production cycle survives alongside test edges, include_tests restores
+  the cycle, test-only forbidden_dep suppressed);
+  `#[cfg(test)]` in `src/parser/rust.rs` (import is_test flagging, range spans)
 - Guard constraint filtering: `#[cfg(test)]` in `src/guard.rs` (14+ tests — severity
   filtering, waiver bypass, lightweight check, advisory passthrough, pattern
   introduced-only, pattern waiver bypass, pattern advisory passthrough, ratchet

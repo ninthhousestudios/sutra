@@ -546,6 +546,13 @@ pub fn extract_proposed_imports(
                 Some(r) if !r.segments.is_empty() => r,
                 _ => continue,
             };
+            // `#[cfg(test)]` imports are not production dependencies. The guard
+            // drops them unconditionally rather than honouring per-constraint
+            // `include_tests` — the review path still enforces that case, and an
+            // edit-time deny on test wiring is the failure mode of sutra/290.
+            if import.is_test {
+                continue;
+            }
             if let Some(target_id) = crate::rust_imports::resolve_segments(
                 &resolved.segments,
                 &path_ref_map,
@@ -560,7 +567,7 @@ pub fn extract_proposed_imports(
         // dart: proposed-edge derivation unsupported — use indexed outgoing edges
         conn.prepare(
             "SELECT file_id, resolved_file_id FROM imports \
-             WHERE file_id = ?1 AND resolved_file_id IS NOT NULL",
+             WHERE file_id = ?1 AND resolved_file_id IS NOT NULL AND is_test = 0",
         )
         .and_then(|mut stmt| {
             stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -575,7 +582,7 @@ pub fn extract_proposed_imports(
 fn get_incoming_edges(conn: &Connection, file_id: i64) -> Vec<(i64, i64)> {
     conn.prepare(
         "SELECT file_id, resolved_file_id FROM imports \
-         WHERE resolved_file_id = ?1 AND resolved_file_id IS NOT NULL",
+         WHERE resolved_file_id = ?1 AND resolved_file_id IS NOT NULL AND is_test = 0",
     )
     .and_then(|mut stmt| {
         stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -1317,7 +1324,7 @@ mod tests {
     fn check_file_constraints_empty_without_rules() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
@@ -1332,13 +1339,13 @@ mod tests {
     fn check_file_constraints_finds_violation() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/tools/review.rs');
              INSERT INTO files VALUES (2, 'src/daemon.rs');
-             INSERT INTO imports VALUES (1, 2);",
+             INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);",
         )
         .unwrap();
 
@@ -1371,13 +1378,13 @@ name = "no-tools-daemon"
     fn check_file_constraints_respects_waivers() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/tools/review.rs');
              INSERT INTO files VALUES (2, 'src/daemon.rs');
-             INSERT INTO imports VALUES (1, 2);",
+             INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);",
         )
         .unwrap();
 
@@ -1418,13 +1425,13 @@ name = "no-tools-daemon"
     fn check_file_constraints_advisory_severity() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
              INSERT INTO files VALUES (1, 'src/config.rs');
              INSERT INTO files VALUES (2, 'src/db/mod.rs');
-             INSERT INTO imports VALUES (2, 1);",
+             INSERT INTO imports (file_id, resolved_file_id) VALUES (2, 1);",
         )
         .unwrap();
 
@@ -1453,7 +1460,7 @@ name = "db-config-coupling"
     fn setup_constraint_db() -> (Connection, tempfile::TempDir) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1503,7 +1510,7 @@ name = "no-tools-daemon"
     #[test]
     fn proposed_fixing_edit_allowed() {
         let (conn, dir) = setup_constraint_db();
-        conn.execute_batch("INSERT INTO imports VALUES (1, 2);")
+        conn.execute_batch("INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);")
             .unwrap();
         let proposed_outgoing = vec![(1, 3)];
         let outcome =
@@ -1583,7 +1590,7 @@ name = "no-tools-daemon"
     fn setup_external_db() -> (Connection, tempfile::TempDir) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1653,7 +1660,7 @@ name = "protos-confined"
     #[test]
     fn indexed_unresolved_external_found_in_single_file_check() {
         let (conn, dir) = setup_external_db();
-        conn.execute_batch("INSERT INTO imports VALUES (1, 'sqlx::query', NULL);")
+        conn.execute_batch("INSERT INTO imports (file_id, imported_path, resolved_file_id) VALUES (1, 'sqlx::query', NULL);")
             .unwrap();
         let outcome = check_file_constraints(&conn, dir.path(), 1);
         assert_eq!(outcome.active.len(), 1);
@@ -1695,7 +1702,7 @@ name = "protos-confined"
     fn external_targeting_member_surfaces_as_blocking_finding() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1804,7 +1811,7 @@ name = "bad-rule-targets-member"
     fn proposed_incoming_edge_still_checked() {
         let (conn, dir) = setup_constraint_db();
         // daemon.rs (file_id=2) has an incoming edge from tools/review.rs that violates
-        conn.execute_batch("INSERT INTO imports VALUES (1, 2);")
+        conn.execute_batch("INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);")
             .unwrap();
         // We're editing daemon.rs — proposed outgoing is clean, but incoming is violating
         let proposed_outgoing: Vec<(i64, i64)> = vec![];
@@ -1828,7 +1835,7 @@ name = "bad-rule-targets-member"
     fn max_fan_in_violation_detected() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1864,7 +1871,7 @@ name = "config-fan-in"
     fn max_fan_in_below_threshold_no_finding() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1894,7 +1901,7 @@ threshold = 10
     fn max_fan_in_glob_target() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1930,7 +1937,7 @@ threshold = 10
     fn max_fan_in_proposed_edge_to_over_threshold_target() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
@@ -1967,7 +1974,7 @@ name = "config-fan-in"
     fn root_manifest_rename_change_rechecks_members() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
@@ -2029,7 +2036,7 @@ innocent = { package = "arrow-core", version = "1" }
     fn root_rename_ignores_preexisting_member_violations() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
@@ -2097,7 +2104,7 @@ innocent = { package = "arrow-core", version = "1" }
     fn root_rename_skips_non_workspace_members() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER);
+            "CREATE TABLE imports (file_id INTEGER, imported_path TEXT, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, language TEXT);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
              CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",

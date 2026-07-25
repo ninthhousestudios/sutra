@@ -1575,6 +1575,7 @@ fn walk_imports_recursive(imports: &mut Vec<ExtractedImport>, cursor: &mut TreeC
                     line: node.start_position().row + 1,
                     kind: "re_export",
                     alias: None,
+                    is_test: false,
                 });
             }
         }
@@ -1634,6 +1635,7 @@ fn extract_es_import(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>)
         line,
         kind: "es_import",
         alias,
+        is_test: false,
     });
 }
 
@@ -1664,6 +1666,7 @@ fn extract_require_or_dynamic_import(node: Node, src: &[u8], imports: &mut Vec<E
                 line: node.start_position().row + 1,
                 kind,
                 alias: None,
+                is_test: false,
             });
             return;
         }

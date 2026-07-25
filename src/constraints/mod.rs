@@ -269,6 +269,7 @@ mod tests {
             provenance: None,
             scope: None,
             ratchet: false,
+            include_tests: false,
         }
     }
 

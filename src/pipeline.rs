@@ -242,6 +242,7 @@ fn parse_single_file(
             line: imp.line as i64,
             kind: imp.kind,
             alias: imp.alias.as_deref(),
+            is_test: imp.is_test,
         })
         .collect();
     let ref_params: Vec<InsertRefParams<'_>> = parse_result
@@ -337,6 +338,7 @@ fn resolve_file_refs(
             line: i.line as usize,
             kind: "import",
             alias: i.alias.clone(),
+            is_test: i.is_test,
         })
         .collect();
 

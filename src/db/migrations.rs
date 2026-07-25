@@ -266,6 +266,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0052_import_alias.sql"),
         true,
     ),
+    (
+        "0053_import_is_test",
+        include_str!("../../migrations/0053_import_is_test.sql"),
+        true,
+    ),
 ];
 
 impl Db {

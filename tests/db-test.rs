@@ -1229,6 +1229,7 @@ fn test_replace_file_data_atomic() {
         line: 1,
         kind: "use",
         alias: None,
+        is_test: false,
     }];
     let refs = vec![InsertRefParams {
         unresolved_name: Some("println"),

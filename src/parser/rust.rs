@@ -264,6 +264,16 @@ pub fn parse(ctx: &ParseContext) -> Result<ParseResult> {
     let mut imports = Vec::new();
     collect_imports(&mut imports, root, src);
 
+    // Imports inside `#[cfg(test)]` are not production dependencies: an edge
+    // they create is invisible to a release build, so constraint evaluation
+    // must be able to tell them apart (sutra/290).
+    let test_ranges = test_line_ranges(ctx);
+    if !test_ranges.is_empty() {
+        for imp in &mut imports {
+            imp.is_test = crate::parser::adapter::line_in_ranges(&test_ranges, imp.line as u32);
+        }
+    }
+
     Ok(ParseResult {
         file_path: ctx.file_path.to_string(),
         language: "rust".to_string(),
@@ -1092,6 +1102,80 @@ fn collect_imports(imports: &mut Vec<ExtractedImport>, node: Node, src: &[u8]) {
     walk_imports_recursive(imports, &mut cursor, src, &[]);
 }
 
+// ---------------------------------------------------------------------------
+// Test-scope detection
+// ---------------------------------------------------------------------------
+
+/// 1-based inclusive line ranges covering `#[cfg(test)]` items and `#[test]`
+/// functions. Ranges start at the attribute, not the item, so an attribute-line
+/// match is attributed to test scope too.
+pub fn test_line_ranges(ctx: &ParseContext) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    collect_test_ranges(ctx.tree.root_node(), ctx.source, &mut ranges);
+    ranges
+}
+
+fn collect_test_ranges(node: Node, src: &[u8], out: &mut Vec<(u32, u32)>) {
+    let mut cursor = node.walk();
+    let mut pending_start: Option<usize> = None;
+    for child in node.children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            if pending_start.is_none() && attribute_marks_test(child, src) {
+                pending_start = Some(child.start_position().row);
+            }
+            continue;
+        }
+        if child.is_extra() {
+            continue;
+        }
+        match pending_start.take() {
+            // The attributed item is test-only in its entirety — no need to
+            // descend, and descending would double-report nested `#[test]` fns.
+            Some(start) => out.push(((start + 1) as u32, (child.end_position().row + 1) as u32)),
+            None => collect_test_ranges(child, src, out),
+        }
+    }
+}
+
+/// Whether an `attribute_item` marks what follows as test-only. Recognises
+/// `#[test]` (and namespaced variants like `#[tokio::test]`) plus `cfg`
+/// predicates naming a bare `test` token.
+fn attribute_marks_test(node: Node, src: &[u8]) -> bool {
+    let Ok(text) = node.utf8_text(src) else {
+        return false;
+    };
+    let inner = text
+        .trim()
+        .trim_start_matches('#')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+
+    if inner.rsplit("::").next().map(str::trim) == Some("test") {
+        return true;
+    }
+
+    let Some(predicate) = inner.strip_prefix("cfg") else {
+        return false;
+    };
+    // `cfg(not(test))` inverts the meaning; bail rather than misclassify
+    // production code as tests. Same for anything inside a string literal,
+    // where `test` is a feature name, not the built-in cfg.
+    if predicate.contains("not(") || predicate.contains('"') {
+        return false;
+    }
+    contains_bare_token(predicate, "test")
+}
+
+fn contains_bare_token(haystack: &str, token: &str) -> bool {
+    haystack.match_indices(token).any(|(idx, _)| {
+        let before = haystack[..idx].chars().next_back();
+        let after = haystack[idx + token.len()..].chars().next();
+        let boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        boundary(before) && boundary(after)
+    })
+}
+
 fn walk_imports_recursive(
     imports: &mut Vec<ExtractedImport>,
     cursor: &mut TreeCursor,
@@ -1115,6 +1199,7 @@ fn walk_imports_recursive(
                     line,
                     kind: "import",
                     alias: None,
+                    is_test: false,
                 });
             }
         }
@@ -1139,6 +1224,7 @@ fn walk_imports_recursive(
                 line,
                 kind: "mod",
                 alias: None,
+                is_test: false,
             });
             return;
         }
@@ -1225,13 +1311,50 @@ fn split_top_level(s: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::adapter::{ParserPool, RustAdapter};
+    use crate::parser::adapter::{LanguageAdapter, ParserPool, RustAdapter};
     use std::time::Duration;
 
     fn parse_rust(source: &str, file_path: &str) -> crate::error::Result<ParseResult> {
         let adapter = RustAdapter;
         let mut pool = ParserPool::new(Duration::from_secs(5));
         pool.parse_with(&adapter, source, file_path)
+    }
+
+    #[test]
+    fn imports_inside_cfg_test_are_flagged() {
+        let src = r#"
+use crate::prod_dep;
+
+#[cfg(test)]
+mod tests {
+    use crate::test_only_dep;
+    use crate::another_test_dep;
+}
+"#;
+        let result = parse_rust(src, "src/lib.rs").unwrap();
+        let flagged: Vec<(&str, bool)> = result
+            .imports
+            .iter()
+            .map(|i| (i.raw_path.as_str(), i.is_test))
+            .collect();
+        assert!(flagged.contains(&("crate::prod_dep", false)));
+        assert!(flagged.contains(&("crate::test_only_dep", true)));
+        assert!(flagged.contains(&("crate::another_test_dep", true)));
+    }
+
+    #[test]
+    fn test_line_ranges_cover_attribute_through_item_end() {
+        let src = "fn prod() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn after() {}\n";
+        let adapter = RustAdapter;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&adapter.grammar()).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let ctx = ParseContext {
+            source: src.as_bytes(),
+            tree: &tree,
+            file_path: "src/lib.rs",
+        };
+        assert_eq!(test_line_ranges(&ctx), vec![(2, 5)]);
     }
 
     #[test]

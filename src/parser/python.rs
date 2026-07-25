@@ -1276,6 +1276,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                         line: child.start_position().row + 1,
                         kind: "import",
                         alias: None,
+                        is_test: false,
                     });
                 }
             }
@@ -1292,6 +1293,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
                         line: name.start_position().row + 1,
                         kind: "import",
                         alias,
+                        is_test: false,
                     });
                 }
             }
@@ -1340,6 +1342,7 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
                 line,
                 kind: "from_import",
                 alias: alias_text.map(|s| s.to_string()),
+                is_test: false,
             });
         }
     }
@@ -1351,6 +1354,7 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
             line,
             kind: "from_import",
             alias: None,
+            is_test: false,
         });
     }
 }

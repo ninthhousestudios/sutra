@@ -122,6 +122,15 @@ impl ModuleBoundaryStrength {
     }
 }
 
+/// True when `line` (1-based) falls inside any of `ranges`, as produced by
+/// [`LanguageAdapter::test_line_ranges`]. Ranges are few — one per test module —
+/// so a linear scan beats building an interval tree.
+pub fn line_in_ranges(ranges: &[(u32, u32)], line: u32) -> bool {
+    ranges
+        .iter()
+        .any(|&(start, end)| line >= start && line <= end)
+}
+
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
     /// Extensions this adapter indexes: parsed into symbols, imports and rollups.
@@ -135,6 +144,14 @@ pub trait LanguageAdapter: Send + Sync {
     }
     fn grammar(&self) -> Language;
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult>;
+    /// Line ranges (1-based, inclusive) covering test-only code — Rust's
+    /// `#[cfg(test)]` items and `#[test]` functions. Constraint evaluation
+    /// skips matches inside these ranges unless the rule sets
+    /// `include_tests = true`. Default: none, so a language opts in by
+    /// overriding rather than by accident.
+    fn test_line_ranges(&self, _ctx: &ParseContext) -> Vec<(u32, u32)> {
+        Vec::new()
+    }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         None
     }
@@ -243,6 +260,9 @@ impl LanguageAdapter for RustAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::rust::parse(ctx)
+    }
+    fn test_line_ranges(&self, ctx: &ParseContext) -> Vec<(u32, u32)> {
+        super::rust::test_line_ranges(ctx)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
