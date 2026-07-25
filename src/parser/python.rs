@@ -583,6 +583,17 @@ fn extract_flags(file_path: &str, name: &str, node: Node, src: &[u8]) -> u32 {
     flags
 }
 
+/// Whether `path` is Python test code for constraint purposes: the pytest and
+/// unittest file-naming conventions [`is_test_file`] knows, plus any `test/` or
+/// `tests/` directory. The directory forms live here rather than in
+/// `is_test_file` deliberately — that one drives symbol `FLAG_TEST`, and a
+/// directory says "not production code" without saying "every symbol under it
+/// is a test" (sutra/295). Python has no attribute equivalent to `#[cfg(test)]`,
+/// so path is the only signal test scope has.
+pub fn is_test_path(path: &str) -> bool {
+    is_test_file(path) || crate::parser::adapter::path_in_test_dir(path)
+}
+
 fn is_test_file(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     let lower = file_name.to_ascii_lowercase();

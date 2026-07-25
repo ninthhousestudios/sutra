@@ -601,7 +601,7 @@ fn has_annotation(node: Node, src: &[u8], name: &str) -> bool {
 /// signal test scope has (sutra/292).
 pub fn is_test_path(path: &str) -> bool {
     path.ends_with("_test.dart")
-        || crate::parser::adapter::path_has_dir_segment(path, "test")
+        || crate::parser::adapter::path_in_test_dir(path)
         || crate::parser::adapter::path_has_dir_segment(path, "integration_test")
 }
 

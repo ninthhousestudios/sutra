@@ -742,6 +742,17 @@ pub(super) fn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {
     flags
 }
 
+/// Whether `path` is JS/TS test code for constraint purposes: the `.test.`/
+/// `.spec.`/`__tests__` conventions [`is_test_file`] already knows, plus a
+/// `test/` or `tests/` directory. The directory forms live here rather than in
+/// `is_test_file` deliberately — `is_test_file` drives symbol `FLAG_TEST`, and
+/// a bare `test/` directory is a weaker signal than a `.test.ts` suffix: good
+/// enough to stop a rule flooding, not good enough to relabel every symbol in
+/// it (sutra/295).
+pub fn is_test_path(path: &str) -> bool {
+    is_test_file(path) || crate::parser::adapter::path_in_test_dir(path)
+}
+
 pub(super) fn is_test_file(path: &str) -> bool {
     let lower = path.to_lowercase();
     lower.ends_with(".test.js")

@@ -281,6 +281,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0055_reparse_for_test_path_is_test.sql"),
         true,
     ),
+    (
+        "0056_reparse_for_test_path_remaining_languages",
+        include_str!("../../migrations/0056_reparse_for_test_path_remaining_languages.sql"),
+        true,
+    ),
 ];
 
 impl Db {

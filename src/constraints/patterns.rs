@@ -440,6 +440,97 @@ name = "no-assign"
         }
     }
 
+    /// Every language that classifies test paths, checked through the same
+    /// door a real rule uses (sutra/295). Each case is
+    /// `(language, query, production path + source, test paths)`.
+    #[test]
+    fn remaining_languages_exclude_test_paths() {
+        struct Case {
+            language: &'static str,
+            query: &'static str,
+            source: &'static str,
+            production: &'static str,
+            tests: &'static [&'static str],
+        }
+        let cases = [
+            Case {
+                language: "python",
+                query: "(assert_statement) @cap",
+                source: "def f():\n    assert True\n",
+                production: "app/models.py",
+                tests: &[
+                    "tests/test_models.py",
+                    "app/tests/test_models.py",
+                    "app/test_models.py",
+                    "app/models_test.py",
+                ],
+            },
+            Case {
+                language: "c",
+                query: "(goto_statement) @cap",
+                source: "int f(void) { goto done; done: return 0; }\n",
+                production: "src/engine.c",
+                tests: &["tests/engine.c", "src/tests/engine.c", "src/engine_test.c"],
+            },
+            Case {
+                language: "typescript",
+                query: "(debugger_statement) @cap",
+                source: "function f() { debugger; }\n",
+                production: "src/app.ts",
+                tests: &[
+                    "src/app.test.ts",
+                    "src/app.spec.tsx",
+                    "src/__tests__/app.ts",
+                    "test/app.ts",
+                    "packages/ui/tests/app.ts",
+                ],
+            },
+            Case {
+                language: "javascript",
+                query: "(debugger_statement) @cap",
+                source: "function f() { debugger; }\n",
+                production: "src/app.js",
+                tests: &["src/app.test.js", "src/__tests__/app.js", "test/app.mjs"],
+            },
+        ];
+
+        let registry = default_registry();
+        for case in cases {
+            let toml = format!(
+                "[[constraint]]\nkind = \"forbidden_pattern\"\nlanguage = \"{}\"\nquery = \"{}\"\nname = \"no-x\"\n",
+                case.language, case.query
+            );
+            let cs = pattern_constraints(&toml);
+            let prod = check_forbidden_patterns(&cs, &[(case.production, case.source)], &registry);
+            assert_eq!(
+                prod.len(),
+                1,
+                "{} production path {} should report",
+                case.language,
+                case.production
+            );
+            for path in case.tests {
+                let findings = check_forbidden_patterns(&cs, &[(*path, case.source)], &registry);
+                assert!(
+                    findings.is_empty(),
+                    "{} test path {path} should be excluded, got {findings:?}",
+                    case.language
+                );
+            }
+
+            let opt_in = pattern_constraints(&format!("{toml}include_tests = true\n"));
+            let restored =
+                check_forbidden_patterns(&opt_in, &[(case.tests[0], case.source)], &registry);
+            assert_eq!(
+                restored.len(),
+                1,
+                "{} include_tests must restore {}",
+                case.language,
+                case.tests[0]
+            );
+        }
+    }
+
     #[test]
     fn bare_test_attribute_on_free_function_excluded() {
         let toml = r#"

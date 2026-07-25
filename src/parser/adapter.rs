@@ -154,6 +154,14 @@ pub fn path_has_dir_segment(path: &str, dir: &str) -> bool {
     parent.split('/').any(|seg| seg == dir)
 }
 
+/// True when `path` lives under a directory that conventionally holds tests —
+/// `test/` or `tests/` at any depth. Shared by every language whose test layout
+/// is directory-based; Rust deliberately does not use it, because Cargo gives
+/// `tests/` and `benches/` an exact meaning that a bare `test/` lacks.
+pub fn path_in_test_dir(path: &str) -> bool {
+    path_has_dir_segment(path, "test") || path_has_dir_segment(path, "tests")
+}
+
 pub trait LanguageAdapter: Send + Sync {
     fn language_id(&self) -> &str;
     /// Extensions this adapter indexes: parsed into symbols, imports and rollups.
@@ -453,6 +461,9 @@ impl LanguageAdapter for CAdapter {
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::c::parse(ctx)
     }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::c::is_test_path(path)
+    }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
     }
@@ -507,6 +518,9 @@ impl LanguageAdapter for PythonAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::python::parse(ctx)
+    }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::python::is_test_path(path)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
@@ -570,6 +584,9 @@ impl LanguageAdapter for JsAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::javascript::parse(ctx)
+    }
+    fn is_test_path(&self, path: &str) -> bool {
+        super::javascript::is_test_path(path)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
@@ -640,6 +657,11 @@ impl LanguageAdapter for TsAdapter {
     }
     fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {
         super::typescript::parse(ctx)
+    }
+    fn is_test_path(&self, path: &str) -> bool {
+        // Shared with JS: the `.test.`/`.spec.` conventions and their
+        // extensions are one vocabulary across both languages.
+        super::javascript::is_test_path(path)
     }
     fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {
         Some(self)
@@ -827,6 +849,54 @@ mod tests {
         assert!(attrs.attributes.contains(&"complexity:low".to_string()));
         assert!(attrs.attributes.contains(&"returns_result".to_string()));
         assert!(attrs.attributes.contains(&"is_async".to_string()));
+    }
+
+    /// `parse_with` flags every import in a test-path file, which is what feeds
+    /// `db::production_import_edges` for the dep-shaped constraint kinds
+    /// (sutra/292, extended to these languages in sutra/295).
+    #[test]
+    fn parse_with_flags_imports_in_test_paths() {
+        let mut pool = ParserPool::new(Duration::from_secs(5));
+        let cases: [(&dyn LanguageAdapter, &str, &str, &str); 4] = [
+            (
+                &PythonAdapter,
+                "import os\nfrom django.db import models\n",
+                "tests/test_models.py",
+                "app/models.py",
+            ),
+            (
+                &CAdapter,
+                "#include \"engine.h\"\n",
+                "tests/engine.c",
+                "src/engine.c",
+            ),
+            (
+                &TsAdapter,
+                "import { z } from 'zod';\n",
+                "src/app.test.ts",
+                "src/app.ts",
+            ),
+            (
+                &JsAdapter,
+                "import { z } from 'zod';\n",
+                "__tests__/app.js",
+                "src/app.js",
+            ),
+        ];
+        for (adapter, source, test_path, prod_path) in cases {
+            let in_test = pool.parse_with(adapter, source, test_path).unwrap();
+            assert!(
+                !in_test.imports.is_empty() && in_test.imports.iter().all(|i| i.is_test),
+                "{test_path}: expected every import flagged, got {:?}",
+                in_test.imports
+            );
+            let in_prod = pool.parse_with(adapter, source, prod_path).unwrap();
+            assert!(
+                in_prod.imports.iter().all(|i| !i.is_test),
+                "{prod_path}: imports must stay production, got {:?}",
+                in_prod.imports
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-25 (sutra/292: test-scope exclusion extended to whole-file test targets — Rust `tests/`/`benches/`, all Dart test code)
+Last updated: 2026-07-25 (sutra/295: path-based test-scope exclusion now covers every language — Rust, Dart, Python, C, JS/TS)
 
 ## Module layout
 
@@ -327,15 +327,31 @@ than silently muted. `patterns.rs` caches ranges per
 path across the per-constraint loop and drops matches falling inside them.
 `adapter::line_in_ranges` is the shared containment check.
 
-**Test paths (all kinds, sutra/292).** A whole-file test target carries no
-attribute for line ranges to find, so `LanguageAdapter::is_test_path(path)`
-classifies by convention: Rust `tests/`/`benches/`, Dart `test/`,
-`integration_test/`, `*_test.dart`. Default impl is `false` — other languages
-have their own `is_test_file` helpers for flags, deliberately not wired to
-constraints yet. `adapter::path_has_dir_segment` matches a *directory*
-component anywhere in the path (so a monorepo's `crates/core/tests/` counts)
-and never the file name, keeping `src/tests.rs` production. `patterns.rs` skips
-such a file wholesale.
+**Test paths (all kinds, sutra/292 + sutra/295).** A whole-file test target
+carries no attribute for line ranges to find, so
+`LanguageAdapter::is_test_path(path)` classifies by convention. Every adapter
+overrides it (default impl is `false`, so a new language opts in deliberately):
+
+| language | classified as test |
+| --- | --- |
+| rust | `tests/`, `benches/` |
+| dart | `test/`, `tests/`, `integration_test/`, `*_test.dart` |
+| python | `test_*.py`, `*_test.py`, `test/`, `tests/` |
+| c | `test_*`, `*_test.c`, `test/`, `tests/` |
+| javascript / typescript | `*.test.*`, `*.spec.*`, `__tests__/`, `test/`, `tests/` |
+
+`adapter::path_has_dir_segment` matches a *directory* component anywhere in the
+path (so a monorepo's `crates/core/tests/` counts) and never the file name,
+keeping `src/tests.rs` production. `adapter::path_in_test_dir` is the shared
+`test/`-or-`tests/` check; Rust deliberately does not use it, because Cargo gives
+`tests/` and `benches/` an exact meaning a bare `test/` lacks. `patterns.rs`
+skips such a file wholesale.
+
+Note the split between `is_test_path` and each language's older `is_test_file`:
+the latter drives symbol `FLAG_TEST` and stays keyed on *file naming* only. A
+directory says "not production code" without saying "every symbol under it is a
+test", so wiring directories into symbol flags would overreach — python.rs, c.rs
+and javascript.rs each keep both functions for that reason.
 
 The escape hatch is the rule's own scope: `scope = "tests/**"` keeps firing
 inside `tests/`, because a rule aimed at test code would otherwise go silently
@@ -378,18 +394,20 @@ contract only.
   *externals* do carry the flag: the parser has already computed it, so
   per-constraint fidelity there costs nothing.
 
-Known gap: Dart's `@visibleForTesting` (a production symbol reserved for test
-use) has no equivalent — only path classification applies there. Python, C and
-JS/TS still report inside their test files: their `is_test_file` helpers feed
-symbol flags, not `is_test_path`.
+Known gaps: Dart's `@visibleForTesting` (a production symbol reserved for test
+use) has no equivalent — only path classification applies there. Fixture
+directories that avoid a test-named path (`resources/corpus/`, `testdata/`) are
+still evaluated; sutra will not guess at a project-specific layout, and
+`scope` is the answer there.
 
 Migration 0053 defaults `is_test = 0`, and the column is only ever written at
 parse time — but the pipeline skips a file whose stored `content_hash` still
 matches disk, so an older index would have kept the old edge behaviour
 indefinitely. Migration 0054 clears `content_hash` on Rust files, forcing one
 reparse that repopulates `is_test` (sutra/293). Migration 0055 does the same for
-Rust *and* Dart when path classification landed (sutra/292). Pattern kinds read
-from disk and take effect immediately.
+Rust *and* Dart when path classification landed (sutra/292), and 0056 for
+Python, C and JS/TS (sutra/295). Pattern kinds read from disk and take effect
+immediately.
 
 ### Old format (backward compat)
 ```toml
