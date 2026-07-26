@@ -268,6 +268,27 @@ impl SutraServer {
         let _guard = lock.lock().await;
     }
 
+    /// Acquire the per-workspace parse lock and *hold* it across a DD-backed
+    /// evaluation. A reparse remints file ids and commits per file; if it lands
+    /// between the `all_files()` read (→ path_map) and the `import_edges()` read
+    /// the engine syncs to, path_map and the edges end up in disjoint id spaces,
+    /// reviving the silent-clean of sutra/297 (and, per sutra/299, can hang the
+    /// shared engine). Holding this guard makes evaluation and reparse mutually
+    /// exclusive, closing the window at the source; the read-side data_generation
+    /// guard in `constraints::check::evaluate` stays as belt-and-suspenders.
+    ///
+    /// The lock is keyed on the *canonical* workspace id — the same key the
+    /// `reparse` action and the first-parse task use — so callers may pass a
+    /// path or basename and still land on the one mutex that serializes parses.
+    async fn hold_parse_lock(
+        &self,
+        ws_id: &str,
+    ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, ErrorData> {
+        let entry = self.resolve_workspace(ws_id)?;
+        let lock = self.parse_coord.lock_for(&entry.id);
+        Ok(lock.lock_owned().await)
+    }
+
     fn wrap_response(
         &self,
         db: &Db,
@@ -375,6 +396,9 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::orient::OrientArgs>,
     ) -> Result<String, ErrorData> {
+        // Hold the parse lock across evaluation so a reparse cannot remint file
+        // ids mid-read and desync path_map from the engine's edges (sutra/298).
+        let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
         let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
         let registry = crate::parser::adapter::default_registry();
@@ -415,6 +439,9 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::constraints::ConstraintsArgs>,
     ) -> Result<String, ErrorData> {
+        // Hold the parse lock across evaluation so a reparse cannot remint file
+        // ids mid-read and desync path_map from the engine's edges (sutra/298).
+        let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
         let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::constraints::handle(ctx.db(), ctx.workspace_root(), Some(&dd), &args)
@@ -756,7 +783,11 @@ impl SutraServer {
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
         self.require_analysis()?;
-        self.await_parse(&args.workspace).await;
+        // Hold (not merely await) the parse lock across the DD-backed review so a
+        // reparse cannot remint file ids mid-evaluation (sutra/298). This
+        // subsumes the previous await_parse, which only waited for an in-flight
+        // parse and then released before evaluation ran.
+        let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
         let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::review::handle(
@@ -950,6 +981,12 @@ impl SutraServer {
             "status" => {
                 let needs_parse = db.last_parse_time().ok().flatten().is_none();
                 if needs_parse {
+                    // Hold the parse lock across the first parse so it excludes a
+                    // concurrent DD-backed evaluation the same way the reparse
+                    // action does — otherwise the never-parsed path could remint
+                    // ids under an in-flight constraints/orient read (sutra/298).
+                    let lock = self.parse_coord.lock_for(&ws_id);
+                    let _guard = lock.lock().await;
                     let entry_bg = Arc::clone(&entry);
                     let db_bg = Arc::clone(&db);
                     let config_bg = Arc::clone(&self.config);

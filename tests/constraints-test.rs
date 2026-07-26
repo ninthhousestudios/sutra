@@ -2338,3 +2338,89 @@ name = "no-module-cycles"
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot coherence under concurrent reparse (sutra/298)
+//
+// evaluate_dd reads files (→ path_map), components and import edges across
+// separate `Mutex<Connection>` acquisitions, and the constraint/orient
+// endpoints don't hold the parse lock. A reparse reminting file ids mid-read
+// can pair an old-id path_map with new-id edges — the disjoint-id silent-clean
+// of sutra/297, now driven by concurrency rather than a stale cached graph.
+// `evaluate` guards the read window with the index's data_generation: if it
+// moves across the reads the snapshot was incoherent, so it retries, and
+// sustained churn surfaces as an explicit error. Invariant under test: a query
+// is never Ok-but-empty while the offending edge is present — it is either the
+// correct violations or an explicit not-evaluated error, never silently clean.
+// ---------------------------------------------------------------------------
+
+// Quarantined: this concurrent-reparse scenario trips sutra/299 (driving the
+// shared DdEngine while another thread remints file ids hangs the reparse thread
+// in an unbounded SQLite write loop, ~30% of runs). Un-ignore once sutra/299 is
+// fixed — it is also the reproduction for that bug.
+#[test]
+#[ignore = "hangs on sutra/299 (DdEngine + concurrent reminting)"]
+fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), dep_rules("advisory")).unwrap();
+
+    index_dep_fixture(&db);
+
+    let registry = default_registry();
+    let engine = DdEngine::new(std::time::Duration::from_secs(600));
+    let stop = AtomicBool::new(false);
+
+    std::thread::scope(|s| {
+        // A concurrent reparse: continuously delete and re-insert both files,
+        // reminting their ids exactly as `replace_file_data` does, so the
+        // foreground evaluations straddle a committing reparse. Each
+        // `delete_file_cascade` bumps `data_generation`, which is the signal the
+        // guard keys on.
+        s.spawn(|| {
+            while !stop.load(Ordering::Relaxed) {
+                remint_dep_fixture(&db);
+                // A brief yield keeps the reparse from monopolising the shared
+                // connection mutex, leaving windows where a full evaluation
+                // reads a coherent snapshot — so the test exercises both the
+                // retried-correct and not-evaluated outcomes, not just churn.
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+
+        // Many evaluations against the churning index. Without the guard, a
+        // read landing in a remint window returns an empty-but-Ok outcome; with
+        // it, that window is retried or reported as an error — never clean.
+        for i in 0..120 {
+            match evaluate(
+                &FactsSource::DdBacked {
+                    db: &db,
+                    dd_engine: Some(&engine),
+                },
+                dir.path(),
+                EvalScope::Workspace,
+                &registry,
+            ) {
+                Ok(outcome) => {
+                    let kinds = dep_kinds(&outcome);
+                    assert!(
+                        kinds.contains(&"forbidden_dep".to_string()),
+                        "iteration {i}: forbidden_dep vanished with the edge present — \
+                         a coherent snapshot must report it (got {kinds:?})"
+                    );
+                }
+                // A reparse committing across every retry attempt is a
+                // legitimate not-evaluated result: explicit, not silently clean.
+                Err(_) => {}
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
+}

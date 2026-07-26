@@ -57,8 +57,30 @@ pub fn evaluate(
     registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     match facts {
+        // A DD-backed evaluation reads files (→ path_map), components and import
+        // edges across separate `Mutex<Connection>` acquisitions. A reparse
+        // remints file ids and commits per file, and the constraint/orient
+        // endpoints don't hold the parse lock — so a reparse landing mid-read
+        // can leave path_map on old ids while the edges the engine syncs to
+        // carry new ones, reviving the disjoint-id silent-clean of sutra/297.
+        // Guard the read window with the index's data_generation: if it moved
+        // while we read, the snapshot was incoherent, so retry against a fresh
+        // one. Sustained churn (a long reparse) surfaces as an explicit error
+        // rather than a silently-empty result (sutra/298).
         FactsSource::DdBacked { db, dd_engine } => {
-            evaluate_dd(db, *dd_engine, workspace_root, scope, registry)
+            const MAX_ATTEMPTS: u32 = 4;
+            for _ in 0..MAX_ATTEMPTS {
+                let gen_before = db.get_data_generation()?;
+                let outcome = evaluate_dd(db, *dd_engine, workspace_root, &scope, registry)?;
+                if db.get_data_generation()? == gen_before {
+                    return Ok(outcome);
+                }
+            }
+            Err(crate::error::SutraError::Internal(
+                "constraint evaluation could not read a coherent index snapshot: \
+                 a reparse kept committing across every attempt"
+                    .to_string(),
+            ))
         }
         FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope, registry),
     }
@@ -84,7 +106,7 @@ fn evaluate_dd(
     db: &crate::db::Db,
     dd_engine: Option<&DdEngine>,
     workspace_root: &Path,
-    scope: EvalScope,
+    scope: &EvalScope,
     registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     let mut loaded_rules = rules::load_rules(workspace_root)?;
@@ -103,7 +125,7 @@ fn evaluate_dd(
         }
     }
 
-    let changed_ids = match &scope {
+    let changed_ids = match scope {
         EvalScope::ChangedFiles { changed_ids, .. } => Some(*changed_ids),
         _ => None,
     };
@@ -194,7 +216,7 @@ fn evaluate_dd(
     // Forbidden pattern checks — read source from disk for scope-matched files.
     // Runs before the edge-empty early return since patterns are per-file, not edge-based.
     if has_patterns {
-        let scan_ids: HashSet<i64> = match &scope {
+        let scan_ids: HashSet<i64> = match scope {
             EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
             EvalScope::SingleFile(id) => std::iter::once(*id).collect(),
             EvalScope::Edges { .. } => HashSet::new(),
@@ -204,7 +226,7 @@ fn evaluate_dd(
         // workspace audit takes every stub on disk, a review takes the ones the
         // caller reports as changed. Matches the indexed-file contract, where a
         // changed file is scanned whole rather than diffed for introduced matches.
-        let scan_stub_paths: &[String] = match &scope {
+        let scan_stub_paths: &[String] = match scope {
             EvalScope::Workspace => &stub_paths,
             EvalScope::ChangedFiles {
                 changed_pattern_only_paths,
@@ -287,7 +309,7 @@ fn evaluate_dd(
         engine.set_forbidden_pairs(pairs)?;
         let current_violations = engine.query_violations()?;
 
-        let (baseline_set, delta_available) = match &scope {
+        let (baseline_set, delta_available) = match scope {
             EvalScope::ChangedFiles {
                 old_edges,
                 changed_ids,
