@@ -2354,12 +2354,21 @@ name = "no-module-cycles"
 // correct violations or an explicit not-evaluated error, never silently clean.
 // ---------------------------------------------------------------------------
 
-// Quarantined: this concurrent-reparse scenario trips sutra/299 (driving the
-// shared DdEngine while another thread remints file ids hangs the reparse thread
-// in an unbounded SQLite write loop, ~30% of runs). Un-ignore once sutra/299 is
-// fixed — it is also the reproduction for that bug.
+// Quarantined, and kept quarantined by design (sutra/299). Driving the shared
+// DdEngine's timely worker while another thread reparses the same Db corrupts
+// the process heap (~30% of runs): SQLite's LALR parser state is clobbered and
+// spins forever in yy_reduce on a trivial query — a heap-corruption data race
+// in the third-party timely/differential + bundled-sqlite interaction, not in
+// this crate (which has no `unsafe`). sutra/298 makes that overlap structurally
+// impossible in the server: the constraints/orient/review endpoints and the
+// first-parse path now hold the parse-coordinator lock across DD evaluation, so
+// the engine is never driven concurrently with a reparse. This test is retained
+// as the reproduction/documentation of the race; do NOT un-ignore it — it
+// exercises a configuration the running system now prevents, and running an
+// intermittent heap-corruption race in CI would only add flakiness.
 #[test]
-#[ignore = "hangs on sutra/299 (DdEngine + concurrent reminting)"]
+#[ignore = "sutra/299: heap-corruption race in timely+sqlite under concurrent reparse; \
+            structurally prevented in production by the sutra/298 parse-lock serialization"]
 fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
