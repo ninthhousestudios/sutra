@@ -40,7 +40,7 @@ pub fn handle(
             "parse_errors": parse_errors,
             "last_parse": last_parse,
         });
-        if parse_coord.is_locked(&ws.id) {
+        if parse_coord.is_parsing(&ws.id) {
             entry["parsing_in_progress"] = serde_json::Value::Bool(true);
         }
         ws_summaries.push(entry);

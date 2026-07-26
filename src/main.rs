@@ -430,11 +430,13 @@ fn maybe_reparse_cwd(
     let Ok(guard) = lock.clone().try_lock_owned() else {
         return;
     };
+    let mark = parse_coord.mark_parsing(&entry.id);
 
     let config = Arc::clone(config);
     let ws_id = entry.id.clone();
     tokio::spawn(async move {
         let _guard = guard;
+        let _mark = mark;
         let result = tokio::task::spawn_blocking(move || {
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let registry = sutra::parser::adapter::default_registry();

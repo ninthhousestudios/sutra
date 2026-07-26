@@ -251,7 +251,7 @@ impl SutraServer {
             self.config.stale_threshold_sec,
         );
 
-        let parsing = self.parse_coord.is_locked(db.workspace_id());
+        let parsing = self.parse_coord.is_parsing(db.workspace_id());
 
         let mut val = serde_json::json!({
             "as_of": as_of,
@@ -987,6 +987,7 @@ impl SutraServer {
                     // ids under an in-flight constraints/orient read (sutra/298).
                     let lock = self.parse_coord.lock_for(&ws_id);
                     let _guard = lock.lock().await;
+                    let _mark = self.parse_coord.mark_parsing(&ws_id);
                     let entry_bg = Arc::clone(&entry);
                     let db_bg = Arc::clone(&db);
                     let config_bg = Arc::clone(&self.config);
@@ -1033,6 +1034,7 @@ impl SutraServer {
                 let ws_root = entry.root.as_path().to_owned();
                 let lock = self.parse_coord.lock_for(&ws_id);
                 let _guard = lock.lock().await;
+                let _mark = self.parse_coord.mark_parsing(&ws_id);
                 let config = Arc::clone(&self.config);
                 let db_bg = Arc::clone(&db);
                 let result = tokio::task::spawn_blocking(move || {

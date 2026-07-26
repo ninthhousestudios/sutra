@@ -25,9 +25,28 @@ use crate::workspace::WorkspaceEntry;
 
 /// Shared per-workspace parse lock. MCP tool handlers acquire the lock before
 /// parsing, preventing concurrent parses against the same SQLite database.
+///
+/// The `locks` mutex serializes *all* work that must not overlap a parse —
+/// since sutra/298 that includes DD-backed constraint evaluation, which holds
+/// the lock without parsing. The separate `parsing` flag records whether a
+/// *genuine parse* is in flight, so `parsing_in_progress` freshness signals
+/// don't report an evaluation lock holder as a parse (sutra/300). Mark it via
+/// [`ParseCoordinator::mark_parsing`] at the parse sites; read it via
+/// [`ParseCoordinator::is_parsing`].
 #[derive(Clone, Default)]
 pub struct ParseCoordinator {
     locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    parsing: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+/// RAII guard that clears the per-workspace parsing flag on drop. Held for the
+/// duration of a genuine parse (alongside the parse lock guard).
+pub struct ParseMark(Arc<AtomicBool>);
+
+impl Drop for ParseMark {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl ParseCoordinator {
@@ -43,11 +62,25 @@ impl ParseCoordinator {
             .clone()
     }
 
-    /// Returns `true` if a parse is currently running for this workspace.
-    pub fn is_locked(&self, ws_id: &str) -> bool {
-        let locks = self.locks.lock();
-        match locks.get(ws_id) {
-            Some(lock) => lock.try_lock().is_err(),
+    /// Marks a genuine parse as in progress for this workspace and returns a
+    /// guard that clears the mark on drop. Call at the parse sites (holding the
+    /// parse lock), NOT in the evaluation-serialization path.
+    pub fn mark_parsing(&self, ws_id: &str) -> ParseMark {
+        let mut parsing = self.parsing.lock();
+        let flag = parsing
+            .entry(ws_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        flag.store(true, Ordering::SeqCst);
+        ParseMark(Arc::clone(flag))
+    }
+
+    /// Returns `true` if a genuine parse is currently running for this
+    /// workspace. Unlike a raw lock check, this excludes evaluation lock
+    /// holders (sutra/300).
+    pub fn is_parsing(&self, ws_id: &str) -> bool {
+        let parsing = self.parsing.lock();
+        match parsing.get(ws_id) {
+            Some(flag) => flag.load(Ordering::SeqCst),
             None => false,
         }
     }
@@ -1042,4 +1075,64 @@ fn parse_ref_context_kind(s: &str) -> parser::RefContextKind {
         warn!(kind = s, "unknown ref context kind, defaulting to other");
         parser::RefContextKind::Other
     })
+}
+
+#[cfg(test)]
+mod parse_coordinator_tests {
+    use super::ParseCoordinator;
+
+    // sutra/300: the parse lock is now held by DD-backed evaluation too
+    // (sutra/298), so `parsing_in_progress` must NOT be derived from the raw
+    // lock — an evaluation lock holder is not a parse. `is_parsing` reads a
+    // separate flag set only by `mark_parsing`.
+    #[test]
+    fn mark_parsing_toggles_is_parsing_and_clears_on_drop() {
+        let coord = ParseCoordinator::new();
+        assert!(!coord.is_parsing("ws"), "no parse marked yet");
+        {
+            let _mark = coord.mark_parsing("ws");
+            assert!(coord.is_parsing("ws"), "mark held → parsing");
+        }
+        assert!(!coord.is_parsing("ws"), "mark dropped → not parsing");
+    }
+
+    // The exact regression Codex flagged: holding the parse lock the way DD
+    // evaluation does (no mark) must leave `is_parsing` false, so freshness
+    // never reports an evaluator as a parser.
+    #[test]
+    fn holding_lock_without_marking_is_not_reported_as_parsing() {
+        let coord = ParseCoordinator::new();
+        let lock = coord.lock_for("ws");
+        let _guard = lock.try_lock().expect("uncontended");
+        assert!(
+            !coord.is_parsing("ws"),
+            "evaluation-style lock hold must not look like a parse"
+        );
+    }
+
+    // The lock is still the serialization primitive that excludes a concurrent
+    // parse/evaluation on the same workspace.
+    #[test]
+    fn lock_for_serializes_same_workspace() {
+        let coord = ParseCoordinator::new();
+        let held = coord.lock_for("ws");
+        let _guard = held.try_lock().expect("uncontended first acquire");
+        assert!(
+            coord.lock_for("ws").try_lock().is_err(),
+            "second acquire on same workspace must contend"
+        );
+        // A different workspace keys a different lock.
+        assert!(
+            coord.lock_for("other").try_lock().is_ok(),
+            "distinct workspace must not contend"
+        );
+    }
+
+    #[test]
+    fn parsing_flag_is_keyed_per_workspace() {
+        let coord = ParseCoordinator::new();
+        let _mark = coord.mark_parsing("ws");
+        assert!(coord.is_parsing("ws"));
+        assert!(!coord.is_parsing("other"), "flag must not leak across ws");
+    }
 }
