@@ -184,10 +184,16 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
             match cmd_rx.recv() {
                 Ok(Command::Ingest(edges)) => {
                     {
+                        // The graph is a set. `Db::import_edges` repeats an edge
+                        // once per import statement, and feeding a duplicate to
+                        // DD would raise the pair's multiplicity above the
+                        // store's — a later single retraction would then leave
+                        // the edge alive in the dataflow only (sutra/297).
                         let mut store = edges_store.borrow_mut();
                         for &edge in &edges {
-                            store.insert(edge);
-                            input.insert(edge);
+                            if store.insert(edge) {
+                                input.insert(edge);
+                            }
                         }
                     }
                     advance_and_step(
@@ -203,12 +209,14 @@ fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
                     {
                         let mut store = edges_store.borrow_mut();
                         for &edge in &added {
-                            store.insert(edge);
-                            input.insert(edge);
+                            if store.insert(edge) {
+                                input.insert(edge);
+                            }
                         }
                         for &edge in &removed {
-                            store.remove(&edge);
-                            input.remove(edge);
+                            if store.remove(&edge) {
+                                input.remove(edge);
+                            }
                         }
                     }
                     advance_and_step(

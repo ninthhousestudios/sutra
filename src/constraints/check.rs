@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use glob::{MatchOptions, Pattern};
 
-use crate::constraints::{self, ConstraintResolver, DdEngine, DdFacts, external};
+use crate::constraints::{self, ConstraintResolver, DdEngine, external};
 pub use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::db::{ConstraintRatchetRow, active_ratchets_from_conn};
 use crate::error::Result;
@@ -259,25 +259,19 @@ fn evaluate_dd(
 
     let edge_set: HashSet<(i64, i64)> = edges.iter().copied().collect();
 
+    // The shared engine is per-workspace and per-session, so its graph has to be
+    // reconciled with the index on every evaluation — not just ingested once.
+    // File ids are reminted on reparse, so a cached graph doesn't degrade
+    // gracefully: it goes fully disjoint from the freshly resolved forbidden
+    // pairs and every DD-backed constraint reports zero (sutra/297).
     let ephemeral;
     let engine: &DdEngine = if let Some(e) = dd_engine {
-        if e.is_invalidated() {
-            e.reload(DdFacts {
-                import_edges: edges.clone(),
-            });
-        } else if !e.is_loaded() {
-            e.ingest(DdFacts {
-                import_edges: edges.clone(),
-            })?;
-        }
         e
     } else {
         ephemeral = DdEngine::new(Duration::from_secs(60));
-        ephemeral.ingest(DdFacts {
-            import_edges: edges.clone(),
-        })?;
         &ephemeral
     };
+    engine.sync_edges(&edges)?;
 
     let mut resolver = ConstraintResolver::new();
     let pairs = resolver.resolve(&all_constraints, db, &path_map)?;

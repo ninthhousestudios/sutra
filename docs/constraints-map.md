@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-25 (sutra/295: path-based test-scope exclusion now covers every language — Rust, Dart, Python, C, JS/TS)
+Last updated: 2026-07-26 (sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -20,9 +20,16 @@ src/constraints/
                       a separate arg — unindexed stubs count for
                       forbidden_pattern only, never for dep-kind globs).
   engine.rs         — DdEngine (Cold/Loaded/Warm state machine), public API:
-                      ingest, update, set_forbidden_pairs, query_violations,
-                      query_cycles, query_blast_radius[_all], evict_if_idle.
+                      ingest, sync_edges, update, set_forbidden_pairs,
+                      query_violations, query_cycles, query_blast_radius[_all],
+                      evict_if_idle.
                       query_forbidden_deps (deprecated, no callers).
+                      sync_edges reconciles the cached graph with the index's
+                      current edge set and is what every evaluation calls (see
+                      "Session-lifetime graph staleness"). apply_edge_delta is
+                      the one path that mutates edges — shared by sync_edges and
+                      update, and it commits the tracked list only after the
+                      worker acknowledges.
   resolver.rs       — ConstraintResolver: resolves Constraint rules to
                       forbidden (i64, i64) pairs. Handles ForbiddenDep (glob)
                       + Boundary (component membership). Caches by input hash
@@ -190,6 +197,7 @@ chars, matching convention ID style.
 State machine: `Cold` → `Loaded { edges, forbidden_pairs }` → `Warm { handle,
 edges, forbidden_pairs, last_query }`. Transitions:
 - `ingest()`: Cold → Loaded (once only)
+- `sync_edges()`: Cold → Loaded, or a delta against the existing graph
 - `ensure_warm()`: Loaded → Warm (spawns worker, sends edges + forbidden pairs)
 - `evict_if_idle()`: Warm → Loaded (preserves edges + forbidden pairs)
 - Drop: → Cold (shuts down worker)
@@ -278,6 +286,37 @@ Command/Response protocol (crossbeam channels, blocking recv):
 
 Critical invariant: every mutation handler advances BOTH inputs to the same
 timestamp and flushes both before stepping. Missing this stalls the probe.
+
+Second invariant: the edge collection is a *set*. `Ingest`/`Update` feed DD only
+when `edges_store` actually changed, because `Db::import_edges` repeats a pair
+once per import statement — a duplicate insert would raise that pair's
+multiplicity above the store's, and a later single retraction would leave the
+edge alive in the dataflow alone (sutra/297).
+
+## Session-lifetime graph staleness (sutra/297)
+
+A shared `DdEngine` is per-workspace and per-server-session, so its graph has to
+be reconciled with the index on every evaluation. `check.rs::evaluate_dd` calls
+`engine.sync_edges(&edges)` unconditionally for exactly that reason; the diff is
+usually empty and returns before touching the worker.
+
+Staleness here does not degrade gracefully. `Db::replace_file_data` deletes and
+re-inserts the `files` row on every reparse, and `files.id` is `AUTOINCREMENT`,
+so a reparsed file gets a **brand-new id** — yojana's 25 files span ids 241–341.
+Forbidden pairs are resolved fresh against live ids each evaluation, so a cached
+graph doesn't merely miss an edge: it is disjoint from the pair set, the
+violations semijoin returns empty, and *every* DD-backed constraint reports zero
+with no distinction between "clean" and "not evaluated". `no_cycles` fails the
+same way one step later — stale SCC node ids miss `path_map` and the cycle is
+skipped.
+
+The original design relied on an `invalidate()` signal that had **no callers**,
+which is why this survived: the engine ingested once per session and was never
+told otherwise. Sync-at-use replaces it (`invalidate`/`is_invalidated`/`reload`
+are gone) — a check that can't be forgotten by a future writer of the index.
+Only DD-backed kinds were affected; `forbidden_pattern` reads from disk and the
+`external` kinds re-read `unresolved_imports` each call, which is why those held
+steady in the field report.
 
 ## TOML format (.sutra/rules.toml)
 
@@ -501,6 +540,11 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   filtering, waiver bypass, lightweight check, advisory passthrough, pattern
   introduced-only, pattern waiver bypass, pattern advisory passthrough, ratchet
   guard blocking + release-allows-edit)
+- Session staleness: `tests/constraints-test.rs` (4 tests — forbidden_dep +
+  forbidden_external across five id-reminting cycles, no_cycles across three,
+  survival of a rules.toml reload, exact retraction of a duplicated edge);
+  `tests/review-test.rs` (build_findings resyncs a shared engine holding a
+  stale graph)
 - Ratchet: `tests/constraints-test.rs` (4 tests — drift detection on deletion,
   non-waivability, released-ratchet-inert, ratchet floor monotonicity);
   `tests/db-test.rs` (ratchet_upsert_and_get);

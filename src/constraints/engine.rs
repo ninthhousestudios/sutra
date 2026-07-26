@@ -1,6 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, SutraError};
@@ -14,7 +13,6 @@ use crate::rules::ForbiddenDep;
 pub struct DdEngine {
     state: Mutex<DdState>,
     idle_timeout: Duration,
-    invalidated: AtomicBool,
 }
 
 enum DdState {
@@ -36,16 +34,7 @@ impl DdEngine {
         Self {
             state: Mutex::new(DdState::Cold),
             idle_timeout,
-            invalidated: AtomicBool::new(false),
         }
-    }
-
-    pub fn invalidate(&self) {
-        self.invalidated.store(true, Ordering::Release);
-    }
-
-    pub fn is_invalidated(&self) -> bool {
-        self.invalidated.load(Ordering::Acquire)
     }
 
     pub fn ingest(&self, facts: DdFacts) -> Result<()> {
@@ -64,62 +53,61 @@ impl DdEngine {
         }
     }
 
-    pub fn reload(&self, facts: DdFacts) {
+    /// Bring the engine's graph in line with the index's current edge set,
+    /// applying the difference as a DD delta.
+    ///
+    /// A shared engine outlives any single request, and its graph goes stale the
+    /// moment the index is rewritten. Staleness here is not merely a missing
+    /// edge: `Db::replace_file_data` deletes and re-inserts the `files` row on
+    /// every reparse, and the id column is `AUTOINCREMENT`, so a reparsed file
+    /// gets a *brand-new* id and the cached graph keeps only dead ones. Forbidden
+    /// pairs are resolved fresh against live ids each evaluation, so the
+    /// violations semijoin intersects two disjoint id spaces and every
+    /// DD-backed constraint silently reports zero (sutra/297).
+    ///
+    /// Callers sync before querying rather than relying on an invalidation
+    /// signal reaching them — the previous `invalidate()` hook had no callers,
+    /// which is exactly why the staleness went unnoticed.
+    pub fn sync_edges(&self, edges: &[(i64, i64)]) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        let prev_pairs = match &*state {
-            DdState::Loaded {
-                forbidden_pairs, ..
+        // `Db::import_edges` yields one row per import statement, so an edge
+        // repeats when a file imports several symbols from the same target.
+        // The graph is a set: deduplicating here is what keeps a later
+        // retraction exact.
+        let desired: HashSet<(i64, i64)> = edges.iter().copied().collect();
+
+        let current: HashSet<(i64, i64)> = match &*state {
+            DdState::Cold => {
+                let mut edges: Vec<(i64, i64)> = desired.into_iter().collect();
+                edges.sort_unstable();
+                *state = DdState::Loaded {
+                    edges,
+                    forbidden_pairs: Vec::new(),
+                };
+                return Ok(());
             }
-            | DdState::Warm {
-                forbidden_pairs, ..
-            } => forbidden_pairs.clone(),
-            DdState::Cold => Vec::new(),
+            DdState::Loaded { edges, .. } | DdState::Warm { edges, .. } => {
+                edges.iter().copied().collect()
+            }
         };
-        *state = DdState::Loaded {
-            edges: facts.import_edges,
-            forbidden_pairs: prev_pairs,
-        };
-        self.invalidated.store(false, Ordering::Release);
+
+        let added: Vec<(i64, i64)> = desired.difference(&current).copied().collect();
+        let removed: Vec<(i64, i64)> = current.difference(&desired).copied().collect();
+        if added.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        apply_edge_delta(
+            &mut state,
+            DdDelta {
+                added_edges: added,
+                removed_edges: removed,
+            },
+        )
     }
 
     pub fn update(&self, delta: DdDelta) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        match &mut *state {
-            DdState::Cold => Err(SutraError::Internal("DD engine is cold".into())),
-            DdState::Loaded { edges, .. } => {
-                for edge in &delta.added_edges {
-                    edges.push(*edge);
-                }
-                edges.retain(|e| !delta.removed_edges.contains(e));
-                Ok(())
-            }
-            DdState::Warm {
-                handle,
-                edges,
-                last_query,
-                ..
-            } => {
-                handle
-                    .send(Command::Update {
-                        added: delta.added_edges.clone(),
-                        removed: delta.removed_edges.clone(),
-                    })
-                    .map_err(SutraError::Internal)?;
-
-                match handle.recv() {
-                    Ok(Response::Ok) => {}
-                    Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
-                    _ => return Err(SutraError::Internal("unexpected response".into())),
-                }
-
-                for edge in &delta.added_edges {
-                    edges.push(*edge);
-                }
-                edges.retain(|e| !delta.removed_edges.contains(e));
-                *last_query = Instant::now();
-                Ok(())
-            }
-        }
+        apply_edge_delta(&mut state, delta)
     }
 
     pub fn query_cycles(&self) -> Result<Vec<Cycle>> {
@@ -362,6 +350,57 @@ impl DdEngine {
             &*self.state.lock().unwrap(),
             DdState::Loaded { .. } | DdState::Warm { .. }
         )
+    }
+}
+
+/// The tracked edge list after `delta`. Removal wins over addition for an edge
+/// named in both, preserving the push-then-retain order this had when it lived
+/// inside `update`.
+fn tracked(edges: &[(i64, i64)], delta: &DdDelta) -> Vec<(i64, i64)> {
+    let removed: HashSet<(i64, i64)> = delta.removed_edges.iter().copied().collect();
+    edges
+        .iter()
+        .chain(delta.added_edges.iter())
+        .filter(|e| !removed.contains(e))
+        .copied()
+        .collect()
+}
+
+/// Apply an edge delta to whichever state the engine is in: forwarded to the
+/// worker when warm, recorded against the tracked edge list either way. The
+/// tracked list is only committed once the worker has acknowledged, so a failed
+/// send leaves the two views in agreement.
+fn apply_edge_delta(state: &mut DdState, delta: DdDelta) -> Result<()> {
+    match state {
+        DdState::Cold => Err(SutraError::Internal("DD engine is cold".into())),
+        DdState::Loaded { edges, .. } => {
+            *edges = tracked(edges, &delta);
+            Ok(())
+        }
+        DdState::Warm {
+            handle,
+            edges,
+            last_query,
+            ..
+        } => {
+            let next = tracked(edges, &delta);
+            handle
+                .send(Command::Update {
+                    added: delta.added_edges,
+                    removed: delta.removed_edges,
+                })
+                .map_err(SutraError::Internal)?;
+
+            match handle.recv() {
+                Ok(Response::Ok) => {}
+                Ok(Response::Error(e)) => return Err(SutraError::Internal(e)),
+                _ => return Err(SutraError::Internal("unexpected response".into())),
+            }
+
+            *edges = next;
+            *last_query = Instant::now();
+            Ok(())
+        }
     }
 }
 

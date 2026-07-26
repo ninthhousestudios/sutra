@@ -1230,7 +1230,7 @@ fn convention_pipeline_persists_conventions_to_db() {
 }
 
 #[test]
-fn build_findings_falls_back_to_ephemeral_when_shared_engine_invalidated() {
+fn build_findings_resyncs_shared_engine_holding_a_stale_graph() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open_unchecked("test", dir.path()).unwrap();
 
@@ -1264,16 +1264,16 @@ forbidden_deps = [
     )
     .unwrap();
 
-    // Create a shared engine, ingest, then invalidate it
+    // Seed the shared engine with a graph that no longer matches the index —
+    // the shape a reparse leaves behind, since file ids are reminted.
     let shared = DdEngine::new(Duration::from_secs(600));
     shared
         .ingest(sutra::constraints::DdFacts {
-            import_edges: vec![(f_view.id, f_query.id)],
+            import_edges: vec![(f_view.id + 900, f_query.id + 900)],
         })
         .unwrap();
-    shared.invalidate();
 
-    // build_findings should fall back to ephemeral and still detect the violation
+    // build_findings must resync the engine and still detect the violation
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
     let findings =
@@ -1281,7 +1281,7 @@ forbidden_deps = [
             .unwrap();
     assert!(
         !findings.constraint_violations.is_empty(),
-        "invalidated shared engine should fall back to ephemeral and still detect forbidden dep"
+        "a shared engine holding a stale graph should be resynced, not trusted"
     );
 }
 

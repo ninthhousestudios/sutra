@@ -2060,3 +2060,281 @@ name = "nobody-touches-daemon"
         "a rule that never mentioned tests keeps the default exclusion, got: {details:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session-lifetime graph staleness (sutra/297)
+//
+// A shared DdEngine outlives the request that ingested its graph. Every reparse
+// deletes and re-inserts the `files` row, and `files.id` is AUTOINCREMENT, so
+// the reparsed file gets a brand-new id. Forbidden pairs are resolved fresh
+// against live ids each evaluation, so a cached graph doesn't merely lag — it
+// goes disjoint, and the violations semijoin comes back empty. Silently.
+// ---------------------------------------------------------------------------
+
+/// Index two files with an import edge from `src/ui/view.rs` to
+/// `src/db/query.rs`, plus an unresolved external import. Returns the two ids.
+fn index_dep_fixture(db: &sutra::db::Db) -> (i64, i64) {
+    db.upsert_file("src/ui/view.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("src/db/query.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let view = db.file_by_path("src/ui/view.rs").unwrap().unwrap().id;
+    let query = db.file_by_path("src/db/query.rs").unwrap().unwrap().id;
+    // Two import statements against the same target: `import_edges` repeats the
+    // pair, so this also exercises multiplicity bookkeeping in the DD worker.
+    db.insert_import(view, "src/db/query.rs", Some(query), 1, "use", None)
+        .unwrap();
+    db.insert_import(view, "src/db/query.rs", Some(query), 2, "use", None)
+        .unwrap();
+    db.insert_import(view, "serde::Serialize", None, 3, "use", None)
+        .unwrap();
+    (view, query)
+}
+
+/// Delete and re-insert both files the way a reparse does, minting fresh ids.
+fn remint_dep_fixture(db: &sutra::db::Db) -> (i64, i64) {
+    for path in ["src/ui/view.rs", "src/db/query.rs"] {
+        let id = db.file_by_path(path).unwrap().unwrap().id;
+        db.delete_file_cascade(id).unwrap();
+    }
+    index_dep_fixture(db)
+}
+
+fn dep_rules(severity: &str) -> String {
+    format!(
+        r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/ui/**"
+to = "src/db/**"
+name = "ui-must-not-touch-db"
+severity = "{severity}"
+
+[[constraint]]
+kind = "forbidden_external"
+from = "src/**"
+crates = ["serde"]
+name = "no-serde"
+
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#
+    )
+}
+
+fn dep_kinds(outcome: &sutra::constraints::check::CheckOutcome) -> Vec<String> {
+    let mut kinds: Vec<String> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind != "dead_constraint")
+        .map(|f| f.constraint_kind.clone())
+        .collect();
+    kinds.sort();
+    kinds
+}
+
+#[test]
+fn edge_derived_violations_survive_file_id_reminting_in_one_session() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), dep_rules("advisory")).unwrap();
+
+    index_dep_fixture(&db);
+
+    let registry = default_registry();
+    let engine = DdEngine::new(std::time::Duration::from_secs(600));
+    let run = |db: &Db| {
+        evaluate(
+            &FactsSource::DdBacked {
+                db,
+                dd_engine: Some(&engine),
+            },
+            dir.path(),
+            EvalScope::Workspace,
+            &registry,
+        )
+        .unwrap()
+    };
+
+    let first = dep_kinds(&run(&db));
+    assert_eq!(
+        first,
+        vec!["forbidden_dep", "forbidden_external"],
+        "baseline: both edge-derived kinds report on the first query"
+    );
+
+    // Five reparse/query cycles, matching the reported sequence.
+    for cycle in 1..=5 {
+        let (view, query) = remint_dep_fixture(&db);
+        assert!(
+            db.import_edges().unwrap().contains(&(view, query)),
+            "cycle {cycle}: the edge is still in the index"
+        );
+        assert_eq!(
+            dep_kinds(&run(&db)),
+            first,
+            "cycle {cycle}: violations must be reported identically after reminting"
+        );
+    }
+}
+
+#[test]
+fn forbidden_dep_survives_a_rules_reload_of_an_unrelated_constraint() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), dep_rules("advisory")).unwrap();
+
+    index_dep_fixture(&db);
+
+    let registry = default_registry();
+    let engine = DdEngine::new(std::time::Duration::from_secs(600));
+    let run = |db: &Db| {
+        evaluate(
+            &FactsSource::DdBacked {
+                db,
+                dd_engine: Some(&engine),
+            },
+            dir.path(),
+            EvalScope::Workspace,
+            &registry,
+        )
+        .unwrap()
+    };
+
+    assert!(
+        dep_kinds(&run(&db)).contains(&"forbidden_dep".to_string()),
+        "baseline: the layering rule reports before the rules edit"
+    );
+
+    // The edit that preceded the disappearance: an unrelated field changes, so
+    // the constraint's blake3 id is untouched and its waivers stay keyed.
+    std::fs::write(rules_dir.join("rules.toml"), dep_rules("blocking")).unwrap();
+    remint_dep_fixture(&db);
+
+    let after = run(&db);
+    let dep: Vec<_> = after
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_dep")
+        .collect();
+    assert_eq!(
+        dep.len(),
+        1,
+        "a rules reload must not make the layering rule inert, got: {:?}",
+        dep_kinds(&after)
+    );
+    assert_eq!(
+        dep[0].severity,
+        sutra::rules::Severity::Blocking,
+        "the promoted severity should be picked up"
+    );
+}
+
+#[test]
+fn sync_edges_retracts_a_duplicated_edge_exactly() {
+    // `Db::import_edges` repeats a pair once per import statement. If the
+    // duplicate reached the dataflow, its multiplicity would outlive a single
+    // retraction and the violation would persist after the edge was gone.
+    let engine = DdEngine::new(std::time::Duration::from_secs(600));
+    engine
+        .sync_edges(&[(1, 2), (1, 2), (1, 2), (2, 3)])
+        .unwrap();
+    engine.set_forbidden_pairs(vec![(1, 2), (2, 3)]).unwrap();
+    assert_eq!(engine.query_violations().unwrap(), vec![(1, 2), (2, 3)]);
+
+    engine.sync_edges(&[(2, 3)]).unwrap();
+    assert_eq!(
+        engine.query_violations().unwrap(),
+        vec![(2, 3)],
+        "the tripled edge must retract on the first sync that drops it"
+    );
+
+    engine.sync_edges(&[(1, 2), (2, 3)]).unwrap();
+    assert_eq!(
+        engine.query_violations().unwrap(),
+        vec![(1, 2), (2, 3)],
+        "and come back when the index has it again"
+    );
+}
+
+#[test]
+fn no_cycles_survives_file_id_reminting_in_one_session() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-module-cycles"
+"#,
+    )
+    .unwrap();
+
+    let index = |db: &Db| {
+        db.upsert_file("src/a.rs", "rust", "h1", 10, true).unwrap();
+        db.upsert_file("src/b.rs", "rust", "h2", 10, true).unwrap();
+        let fa = db.file_by_path("src/a.rs").unwrap().unwrap().id;
+        let fb = db.file_by_path("src/b.rs").unwrap().unwrap().id;
+        db.insert_import(fa, "src/b.rs", Some(fb), 1, "use", None)
+            .unwrap();
+        db.insert_import(fb, "src/a.rs", Some(fa), 1, "use", None)
+            .unwrap();
+    };
+    index(&db);
+
+    let registry = default_registry();
+    let engine = DdEngine::new(std::time::Duration::from_secs(600));
+    let cycle_count = |db: &Db| {
+        evaluate(
+            &FactsSource::DdBacked {
+                db,
+                dd_engine: Some(&engine),
+            },
+            dir.path(),
+            EvalScope::Workspace,
+            &registry,
+        )
+        .unwrap()
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .count()
+    };
+
+    assert_eq!(cycle_count(&db), 1, "baseline: the cycle is reported");
+
+    // A stale cycle's node ids fail the path_map lookup and get skipped, so
+    // reminting turns a blocking cycle rule inert just as quietly.
+    for cycle in 1..=3 {
+        for path in ["src/a.rs", "src/b.rs"] {
+            let id = db.file_by_path(path).unwrap().unwrap().id;
+            db.delete_file_cascade(id).unwrap();
+        }
+        index(&db);
+        assert_eq!(
+            cycle_count(&db),
+            1,
+            "cycle {cycle}: the cycle must still be reported after reminting"
+        );
+    }
+}
