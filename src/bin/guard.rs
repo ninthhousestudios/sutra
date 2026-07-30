@@ -190,6 +190,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(proposed) =
             guard::build_proposed_content(&hook.tool_input, &project_root, &rel_path)
         {
+            // Advisory: surface all_constraints parse errors the ratchet check
+            // discards (removed [conventions] block, unknown kind, invalid glob).
+            for warning in guard::proposed_rules_parse_errors(&proposed) {
+                eprintln!("sutra-guard: rules.toml: {warning}");
+            }
             let violations = guard::check_proposed_rules_ratchet(&conn, &proposed);
             if !violations.is_empty() {
                 let reason = guard::format_ratchet_deny(&violations);

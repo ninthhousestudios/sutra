@@ -929,6 +929,32 @@ pub fn format_ratchet_deny(violations: &[RatchetViolation]) -> String {
     reason
 }
 
+/// Advisory parse-error surfacing for the guard's `rules.toml` edit path.
+///
+/// The ratchet check ([`check_proposed_rules_ratchet`]) parses the proposed
+/// rules and discards the `all_constraints` parse errors. Those errors (removed
+/// `[conventions]` block, unknown constraint kind, invalid glob, ...) otherwise
+/// only surface later through the MCP tools. This returns them as rendered
+/// warning strings so the edit path can advise — not deny — at edit time.
+///
+/// A top-level TOML parse failure yields no per-constraint errors here; that is
+/// intentional, mirroring the ratchet check which also bails silently on
+/// unparseable content rather than blocking an edit-in-progress.
+pub fn proposed_rules_parse_errors(proposed_content: &str) -> Vec<String> {
+    let mut parsed = match rules::parse_rules(proposed_content) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let (_constraints, errors) = parsed.all_constraints();
+    errors
+        .into_iter()
+        .map(|e| match e.name {
+            Some(name) => format!("[{name}] {}", e.error),
+            None => e.error,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Install / uninstall
 // ---------------------------------------------------------------------------
@@ -2703,5 +2729,49 @@ name = \"some-new-rule\"
         assert!(msg.contains("sutra ratchet release"));
         assert!(msg.contains("no-domain-to-infra"));
         assert!(msg.contains("deleted"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Ratchet guard: rules.toml advisory parse-error surfacing (sutra/301)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_errors_surface_removed_conventions_block() {
+        let proposed = "\
+[conventions]
+suppress = [\"foo\"]
+";
+        let errors = proposed_rules_parse_errors(proposed);
+        assert_eq!(errors.len(), 1, "the [conventions] block should warn");
+        assert!(
+            errors[0].contains("conventions") && errors[0].contains("removed"),
+            "warning should name the removed block: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn parse_errors_surface_unknown_constraint_kind() {
+        let proposed = "\
+[[constraint]]
+kind = \"totally_bogus_kind\"
+severity = \"blocking\"
+";
+        let errors = proposed_rules_parse_errors(proposed);
+        assert_eq!(errors.len(), 1, "an unknown kind should warn: {errors:?}");
+    }
+
+    #[test]
+    fn parse_errors_empty_for_valid_rules() {
+        let errors = proposed_rules_parse_errors(RATCHETED_RULES);
+        assert!(errors.is_empty(), "valid rules should not warn: {errors:?}");
+    }
+
+    #[test]
+    fn parse_errors_empty_for_malformed_toml() {
+        // Mirrors the ratchet check: unparseable content bails silently rather
+        // than blocking an edit-in-progress.
+        let errors = proposed_rules_parse_errors("this is {{ not valid toml");
+        assert!(errors.is_empty(), "malformed TOML should not warn");
     }
 }
