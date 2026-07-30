@@ -149,6 +149,11 @@ pub enum RefContextKind {
     Import,
     FieldAccess,
     PatternBind,
+    /// A bare value read of an identifier: a const/variable read or a
+    /// function/method tear-off passed as a value (e.g. `onPressed: _openChart`).
+    /// Distinct from `Call` (invocation) and `Other` (uninteresting position);
+    /// kind-agnostic in resolution so it can bind to any symbol kind.
+    Read,
     Other,
 }
 
@@ -161,6 +166,7 @@ impl RefContextKind {
             Self::Import => "import",
             Self::FieldAccess => "field_access",
             Self::PatternBind => "pattern_bind",
+            Self::Read => "read",
             Self::Other => "other",
         }
     }
@@ -176,6 +182,7 @@ impl std::str::FromStr for RefContextKind {
             "import" => Ok(Self::Import),
             "field_access" => Ok(Self::FieldAccess),
             "pattern_bind" => Ok(Self::PatternBind),
+            "read" => Ok(Self::Read),
             "other" => Ok(Self::Other),
             _ => Err(format!("unknown ref context kind: {s}")),
         }

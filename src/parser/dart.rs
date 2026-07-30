@@ -801,6 +801,26 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
                 resolved_local_target: None,
                 receiver,
             });
+        } else if node.kind() == "identifier"
+            && name.starts_with('_')
+            && !is_dart_binding_name(node)
+        {
+            // A bare value read of a private (underscore-prefixed) name — a
+            // const/variable read or a method/function tear-off. Private names
+            // are file-local by Dart semantics, so intra-file resolution counts
+            // these as inbound references and stops the symbol reading as dead
+            // (sutra/288). Definition names are already filtered above by
+            // `is_definition_name`; `is_dart_binding_name` excludes the
+            // remaining declaration positions (variable/field/parameter names)
+            // so a symbol is never treated as referencing itself.
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind: RefContextKind::Read,
+                resolved_local_target: None,
+                receiver: None,
+            });
         }
     }
 
@@ -832,6 +852,42 @@ fn is_definition_name(node: Node) -> bool {
         }
     }
     false
+}
+
+/// True when `node` is the *name* being introduced by a Dart binding
+/// (variable / field / const / parameter declaration), as opposed to a value
+/// referenced on its right-hand side. Definition names for classes, mixins,
+/// functions and accessors are handled separately by `is_definition_name`;
+/// this covers the declaration forms it does not, so a `Read` ref is never
+/// emitted for a symbol's own declaration site (which would make it reference
+/// itself and mask genuine dead code).
+fn is_dart_binding_name(node: Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        // The whole subtree is a binding target, never a value read.
+        "formal_parameter"
+        | "type_parameter"
+        | "label"
+        | "declared_identifier"
+        | "constructor_signature" => true,
+        // `name = value` forms: the declared name is the first identifier and
+        // sits before the initializer; a value read appears after it.
+        "static_final_declaration"
+        | "initialized_identifier"
+        | "initialized_variable_definition" => {
+            first_identifier_child(parent).map(|n| n.id()) == Some(node.id())
+        }
+        _ => false,
+    }
+}
+
+/// First direct child of `node` that is an `identifier`, if any.
+fn first_identifier_child(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .find(|c| c.kind() == "identifier")
 }
 
 fn classify_ref_context(node: Node) -> RefContextKind {

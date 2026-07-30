@@ -1213,3 +1213,64 @@ void main() {
         "named constructor Repo.fromDb() should produce type-tracking hint for Repo"
     );
 }
+
+/// Bare value reads of private symbols — a tear-off passed as an argument and a
+/// const read in an index expression — must produce Read refs so the symbols do
+/// not read as dead (sutra/288).
+#[test]
+fn test_dart_private_value_reads_emit_read_refs() {
+    let src = r#"
+class _State {
+  void _openChart() {}
+  Widget build(BuildContext context) {
+    return Button(onPressed: _openChart);
+  }
+}
+
+const _monthLengths = [31, 28, 31];
+int daysInMonth(int month) => _monthLengths[month - 1];
+"#;
+    let result = parser::parse_file(src, "dart", "lib/foo.dart").unwrap();
+    let reads: Vec<&str> = result
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read)
+        .map(|r| r.name.as_str())
+        .collect();
+
+    assert!(
+        reads.contains(&"_openChart"),
+        "tear-off `onPressed: _openChart` should be a Read ref, got {reads:?}"
+    );
+    assert!(
+        reads.contains(&"_monthLengths"),
+        "const read `_monthLengths[..]` should be a Read ref, got {reads:?}"
+    );
+}
+
+/// A private symbol's own declaration site must never emit a Read ref — that
+/// would make the symbol reference itself and mask genuine dead code (sutra/288).
+#[test]
+fn test_dart_private_declarations_are_not_read_refs() {
+    let src = r#"
+const _monthLengths = [31, 28, 31];
+class Svc {
+  final _svc = _Service();
+  int _count = 0;
+  void _helper() {}
+}
+"#;
+    let result = parser::parse_file(src, "dart", "lib/foo.dart").unwrap();
+    // No Read ref should exist at all here: every private name appears only at
+    // its declaration site.
+    let reads: Vec<(&str, usize)> = result
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read)
+        .map(|r| (r.name.as_str(), r.line))
+        .collect();
+    assert!(
+        reads.is_empty(),
+        "declaration sites must not produce Read refs, got {reads:?}"
+    );
+}
