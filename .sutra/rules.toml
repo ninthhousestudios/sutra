@@ -368,19 +368,3 @@ name = "no-clone-driven-dev"
 provenance = "CLAUDE.md coding_discipline"
 severity = "blocking"
 scope = "src/"
-
-
-[conventions]
-# Suppress tautological conventions during review.
-# These say "symbols in directory X are in directory X" — true by
-# definition for component-scoped conventions, not actionable.
-suppress = [
-  "d5f032a52923809f",  # kind:method (db) → in:src/db
-  "923a40e28a24084e",  # is_method (db) → in:src/db
-  "7a1ed95921b81adc",  # takes_self_ref (db) → in:src/db
-  "c220ab1eeb7aea44",  # complexity:zero (db) → in:src/db
-  "51d0fc43620f4a8f",  # has_doc (db) → in:src/db
-  "76168c42c3aeabf2",  # in:tests → kind:function
-  "344f1e9a9fd3fa1c",  # vis:private (tests) → in:tests
-  "5d8ff8a92d255bd6",  # vis:private (tests) → naming:snake_case
-]

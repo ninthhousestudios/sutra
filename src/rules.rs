@@ -451,8 +451,14 @@ pub struct Rules {
     pub constraints: Constraints,
     #[serde(default)]
     constraint: Vec<RawConstraint>,
+    /// Removed FCA config surface. The `[conventions]` block (`suppress` /
+    /// `exempt`) was orphaned when convention violations were replaced by the
+    /// on-the-fly deviation report (sutra/234). It no longer does anything, but
+    /// `Rules` has no `deny_unknown_fields`, so we keep a catch-all here to
+    /// detect a lingering block and warn rather than silently ignore it — see
+    /// `all_constraints`.
     #[serde(default)]
-    pub conventions: ConventionsConfig,
+    conventions: Option<toml::Value>,
     #[serde(default)]
     pub python: Option<PythonConfig>,
     #[serde(default)]
@@ -465,6 +471,18 @@ impl Rules {
         let mut seen: HashMap<Arc<str>, usize> = HashMap::new();
         let mut out: Vec<Constraint> = Vec::new();
         let mut errors: Vec<ConstraintParseError> = Vec::new();
+
+        if self.conventions.is_some() {
+            errors.push(ConstraintParseError {
+                index: 0,
+                name: Some("conventions".to_string()),
+                error: "the [conventions] block (suppress/exempt) has been removed: convention \
+                        violations were replaced by the on-the-fly deviation report and these \
+                        keys are no longer read. Delete the [conventions] block from \
+                        .sutra/rules.toml."
+                    .to_string(),
+            });
+        }
 
         for (i, fd) in self.constraints.forbidden_deps.iter().enumerate() {
             if let Err(e) =
@@ -528,20 +546,6 @@ impl Rules {
 
         (out, errors)
     }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ConventionsConfig {
-    #[serde(default)]
-    pub suppress: Vec<String>,
-    #[serde(default)]
-    pub exempt: Vec<ConventionExemption>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConventionExemption {
-    pub convention: String,
-    pub symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -666,7 +670,9 @@ forbidden_deps = [
     }
 
     #[test]
-    fn parse_conventions_section() {
+    fn removed_conventions_block_surfaces_parse_error() {
+        // The FCA [conventions] surface is gone; a lingering block must not
+        // parse silently into a no-op — all_constraints reports it as removed.
         let toml = r#"
 [conventions]
 suppress = ["a1b4c2d1", "b2c3d4e5"]
@@ -675,21 +681,25 @@ suppress = ["a1b4c2d1", "b2c3d4e5"]
 convention = "e5f6g7h8"
 symbols = ["InternalError", "DebugHelper"]
 "#;
-        let rules = parse_rules(toml).unwrap();
-        assert_eq!(rules.conventions.suppress, vec!["a1b4c2d1", "b2c3d4e5"]);
-        assert_eq!(rules.conventions.exempt.len(), 1);
-        assert_eq!(rules.conventions.exempt[0].convention, "e5f6g7h8");
-        assert_eq!(
-            rules.conventions.exempt[0].symbols,
-            vec!["InternalError", "DebugHelper"]
-        );
+        let mut rules = parse_rules(toml).unwrap();
+        let (_, errors) = rules.all_constraints();
+        let err = errors
+            .iter()
+            .find(|e| e.name.as_deref() == Some("conventions"))
+            .expect("removed [conventions] block should surface a parse error");
+        assert!(err.error.contains("removed"));
     }
 
     #[test]
-    fn parse_missing_conventions_section() {
-        let rules = parse_rules("[constraints]\n").unwrap();
-        assert!(rules.conventions.suppress.is_empty());
-        assert!(rules.conventions.exempt.is_empty());
+    fn missing_conventions_block_is_silent() {
+        let mut rules = parse_rules("[constraints]\n").unwrap();
+        let (_, errors) = rules.all_constraints();
+        assert!(
+            errors
+                .iter()
+                .all(|e| e.name.as_deref() != Some("conventions")),
+            "absent [conventions] block must not emit a parse error"
+        );
     }
 
     #[test]
@@ -703,9 +713,15 @@ forbidden_deps = [
 [conventions]
 suppress = ["abc123"]
 "#;
-        let rules = parse_rules(toml).unwrap();
+        let mut rules = parse_rules(toml).unwrap();
         assert_eq!(rules.constraints.forbidden_deps.len(), 1);
-        assert_eq!(rules.conventions.suppress, vec!["abc123"]);
+        let (_, errors) = rules.all_constraints();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.name.as_deref() == Some("conventions")),
+            "a [conventions] block alongside constraints is still flagged as removed"
+        );
     }
 
     // --- New constraint system tests ---
