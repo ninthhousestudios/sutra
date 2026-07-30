@@ -522,3 +522,97 @@ fn test_reparse_no_duplicate_symbols() {
         );
     }
 }
+
+/// End-to-end dead-symbol coverage for every Dart private-declaration form,
+/// run through the real parse→resolve→derived pipeline (sutra/302).
+///
+/// Unit tests assert which *ref kinds* the parser emits; this asserts the
+/// observable `sutra_dead` contract: a genuinely-unused private symbol of each
+/// declaration form is reported dead, while a used one is not. It guards both
+/// directions of the sutra/288 → sutra/302 history — the false positives
+/// sutra/288 fixed (used private symbols wrongly dead) and the false negative
+/// sutra/302 fixed (the `external static var _x;` / `identifier_list` form
+/// self-referencing and masking a truly-dead symbol).
+#[tokio::test]
+async fn test_dart_dead_symbols_across_declaration_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("app.dart"),
+        r#"
+class _State {
+  void _openChart() {}
+  void _neverCalled() {}
+  void build() {
+    onPressed(_openChart);
+  }
+}
+
+const _monthLengths = [31, 28, 31];
+const _unusedConst = 7;
+
+class Registry {
+  external static var _liveStatic;
+  external static var _deadStatic;
+  int use() {
+    return _liveStatic + _monthLengths[0];
+  }
+}
+
+class _UnusedClass {}
+class _UsedClass {}
+_UsedClass make() {
+  return _UsedClass();
+}
+"#,
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry {
+        id: "dart-dead".to_string(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["dart".to_string()],
+    };
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    // Short names of everything reported dead (private symbols included).
+    let dead: std::collections::HashSet<String> = db
+        .find_dead_symbols(false, None)
+        .unwrap()
+        .into_iter()
+        .map(|(qn, _path, _kind, _line, _vis)| {
+            qn.rsplit("::").next().unwrap_or(&qn).to_string()
+        })
+        .collect();
+
+    // Genuinely-unused private symbols must be reported dead, one per form:
+    for expected in [
+        "_neverCalled", // method
+        "_unusedConst", // const
+        "_deadStatic",  // external static var — the identifier_list form (sutra/302)
+        "_UnusedClass", // class
+    ] {
+        assert!(
+            dead.contains(expected),
+            "expected `{expected}` to be reported dead; dead set = {dead:?}"
+        );
+    }
+
+    // Used private symbols must NOT be dead — their intra-file references
+    // (tear-off, const read, static read, construction) resolve (sutra/288):
+    for live in ["_openChart", "_monthLengths", "_liveStatic", "_UsedClass"] {
+        assert!(
+            !dead.contains(live),
+            "`{live}` is referenced and must not be reported dead; dead set = {dead:?}"
+        );
+    }
+}
