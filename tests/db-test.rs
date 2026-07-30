@@ -1619,3 +1619,43 @@ fn ratchet_reregistration_after_release_reactivates() {
         "re-registration starts fresh severity floor"
     );
 }
+
+#[test]
+fn find_unreachable_files_dart_test_exclusions_use_literal_underscore() {
+    // Regression (sutra/302): the Dart test-path LIKE patterns treated `_` as a
+    // wildcard, so production files such as `latest.dart` / `contest.dart` were
+    // wrongly exempted from unreachable-file reporting.
+    let (_dir, db) = setup_db();
+    for path in [
+        "pkg/real.dart",
+        "pkg/latest.dart",
+        "pkg/contest.dart",
+        "pkg/foo_test.dart",
+        "integration_test/a.dart",
+        "test/b.dart",
+    ] {
+        db.upsert_file(path, "dart", "h", 1, true).unwrap();
+    }
+
+    let reported: Vec<String> = db
+        .find_unreachable_files(None)
+        .unwrap()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+
+    // Genuine underscore-free production files must still be reported.
+    assert!(reported.contains(&"pkg/real.dart".to_string()));
+    assert!(
+        reported.contains(&"pkg/latest.dart".to_string()),
+        "latest.dart must not match the escaped `%_test.dart` pattern"
+    );
+    assert!(
+        reported.contains(&"pkg/contest.dart".to_string()),
+        "contest.dart must not match the escaped `%_test.dart` pattern"
+    );
+    // Genuine test paths remain exempt.
+    assert!(!reported.contains(&"pkg/foo_test.dart".to_string()));
+    assert!(!reported.contains(&"integration_test/a.dart".to_string()));
+    assert!(!reported.contains(&"test/b.dart".to_string()));
+}

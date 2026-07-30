@@ -1274,3 +1274,85 @@ class Svc {
         "declaration sites must not produce Read refs, got {reads:?}"
     );
 }
+
+/// The bare `identifier_list` declaration form (`external static var _x;`) must
+/// not self-reference. A genuinely-unused private static here produces zero
+/// Read refs; a used one produces exactly one, from the use site (sutra/302).
+#[test]
+fn test_dart_identifier_list_declaration_not_read_ref() {
+    let dead = parser::parse_file(
+        "class Foo { external static var _dead; }",
+        "dart",
+        "lib/foo.dart",
+    )
+    .unwrap();
+    assert!(
+        dead.references
+            .iter()
+            .all(|r| !(r.context_kind == RefContextKind::Read && r.name == "_dead")),
+        "an unused `external static var _dead;` must not self-reference"
+    );
+
+    let used = parser::parse_file(
+        "class Foo { external static var _count; int u() => _count; }",
+        "dart",
+        "lib/foo.dart",
+    )
+    .unwrap();
+    let count_reads = used
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read && r.name == "_count")
+        .count();
+    assert_eq!(
+        count_reads, 1,
+        "`_count` should read exactly once (the use), not also its declaration"
+    );
+}
+
+/// for-in: the loop binding is not a read, but the iterable expression is — a
+/// private iterable must still emit a Read so it does not read as dead
+/// (sutra/302).
+#[test]
+fn test_dart_for_in_binding_not_read_iterable_is() {
+    let result = parser::parse_file(
+        "void f() { for (var _x in _items) { print(_x); } }",
+        "dart",
+        "lib/foo.dart",
+    )
+    .unwrap();
+    let reads: Vec<(&str, usize)> = result
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read)
+        .map(|r| (r.name.as_str(), r.line))
+        .collect();
+    assert!(
+        reads.contains(&("_items", 1)),
+        "the for-in iterable `_items` must emit a Read, got {reads:?}"
+    );
+    // `_x` reads only from `print(_x)`, never from the `for (var _x ...)` binding.
+    let x_reads = reads.iter().filter(|(n, _)| *n == "_x").count();
+    assert_eq!(x_reads, 1, "`_x` should read once (the use), got {reads:?}");
+}
+
+/// A `catch (_err)` binding must not emit a self-Read at its declaration
+/// (sutra/302).
+#[test]
+fn test_dart_catch_binding_not_read_ref() {
+    let result = parser::parse_file(
+        "void f() { try {} catch (_err) { print(_err); } }",
+        "dart",
+        "lib/foo.dart",
+    )
+    .unwrap();
+    let err_reads = result
+        .references
+        .iter()
+        .filter(|r| r.context_kind == RefContextKind::Read && r.name == "_err")
+        .count();
+    assert_eq!(
+        err_reads, 1,
+        "`_err` should read once (the use), not also the catch binding"
+    );
+}

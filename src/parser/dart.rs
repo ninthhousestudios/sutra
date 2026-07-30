@@ -867,11 +867,18 @@ fn is_dart_binding_name(node: Node) -> bool {
     };
     match parent.kind() {
         // The whole subtree is a binding target, never a value read.
+        // `identifier_list` holds the names of a bare (uninitialized) field or
+        // variable declaration — `external static var _a, _b;` — so every
+        // identifier child is a declaration name. `catch_clause` exposes only
+        // its `exception`/`stack_trace` bindings as direct identifier children
+        // (the handler body is a nested block).
         "formal_parameter"
         | "type_parameter"
         | "label"
         | "declared_identifier"
-        | "constructor_signature" => true,
+        | "constructor_signature"
+        | "identifier_list"
+        | "catch_clause" => true,
         // `name = value` forms: the declared name is the first identifier and
         // sits before the initializer; a value read appears after it.
         "static_final_declaration"
@@ -879,6 +886,10 @@ fn is_dart_binding_name(node: Node) -> bool {
         | "initialized_variable_definition" => {
             first_identifier_child(parent).map(|n| n.id()) == Some(node.id())
         }
+        // for-in: `for (var _x in _items)` — the `name` field is the loop
+        // binding, but the `value` field (the iterable) is a genuine read that
+        // must still emit a ref, so guard on the field rather than the parent.
+        "for_statement" => parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()),
         _ => false,
     }
 }

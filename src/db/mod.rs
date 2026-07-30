@@ -1283,9 +1283,9 @@ impl Db {
                AND path NOT LIKE 'tests/%'
                AND path NOT LIKE 'test/%'
                AND path NOT LIKE '%/test/%'
-               AND path NOT LIKE 'integration_test/%'
-               AND path NOT LIKE '%/integration_test/%'
-               AND path NOT LIKE '%_test.dart'
+               AND path NOT LIKE 'integration\\_test/%' ESCAPE '\\'
+               AND path NOT LIKE '%/integration\\_test/%' ESCAPE '\\'
+               AND path NOT LIKE '%\\_test.dart' ESCAPE '\\'
                AND (?1 IS NULL OR path LIKE ?1)
              ORDER BY path",
         )?;
