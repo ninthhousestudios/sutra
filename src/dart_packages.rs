@@ -93,7 +93,7 @@ pub(crate) fn resolve_relative_import(
     normalize_path(&joined)
 }
 
-fn normalize_path(path: &Path) -> Option<String> {
+pub(crate) fn normalize_path(path: &Path) -> Option<String> {
     let mut components = Vec::new();
     for c in path.components() {
         match c {

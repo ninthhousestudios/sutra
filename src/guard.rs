@@ -566,8 +566,43 @@ pub fn extract_proposed_imports(
             }
         }
         edges
+    } else if language == "dart" {
+        let path_to_id: HashMap<String, i64> = conn
+            .prepare("SELECT path, id FROM files")
+            .ok()?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .ok()?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let pkg_map = crate::dart_packages::DartPackageMap::build(project_root);
+        let parent = Path::new(rel_path).parent();
+
+        let mut edges = Vec::new();
+        for import in &result.imports {
+            if import.is_test {
+                continue;
+            }
+            let resolved_path = if import.raw_path.starts_with("package:") {
+                crate::dart_packages::resolve_package_uri(&import.raw_path, &pkg_map)
+            } else if import.raw_path.ends_with(".dart") && !import.raw_path.starts_with("dart:") {
+                parent
+                    .map(|p| p.join(&import.raw_path))
+                    .and_then(|j| crate::dart_packages::normalize_path(&j))
+            } else {
+                None
+            };
+            if let Some(path) = resolved_path
+                && let Some(&target_id) = path_to_id.get(&path)
+                && target_id != file_id
+            {
+                edges.push((file_id, target_id));
+            }
+        }
+        edges
     } else {
-        // dart: proposed-edge derivation unsupported — use indexed outgoing edges
         conn.prepare(
             "SELECT file_id, resolved_file_id FROM imports \
              WHERE file_id = ?1 AND resolved_file_id IS NOT NULL AND is_test = 0",
@@ -1808,6 +1843,82 @@ name = "bad-rule-targets-member"
         assert!(crates.contains(&"axum"));
         assert!(crates.contains(&"std"));
         assert!(!crates.iter().any(|c| *c == "crate" || *c == "render"));
+    }
+
+    fn setup_dart_constraint_db() -> (Connection, tempfile::TempDir) {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             INSERT INTO files VALUES (1, 'lib/tabs/provider.dart');
+             INSERT INTO files VALUES (2, 'lib/core/runner.dart');
+             INSERT INTO files VALUES (3, 'lib/core/kernel.dart');",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("rules.toml"),
+            r#"
+[[constraint]]
+kind = "forbidden_dep"
+from = "lib/tabs/**"
+to = "lib/core/runner.dart"
+severity = "blocking"
+name = "tabs-use-kernel-not-runner"
+"#,
+        )
+        .unwrap();
+
+        (conn, dir)
+    }
+
+    #[test]
+    fn dart_proposed_fixing_edit_resolves_from_content() {
+        let (conn, dir) = setup_dart_constraint_db();
+        conn.execute_batch("INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);")
+            .unwrap();
+
+        let proposed = "import '../core/kernel.dart';\n\nclass Provider {}\n";
+        let parsed = parse_proposed("lib/tabs/provider.dart", proposed).unwrap();
+        let pi = extract_proposed_imports(&conn, dir.path(), "lib/tabs/provider.dart", 1, &parsed)
+            .unwrap();
+
+        assert_eq!(pi.edges, vec![(1, 3)]);
+
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &pi.edges, &pi.externals);
+        let blocking: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        assert!(blocking.is_empty(), "fixing edit should be allowed");
+    }
+
+    #[test]
+    fn dart_proposed_preserving_violation_still_denied() {
+        let (conn, dir) = setup_dart_constraint_db();
+
+        let proposed = "import '../core/runner.dart';\n\nclass Provider {}\n";
+        let parsed = parse_proposed("lib/tabs/provider.dart", proposed).unwrap();
+        let pi = extract_proposed_imports(&conn, dir.path(), "lib/tabs/provider.dart", 1, &parsed)
+            .unwrap();
+
+        assert_eq!(pi.edges, vec![(1, 2)]);
+
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), 1, &pi.edges, &pi.externals);
+        let blocking: Vec<_> = outcome
+            .active
+            .iter()
+            .filter(|f| f.severity == Severity::Blocking)
+            .collect();
+        assert_eq!(blocking.len(), 1, "preserving violation should be denied");
     }
 
     #[test]
