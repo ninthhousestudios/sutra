@@ -577,7 +577,15 @@ pub fn extract_proposed_imports(
             .filter_map(|r| r.ok())
             .collect();
 
-        let pkg_map = crate::dart_packages::DartPackageMap::build(project_root);
+        let has_package_imports = result
+            .imports
+            .iter()
+            .any(|i| !i.is_test && i.raw_path.starts_with("package:"));
+        let pkg_map = if has_package_imports {
+            Some(crate::dart_packages::DartPackageMap::build(project_root))
+        } else {
+            None
+        };
         let parent = Path::new(rel_path).parent();
 
         let mut edges = Vec::new();
@@ -586,7 +594,9 @@ pub fn extract_proposed_imports(
                 continue;
             }
             let resolved_path = if import.raw_path.starts_with("package:") {
-                crate::dart_packages::resolve_package_uri(&import.raw_path, &pkg_map)
+                pkg_map
+                    .as_ref()
+                    .and_then(|m| crate::dart_packages::resolve_package_uri(&import.raw_path, m))
             } else if import.raw_path.ends_with(".dart") && !import.raw_path.starts_with("dart:") {
                 parent
                     .map(|p| p.join(&import.raw_path))
