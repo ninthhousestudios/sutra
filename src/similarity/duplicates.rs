@@ -588,4 +588,68 @@ mod tests {
         );
         assert_eq!(families[0].member_symbol_ids.len(), n);
     }
+
+    #[test]
+    fn name_families_similar_names_grouped() {
+        let symbols = vec![
+            (1, "Module::process_items".to_string()),
+            (2, "Module::process_item".to_string()),
+            (3, "Module::process_itemz".to_string()),
+        ];
+        let families = find_name_families(&symbols, 3);
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].member_symbol_ids.len(), 3);
+        assert_eq!(families[0].detection_mode, "name");
+    }
+
+    #[test]
+    fn name_families_different_names_no_group() {
+        let symbols = vec![
+            (1, "Alpha::compute_metrics".to_string()),
+            (2, "Beta::serialize_response".to_string()),
+            (3, "Gamma::validate_input".to_string()),
+        ];
+        let families = find_name_families(&symbols, 3);
+        assert!(families.is_empty());
+    }
+
+    #[test]
+    fn name_families_entropy_gate_filters_short() {
+        let symbols = vec![
+            (1, "A::new".to_string()),
+            (2, "B::new".to_string()),
+            (3, "C::new".to_string()),
+        ];
+        let families = find_name_families(&symbols, 3);
+        assert!(
+            families.is_empty(),
+            "short low-entropy names should be filtered"
+        );
+    }
+
+    #[test]
+    fn name_families_empty_input() {
+        let families = find_name_families(&[], 3);
+        assert!(families.is_empty());
+    }
+
+    #[test]
+    fn name_families_min_group_respected() {
+        let symbols = vec![
+            (1, "Module::process_items".to_string()),
+            (2, "Module::process_item".to_string()),
+        ];
+        let families = find_name_families(&symbols, 3);
+        assert!(families.is_empty());
+        let families = find_name_families(&symbols, 2);
+        assert_eq!(families.len(), 1);
+    }
+
+    #[test]
+    fn structural_families_tagged_correctly() {
+        let v = make_vec(42);
+        let vectors = vec![(1, v.clone()), (2, v.clone()), (3, v.clone())];
+        let families = find_pattern_families(&vectors, 0.85, 3);
+        assert_eq!(families[0].detection_mode, "structural");
+    }
 }
