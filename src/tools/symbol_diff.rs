@@ -538,6 +538,8 @@ fn language_for_path(path: &str) -> Option<&'static str> {
     match ext {
         "rs" => Some("rust"),
         "dart" => Some("dart"),
+        "c" | "h" => Some("c"),
+        "py" => Some("python"),
         _ => None,
     }
 }
@@ -1154,5 +1156,32 @@ mod tests {
         // Short names differ so it's detected as a rename
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change, ChangeKind::Renamed);
+    }
+
+    #[test]
+    fn test_language_for_path_rust() {
+        assert_eq!(super::language_for_path("src/main.rs"), Some("rust"));
+    }
+
+    #[test]
+    fn test_language_for_path_dart() {
+        assert_eq!(super::language_for_path("lib/widget.dart"), Some("dart"));
+    }
+
+    #[test]
+    fn test_language_for_path_c() {
+        assert_eq!(super::language_for_path("src/parser.c"), Some("c"));
+        assert_eq!(super::language_for_path("include/parser.h"), Some("c"));
+    }
+
+    #[test]
+    fn test_language_for_path_python() {
+        assert_eq!(super::language_for_path("scripts/build.py"), Some("python"));
+    }
+
+    #[test]
+    fn test_language_for_path_unknown() {
+        assert_eq!(super::language_for_path("readme.md"), None);
+        assert_eq!(super::language_for_path("no_extension"), None);
     }
 }
