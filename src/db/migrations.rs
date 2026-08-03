@@ -286,6 +286,11 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0056_reparse_for_test_path_remaining_languages.sql"),
         true,
     ),
+    (
+        "0057_pattern_family_detection_mode",
+        include_str!("../../migrations/0057_pattern_family_detection_mode.sql"),
+        true,
+    ),
 ];
 
 impl Db {

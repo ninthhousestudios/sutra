@@ -3,6 +3,7 @@ pub mod diff;
 pub mod duplicates;
 pub mod encoder;
 pub mod hrr;
+pub mod minhash;
 pub mod search;
 
 use std::collections::{HashMap, HashSet};
@@ -112,12 +113,18 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
 }
 
 pub fn compute_pattern_families(db: &Db) -> Result<usize> {
+    let mut families = Vec::new();
+
     let vectors = db.load_all_strip_vectors()?;
-    if vectors.is_empty() {
-        return Ok(0);
+    if !vectors.is_empty() {
+        families.extend(duplicates::find_pattern_families(&vectors, 0.85, 3));
     }
 
-    let families = duplicates::find_pattern_families(&vectors, 0.85, 3);
+    let names = db.function_symbol_names()?;
+    if !names.is_empty() {
+        families.extend(duplicates::find_name_families(&names, 3));
+    }
+
     let count = families.len();
     db.replace_pattern_families(&families)?;
     Ok(count)

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::PatternFamily;
 use crate::similarity::hrr::{HrrVec, Rng};
+use crate::similarity::minhash::{self, MinHash, MinHashLSH};
 
 // ---------------------------------------------------------------------------
 // Union-Find
@@ -307,8 +308,152 @@ pub fn find_pattern_families(
             } else {
                 0.0
             },
+            detection_mode: "structural",
         });
     }
+
+    families.sort_by_key(|f| std::cmp::Reverse(f.member_symbol_ids.len()));
+    families
+}
+
+// ---------------------------------------------------------------------------
+// Name-based duplicate detection (MinHash/LSH)
+// ---------------------------------------------------------------------------
+
+const MINHASH_NUM_PERM: usize = 128;
+const MINHASH_SEED: u64 = 0xCAFE_BABE_DEAD_BEEF;
+const MINHASH_LSH_THRESHOLD: f64 = 0.4;
+const DICE_MERGE_THRESHOLD: f64 = 0.6;
+const ENTROPY_THRESHOLD: f64 = 2.5;
+const SHINGLE_K: usize = 3;
+
+fn normalize_name(qualified: &str) -> String {
+    let parts: Vec<&str> = qualified.rsplitn(3, "::").collect();
+    let short = match parts.len() {
+        1 => parts[0],
+        2 => return format!("{}::{}", parts[1], parts[0]),
+        _ => return format!("{}::{}", parts[1], parts[0]),
+    };
+    short.to_string()
+}
+
+fn name_to_shingle_text(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn dice_from_jaccard(jaccard: f64) -> f64 {
+    (2.0 * jaccard) / (1.0 + jaccard)
+}
+
+fn exact_dice(a: &str, b: &str) -> f64 {
+    let sa: HashSet<&str> = minhash::shingles(a, SHINGLE_K).into_iter().collect();
+    let sb: HashSet<&str> = minhash::shingles(b, SHINGLE_K).into_iter().collect();
+    let intersection = sa.intersection(&sb).count();
+    let total = sa.len() + sb.len();
+    if total == 0 {
+        return 0.0;
+    }
+    (2 * intersection) as f64 / total as f64
+}
+
+pub fn find_name_families(symbols: &[(i64, String)], min_group: usize) -> Vec<PatternFamily> {
+    if symbols.len() < min_group {
+        return Vec::new();
+    }
+
+    let prepared: Vec<(usize, i64, String)> = symbols
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (id, qname))| {
+            let norm = normalize_name(qname);
+            let text = name_to_shingle_text(&norm);
+            if text.len() < SHINGLE_K {
+                return None;
+            }
+            if minhash::shannon_entropy(&text) < ENTROPY_THRESHOLD {
+                return None;
+            }
+            Some((idx, *id, text))
+        })
+        .collect();
+
+    if prepared.len() < min_group {
+        return Vec::new();
+    }
+
+    let minhashes: Vec<MinHash> = prepared
+        .iter()
+        .map(|(_, _, text)| {
+            let mut mh = MinHash::new(MINHASH_NUM_PERM, MINHASH_SEED);
+            for s in minhash::shingles(text, SHINGLE_K) {
+                mh.update(s.as_bytes());
+            }
+            mh
+        })
+        .collect();
+
+    let n = prepared.len();
+    let mut uf = UnionFind::new(n);
+
+    if n <= BRUTE_FORCE_THRESHOLD {
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let jaccard = minhashes[i].jaccard(&minhashes[j]);
+                if dice_from_jaccard(jaccard) >= DICE_MERGE_THRESHOLD {
+                    let dice = exact_dice(&prepared[i].2, &prepared[j].2);
+                    if dice >= DICE_MERGE_THRESHOLD {
+                        uf.union(i, j);
+                    }
+                }
+            }
+        }
+    } else {
+        let mut lsh = MinHashLSH::new(MINHASH_LSH_THRESHOLD, MINHASH_NUM_PERM);
+        for (i, mh) in minhashes.iter().enumerate() {
+            lsh.insert(i, mh);
+        }
+        for (i, j) in lsh.candidate_pairs() {
+            let jaccard = minhashes[i].jaccard(&minhashes[j]);
+            if dice_from_jaccard(jaccard) >= DICE_MERGE_THRESHOLD {
+                let dice = exact_dice(&prepared[i].2, &prepared[j].2);
+                if dice >= DICE_MERGE_THRESHOLD {
+                    uf.union(i, j);
+                }
+            }
+        }
+    }
+
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        groups.entry(uf.find(i)).or_default().push(i);
+    }
+
+    let mut families: Vec<PatternFamily> = groups
+        .into_values()
+        .filter(|members| members.len() >= min_group)
+        .map(|members| {
+            let mut sim_sum = 0.0;
+            let mut pair_count = 0u64;
+            for i in 0..members.len() {
+                for j in (i + 1)..members.len() {
+                    sim_sum += exact_dice(&prepared[members[i]].2, &prepared[members[j]].2);
+                    pair_count += 1;
+                }
+            }
+            PatternFamily {
+                member_symbol_ids: members.iter().map(|&i| prepared[i].1).collect(),
+                avg_similarity: if pair_count > 0 {
+                    sim_sum / pair_count as f64
+                } else {
+                    0.0
+                },
+                detection_mode: "name",
+            }
+        })
+        .collect();
 
     families.sort_by_key(|f| std::cmp::Reverse(f.member_symbol_ids.len()));
     families

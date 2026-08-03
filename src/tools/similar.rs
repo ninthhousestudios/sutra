@@ -178,9 +178,21 @@ fn handle_duplicates(
     let threshold = threshold.unwrap_or(0.85);
     let min_group = min_group.unwrap_or(3);
 
+    let mut families = Vec::new();
+
     let vectors = db.load_all_strip_vectors()?;
-    let families =
-        crate::similarity::duplicates::find_pattern_families(&vectors, threshold, min_group);
+    if !vectors.is_empty() {
+        families.extend(crate::similarity::duplicates::find_pattern_families(
+            &vectors, threshold, min_group,
+        ));
+    }
+
+    let names = db.function_symbol_names()?;
+    if !names.is_empty() {
+        families.extend(crate::similarity::duplicates::find_name_families(
+            &names, min_group,
+        ));
+    }
 
     if families.is_empty() {
         return Ok(json!({
@@ -217,6 +229,7 @@ fn handle_duplicates(
                 .collect();
             json!({
                 "family_id": i + 1,
+                "detection": fam.detection_mode,
                 "member_count": fam.member_symbol_ids.len(),
                 "avg_similarity": (fam.avg_similarity * 1000.0).round() / 1000.0,
                 "members": members,

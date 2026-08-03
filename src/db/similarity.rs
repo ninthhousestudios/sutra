@@ -10,6 +10,7 @@ use crate::similarity::hrr::HrrVec;
 pub struct PatternFamily {
     pub member_symbol_ids: Vec<i64>,
     pub avg_similarity: f64,
+    pub detection_mode: &'static str,
 }
 
 pub struct SymbolSummary {
@@ -76,6 +77,19 @@ impl Db {
                     end_col: row.get(7)?,
                 })
             })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn function_symbol_names(&self) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.qualified_name
+             FROM symbols s
+             WHERE s.kind IN ('function', 'method')",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -272,7 +286,7 @@ impl Db {
             conn.execute("DELETE FROM pattern_families", [])?;
 
             let mut fam_stmt = conn.prepare(
-                "INSERT INTO pattern_families (member_count, avg_similarity) VALUES (?1, ?2)",
+                "INSERT INTO pattern_families (member_count, avg_similarity, detection_mode) VALUES (?1, ?2, ?3)",
             )?;
             let mut mem_stmt = conn.prepare(
                 "INSERT INTO pattern_family_members (family_id, symbol_id) VALUES (?1, ?2)",
@@ -282,6 +296,7 @@ impl Db {
                 fam_stmt.execute(params![
                     family.member_symbol_ids.len() as i64,
                     family.avg_similarity,
+                    family.detection_mode,
                 ])?;
                 let family_id = conn.last_insert_rowid();
                 for &sym_id in &family.member_symbol_ids {
