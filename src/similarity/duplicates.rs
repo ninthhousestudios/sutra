@@ -359,7 +359,11 @@ fn exact_dice(a: &str, b: &str) -> f64 {
     (2 * intersection) as f64 / total as f64
 }
 
-pub fn find_name_families(symbols: &[(i64, String)], min_group: usize) -> Vec<PatternFamily> {
+pub fn find_name_families(
+    symbols: &[(i64, String)],
+    threshold: f64,
+    min_group: usize,
+) -> Vec<PatternFamily> {
     if symbols.len() < min_group {
         return Vec::new();
     }
@@ -402,9 +406,9 @@ pub fn find_name_families(symbols: &[(i64, String)], min_group: usize) -> Vec<Pa
         for i in 0..n {
             for j in (i + 1)..n {
                 let jaccard = minhashes[i].jaccard(&minhashes[j]);
-                if dice_from_jaccard(jaccard) >= DICE_MERGE_THRESHOLD {
+                if dice_from_jaccard(jaccard) >= threshold {
                     let dice = exact_dice(&prepared[i].2, &prepared[j].2);
-                    if dice >= DICE_MERGE_THRESHOLD {
+                    if dice >= threshold {
                         uf.union(i, j);
                     }
                 }
@@ -417,9 +421,9 @@ pub fn find_name_families(symbols: &[(i64, String)], min_group: usize) -> Vec<Pa
         }
         for (i, j) in lsh.candidate_pairs() {
             let jaccard = minhashes[i].jaccard(&minhashes[j]);
-            if dice_from_jaccard(jaccard) >= DICE_MERGE_THRESHOLD {
+            if dice_from_jaccard(jaccard) >= threshold {
                 let dice = exact_dice(&prepared[i].2, &prepared[j].2);
-                if dice >= DICE_MERGE_THRESHOLD {
+                if dice >= threshold {
                     uf.union(i, j);
                 }
             }
@@ -431,29 +435,100 @@ pub fn find_name_families(symbols: &[(i64, String)], min_group: usize) -> Vec<Pa
         groups.entry(uf.find(i)).or_default().push(i);
     }
 
-    let mut families: Vec<PatternFamily> = groups
-        .into_values()
-        .filter(|members| members.len() >= min_group)
-        .map(|members| {
-            let mut sim_sum = 0.0;
-            let mut pair_count = 0u64;
-            for i in 0..members.len() {
-                for j in (i + 1)..members.len() {
-                    sim_sum += exact_dice(&prepared[members[i]].2, &prepared[members[j]].2);
-                    pair_count += 1;
+    // Complete-link pruning: remove members until all pairs meet threshold
+    let mut families = Vec::new();
+    for (_root, mut members) in groups {
+        if members.len() < min_group {
+            continue;
+        }
+
+        if members.len() > MAX_GROUP_SIZE {
+            let mut avg_sims: Vec<(usize, f64)> = members
+                .iter()
+                .enumerate()
+                .map(|(mi, &a)| {
+                    let sum: f64 = members
+                        .iter()
+                        .filter(|&&b| b != a)
+                        .map(|&b| exact_dice(&prepared[a].2, &prepared[b].2))
+                        .sum();
+                    (mi, sum / (members.len() - 1) as f64)
+                })
+                .collect();
+            avg_sims.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let keep: HashSet<usize> = avg_sims[..MAX_GROUP_SIZE]
+                .iter()
+                .map(|&(mi, _)| mi)
+                .collect();
+            members = members
+                .into_iter()
+                .enumerate()
+                .filter(|(mi, _)| keep.contains(mi))
+                .map(|(_, v)| v)
+                .collect();
+        }
+
+        loop {
+            let mut failing: Vec<(usize, f64)> = Vec::new();
+            for (mi, &a) in members.iter().enumerate() {
+                let mut min_sim = f64::MAX;
+                for &b in &members {
+                    if a == b {
+                        continue;
+                    }
+                    let sim = exact_dice(&prepared[a].2, &prepared[b].2);
+                    min_sim = min_sim.min(sim);
+                }
+                if min_sim < threshold {
+                    failing.push((mi, min_sim));
                 }
             }
-            PatternFamily {
-                member_symbol_ids: members.iter().map(|&i| prepared[i].1).collect(),
-                avg_similarity: if pair_count > 0 {
-                    sim_sum / pair_count as f64
-                } else {
-                    0.0
-                },
-                detection_mode: "name",
+
+            if failing.is_empty() {
+                break;
             }
-        })
-        .collect();
+
+            failing.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            let max_removable = members.len().saturating_sub(min_group);
+            if max_removable == 0 {
+                members.clear();
+                break;
+            }
+            let to_remove = (failing.len() / 2).max(1).min(max_removable);
+            let mut remove_indices: Vec<usize> =
+                failing[..to_remove].iter().map(|&(i, _)| i).collect();
+            remove_indices.sort_unstable_by(|a, b| b.cmp(a));
+            for idx in remove_indices {
+                members.swap_remove(idx);
+            }
+
+            if members.len() < min_group {
+                break;
+            }
+        }
+
+        if members.len() < min_group {
+            continue;
+        }
+
+        let mut sim_sum = 0.0;
+        let mut pair_count = 0u64;
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                sim_sum += exact_dice(&prepared[members[i]].2, &prepared[members[j]].2);
+                pair_count += 1;
+            }
+        }
+        families.push(PatternFamily {
+            member_symbol_ids: members.iter().map(|&i| prepared[i].1).collect(),
+            avg_similarity: if pair_count > 0 {
+                sim_sum / pair_count as f64
+            } else {
+                0.0
+            },
+            detection_mode: "name",
+        });
+    }
 
     families.sort_by_key(|f| std::cmp::Reverse(f.member_symbol_ids.len()));
     families
@@ -596,7 +671,7 @@ mod tests {
             (2, "Module::process_item".to_string()),
             (3, "Module::process_itemz".to_string()),
         ];
-        let families = find_name_families(&symbols, 3);
+        let families = find_name_families(&symbols, 0.6, 3);
         assert_eq!(families.len(), 1);
         assert_eq!(families[0].member_symbol_ids.len(), 3);
         assert_eq!(families[0].detection_mode, "name");
@@ -609,7 +684,7 @@ mod tests {
             (2, "Beta::serialize_response".to_string()),
             (3, "Gamma::validate_input".to_string()),
         ];
-        let families = find_name_families(&symbols, 3);
+        let families = find_name_families(&symbols, 0.6, 3);
         assert!(families.is_empty());
     }
 
@@ -620,7 +695,7 @@ mod tests {
             (2, "B::new".to_string()),
             (3, "C::new".to_string()),
         ];
-        let families = find_name_families(&symbols, 3);
+        let families = find_name_families(&symbols, 0.6, 3);
         assert!(
             families.is_empty(),
             "short low-entropy names should be filtered"
@@ -629,7 +704,7 @@ mod tests {
 
     #[test]
     fn name_families_empty_input() {
-        let families = find_name_families(&[], 3);
+        let families = find_name_families(&[], 0.6, 3);
         assert!(families.is_empty());
     }
 
@@ -639,9 +714,9 @@ mod tests {
             (1, "Module::process_items".to_string()),
             (2, "Module::process_item".to_string()),
         ];
-        let families = find_name_families(&symbols, 3);
+        let families = find_name_families(&symbols, 0.6, 3);
         assert!(families.is_empty());
-        let families = find_name_families(&symbols, 2);
+        let families = find_name_families(&symbols, 0.6, 2);
         assert_eq!(families.len(), 1);
     }
 
@@ -651,5 +726,34 @@ mod tests {
         let vectors = vec![(1, v.clone()), (2, v.clone()), (3, v.clone())];
         let families = find_pattern_families(&vectors, 0.85, 3);
         assert_eq!(families[0].detection_mode, "structural");
+    }
+
+    #[test]
+    fn name_families_transitive_chain_pruned() {
+        let symbols = vec![
+            (1, "Module::abcdefghijkl".to_string()),
+            (2, "Module::abcdefghijklqwertyuiopas".to_string()),
+            (3, "Module::qwertyuiopas".to_string()),
+        ];
+        let families = find_name_families(&symbols, 0.6, 3);
+        assert!(
+            families.is_empty(),
+            "transitive chain with dissimilar endpoints should be pruned"
+        );
+    }
+
+    #[test]
+    fn name_families_unicode_identifiers() {
+        let symbols = vec![
+            (1, "Module::процесс_данных".to_string()),
+            (2, "Module::процесс_данные".to_string()),
+            (3, "Module::процесс_данным".to_string()),
+        ];
+        let families = find_name_families(&symbols, 0.5, 3);
+        assert_eq!(
+            families.len(),
+            1,
+            "Unicode names should be shingled correctly"
+        );
     }
 }

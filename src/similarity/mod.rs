@@ -122,7 +122,7 @@ pub fn compute_pattern_families(db: &Db) -> Result<usize> {
 
     let names = db.function_symbol_names()?;
     if !names.is_empty() {
-        families.extend(duplicates::find_name_families(&names, 3));
+        families.extend(duplicates::find_name_families(&names, 0.6, 3));
     }
 
     let count = families.len();

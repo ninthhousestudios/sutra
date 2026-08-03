@@ -102,19 +102,25 @@ impl MinHashLSH {
     }
 
     pub fn candidate_pairs(&self) -> Vec<(usize, usize)> {
+        const MAX_BUCKET: usize = 200;
         let mut seen = std::collections::HashSet::new();
         let mut pairs = Vec::new();
         for table in &self.tables {
             for bucket in table.values() {
-                if bucket.len() < 2 || bucket.len() > 200 {
+                if bucket.len() < 2 {
                     continue;
                 }
-                for i in 0..bucket.len() {
-                    for j in (i + 1)..bucket.len() {
-                        let (a, b) = if bucket[i] < bucket[j] {
-                            (bucket[i], bucket[j])
+                let effective = if bucket.len() <= MAX_BUCKET {
+                    &bucket[..]
+                } else {
+                    &bucket[..MAX_BUCKET]
+                };
+                for i in 0..effective.len() {
+                    for j in (i + 1)..effective.len() {
+                        let (a, b) = if effective[i] < effective[j] {
+                            (effective[i], effective[j])
                         } else {
-                            (bucket[j], bucket[i])
+                            (effective[j], effective[i])
                         };
                         if seen.insert((a, b)) {
                             pairs.push((a, b));
@@ -163,12 +169,20 @@ fn integrate<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
 }
 
 pub fn shingles(text: &str, k: usize) -> Vec<&str> {
-    if text.len() < k {
+    let char_indices: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    if char_indices.len() < k {
         return vec![text];
     }
-    let bytes = text.as_bytes();
-    (0..=bytes.len() - k)
-        .filter_map(|i| std::str::from_utf8(&bytes[i..i + k]).ok())
+    (0..=char_indices.len() - k)
+        .map(|i| {
+            let start = char_indices[i];
+            let end = if i + k < char_indices.len() {
+                char_indices[i + k]
+            } else {
+                text.len()
+            };
+            &text[start..end]
+        })
         .collect()
 }
 

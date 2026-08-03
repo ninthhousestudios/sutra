@@ -190,7 +190,7 @@ fn handle_duplicates(
     let names = db.function_symbol_names()?;
     if !names.is_empty() {
         families.extend(crate::similarity::duplicates::find_name_families(
-            &names, min_group,
+            &names, threshold, min_group,
         ));
     }
 
