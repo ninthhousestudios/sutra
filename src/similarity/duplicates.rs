@@ -323,7 +323,6 @@ pub fn find_pattern_families(
 const MINHASH_NUM_PERM: usize = 128;
 const MINHASH_SEED: u64 = 0xCAFE_BABE_DEAD_BEEF;
 const MINHASH_LSH_THRESHOLD: f64 = 0.4;
-const DICE_MERGE_THRESHOLD: f64 = 0.6;
 const ENTROPY_THRESHOLD: f64 = 2.5;
 const SHINGLE_K: usize = 3;
 
