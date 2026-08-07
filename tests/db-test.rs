@@ -1168,6 +1168,128 @@ fn constraint_waiver_orphan_detection() {
 }
 
 // ---------------------------------------------------------------------------
+// Instance acks (sutra/305)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn constraint_instance_ack_upsert_is_count_aware() {
+    let (_dir, db) = setup_db();
+
+    let id1 = db
+        .create_constraint_instance_ack(
+            "abc",
+            Some("no-clone"),
+            "src/a.rs",
+            Some("f"),
+            Some("x.clone()"),
+            2,
+            Some("owned"),
+            "josh",
+        )
+        .unwrap();
+    // Same content key -> upsert (not a second row), new accepted_count wins.
+    let id2 = db
+        .create_constraint_instance_ack(
+            "abc",
+            Some("no-clone"),
+            "src/a.rs",
+            Some("f"),
+            Some("x.clone()"),
+            3,
+            None,
+            "josh",
+        )
+        .unwrap();
+    assert_eq!(id1, id2, "same key must upsert, not insert a duplicate row");
+
+    let acks = db
+        .get_constraint_instance_acks_for_file("src/a.rs")
+        .unwrap();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].accepted_count, 3, "accepted_count is overwritten");
+    assert_eq!(
+        acks[0].rationale.as_deref(),
+        Some("owned"),
+        "a None rationale on upsert preserves the prior one (COALESCE)"
+    );
+
+    // A different snippet is a different key -> a distinct row.
+    db.create_constraint_instance_ack(
+        "abc",
+        Some("no-clone"),
+        "src/a.rs",
+        Some("f"),
+        Some("y.clone()"),
+        1,
+        Some("owned"),
+        "josh",
+    )
+    .unwrap();
+    assert_eq!(
+        db.get_constraint_instance_acks_for_file("src/a.rs")
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn constraint_instance_ack_survives_reindex() {
+    let (_dir, db) = setup_db();
+    db.create_constraint_instance_ack(
+        "abc",
+        Some("no-clone"),
+        "src/a.rs",
+        Some("f"),
+        Some("x.clone()"),
+        1,
+        Some("owned"),
+        "josh",
+    )
+    .unwrap();
+
+    db.reindex().unwrap();
+
+    let acks = db.get_all_constraint_instance_acks().unwrap();
+    assert_eq!(acks.len(), 1, "instance ack should survive reindex");
+    assert_eq!(&*acks[0].constraint_id, "abc");
+}
+
+#[test]
+fn constraint_instance_ack_delete_and_orphan_detection() {
+    let (_dir, db) = setup_db();
+
+    let id = db
+        .create_constraint_instance_ack("abc", None, "src/a.rs", None, None, 1, None, "josh")
+        .unwrap();
+    db.create_constraint_instance_ack("def", None, "src/b.rs", None, None, 1, None, "josh")
+        .unwrap();
+
+    // An ack for a still-live constraint is not orphaned; one for a removed
+    // constraint is surfaced for GC.
+    let orphans = db
+        .reconcile_orphaned_constraint_instance_acks(&["abc"])
+        .unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(&*orphans[0].constraint_id, "def");
+
+    // No active ids -> everything is orphaned.
+    assert_eq!(
+        db.reconcile_orphaned_constraint_instance_acks(&[])
+            .unwrap()
+            .len(),
+        2
+    );
+
+    assert!(db.delete_constraint_instance_ack(id).unwrap());
+    assert!(
+        !db.delete_constraint_instance_ack(id).unwrap(),
+        "deleting a gone row returns false"
+    );
+    assert_eq!(db.get_all_constraint_instance_acks().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
 // Symbol uniqueness and heal
 // ---------------------------------------------------------------------------
 

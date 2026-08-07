@@ -102,6 +102,55 @@ fn test_directed_ids(constraints: &[Constraint]) -> HashSet<&str> {
         .collect()
 }
 
+/// Subtract report-only instance acks from `forbidden_pattern` active findings
+/// (sutra/305). Acks are honored ONLY here on the report path — never by the
+/// guard — so a specific examined clone can be acknowledged while its siblings
+/// and any future addition stay governed. Count-aware via the shared
+/// [`super::patterns::subtract_multiset`]: an ack of N cancels N matches of that
+/// content key in that file, and a surplus (e.g. a new byte-identical clone)
+/// still surfaces. Non-pattern findings pass through untouched.
+///
+/// Only reachable from the DD-backed (`evaluate_dd`) report path; the guard's
+/// `RawConn` evaluation never calls it, which is what keeps acks off the
+/// edit-time surface.
+fn apply_instance_acks(
+    db: &crate::db::Db,
+    active: Vec<ConstraintFinding>,
+) -> Result<Vec<ConstraintFinding>> {
+    use super::patterns::{self, MatchKey};
+
+    let (mut pattern_findings, mut kept): (Vec<_>, Vec<_>) = active
+        .into_iter()
+        .partition(|f| f.constraint_kind.as_str() == "forbidden_pattern");
+    if pattern_findings.is_empty() {
+        return Ok(kept);
+    }
+
+    // Acks are stored per file, so cancel per file: an ack in file A must not
+    // cancel a same-content match in file B. Sort by path and walk contiguous
+    // runs — no owned-key clone needed to group.
+    pattern_findings.sort_by(|a, b| a.from_path.cmp(&b.from_path));
+    let mut remaining = pattern_findings;
+    while !remaining.is_empty() {
+        let run_end = remaining
+            .iter()
+            .take_while(|f| f.from_path == remaining[0].from_path)
+            .count();
+        let rest_after = remaining.split_off(run_end);
+        // `remaining` now holds exactly the run of findings for one file.
+        let run = std::mem::replace(&mut remaining, rest_after);
+        let mut prior: HashMap<MatchKey, usize> = HashMap::new();
+        for a in db.get_constraint_instance_acks_for_file(run[0].from_path.as_str())? {
+            let count = a.accepted_count.max(0) as usize;
+            *prior
+                .entry((a.constraint_id, a.enclosing_symbol, a.snippet))
+                .or_default() += count;
+        }
+        kept.extend(patterns::subtract_multiset(run, prior));
+    }
+    Ok(kept)
+}
+
 fn evaluate_dd(
     db: &crate::db::Db,
     dd_engine: Option<&DdEngine>,
@@ -268,7 +317,8 @@ fn evaluate_dd(
     let production_edges = db.production_import_edges()?;
     if edges.is_empty() {
         let constraint_waivers = db.get_constraint_waivers(None)?;
-        let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
+        let (active, waived) = waivers::partition(findings, &constraint_waivers);
+        let mut active = apply_instance_acks(db, active)?;
         let ratchets = db.get_active_constraint_ratchets()?;
         active.extend(check_ratchet_violations(&ratchets, &all_constraints));
         return Ok(CheckOutcome {
@@ -565,7 +615,8 @@ fn evaluate_dd(
     }
 
     let constraint_waivers = db.get_constraint_waivers(None)?;
-    let (mut active, waived) = waivers::partition(findings, &constraint_waivers);
+    let (active, waived) = waivers::partition(findings, &constraint_waivers);
+    let mut active = apply_instance_acks(db, active)?;
     let ratchets = db.get_active_constraint_ratchets()?;
     active.extend(check_ratchet_violations(&ratchets, &all_constraints));
 

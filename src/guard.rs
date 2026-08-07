@@ -725,7 +725,9 @@ pub fn check_proposed_patterns(
     rel_path: &str,
     proposed_content: &str,
 ) -> CheckOutcome {
-    use crate::constraints::patterns::check_forbidden_patterns;
+    use crate::constraints::patterns::{
+        MatchKey, check_forbidden_patterns, match_key, subtract_multiset,
+    };
     use crate::db::ConstraintWaiverRow;
     use crate::rules::{self, ConstraintKind};
     use crate::waivers;
@@ -799,33 +801,14 @@ pub fn check_proposed_patterns(
     let (disk_active, _) = waivers::partition(disk_findings, &constraint_waivers);
 
     // Multiset diff by (constraint_id, enclosing_symbol, snippet) — each disk
-    // match cancels one proposed match with the same key. What remains is introduced.
-    type MatchKey = (Arc<str>, Option<String>, Option<String>);
+    // match cancels one proposed match with the same key. What remains is
+    // introduced. Shares the fingerprint with the report-path instance-ack
+    // subtraction (sutra/305) so both surfaces key matches identically.
     let mut disk_multiset: HashMap<MatchKey, usize> = HashMap::new();
     for f in &disk_active {
-        let key: MatchKey = (
-            f.constraint_id.clone(),
-            f.enclosing_symbol.clone(),
-            f.snippet.clone(),
-        );
-        *disk_multiset.entry(key).or_default() += 1;
+        *disk_multiset.entry(match_key(f)).or_default() += 1;
     }
-
-    let mut introduced = Vec::new();
-    for f in proposed_active {
-        let key: MatchKey = (
-            f.constraint_id.clone(),
-            f.enclosing_symbol.clone(),
-            f.snippet.clone(),
-        );
-        if let Some(count) = disk_multiset.get_mut(&key)
-            && *count > 0
-        {
-            *count -= 1;
-            continue;
-        }
-        introduced.push(f);
-    }
+    let introduced = subtract_multiset(proposed_active, disk_multiset);
 
     CheckOutcome {
         active: introduced,
@@ -2582,6 +2565,53 @@ scope = "src/"
             "waived symbol should be excluded from both counts"
         );
         assert_eq!(outcome.waived.len(), 1);
+    }
+
+    /// Instance acks are a report-only surface (sutra/305). The edit-time guard
+    /// must never read them: a newly introduced clone stays denied even when an
+    /// ack row would suppress that exact content key on the `violations` report.
+    #[test]
+    fn pattern_ack_does_not_relax_guard() {
+        let disk_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let proposed_content =
+            "fn main() {\n    let x = vec![1].clone();\n    let y = vec![2].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let rule_id = {
+            let mut loaded = crate::rules::load_rules(dir.path()).unwrap();
+            let (constraints, _) = loaded.all_constraints();
+            constraints
+                .iter()
+                .find(|c| c.name.as_deref() == Some("no-clone"))
+                .unwrap()
+                .id
+                .to_string()
+        };
+
+        // An ack that WOULD zero this key out on the report surface.
+        conn.execute_batch(
+            "CREATE TABLE constraint_instance_acks (\
+                id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, \
+                file_path TEXT, enclosing_symbol TEXT, snippet TEXT, \
+                accepted_count INTEGER DEFAULT 1, rationale TEXT, \
+                acked_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT ''\
+             );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO constraint_instance_acks \
+             (constraint_id, file_path, enclosing_symbol, snippet, accepted_count, acked_by) \
+             VALUES (?1, 'src/lib.rs', 'main', 'vec![2].clone()', 99, 'test')",
+            params![rule_id],
+        )
+        .unwrap();
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(
+            outcome.active.len(),
+            1,
+            "the guard must ignore instance acks; the introduced clone stays denied"
+        );
     }
 
     #[test]

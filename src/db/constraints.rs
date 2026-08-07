@@ -37,6 +37,48 @@ const SELECT_COLS: &str = "id, constraint_id, constraint_name, file_path, \
                            symbol_qualified_name, rationale, waived_by, \
                            created_at, updated_at";
 
+// --- Instance acks (report-only, count-aware, content-keyed; sutra/305) ---
+
+/// A report-only acknowledgment of one or more byte-identical forbidden_pattern
+/// match instances. Keyed by the guard's content fingerprint
+/// `(constraint_id, enclosing_symbol, snippet)` plus `file_path`; `accepted_count`
+/// is how many matches of that key are examined-and-accepted, so surplus siblings
+/// (and any future clone) still surface on the report.
+#[derive(Debug, Clone)]
+pub struct ConstraintInstanceAckRow {
+    pub id: i64,
+    pub constraint_id: Arc<str>,
+    pub constraint_name: Option<Arc<str>>,
+    pub file_path: String,
+    pub enclosing_symbol: Option<String>,
+    pub snippet: Option<String>,
+    pub accepted_count: i64,
+    pub rationale: Option<String>,
+    pub acked_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn map_ack_row(row: &rusqlite::Row) -> rusqlite::Result<ConstraintInstanceAckRow> {
+    Ok(ConstraintInstanceAckRow {
+        id: row.get(0)?,
+        constraint_id: Arc::from(row.get::<_, String>(1)?),
+        constraint_name: row.get::<_, Option<String>>(2)?.map(Arc::from),
+        file_path: row.get(3)?,
+        enclosing_symbol: row.get(4)?,
+        snippet: row.get(5)?,
+        accepted_count: row.get(6)?,
+        rationale: row.get(7)?,
+        acked_by: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+const ACK_SELECT_COLS: &str = "id, constraint_id, constraint_name, file_path, \
+                               enclosing_symbol, snippet, accepted_count, rationale, \
+                               acked_by, created_at, updated_at";
+
 // --- Ratchet registry ---
 
 #[derive(Debug, Clone)]
@@ -187,6 +229,137 @@ impl Db {
             params![waiver_id],
         )?;
         Ok(count > 0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Instance acks (report-only; sutra/305)
+    // -----------------------------------------------------------------------
+
+    /// Upsert an instance ack, setting `accepted_count` to the caller-computed
+    /// value (the caller decides whether that is a fresh snapshot count or an
+    /// incremented single-ack count, and caps it at what actually matches on
+    /// disk). Keyed by `(constraint_id, file_path, enclosing_symbol, snippet)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_constraint_instance_ack(
+        &self,
+        constraint_id: &str,
+        constraint_name: Option<&str>,
+        file_path: &str,
+        enclosing_symbol: Option<&str>,
+        snippet: Option<&str>,
+        accepted_count: i64,
+        rationale: Option<&str>,
+        acked_by: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO constraint_instance_acks
+             (constraint_id, constraint_name, file_path, enclosing_symbol, snippet,
+              accepted_count, rationale, acked_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(constraint_id, file_path,
+                         COALESCE(enclosing_symbol, ''), COALESCE(snippet, ''))
+             DO UPDATE SET
+                 constraint_name = ?2,
+                 accepted_count = ?6,
+                 rationale = COALESCE(?7, rationale),
+                 acked_by = ?8,
+                 updated_at = datetime('now')",
+            params![
+                constraint_id,
+                constraint_name,
+                file_path,
+                enclosing_symbol,
+                snippet,
+                accepted_count,
+                rationale,
+                acked_by,
+            ],
+        )?;
+        let id: i64 = conn.query_row(
+            "SELECT id FROM constraint_instance_acks \
+             WHERE constraint_id = ?1 AND file_path = ?2 \
+             AND COALESCE(enclosing_symbol, '') = COALESCE(?3, '') \
+             AND COALESCE(snippet, '') = COALESCE(?4, '')",
+            params![constraint_id, file_path, enclosing_symbol, snippet],
+            |row| row.get(0),
+        )?;
+        Ok(id)
+    }
+
+    pub fn get_constraint_instance_acks_for_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<ConstraintInstanceAckRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ACK_SELECT_COLS} FROM constraint_instance_acks \
+             WHERE file_path = ?1 ORDER BY created_at DESC"
+        ))?;
+        let rows = stmt
+            .query_map(params![file_path], map_ack_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_all_constraint_instance_acks(&self) -> Result<Vec<ConstraintInstanceAckRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ACK_SELECT_COLS} FROM constraint_instance_acks ORDER BY created_at DESC"
+        ))?;
+        let rows = stmt
+            .query_map([], map_ack_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_constraint_instance_ack(&self, ack_id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        let count = conn.execute(
+            "DELETE FROM constraint_instance_acks WHERE id = ?1",
+            params![ack_id],
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Instance acks whose constraint no longer exists in the loaded rules.
+    /// Mirrors [`Db::reconcile_orphaned_constraint_waivers`]: an ack for a removed
+    /// constraint can never suppress anything (its key matches no live finding),
+    /// so it is dead state to be surfaced and GC'd. Empty `active_ids` returns all
+    /// rows (every ack is orphaned).
+    pub fn reconcile_orphaned_constraint_instance_acks(
+        &self,
+        active_ids: &[&str],
+    ) -> Result<Vec<ConstraintInstanceAckRow>> {
+        let conn = self.conn.lock();
+        if active_ids.is_empty() {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {ACK_SELECT_COLS} FROM constraint_instance_acks ORDER BY created_at DESC"
+            ))?;
+            let rows = stmt
+                .query_map([], map_ack_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            return Ok(rows);
+        }
+        let placeholders: String = active_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT {ACK_SELECT_COLS} FROM constraint_instance_acks \
+             WHERE constraint_id NOT IN ({placeholders}) ORDER BY created_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = active_ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(params.as_slice(), map_ack_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     // -----------------------------------------------------------------------

@@ -14,7 +14,7 @@ mod migrations;
 mod similarity;
 
 pub(crate) use constraints::active_ratchets_from_conn;
-pub use constraints::{ConstraintRatchetRow, ConstraintWaiverRow};
+pub use constraints::{ConstraintInstanceAckRow, ConstraintRatchetRow, ConstraintWaiverRow};
 pub use conventions::ConventionRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};

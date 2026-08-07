@@ -291,6 +291,12 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0057_pattern_family_detection_mode.sql"),
         true,
     ),
+    // Persistent (not ephemeral): instance acks are user judgment, like waivers.
+    (
+        "0058_constraint_instance_acks",
+        include_str!("../../migrations/0058_constraint_instance_acks.sql"),
+        false,
+    ),
 ];
 
 impl Db {

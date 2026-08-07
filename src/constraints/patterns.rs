@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
@@ -8,6 +9,52 @@ use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::parser::adapter::{LanguageRegistry, ParseContext, line_in_ranges};
 use crate::parser::{ExtractedSymbol, flatten_symbols};
 use crate::rules::{Constraint, ConstraintKind, scope_matches_path};
+
+/// Content fingerprint of a forbidden-pattern match, stable across line moves
+/// and re-indentation: `(constraint_id, enclosing_symbol, snippet)`. `snippet`
+/// is the matched node's first line verbatim (node-relative, so leading
+/// indentation is excluded). Shared by the guard's introduced-only diff and the
+/// report-path instance-ack subtraction so both fingerprint matches identically
+/// (sutra/305).
+pub type MatchKey = (Arc<str>, Option<String>, Option<String>);
+
+/// The [`MatchKey`] of a single finding. The clones build an owned key from a
+/// borrowed finding: the `Arc<str>` clone is a refcount bump, and the key must
+/// outlive the findings it is derived from (they are consumed by
+/// [`subtract_multiset`]), so borrowing is not an option.
+pub fn match_key(f: &ConstraintFinding) -> MatchKey {
+    (
+        f.constraint_id.clone(),
+        f.enclosing_symbol.clone(),
+        f.snippet.clone(),
+    )
+}
+
+/// Cancel `findings` against a `prior` multiset of match keys, preserving order:
+/// each finding whose key still has budget in `prior` is dropped, and the budget
+/// for that key is spent. What remains is the surplus — the matches `prior` does
+/// not account for.
+///
+/// The guard uses this to diff proposed matches against what is already on disk
+/// (introduced-only enforcement); the report path uses it to subtract accepted
+/// instance-ack counts. `prior` is taken by value and spent in place.
+pub fn subtract_multiset(
+    findings: Vec<ConstraintFinding>,
+    mut prior: HashMap<MatchKey, usize>,
+) -> Vec<ConstraintFinding> {
+    let mut surplus = Vec::new();
+    for f in findings {
+        let key = match_key(&f);
+        if let Some(count) = prior.get_mut(&key)
+            && *count > 0
+        {
+            *count -= 1;
+            continue;
+        }
+        surplus.push(f);
+    }
+    surplus
+}
 
 /// Walk the workspace for files that are pattern-eligible but never indexed
 /// (e.g. Python `.pyi` stubs) and return their workspace-relative paths, sorted.

@@ -2433,3 +2433,113 @@ fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting()
         stop.store(true, Ordering::Relaxed);
     });
 }
+
+/// Report-path instance acks (sutra/305): acknowledged clones drop off the
+/// `violations`/review surface, count-aware, while surplus siblings and any
+/// future byte-identical clone stay reported. Report-only — the guard is tested
+/// separately (src/guard.rs::pattern_ack_does_not_relax_guard).
+#[test]
+fn instance_acks_subtract_on_report_count_aware() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone"
+severity = "blocking"
+scope = "src/"
+"#,
+    )
+    .unwrap();
+
+    // Three byte-identical `foo.clone()` in one fn, plus one distinct `bar.clone()`.
+    let src = "fn a() {\n    let x = foo.clone();\n    let y = foo.clone();\n    \
+               let z = foo.clone();\n    let w = bar.clone();\n}\n";
+    let src_path = dir.path().join("src/lib.rs");
+    std::fs::create_dir_all(src_path.parent().unwrap()).unwrap();
+    std::fs::write(&src_path, src).unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h1", 6, true).unwrap();
+
+    let registry = default_registry();
+    let count_active = |db: &Db| {
+        evaluate(
+            &FactsSource::DdBacked {
+                db,
+                dd_engine: None,
+            },
+            dir.path(),
+            EvalScope::Workspace,
+            &registry,
+        )
+        .unwrap()
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .count()
+    };
+
+    assert_eq!(
+        count_active(&db),
+        4,
+        "all four clones reported before any ack"
+    );
+
+    let rule_id = {
+        let mut loaded = sutra::rules::load_rules(dir.path()).unwrap();
+        let (cs, _) = loaded.all_constraints();
+        cs.iter()
+            .find(|c| c.name.as_deref() == Some("no-clone"))
+            .unwrap()
+            .id
+            .to_string()
+    };
+
+    // Ack 2 of the 3 identical foo.clone() instances (snippet is the matched
+    // node's first line verbatim: "foo.clone()").
+    db.create_constraint_instance_ack(
+        &rule_id,
+        Some("no-clone"),
+        "src/lib.rs",
+        Some("a"),
+        Some("foo.clone()"),
+        2,
+        Some("owned-required"),
+        "test",
+    )
+    .unwrap();
+    assert_eq!(
+        count_active(&db),
+        2,
+        "2 of 3 foo clones acked -> 1 foo surplus + 1 bar still reported"
+    );
+
+    // Bump the same key to 3 -> all foo accounted for, only bar remains. The
+    // distinct bar.clone() is a different key and is never suppressed.
+    db.create_constraint_instance_ack(
+        &rule_id,
+        Some("no-clone"),
+        "src/lib.rs",
+        Some("a"),
+        Some("foo.clone()"),
+        3,
+        Some("owned-required"),
+        "test",
+    )
+    .unwrap();
+    assert_eq!(
+        count_active(&db),
+        1,
+        "all foo clones acked -> only bar reported"
+    );
+}
