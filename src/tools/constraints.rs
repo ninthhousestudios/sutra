@@ -243,10 +243,11 @@ fn handle_violations(
         "waived_violations": waived,
     });
     // Surface instance acks so the state that removed matches from `violations`
-    // is visible, not silent (sutra/305).
-    let acks = db.get_all_constraint_instance_acks().unwrap_or_default();
-    if !acks.is_empty() {
-        result["acknowledged"] = json!(acks.iter().map(ack_to_json).collect::<Vec<_>>());
+    // is visible, not silent (sutra/305). Errors propagate (sutra/306): a failed
+    // ack lookup must not masquerade as "nothing acked".
+    let acked = acked_instances_json(db, None)?;
+    if !acked.is_empty() {
+        result["acknowledged"] = json!(acked);
     }
     if !outcome.parse_errors.is_empty() {
         result["parse_errors"] = json!(
@@ -339,7 +340,7 @@ fn handle_unwaive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> 
     Ok(json!({ "revoked": waiver_id }))
 }
 
-fn ack_to_json(a: &crate::db::ConstraintInstanceAckRow) -> serde_json::Value {
+pub(crate) fn ack_to_json(a: &crate::db::ConstraintInstanceAckRow) -> serde_json::Value {
     json!({
         "ack_id": a.id,
         "constraint_id": a.constraint_id,
@@ -353,15 +354,34 @@ fn ack_to_json(a: &crate::db::ConstraintInstanceAckRow) -> serde_json::Value {
     })
 }
 
-/// Resolve a constraint by id (preferred) or name from the loaded rules,
+/// Report-only instance acks as JSON, for surfacing on any report surface
+/// (`violations` / review / orient) so the state that removed matches from the
+/// report stays visible, not silent (sutra/305, sutra/306). `scope` restricts to
+/// acks on the given file paths (`None` = all); errors propagate rather than
+/// being swallowed, so a failed lookup is never mistaken for "no acks".
+pub(crate) fn acked_instances_json(
+    db: &Db,
+    scope: Option<&std::collections::HashSet<&str>>,
+) -> Result<Vec<serde_json::Value>> {
+    Ok(db
+        .get_all_constraint_instance_acks()?
+        .iter()
+        .filter(|a| {
+            scope
+                .map(|s| s.contains(a.file_path.as_str()))
+                .unwrap_or(true)
+        })
+        .map(ack_to_json)
+        .collect())
+}
+
+/// Resolve a constraint by id (preferred) or name from already-loaded rules,
 /// returning its `(id, name)`. Baseline/ack accept either handle.
 fn resolve_constraint(
-    workspace_root: &Path,
+    all_constraints: &[rules::Constraint],
     constraint_id: Option<&str>,
     constraint_name: Option<&str>,
 ) -> Result<(String, Option<String>)> {
-    let mut rules = rules::load_rules(workspace_root)?;
-    let (all_constraints, _errors) = rules.all_constraints();
     let found = all_constraints.iter().find(|c| match constraint_id {
         Some(id) => c.id.as_ref() == id,
         None => match constraint_name {
@@ -388,11 +408,6 @@ fn handle_baseline(
     _dd_engine: Option<&DdEngine>,
     args: &ConstraintsArgs,
 ) -> Result<serde_json::Value> {
-    let (constraint_id, constraint_name) = resolve_constraint(
-        workspace_root,
-        args.constraint_id.as_deref(),
-        args.constraint_name.as_deref(),
-    )?;
     let acked_by = args
         .acked_by
         .as_deref()
@@ -401,6 +416,11 @@ fn handle_baseline(
     let registry = crate::parser::adapter::default_registry();
     let mut rules_loaded = rules::load_rules(workspace_root)?;
     let (all_constraints, _errors) = rules_loaded.all_constraints();
+    let (constraint_id, constraint_name) = resolve_constraint(
+        &all_constraints,
+        args.constraint_id.as_deref(),
+        args.constraint_name.as_deref(),
+    )?;
 
     // Candidate files: every indexed file plus unindexed pattern-only stubs,
     // narrowed by the optional action scope. check_forbidden_patterns applies the
@@ -494,11 +514,6 @@ fn handle_baseline(
 /// can never suppress more than actually exists — a new clone always resurfaces
 /// (sutra/305).
 fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let (constraint_id, constraint_name) = resolve_constraint(
-        workspace_root,
-        args.constraint_id.as_deref(),
-        args.constraint_name.as_deref(),
-    )?;
     let file_path = args
         .file_path
         .as_deref()
@@ -517,11 +532,17 @@ fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<
         ));
     }
 
-    let content = std::fs::read_to_string(workspace_root.join(file_path))
-        .map_err(|e| SutraError::Internal(format!("cannot read {file_path}: {e}")))?;
     let registry = crate::parser::adapter::default_registry();
     let mut rules_loaded = rules::load_rules(workspace_root)?;
     let (all_constraints, _errors) = rules_loaded.all_constraints();
+    let (constraint_id, constraint_name) = resolve_constraint(
+        &all_constraints,
+        args.constraint_id.as_deref(),
+        args.constraint_name.as_deref(),
+    )?;
+
+    let content = std::fs::read_to_string(workspace_root.join(file_path))
+        .map_err(|e| SutraError::Internal(format!("cannot read {file_path}: {e}")))?;
     let findings = crate::constraints::patterns::check_forbidden_patterns(
         &all_constraints,
         &[(file_path, &content)],

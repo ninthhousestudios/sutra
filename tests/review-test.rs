@@ -1855,3 +1855,99 @@ name = "no-unsafe"
         "waived pattern finding should appear in waived list"
     );
 }
+
+/// Report-only instance acks (sutra/305) must stay visible on the review surface,
+/// not silently drop out of the count (sutra/306). An acked clone is subtracted
+/// from constraint_violations but surfaced in the `acknowledged` array — parity
+/// with how waivers appear in waived_constraint_violations.
+#[test]
+fn instance_acks_surface_on_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    fs::create_dir_all(&rules_dir).unwrap();
+    fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone"
+severity = "blocking"
+scope = "src/"
+"#,
+    )
+    .unwrap();
+
+    // Two byte-identical foo.clone() in one fn, plus one distinct bar.clone().
+    let src = "fn a() {\n    let x = foo.clone();\n    let y = foo.clone();\n    \
+               let w = bar.clone();\n}\n";
+    let src_path = dir.path().join("src/lib.rs");
+    fs::create_dir_all(src_path.parent().unwrap()).unwrap();
+    fs::write(&src_path, src).unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h1", 5, true).unwrap();
+
+    let rule_id = {
+        let mut loaded = sutra::rules::load_rules(dir.path()).unwrap();
+        let (cs, _) = loaded.all_constraints();
+        cs.iter()
+            .find(|c| c.name.as_deref() == Some("no-clone"))
+            .unwrap()
+            .id
+            .to_string()
+    };
+
+    // Ack both foo.clone() instances; bar.clone() is a different key, untouched.
+    db.create_constraint_instance_ack(
+        &rule_id,
+        Some("no-clone"),
+        "src/lib.rs",
+        Some("a"),
+        Some("foo.clone()"),
+        2,
+        Some("owned-required"),
+        "josh",
+    )
+    .unwrap();
+
+    let changed = vec!["src/lib.rs".to_string()];
+    let registry = default_registry();
+    let findings =
+        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+
+    // The two acked foo clones are gone; only the distinct bar clone remains.
+    let pattern: Vec<_> = findings
+        .constraint_violations
+        .iter()
+        .filter(|v| v.constraint_kind == "forbidden_pattern")
+        .collect();
+    assert_eq!(
+        pattern.len(),
+        1,
+        "both foo clones acked -> only bar reported: {:#?}",
+        findings.constraint_violations
+    );
+    assert_eq!(pattern[0].snippet.as_deref(), Some("bar.clone()"));
+
+    // The acked state is surfaced on findings, not silent.
+    assert_eq!(findings.acknowledged.len(), 1, "the acked key is surfaced");
+    assert_eq!(findings.acknowledged[0]["snippet"], "foo.clone()");
+    assert_eq!(findings.acknowledged[0]["accepted_count"], 2);
+
+    // ...and it makes it into the serialized review output.
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &findings,
+        false,
+    )
+    .unwrap();
+    let acked = result["acknowledged"].as_array().unwrap();
+    assert_eq!(acked.len(), 1);
+    assert_eq!(acked[0]["snippet"], "foo.clone()");
+    assert_eq!(acked[0]["rationale"], "owned-required");
+}

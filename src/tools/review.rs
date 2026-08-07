@@ -50,6 +50,10 @@ pub struct ReviewFindings {
     pub waived_constraint_violations: Vec<Waived<ConstraintFinding>>,
     pub constraint_parse_errors: Vec<rules::ConstraintParseError>,
     pub constraint_violations_total: usize,
+    /// Report-only instance acks (sutra/305) on changed files, as JSON. Surfaced
+    /// so acknowledged clones dropped from `constraint_violations` stay visible on
+    /// the review surface, not silent (sutra/306) — parity with waivers.
+    pub acknowledged: Vec<serde_json::Value>,
     pub deviations: Vec<Deviation>,
 }
 
@@ -464,12 +468,17 @@ pub fn build_findings(
         &sketch_components,
     );
 
+    // Report-only instance acks on the changed files, so acknowledged clones
+    // dropped from constraint_violations stay visible here (sutra/306).
+    let acknowledged = crate::tools::constraints::acked_instances_json(db, Some(&changed_set))?;
+
     Ok(ReviewFindings {
         constraint_violations,
         resolved_constraint_violations,
         waived_constraint_violations,
         constraint_parse_errors,
         constraint_violations_total,
+        acknowledged,
         deviations,
     })
 }
@@ -912,6 +921,9 @@ pub fn compute(
     });
     if !behavioral.is_empty() {
         result["behavioral_coupling"] = json!(behavioral);
+    }
+    if !findings.acknowledged.is_empty() {
+        result["acknowledged"] = json!(findings.acknowledged);
     }
     if !findings.constraint_parse_errors.is_empty() {
         result["constraint_parse_errors"] = json!(

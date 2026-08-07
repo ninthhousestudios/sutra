@@ -348,6 +348,10 @@ pub fn handle(
     let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = loaded_rules.all_constraints();
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
+    // Report-only instance acks (sutra/305), surfaced per component alongside
+    // waivers so acknowledged clones dropped from `violations` stay visible on the
+    // orient surface, not silent (sutra/306).
+    let all_constraint_instance_acks = db.get_all_constraint_instance_acks().unwrap_or_default();
 
     let comp_with_paths = db.active_components_with_paths()?;
     let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
@@ -510,6 +514,18 @@ pub fn handle(
                 .collect();
             if !in_scope_constraint_waivers.is_empty() {
                 constraints_section["waivers"] = json!(in_scope_constraint_waivers);
+            }
+
+            let in_scope_acks: Vec<_> = all_constraint_instance_acks
+                .iter()
+                .filter(|a| {
+                    constraint_ids.contains(&*a.constraint_id)
+                        && file_set.contains(a.file_path.as_str())
+                })
+                .map(crate::tools::constraints::ack_to_json)
+                .collect();
+            if !in_scope_acks.is_empty() {
+                constraints_section["acknowledged"] = json!(in_scope_acks);
             }
 
             section["constraints"] = constraints_section;
@@ -1020,6 +1036,54 @@ name = "no-tool-daemon"
         assert_eq!(waivers[0]["constraint_id"], &**constraint_id);
         assert_eq!(waivers[0]["rationale"], "temporary during migration");
         assert_eq!(waivers[0]["waived_by"], "josh");
+    }
+
+    /// Report-only instance acks (sutra/305) must surface on orient alongside
+    /// waivers, not silently vanish from the report (sutra/306).
+    #[test]
+    fn instance_acks_shown() {
+        let (db, dir) = setup_db();
+        insert_component(&db, "comp-1", "tools", &["src/tools/review.rs"]);
+        write_rules(
+            &dir,
+            r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "clone"))) @match'
+name = "no-clone"
+severity = "blocking"
+scope = "src/tools/"
+"#,
+        );
+
+        let (constraints, _) = rules::load_rules(dir.path()).unwrap().all_constraints();
+        let constraint_id = constraints
+            .iter()
+            .find(|c| c.name.as_deref() == Some("no-clone"))
+            .unwrap()
+            .id
+            .to_string();
+
+        db.create_constraint_instance_ack(
+            &constraint_id,
+            Some("no-clone"),
+            "src/tools/review.rs",
+            Some("f"),
+            Some("x.clone()"),
+            2,
+            Some("owned-required"),
+            "josh",
+        )
+        .unwrap();
+
+        let result = handle(&db, "tools", dir.path(), None, None, &registry()).unwrap();
+        let section = &result["orientation"][0]["constraints"];
+        let acked = section["acknowledged"].as_array().unwrap();
+        assert_eq!(acked.len(), 1);
+        assert_eq!(acked[0]["constraint_id"], constraint_id);
+        assert_eq!(acked[0]["accepted_count"], 2);
+        assert_eq!(acked[0]["rationale"], "owned-required");
     }
 
     #[test]
