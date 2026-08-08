@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-07-26 (sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
+Last updated: 2026-08-08 (sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -57,6 +57,18 @@ src/constraints/
                       Workspace → every stub on disk, ChangedFiles →
                       EvalScope's changed_pattern_only_paths, SingleFile/Edges →
                       none (guard covers those via check_proposed_patterns).
+  accepted.rs       — `.sutra/accepted.toml` source-of-truth layer (sutra/303,
+                      sutra/308). Types: AcceptedFile (waivers + acks arrays),
+                      WaiverEntry, AckEntry, AcceptedWarning, AcceptedLoad,
+                      RefResolution. Public API: refresh_cache (read-surface
+                      gate: migrate_db_to_file THEN ensure_cache_fresh),
+                      is_cache_fresh_conn (guard-side read-only freshness
+                      check), resolve_waivers_for_guard (in-memory fallback
+                      when cache stale), upsert_waiver / remove_waiver /
+                      upsert_ack / remove_ack (file writers),
+                      write_accepted_file, load_accepted_file,
+                      resolve_accepted, current_file_hash.
+                      See "Accepted.toml freshness gate" section below.
   check.rs          — Unified constraint evaluation. evaluate() dispatches to
                       evaluate_dd (DD-backed: review, orient, sutra_constraints
                       violations) or evaluate_raw (raw SQLite: guard hook).
@@ -104,7 +116,10 @@ src/rules.rs        — TOML parsing for .sutra/rules.toml.
                       orient's generic scope filter), match_no_cycles_constraint.
 
 src/db/
-  constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table.
+  constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table
+                      (now a reproject-on-read cache of `.sutra/accepted.toml`;
+                      see "Accepted.toml freshness gate"). Row ids are
+                      re-minted on every sync, so they are not stable handles.
                       get_constraint_waivers, get_constraint_waivers_for_file,
                       create/update/delete, reconcile_orphaned_constraint_waivers.
                       ConstraintRatchetRow, ratchet registry:
@@ -132,9 +147,12 @@ src/tools/
                       violations (DD maintained view — forbidden_dep, boundary,
                       no_cycles, max_fan_in, forbidden_external, confined_external,
                       plus dead_constraint informational findings),
-                      waive (create constraint waiver),
-                      unwaive (revoke waiver). Thin translation over library
-                      API + DB CRUD, following conventions.rs pattern.
+                      waive / unwaive (guard-honored waivers),
+                      baseline / ack / unack (report-only instance acks).
+                      Write actions write `.sutra/accepted.toml` + re-project
+                      the DB cache (migrate_db_to_file → upsert/remove →
+                      ensure_cache_fresh). Removal is key-based, not id-based
+                      (projection re-mints ids on every sync).
 
 src/guard.rs        — Lightweight per-edit constraint check.
                       check_file_constraints: queries imports table + rules TOML
@@ -209,10 +227,20 @@ component membership via DB. Caches result keyed by `(input_hash,
 clustering_generation)` — invalidate on component recompute. Used by
 build_findings before calling `set_forbidden_pairs`.
 
+### CheckOutcome (check.rs)
+`{ active, waived, resolved, parse_errors, accepted_warnings }`.
+`accepted_warnings: Vec<String>` surfaces operator-facing warnings from
+resolving `.sutra/accepted.toml` against the live rule set (unknown/ambiguous
+constraint refs). Populated only by the DD-backed report path (`evaluate_dd`);
+the guard's `RawConn` path leaves it empty (config warnings belong on the
+report, not at the edit-time gate).
+
 ### ConstraintWaiverRow (db/constraints.rs)
 `{ id, constraint_id, constraint_name, file_path, symbol_qualified_name,
-rationale, waived_by, created_at, updated_at }`. Waiver lookup in review:
-match on `constraint_id` + `file_path` (either from_path or to_path).
+rationale, waived_by, created_at, updated_at }`. Now a **cache row** projected
+from `.sutra/accepted.toml` — ids are re-minted on every sync, so they are not
+stable handles. Waiver lookup in review: match on `constraint_id` +
+`file_path` (either from_path or to_path).
 
 ### ConstraintRatchetRow (db/constraints.rs)
 `{ id, constraint_id, name, rendered_description, severity_floor,
@@ -317,6 +345,121 @@ are gone) — a check that can't be forgotten by a future writer of the index.
 Only DD-backed kinds were affected; `forbidden_pattern` reads from disk and the
 `external` kinds re-read `unresolved_imports` each call, which is why those held
 steady in the field report.
+
+## Accepted.toml freshness gate (sutra/303, sutra/308)
+
+`.sutra/accepted.toml` is the **source of truth** for waivers (guard-honored,
+coarse suppression) and instance acks (report-only, content-keyed,
+count-aware). The DB tables `constraint_waivers` and `constraint_instance_acks`
+are a reproject-on-read cache — row ids are re-minted on every sync and are
+not stable handles. The file is version-controlled, so waivers and acks appear
+in `git diff` as reviewable events.
+
+### File format
+
+```toml
+[[waiver]]
+constraint = "no-tool-daemon"       # constraint NAME (human-stable)
+file = "src/tools/review.rs"
+symbol = "build_findings"           # optional; absent = whole-file
+rationale = "reviewed: legacy path"
+by = "josh"
+
+[[ack]]
+constraint = "no-clone-driven-dev"  # constraint NAME
+file = "src/parser/rust.rs"
+symbol = "parse"                    # enclosing_symbol (MatchKey part)
+snippet = ".clone()"                # matched node's first line (MatchKey part)
+count = 2                           # how many matches of this key are accepted
+rationale = "examined: unavoidable" # optional for baseline, required for ack
+by = "josh"
+```
+
+Entries are keyed by constraint **name** (resolved to an id at load via
+`resolve_ref`), not by the blake3 id. A constraint with no name can only be
+referenced by its id, which surfaces as an `unknown` warning on load — the
+signal to give the rule a name. Names survive a scope/param edit that reshapes
+the blake3 id.
+
+### Read-surface freshness gate
+
+`accepted::refresh_cache(db, root, constraints)` is called at the head of
+every DD-backed report path. Call sites:
+
+| Surface | Where |
+|---|---|
+| `evaluate_dd` | `check.rs:177` — before any DB-backed waiver/ack read |
+| `orient` | `orient.rs:357` — constraints section |
+| `list` | `constraints.rs:89` — reads waiver cache directly, no `evaluate` |
+
+`refresh_cache` does two things in load-bearing order:
+
+1. **`migrate_db_to_file`** — one-time: dumps any pre-existing local-only DB
+   waivers/acks into `accepted.toml` so the move to file-authoritative does not
+   strand them. Gated on file absence (`Ok(None)` when the file already exists
+   or there is nothing to migrate). **Must run before** `ensure_cache_fresh`,
+   or a repo whose acceptances still live only in the DB (no file yet) would
+   reproject from an absent → empty file and wipe them (sutra/308 hazard 1).
+
+2. **`ensure_cache_fresh`** — parse + resolve the file (so warnings are always
+   current), then re-project the DB cache only when the on-disk blake3 hash
+   differs from the stored marker (`accepted_sync_marker`). The parse is
+   microseconds; the freshness check gates only the DB *write*, not the read.
+
+Returns `Vec<AcceptedWarning>` — unknown/ambiguous constraint refs surfaced on
+the report so a waiver silently pointing at a deleted constraint is visible.
+Mapped to `CheckOutcome.accepted_warnings` strings by all three call sites.
+
+### Guard stale path
+
+`evaluate_raw` (the guard's edit-time path) holds a bare `Connection`, not a
+writable `Db`, so it cannot reproject. It uses `accepted::is_cache_fresh_conn`
+to decide which waiver source to trust:
+
+- **Cache fresh** (a server review already projected the current file):
+  fast path — read `constraint_waivers` rows from the DB directly.
+- **Cache stale** (a hand-edited `accepted.toml` no server pass has seen yet):
+  call `accepted::resolve_waivers_for_guard(root, constraints)` — identical
+  data derived in-memory from the same file the server-side reprojection would
+  use, no persist, no writable handle on the latency path. Acks are
+  report-only, so the guard never needs them.
+
+This ensures the guard honors exactly what the next audit report will show
+(guard must predict the report, sutra/308 hazard 3).
+
+### Write actions
+
+All write actions follow the same pattern:
+`migrate_db_to_file` → file mutation → `ensure_cache_fresh`.
+
+| Action | File mutation | Key |
+|---|---|---|
+| `waive` | `accepted::upsert_waiver` | `(constraint, file, symbol)` |
+| `unwaive` | `accepted::remove_waiver` | `(constraint, file, symbol)` |
+| `baseline` | `accepted::upsert_ack` (per content key) | `(constraint, file, symbol, snippet)` |
+| `ack` | `accepted::upsert_ack` (single instance) | `(constraint, file, symbol, snippet)` |
+| `unack` | `accepted::remove_ack` | `(constraint, file, symbol, snippet)` |
+
+`migrate_db_to_file` runs first in each — so any legacy DB-only rows are
+seeded before the new entry is appended; skip it and an absent file would be
+created carrying only the new entry, wiping the rest on re-projection.
+`ensure_cache_fresh` at the end so the very next report/guard check sees the
+change.
+
+### Resolution and warnings
+
+`resolve_accepted` resolves every file entry against the live constraints,
+partitioning into projectable rows (`AcceptedLoad.waivers` + `.acks`) and
+`AcceptedWarning`s for entries that did not resolve. Two warning kinds:
+
+- **Unknown** — constraint name not found in the live rule set (deleted or
+  renamed constraint). The entry is *not dropped* — it stays in the file so a
+  rename can be fixed manually.
+- **Ambiguous** — constraint name matches multiple live constraints (a name
+  collision). Also preserved in the file; the operator must disambiguate.
+
+Warnings are surfaced on every report surface (`accepted_warnings` field) and
+via the `violations` tool output, never silently swallowed.
 
 ## TOML format (.sutra/rules.toml)
 
@@ -522,6 +665,10 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 
 ## Test locations
 
+- Accepted.toml: `#[cfg(test)]` in `src/constraints/accepted.rs` (8 tests —
+  roundtrip, absent-file, malformed-file, unknown-constraint warning,
+  cache freshness + idempotency, edited-file reprojects, guard-resolution
+  matches server, upsert-replaces-not-appends)
 - Unit tests: `#[cfg(test)]` in `src/rules.rs` (22 tests — parsing, identity, defaults, errors)
 - Integration tests: `tests/constraints-test.rs` (27 tests — cycles, blast radius,
   forbidden deps ad-hoc, maintained violations, eviction/rewarm)
