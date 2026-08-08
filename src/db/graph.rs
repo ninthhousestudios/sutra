@@ -67,18 +67,31 @@ impl Db {
         Ok(rows?)
     }
 
-    /// Edges that exist only because a parent module declares a child with
-    /// `mod child;` / `pub mod child;` (import `kind = 'mod'`). These wire the
-    /// module tree — they are not architectural coupling. Idiomatic Rust hoists
-    /// shared items into `mod.rs` and children reach back up via `use super::X`,
-    /// which closes a file-import cycle that exists *only* because of the `mod`
-    /// edge. Cycle detection subtracts these so it reports genuine peer-to-peer
-    /// import loops, not module-tree wiring (sutra/304).
+    /// File pairs held together *purely* by a module declaration —
+    /// `mod child;` / `pub mod child;` (import `kind = 'mod'`) with no other
+    /// import backing the same pair. These wire the module tree; they are not
+    /// architectural coupling. Idiomatic Rust hoists shared items into `mod.rs`
+    /// and children reach back up via `use super::X`, which closes a file-import
+    /// cycle that exists *only* because of the `mod` edge. Cycle detection
+    /// subtracts these so it reports genuine peer-to-peer import loops, not
+    /// module-tree wiring (sutra/304).
+    ///
+    /// The `NOT EXISTS` guard is load-bearing: a parent that both declares a
+    /// child (`mod child;`) *and* substantively imports it (`use child::X;`)
+    /// produces two rows resolving to the same `(parent, child)` pair. That pair
+    /// carries a genuine `use` edge, so it must NOT be treated as pure wiring —
+    /// dropping it would suppress a real parent↔child cycle (sutra/307).
     pub fn module_declaration_edges(&self) -> Result<std::collections::HashSet<(i64, i64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT file_id, resolved_file_id FROM imports \
-             WHERE resolved_file_id IS NOT NULL AND kind = 'mod'",
+            "SELECT DISTINCT i.file_id, i.resolved_file_id FROM imports i \
+             WHERE i.resolved_file_id IS NOT NULL AND i.kind = 'mod' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM imports j \
+                 WHERE j.file_id = i.file_id \
+                   AND j.resolved_file_id = i.resolved_file_id \
+                   AND j.kind <> 'mod' \
+             )",
         )?;
         let rows: rusqlite::Result<std::collections::HashSet<(i64, i64)>> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

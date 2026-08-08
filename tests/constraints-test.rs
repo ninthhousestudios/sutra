@@ -1388,6 +1388,81 @@ fn genuine_use_cycle_survives_module_edge_filtering() {
     );
 }
 
+/// A parent that both declares a child (`mod child;`) AND substantively imports
+/// it (`use child::X;`) has a genuine `use` edge on the same file pair as the
+/// `mod` edge. The pair is therefore NOT pure module-tree wiring — dropping it
+/// would suppress a real parent↔child cycle. Only pairs backed *solely* by a
+/// module declaration are subtracted (sutra/307).
+#[test]
+fn parent_child_cycle_with_real_use_edge_still_fires() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    db.upsert_file("src/synthesis/mod.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("src/synthesis/child.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let mod_rs = db.file_by_path("src/synthesis/mod.rs").unwrap().unwrap();
+    let child = db.file_by_path("src/synthesis/child.rs").unwrap().unwrap();
+
+    // Parent declares the child (module-tree wiring) ...
+    db.insert_import(mod_rs.id, "self::child", Some(child.id), 1, "mod", None)
+        .unwrap();
+    // ... and ALSO substantively imports it — same (parent, child) pair, but a
+    // real `use` edge. This is genuine coupling, not pure wiring.
+    db.insert_import(
+        mod_rs.id,
+        "self::child::Worker",
+        Some(child.id),
+        2,
+        "import",
+        None,
+    )
+    .unwrap();
+    // Child reaches a hoisted item back up, closing the loop.
+    db.insert_import(
+        child.id,
+        "super::Candidate",
+        Some(mod_rs.id),
+        1,
+        "import",
+        None,
+    )
+    .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(
+        cycle_findings.len(),
+        1,
+        "a parent<->child cycle backed by a real `use` edge must fire, got: {:?}",
+        cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn evaluate_dd_finds_forbidden_pattern_violations() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
