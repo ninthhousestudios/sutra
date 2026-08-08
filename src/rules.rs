@@ -544,6 +544,36 @@ impl Rules {
             }
         }
 
+        // Constraint names double as the stable key for portable waivers/acks
+        // (.sutra/accepted.toml, sutra/303): the tracked file references a
+        // constraint by name because the blake3 id reshapes on any scope/param
+        // edit. A name that resolves to more than one constraint cannot be
+        // honored unambiguously, so reject duplicates here, surfaced through the
+        // same error channel as every other rule error.
+        let mut name_counts: HashMap<Arc<str>, usize> = HashMap::new();
+        for c in &out {
+            if let Some(name) = &c.name {
+                *name_counts.entry(name.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut dup_names: Vec<Arc<str>> = name_counts
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(name, _)| name)
+            .collect();
+        dup_names.sort();
+        for name in dup_names {
+            errors.push(ConstraintParseError {
+                index: 0,
+                name: Some(name.to_string()),
+                error: format!(
+                    "constraint name `{name}` is used by more than one constraint; \
+                     names must be unique so portable waivers/acks \
+                     (.sutra/accepted.toml) can key on them"
+                ),
+            });
+        }
+
         (out, errors)
     }
 }
@@ -699,6 +729,54 @@ symbols = ["InternalError", "DebugHelper"]
                 .iter()
                 .all(|e| e.name.as_deref() != Some("conventions")),
             "absent [conventions] block must not emit a parse error"
+        );
+    }
+
+    #[test]
+    fn duplicate_constraint_names_are_rejected() {
+        // Two distinct constraints (different scope -> different id) sharing one
+        // name: the name can no longer key a portable waiver unambiguously.
+        let toml = r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-loops"
+scope = "src/a/"
+
+[[constraint]]
+kind = "no_cycles"
+name = "no-loops"
+scope = "src/b/"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (constraints, errors) = rules.all_constraints();
+        // Both still load (enforcement is not disabled) ...
+        assert_eq!(constraints.len(), 2);
+        // ... but the collision is surfaced loudly.
+        let err = errors
+            .iter()
+            .find(|e| e.name.as_deref() == Some("no-loops"))
+            .expect("duplicate constraint name should surface a parse error");
+        assert!(err.error.contains("unique"));
+    }
+
+    #[test]
+    fn distinct_constraint_names_pass() {
+        let toml = r#"
+[[constraint]]
+kind = "no_cycles"
+name = "no-loops-a"
+scope = "src/a/"
+
+[[constraint]]
+kind = "no_cycles"
+name = "no-loops-b"
+scope = "src/b/"
+"#;
+        let mut rules = parse_rules(toml).unwrap();
+        let (_, errors) = rules.all_constraints();
+        assert!(
+            errors.iter().all(|e| !e.error.contains("unique")),
+            "distinct names must not trip the uniqueness check"
         );
     }
 
