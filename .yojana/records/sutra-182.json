@@ -1,0 +1,155 @@
+{
+  "id": "019efa4a-835d-7c01-b2c7-0ac9421fa341",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/182",
+  "sequence_number": 182,
+  "title": "C parser module + complexity branches",
+  "description": "Session 1 of the C adapter arc. Add tree-sitter-c dependency, create the C parser module, and add complexity branches. This is the densest step — the parser module alone is ~400-600 lines.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "tree-sitter-c added to Cargo.toml"
+    },
+    {
+      "done": false,
+      "text": "src/parser/c.rs created with parse() function returning ParseResult"
+    },
+    {
+      "done": false,
+      "text": "Symbol extraction covers: function_definition→Function, struct_specifier(with body)→Struct, enum_specifier(with body)→Enum, type_definition→TypeAlias, preproc_function_def→Macro, preproc_def→Const (header guard filtered), top-level declaration→Static/Const"
+    },
+    {
+      "done": false,
+      "text": "Header guard filter excludes names ending in _H, _H_, _INCLUDED, _INCLUDED_"
+    },
+    {
+      "done": false,
+      "text": "Visibility: static storage class → private, else → pub"
+    },
+    {
+      "done": false,
+      "text": "Signatures: return_type function_name(params) extracted from declarator nodes"
+    },
+    {
+      "done": false,
+      "text": "Docstrings: preceding block/line comments extracted"
+    },
+    {
+      "done": false,
+      "text": "References classified: call_expression→Call, field_expression→FieldAccess, type_identifier in param/return→TypeUse, struct initializer→Construction"
+    },
+    {
+      "done": false,
+      "text": "#include directives produce ExtractedImport with raw_path preserving quotes/angles"
+    },
+    {
+      "done": false,
+      "text": "language_attrs JSON: returns_ptr, takes_ptr, is_static, is_inline, is_variadic, has_const, returns_void, has_struct_param"
+    },
+    {
+      "done": false,
+      "text": "Flags: test file heuristics (*_test.c, test_*.c, tests/*.c), test_* function names, __attribute__→FFI entry"
+    },
+    {
+      "done": false,
+      "text": "classify_cognitive has 'c' branch: if/for/while/do→(true,true), switch→(true,false), case/goto→(true,false)"
+    },
+    {
+      "done": false,
+      "text": "walk_cyclomatic has 'c' branch: if/for/while/do/goto +1, case +1, switch -1, logical operators +1"
+    },
+    {
+      "done": false,
+      "text": "pub mod c added to src/parser/mod.rs"
+    },
+    {
+      "done": false,
+      "text": "cargo check passes"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nCreate the C parser module and complexity branches. Follow the `rust::parse` pattern exactly.\n\n## Files\n\n- **Modify**: `Cargo.toml` — add `tree-sitter-c` dependency\n- **Create**: `src/parser/c.rs` — full C parser module\n- **Modify**: `src/parser/mod.rs` — add `pub mod c;`\n- **Modify**: `src/parser/complexity.rs` — add `\"c\"` branches to `classify_cognitive` (before `_ =>` fallback at line 145) and `walk_cyclomatic` (before `_ => {}` at line 51)\n\n## Steps\n\n### Step 1: Add tree-sitter-c dependency\n\n```toml\ntree-sitter-c = \"0.23\"\n```\n\n### Step 2: Create `src/parser/c.rs`\n\nCore structure:\n\n```rust\npub fn parse(ctx: &ParseContext) -> Result<ParseResult>\n\n// Symbol extraction\nfn collect_symbols(node: Node, src: &[u8], file_path: &str) -> Vec<ExtractedSymbol>\nfn collect_symbols_inner(node: Node, src: &[u8], file_path: &str, symbols: &mut Vec<ExtractedSymbol>)\nfn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol>\nfn extract_struct(node: Node, src: &[u8]) -> Option<ExtractedSymbol>\nfn extract_enum(node: Node, src: &[u8]) -> Option<ExtractedSymbol>\nfn extract_typedef(node: Node, src: &[u8]) -> Option<ExtractedSymbol>\nfn extract_macro(node: Node, src: &[u8]) -> Option<ExtractedSymbol>  // preproc_function_def\nfn extract_const_define(node: Node, src: &[u8]) -> Option<ExtractedSymbol>  // preproc_def, with guard filter\nfn extract_global_var(node: Node, src: &[u8]) -> Option<ExtractedSymbol>  // top-level declaration\nfn is_header_guard(name: &str) -> bool\n\n// Helpers\nfn extract_visibility(node: Node, src: &[u8]) -> Option<String>  // static → \"private\", else \"pub\"\nfn extract_docstring(node: Node, src: &[u8]) -> Option<String>\nfn build_fn_signature(node: Node, src: &[u8]) -> Option<String>\nfn extract_flags(file_path: &str, name: &str, node: Node, src: &[u8]) -> u32\nfn extract_language_attrs(node: Node, src: &[u8]) -> Option<String>  // JSON with returns_ptr etc.\n\n// References\nfn collect_references(node: Node, src: &[u8]) -> Vec<ExtractedRef>\nfn walk_refs_recursive(node: Node, src: &[u8], refs: &mut Vec<ExtractedRef>)\nfn is_definition_name(node: Node) -> bool\nfn classify_ref_context(node: Node) -> RefContextKind\n\n// Imports\nfn collect_includes(node: Node, src: &[u8]) -> Vec<ExtractedImport>\n```\n\n### Step 3: Add complexity branches\n\n`classify_cognitive` — add `\"c\"` arm:\n```rust\n\"c\" => match kind {\n    \"if_statement\" => (true, true),\n    \"while_statement\" | \"for_statement\" | \"do_statement\" => (true, true),\n    \"switch_statement\" => (true, false),\n    \"case_statement\" | \"goto_statement\" => (true, false),\n    _ => (false, false),\n},\n```\n\n`walk_cyclomatic` — add `\"c\"` arm:\n```rust\n\"c\" => match kind {\n    \"if_statement\" | \"while_statement\" | \"for_statement\" | \"do_statement\" => { *count += 1; }\n    \"case_statement\" => { *count += 1; }\n    \"switch_statement\" => { *count = count.saturating_sub(1); }\n    \"binary_expression\" if is_logical_operator(node, src) => { *count += 1; }\n    \"goto_statement\" => { *count += 1; }\n    _ => {}\n},\n```\n\n### Step 4: Wire module declaration\n\nAdd `pub mod c;` to `src/parser/mod.rs`.",
+  "execution_record": "Followed the implementation plan step by step. Three fixes needed during testing: (1) struct/enum in tree-sitter-c appear as direct children of translation_unit, not wrapped in `declaration` — added top-level arms; (2) `typedef unsigned long size_t` produces a `primitive_type` node for `size_t` — added to `find_name_in_declarator`; (3) `is_test_file` missed paths starting with `tests/` (no leading slash). All discovered via failing tests in the first pass. 41 tests total, full suite green.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "67410c8"
+    }
+  ],
+  "files": [
+    "Cargo.toml",
+    "src/parser/c.rs",
+    "src/parser/mod.rs",
+    "src/parser/complexity.rs"
+  ],
+  "tags": [
+    "language",
+    "c",
+    "adapter"
+  ],
+  "history": [
+    {
+      "ts": 1782315647837,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 182
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782323275547,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782324346776,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes.\\n\\n3 medium findings (definition-name leak through pointer/array declarator wrappers, struct/enum docstring extracted from wrong anchor node, comma-separated declarators silently dropped), 2 low (signature misses type qualifiers, ternary not counted in complexity). Core extraction is correct for common C constructs; issues are interaction patterns with tree-sitter AST wrapping. Codex concurred on definition-name leak, docstring anchor, and multi-declarator findings independently.\\n\\nRecommend fixing the 3 mediums before closing the arc — they cause incomplete symbol tables and noisy reference graphs.\"",
+      "ts": 1782325191461
+    }
+  ],
+  "created_at": 1782315647837,
+  "updated_at": 1782324346776,
+  "completed_at": 1782324346776,
+  "arc_id": "019efa49-d9e0-7c50-84fa-7da989b05b78",
+  "arc_phase": "parser",
+  "edges": [
+    {
+      "id": "019efa4b-aba5-7df1-9341-eee0f488b470",
+      "edge_type": "refines",
+      "source": "sutra/182",
+      "target": "sutra/115",
+      "note": null,
+      "created_at": 1782315723685
+    },
+    {
+      "id": "019efa4b-b5a8-7b80-8256-15a2d79a14c5",
+      "edge_type": "depends_on",
+      "source": "sutra/183",
+      "target": "sutra/182",
+      "note": null,
+      "created_at": 1782315726248
+    }
+  ]
+}

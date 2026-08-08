@@ -1,0 +1,139 @@
+{
+  "id": "019efb44-56c9-7070-9e13-af0e714c5f69",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/189",
+  "sequence_number": 189,
+  "title": "Python import resolver + pipeline wiring",
+  "description": "Create the Python import resolver and wire it into the pipeline. This is the most algorithmically complex piece — package root discovery via __init__.py scanning, absolute import resolution, relative import resolution with level-based directory walk.\n\nCovers plan Steps 6-7 from sutra/116.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "src/python_imports.rs created with resolve_python_imports(db, workspace_root) -> Result<usize>"
+    },
+    {
+      "done": false,
+      "text": "Package root discovery: scans indexed __init__.py files to build package tree, finds topmost package dirs, their parents are roots"
+    },
+    {
+      "done": false,
+      "text": ".sutra/rules.toml [python] package_roots override supported for src-layout projects"
+    },
+    {
+      "done": false,
+      "text": "Absolute import resolution: splits module path on '.', tries {root}/{segments}.py then {root}/{segments}/__init__.py for each package root"
+    },
+    {
+      "done": false,
+      "text": "Relative import resolution: counts leading dots for level, walks up from importing file's dir, resolves remaining module path"
+    },
+    {
+      "done": false,
+      "text": "Db::unresolved_python_imports() query added (or reuse unresolved_imports_with_files with language filter)"
+    },
+    {
+      "done": false,
+      "text": "Wired into post_parse_sequence in src/pipeline.rs after C resolver block"
+    },
+    {
+      "done": false,
+      "text": "pub mod python_imports added to src/lib.rs"
+    },
+    {
+      "done": false,
+      "text": "Tests: absolute resolution (foo.bar → foo/bar.py), package resolution (foo → foo/__init__.py), relative import (from . import sibling), multi-level relative (from ..utils import helper), unresolved external stays NULL"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nFollow the established resolver pattern (C/Rust/Dart): language-specific DB query → build path maps from `all_files()` → resolve each unresolved import → batch update. Python-specific logic: discover package roots from `__init__.py` files (with `.sutra/rules.toml` override), resolve absolute imports by probing dotted segments as filesystem paths, resolve relative imports by counting leading dots and walking up directories. External/stdlib imports that don't match workspace files stay NULL.\n\n## Files\n\n- **Modify**: `src/db/mod.rs` (after line 1577) — add `unresolved_python_imports()` method\n- **Modify**: `src/rules.rs` (lines 327-335) — add `PythonConfig` struct and field on `Rules`\n- **Create**: `src/python_imports.rs` — `resolve_python_imports`, package root discovery, absolute/relative resolution\n- **Modify**: `src/pipeline.rs` (after line 573) — wire Python resolver call\n- **Modify**: `src/lib.rs` (between lines 18-19) — add `pub mod python_imports;`\n- **Test**: `src/python_imports.rs` (test module) — resolution correctness tests\n\n## Steps\n\n### Step 1: Add `unresolved_python_imports()` to `Db`\n\nFile: `src/db/mod.rs`, after line 1577 (after `unresolved_c_imports`)\n\nCopy the `unresolved_c_imports` pattern with `'python'` language filter:\n\n```rust\npub fn unresolved_python_imports(&self) -> Result<Vec<(i64, i64, String)>> {\n    let conn = self.conn.lock();\n    let mut stmt = conn.prepare(\n        \"SELECT i.id, i.file_id, i.imported_path FROM imports i\n         JOIN files f ON f.id = i.file_id\n         WHERE i.resolved_file_id IS NULL\n         AND f.language = 'python'\",\n    )?;\n    let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt\n        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?\n        .collect();\n    Ok(rows?)\n}\n```\n\n### Step 2: Add `PythonConfig` to Rules\n\nFile: `src/rules.rs`, before the `Rules` struct (line ~327)\n\n```rust\n#[derive(Debug, Clone, Default, Deserialize)]\npub struct PythonConfig {\n    #[serde(default)]\n    pub package_roots: Vec<String>,\n}\n```\n\nAdd field to `Rules` struct:\n```rust\npub struct Rules {\n    // existing fields...\n    #[serde(default)]\n    pub python: PythonConfig,\n}\n```\n\nThis supports `.sutra/rules.toml` entries like:\n```toml\n[python]\npackage_roots = [\"src\"]\n```\n\n### Step 3: Create `src/python_imports.rs` — scaffold + package root discovery\n\nFile: `src/python_imports.rs` (new file)\n\nMain function follows the Rust resolver pattern — `all_files()` returns `Vec<FileRow>`, build maps via `(&*f.path, f.id)`:\n\n```rust\nuse std::collections::{HashMap, HashSet};\nuse std::path::Path;\n\nuse tracing::debug;\n\nuse crate::db::Db;\nuse crate::error::Result;\n\npub fn resolve_python_imports(db: &Db, workspace_root: &Path) -> Result<usize> {\n    let unresolved = db.unresolved_python_imports()?;\n    if unresolved.is_empty() {\n        return Ok(0);\n    }\n\n    let all_files = db.all_files()?;\n    let path_to_id: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();\n    let id_to_path: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();\n\n    let rules = crate::rules::load_rules(workspace_root)?;\n    let package_roots: Vec<&str> = if rules.python.package_roots.is_empty() {\n        discover_package_roots(&path_to_id)\n    } else {\n        rules.python.package_roots.iter().map(|s| s.as_str()).collect()\n    };\n\n    let mut updates = Vec::new();\n    for (import_id, file_id, raw_path) in &unresolved {\n        let file_path = match id_to_path.get(file_id) {\n            Some(p) => *p,\n            None => continue,\n        };\n        if let Some(target_id) = resolve_import(raw_path, file_path, &path_to_id, &package_roots)\n            && target_id != *file_id\n        {\n            updates.push((*import_id, target_id));\n        }\n    }\n\n    let resolved_count = updates.len();\n    db.batch_update_import_resolved_file_ids(&updates)?;\n    if resolved_count > 0 {\n        debug!(\n            total = unresolved.len(),\n            resolved = resolved_count,\n            \"resolved Python import edges\"\n        );\n    }\n    Ok(resolved_count)\n}\n```\n\n**Package root discovery** — scan `__init__.py` files, walk up to find topmost package dirs, their parents are roots:\n\n```rust\nfn discover_package_roots<'a>(path_to_id: &HashMap<&'a str, i64>) -> Vec<&'a str> {\n    // Collect directories that contain __init__.py\n    let package_dirs: HashSet<&str> = path_to_id\n        .keys()\n        .filter(|p| p.ends_with(\"/__init__.py\") || *p == \"__init__.py\")\n        .filter_map(|p| p.rsplit_once('/').map(|(dir, _)| dir))\n        .collect();\n\n    // For each package dir, walk up to topmost package ancestor\n    let mut roots: HashSet<&str> = HashSet::new();\n    for pkg_dir in &package_dirs {\n        let mut current = *pkg_dir;\n        while let Some((parent, _)) = current.rsplit_once('/') {\n            if package_dirs.contains(parent) {\n                current = parent;\n            } else {\n                break;\n            }\n        }\n        // current is topmost package dir; its parent is the root\n        match current.rsplit_once('/') {\n            Some((root, _)) => { roots.insert(root); }\n            None => { roots.insert(\"\"); }\n        }\n    }\n    roots.into_iter().collect()\n}\n```\n\nUses string-based path operations on the DB's relative paths (no `Path` needed since these are `/`-separated relative paths).\n\n### Step 4: Import resolution logic (absolute + relative)\n\nFile: `src/python_imports.rs` (continued)\n\n**Dispatcher** — routes to absolute or relative based on leading dots:\n\n```rust\nfn resolve_import(\n    raw_path: &str,\n    file_path: &str,\n    path_to_id: &HashMap<&str, i64>,\n    package_roots: &[&str],\n) -> Option<i64> {\n    let dots = raw_path.bytes().take_while(|b| *b == b'.').count();\n    if dots > 0 {\n        resolve_relative(raw_path, dots, file_path, path_to_id)\n    } else {\n        resolve_absolute(raw_path, path_to_id, package_roots)\n    }\n}\n```\n\n**Absolute resolution** — split dotted path into segments, probe from longest to shortest module path against each package root:\n\n```rust\nfn resolve_absolute(\n    raw_path: &str,\n    path_to_id: &HashMap<&str, i64>,\n    package_roots: &[&str],\n) -> Option<i64> {\n    let segments: Vec<&str> = raw_path.split('.').collect();\n    for root in package_roots {\n        if let Some(id) = probe_segments(&segments, root, path_to_id) {\n            return Some(id);\n        }\n    }\n    None\n}\n```\n\n**Relative resolution** — count leading dots (N dots = walk up N-1 dirs from file's parent), resolve remaining path from that base:\n\n```rust\nfn resolve_relative(\n    raw_path: &str,\n    dots: usize,\n    file_path: &str,\n    path_to_id: &HashMap<&str, i64>,\n) -> Option<i64> {\n    let remaining = &raw_path[dots..];\n    // Start from file's parent directory, walk up (dots - 1) levels\n    let mut base = file_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(\"\");\n    for _ in 1..dots {\n        base = base.rsplit_once('/').map(|(parent, _)| parent).unwrap_or(\"\");\n    }\n    if remaining.is_empty() {\n        // `from . import *` or bare relative — resolve the package __init__.py\n        let probe = if base.is_empty() {\n            \"__init__.py\".to_string()\n        } else {\n            format!(\"{base}/__init__.py\")\n        };\n        return path_to_id.get(probe.as_str()).copied();\n    }\n    let segments: Vec<&str> = remaining.split('.').collect();\n    probe_segments(&segments, base, path_to_id)\n}\n```\n\n**Greedy segment probing** — shared by both absolute and relative. Tries longest module path first, falls back to shorter:\n\n```rust\nfn probe_segments(\n    segments: &[&str],\n    root: &str,\n    path_to_id: &HashMap<&str, i64>,\n) -> Option<i64> {\n    // Try from longest to shortest prefix as filesystem path\n    for n in (1..=segments.len()).rev() {\n        let module_path = segments[..n].join(\"/\");\n        // Try as .py file\n        let py = if root.is_empty() {\n            format!(\"{module_path}.py\")\n        } else {\n            format!(\"{root}/{module_path}.py\")\n        };\n        if let Some(&id) = path_to_id.get(py.as_str()) {\n            return Some(id);\n        }\n        // Try as package __init__.py\n        let init = if root.is_empty() {\n            format!(\"{module_path}/__init__.py\")\n        } else {\n            format!(\"{root}/{module_path}/__init__.py\")\n        };\n        if let Some(&id) = path_to_id.get(init.as_str()) {\n            return Some(id);\n        }\n    }\n    None\n}\n```\n\nFor `\"foo.bar\"` with root `\"\"`: probes `foo/bar.py`, `foo/bar/__init__.py`, then `foo.py`, `foo/__init__.py`. First match wins.\n\n### Step 5: Wire into pipeline + register module\n\nFile: `src/pipeline.rs`, after line 573 (after C resolver block):\n```rust\nlet python_resolved = crate::python_imports::resolve_python_imports(db, workspace_root)?;\nif python_resolved > 0 {\n    info!(count = python_resolved, \"resolved Python import edges\");\n}\n```\n\nFile: `src/lib.rs`, line 18 (alphabetically between `pipeline` and `resolver`):\n```rust\npub mod python_imports;\n```\n\n### Step 6: Tests\n\nFile: `src/python_imports.rs`, test module\n\nBuild synthetic `path_to_id` maps and test the resolution functions directly. Helper:\n\n```rust\nfn make_path_map(paths: &[&str]) -> HashMap<&str, i64> {\n    paths.iter().enumerate()\n        .map(|(i, p)| (*p, (i + 1) as i64))\n        .collect()\n}\n```\n\n**Test A — absolute submodule resolution:**\npaths: `[\"foo/bar.py\", \"foo/__init__.py\"]`, roots: `[\"\"]`\n`resolve_absolute(\"foo.bar\", ...)` → id of `foo/bar.py`\n\n**Test B — package resolution (foo → foo/__init__.py):**\npaths: `[\"foo/__init__.py\", \"foo/bar.py\"]`, roots: `[\"\"]`\n`resolve_absolute(\"foo\", ...)` → id of `foo/__init__.py`\n\n**Test C — relative import (from . import sibling):**\npaths: `[\"pkg/main.py\", \"pkg/sibling.py\", \"pkg/__init__.py\"]`\n`resolve_relative(\".sibling\", 1, \"pkg/main.py\", ...)` → id of `pkg/sibling.py`\n\n**Test D — multi-level relative (from ..utils import helper):**\npaths: `[\"app/views/home.py\", \"app/utils.py\", \"app/__init__.py\", \"app/views/__init__.py\"]`\n`resolve_relative(\"..utils.helper\", 2, \"app/views/home.py\", ...)` → id of `app/utils.py`\n\n**Test E — unresolved external stays None:**\npaths: `[\"myapp/__init__.py\", \"myapp/main.py\"]`, roots: `[\"\"]`\n`resolve_absolute(\"requests.get\", ...)` → None\n\n**Test F — package root discovery:**\npaths: `[\"src/myapp/__init__.py\", \"src/myapp/views/__init__.py\"]`\n`discover_package_roots(...)` → contains `\"src\"`\n\n**Test G — src-layout with rules override:**\nVerify that when `package_roots = [\"src\"]` is configured, absolute imports resolve against `src/` root.\n\n## Acceptance criteria coverage\n\n- [x] \"src/python_imports.rs created with resolve_python_imports(db, workspace_root) -> Result<usize>\" → Step 3\n- [x] \"Package root discovery: scans __init__.py files, finds topmost package dirs, parents are roots\" → Step 3\n- [x] \".sutra/rules.toml [python] package_roots override\" → Steps 2, 3\n- [x] \"Absolute import resolution: splits on '.', tries .py then __init__.py for each root\" → Step 4\n- [x] \"Relative import resolution: counts leading dots, walks up, resolves remaining\" → Step 4\n- [x] \"Db::unresolved_python_imports() query added\" → Step 1\n- [x] \"Wired into post_parse_sequence after C resolver block\" → Step 5\n- [x] \"pub mod python_imports added to src/lib.rs\" → Step 5\n- [x] \"Tests: absolute, package, relative, multi-level relative, unresolved external\" → Step 6",
+  "execution_record": "Straightforward implementation following the existing pattern from c_imports.rs / dart_packages.rs / rust_imports.rs. All 10 unit tests cover the acceptance criteria test cases. Progressive segment fallback added so `from foo.bar import Baz` (raw_path 'foo.bar.Baz') resolves to foo/bar.py when Baz is a name in bar, not a submodule.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2dae33c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "language",
+    "python",
+    "resolver"
+  ],
+  "history": [
+    {
+      "ts": 1782332020425,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 189
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782395617801,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782396268116,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Note from sutra/187 review: collect_import_from now emits fully-qualified raw_paths (e.g. 'pathlib.Path', '.utils', '..models.User') instead of just the module name. The resolver can use these directly — no need to re-parse the AST to recover imported symbol names. Wildcard imports (from X import *) still store just the module path since there's no specific symbol.",
+      "ts": 1782394157350
+    },
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers sutra/188 + sutra/189 together):\n\nVerdict: needs-attention\n\nFindings:\n1. [high] Greedy prefix resolution can turn invalid imports into local edges (python_imports.rs:160-175) — `try_resolve_segments` walks shorter prefixes until any module/package exists. `import pkg.foo.bar` resolves to `pkg/foo.py` when it exists, even though Python requires `pkg.foo` to be a package. Impact: unresolved or external imports hidden as local dependency edges, corrupting graph/impact/constraints.\n2. [medium] Auto-discovered package roots resolve nondeterministically (python_imports.rs:71-106) — HashSet→into_iter() means root ordering varies across runs. In monorepos with multiple roots containing the same package name, same import can resolve to different files.\n3. [high] Unresolved Python effect fallback doesn't see real dotted calls (attributes.rs:155-162) — Python parser records attribute refs as bare identifiers (`get`), not full chains (`requests.get`). Effect pattern matching against `requests` prefix won't fire on production parser output.",
+      "ts": 1782396638740
+    }
+  ],
+  "created_at": 1782332020425,
+  "updated_at": 1782396268116,
+  "completed_at": 1782396268116,
+  "arc_id": "019efb43-0c5e-7242-80eb-87939215d6ad",
+  "arc_phase": "Import Resolution",
+  "edges": [
+    {
+      "id": "019efb44-b32d-79d3-88d2-44d7cb91bc55",
+      "edge_type": "refines",
+      "source": "sutra/189",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332044077
+    },
+    {
+      "id": "019efb44-bcd7-7b13-9966-56e71653b910",
+      "edge_type": "depends_on",
+      "source": "sutra/189",
+      "target": "sutra/187",
+      "note": null,
+      "created_at": 1782332046551
+    },
+    {
+      "id": "019efb44-c139-7de2-9da0-ad3041fe5bf3",
+      "edge_type": "depends_on",
+      "source": "sutra/190",
+      "target": "sutra/189",
+      "note": null,
+      "created_at": 1782332047673
+    }
+  ]
+}

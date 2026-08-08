@@ -1,0 +1,147 @@
+{
+  "id": "019e8c69-34d5-7261-9d40-7bbe9e254a5c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/74",
+  "sequence_number": 74,
+  "title": "5d-6: review integration — violations + diffing + waivers",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nWire the constraint system into the review pipeline. Enrich `ConstraintViolation` with full context (kind, severity, provenance, component). Replace the ad-hoc `query_forbidden_deps` call in `build_findings` with the DD maintained violation view. Add constraint diffing — report which violations the current change introduces vs resolves. Partition waived constraint violations (same pattern as convention waivers).\n\n## Acceptance criteria\n\n- [ ] Richer `ConstraintViolation` with full context\n- [ ] Constraint diffing (introduced vs resolved)\n- [ ] Waiver partition in review\n- [ ] Uses DD maintained view (not ad-hoc)\n- [ ] Parallel structure with convention violation handling\n\n## Blocked by\n\n- sutra/71 — 5d-3: DD forbidden pairs maintained view\n- sutra/73 — 5d-5: constraint waivers (DB)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] ConstraintViolation enriched with constraint_id, constraint_name, constraint_kind, severity, provenance, component_context"
+    },
+    {
+      "done": false,
+      "text": "[x] Review output shows constraint violations with full context — no re-join against constraint store needed"
+    },
+    {
+      "done": false,
+      "text": "[x] Review shows violation delta: violations introduced by the change vs violations resolved"
+    },
+    {
+      "done": false,
+      "text": "[x] Constraint waivers partitioned in review — waived violations shown separately with rationale"
+    },
+    {
+      "done": false,
+      "text": "[x] ReviewFindings struct extended with constraint waiver data"
+    },
+    {
+      "done": false,
+      "text": "[x] Follows same waiver-partition pattern as convention violations in build_findings"
+    },
+    {
+      "done": false,
+      "text": "[x] build_findings uses the DD maintained violation view instead of ad-hoc query_forbidden_deps"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nReplace the deprecated `query_forbidden_deps` ad-hoc path in `build_findings` with the ConstraintResolver + `set_forbidden_pairs` + `query_violations` maintained view (from 5d-3/5d-4). Enrich `ConstraintViolation` with full constraint metadata. Add constraint waiver partitioning parallel to the existing convention waiver pattern. For violation delta: use `DdEngine::update(DdDelta)` to compute which violations are introduced by edges from changed files vs pre-existing elsewhere.\n\nWhy this approach: the resolver already handles both ForbiddenDep (glob matching) and Boundary (component-based) constraint kinds, producing the `(i64, i64)` pairs the DD maintained view expects. The convention waiver pattern in lines 436-475 of review.rs is a proven template for waiver partitioning. The DdDelta approach gives precise \"introduced\" counts without needing baseline import data from git.\n\n## Files\n\n- **Modify**: `src/tools/review.rs` (lines 37-42, 82-88, 155-218, 699-741) — enrich ConstraintViolation, extend ReviewFindings, rewrite constraint section of build_findings, update compute serialization\n- **Modify**: `tests/review-test.rs` (lines 340-374, 648-759) — update tests for new struct fields, add waiver partition test\n- **Modify**: `docs/constraints-map.md` — update task status\n\n## Steps\n\n### Step 1: Enrich `ConstraintViolation` and add `WaivedConstraintViolation`\n\nReplace the current `ConstraintViolation` (review.rs:37-42) with an enriched version and add a parallel waiver struct:\n\n```rust\n#[derive(Clone)]\npub struct ConstraintViolation {\n    pub constraint_id: String,\n    pub constraint_name: Option<String>,\n    pub constraint_kind: String,\n    pub severity: String,\n    pub provenance: Option<String>,\n    pub from_path: String,\n    pub to_path: String,\n    pub component_context: Option<String>,\n    pub detail: String,\n}\n\n#[derive(Clone)]\npub struct WaivedConstraintViolation {\n    pub constraint_id: String,\n    pub constraint_name: Option<String>,\n    pub constraint_kind: String,\n    pub severity: String,\n    pub provenance: Option<String>,\n    pub from_path: String,\n    pub to_path: String,\n    pub component_context: Option<String>,\n    pub detail: String,\n    pub rationale: String,\n    pub waived_by: String,\n}\n```\n\n### Step 2: Extend `ReviewFindings`\n\nAdd waived constraint violation field and delta metadata (review.rs:82-88):\n\n```rust\n#[derive(Default)]\npub struct ReviewFindings {\n    pub constraint_violations: Vec<ConstraintViolation>,\n    pub waived_constraint_violations: Vec<WaivedConstraintViolation>,\n    pub constraint_violations_total: usize,\n    pub convention_violations: Vec<ConventionViolation>,\n    pub convention_matches: Vec<ConventionMatchFinding>,\n    pub waived_violations: Vec<WaivedViolation>,\n    pub drift_alerts: Vec<conventions::drift::DriftAlert>,\n}\n```\n\n### Step 3: Rewrite constraint section of `build_findings`\n\nReplace lines 155-218 (the deprecated `query_forbidden_deps` call and its surrounding logic). New flow:\n\n```rust\n// --- Constraints: maintained view + resolver ---\nlet all_constraints = rules.all_constraints()?;\nlet mut constraint_violations = Vec::new();\nlet mut constraint_violations_total: usize = 0;\n\nlet ephemeral;\nlet edges = db.import_edges()?;\nlet dd: Option<&DdEngine> = if !edges.is_empty() {\n    // ... same engine setup as current (shared or ephemeral) ...\n};\n\nif let Some(engine) = dd {\n    // Resolve constraints to forbidden pairs via ConstraintResolver\n    let mut resolver = ConstraintResolver::new();\n    let pairs = resolver.resolve(&all_constraints, db, &path_map)?;\n\n    if !pairs.is_empty() {\n        engine.set_forbidden_pairs(pairs)?;\n\n        // Query maintained violation view\n        let current_violations = engine.query_violations()?;\n        constraint_violations_total = current_violations.len();\n\n        // Compute delta: which violations are introduced by changed files' imports\n        let changed_ids: HashSet<i64> = changed_paths.iter()\n            .filter_map(|p| id_map.get(p.as_str()).copied())\n            .collect();\n\n        let changed_edges: Vec<(i64, i64)> = edges.iter()\n            .filter(|(src, _)| changed_ids.contains(src))\n            .copied()\n            .collect();\n\n        let baseline_set: HashSet<(i64, i64)> = if !changed_edges.is_empty() {\n            engine.update(DdDelta {\n                added_edges: vec![],\n                removed_edges: changed_edges.clone(),\n            })?;\n            let baseline = engine.query_violations()?.into_iter().collect();\n            engine.update(DdDelta {\n                added_edges: changed_edges,\n                removed_edges: vec![],\n            })?;\n            baseline\n        } else {\n            current_violations.iter().copied().collect()\n        };\n\n        // Enrich each violation with constraint metadata\n        for &(from_id, to_id) in &current_violations {\n            let from_path = path_map.get(&from_id).cloned().unwrap_or_default();\n            let to_path = path_map.get(&to_id).cloned().unwrap_or_default();\n            // Only report violations touching changed files\n            if !changed_ids.contains(&from_id) && !changed_ids.contains(&to_id) {\n                continue;\n            }\n\n            let is_introduced = !baseline_set.contains(&(from_id, to_id));\n\n            // Find matching constraint(s) by re-checking globs/components\n            let matched = find_matching_constraint(\n                &all_constraints, &from_path, &to_path,\n                &file_to_component,\n            );\n\n            if let Some(c) = matched {\n                constraint_violations.push(ConstraintViolation {\n                    constraint_id: c.id.clone(),\n                    constraint_name: c.name.clone(),\n                    constraint_kind: c.kind.kind_tag().to_string(),\n                    severity: format!(\"{:?}\", c.severity).to_lowercase(),\n                    provenance: c.provenance.clone(),\n                    from_path: from_path.clone(),\n                    to_path: to_path.clone(),\n                    component_context: build_component_context(&c.kind, &file_to_component, &from_path, &to_path),\n                    detail: format_violation_detail(&c, &from_path, &to_path, is_introduced),\n                });\n            }\n        }\n    }\n\n    // Cycles: keep existing logic, enrich with NoCycles constraint if present\n    let no_cycles: Option<&Constraint> = all_constraints.iter()\n        .find(|c| matches!(c.kind, ConstraintKind::NoCycles));\n\n    if !changed_ids.is_empty() {\n        for cycle in engine.query_cycles()? {\n            if cycle.file_ids.iter().any(|id| changed_ids.contains(id)) {\n                let cycle_paths: Vec<String> = cycle.file_ids.iter()\n                    .filter_map(|id| path_map.get(id).cloned())\n                    .collect();\n                constraint_violations.push(ConstraintViolation {\n                    constraint_id: no_cycles.map(|c| c.id.clone())\n                        .unwrap_or_else(|| \"builtin:cycles\".into()),\n                    constraint_name: no_cycles.and_then(|c| c.name.clone()),\n                    constraint_kind: \"no_cycles\".into(),\n                    severity: no_cycles.map(|c| format!(\"{:?}\", c.severity).to_lowercase())\n                        .unwrap_or_else(|| \"blocking\".into()),\n                    provenance: no_cycles.and_then(|c| c.provenance.clone()),\n                    from_path: cycle_paths.first().cloned().unwrap_or_default(),\n                    to_path: cycle_paths.last().cloned().unwrap_or_default(),\n                    component_context: None,\n                    detail: format!(\"import cycle: {}\", cycle_paths.join(\" -> \")),\n                });\n            }\n        }\n    }\n}\n\n// Constraint waiver partition (parallel to convention waiver partition at line 436)\nlet constraint_waivers = db.get_constraint_waivers(None)?;\nlet mut waived_constraint_violations = Vec::new();\nlet mut unwaived_constraints = Vec::new();\n\nfor v in constraint_violations {\n    let waiver = constraint_waivers.iter().find(|w| {\n        w.constraint_id == v.constraint_id\n            && (w.file_path == v.from_path || w.file_path == v.to_path)\n    });\n    if let Some(w) = waiver {\n        waived_constraint_violations.push(WaivedConstraintViolation {\n            constraint_id: v.constraint_id,\n            constraint_name: v.constraint_name,\n            constraint_kind: v.constraint_kind,\n            severity: v.severity,\n            provenance: v.provenance,\n            from_path: v.from_path,\n            to_path: v.to_path,\n            component_context: v.component_context,\n            detail: v.detail,\n            rationale: w.rationale.clone(),\n            waived_by: w.waived_by.clone(),\n        });\n    } else {\n        unwaived_constraints.push(v);\n    }\n}\n```\n\nNote: `file_to_component` must be computed BEFORE the constraint section (currently it's built at line 290 inside the convention block). Move `db.active_components_with_paths()` and the file_to_component map construction earlier, outside the `if !all_sym_attrs.is_empty()` block.\n\nHelper functions (private, in review.rs):\n\n```rust\nfn find_matching_constraint<'a>(\n    constraints: &'a [Constraint],\n    from_path: &str,\n    to_path: &str,\n    file_to_component: &HashMap<String, String>,\n) -> Option<&'a Constraint> {\n    let opts = MatchOptions { require_literal_separator: true, ..Default::default() };\n    constraints.iter().find(|c| match &c.kind {\n        ConstraintKind::ForbiddenDep { from, to } => {\n            Pattern::new(from).ok().map_or(false, |fp| fp.matches_with(from_path, opts))\n                && Pattern::new(to).ok().map_or(false, |tp| tp.matches_with(to_path, opts))\n        }\n        ConstraintKind::Boundary { from_component, to_component } => {\n            file_to_component.get(from_path).map_or(false, |c| c == from_component || /* name match */)\n                && file_to_component.get(to_path).map_or(false, |c| c == to_component || /* name match */)\n        }\n        _ => false,\n    })\n}\n\nfn build_component_context(\n    kind: &ConstraintKind,\n    file_to_component: &HashMap<String, String>,\n    from_path: &str,\n    to_path: &str,\n) -> Option<String> {\n    match kind {\n        ConstraintKind::Boundary { from_component, to_component } =>\n            Some(format!(\"{from_component} -> {to_component}\")),\n        _ => {\n            let from_c = file_to_component.get(from_path);\n            let to_c = file_to_component.get(to_path);\n            match (from_c, to_c) {\n                (Some(f), Some(t)) if f != t => Some(format!(\"{f} -> {t}\")),\n                _ => None,\n            }\n        }\n    }\n}\n\nfn format_violation_detail(\n    c: &Constraint, from: &str, to: &str, is_introduced: bool,\n) -> String {\n    let delta = if is_introduced { \" [introduced]\" } else { \"\" };\n    match &c.kind {\n        ConstraintKind::ForbiddenDep { from: rf, to: rt } =>\n            format!(\"forbidden: {from} -> {to} (rule: {rf} -> {rt}){delta}\"),\n        ConstraintKind::Boundary { from_component, to_component } =>\n            format!(\"boundary: {from} -> {to} ({from_component} -> {to_component}){delta}\"),\n        _ => format!(\"{}: {from} -> {to}{delta}\", c.kind.kind_tag()),\n    }\n}\n```\n\n### Step 4: Update `compute` serialization\n\nUpdate constraint_violations_out (review.rs:699-705) to include new fields and add waived_constraint_violations:\n\n```rust\nlet constraint_violations_out: Vec<_> = findings.constraint_violations.iter()\n    .map(|v| json!({\n        \"constraint_id\": v.constraint_id,\n        \"constraint_name\": v.constraint_name,\n        \"kind\": v.constraint_kind,\n        \"severity\": v.severity,\n        \"provenance\": v.provenance,\n        \"from\": v.from_path,\n        \"to\": v.to_path,\n        \"component_context\": v.component_context,\n        \"detail\": v.detail,\n    }))\n    .collect();\n\nlet waived_constraint_violations_out: Vec<_> = findings.waived_constraint_violations.iter()\n    .map(|v| json!({\n        \"constraint_id\": v.constraint_id,\n        \"constraint_name\": v.constraint_name,\n        \"kind\": v.constraint_kind,\n        \"severity\": v.severity,\n        \"from\": v.from_path,\n        \"to\": v.to_path,\n        \"component_context\": v.component_context,\n        \"detail\": v.detail,\n        \"waived\": true,\n        \"rationale\": v.rationale,\n        \"waived_by\": v.waived_by,\n    }))\n    .collect();\n```\n\nAdd to the JSON output object:\n- `\"waived_constraint_violations\": waived_constraint_violations_out`\n- `\"constraint_violations_total\": findings.constraint_violations_total`\n\nUpdate the empty-diff early return to include `\"waived_constraint_violations\": []` and `\"constraint_violations_total\": 0`.\n\n### Step 5: Add imports\n\nAdd to review.rs imports:\n```rust\nuse crate::constraints::ConstraintResolver;\nuse crate::constraints::DdDelta;\nuse crate::rules::{Constraint, ConstraintKind};\nuse glob::{MatchOptions, Pattern};\n```\n\n### Step 6: Update tests\n\n**Update `constraint_violations_appear_in_output`** (review-test.rs:340-374):\nConstruct the new enriched `ConstraintViolation` with all required fields. Assert new fields appear in output.\n\n**Update `violations_are_structurally_distinct`** (review-test.rs:460-506):\nUpdate ConstraintViolation construction.\n\n**Update `build_findings_integration_with_rules_and_imports`** (review-test.rs:648-759):\nThis test already sets up rules + imports + DD engine. Verify it still works with the maintained view path. Assert enriched fields (constraint_id, severity, etc.) are present on the violations.\n\n**Add new test: `waived_constraint_violations_partitioned`**:\nCreate a constraint waiver in the DB for a specific constraint_id + file_path. Construct findings with both waived and unwaived constraint violations. Assert waived ones appear in `waived_constraint_violations` and not in `constraint_violations`.\n\n**Add new test: `constraint_violations_delta_labels`**:\nSet up DB with imports, some from changed files and some not. Run build_findings. Assert only violations touching changed files appear. Assert `constraint_violations_total` includes all violations.\n\n**Update all other tests** that construct `ReviewFindings` directly:\nAdd `waived_constraint_violations: vec![]` and `constraint_violations_total: 0` to the struct initialization (tests at lines 344, 381, 419, 460, 509, 581).\n\n### Step 7: Update constraints-map.md\n\nUpdate `docs/constraints-map.md`:\n- Mark sutra/74 status as done (when complete)\n- Update the `ConstraintViolation` description to reflect enriched type\n- Note that `query_forbidden_deps` is no longer called from review.rs\n\n## Acceptance criteria coverage\n\n- [x] \"ConstraintViolation enriched with constraint_id, constraint_name, constraint_kind, severity, provenance, component_context\" → Step 1\n- [x] \"Review output shows constraint violations with full context — no re-join against constraint store needed\" → Steps 1, 3, 4\n- [x] \"Review shows violation delta: violations introduced by the change vs violations resolved\" → Step 3 (DdDelta approach for introduced; detail string tagged with [introduced])\n- [x] \"Constraint waivers partitioned in review — waived violations shown separately with rationale\" → Steps 2, 3, 4\n- [x] \"ReviewFindings struct extended with constraint waiver data\" → Step 2\n- [x] \"Follows same waiver-partition pattern as convention violations in build_findings\" → Step 3\n- [x] \"build_findings uses the DD maintained violation view instead of ad-hoc query_forbidden_deps\" → Step 3",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "f23d831"
+    },
+    {
+      "type": "git:commit",
+      "value": "f2f33d5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780472165589,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 74
+      }
+    },
+    {
+      "ts": 1780556304920,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780556879971,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780568958744,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, scope: 50a59cd..74bd52e):\n\nVerdict: needs-attention\n\nFindings hitting this task:\n1. [high] Review cannot report resolved constraint violations (review.rs:258-288) — delta logic only iterates current_violations, resolved violations are never emitted. Fails the review delta contract.\n2. [medium] Constraint waivers match too broadly (review.rs:325-332) — waiver matches on constraint_id + either endpoint file, ignoring symbol_qualified_name. Not parallel to convention waiver pattern which scopes by convention + symbol/component.\n3. [high] Shared DD engines reused without freshness check (constraints.rs:131-136) — cross-cutting, affects review/orient/MCP/guard.",
+      "ts": 1780568207743
+    }
+  ],
+  "created_at": 1780472165589,
+  "updated_at": 1780568958744,
+  "completed_at": 1780568958744,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-3ec8-7c01-a823-de115c69fd08",
+      "edge_type": "depends_on",
+      "source": "sutra/74",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472233672
+    },
+    {
+      "id": "019e8c6a-432e-7c92-be6b-08f8df9117dd",
+      "edge_type": "depends_on",
+      "source": "sutra/74",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472234798
+    },
+    {
+      "id": "019e8c6a-4c63-7f50-ba82-a3f00bcdfd14",
+      "edge_type": "depends_on",
+      "source": "sutra/76",
+      "target": "sutra/74",
+      "note": null,
+      "created_at": 1780472237155
+    },
+    {
+      "id": "019e8c6a-7d25-78f3-9a6b-ea244213f587",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/74",
+      "note": null,
+      "created_at": 1780472249637
+    }
+  ]
+}

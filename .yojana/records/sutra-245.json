@@ -1,0 +1,98 @@
+{
+  "id": "019f494e-17ac-79d2-9a7d-c26be21d2889",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/245",
+  "sequence_number": 245,
+  "title": "Ratchet flags parsing + durable registry + index-time registration",
+  "description": "TOML: per-constraint `ratchet = true` and workspace `[ratchet] all = true` in src/rules.rs (flags are triggers, not state; old-format constraints unaffected). New durable table `constraint_ratchets` (ADR-0002 durable partition): constraint_id, name, rendered_description (human-readable summary of what the constraint was, for post-deletion reporting), severity_floor, registered_at, released_at, released_by, release_rationale. Migration + CRUD in src/db/constraints.rs.\n\nRegistration at index time (precedent: external.rs check_workspace_externals is the index-side entry point pattern): every flagged constraint upserts a registry row; severity_floor = monotone max(existing, current); flag/constraint removal NEVER unregisters. Severity ordering: Informational < Advisory < Blocking.\n\nDesign: sutra/223 implementation_plan. Tests: rules parsing (both flag forms), registry monotonicity (floor never lowers, re-registration idempotent), flag-removal-keeps-row.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/223",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "646259e"
+    }
+  ],
+  "files": [
+    "src/rules.rs",
+    "src/db/constraints.rs"
+  ],
+  "tags": [
+    "constraints",
+    "agent-trust"
+  ],
+  "history": [
+    {
+      "ts": 1783641282476,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 245
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783700444000,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783700951076,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783641282476,
+  "updated_at": 1783700951076,
+  "completed_at": 1783700951076,
+  "arc_id": "019f494d-e005-7d20-be0c-d682a67b5f8e",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f494e-ef64-7402-84a2-cfc165456b17",
+      "edge_type": "depends_on",
+      "source": "sutra/246",
+      "target": "sutra/245",
+      "note": null,
+      "created_at": 1783641337700
+    },
+    {
+      "id": "019f494e-f343-7e71-b798-a9121306476c",
+      "edge_type": "depends_on",
+      "source": "sutra/247",
+      "target": "sutra/245",
+      "note": null,
+      "created_at": 1783641338691
+    },
+    {
+      "id": "019f494e-f735-7042-889c-90864b40d225",
+      "edge_type": "depends_on",
+      "source": "sutra/248",
+      "target": "sutra/245",
+      "note": null,
+      "created_at": 1783641339701
+    }
+  ]
+}

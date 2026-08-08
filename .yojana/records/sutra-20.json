@@ -1,0 +1,48 @@
+{
+  "id": "019e094f-e9da-7523-90d4-4df27daf4052",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/20",
+  "sequence_number": 20,
+  "title": "Add lens-based parallel review to vidhi",
+  "description": "Split vidhi's code review into parallel subagent lenses run within a single session. Each lens focuses on a specific concern: security/unsafe patterns, test coverage gaps, API surface consistency with sibling crates, performance hotpaths/allocations, and docs/comment drift vs behavior. Agents run concurrently, findings are deduplicated and ranked by severity, output as a markdown checklist. This is an improvement to the existing vidhi skill, not a new system — no karma/sangha infrastructure needed.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "vidhi",
+    "code-review",
+    "parallel-agents"
+  ],
+  "history": [
+    {
+      "ts": 1778272692698,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 20
+      }
+    },
+    {
+      "ts": 1778273133424,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778272692698,
+  "updated_at": 1778273133424,
+  "completed_at": null,
+  "edges": []
+}

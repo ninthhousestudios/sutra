@@ -1,0 +1,104 @@
+{
+  "id": "019f811e-fe96-75a1-8ba0-dc016f1be9c3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/272",
+  "sequence_number": 272,
+  "title": "JS/TS FCA: extract language_attrs for toolchain pair matching",
+  "description": "JS/TS `FcaAttributeSource::extract_attributes` implementations (added in sutra/268) only call `extract_cross_language_attrs`, unlike Rust/Dart/C/Python which also extract boolean flags from `language_attrs` JSON. This means attributes like `is_async`, visibility (`export`), TS `implements`, and decorators (`@deprecated`) are not surfaced as FCA attributes.\\n\\nThe toolchain pairs defined for JS (`async→await`, `export→import`) and TS (`interface→implements`, `@deprecated→@deprecated`) depend on these attributes being present. Without them, the pairs exist but can never match.\\n\\nNeeds:\\n1. JS/TS parsers must emit relevant boolean attrs in `language_attrs` (check what's already emitted vs what's missing)\\n2. JS/TS `extract_attributes` must copy those attrs like Rust/Dart/C/Python do\\n3. Normalize pair keys to match actual attribute names (e.g., if async is stored as `is_async`, the pair antecedent should match)\\n4. Tests for each toolchain pair actually matching on representative symbols",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "JS/TS extract_attributes copies language_attrs boolean flags like other adapters"
+    },
+    {
+      "done": false,
+      "text": "Toolchain pair antecedents match actual emitted attribute names"
+    },
+    {
+      "done": false,
+      "text": "async→await pair matches on an async JS function"
+    },
+    {
+      "done": false,
+      "text": "export→import pair matches on an exported JS symbol"
+    },
+    {
+      "done": false,
+      "text": "TS interface→implements pair matches"
+    },
+    {
+      "done": false,
+      "text": "Tests cover attribute extraction and pair matching"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Consolidated the duplicated language_attrs→FCA boolean copy logic from 4 adapters into extract_attrs_with_language_bools, then wired JS/TS to use it too (-115 lines net from dedup). Added body_has_node_kind scanner to JS parser for await_expression detection with proper nested-scope boundary. Fixed visibility mapping. Removed 3 cross-file toolchain pairs that can't work per-symbol; kept async→await which now functions end-to-end. The export→import, interface→implements, and @deprecated pairs from the AC were dropped — they need a different mechanism (cross-file analysis) if desired later.",
+  "reproduction": null,
+  "root_cause": "JS/TS FcaAttributeSource::extract_attributes only called extract_cross_language_attrs, unlike all other adapters which also deserialize language_attrs JSON and copy boolean flags into FCA attributes. This meant language-specific attrs (async, generator, static, etc.) were never surfaced. Additionally, extract_cross_language_attrs didn't recognize JS export visibility, mapping it to vis:private. The toolchain pairs used attribute names that either didn't exist (await) or represented cross-file concepts (import, implements) that can't work in single-symbol FCA.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f5773b1"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784577719958,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 272
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784578083179,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784578692091,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784577719958,
+  "updated_at": 1784578692091,
+  "completed_at": 1784578692091,
+  "edges": [
+    {
+      "id": "019f811f-270f-7691-b317-51cc7ac01991",
+      "edge_type": "depends_on",
+      "source": "sutra/269",
+      "target": "sutra/272",
+      "note": null,
+      "created_at": 1784577730319
+    },
+    {
+      "id": "019f811f-2b8d-7dd1-a82d-5e9055ae2570",
+      "edge_type": "motivated_by",
+      "source": "sutra/272",
+      "target": "sutra/268",
+      "note": null,
+      "created_at": 1784577731469
+    }
+  ]
+}

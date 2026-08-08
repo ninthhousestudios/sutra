@@ -1,0 +1,80 @@
+{
+  "id": "019e85c4-ec45-73b1-8104-36a896444c92",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/60",
+  "sequence_number": 60,
+  "title": "5c-3: one-hop effect attributes for FCA",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nExtend attribute extraction with one-hop effect detection. After normal attribute extraction, look up each symbol's outgoing `calls` edges and match callee qualified names against per-adapter effect pattern lists.\n\nEffect attributes to add:\n- `effect:fs` — calls into std::fs::*, tokio::fs::*\n- `effect:net` — calls into std::net::*, tokio::net::*, hyper::*, reqwest::*\n- `effect:db` — calls into sqlx::*, diesel::*, rusqlite::*\n- `effect:mut_state` — takes &mut self or &mut parameters\n- `effect:unsafe_transitive` — calls unsafe functions\n\nThe effect pattern list is per-adapter (part of the FcaAttributeSource trait or a companion method). Effect attributes enter the FCA matrix as regular attributes.\n\n## Acceptance criteria\n\n- [ ] RustAdapter produces effect:* attributes for symbols with matching callees\n- [ ] Effect patterns are defined in the adapter, not globally\n- [ ] Symbols with no matching callees get no effect attributes (no false positives)\n- [ ] Effect attributes appear in FCA convention output when patterns are strong enough\n- [ ] Test: construct symbols with known call edges → verify correct effect attrs produced\n\n## Blocked by\n\n- sutra/58 (module rename)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "0356435"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "review-a"
+  ],
+  "history": [
+    {
+      "ts": 1780360735813,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 60
+      }
+    },
+    {
+      "ts": 1780401237338,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780401240392,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "opus-review",
+      "text": "Code review: APPROVE WITH NOTES. Two findings: (1) effect:unsafe_transitive from the task description is not implemented — implement or record deferral decision. (2) N+1 query pattern in review.rs build_findings: each call ref triggers a separate db.symbol_by_id() — pre-load a HashMap per file to batch. Four of five effect patterns are well-implemented, trait method design is clean, tests are solid.",
+      "ts": 1780401423165
+    }
+  ],
+  "created_at": 1780360735813,
+  "updated_at": 1780401240392,
+  "completed_at": 1780401240392,
+  "edges": [
+    {
+      "id": "019e85c6-5e66-7fb3-8049-ae01420eb08a",
+      "edge_type": "depends_on",
+      "source": "sutra/60",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360830566
+    }
+  ]
+}

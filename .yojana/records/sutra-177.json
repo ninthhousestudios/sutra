@@ -1,0 +1,78 @@
+{
+  "id": "019ed6da-b47c-73c0-a416-a07fdb23a530",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/177",
+  "sequence_number": 177,
+  "title": "Anchor enrichment: exclude high-frequency import patterns",
+  "description": "## Problem\n\nAuto-enrichment on `sutra_remember` generates import_pattern anchors for all imports in the anchored file. Infrastructure crates like `parking_lot`, `serde`, and `schemars` appear in most source files, so lessons anchored to them surface everywhere — defeating the purpose of contextual surfacing.\n\nCurrent state: `parking_lot::*` is an anchor on all 5 verified lessons. Any file importing parking_lot (8 files) sees all 5 lessons regardless of relevance. The MCP server lesson surfaces when reading `Db::replace_file_data` solely because both files import parking_lot.\n\n## What to build\n\nDuring anchor enrichment in `sutra_remember`, filter out import_pattern anchors whose import appears in more than N files in the workspace (suggested threshold: files importing the crate > 30% of total source files, or a hard cap like >5 files). Alternatively, maintain a denylist of infrastructure crates (`parking_lot`, `serde`, `schemars`, `std::*`).\n\nAlso retroactively clean the existing anchors — delete import_pattern anchors for the denied crates from the 5 migrated lessons.\n\n## Files\n\n- `src/lessons.rs` — the `store_with_enrichment` or equivalent method that generates import_pattern anchors\n- `~/.sutra/lessons.db` — one-time cleanup of existing noisy anchors",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Three filters added to enrichment: (1) import_root skips `pub use` re-exports, (2) import_pattern anchors skipped when the root crate appears in >5 workspace files (via new Db::import_root_file_counts), (3) directory anchors skipped when top-level (no `/` separator). Retroactively cleaned 21 noisy import_pattern anchors and 3 top-level directory anchors from existing lessons. Surfacing precision: Db::replace_file_data 4→2 lessons, SutraServer 4→2, DdEngine::query_violations 3→1.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "08002e1"
+    },
+    {
+      "type": "git:commit",
+      "value": "f2dd60d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "precision"
+  ],
+  "history": [
+    {
+      "ts": 1781721117820,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 177
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781721833749,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781721838487,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Adversarial review — verdict: needs-attention\n\n**Finding 1 [high]: Root frequency counts inflated — not counting distinct files per root**\n`import_root_file_counts()` groups by full `imported_path`, counts distinct files per exact path, then sums after extracting the root. A file importing both `rusqlite::params` and `rusqlite::Connection` contributes 2 to `rusqlite`'s count, even though the method promises distinct files per root. With a hard cap of 5, three files importing two items from the same crate hit frequency 6 and the crate anchor is suppressed — false positive.\nRecommendation: Count distinct `(root, file_id)` pairs instead. Share the root-extraction helper with enrichment, collect `HashSet<i64>` per root from `SELECT file_id, imported_path FROM imports`, then convert set lengths.\n\n**Finding 2 [high]: Existing noisy import anchors not cleaned up**\nThe new logic only skips adding new `ImportPattern` anchors during `sutra_remember`; it does not remove or ignore previously stored anchors. The task description says verified lessons already have anchors like `parking_lot::*`, and those persisted anchors still match during lesson surfacing. Creation-time filter alone leaves the user-visible pollution in place for the exact lessons that motivated the task.\nRecommendation: Add explicit cleanup or query-time suppression for existing high-frequency `import_pattern` anchors.",
+      "ts": 1781722004862
+    },
+    {
+      "author": "agent",
+      "text": "Fixed both codex review findings in f2dd60d:\n1. import_root_file_counts now collects HashSet<i64> per root — each file counted once regardless of how many symbols it imports from that crate.\n2. Added LessonsDb::prune_high_freq_import_anchors — deletes persisted import_pattern anchors for roots exceeding the cap. Called on every sutra_remember invocation, so existing noisy anchors (parking_lot::*, serde::*, etc.) are cleaned up on next use.",
+      "ts": 1781722227260
+    }
+  ],
+  "created_at": 1781721117820,
+  "updated_at": 1781722224192,
+  "completed_at": 1781721838487,
+  "edges": []
+}

@@ -1,0 +1,148 @@
+{
+  "id": "019f8040-e116-7473-9557-a1532acb81d4",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/266",
+  "sequence_number": 266,
+  "title": "JavaScript scope resolution",
+  "description": "Implement local scope resolution for JavaScript in `src/parser/javascript.rs`. This resolves extracted references to their local definitions using scope-chain lookup, populating `ExtractedRef::resolved_local_target`.\n\nJavaScript has a more complex scope model than Rust/Dart:\n- `let` and `const` are **block-scoped** (like Rust's let)\n- `var` is **function-scoped** (hoisted to enclosing function, not block)\n- Function declarations are hoisted to enclosing function scope\n- Arrow functions create a new scope but share `this` with parent\n- `catch(e)` creates a block scope for the error binding\n- `for (let i ...)` / `for (const x of ...)` — loop variable scoped to loop body\n- Class bodies create their own scope for methods/fields\n\nScope arena design (follow `src/parser/rust.rs::build_scope_arena` pattern):\n- `ScopeKind::Module` — file-level scope\n- `ScopeKind::Function` — function_declaration, arrow_function, method_definition, generator bodies\n- `ScopeKind::Block` — statement_block, for bodies, if bodies, catch clauses\n- `ScopeKind::Class` — class_body\n\nKey behaviors:\n1. **var hoisting**: When encountering `var x` in a block scope, register the binding in the nearest enclosing function scope (or module scope). The binding is visible from the start of that function scope (value is undefined until assignment, but the name resolves).\n2. **let/const TDZ**: Block-scoped. Only visible after the declaration line within the enclosing block. Before the declaration, refs should NOT resolve to this binding (temporal dead zone). Implementation: track declaration line and only resolve if ref_line >= decl_line, same as Rust's let binding behavior.\n3. **Function declaration hoisting**: Function declarations are visible throughout their enclosing function scope regardless of position (like var but also initialized).\n4. **Scope chain resolution**: Walk up the scope chain (child → parent) to find the tightest matching definition. Return the qualified name of the matched symbol.\n5. **Shadowing**: Inner scopes shadow outer scopes. A `let x` in an inner block shadows a `var x` from the enclosing function.\n\nImplementation:\n- `build_scope_arena(root, src, symbols)` — construct scope tree\n- `collect_let_bindings(block, src, bindings)` — collect let/const declarations with lines\n- `collect_var_bindings(node, src, func_scope)` — collect var declarations, register in enclosing function scope\n- `resolve_refs_locally(arena, symbols, refs)` — resolve each ref via scope chain\n- `resolve_in_scope_chain(arena, symbols, start_scope, name, ref_line)` — walk up scope chain\n\nMake functions `pub(super)` for typescript.rs reuse.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "let/const bindings resolve in their enclosing block scope"
+    },
+    {
+      "done": false,
+      "text": "var bindings resolve in the enclosing function scope (hoisted)"
+    },
+    {
+      "done": false,
+      "text": "Function declarations hoisted and resolve throughout function scope"
+    },
+    {
+      "done": false,
+      "text": "Block scoping: let in if/for body not visible outside"
+    },
+    {
+      "done": false,
+      "text": "var hoisting: var in if body visible in enclosing function"
+    },
+    {
+      "done": false,
+      "text": "Shadowing: inner let x shadows outer var x"
+    },
+    {
+      "done": false,
+      "text": "Refs before let/const declaration do NOT resolve (TDZ behavior)"
+    },
+    {
+      "done": false,
+      "text": "catch clause error binding scoped to catch block"
+    },
+    {
+      "done": false,
+      "text": "for-loop let/const variable scoped to loop body"
+    },
+    {
+      "done": false,
+      "text": "Arrow function body creates new scope"
+    },
+    {
+      "done": false,
+      "text": "Class methods create function scopes"
+    },
+    {
+      "done": false,
+      "text": "resolve_refs_locally populates resolved_local_target on matched refs"
+    },
+    {
+      "done": false,
+      "text": "Unresolved refs leave resolved_local_target as None"
+    },
+    {
+      "done": false,
+      "text": "Key functions pub(super) for typescript.rs"
+    },
+    {
+      "done": false,
+      "text": "Tests cover: basic scope, var vs let, hoisting, shadowing, TDZ, nested functions, class methods"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Had to fix two issues from the initial implementation: (1) module-level const/let weren't being collected as bindings — added collect_block_bindings call on root node in build_scope_arena; (2) function declaration defs resolved as LOCAL_BINDING_SENTINEL instead of qualified name because hoisted_bindings check ran before defs check — reordered to check defs first. Also had to remove the RefContextKind::Other filter from walk_refs_recursive so plain variable references (return x, x + 1, etc.) are extracted and available for scope resolution.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "7ce28a9"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563163414,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 266
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784569820638,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784570149181,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention → fixed. Three findings addressed in 42893e6:\\n1. [high] function_expression/generator_function not creating Function scopes — added to scope builder + is_nested_block + var-hoist boundary\\n2. [high] property_identifier refs falsely resolved through lexical scope — now skipped when receiver is present or context is FieldAccess\\n3. [medium] destructured var bindings not hoisted — collect_var_bindings now uses collect_pattern_names\\n\\nDeferred: line-only scope lookup is systemic across all language parsers.\"",
+      "ts": 1784570654906
+    }
+  ],
+  "created_at": 1784563163414,
+  "updated_at": 1784570149181,
+  "completed_at": 1784570149181,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "js-core",
+  "edges": [
+    {
+      "id": "019f8042-2057-7ef1-b029-60c5fa361536",
+      "edge_type": "depends_on",
+      "source": "sutra/266",
+      "target": "sutra/265",
+      "note": null,
+      "created_at": 1784563245143
+    },
+    {
+      "id": "019f8042-2f81-7a73-9b56-de97e524963e",
+      "edge_type": "depends_on",
+      "source": "sutra/267",
+      "target": "sutra/266",
+      "note": null,
+      "created_at": 1784563249025
+    }
+  ]
+}

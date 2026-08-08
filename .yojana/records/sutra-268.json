@@ -1,0 +1,144 @@
+{
+  "id": "019f8041-99d9-7232-8978-d2bb4eca095a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/268",
+  "sequence_number": 268,
+  "title": "JS/TS complexity rules + convention patterns",
+  "description": "Add JavaScript/TypeScript support to the shared complexity module and implement FcaAttributeSource for convention analysis.\n\n**Complexity rules** (`src/parser/complexity.rs`):\n\nAdd `\"javascript\" | \"typescript\"` branches to the three language-dispatch functions:\n\n`walk_cyclomatic` — decision points:\n- `if_statement`, `while_statement`, `for_statement`, `for_in_statement`, `do_statement`, `ternary_expression` → +1\n- `switch_case` → +1, `switch_statement` → -1 (same pattern as Dart/C)\n- `catch_clause` → +1\n- Logical operators (`&&`, `||`, `??`) in `binary_expression` → +1\n\n`classify_cognitive` — (is_flow_break, increments_nesting):\n- `if_statement` → (true, true)\n- `while_statement`, `for_statement`, `for_in_statement`, `do_statement` → (true, true)\n- `switch_statement` → (true, false)\n- `ternary_expression` / `conditional_expression` → (true, true)\n- `catch_clause` → (true, false)\n- `arrow_function` / `function_expression` → (false, true) — nested callbacks increment nesting\n- `try_statement` → (true, true)\n\n`walk_nesting` — already delegates to classify_cognitive, but needs the else-if flattening logic for JS:\n- JS uses `else_clause` containing `if_statement` — add an else-if flattening case similar to the Rust one\n\n`is_logical_operator` — already handles `binary_expression`, just needs to ensure JS node kinds match. JS uses `\"&&\"`, `\"||\"`, `\"??\"` as operators inside `binary_expression`.\n\n**FCA convention patterns** (`src/parser/adapter.rs`):\n\nImplement `FcaAttributeSource` for both `JsAdapter` and `TsAdapter`:\n\nEffect patterns (similar across JS and TS):\n- DOM access: `document.`, `window.`, `globalThis.`\n- Network: `fetch(`, `XMLHttpRequest`, `axios.`\n- Filesystem (Node): `fs.`, `readFile`, `writeFile`\n- Process: `process.exit`, `process.env`\n- Console: `console.log`, `console.error`\n- Async patterns: `await`, `Promise`, `.then(`\n\nToolchain pairs (conventions the toolchain enforces):\n- `async` → `await` (async function should use await)\n- `export` → `import` (exported symbols should be imported somewhere)\n- `interface` → `implements` (TS interfaces should be implemented)\n- `@deprecated` → JSDoc deprecation should be respected\n\nModule boundary strength: already set to Moderate in scaffold task.\n\n**Tests:**\n- Add JS/TS complexity test cases to `src/parser/complexity.rs::tests`\n- Test effect pattern extraction for JS/TS\n- Test toolchain pairs",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "walk_cyclomatic handles javascript and typescript language IDs with correct decision points"
+    },
+    {
+      "done": false,
+      "text": "classify_cognitive handles JS/TS node kinds for flow breaks and nesting"
+    },
+    {
+      "done": false,
+      "text": "Else-if chains in JS flatten correctly (not double-counted nesting)"
+    },
+    {
+      "done": false,
+      "text": "Logical operators (&&, ||, ??) increment cyclomatic complexity"
+    },
+    {
+      "done": false,
+      "text": "arrow_function and function_expression increment nesting in cognitive complexity"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource implemented for JsAdapter with effect patterns"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource implemented for TsAdapter with effect patterns + TS-specific toolchain pairs"
+    },
+    {
+      "done": false,
+      "text": "Complexity tests: JS function with if/for/switch gets correct cyclomatic score"
+    },
+    {
+      "done": false,
+      "text": "Complexity tests: nested callbacks get correct cognitive score"
+    },
+    {
+      "done": false,
+      "text": "Existing complexity tests for other languages still pass"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5c10c14"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563210713,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 268
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784577108469,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784577321530,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\\n\\n1. [high] JS/TS effect patterns don't match JS reference representation — patterns use source-like prefixes (`fetch(`, `document.`) but JS parser records calls as bare names with receiver stored separately. Most effect patterns will silently never match.\\n2. [high] collect_toolchain_pairs omits javascript/typescript — FIXED in b89604c.\\n3. [medium] JS/TS FCA adapters skip language_attrs extraction unlike Rust/Dart/C/Python — `async`, `export`, `interface` etc. won't surface as attributes for pair matching.",
+      "ts": 1784577625467
+    }
+  ],
+  "created_at": 1784563210713,
+  "updated_at": 1784577321530,
+  "completed_at": 1784577321530,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "integration",
+  "edges": [
+    {
+      "id": "019f8042-2fba-7e22-b8d5-711ff279de10",
+      "edge_type": "depends_on",
+      "source": "sutra/268",
+      "target": "sutra/263",
+      "note": null,
+      "created_at": 1784563249082
+    },
+    {
+      "id": "019f8042-3025-7920-96c7-d7fe62ae6984",
+      "edge_type": "depends_on",
+      "source": "sutra/269",
+      "target": "sutra/268",
+      "note": null,
+      "created_at": 1784563249189
+    },
+    {
+      "id": "019f811f-296e-7373-8b3c-be1a66aa9467",
+      "edge_type": "motivated_by",
+      "source": "sutra/271",
+      "target": "sutra/268",
+      "note": null,
+      "created_at": 1784577730926
+    },
+    {
+      "id": "019f811f-2b8d-7dd1-a82d-5e9055ae2570",
+      "edge_type": "motivated_by",
+      "source": "sutra/272",
+      "target": "sutra/268",
+      "note": null,
+      "created_at": 1784577731469
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "id": "019e8352-5e32-7271-905b-4fa8293c9f12",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/13",
+  "sequence_number": 13,
+  "title": "Before/after snapshots and per-commit manifests",
+  "description": "## Motivation\n\nSutra reads current file state from the index. It has no way to return file content at an arbitrary git ref, or to break down a range of commits into per-commit change manifests. These are useful for agents doing multi-commit review or understanding how a file evolved.\n\n## What this would add\n\n1. **File snapshots at refs** — `sutra_snapshot(path, ref_a, ref_b)` returning full before/after content (or a line range), with optional hunk boundaries. Saves agents from parsing `git show` or `git diff` output.\n2. **Per-commit history manifests** — given a commit range, return a structured manifest per commit (files changed, symbols affected, change classification). This is richer than `sutra_provenance` which returns commit metadata but not per-commit structural diffs.\n\n## Approach sketch\n\nSnapshots: shell out to `git show {ref}:{path}` and return structured content. Straightforward, no index needed.\n\nPer-commit manifests: iterate commits in range, for each compute a lightweight diff manifest. If function-level structural diffs land first, each commit manifest could include symbol-level change classification. Without that, it's file-level change types (added/modified/deleted/renamed) which is closer to `git diff --stat` in structured form.\n\n## Priority note\n\nThis is lower priority than the structural diff and callee graph tasks — it's primarily a convenience layer over git plumbing. Most useful for agents that need to review multi-commit branches where `sutra_review` (which collapses to a single diff) loses per-commit intent.\n\n## Prior art\n\ngit-prism's `get_file_snapshots` and `get_commit_history` tools.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "survey-git-prism",
+    "git",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780319673906,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 13
+      }
+    },
+    {
+      "ts": 1780709735818,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780319673906,
+  "updated_at": 1780709735818,
+  "completed_at": null,
+  "edges": []
+}

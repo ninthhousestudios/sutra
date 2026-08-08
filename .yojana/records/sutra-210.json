@@ -1,0 +1,110 @@
+{
+  "id": "019f08da-72c2-7e31-b7f5-8e7807d5e1a1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/210",
+  "sequence_number": 210,
+  "title": "Spike: check community connectedness (Leiden necessity test)",
+  "description": "Louvain's known defect: it can produce internally-disconnected communities (subgroups with no intra-community path between them). Leiden guarantees connected communities but requires implementing ~300-400 lines of non-trivial graph algorithm in Rust (no mature crate exists).\\n\\nThis spike determines whether Leiden is necessary by checking if the problem actually manifests:\\n\\nExperiment (run AFTER the hub-exclusion spike, using its best configuration):\\n1. For each community in the clustering result, extract the subgraph of files in that community\\n2. Run BFS/DFS to count connected components within each community's subgraph\\n3. If any community has >1 connected component, it's internally disconnected — Leiden would help\\n4. Report: how many communities are disconnected, how badly (2 components vs 5), and how large they are\\n\\nDecision framework:\\n- 0 disconnected communities → Louvain + hub exclusion is sufficient, skip Leiden\\n- A few small disconnected communities → simple post-processing (split disconnected subgraphs) is cheaper than Leiden\\n- Many/large disconnected communities → invest in Leiden implementation\\n\\nDepends on: hub-exclusion spike results (run on the best configuration from that spike)",
+  "category": "experiment",
+  "status": "wontfix",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Connectedness check run on communities from best hub-exclusion configuration"
+    },
+    {
+      "done": false,
+      "text": "Count and severity of disconnected communities reported"
+    },
+    {
+      "done": false,
+      "text": "Concrete recommendation: Leiden, post-processing split, or neither"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/199"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "louvain"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782559961794,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 210
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560676716,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560681296,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Superseded: leiden-rs guarantees connected communities, making the connectedness check moot. The go/no-go gate was for a ~400-line hand-rolled implementation; with a mature crate the integration cost (~50 lines) is below the threshold that justifies a spike.",
+      "ts": 1782560668685
+    }
+  ],
+  "created_at": 1782559961794,
+  "updated_at": 1782560681296,
+  "completed_at": 1782560681296,
+  "arc_id": "019f08d9-c3f8-7bd1-8e9c-f3afebc13c2b",
+  "arc_phase": "spike",
+  "edges": [
+    {
+      "id": "019f08da-9f92-7911-bf7f-6373a222ffb5",
+      "edge_type": "depends_on",
+      "source": "sutra/210",
+      "target": "sutra/209",
+      "note": "Connectedness check should run on the best hub-exclusion configuration",
+      "created_at": 1782559973266
+    },
+    {
+      "id": "019f08da-a8db-70b1-8215-f91e2ffdd06b",
+      "edge_type": "refines",
+      "source": "sutra/210",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559975643
+    },
+    {
+      "id": "019f08e5-dba9-7991-9414-4573195aae0c",
+      "edge_type": "supersedes",
+      "source": "sutra/211",
+      "target": "sutra/210",
+      "note": null,
+      "created_at": 1782560709545
+    }
+  ]
+}

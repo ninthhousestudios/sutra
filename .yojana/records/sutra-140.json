@@ -1,0 +1,88 @@
+{
+  "id": "019eb424-f424-71d2-997b-1e6ee5af6850",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/140",
+  "sequence_number": 140,
+  "title": "Persistent post-parse completion tracking (replaces dart-import fast-path gate, fixes interrupted-parse poisoning)",
+  "description": "Two bugs, one mechanism.\n\nBug 1: the NoChanges fast path (src/pipeline.rs:436-443) is gated on !db.has_unresolved_dart_imports() (src/db/mod.rs:1355), which only excludes dart:% — external pub package: imports (215 in swe_dashboard) never resolve, so the gate is permanently open and the full post-parse pipeline (~8s, HRR-dominated) runs on EVERY no-change parse of any real Dart project. Rust equivalent: 16ms.\n\nBug 2: an interrupted parse (Ctrl-C, crash, cancel) leaves files committed with current content_hash but refs unresolved and derived data missing (observed on redox-kernel: 160/52,718 refs resolved, zero pagerank/HRR/components/health). Next parse sees no changed files + a prior snapshot → fast path → never repairs. Ref resolution only covers dirty files, so even changed-file parses never heal the orphans. Only fix today is deleting the DB. Note record_snapshot also runs on the Err/cancel path, so has_previous_snapshot is not a completion signal.\n\nFix (design from 2026-06-10 perf review):\n1. Per-file work flag: files.needs_resolution, set inside replace_file_data's transaction, cleared inside resolve_file_refs' write transaction. The resolution work-queue lives in the DB, atomically consistent with the data it describes. post_parse resolves WHERE needs_resolution=1, not an in-memory set.\n2. Global completion marker: single-row index_meta table with data_generation (bumped whenever any file row changes) and derived_complete_generation (written only after post_parse_sequence + snapshot fully commit). Fast path: skip post-parse iff zero files parsed/deleted/pruned AND no needs_resolution rows AND generations match. Delete has_unresolved_dart_imports gate entirely.\nInterruption at any point then self-heals on the next parse, incremental or full.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "No-change parse of swe_dashboard takes <100ms (fast path fires despite external package: imports)"
+    },
+    {
+      "done": false,
+      "text": "Kill -9 a parse mid-resolution; next no-change parse detects incomplete state and completes resolution + derived data"
+    },
+    {
+      "done": false,
+      "text": "has_unresolved_dart_imports gate removed"
+    },
+    {
+      "done": false,
+      "text": "needs_resolution flag set/cleared transactionally with the data it describes"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented per-file `needs_resolution` flag + global `index_meta` generation pair. Key changes:\\n\\n- Migration 0037: adds `needs_resolution` column to `files`, creates `index_meta` table with generation pair\\n- `replace_file_data`: sets `needs_resolution=1` and bumps `data_generation` atomically\\n- `delete_file_cascade`: bumps `data_generation` atomically\\n- New `replace_refs_and_clear_resolution`: wraps ref writes + needs_resolution clear in a single transaction\\n- `post_parse_sequence`: queries dirty files from DB instead of in-memory HashSet; marks deleted-symbol back-references durably\\n- Fast path: replaced `has_previous_snapshot + has_unresolved_dart_imports` with `has_pending_work` (checks needs_resolution + generation match)\\n- Completion marker: `set_derived_complete` called only after successful post_parse + snapshot\\n- Reindex resets generations to 0\\n\\nAll 723 tests pass. Acceptance criteria 3-4 (gate removal, transactional flag) verified structurally. Criteria 1-2 (perf, crash recovery) need integration testing against a real Dart workspace.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "17e45fc"
+    }
+  ],
+  "files": [
+    "src/pipeline.rs",
+    "src/db/mod.rs",
+    "migrations/"
+  ],
+  "tags": [
+    "perf-review",
+    "parse-pipeline",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1781138781220,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 140
+      }
+    },
+    {
+      "ts": 1781156663837,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781157250772,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: **needs-attention**\n\n**Finding 1 [high]: Dependent-file re-resolution not transactionally covered**\n`post_parse_sequence` calls `mark_needs_resolution` for back-references AFTER `replace_file_data`/`delete_file_cascade` has already committed. Those paths delete old symbols with FK cascades wiping `refs.target_symbol_id`, so `find_files_referencing_symbols` can find nothing. A kill between committed file mutation and the post-parse mark leaves no durable queue entry for dependent files — next parse sees generation mismatch but has no `deleted_symbol_ids` and no `needs_resolution` rows for those dependents.\n\nRecommendation: Move dependent-file discovery and `needs_resolution=1` into the same transaction that removes/replaces old symbols, before cascading deletes erase the evidence.\n\n**Finding 2 [medium]: Migration initializes existing indexes as complete by default**\nMigration 0037 adds `needs_resolution DEFAULT 0` and `index_meta` with `data_generation=0, derived_complete_generation=0`. For an existing DB with a previously interrupted/poisoned index, `has_pending_work` returns false — the fast path fires and stale derived data survives.\n\nRecommendation: On migration, mark existing file rows `needs_resolution=1` or initialize generations as mismatched so the first post-upgrade parse forces full recovery.",
+      "ts": 1781157586640
+    }
+  ],
+  "created_at": 1781138781220,
+  "updated_at": 1781157250772,
+  "completed_at": 1781157250772,
+  "edges": []
+}

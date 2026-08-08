@@ -8,6 +8,7 @@ target/
 # Sutra workspace data (DBs, ack files) — but track config
 .sutra/*/
 .sutra/acks/
+.sutra/accepted.lock
 !.sutra/rules.toml
 !.sutra/owners.toml
 !.sutra/accepted.toml

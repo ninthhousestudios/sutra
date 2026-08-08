@@ -1,0 +1,160 @@
+{
+  "id": "019f8041-456f-7380-927e-6c701ae10f54",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/267",
+  "sequence_number": 267,
+  "title": "TypeScript extension layer",
+  "description": "Implement TypeScript-specific parsing in `src/parser/typescript.rs`, extending the JavaScript extraction from `javascript.rs`.\n\nTypeScript adds several constructs that JavaScript lacks. The tree-sitter-typescript grammar (both TypeScript and TSX variants) includes all JavaScript node kinds plus TS-specific ones. The implementation strategy: typescript.rs's `parse()` calls javascript.rs's extraction functions with the TS tree, then does a second pass to handle TS-specific nodes.\n\n**TS-specific symbol kinds to extract:**\n- `interface_declaration` → Trait (closest SymbolKind mapping)\n- `type_alias_declaration` → TypeAlias\n- `enum_declaration` → Enum, with enum members as children (Field kind)\n- `namespace_declaration` / `module_declaration` → Module\n- `abstract_class_declaration` → Class (with `abstract: true` in language_attrs)\n- Decorators on classes/methods → captured in language_attrs\n\n**TS-specific visibility:**\n- `public`, `private`, `protected` accessibility modifiers on class members → visibility field\n- `readonly` modifier → language_attrs\n- `abstract` modifier → language_attrs\n- `override` modifier → language_attrs + FLAG_OVERRIDE flag\n- `declare` modifier → language_attrs\n\n**TS-specific references:**\n- Type annotations (`type_annotation` nodes) → refs with RefContextKind::TypeUse\n- Generic type arguments (`type_arguments`) → refs  \n- `implements` clauses → refs with TypeUse context\n- `extends` clauses (already in JS, but more common in TS) → refs\n- Mapped types, conditional types, utility types → refs for type names\n\n**TS-specific imports:**\n- `import type { Foo } from 'bar'` → kind: \"type_import\" (type-only import)\n- `import { type Foo } from 'bar'` → individual type import specifier\n- `export type { Foo }` → type-only re-export\n- `/// <reference path=\"...\" />` → kind: \"triple_slash_reference\"\n\n**TSX handling:**\n- The TSX grammar handles JSX elements (same as JavaScript JSX)\n- The TsAdapter should detect .tsx extensions and use `tree_sitter_typescript::LANGUAGE_TSX` instead of `LANGUAGE_TYPESCRIPT`\n- Implementation: TsAdapter::grammar() could take the extension into account, OR we could have a separate TsxAdapter. Decision: handle in the adapter by storing the grammar variant, or use the TSX grammar for all TS files (TSX is a superset — check if this is true for tree-sitter-typescript)\n\n**Implementation approach:**\n```rust\npub fn parse(ctx: &ParseContext, is_tsx: bool) -> Result<ParseResult> {\n    // Use javascript.rs functions for shared extraction\n    let symbols = javascript::collect_symbols(root, src, file_path);\n    let mut ts_symbols = collect_ts_symbols(root, src, file_path); // TS-specific\n    symbols.extend(ts_symbols);\n    \n    let mut references = Vec::new();\n    javascript::collect_references(&mut references, root, src);\n    collect_ts_references(&mut references, root, src); // type refs\n    \n    let imports = javascript::collect_imports(root, src);\n    let mut ts_imports = collect_ts_imports(root, src);\n    imports.extend(ts_imports);\n    \n    // Scope resolution (same as JS but with TS-specific scope nodes like namespace)\n    // ...\n}\n```\n\nNote: if the shared JS functions already handle all common node kinds correctly (and ignore unknown TS-specific nodes), the TS layer only needs to ADD the TS-specific extractions. Verify this during implementation.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "interface_declaration extracted as Trait kind with methods/properties as children"
+    },
+    {
+      "done": false,
+      "text": "type_alias_declaration extracted as TypeAlias kind"
+    },
+    {
+      "done": false,
+      "text": "enum_declaration extracted as Enum kind with member children"
+    },
+    {
+      "done": false,
+      "text": "namespace/module_declaration extracted as Module kind"
+    },
+    {
+      "done": false,
+      "text": "abstract classes have abstract: true in language_attrs"
+    },
+    {
+      "done": false,
+      "text": "Decorators captured in language_attrs for decorated symbols"
+    },
+    {
+      "done": false,
+      "text": "Access modifiers (public/private/protected) set as visibility"
+    },
+    {
+      "done": false,
+      "text": "readonly/abstract/override/declare captured in language_attrs"
+    },
+    {
+      "done": false,
+      "text": "Type annotations produce TypeUse refs for referenced type names"
+    },
+    {
+      "done": false,
+      "text": "Generic type arguments produce refs"
+    },
+    {
+      "done": false,
+      "text": "implements/extends clauses produce TypeUse refs"
+    },
+    {
+      "done": false,
+      "text": "import type handled as type_import kind"
+    },
+    {
+      "done": false,
+      "text": "Type-only re-exports handled"
+    },
+    {
+      "done": false,
+      "text": "TSX files parse correctly (JSX elements + type annotations)"
+    },
+    {
+      "done": false,
+      "text": "parse() reuses javascript.rs extraction functions (no duplication of JS logic)"
+    },
+    {
+      "done": false,
+      "text": "Tests cover: interfaces, type aliases, enums, namespaces, decorators, access modifiers, type imports, TSX"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented as designed: typescript.rs has its own collect_symbols_inner that routes JS nodes to JS extractors and TS nodes to TS extractors. Two surprises in tree-sitter-typescript v0.23: (1) enum members are bare property_identifier nodes with field name 'name' inside enum_body, not wrapped in enum_member; (2) class fields are always public_field_definition (not field_definition) and use 'name' field instead of JS's 'property' field. Built a standalone extract_field for TS instead of delegating to JS extract_field. Minimal JS changes: is_definition_name got TS definition parents, is_test_file got TS extensions.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "092e36a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563189103,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 267
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784571395383,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784571897484,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: 4 findings, 3 fixed in 40c3540.\\n\\n- [high] `module` node kind not handled → fixed, both `module` and `internal_module` now route to namespace extraction\\n- [high] `export declare ...` dropped → fixed, `ambient_declaration` unwrapped in both collect_symbols_inner and handle_export, with `declare: true` attr injected\\n- [medium] line-based type-import marking could misclassify → fixed, now matches on raw_path + line\\n- [medium] namespace scopes not in JS scope arena → deferred, known limitation; namespaces are rare in modern TS and scope resolution is best-effort for code intelligence\"",
+      "ts": 1784572696378
+    }
+  ],
+  "created_at": 1784563189103,
+  "updated_at": 1784571897484,
+  "completed_at": 1784571897484,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "ts-extensions",
+  "edges": [
+    {
+      "id": "019f8042-2406-7c42-a82c-4a6b5faec1f8",
+      "edge_type": "depends_on",
+      "source": "sutra/267",
+      "target": "sutra/265",
+      "note": null,
+      "created_at": 1784563246086
+    },
+    {
+      "id": "019f8042-2f81-7a73-9b56-de97e524963e",
+      "edge_type": "depends_on",
+      "source": "sutra/267",
+      "target": "sutra/266",
+      "note": null,
+      "created_at": 1784563249025
+    },
+    {
+      "id": "019f8042-2fe4-7b02-848c-555cb28c8e28",
+      "edge_type": "depends_on",
+      "source": "sutra/269",
+      "target": "sutra/267",
+      "note": null,
+      "created_at": 1784563249124
+    }
+  ]
+}

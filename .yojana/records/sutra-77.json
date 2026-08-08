@@ -1,0 +1,138 @@
+{
+  "id": "019e8c69-a20d-74f3-acf3-09d71a669536",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/77",
+  "sequence_number": 77,
+  "title": "5d-9: MCP constraint tools",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nMCP tool actions for constraint management. Thin translation layer over the library API, following existing patterns in `src/tools/conventions.rs`. Actions: `list` (all constraints with metadata), `violations` (current DD violations), `waive` (create waiver with rationale), `unwaive` (revoke waiver).\n\n## Acceptance criteria\n\n- [ ] `list` action\n- [ ] `violations` action\n- [ ] `waive` action\n- [ ] `unwaive` action\n- [ ] Follows existing MCP tool patterns\n\n## Blocked by\n\n- sutra/71 — 5d-3: DD forbidden pairs maintained view\n- sutra/73 — 5d-5: constraint waivers (DB)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "MCP tool action: list — returns all constraints with kind, severity, name, provenance, scope, resolution status"
+    },
+    {
+      "done": false,
+      "text": "MCP tool action: violations — returns current constraint violations from DD maintained view"
+    },
+    {
+      "done": false,
+      "text": "MCP tool action: waive — creates a constraint waiver with required rationale"
+    },
+    {
+      "done": false,
+      "text": "MCP tool action: unwaive — revokes a constraint waiver"
+    },
+    {
+      "done": false,
+      "text": "Tool follows existing MCP tool patterns (thin translation layer over library API)"
+    },
+    {
+      "done": false,
+      "text": "JSON output matches existing tool conventions"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "a81fd43"
+    },
+    {
+      "type": "git:commit",
+      "value": "71aa254"
+    }
+  ],
+  "files": [
+    "src/tools/constraints.rs",
+    "src/tools/mod.rs",
+    "src/mcp.rs"
+  ],
+  "tags": [
+    "phase-5",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1780472193549,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 77
+      }
+    },
+    {
+      "ts": 1780566850608,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780567068822,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780568960894,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, scope: 50a59cd..74bd52e):\n\nVerdict: needs-attention\n\nFinding hitting this task:\n1. [high] Shared DD engines reused without freshness check (constraints.rs:131-136) — MCP constraint tools reuse already-loaded DD engine, can return stale violation data after workspace reparse.",
+      "ts": 1780568213682
+    }
+  ],
+  "created_at": 1780472193549,
+  "updated_at": 1780568960894,
+  "completed_at": 1780568960894,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-599e-7d61-bb58-97d03eb3901a",
+      "edge_type": "depends_on",
+      "source": "sutra/77",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472240542
+    },
+    {
+      "id": "019e8c6a-59e5-7b63-883a-bda8becf1726",
+      "edge_type": "depends_on",
+      "source": "sutra/77",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472240613
+    },
+    {
+      "id": "019e8c6a-84d2-7a33-81fd-75d27c82fd38",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/77",
+      "note": null,
+      "created_at": 1780472251602
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "id": "019e9a93-455e-7912-b140-80caef0b1bd7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/114",
+  "sequence_number": 114,
+  "title": "Index top-level variables and constants",
+  "description": "Agents hit this gap: sutra_grep can't find module-level variables because they aren't indexed. Rust top-level const/static are indexed, but Dart top-level variables are not. Becomes more important as more languages are added (C globals, Python module-level assignments).\n\nScope: extend Dart parser to extract top-level variable declarations as Const-kind symbols. Verify Rust coverage of static items. Add to the adding-languages doc as a requirement for new adapters.\n\nSmall effort, real agent UX improvement.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented as planned. Three changes: (1) `extract_variable_symbols` helper in dart.rs handles both `top_level_variable_declaration` and `declaration` (class field) nodes, walking `static_final_declaration_list` and `initialized_identifier_list` to extract each variable; (2) `extract_language_attrs` gained a `Const | Static` branch emitting is_const/is_final/is_static/is_late; (3) adding-languages.md updated with variable extraction as a requirement. Rust parser already had full const/static coverage — no changes needed. 5 new tests, all 558 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "3b1a9f7"
+    },
+    {
+      "type": "git:commit",
+      "value": "51c0112"
+    }
+  ],
+  "files": [
+    "src/parser/dart.rs"
+  ],
+  "tags": [
+    "dart",
+    "parser",
+    "completeness"
+  ],
+  "history": [
+    {
+      "ts": 1780709803358,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 114
+      }
+    },
+    {
+      "ts": 1781444176732,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781444185365,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes. One real finding (medium): tree-sitter-dart uses `identifier_list` for abstract and external field declarations, which `extract_variable_symbols` didn't handle. Fixed in 51c0112.",
+      "ts": 1781444948208
+    }
+  ],
+  "created_at": 1780709803358,
+  "updated_at": 1781444948519,
+  "completed_at": 1781444185365,
+  "edges": []
+}

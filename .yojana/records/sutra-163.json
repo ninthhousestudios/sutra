@@ -1,0 +1,130 @@
+{
+  "id": "019ece4d-d073-7801-b5b6-5fabe9deff25",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/163",
+  "sequence_number": 163,
+  "title": "vidhi-reflect evolution: write/prune lessons store",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nEvolve the vidhi-reflect skill to use the shared lessons store instead of (or alongside) ledger.md. This is a skill rewrite (prose, not code).\n\n**Changes to the vidhi-reflect process:**\n- Tier (c) entries: write to `sutra_remember` instead of editing `<engineering_lessons>` in manas-instructions.md\n- New pruning pass: call `LessonsDb::archive_decayed()` to archive unverified lessons past the decay window\n- New staleness pass: flag verified lessons whose anchored code has changed since verification\n- New dedup/merge pass: consolidate overlapping lessons (same text, overlapping anchors)\n- Watermark storage: move from ledger.md `## Watermarks` table to a `metadata` table in lessons.db\n- Input unchanged: still mines yojana close-outs via sqlite3 queries\n- Other tier artifacts unchanged: rules.toml (a), convention lifecycle (b), project CLAUDE.md (d), playbooks (e), remediation tasks (f), skill edits (g)\n\nHITL because the skill rewrite needs human review of the new process before agents start using it.\n\n## Acceptance criteria\n\n- [ ] vidhi-reflect SKILL.md updated with lessons store integration\n- [ ] Tier (c) entries written via sutra_remember with appropriate anchors\n- [ ] Pruning pass calls archive_decayed() with configured window\n- [ ] Staleness pass identifies and flags stale verified lessons\n- [ ] Dedup pass consolidates overlapping lessons\n- [ ] Watermark stored in lessons.db metadata table\n- [ ] Existing tier artifact outputs (a, b, d–g) unchanged\n\n## Blocked by\n\n- sutra/162 — 5x-review-3",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "vidhi-reflect SKILL.md updated with lessons store integration"
+    },
+    {
+      "done": false,
+      "text": "Tier (c) entries written via sutra_remember with appropriate anchors"
+    },
+    {
+      "done": false,
+      "text": "Pruning pass calls archive_decayed() with configured window"
+    },
+    {
+      "done": false,
+      "text": "Staleness pass identifies and flags stale verified lessons"
+    },
+    {
+      "done": false,
+      "text": "Dedup pass consolidates overlapping lessons"
+    },
+    {
+      "done": false,
+      "text": "Watermark stored in lessons.db metadata table"
+    },
+    {
+      "done": false,
+      "text": "Existing tier artifact outputs (a, b, d–g) unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\\n\\nRewrite vidhi-reflect's SKILL.md to route tier (c) through sutra_remember, add three new passes (prune, staleness, dedup), and move watermarks from ledger.md to lessons.db. The ledger continues as the routing table of record — only the tier (c) write target and watermark storage change. All other tier artifacts (a, b, d–g) are untouched.\\n\\nThis is a prose-only change (SKILL.md is a skill definition, not code), but it must be precise about the API calls and SQL it prescribes because agents execute it literally.\\n\\n## Files\\n\\n- **Modify**: `~/soft/manas/vidhi/vidhi-reflect/SKILL.md` — the entire skill definition; every section touched\\n- **No new files** — no code changes, no migrations\\n\\n## Steps\\n\\n### Step 1: Add metadata table migration prerequisite\\n\\nAdd a new precondition: lessons.db must have a `metadata` table for watermark storage. The vidhi-reflect pass should create it if absent (a one-time bootstrap, since this is a skill operating on an existing DB, not a code migration):\\n\\n```sql\\nCREATE TABLE IF NOT EXISTS metadata (\\n    key   TEXT NOT NULL PRIMARY KEY,\\n    value TEXT NOT NULL\\n);\\n```\\n\\nThe watermark key is `reflect_watermark:<scope>` (e.g., `reflect_watermark:global`, `reflect_watermark:sutra`). Value is the max `completed_at` timestamp mined (integer ms, same as yojana uses).\\n\\nThis replaces the current \\\"read the ledger header\\\" watermark mechanism in §1. The ledger's `## Watermarks` table is retired — kept as-is for history but no longer read or written.\\n\\n### Step 2: Rewrite tier (c) routing in §4 (Route) and §7 (Write)\\n\\nCurrently tier (c) entries are written as bullet points in the `<engineering_lessons>` section of `~/soft/manas/manas-cli/src/adapter/manas-instructions.md`, with a hard budget of ~10 entries.\\n\\nNew behavior: tier (c) entries are written via `sutra_remember` with:\\n- `text`: the lesson text (imperative, 1-3 sentences, no war story)\\n- `location_anchors`: symbol or file anchors derived from the evidence tasks' `files` fields or root_cause descriptions\\n- `source_tasks`: the yojana task IDs from the evidence column\\n- `project_origin`: null for cross-project themes, project slug for single-project themes\\n- `categories`: technology/concern tags (e.g., `[\\\"sqlite\\\", \\\"concurrency\\\"]`)\\n- `workspace`: the workspace path for anchor enrichment\\n\\nThe `<engineering_lessons>` section budget constraint is removed — sutra's contextual surfacing replaces the broadcast. The SKILL.md should note that existing entries in manas-instructions.md stay until the migration pass (sutra/150's migration path) replaces them.\\n\\nLedger rows still record the routing — `Tier: (c)`, `Mechanism: sutra_remember lesson <lesson_id>` — the ledger is the provenance record, sutra_remember is the enforcement mechanism.\\n\\n### Step 3: Add new §3.5 — Pruning pass\\n\\nInsert after mining/clustering, before routing. This is a maintenance pass that runs every reflect invocation:\\n\\n```\\n### 3.5 Prune decayed lessons\\n\\nCall `sutra_remember` search to list unverified, uncited lessons older than\\nthe decay window (default 90 days). Review the list:\\n\\n- Lessons with 0 citations and 0 surfacings: archive silently.\\n- Lessons with some surfacings but no citations: present to user for\\n  judgment (\\\"surfaced but never cited — keep or archive?\\\").\\n\\nImplementation: the skill runs:\\n\\n```sql\\nSELECT id, text, created_at, last_surfaced, last_cited, confidence\\nFROM lessons\\nWHERE archived = 0 AND verified = 0\\n  AND created_at < datetime('now', '-90 days')\\n  AND (last_cited IS NULL OR last_cited < datetime('now', '-90 days'))\\nORDER BY created_at;\\n```\\n\\nFor the auto-archive set (last_surfaced IS NULL):\\n```sql\\nUPDATE lessons SET archived = 1\\nWHERE id IN (<auto-archive-ids>);\\n```\\n\\nAlternatively, the skill can call the MCP tool flow:\\n1. Search with `include_archived: false, verified: false` to find candidates\\n2. Present the list\\n3. Archive by calling `sutra_remember` with an archive action (or direct SQL if sutra_remember doesn't expose archive — note: `LessonsDb::archive_decayed()` exists in the Rust code and runs automatically on DB open with a 90-day window, so the skill's pruning pass is about the *human-reviewed* edge cases that auto-decay doesn't cover)\\n\\nThe key distinction: `archive_decayed()` runs automatically and silently archives the obvious cases (no citations, no surfacings, past window). The reflect pass reviews the borderline cases (surfaced but uncited) with human judgment.\\n```\\n\\n### Step 4: Add new §3.6 — Staleness pass\\n\\nAfter pruning, check verified lessons for code drift:\\n\\n```\\n### 3.6 Flag stale verified lessons\\n\\nQuery verified lessons and check whether their anchored code has changed\\nsince verification. The staleness machinery already exists in sutra\\n(`LessonsDb::check_staleness` + `anchor_verification` table with content\\nhashes snapshotted at verification time).\\n\\nThe skill queries:\\n\\n```sql\\nSELECT l.id, l.text, l.verified_at,\\n       a.kind, a.value, av.content_hash\\nFROM lessons l\\nJOIN anchor_verification av ON av.lesson_id = l.id\\nJOIN anchors a ON a.id = av.anchor_id\\nWHERE l.verified = 1 AND l.archived = 0;\\n```\\n\\nFor each verified lesson, compare the stored `content_hash` against the\\ncurrent content hash of the anchored symbol/file (resolve via the workspace\\nindex). If changed:\\n\\n- Present to user: \\\"Lesson <id> was verified against <symbol> but the code\\n  has changed since. Review: still valid / needs update / archive?\\\"\\n- User says valid → re-snapshot hashes (cite the lesson to refresh)\\n- User says needs update → edit lesson text, re-store\\n- User says archive → archive\\n\\nThis is the human-in-the-loop complement to sutra's automatic `[stale]`\\nflagging during surfacing. Surfacing flags stale lessons for agents to treat\\nwith caution; reflect resolves them.\\n```\\n\\n### Step 5: Add new §3.7 — Dedup/merge pass\\n\\nAfter staleness, consolidate overlapping lessons:\\n\\n```\\n### 3.7 Deduplicate overlapping lessons\\n\\nSearch for lessons with overlapping text and overlapping anchors:\\n\\n1. Group lessons by anchor overlap: two lessons sharing ≥1 anchor are\\n   candidates for dedup.\\n2. Within each group, check text similarity (agent judgment — are these\\n   saying the same thing in different words?).\\n3. Present merge candidates to user:\\n   - \\\"Lessons <id1> and <id2> both anchor to <symbol> and say similar\\n     things. Merge into one? Which text to keep?\\\"\\n4. Merge: keep the higher-confidence lesson, add the other's anchors and\\n   citations to it, archive the duplicate.\\n\\nImplementation: query anchor overlap:\\n\\n```sql\\nSELECT a1.lesson_id AS id1, a2.lesson_id AS id2,\\n       COUNT(*) AS shared_anchors\\nFROM anchors a1\\nJOIN anchors a2 ON a1.kind = a2.kind AND a1.value = a2.value\\n     AND a1.lesson_id < a2.lesson_id\\nJOIN lessons l1 ON l1.id = a1.lesson_id AND l1.archived = 0\\nJOIN lessons l2 ON l2.id = a2.lesson_id AND l2.archived = 0\\nGROUP BY a1.lesson_id, a2.lesson_id\\nHAVING shared_anchors >= 1\\nORDER BY shared_anchors DESC;\\n```\\n\\nThe merge operation is manual (the skill presents, user decides, skill\\nexecutes). Automated merge is too risky — two lessons anchored to the same\\nfile may be about completely different concerns.\\n```\\n\\n### Step 6: Update §1 (Establish the window) for metadata table watermarks\\n\\nReplace the ledger-header watermark read with:\\n\\n```sql\\n-- Bootstrap (first run only):\\nCREATE TABLE IF NOT EXISTS metadata (\\n    key TEXT NOT NULL PRIMARY KEY,\\n    value TEXT NOT NULL\\n);\\n\\n-- Read watermark:\\nSELECT value FROM metadata WHERE key = 'reflect_watermark:<scope>';\\n```\\n\\nAnd in §7 (Write), update the watermark:\\n\\n```sql\\nINSERT OR REPLACE INTO metadata (key, value)\\nVALUES ('reflect_watermark:<scope>', '<max_completed_at>');\\n```\\n\\n### Step 7: Update §7 (Write) for new outputs\\n\\nThe Write section gains:\\n- Tier (c) lessons written via `sutra_remember` (step 2)\\n- Pruning results archived via direct SQL or sutra API\\n- Staleness resolutions written (re-snapshot, edit, archive)\\n- Dedup merges executed\\n- Watermark updated in metadata table\\n- Ledger rows still appended for all tiers (ledger is the provenance record)\\n\\n### Step 8: Verify acceptance criteria coverage and write the SKILL.md\\n\\nRewrite the full SKILL.md incorporating all changes. Verify every AC maps to a section:\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"vidhi-reflect SKILL.md updated with lessons store integration\\\" → the entire rewrite\\n- [x] \\\"Tier (c) entries written via sutra_remember with appropriate anchors\\\" → Step 2: §4 Route + §7 Write\\n- [x] \\\"Pruning pass calls archive_decayed() with configured window\\\" → Step 3: §3.5\\n- [x] \\\"Staleness pass identifies and flags stale verified lessons\\\" → Step 4: §3.6\\n- [x] \\\"Dedup pass consolidates overlapping lessons\\\" → Step 5: §3.7\\n- [x] \\\"Watermark stored in lessons.db metadata table\\\" → Steps 1, 6: §1 + §7\\n- [x] \\\"Existing tier artifact outputs (a, b, d–g) unchanged\\\" → Steps 2, 7: only tier (c) changes target; explicit callout in §4 that other tiers are untouched\"",
+  "execution_record": "Reviewed as part of sutra/165. SKILL.md is thorough and correct — tier routing, maintenance passes (prune/stale/dedup), watermark migration, and sutra_remember API usage all match the actual system. No changes needed to the SKILL.md itself. The metadata table self-bootstrap pattern was made redundant by adding it as a proper Rust migration (0005_metadata) during the review.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "36a6ed4"
+    },
+    {
+      "type": "git:commit",
+      "value": "e39eba3"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "needs-plan",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577666675,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 163
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781719624324,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781719827059,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781721190649,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577666675,
+  "updated_at": 1781721190649,
+  "completed_at": 1781721190649,
+  "edges": [
+    {
+      "id": "019ece4e-1724-7cd3-982d-434b28dd2b65",
+      "edge_type": "depends_on",
+      "source": "sutra/163",
+      "target": "sutra/162",
+      "note": null,
+      "created_at": 1781577684772
+    },
+    {
+      "id": "019ece4e-20d1-73c0-ab83-674ec3f9bc11",
+      "edge_type": "motivated_by",
+      "source": "sutra/163",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577687249
+    },
+    {
+      "id": "019ece4e-6b27-7d13-a0fe-820b27309eef",
+      "edge_type": "depends_on",
+      "source": "sutra/165",
+      "target": "sutra/163",
+      "note": null,
+      "created_at": 1781577706279
+    }
+  ]
+}

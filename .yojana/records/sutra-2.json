@@ -1,0 +1,44 @@
+{
+  "id": "019e0170-000d-71e1-b4b4-0732803da044",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/2",
+  "sequence_number": 2,
+  "title": "triage todo/steal list and put into yojana",
+  "description": "",
+  "category": null,
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1778140577805,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 2
+      }
+    },
+    {
+      "ts": 1778232777651,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778140577805,
+  "updated_at": 1778232777651,
+  "completed_at": 1778232777651,
+  "edges": []
+}

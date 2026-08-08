@@ -1,0 +1,133 @@
+{
+  "id": "019e1cda-0d20-7b73-8c00-7963eee32387",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/13",
+  "sequence_number": 13,
+  "title": "sutra_review: structural core",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd `src/review.rs` — the review compositor. Accepts `diff` parameter (`branch` | `staged` | `unstaged`, default `branch` against main). Runs git diff, identifies changed files and symbols, computes impact via existing tools, calculates risk score (0.0–1.0) with breakdown (blast_radius, complexity_delta, hotspot_overlap, churn), truncates affected lists (top 20 with total count), ranks `recommended_reads` (top 10), includes freshness envelope. Register as `sutra_review` MCP tool.\\n\\nThis slice works without DD/FCA — structural analysis only. DD and FCA findings are wired in by the next slice.\\n\\n## Acceptance criteria\\n\\n- [ ] `sutra_review` MCP tool registered and callable\\n- [ ] `diff=\\\"branch\\\"` diffs current branch against main merge base\\n- [ ] `diff=\\\"staged\\\"` and `diff=\\\"unstaged\\\"` work correctly\\n- [ ] Response includes: changed_files, changed_symbols, affected_files (top 20), affected_symbols (top 20), affected_total, risk_score, risk_breakdown, recommended_reads (top 10), freshness\\n- [ ] Truncation: lists capped with truncated flag and true total count\\n- [ ] Risk score is 0.0–1.0 with per-signal breakdown\\n- [ ] Tests: fixture workspace with known diff, verify output shape and truncation behavior\\n\\n## Blocked by\\n\\n- sutra/v1/7 — Diagnostics module (freshness envelope)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "`sutra_review` MCP tool registered and callable"
+    },
+    {
+      "done": true,
+      "text": "`diff=\"branch\"` diffs current branch against main merge base"
+    },
+    {
+      "done": true,
+      "text": "`diff=\"staged\"` and `diff=\"unstaged\"` work correctly"
+    },
+    {
+      "done": true,
+      "text": "Response includes: changed_files, changed_symbols, affected_files (top 20), affected_symbols (top 20), affected_total, risk_score, risk_breakdown, recommended_reads (top 10), freshness"
+    },
+    {
+      "done": true,
+      "text": "Truncation: lists capped with truncated flag and true total count"
+    },
+    {
+      "done": true,
+      "text": "Risk score is 0.0–1.0 with per-signal breakdown"
+    },
+    {
+      "done": true,
+      "text": "Tests: fixture workspace with known diff, verify output shape and truncation behavior"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ea6cea1"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1778600512800,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 13
+      }
+    },
+    {
+      "ts": 1778676656911,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778677185779,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Starting implementation. Codebase explored — will follow pr_risk pattern: compute() separated from handle() for testability. Adding git helpers for staged/unstaged/merge-base diffs.",
+      "ts": 1778676865538
+    },
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers #13 + #14 together):\\n\\nVerdict: needs-attention\\n\\n4 findings:\\n1. [high] DD/FCA integration failures silently swallowed via unwrap_or_default() — empty violations indistinguishable from analyzer failure\\n2. [medium] FCA convention confidence not propagated to review output — violates distinct-confidence-semantics requirement\\n3. [medium] recommended_reads violation ranking uses HashSet — nondeterministic order, can drop higher-risk sites\\n4. [medium] Tests only exercise compute() with hand-built findings, never build_findings or handle — broken integration would still pass\\n\\nFull review on #14.\"",
+      "ts": 1778678795495
+    }
+  ],
+  "created_at": 1778600512800,
+  "updated_at": 1778677185779,
+  "completed_at": 1778677185779,
+  "edges": [
+    {
+      "id": "019e1cda-7640-73c3-8ef1-3a8963608b20",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/13",
+      "target": "sutra/v1/7",
+      "note": null,
+      "created_at": 1778600539712
+    },
+    {
+      "id": "019e1cda-82a8-7981-a30f-b7237ad9061f",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/13",
+      "note": null,
+      "created_at": 1778600542888
+    },
+    {
+      "id": "019e1cda-8375-7201-ae81-63cf87fe966b",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/15",
+      "target": "sutra/v1/13",
+      "note": null,
+      "created_at": 1778600543093
+    },
+    {
+      "id": "019e1cda-b64f-7da1-aad2-de9f4ac1b12e",
+      "edge_type": "refines",
+      "source": "sutra/v1/13",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600556111
+    }
+  ]
+}

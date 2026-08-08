@@ -1,0 +1,74 @@
+{
+  "id": "019e084c-c4da-7263-935b-ab54a0d62383",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/12",
+  "sequence_number": 12,
+  "title": "sutra_cochange: git pretty-format error 'invalid --pretty format: COMMIT_SEP'",
+  "description": "`sutra_cochange` returns:\n```\nMCP error -32603: internal: git log: fatal: invalid --pretty format: COMMIT_SEP\n```\n\n**Reproduce:** call `sutra_cochange(workspace=\"chitta\", path=\"src/tools/search.rs\")` against `/home/josh/soft/manas/chitta`.\n\n**Likely cause:** an unquoted format-string literal in the git command construction. Looks like the code intends `--pretty=format:%H%nCOMMIT_SEP%n...` but is passing `--pretty=COMMIT_SEP` or similar — the `format:` prefix is missing or the literal is being shell-escaped wrong. Trivial fix once located in the cochange shellout code.\n\n**Surfaced during:** chitta release-review spike, 2026-05-08. Cochange data would have informed deepening recommendations (paired files that should be one module) but the pack had to omit it.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_cochange against chitta/src/tools/search.rs returns valid co-change list, not an internal error"
+    },
+    {
+      "done": false,
+      "text": "Add a regression test pinning the git pretty-format string"
+    },
+    {
+      "done": false,
+      "text": "Verify against at least one other workspace (sutra, smriti) to confirm not a chitta-specific git config issue"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "4b3bbcd"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-chitta-spike",
+    "git",
+    "shellout"
+  ],
+  "history": [
+    {
+      "ts": 1778255709402,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 12
+      }
+    },
+    {
+      "ts": 1778256890573,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778257245625,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778255709402,
+  "updated_at": 1778257245625,
+  "completed_at": 1778257245625,
+  "edges": []
+}

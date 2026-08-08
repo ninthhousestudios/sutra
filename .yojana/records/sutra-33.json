@@ -1,0 +1,107 @@
+{
+  "id": "019e69c7-1419-7d83-9bc1-da903168c328",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/33",
+  "sequence_number": 33,
+  "title": "5a-3: tree-structured ParseResult",
+  "description": "## Parent\\n\\nsutra/30 (PRD: core model redesign)\\n\\n## What to build\\n\\nRework ExtractedSymbol to carry children directly instead of using parent_qualified_name for containment. Adapters produce a tree of symbols. Pipeline flattens the tree for DB insertion, assigning parent_symbol_id during a depth-first walk.\\n\\n## Acceptance criteria\\n\\n- [ ] ExtractedSymbol gains children: Vec<ExtractedSymbol> field\\n- [ ] parent_qualified_name: Option<String> removed from ExtractedSymbol\\n- [ ] RustAdapter and DartAdapter produce tree-structured output (methods nested under impl blocks, functions under modules, etc.)\\n- [ ] Pipeline tree-to-flat conversion: depth-first walk assigns parent_symbol_id during DB insertion\\n- [ ] Round-trip test: tree output flattened and inserted, queried back, matches expected parent-child structure\\n- [ ] Edge case: top-level symbols have no parent; deeply nested symbols maintain full chain\\n- [ ] Behavioral parity: same symbols in DB with correct parent_symbol_id as before\\n\\n## Blocked by\\n\\n- sutra/31 (LanguageAdapter trait + registry)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] ExtractedSymbol gains children: Vec<ExtractedSymbol> field"
+    },
+    {
+      "done": false,
+      "text": "[x] parent_qualified_name removed from ExtractedSymbol"
+    },
+    {
+      "done": false,
+      "text": "[x] RustAdapter and DartAdapter produce tree-structured output"
+    },
+    {
+      "done": false,
+      "text": "[x] Pipeline tree-to-flat conversion: depth-first walk assigns parent_symbol_id during DB insertion"
+    },
+    {
+      "done": false,
+      "text": "[x] Round-trip test: tree flattened, inserted, queried back, matches expected structure"
+    },
+    {
+      "done": false,
+      "text": "[x] Edge case: top-level symbols no parent, deeply nested symbols maintain full chain"
+    },
+    {
+      "done": false,
+      "text": "[x] Behavioral parity: same symbols in DB with correct parent_symbol_id as before"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nReplace the flat `parent_qualified_name: Option<String>` field on `ExtractedSymbol` with `children: Vec<ExtractedSymbol>`, making `ParseResult.symbols` a tree of top-level symbols with nested children. Both parsers already walk the AST recursively passing `name_context` — the change remodels them to collect children into the parent node instead of appending to a shared flat vec. The pipeline does DFS insertion, threading `parent_symbol_id` downward. A `flatten_symbols` helper preserves flat-list access for the resolver and tests.\n\n## Files\n\n- **Modify**: `src/parser/mod.rs` (lines 20-36) — replace `parent_qualified_name` with `children` on `ExtractedSymbol`; add `flatten_symbols` free function\n- **Modify**: `src/parser/rust.rs` (lines 95-244, 259-343) — refactor `collect_symbols`/`collect_symbols_inner` to return `Vec<ExtractedSymbol>` with children nested; update `extract_symbol`/`extract_impl_symbol`\n- **Modify**: `src/parser/dart.rs` (lines 40-128, 227-276) — refactor `collect_symbols` to return `Vec<ExtractedSymbol>` with children nested; update `build_symbol`\n- **Modify**: `src/pipeline.rs` (lines 176-197, 238-256) — DFS insertion helper replacing flat loop; update `resolve_file_refs` reconstruction\n- **Modify**: `tests/resolver_test.rs` (line 22) — replace `parent_qualified_name: None` with `children: vec![]`\n- **Modify**: `tests/parse_rust_test.rs` (lines 49-76) — update parent assertion to use tree navigation; update flat `.iter()` to use `flatten_symbols` where needed\n- **Modify**: `tests/parse-dart-test.rs` — update flat `.iter()` calls to use `flatten_symbols`\n- **Test**: `tests/parse_rust_test.rs` — new test: tree structure verification + DFS flatten round-trip\n- **Test**: `tests/pipeline-test.rs` — new test: parse → insert → query back verifying parent_symbol_id chain\n\n## Steps\n\n### Step 1: Modify ExtractedSymbol and add flatten_symbols\n\nIn `src/parser/mod.rs`, replace the `parent_qualified_name` field with `children` and add a DFS flatten utility:\n\n```rust\n#[derive(Debug, Clone)]\npub struct ExtractedSymbol {\n    pub qualified_name: String,\n    pub short_name: String,\n    pub kind: SymbolKind,\n    pub signature: Option<String>,\n    pub signature_hash: Option<String>,\n    pub visibility: Option<String>,\n    pub start_line: usize,\n    pub start_col: usize,\n    pub end_line: usize,\n    pub end_col: usize,\n    pub children: Vec<ExtractedSymbol>,\n    pub docstring: Option<String>,\n    pub cyclomatic: Option<u32>,\n    pub cognitive: Option<u32>,\n    pub flags: u32,\n}\n\npub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {\n    let mut out = Vec::new();\n    fn walk<'a>(symbols: &'a [ExtractedSymbol], out: &mut Vec<&'a ExtractedSymbol>) {\n        for sym in symbols {\n            out.push(sym);\n            walk(&sym.children, out);\n        }\n    }\n    walk(tree, &mut out);\n    out\n}\n```\n\n### Step 2: Refactor Rust parser to produce tree-structured output\n\nIn `src/parser/rust.rs`:\n\nChange `collect_symbols` and `collect_symbols_inner` to return `Vec<ExtractedSymbol>` instead of pushing to a mutable `&mut Vec`. Container nodes (impl, trait, mod) recurse to get children, then set them on the parent symbol. Leaf nodes return with `children: vec![]`.\n\n```rust\nfn collect_symbols(node: Node, src: &[u8], name_context: &[String]) -> Vec<ExtractedSymbol> {\n    collect_symbols_inner(node, src, name_context, false)\n}\n\nfn collect_symbols_inner(\n    node: Node,\n    src: &[u8],\n    name_context: &[String],\n    in_cfg_test: bool,\n) -> Vec<ExtractedSymbol> {\n    let mut symbols = Vec::new();\n    let mut cursor = node.walk();\n    for child in node.children(&mut cursor) {\n        match child.kind() {\n            \"function_item\" | \"function_signature_item\" => {\n                // ... same kind detection logic ...\n                if let Some(mut sym) = extract_symbol(child, src, name_context, kind) {\n                    sym.flags |= extract_flags(child, src);\n                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }\n                    symbols.push(sym);\n                }\n            }\n            // leaf types: struct_item, enum_item, type_item, const_item, static_item, macro_definition\n            // same pattern — extract, push with children: vec![]\n            \"impl_item\" => {\n                if let Some(mut sym) = extract_impl_symbol(child, src, name_context) {\n                    sym.flags |= extract_flags(child, src);\n                    if in_cfg_test { sym.flags |= FLAG_CFG_TEST; }\n                    let impl_name = sym.short_name.clone();\n                    if let Some(body) = child.child_by_field_name(\"body\") {\n                        let mut ctx = name_context.to_vec();\n                        ctx.push(impl_name);\n                        sym.children = collect_symbols_inner(body, src, &ctx, in_cfg_test);\n                    }\n                    symbols.push(sym);\n                }\n            }\n            // trait_item, mod_item — same pattern: extract, recurse into body, set children\n            _ => {\n                symbols.extend(collect_symbols_inner(child, src, name_context, in_cfg_test));\n            }\n        }\n    }\n    symbols\n}\n```\n\nUpdate `extract_symbol` and `extract_impl_symbol` to set `children: vec![]` instead of `parent_qualified_name`.\n\nUpdate `pub fn parse(...)` to call the new signature: `let symbols = collect_symbols(root, src_bytes, &[]);`.\n\n### Step 3: Refactor Dart parser to produce tree-structured output\n\nIn `src/parser/dart.rs`:\n\nSame pattern as Rust. Change `collect_symbols` to return `Vec<ExtractedSymbol>`. Container types (class, mixin, extension) recurse into body and set children. Leaf types return with `children: vec![]`.\n\nUpdate `build_symbol` to use `children: vec![]` instead of `parent_qualified_name`.\n\nUpdate `pub fn parse(...)` to use the new return-based signature.\n\n### Step 4: Pipeline DFS insertion\n\nIn `src/pipeline.rs`, replace the flat symbol insertion loop (lines 176-197) with a DFS helper:\n\n```rust\nfn insert_symbols_dfs(\n    db: &Db,\n    file_id: i64,\n    symbols: &[ExtractedSymbol],\n    parent_id: Option<i64>,\n) -> Result<i64> {\n    let mut count = 0;\n    for sym in symbols {\n        let id = db.insert_symbol(&InsertSymbolParams {\n            file_id,\n            qualified_name: &sym.qualified_name,\n            short_name: &sym.short_name,\n            kind: sym.kind.as_str(),\n            signature: sym.signature.as_deref(),\n            signature_hash: sym.signature_hash.as_deref(),\n            visibility: sym.visibility.as_deref(),\n            start_line: sym.start_line as i64,\n            start_col: sym.start_col as i64,\n            end_line: sym.end_line as i64,\n            end_col: sym.end_col as i64,\n            parent_symbol_id: parent_id,\n            docstring: sym.docstring.as_deref(),\n            cyclomatic: sym.cyclomatic.map(|v| v as i64),\n            cognitive: sym.cognitive.map(|v| v as i64),\n            flags: sym.flags as i64,\n        })?;\n        count += 1;\n        count += insert_symbols_dfs(db, file_id, &sym.children, Some(id))?;\n    }\n    Ok(count)\n}\n```\n\nCall site in `parse_single_file` becomes:\n```rust\nlet symbols_extracted = insert_symbols_dfs(db, file_id, &parse_result.symbols, None)?;\n```\n\n### Step 5: Update resolve_file_refs reconstruction\n\nIn `src/pipeline.rs` lines 238-256, replace `parent_qualified_name: None` with `children: vec![]` in the `ExtractedSymbol` construction from `SymbolRow`.\n\n### Step 6: Update test helpers and assertions\n\n**`tests/resolver_test.rs`**: In `make_symbol`, replace `parent_qualified_name: None` with `children: vec![]`.\n\n**`tests/parse_rust_test.rs`**:\n- `test_parse_function`: `result.symbols[0]` stays valid (top-level fn, no nesting change)\n- `test_parse_struct_with_methods` (lines 34-77): Method `bar` is now nested under impl, not at top level. Navigate via impl's children or use `flatten_symbols`. Replace `parent_qualified_name` assertion with tree structure assertion:\n  ```rust\n  let impl_sym = result.symbols.iter().find(|s| s.kind == SymbolKind::Impl).unwrap();\n  assert_eq!(impl_sym.children.len(), 1);\n  assert_eq!(impl_sym.children[0].short_name, \"bar\");\n  ```\n- Other tests use `.iter().find()` on top-level symbols — those with only top-level types stay unchanged. Tests that search for methods inside impls need `flatten_symbols`.\n\n**`tests/parse-dart-test.rs`**:\n- `test_parse_dart_class`: Methods are now nested under the class. Use `flatten_symbols` or navigate children.\n- `test_parse_dart_mixin`, `test_parse_dart_extension`: Container symbols at top level — fine. But if tests search for nested methods, they need `flatten_symbols`.\n\n### Step 7: Add tree structure verification test\n\nIn `tests/parse_rust_test.rs`, add a test that parses a multi-level nesting (module containing impl containing method) and verifies the tree shape:\n\n```rust\n#[test]\nfn test_tree_structured_symbols() {\n    let src = r#\"\nmod inner {\n    struct Foo;\n    impl Foo {\n        fn bar(&self) {}\n    }\n}\n\"#;\n    let result = parse_file(src, \"rust\", \"test.rs\").unwrap();\n    assert_eq!(result.symbols.len(), 1); // only top-level mod\n    let module = &result.symbols[0];\n    assert_eq!(module.short_name, \"inner\");\n    assert_eq!(module.children.len(), 2); // Foo struct + impl Foo\n    let impl_sym = module.children.iter().find(|s| s.kind == SymbolKind::Impl).unwrap();\n    assert_eq!(impl_sym.children.len(), 1);\n    assert_eq!(impl_sym.children[0].short_name, \"bar\");\n\n    // flatten preserves all symbols\n    let flat = flatten_symbols(&result.symbols);\n    assert_eq!(flat.len(), 4); // mod, struct, impl, method\n}\n```\n\n### Step 8: Add pipeline round-trip test\n\nIn `tests/pipeline-test.rs`, add a test that:\n1. Creates a temp workspace with a Rust file containing nested symbols\n2. Runs `parse_workspace`\n3. Queries symbols back from DB\n4. Verifies `parent_symbol_id` chain: method's parent_symbol_id points to impl, impl's parent_symbol_id is None (or points to module)\n\n```rust\n#[test]\nfn test_parent_symbol_id_round_trip() {\n    // create temp dir with a .rs file containing impl + method\n    // run parse_workspace\n    // query symbols from DB\n    // verify parent_symbol_id chain\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"ExtractedSymbol gains children: Vec<ExtractedSymbol> field\" → Step 1\n- [x] \"parent_qualified_name removed from ExtractedSymbol\" → Step 1\n- [x] \"RustAdapter and DartAdapter produce tree-structured output\" → Steps 2, 3\n- [x] \"Pipeline tree-to-flat conversion: depth-first walk assigns parent_symbol_id during DB insertion\" → Step 4\n- [x] \"Round-trip test: tree flattened, inserted, queried back, matches expected structure\" → Step 8\n- [x] \"Edge case: top-level symbols no parent, deeply nested symbols maintain full chain\" → Steps 7, 8\n- [x] \"Behavioral parity: same symbols in DB with correct parent_symbol_id as before\" → Step 4 (actually improves on before — previously parent_symbol_id was always None)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "9949356"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1779891115033,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 33
+      }
+    },
+    {
+      "ts": 1779897744112,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779898136097,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: **approve**. No ship-blocking findings. Parser tests passed in sandbox; pipeline integration tests (17/17) verified separately. DFS insertion correctly threads parent_id, resolver reconstruction stays flat (correct for its consumers), container type coverage is symmetric across Rust and Dart parsers. Risk score 0.604 driven by churn/complexity — convention violations are pre-existing pipeline symbols, not from this change.",
+      "ts": 1779898539599
+    }
+  ],
+  "created_at": 1779891115033,
+  "updated_at": 1779898136097,
+  "completed_at": 1779898136097,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e69c7-c1eb-75b0-b278-767274d9640b",
+      "edge_type": "depends_on",
+      "source": "sutra/33",
+      "target": "sutra/31",
+      "note": null,
+      "created_at": 1779891159531
+    }
+  ]
+}

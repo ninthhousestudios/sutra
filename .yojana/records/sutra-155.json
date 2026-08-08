@@ -1,0 +1,125 @@
+{
+  "id": "019ece4b-6199-7a63-8a3d-272f7a60d520",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/155",
+  "sequence_number": 155,
+  "title": "Categories + cross-project filtering",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nCategory-based filtering so that lessons surface only in relevant workspaces. Categories are flat tags (multi-valued) on each lesson. When surfacing, sutra filters by the current workspace's language and technology stack — a Dart project never sees rust-only lessons, but does see sqlite-general ones.\n\nCategory dimensions:\n- **Technology**: rust, dart, flutter, sqlite, rusqlite, diesel, etc.\n- **Architectural**: mcp-server, cli, daemon, indexer, state-management\n- **Concern**: concurrency, error-handling, sentinel-values, migration, testing\n\n`sutra_remember` accepts optional explicit categories. Category inference from the workspace graph (file language, imports) comes in the enrichment slice (sutra/157).\n\nSurfacing: `query_for_context()` accepts the workspace's language/tech profile and filters out lessons whose categories are all irrelevant to the workspace.\n\n## Acceptance criteria\n\n- [ ] Categories stored per-lesson in the `categories` table\n- [ ] `sutra_remember` accepts optional `categories` parameter\n- [ ] `query_for_context()` accepts workspace language/tech profile and filters by category relevance\n- [ ] Lessons with no categories surface in all workspaces (uncategorized = universal)\n- [ ] Lessons tagged only `[rust]` do not surface in a Dart workspace\n- [ ] Lessons tagged `[sqlite]` (no language tag) surface in both Rust and Dart workspaces\n- [ ] Tests: category filtering, universal lessons, cross-project scenarios\n\n## Blocked by\n\n- sutra/152 — 5x-review-1",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Categories stored per-lesson in the categories table"
+    },
+    {
+      "done": false,
+      "text": "sutra_remember accepts optional categories parameter"
+    },
+    {
+      "done": false,
+      "text": "query_for_context() filters by category relevance to workspace"
+    },
+    {
+      "done": false,
+      "text": "Uncategorized lessons surface in all workspaces"
+    },
+    {
+      "done": false,
+      "text": "Rust-only lessons do not surface in Dart workspaces"
+    },
+    {
+      "done": false,
+      "text": "Language-agnostic technology lessons surface in all relevant workspaces"
+    },
+    {
+      "done": false,
+      "text": "Tests: category filtering, universal lessons, cross-project scenarios"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd category-based filtering to `query_for_context()` so language-specific lessons only surface in workspaces that use those languages, while technology and uncategorized lessons surface everywhere. The store path already handles categories (schema, `StoreLessonParams`, `RememberArgs`); this task fills the query-side gap.\n\nThe filtering uses a known-languages const to distinguish language categories (e.g. \"rust\", \"dart\") from technology categories (e.g. \"sqlite\", \"concurrency\"). A lesson passes if it has no categories, has any non-language category, or has a language category matching the workspace.\n\n## Files\n\n- **Modify**: `src/db/mod.rs` (~line 600) — add `Db::distinct_languages()` query\n- **Modify**: `src/lessons.rs` (lines 176-307) — add `workspace_languages` to `MatchContext`, add `KNOWN_LANGUAGE_CATEGORIES` const, add post-filter in `query_for_context()`\n- **Modify**: `src/tools/read.rs` (lines 167-184) — compute workspace languages from Db, pass to `MatchContext`\n- **Test**: `tests/lessons-test.rs` — update `symbol_ctx` helper, add 4-5 new tests\n\n## Steps\n\n### Step 1: Add `Db::distinct_languages()`\n\nAdd a method to get the set of languages present in the workspace file index.\n\n```rust\n// src/db/mod.rs\npub fn distinct_languages(&self) -> Result<Vec<String>> {\n    let conn = self.conn.lock();\n    let mut stmt = conn.prepare(\n        \"SELECT DISTINCT language FROM files\"\n    )?;\n    let langs = stmt.query_map([], |row| row.get(0))?\n        .collect::<std::result::Result<Vec<String>, _>>()?;\n    Ok(langs)\n}\n```\n\n### Step 2: Extend `MatchContext` with workspace languages\n\n```rust\n// src/lessons.rs\npub struct MatchContext<'a> {\n    pub symbol_name: &'a str,\n    pub file_path: Option<&'a str>,\n    pub imports: &'a [String],\n    pub project: Option<&'a str>,\n    pub workspace_languages: &'a [String],  // NEW\n}\n```\n\n### Step 3: Add category filtering in `query_for_context()`\n\nAfter collecting candidate lessons from phases 1 and 2 (before updating `last_surfaced`), batch-load categories and apply the filter.\n\n```rust\n// src/lessons.rs — const at module level\nconst KNOWN_LANGUAGE_CATEGORIES: &[&str] = &[\"rust\", \"dart\"];\n\n// Inside query_for_context(), after phase 2, before the last_surfaced update:\nfn is_language_category(cat: &str) -> bool {\n    KNOWN_LANGUAGE_CATEGORIES.iter().any(|&lc| lc.eq_ignore_ascii_case(cat))\n}\n\n// Batch-load categories for matched lessons\nif !lessons.is_empty() && !ctx.workspace_languages.is_empty() {\n    let ids: Vec<&str> = lessons.iter().map(|l| l.id.as_str()).collect();\n    let placeholders = ids.iter().map(|_| \"?\").collect::<Vec<_>>().join(\",\");\n    let mut stmt = conn.prepare(&format!(\n        \"SELECT lesson_id, tag FROM categories WHERE lesson_id IN ({placeholders})\"\n    ))?;\n    let refs: Vec<&dyn rusqlite::types::ToSql> =\n        ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();\n    let mut cat_map: HashMap<String, Vec<String>> = HashMap::new();\n    let mut rows = stmt.query(refs.as_slice())?;\n    while let Some(row) = rows.next()? {\n        let lid: String = row.get(0)?;\n        let tag: String = row.get(1)?;\n        cat_map.entry(lid).or_default().push(tag);\n    }\n\n    let ws_lang_set: HashSet<&str> = ctx.workspace_languages\n        .iter().map(|s| s.as_str()).collect();\n\n    lessons.retain(|l| {\n        let cats = cat_map.get(&l.id);\n        match cats {\n            None => true, // uncategorized → universal\n            Some(cats) if cats.is_empty() => true,\n            Some(cats) => {\n                cats.iter().any(|c| {\n                    if is_language_category(c) {\n                        ws_lang_set.contains(c.as_str())\n                    } else {\n                        true // non-language categories always relevant\n                    }\n                })\n            }\n        }\n    });\n}\n```\n\nWhen `workspace_languages` is empty, skip filtering entirely (no workspace context → surface everything).\n\n### Step 4: Update `tools/read.rs` call site\n\n```rust\n// src/tools/read.rs, inside the lessons block (~line 167-184)\nif let Some(ldb) = lessons_db {\n    let project_slug = workspace_root.file_name().and_then(|n| n.to_str());\n    let import_paths: Vec<String> = db\n        .imports_for_file(sym.file_id)\n        .unwrap_or_default()\n        .into_iter()\n        .map(|i| i.imported_path)\n        .collect();\n    let ws_langs = db.distinct_languages().unwrap_or_default();\n    let ctx = crate::lessons::MatchContext {\n        symbol_name: &sym.qualified_name,\n        file_path: Some(&file.path),\n        imports: &import_paths,\n        project: project_slug,\n        workspace_languages: &ws_langs,\n    };\n    let lessons = ldb.query_for_context(&ctx)?;\n    // ...\n}\n```\n\n### Step 5: Update existing tests\n\nUpdate `symbol_ctx` helper and all inline `MatchContext` constructions in `tests/lessons-test.rs` to include `workspace_languages: &[]` (empty = no filtering, preserving existing behavior).\n\n```rust\nfn symbol_ctx<'a>(name: &'a str, project: Option<&'a str>) -> MatchContext<'a> {\n    MatchContext {\n        symbol_name: name,\n        file_path: None,\n        imports: &[],\n        project,\n        workspace_languages: &[],\n    }\n}\n```\n\n### Step 6: Add new category filtering tests\n\n```rust\n#[test]\nfn category_filtering_excludes_wrong_language() {\n    // Store a rust-only lesson, query in a dart workspace → filtered out\n}\n\n#[test]\nfn uncategorized_lessons_surface_everywhere() {\n    // Store a lesson with no categories, query in dart workspace → surfaces\n}\n\n#[test]\nfn technology_category_surfaces_in_all_workspaces() {\n    // Store \"sqlite\" lesson, query in dart workspace → surfaces\n}\n\n#[test]\nfn mixed_categories_surface_if_any_relevant() {\n    // Store [\"rust\", \"sqlite\"] lesson, query in dart workspace → surfaces (sqlite is non-language)\n}\n\n#[test]\nfn empty_workspace_languages_skips_filtering() {\n    // Store a rust-only lesson, query with empty workspace_languages → surfaces\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"Categories stored per-lesson in the categories table\" → Already done (schema + store)\n- [x] \"sutra_remember accepts optional categories parameter\" → Already done (RememberArgs)\n- [x] \"query_for_context() filters by category relevance to workspace\" → Steps 2-4\n- [x] \"Uncategorized lessons surface in all workspaces\" → Step 3 (None branch)\n- [x] \"Rust-only lessons do not surface in Dart workspaces\" → Step 3 (language filter)\n- [x] \"Language-agnostic technology lessons surface in all relevant workspaces\" → Step 3 (non-language category → always relevant)\n- [x] \"Tests: category filtering, universal lessons, cross-project scenarios\" → Steps 5-6",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "6ac455d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "needs-plan",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577507225,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 155
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781663784925,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781664026677,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577507225,
+  "updated_at": 1781664026677,
+  "completed_at": 1781664026677,
+  "edges": [
+    {
+      "id": "019ece4b-9eca-7832-83a3-fc8808065867",
+      "edge_type": "depends_on",
+      "source": "sutra/155",
+      "target": "sutra/152",
+      "note": null,
+      "created_at": 1781577522890
+    },
+    {
+      "id": "019ece4b-ab08-7f40-8f26-7e23b90ff1b4",
+      "edge_type": "motivated_by",
+      "source": "sutra/155",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577526024
+    },
+    {
+      "id": "019ece4c-04d3-7ce1-9f5c-d00d2216c05d",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/155",
+      "note": null,
+      "created_at": 1781577549011
+    },
+    {
+      "id": "019ece4c-f13e-7c80-9b24-664f1170b32e",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/155",
+      "note": null,
+      "created_at": 1781577609534
+    }
+  ]
+}

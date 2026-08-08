@@ -1,0 +1,119 @@
+{
+  "id": "019f9abe-8f61-73b2-944f-7b78f3cf17a1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/296",
+  "sequence_number": 296,
+  "title": "Test-directed escape hatch is missing from dep, cycle and external constraint evaluation",
+  "description": "Codex adversarial review of c483406..77b48f8 (sutra/290 292 293 294 295), verified against source.\n\n**1. [high] `scope_targets_tests` exists only for forbidden_pattern.** `rg scope_targets_tests` returns 5 hits, all in `src/constraints/patterns.rs`. The DD dep path (`check.rs:336`, and the resolved/baseline path at `check.rs:381`) filters on `!c.include_tests && !production_edges.contains(...)`; the cycle path (`check.rs:435`) on `matched.is_some_and(|c| c.include_tests)`. Neither consults the constraint's own scope. Since sutra/292 + sutra/295 now mark imports under `tests/`, `test/`, `test_*.py` etc. as `is_test` across five languages, a `forbidden_dep from = \"tests/**\"` or a `no_cycles` scoped to `tests/**` matches the raw graph and is then silently discarded unless the author also sets `include_tests = true`.\n\nThis is the sutra/292 design decision holding for one constraint kind and quietly not holding for the others, and it fails in the dangerous direction: a deliberately test-targeted *blocking* rule goes inert with no production signal.\n\n**2. [medium] External `include_tests` shadowed by rule order.** `match_external` (external.rs:96) is `constraints.iter().find(...)` — first match wins — and `check_import_items` (external.rs:228-235) applies the `*is_test && !c.include_tests` skip *after* matching. A broad rule preceding a narrower `include_tests = true` rule swallows the match and the opt-in rule never evaluates. Same first-match behaviour prevents a test-path-directed external rule (`from = \"tests/**\"`) from firing.\n\nCodex recommended reporting every matching external constraint and deduping by `(constraint_id, from_path, crate)`. Rejected: that changes the observable contract (one finding per `(file, crate)` becomes N for N overlapping rules) to fix a shadowing bug. Instead, restrict matching to constraints *applicable to this item* and keep first-match — same finding count, shadowing gone.\n\nNot in scope: `find_matching_constraint` has the same first-match property for deps, so a broad dep rule preceding a test-directed one still shadows it. One dep rule has always reported per edge; changing that is a separate contract decision.\n\nAlso not in scope (deliberate, documented): `guard.rs:552` drops `is_test` imports unconditionally regardless of `include_tests`, with a comment giving the rationale — the review path still enforces, and an edit-time deny on test wiring is the sutra/290 failure mode.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "The test-directed escape hatch is a single shared helper, not reimplemented per constraint kind"
+    },
+    {
+      "done": true,
+      "text": "forbidden_dep with from or to literal-prefixing into a test path fires on test-only edges without include_tests"
+    },
+    {
+      "done": true,
+      "text": "no_cycles scoped to a test path reports test-only cycles without include_tests"
+    },
+    {
+      "done": true,
+      "text": "confined_external's allowed_in does NOT count as targeting tests (it is an allowlist, not a target)"
+    },
+    {
+      "done": true,
+      "text": "forbidden_external from = \"tests/**\" fires on a test-only import without include_tests"
+    },
+    {
+      "done": true,
+      "text": "A broad external rule preceding a narrower include_tests = true rule no longer shadows it"
+    },
+    {
+      "done": true,
+      "text": "External findings stay one per (file, crate) — no change to finding volume for non-test items"
+    },
+    {
+      "done": true,
+      "text": "forbidden_pattern behaviour is unchanged (scope-only escape hatch, existing tests still pass)"
+    },
+    {
+      "done": true,
+      "text": "Regression tests cover each of the above, including the negative direction (rules stay live on production code)"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "External test-item filtering moved into matching (`match_external_where`) rather than reporting every matching constraint.",
+      "rationale": "External matching is first-match by contract — exactly one finding per (file, crate). Restricting the candidate set fixes the shadowing without touching finding volume.",
+      "rejected_alternatives": "Codex's recommendation: iterate all matching constraints and dedupe by (constraint_id, from_path, crate). Fixes shadowing but silently changes the observable contract — two overlapping rules on the same crate would double every existing finding. Exactly the refactor-contract failure mode CLAUDE.md documents (lessons ledger L9)."
+    },
+    {
+      "decision": "Dep/cycle/external consult `adapter::any_language_is_test_path` (any registered adapter) rather than a single adapter's classifier.",
+      "rationale": "Only forbidden_pattern names a language. A `tests/**` glob on a dep or cycle rule spans the whole workspace and is not written against one grammar.",
+      "rejected_alternatives": "Plumb `&LanguageRegistry` through `check_import_items`, `check_workspace_externals` and their callers — more precise in principle but the classifier is path-only and has no language to dispatch on anyway, so the plumbing would buy nothing."
+    },
+    {
+      "decision": "`confined_external`'s `allowed_in` does not count as a test-directed glob.",
+      "rationale": "It is an allowlist: `allowed_in = [\"tests/**\"]` says test usage is permitted, which is the opposite of aiming the rule at tests. Counting it would make the rule fire on precisely the code it exempts.",
+      "rejected_alternatives": "Treat every path glob on a constraint uniformly — simpler to describe, but inverts the meaning of the one field whose paths are permissive rather than targeting."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Rejected Codex's recommendation for the external fix (report every matching constraint, dedupe by (constraint_id, from_path, crate)) — that trades a contract change (one finding per (file, crate) becomes N for N overlapping rules) for a shadowing bug. Moved applicability into matching instead via `match_external_where`; finding volume is unchanged, verified by `applicability_matching_does_not_multiply_findings_for_production_items`.\n\nEach of the four positive-direction tests was verified to FAIL against the pre-fix code by temporarily neutering `test_directed_ids` (returns empty set) and reverting `check_import_items` to post-filtering, then restoring. Without that step the tests would have been indistinguishable from tests that pass for unrelated reasons.\n\nDeliberately left in place, both pre-existing and orthogonal to the escape hatch:\n- `find_matching_constraint` is also first-match, so a broad dep rule preceding a test-directed one still shadows it. One dep rule has always reported per edge; changing that is a separate contract decision, and unlike external there is no include_tests interaction making it newly reachable.\n- `evaluate_raw` hard-filters `is_test = 0` in SQL and never honours include_tests. Same class as the documented guard decision at guard.rs:552 (review path still enforces; an edit-time deny on test wiring is the sutra/290 failure mode).",
+  "reproduction": null,
+  "root_cause": "sutra/292 introduced the test-directed escape hatch inside `patterns.rs` as a local private fn (`scope_targets_tests`) rather than as a shared constraint-level concept. The exclusion it guards against, however, is graph-wide: `imports.is_test` is set by path in `ParserPool::parse_with` and consumed by dep, cycle and external evaluation too. So the mitigation landed in one of the four places its own precondition applies, and the gap was invisible because the escape hatch had no caller outside the file that defined it.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "77b48f8",
+      "label": "head of reviewed range"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/292",
+      "label": "introduced the escape hatch, patterns only"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/294",
+      "label": "introduced external is_test filtering"
+    },
+    {
+      "type": "git:commit",
+      "value": "8c757f7"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1785007607649,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 296
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785008063854,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1785007607649,
+  "updated_at": 1785008063854,
+  "completed_at": 1785008063854,
+  "edges": []
+}

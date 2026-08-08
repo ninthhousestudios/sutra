@@ -1,0 +1,92 @@
+{
+  "id": "019eae91-9845-7e01-93a8-6605e92f71f2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/127",
+  "sequence_number": 127,
+  "title": "Wave 3: cochange from commit_files + behavioral tests",
+  "description": "sutra_cochange always returns empty: git log --name-only with a pathspec filters output to that pathspec, so the skip-self filter drops everything (reproduced empirically). Health pipeline uses a different, working path (commit_files tables) so the two surfaces contradict. Tests assert shape only and pass on empty output. Findings: cochange-always-empty (HIGH), cochange-tests-vacuous (MEDIUM). Locations: src/git.rs:103-144, src/tools/cochange.rs, tests/cochange-test.rs.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_cochange answers from already-populated commit_files tables; broken git plumbing deleted"
+    },
+    {
+      "done": false,
+      "text": "behavioral test: fixture repo with two files committed together twice yields non-empty cochange result"
+    },
+    {
+      "done": false,
+      "text": "audit other git-backed tool tests for non-emptiness assertions; add where missing"
+    },
+    {
+      "done": false,
+      "text": "sutra_cochange on src/components.rs against live index returns non-empty partners"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "findings: cochange-always-empty, cochange-tests-vacuous"
+    },
+    {
+      "type": "git:commit",
+      "value": "c39583f"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045237829,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 127
+      }
+    },
+    {
+      "ts": 1781096132289,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781096491426,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045237829,
+  "updated_at": 1781096491426,
+  "completed_at": 1781096491426,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "cochange",
+  "edges": [
+    {
+      "id": "019eae92-7ab6-7433-adc7-94a45d41f452",
+      "edge_type": "relates_to",
+      "source": "sutra/127",
+      "target": "sutra/125",
+      "note": null,
+      "created_at": 1781045295798
+    }
+  ]
+}

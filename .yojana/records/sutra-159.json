@@ -1,0 +1,151 @@
+{
+  "id": "019ece4c-8b40-7163-9664-2a5362d4fbd8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/159",
+  "sequence_number": 159,
+  "title": "Anchor enrichment on write",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nWhen `sutra_remember` is called, the writing sutra instance enriches the lesson with pattern anchors and categories inferred from its workspace graph, before persisting. The agent provides text + location anchors (what it was editing); sutra fills in the rest.\n\nEnrichment steps:\n1. Location anchors stored as-is (agent-provided symbol name, file path)\n2. Look up the file in the workspace index → get imports via `Db::imports_for_file()`\n3. Infer import-pattern anchors from the file's import paths (e.g., file imports `rusqlite` → add `import:rusqlite` anchor)\n4. Infer directory pattern from the file path (e.g., `crates/sutra-core/src/extract/` → directory anchor)\n5. Infer categories from file language (→ `rust`/`dart`), import-derived technology tags, and component membership\n\nThis slice requires the anchor matching (sutra/153) and categories (sutra/155) slices to be complete so that enriched anchors and categories are meaningful.\n\n## Acceptance criteria\n\n- [ ] Writing a lesson with only a symbol anchor auto-generates import-pattern anchors from the symbol's file\n- [ ] Writing a lesson auto-generates a directory anchor from the file path\n- [ ] Writing a lesson auto-infers language category from the file\n- [ ] Writing a lesson auto-infers technology categories from imports\n- [ ] Explicitly provided anchors/categories are preserved (enrichment adds, doesn't replace)\n- [ ] Enrichment is best-effort — missing workspace data doesn't fail the write\n- [ ] Tests: enrichment from imports, from directory, from language, explicit + inferred combination\n\n## Blocked by\n\n- sutra/153 — File glob + import pattern + directory anchor matching\n- sutra/155 — Categories + cross-project filtering\n- sutra/157 — 5x-review-2",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Symbol-only write auto-generates import-pattern anchors from the symbol's file ✅"
+    },
+    {
+      "done": false,
+      "text": "Auto-generates directory anchor from file path ✅"
+    },
+    {
+      "done": false,
+      "text": "Auto-infers language category from file ✅"
+    },
+    {
+      "done": false,
+      "text": "Auto-infers technology categories from imports ✅"
+    },
+    {
+      "done": false,
+      "text": "Explicit anchors/categories preserved (enrichment adds, doesn't replace) ✅"
+    },
+    {
+      "done": false,
+      "text": "Enrichment is best-effort — missing workspace data doesn't fail the write ✅"
+    },
+    {
+      "done": false,
+      "text": "Tests: enrichment from imports, directory, language, explicit + inferred combination ✅"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd an optional `workspace` parameter to `sutra_remember`. When provided, the handler resolves the workspace DB and enriches agent-provided anchors/categories by inspecting the workspace graph — deriving import-pattern anchors, directory anchors, language categories, and technology categories from the files backing the agent's symbol/file anchors. Enrichment is additive (never replaces explicit inputs) and best-effort (DB lookup failures are silently skipped).\n\nThe enrichment logic lives in `remember.rs` (not `lessons.rs`) because it bridges the workspace `Db` and the lessons store — `LessonsDb::store` stays a dumb persistence layer.\n\n## Files\n\n- **Modify**: `src/tools/remember.rs` (lines ~9-144) — add workspace field, enrichment function, merge logic\n- **Modify**: `src/mcp.rs` (lines ~541-547) — resolve workspace DB when provided, pass to handler\n- **Test**: `tests/remember-enrichment-test.rs` — new file for enrichment-specific tests (separate from lessons-test.rs which tests the LessonsDb layer)\n\n## Steps\n\n### Step 1: Add `workspace` field to `RememberArgs`\n\nIn `src/tools/remember.rs`, add:\n\n```rust\n/// Workspace to use for anchor enrichment. When provided, sutra auto-generates\n/// import-pattern anchors, directory anchors, and categories from the workspace graph.\n#[serde(default)]\npub workspace: Option<String>,\n```\n\n### Step 2: Define enrichment types and import→technology mapping\n\nIn `src/tools/remember.rs`, add:\n\n```rust\nuse std::collections::HashSet;\nuse crate::db::Db;\n\nconst IMPORT_TECH_MAP: &[(&str, &str)] = &[\n    (\"rusqlite\", \"sqlite\"),\n    (\"sqlx\", \"sql\"),\n    (\"tokio\", \"async\"),\n    (\"serde\", \"serialization\"),\n    (\"serde_json\", \"json\"),\n    (\"flutter\", \"flutter\"),\n    (\"http\", \"http\"),\n    (\"hyper\", \"http\"),\n    (\"reqwest\", \"http\"),\n    (\"tonic\", \"grpc\"),\n    (\"prost\", \"grpc\"),\n    (\"tracing\", \"observability\"),\n];\n\nstruct Enrichment {\n    anchors: Vec<(AnchorKind, String)>,\n    categories: Vec<String>,\n}\n```\n\n### Step 3: Implement `enrich` function\n\n```rust\nfn enrich(db: &Db, explicit_anchors: &[(AnchorKind, &str)]) -> Enrichment {\n    let mut seen_dirs: HashSet<String> = HashSet::new();\n    let mut seen_imports: HashSet<String> = HashSet::new();\n    let mut cats: HashSet<String> = HashSet::new();\n    let mut anchors = Vec::new();\n\n    for &(kind, value) in explicit_anchors {\n        let file_row = match kind {\n            AnchorKind::Symbol => {\n                db.resolve_symbol(value, None)\n                    .ok()\n                    .flatten()\n                    .and_then(|sym| db.file_by_id(sym.file_id).ok().flatten())\n            }\n            AnchorKind::File => db.file_by_path(value).ok().flatten(),\n            _ => continue,\n        };\n\n        let Some(file) = file_row else { continue };\n\n        // Directory anchor from parent path\n        if let Some(dir) = file.path.rsplit_once('/').map(|(d, _)| d) {\n            if seen_dirs.insert(dir.to_string()) {\n                anchors.push((AnchorKind::Directory, dir.to_string()));\n            }\n        }\n\n        // Language category\n        let lang = file.language.to_lowercase();\n        if !lang.is_empty() {\n            cats.insert(lang);\n        }\n\n        // Import-derived anchors and technology categories\n        let imports = db.imports_for_file(file.id).unwrap_or_default();\n        for imp in &imports {\n            let root = import_root(&imp.imported_path);\n            if !root.is_empty() && seen_imports.insert(root.to_string()) {\n                anchors.push((AnchorKind::ImportPattern, format!(\"{root}::*\")));\n                if let Some(&(_, tech)) = IMPORT_TECH_MAP.iter().find(|&&(k, _)| k == root) {\n                    cats.insert(tech.to_string());\n                }\n            }\n        }\n    }\n\n    Enrichment { anchors, categories: cats.into_iter().collect() }\n}\n\nfn import_root(imported_path: &str) -> &str {\n    // Dart: \"package:flutter/material.dart\" → \"flutter\"\n    if let Some(rest) = imported_path.strip_prefix(\"package:\") {\n        return rest.split('/').next().unwrap_or(\"\");\n    }\n    // Dart: \"dart:core\" → skip (stdlib, not useful as tech category)\n    if imported_path.starts_with(\"dart:\") {\n        return \"\";\n    }\n    // Rust: \"rusqlite::params\" → \"rusqlite\"\n    imported_path.split(\"::\").next().unwrap_or(\"\")\n}\n```\n\n### Step 4: Integrate enrichment into `handle`\n\nChange `handle` signature:\n```rust\npub fn handle(lessons_db: &LessonsDb, workspace_db: Option<&Db>, args: &RememberArgs) -> Result<serde_json::Value>\n```\n\nAfter building `anchors` and `cats` from explicit inputs, merge enrichment:\n```rust\nlet enrichment = workspace_db.map(|db| enrich(db, &anchors));\n\nlet mut all_anchors: Vec<(AnchorKind, &str)> = anchors;\nlet mut all_cats: Vec<&str> = cats;\nlet owned_anchor_strings: Vec<(AnchorKind, String)>;\nlet owned_cat_strings: Vec<String>;\n\nif let Some(e) = enrichment {\n    owned_anchor_strings = e.anchors;\n    owned_cat_strings = e.categories;\n    // Add enriched anchors that aren't already explicit\n    for (k, v) in &owned_anchor_strings {\n        if !all_anchors.iter().any(|(ek, ev)| ek == k && *ev == v.as_str()) {\n            all_anchors.push((*k, v.as_str()));\n        }\n    }\n    for c in &owned_cat_strings {\n        if !all_cats.iter().any(|&ec| ec == c.as_str()) {\n            all_cats.push(c.as_str());\n        }\n    }\n}\n```\n\nUpdate response to report enrichment:\n```rust\nOk(json!({\n    \"stored\": true,\n    \"lesson_id\": id,\n    \"anchor_count\": all_anchors.len(),\n    \"enriched\": workspace_db.is_some(),\n}))\n```\n\n### Step 5: Update MCP handler\n\nIn `src/mcp.rs`, change `sutra_remember`:\n```rust\npub async fn sutra_remember(\n    &self,\n    Parameters(args): Parameters<RememberArgs>,\n) -> Result<String, ErrorData> {\n    let ws_db = args.workspace.as_deref()\n        .and_then(|ws| self.get_db(ws).ok());\n    let result = tools::remember::handle(\n        &self.lessons_db,\n        ws_db.as_deref(),\n        &args,\n    ).map_err(sutra_to_rmcp)?;\n    to_compact_json(result)\n}\n```\n\n### Step 6: Write tests\n\nCreate `tests/remember-enrichment-test.rs` with test cases using a workspace DB seeded with files and imports:\n\n1. **symbol anchor enrichment**: Store a lesson with a symbol anchor → verify import-pattern, directory, language category are auto-added\n2. **file anchor enrichment**: Store with a file anchor → same verifications\n3. **explicit + inferred merge**: Explicit categories preserved, inferred ones added alongside\n4. **no workspace DB**: Pass None → stores with explicit anchors only, no error\n5. **symbol not found**: Symbol doesn't exist in workspace → stores with explicit anchors, no error\n6. **dedup**: File appears in multiple anchors → directory/import anchors not duplicated\n\nTests will need a helper that creates a workspace `Db`, inserts files and imports, then calls `handle` and inspects the LessonsDb to verify stored anchors/categories.\n\n## Acceptance criteria coverage\n\n- [x] \"Symbol-only write auto-generates import-pattern anchors from the symbol's file\" → Steps 3, 4 + Test 1\n- [x] \"Auto-generates directory anchor from file path\" → Step 3 (directory extraction) + Tests 1, 2\n- [x] \"Auto-infers language category from file\" → Step 3 (language from FileRow) + Tests 1, 2\n- [x] \"Auto-infers technology categories from imports\" → Step 3 (IMPORT_TECH_MAP) + Test 1\n- [x] \"Explicit anchors/categories preserved (enrichment adds, doesn't replace)\" → Step 4 (dedup merge) + Test 3\n- [x] \"Enrichment is best-effort — missing workspace data doesn't fail the write\" → Step 3 (all lookups use ok().flatten()) + Tests 4, 5\n- [x] \"Tests: enrichment from imports, directory, language, explicit + inferred combination\" → Step 6",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ba7f3a3"
+    },
+    {
+      "type": "git:commit",
+      "value": "a690a9e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "needs-plan",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577583424,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 159
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781702945678,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781703226259,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention → fixed in a690a9e.\\n\\nFindings:\\n1. [high] crate::* anchor pollution — import_root returned \\\"crate\\\" for internal Rust imports, producing broad anchors. Fixed: skip crate/self/super/std roots.\\n2. [medium] ambiguous short symbol enrichment — resolve_symbol picked arbitrarily among multiple matches. Fixed: switched to resolve_symbol_diagnostic, only enrich Unique results.\\n\\nBoth findings have regression tests.",
+      "ts": 1781703578920
+    }
+  ],
+  "created_at": 1781577583424,
+  "updated_at": 1781703581906,
+  "completed_at": 1781703226259,
+  "edges": [
+    {
+      "id": "019ece4c-eaa5-7cd0-8c60-ad4903238495",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/157",
+      "note": null,
+      "created_at": 1781577607845
+    },
+    {
+      "id": "019ece4c-ec92-7492-8111-39640cd57e8f",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/153",
+      "note": null,
+      "created_at": 1781577608338
+    },
+    {
+      "id": "019ece4c-f13e-7c80-9b24-664f1170b32e",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/155",
+      "note": null,
+      "created_at": 1781577609534
+    },
+    {
+      "id": "019ece4c-fce8-7810-ac7f-dcdae21952d2",
+      "edge_type": "motivated_by",
+      "source": "sutra/159",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577612520
+    },
+    {
+      "id": "019ece4d-7fcc-7f22-907e-15118fd4b768",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/159",
+      "note": null,
+      "created_at": 1781577646028
+    },
+    {
+      "id": "019ece4e-1abe-7e21-bdbf-06a4aa6aa743",
+      "edge_type": "depends_on",
+      "source": "sutra/164",
+      "target": "sutra/159",
+      "note": null,
+      "created_at": 1781577685694
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "id": "019e222a-562c-7d80-848e-41c8a4d21efc",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/26",
+  "sequence_number": 26,
+  "title": "Extract shared risk scoring module from pr_risk and review",
+  "description": "pr_risk.rs and review.rs implement overlapping risk-scoring logic with divergent weights, separate ChurnMap types, and shared magic-number thresholds (50, 30, 20) with no common definition.\\n\\nExtract risk.rs or scoring.rs: normalization thresholds, Signal enum, RiskModel with configurable weights, gather_file_stats(). Both tools become thin callers. Single ChurnMap definition.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Shared risk scoring module exists with configurable weights"
+    },
+    {
+      "done": false,
+      "text": "pr_risk and review both use the shared module"
+    },
+    {
+      "done": false,
+      "text": "No duplicated ChurnMap or normalization constants"
+    },
+    {
+      "done": false,
+      "text": "Existing test results unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f5a0d95"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-b"
+  ],
+  "history": [
+    {
+      "ts": 1778689660460,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 26
+      }
+    },
+    {
+      "ts": 1778698148086,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778698854216,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689660460,
+  "updated_at": 1778698854216,
+  "completed_at": 1778698854216,
+  "edges": []
+}

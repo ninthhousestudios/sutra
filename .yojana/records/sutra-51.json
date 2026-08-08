@@ -1,0 +1,103 @@
+{
+  "id": "019e7f85-06dc-7023-8071-c757ca77ff67",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/51",
+  "sequence_number": 51,
+  "title": "5b-7: module boundary hints in adapter trait",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nExtend the `LanguageAdapter` trait with `module_boundary_hints()` returning a strength enum (Strong/Moderate/Weak). Implement Strong for Rust (mod system provides real boundaries), Moderate for Dart (library/part system), Weak as default. Clustering multiplies edge weights for files sharing a language-module boundary by the hint strength, biasing clusters toward language-idiomatic component boundaries.\n\n## Acceptance criteria\n\n- [ ] `module_boundary_hints()` added to LanguageAdapter with default returning Weak\n- [ ] Rust adapter returns Strong\n- [ ] Dart adapter returns Moderate\n- [ ] Clustering applies boundary hint as edge weight multiplier for co-module files\n- [ ] Existing tests still pass (backward compatible — default Weak = no behavior change)\n\n## Blocked by\n\n- sutra/45 (5b-1: basic component discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "module_boundary_hints() added to LanguageAdapter with default returning Weak"
+    },
+    {
+      "done": false,
+      "text": "Rust adapter returns Strong"
+    },
+    {
+      "done": false,
+      "text": "Dart adapter returns Moderate"
+    },
+    {
+      "done": false,
+      "text": "Clustering applies boundary hint as edge weight multiplier for co-module files"
+    },
+    {
+      "done": false,
+      "text": "Existing tests still pass (backward compatible — default Weak = no behavior change)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "4c3d330"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780255885020,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 51
+      }
+    },
+    {
+      "ts": 1780323470493,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780323473913,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, tasks 49/50/51):\\n\\n- [medium] Existing workspaces can skip boundary-hint reclustering forever — stale check uses raw edge count/file count, which doesn't change on upgrade. Boundary multipliers never applied until topology changes.\"",
+      "ts": 1780323785527
+    },
+    {
+      "author": "claude",
+      "text": "Codex finding \"stale check misses boundary-hint reclustering\" is a false positive. `is_clustering_stale()` includes a `clustering_config_hash` built from sorted boundary multiplier values per language + the resolution gamma. On upgrade from pre-boundary-hints code, the stored hash (no multiplier data) differs from the new hash (includes Rust=2.0, Dart=1.5), triggering automatic reclustering. No code change needed.",
+      "ts": 1780324757728
+    }
+  ],
+  "created_at": 1780255885020,
+  "updated_at": 1780323473913,
+  "completed_at": 1780323473913,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-3381-7851-a231-af13ca7ea738",
+      "edge_type": "depends_on",
+      "source": "sutra/51",
+      "target": "sutra/45",
+      "note": null,
+      "created_at": 1780255896449
+    }
+  ]
+}

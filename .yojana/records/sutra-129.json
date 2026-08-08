@@ -1,0 +1,121 @@
+{
+  "id": "019eae91-e715-7cd1-9975-839336019a4d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/129",
+  "sequence_number": 129,
+  "title": "Wave 4: guard semantics decision + canonical waiver-match rule",
+  "description": "Guard checks the file's current indexed import edges, never the proposed new_string/content: the violating edit passes (edge not yet indexed), then every subsequent edit to the file is denied — including the fix. README promises introduce-time blocking. Two design decisions needed from Josh: (1) parse proposed content for would-be edges vs rename semantic to flag-on-next-touch (either way needs fix-path exemption + README truthing); (2) the canonical waiver-match rule — guard matches from||to, review/constraints match from-only (already divergent enforcement). Findings: guard-checks-pre-edit-state (HIGH); architecture candidate 1 waiver divergence. Locations: src/bin/guard.rs:148-176, src/guard.rs:299-420.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "design decision recorded: introduce-time blocking vs flag-on-next-touch"
+    },
+    {
+      "done": false,
+      "text": "design decision recorded: canonical waiver-match rule (from-only vs from||to)"
+    },
+    {
+      "done": false,
+      "text": "fix-path exemption: an edit that removes the offending import is never denied"
+    },
+    {
+      "done": false,
+      "text": "README guard section matches actual semantics"
+    },
+    {
+      "done": false,
+      "text": "guard tests cover: violating edit, fixing edit, unrelated edit to violating file"
+    }
+  ],
+  "decisions": [
+    "Decision 1: Introduce-time blocking — parse proposed content for would-be edges. Fix-path exemption falls out naturally (proposed content with no violation → allow). Flag-on-next-touch rejected: requires the same parsing work with strictly worse semantics, confusing agent experience, and README rewrite.",
+    "Decision 2: from-only waiver match — guard's from||to is the outlier (2 of 3 implementations use from-only). Target-scoped waivers should be explicit if ever needed, not an implicit side-effect. Guard guard.rs:384-385 changed to from-only.",
+    "Fallback: if proposed-content parsing fails (unsupported language, parse error), fall back to current indexed-edge check. Never worse than today."
+  ],
+  "implementation_plan": "Phase 1: Add proposed_imports extraction to guard.rs (parse proposed content, resolve to edges). Replace current constraint check in bin/guard.rs to check proposed edges. Phase 2: Fix waiver match in guard.rs from||to → from-only. Phase 3: Update README guard section, add 5 guard tests (violating edit, fixing edit, unrelated edit to violating file, new file write, parse-failure fallback).",
+  "execution_record": "All 5 acceptance criteria met:\\n1. Decision recorded: introduce-time blocking (parse proposed content). Flag-on-next-touch rejected — requires same parsing work with worse semantics.\\n2. Decision recorded: from-only waiver match. Guard's from||to was the outlier; 2 of 3 implementations already used from-only.\\n3. Fix-path exemption: falls out naturally — proposed content with no violation always allowed.\\n4. README guard section updated to match actual semantics.\\n5. Guard tests cover: violating edit (denied), fixing edit (allowed), unrelated edit to violating file (denied), plus waiver-on-target-not-suppress, waiver-on-source-suppress, build_proposed_content_edit, build_proposed_content_write, incoming-edge-still-checked — 8 new tests, 21 total guard tests, 756 full suite all green.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "finding: guard-checks-pre-edit-state"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 1: waiver divergence"
+    },
+    {
+      "type": "git:commit",
+      "value": "3f1e069"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045258005,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 129
+      }
+    },
+    {
+      "ts": 1781097436077,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781097824335,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045258005,
+  "updated_at": 1781097824335,
+  "completed_at": 1781097824335,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "guard-semantics",
+  "edges": [
+    {
+      "id": "019eae92-80b4-7003-9ba3-576fa810d411",
+      "edge_type": "depends_on",
+      "source": "sutra/129",
+      "target": "sutra/126",
+      "note": "guard fix should be verified against trustworthy refs",
+      "created_at": 1781045297332
+    },
+    {
+      "id": "019eae92-8449-75a0-b50e-bb1a328df15c",
+      "edge_type": "relates_to",
+      "source": "sutra/130",
+      "target": "sutra/129",
+      "note": null,
+      "created_at": 1781045298249
+    },
+    {
+      "id": "019eae92-89db-7ea1-be50-b0b36c6ef8b3",
+      "edge_type": "depends_on",
+      "source": "sutra/132",
+      "target": "sutra/129",
+      "note": "candidate 1 waiver-rule choice must follow Wave 4 decision",
+      "created_at": 1781045299675
+    }
+  ]
+}

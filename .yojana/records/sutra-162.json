@@ -1,0 +1,131 @@
+{
+  "id": "019ece4d-5c24-74a3-a2be-6dee9afdf7d5",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/162",
+  "sequence_number": 162,
+  "title": "5x-review-3: review quality lifecycle",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to review\n\nThe full quality lifecycle is active. Lessons gain confidence through citation, lose it through anti-verification, flip to verified at threshold, surface with priority rules, detect staleness via content hash, and decay/archive when uncited. Write path enriches anchors automatically from the workspace graph.\n\n**Reviewer focus:**\n- Confidence thresholds — is 2-3 citations the right bar for verification?\n- Surfacing priority — does the verified-first/unverified-fallback rule produce good results in practice?\n- Decay window — is the time window reasonable? Too aggressive archives useful lessons; too lax accumulates noise.\n- Enrichment accuracy — are the inferred anchors and categories correct? Does enrichment produce false matches?\n- Staleness — is content hash comparison reliable across reindexes?\n\n## Blocked by\n\n- sutra/158 — Confidence lifecycle + surfacing priority\n- sutra/159 — Anchor enrichment on write\n- sutra/160 — Staleness detection\n- sutra/161 — Decay + archive",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Codex adversarial review surfaced 5 findings (3 high, 2 medium). Two high-severity bugs confirmed and fixed:\\n\\n1. anti_verify used a fixed empty task_id, so the unique index on citations blocked repeat anti-verifications. Fixed by using sequential vote keys (anti:0, anti:1, ...).\\n2. check_staleness treated None from the hash resolver (deleted/renamed symbol) as 'not stale'. Fixed by inverting the match — only exact hash match is not-stale; everything else (changed hash, missing resolution) is stale.\\n\\nBoth fixes verified with reproduction tests (55/55 pass). Full test suite green.\\n\\nRemaining codex findings triaged as low-priority follow-up:\\n- Migration data safety (low practical risk)\\n- Dart import normalization mismatch (latent, no Dart lessons in use)\\n- archive_decayed not wired into production (mechanism ready, wiring is intentional follow-up)\\n\\nOwn review validated design choices: VERIFICATION_THRESHOLD=2 appropriate, suppression logic correct, re-verification re-snapshots, staleness wired into orient/read/impact production paths.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "822ad32"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577636900,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 162
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781706300951,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781706729405,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Codex adversarial review (verdict: needs-attention):\\n\\n5 findings, 3 high / 2 medium. My verification:\\n\\n1. [high] anti_verify UNIQUE constraint on second call — CONFIRMED, FIXED (822ad32). Plain INSERT with fixed task_id='' meant second anti-verify crashed. Now uses sequential vote keys.\\n\\n2. [high] Deleted anchors reported as not stale — CONFIRMED, FIXED (822ad32). None from resolver left stale=false for snapshotted anchors. Now treats missing resolution as stale.\\n\\n3. [high] Idempotency migration can fail on duplicate citation data — VALID but low practical risk. Citations table exists from initial schema, but duplicates would only arise from duplicate source_task_ids in a single store call, or cites that ran between commits before the unique index was added. No production server ran between those commits. Downgrade to low.\\n\\n4. [medium] archive_decayed not wired into production — CONFIRMED. No production caller exists. The method works (tested) but decay never runs. This is expected — the task (sutra/161) implemented the mechanism; wiring it into a production path (e.g. on LessonsDb::open or a maintenance endpoint) is follow-up work.\\n\\n5. [medium] Dart import anchor normalization mismatch — VALID but latent. Enrichment stores 'flutter::*' while query imports are 'package:flutter/material.dart', so globs won't match for Dart. Only affects Dart/mixed-language workspaces, which don't currently use lessons. Low priority.\"\n<parameter name=\"author\">agent",
+      "ts": 1781706482004
+    },
+    {
+      "author": "user",
+      "text": "Own review findings (beyond codex):\\n\\n**Design validation (all sound):**\\n- VERIFICATION_THRESHOLD=2 is appropriate — source_task_ids on store count as provenance only, not confidence. Two independent cite calls from different tasks needed for verification.\\n- Suppression logic (Phase 4) is conservative: suppresses unverified if ANY of its anchors overlap with verified. Could over-suppress multi-anchor lessons, but safe default for avoiding clutter.\\n- Re-verification re-snapshots hashes via ON CONFLICT DO UPDATE — correct. A lesson that drops below threshold and re-verifies gets a fresh content hash.\\n- Anonymous citations are idempotent at +1 confidence — correct. No task_id → can't inflate by spamming.\\n- Staleness applied in orient, read, impact paths. Not in sutra_lessons (search) — acceptable since search is for browsing.\\n\\n**No additional bugs found.**\\n\\nVerdict: approve with notes. The two high bugs are fixed in 822ad32. Remaining items (migration data safety, dart import normalization, production decay wiring) are low-priority follow-up, not blockers.\"\n<parameter name=\"author\">agent",
+      "ts": 1781706718639
+    }
+  ],
+  "created_at": 1781577636900,
+  "updated_at": 1781706729405,
+  "completed_at": 1781706729405,
+  "edges": [
+    {
+      "id": "019ece4d-7050-7190-b806-fb121833e032",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577642064
+    },
+    {
+      "id": "019ece4d-7fcc-7f22-907e-15118fd4b768",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/159",
+      "note": null,
+      "created_at": 1781577646028
+    },
+    {
+      "id": "019ece4d-8035-7942-b6ec-152a2aafb447",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/160",
+      "note": null,
+      "created_at": 1781577646133
+    },
+    {
+      "id": "019ece4d-80d2-7af0-9c68-5fe022448294",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/161",
+      "note": null,
+      "created_at": 1781577646290
+    },
+    {
+      "id": "019ece4d-814e-7c90-91e4-4cedba5fbe1d",
+      "edge_type": "motivated_by",
+      "source": "sutra/162",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577646414
+    },
+    {
+      "id": "019ece4e-1724-7cd3-982d-434b28dd2b65",
+      "edge_type": "depends_on",
+      "source": "sutra/163",
+      "target": "sutra/162",
+      "note": null,
+      "created_at": 1781577684772
+    },
+    {
+      "id": "019ece4e-1f89-7233-9909-1337dc9d3df5",
+      "edge_type": "depends_on",
+      "source": "sutra/164",
+      "target": "sutra/162",
+      "note": null,
+      "created_at": 1781577686921
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "id": "019f4712-4cbe-7ad1-b324-43d0b7e19a67",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/237",
+  "sequence_number": 237,
+  "title": "Track Rust mod/use statements as import edges",
+  "description": "sutra currently does not track Rust `mod` declarations or `use` statements as import edges in the dependency graph. This means constraints scoped to Rust files (`no_cycles`, `max_fan_in`) bind to zero files and are inert.\\n\\nDiscovered during pyswisseph-rs/9 checkpoint review: `wrapper-no-cycles` (scope `src/**`) shows `matched_file_count: {\\\"scope\\\": 0}` despite 7 indexed Rust files with 364 symbols. `sutra_deps(path=\\\"src/lib.rs\\\")` returns zero edges.\\n\\nThis blocks Rust-side architectural governance for any sutra-governed Rust project. The pyswisseph-rs constraints (`wrapper-no-cycles`, `wrapper-fan-in`) are correctly authored but architecturally toothless until this lands.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "mod foo; declarations (external module declarations) produce import edges in the dependency graph"
+    },
+    {
+      "done": false,
+      "text": "sutra_deps returns non-zero edges for Rust projects with module structure"
+    },
+    {
+      "done": false,
+      "text": "no_cycles and max_fan_in constraints bind to Rust files when scoped via scope/target globs"
+    },
+    {
+      "done": false,
+      "text": "Inline modules (mod foo { ... }) do NOT produce spurious import edges"
+    },
+    {
+      "done": false,
+      "text": "Existing use statement import resolution continues to work unchanged"
+    },
+    {
+      "done": false,
+      "text": "Unit tests cover mod declaration extraction and resolution"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd `mod foo;` (external module declaration) detection to the Rust parser's import collector. By synthesizing `self::{mod_name}` as the import path, the existing `normalize_to_crate_segments` + `resolve_segments` resolution pipeline handles `mod` declarations without any changes to the resolution code or DB schema.\n\n**Why `self::` prefix works**: `mod foo;` in `src/lib.rs` declares a submodule `foo`, resolved to `src/foo.rs` or `src/foo/mod.rs`. `normalize_to_crate_segments(\"self::foo\", \"src/lib.rs\", &layout)` produces segments `[\"foo\"]` with `src_prefix \"src\"`, and `resolve_segments` tries exactly those paths. For `mod bar;` in `src/foo/mod.rs`, `self::bar` yields segments `[\"foo\", \"bar\"]`, resolving to `src/foo/bar.rs` — matching Rust's 2018-edition module resolution.\n\n**Why only `mod` declarations need work**: The `use` statement extraction and resolution infrastructure already exists and works. The gap is that `mod` declarations — the primary mechanism defining Rust's file-level module tree — are parsed as symbols but never emitted as imports. Without `mod` edges, the import graph for a Rust project is nearly empty (only intra-crate `use` statements produce edges; most `use` statements import from external crates and correctly resolve to `None`).\n\n## Files\n\n- **Modify**: `src/parser/rust.rs` (lines ~820-852) — add `mod_item` handling to `walk_imports_recursive`\n- **Test**: `src/parser/rust.rs` (tests module, lines ~910+) — add unit tests for mod declaration extraction\n\n## Steps\n\n### Step 1: Add `mod_item` detection to `walk_imports_recursive`\n\nIn `walk_imports_recursive`, add a check for `mod_item` nodes before the generic child recursion. When the `mod_item` has no `body` child (external module declaration), extract the name and emit an import:\n\n```rust\n// In walk_imports_recursive, after the use_declaration check:\nif node.kind() == \"mod_item\" && node.child_by_field_name(\"body\").is_none() {\n    if let Some(name_node) = node.child_by_field_name(\"name\") {\n        if let Ok(name) = name_node.utf8_text(src) {\n            let line = node.start_position().row + 1;\n            imports.push(ExtractedImport {\n                raw_path: format!(\"self::{name}\"),\n                line,\n                kind: \"mod\",\n            });\n        }\n    }\n    return;\n}\n```\n\nInline modules (`mod foo { ... }`) fall through to the generic recursion, which descends into their body and finds any `use` or nested `mod` declarations naturally.\n\n### Step 2: Add unit tests\n\nAdd tests to the `tests` module in `src/parser/rust.rs`:\n\n```rust\n#[test]\nfn mod_declaration_extracted_as_import() {\n    let result = parse_rust(\"mod foo;\\nmod bar;\\n\");\n    assert_eq!(result.imports.len(), 2);\n    assert_eq!(result.imports[0].raw_path, \"self::foo\");\n    assert_eq!(result.imports[0].kind, \"mod\");\n    assert_eq!(result.imports[1].raw_path, \"self::bar\");\n}\n\n#[test]\nfn inline_mod_no_import() {\n    let result = parse_rust(\"mod foo { fn inner() {} }\\n\");\n    assert!(result.imports.is_empty());\n}\n\n#[test]\nfn mod_and_use_both_extracted() {\n    let result = parse_rust(\"mod foo;\\nuse crate::foo::Thing;\\n\");\n    assert_eq!(result.imports.len(), 2);\n    let kinds: Vec<&str> = result.imports.iter().map(|i| i.kind).collect();\n    assert!(kinds.contains(&\"mod\"));\n    assert!(kinds.contains(&\"import\"));\n}\n```\n\n### Step 3: Verify existing resolution handles mod imports\n\nRun the existing `normalize_to_crate_segments` + `resolve_segments` tests to confirm `self::` paths resolve correctly. The existing test `self_prefix` already covers this case. Run `cargo test` to verify no regressions.\n\n## Acceptance criteria coverage\n\n- [x] \"mod foo; declarations produce import edges\" → Step 1 (parser emits imports that feed into existing resolution pipeline)\n- [x] \"sutra_deps returns non-zero edges for Rust projects\" → Step 1 (resolved mod imports become import_edges)\n- [x] \"no_cycles and max_fan_in constraints bind to Rust files\" → Step 1 (constraints read from the same import_edges)\n- [x] \"Inline modules do NOT produce spurious imports\" → Step 1 (body check) + Step 2 (test)\n- [x] \"Existing use statement handling unchanged\" → Step 1 (no changes to use_declaration branch)\n- [x] \"Unit tests cover mod declaration extraction\" → Step 2\n\n## Known limitations\n\n- `#[path = \"custom.rs\"]` attribute on `mod` declarations is not handled — the resolution uses default module path lookup. This is rare and can be addressed in a follow-up.\n- `mod foo;` inside an inline module's body (e.g., `mod outer { mod inner; }`) resolves using `self::inner` which may produce incorrect segments when the inline module adds a path component. This is valid Rust but extremely rare; the tree walk will still emit the import, it just might not resolve correctly.",
+  "execution_record": "Single-file change as planned. Added mod_item detection to walk_imports_recursive in src/parser/rust.rs — 14 lines of production code, 25 lines of tests. No changes needed to resolution pipeline, DB schema, or constraint evaluation. All 1113 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "pyswisseph-rs/9",
+      "label": "discovered during"
+    },
+    {
+      "type": "git:commit",
+      "value": "70488f3"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1783603809470,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 237
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783611835386,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783611983315,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention (1 finding).\\n\\n[high] Nested mod declarations inside inline modules resolve to wrong file. `mod outer { mod inner; }` in src/lib.rs emits `self::inner` which resolves to src/inner.rs instead of src/outer/inner.rs. This was acknowledged as a known limitation in the plan but could produce false edges if the wrong file exists.\\n\\nRecommendation: thread inline module prefix through walk_imports_recursive to synthesize e.g. `self::outer::inner`.\"",
+      "ts": 1783612174721
+    }
+  ],
+  "created_at": 1783603809470,
+  "updated_at": 1783611983315,
+  "completed_at": 1783611983315,
+  "edges": []
+}

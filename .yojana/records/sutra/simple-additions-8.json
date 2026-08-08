@@ -1,0 +1,66 @@
+{
+  "id": "019eb5b0-3c4b-7240-80cc-1bf4e1cb0321",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/8",
+  "sequence_number": 8,
+  "title": "max_fan_in constraints are parsed but never evaluated",
+  "description": "ConstraintResolver::resolve (src/constraints/resolver.rs:59) has `_ => {}` for MaxFanIn — the kind is parsed from rules.toml, listed by sutra_constraints, displayed in docs/README, but generates no violations ever. Silent constraint theater: a user who sets max_fan_in believes they have a guardrail and doesn't. (mcp.rs:405 tool description does say \"does not include max_fan_in\", but rules.toml docs advertise the kind.)\n\nFix: evaluate it — files table already has fan_in_files; check is `SELECT path, fan_in_files FROM files WHERE path = <target> AND fan_in_files > <threshold>` surfaced as a ConstraintFinding in check::evaluate. Until then, at minimum warn at load_rules time that the kind is inert. Found during sutra/needs-designing/14 exploration, 2026-06-11.",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d411912"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "bug"
+  ],
+  "history": [
+    {
+      "ts": 1781164686411,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 8
+      }
+    },
+    {
+      "ts": 1781190485622,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781190489728,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (bb2f504..30331bd):\n\nVerdict: needs-attention\n\n[high] Changed-files review drops max_fan_in violations on imported targets (src/constraints/check.rs:363-365)\nIn ChangedFiles scope, the new max_fan_in loop filters findings to files whose own id is in changed_ids. Fan-in lives on the imported target, not the changed source. If a changed file adds an import to an unchanged target and that target crosses the threshold, sutra_review will skip the target because its id is not in changed_ids.\nRecommendation: For ChangedFiles, evaluate max_fan_in for targets affected by changed outgoing edges or all rule-matching targets with changed incoming edges. Add a regression test.\n\n[high] Proposed-edge guard path never evaluates max_fan_in (src/constraints/check.rs:593-595)\nThe guard's proposed-content path calls evaluate with EvalScope::Edges, but the max_fan_in block only runs for EvalScope::SingleFile. Edits with proposed imports skip fan-in thresholds entirely.\nRecommendation: Handle EvalScope::Edges for max_fan_in by checking proposed target ids and computing effective fan-in from files.fan_in_files plus proposed incoming edges. Add a guard regression test.",
+      "ts": 1781190827831
+    }
+  ],
+  "created_at": 1781164686411,
+  "updated_at": 1781190489728,
+  "completed_at": 1781190489728,
+  "edges": []
+}

@@ -1,0 +1,69 @@
+{
+  "id": "019f9425-3c61-7f82-8f66-5502f101c318",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/288",
+  "sequence_number": 288,
+  "title": "sutra_dead: Dart false positives — intra-file references to private symbols not resolved",
+  "description": "On the swe_dashboard workspace (Flutter, 160 files), sutra_dead reports 330 dead symbols and 27 unreachable files, nearly all false positives. Two classes: (1) private Dart symbols (underscore-prefixed methods/consts/classes) referenced only within their own file are reported dead — e.g. widget State helper methods called from build() (_ContextBarState::_openChart, _DatesTabState::_buildResults), private consts used by same-file functions (_monthLengths in calendar.dart), private State classes returned by createState(). Spot-checks during the 2026-07-24 swe_dashboard release review confirmed these are live (a reviewer verified by grep). Suggests the Dart reference extractor misses intra-file/implicit-this call edges. (2) All 27 test/*.dart files are listed as unreachable files — Dart test entry points (main() invoked by the test runner) need the same exemption Rust #[test]/tests/*.rs already get (sutra/13). Impact: the dead list is unusable for Dart workspaces; the release-review skill's pack-build had to caveat it as \"do not chase\".",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Added RefContextKind::Read (as_str/from_str) and emit it in dart.rs for private (underscore) identifier value reads, gating out declaration sites with existing is_definition_name plus new is_dart_binding_name (excludes static_final_declaration/initialized_identifier/initialized_variable_definition name child, and formal_parameter/type_parameter/label/declared_identifier/constructor_signature wholesale). Scoped to private/underscore names deliberately — matches the bug (intra-file private) and keeps blast radius minimal; cross-file public tear-offs are out of scope. Read is kind-agnostic in the resolver (not in the use_kind_filter set) and maps to EdgeKind::Reference (weight 0.2) via the existing `_ =>` fallback, so no resolver/graph code changed. Added test/ + integration_test/ + %_test.dart exclusions to find_unreachable_files SQL. Investigation surprises: (a) createState `_ContextBarState()` classifies as Call and fails kind_compatible(Call,class), but resolves anyway via the existing unfiltered fallback branch (fallback len==1) — so NO change to kind_compatible was needed; verified relaxing it would have broken test_kind_aware_call_prefers_function. (b) The live DB showed `_ContextBarState` with an empty unresolved_name (stale/older MCP binary); the current parser extracts the name correctly. Verified end-to-end with a throwaway pipeline integration test against the real swe_dashboard workspace: 330→2 dead symbols, 27→6 unreachable files (remaining 6 are genuine third_party/*_web.dart conditional-import platform variants + a build hook), all three named symbols now live. Full suite: 39 suites / 783 tests pass; clippy clean on changed files. Pre-existing unrelated Cargo.toml edit (indexing_slicing lint) left unstaged.",
+  "reproduction": "sutra_workspace(path=/home/josh/nhs/soft/astrology/swe_dashboard, enable=[\"analysis\"]); sutra_dead(workspace=\"swe_dashboard\") -> 330 dead symbols, 27 unreachable files. Counter-example: lib/core/calendar.dart _monthLengths is referenced by daysInMonth in the same file but listed dead.",
+  "root_cause": "Two independent mechanisms. (1) The Dart reference extractor (walk_refs_recursive/classify_ref_context) only emitted refs for Call/Construction/TypeUse/FieldAccess/Import contexts and dropped everything classified `Other`, which includes bare value reads: const/variable reads (`_monthLengths[i]` → index_expression) and method/function tear-offs (`onPressed: _openChart` → named_argument). Private same-file symbols referenced only as values therefore had zero inbound resolved refs and read as dead. (2) find_unreachable_files excluded only Rust `tests/`; Dart tests live under `test/`/`integration_test/`, so all test files (fan_in_files=0, main() invoked by the runner) were flagged unreachable. Dead *symbols* in test files were already exempt via FLAG_CFG_TEST (flags & 7 filter), so only the file-level path exclusion was missing.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "e3ded9b"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "dart",
+    "analysis-tier"
+  ],
+  "history": [
+    {
+      "ts": 1784896896097,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 288
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785433317257,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785434767225,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Review (vidhi-review, codex + claude verification of e3ded9b): REQUEST CHANGES — two confirmed bugs in landed code.\n\n[HIGH] is_dart_binding_name misses the `identifier_list` declaration form → private-symbol self-reference masks genuine dead code. Empirically verified (parse of `external static var _dead;`): the declaration identifier itself emits a RefContextKind::Read (line/col at the declaration), which the kind-agnostic resolver binds back to the same symbol, giving it a self-inbound-ref and hiding it from find_dead_symbols. This is the inverse of the bug the commit fixes (false negative). Note: `int _count;` and multi-var `int _a, _b;` ARE handled correctly (declared_identifier / initialized_identifier) — the gap is specific to the bare `identifier_list` form used by external/static var without initializer. Catch-clause (`catch (_err)`) and for-in (`for (var _x ...)`) bindings ALSO emit self-Reads but are not indexed as dead-checkable symbols, so those are harmless noise rather than masking. Fix: recognize `identifier_list` children as binding names (prefer a field-name / declaration-container check over the immediate-parent allowlist); add regression test for a private `external static var _dead;` producing zero Read refs at its declaration.\n\n[MEDIUM] find_unreachable_files LIKE patterns treat `_` as a wildcard (src/db/mod.rs:1286-1288). Verified in sqlite: `'latest.dart' LIKE '%_test.dart'` and `'contest.dart' LIKE '%_test.dart'` both return 1 — production Dart files ending in \"…test.dart\" are wrongly excluded from unreachable-file reporting. Same unescaped-underscore issue on the `integration_test` segment patterns. Fix: add `ESCAPE '\\'` and escape the literal underscores (verified `'%\\_test.dart' ESCAPE '\\'` returns 0 for latest.dart), or switch to GLOB. Add tests: foo_test.dart excluded; latest.dart/contest.dart still reported.\n\nStructural: sutra_review risk 0.963 but that is inherent file churn/blast-radius (db/mod.rs, parser/dart.rs hotspots), not this 68-line additive change. The Read→Reference weak-edge mapping and kind-agnostic resolver handling of Read were verified correct. Filing follow-up bug task.",
+      "ts": 1785435685627
+    }
+  ],
+  "created_at": 1784896896097,
+  "updated_at": 1785434767225,
+  "completed_at": 1785434767225,
+  "edges": []
+}

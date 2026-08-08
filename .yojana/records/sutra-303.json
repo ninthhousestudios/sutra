@@ -1,0 +1,83 @@
+{
+  "id": "019fdcfb-5083-7b43-b8c9-0940d03d8e7c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/303",
+  "sequence_number": 303,
+  "title": "Make constraint waivers portable / version-controllable",
+  "description": "Waivers created via `sutra_constraints action=waive` are stored in the local workspace db (under `.sutra/<workspace>/`, which is gitignored) rather than in the tracked `.sutra/rules.toml`. Consequences: they don't travel via git, so a fresh clone, CI, or a teammate loses every waiver and its rationale — and the review report re-flags everything that was deliberately accepted. The rationale text (often the most valuable \"why this clone/unsafe/allow is fine\" knowledge) is stranded on one machine.\n\nSurfaced during chitta sutra-adoption: we created 23 waivers (2 #[allow] + 21 no-clone-driven-dev groups), all now local-only.\n\nDesign question (why this is HITL): where should the source of truth live?\n- (a) Keep the db authoritative, add an export/import (waivers → a tracked file, e.g. `.sutra/waivers.toml`, synced on waive/unwaive).\n- (b) Make a tracked file authoritative and load waivers from it at parse time (like rules.toml constraints), db becomes a cache.\n- (c) A `[[waiver]]` block inside rules.toml itself, keyed by constraint_id + file + symbol + rationale.\n\nConsider stability of the key across reparses (line numbers shift; symbol_qualified_name is more stable) and how introduced-only semantics interact with a tracked waiver list.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "File-authoritative (.sutra/accepted.toml), DB tables demoted to a freshness-gated projection",
+      "rationale": "One writer direction (file->DB) makes bidirectional drift impossible; merges happen in human-readable git-mergeable TOML; git blame is the audit trail. The cache preserves the existing SQLite read paths (guard find_waiver, report partition, evaluate_dd ack subtraction) unchanged behind an mtime/hash freshness gate, so guard and report keep deriving acceptance through the SAME table (guard must predict the audit, lesson 019f9add). Covers BOTH sutra/305 report-only instance acks and the original guard-honored waivers without re-coupling the two 305 deliberately split.",
+      "rejected_alternative": "(a) DB-authoritative + export/import — bidirectional sync drifts and conflicts across branches. (c) inline [[waiver]]/[[ack]] in rules.toml — buries authored rules under a 95-entry instance ledger and routes every ack through the ratchet guard. Also rejected 'no cache, both surfaces parse the file directly' — forks/rewrites two read paths and re-parses TOML on every edit."
+    },
+    {
+      "decision": "Key file entries by constraint NAME, not the blake3 id; enforce unique constraint names at rule-parse time",
+      "rationale": "id = blake3(kind,params,scope), so a scope/param edit reshapes it and orphans every entry keyed to it — in a tracked file that means a confusing diff and lost rationale team-wide. Names survive such edits and read cleanly in review. Enforcing uniqueness at parse time (rules.rs) makes name a safe key; verified current rules.toml has 34/34 named, 0 duplicates, so no existing repo breaks. resolve_ref still surfaces Unknown/Ambiguous as warnings (never a silent drop) for robustness.",
+      "rejected_alternative": "id-with-name-fallback: fragile (orphans on rule edits) and unreadable in diffs. Uniqueness-as-resolve-time-warning-only: weaker; a dup name would silently pick one constraint."
+    },
+    {
+      "decision": "No timestamps in the tracked file; count as u32 in schema",
+      "rationale": "created_at/updated_at in a tracked file only produce merge churn; verified nothing reads them semantically (only ORDER BY created_at DESC for display, preserved by projecting in canonical file order). count as u32 makes a negative accepted-count unrepresentable, converted to i64 at the DB boundary.",
+      "rejected_alternative": "Carry timestamps for parity with the DB rows — rejected: merge churn with zero semantic consumer."
+    }
+  ],
+  "implementation_plan": "Types-first skeleton approved (src/constraints/accepted.rs, type-checks). Decisions settled + verified (see decisions field). Implementation units, compiler-driven bottom-up, commit per verified unit:\n\n**A. rules.rs name uniqueness** — in Rules::all_constraints, after building `out`, count Constraint.name occurrences; emit a ConstraintParseError per duplicated name (same channel as other rule errors). Verified: current rules.toml 34/34 named, 0 dups. Test in rules.rs #[cfg(test)].\n\n**B. Migration 0058_accepted_sync_marker** — add a sync-marker column/row so the freshness gate can detect file changes. Options: extend index_meta with `accepted_file_hash TEXT` (id=1 row) OR a tiny kv. Prefer index_meta column (single-row, already the generation home). Register in migrations.rs after 0057.\n\n**C. DB CRUD (db/constraints.rs + db/mod.rs)** — `delete_all_constraint_waivers`, `delete_all_constraint_instance_acks` (truncate for reproject); `get_accepted_sync_marker`/`set_accepted_sync_marker` (index_meta). Reuse existing create_* CRUD for insert.\n\n**D. accepted.rs bodies** — load_accepted_file (fail-loud IO/parse), write_accepted_file (canonical sort: constraint,file,symbol,snippet), resolve_ref (unique-name lookup), resolve_accepted (partition -> ResolvedWaiver/Ack + warnings), ensure_cache_fresh (hash accepted.toml; if != marker, truncate+reinsert both tables in one txn, update marker, return warnings), upsert/remove mutations (file-first, canonical write), migrate_db_to_file (one-time DB->file when file absent).\n\n**E. Cross-process freshness wiring** — report/orient/violations run server-side (writable Db): call ensure_cache_fresh at head, surface warnings. GUARD (read-only conn, latency-critical): stat accepted.toml vs marker; if stale, resolve waivers in-memory from the file (reuse resolve_accepted) WITHOUT persisting — same data the reproject would produce, no divergence, no write from the hot path (lessons 019f9add same-derivation, 019f8a98 hot-path handle). If fresh, read cache as today.\n\n**F. MCP actions (tools/constraints.rs)** — waive/unwaive -> upsert_waiver/remove_waiver + reproject; ack/baseline/unack -> upsert_ack/remove_ack + reproject. violations/list surface AcceptedWarning (unknown/ambiguous constraint refs). Call migrate_db_to_file once on first touch.\n\n**G. .gitignore** — add `!.sutra/accepted.toml` to the tracked allowlist (alongside rules.toml/owners.toml).\n\n**Tests**: rules dup-name (A); db truncate + marker CRUD (C); accepted roundtrip/resolve/warnings + freshness reproject (D); guard stale-file in-memory resolution == cache result (E); MCP file-first + warning surfacing (F).",
+  "execution_record": "Types-first gate complete + foundation landed & tested; end-to-end integration (Units E+F) deliberately deferred to a focused follow-up (sutra/308) because it is coupled and lands on contract-sensitive files.\n\nLANDED (committed, verified):\n- 877b5ec Unit A: parse-time duplicate constraint-name rejection (names are the portable key). 2 tests; verified rules.toml has 34/34 named, 0 dups.\n- 7a5059e Units B/C/D/G: migration 0059 accepted_sync marker; db reproject_accepted (transactional truncate+reinsert+stamp) + get_accepted_sync_marker + Waiver/AckProjection; src/constraints/accepted.rs (file schema name-keyed no-timestamps, resolve_ref Unknown/Ambiguous-as-warnings, ensure_cache_fresh server gate, resolve_waivers_for_guard read-only path, file-first mutations, migrate_db_to_file); .gitignore allowlist. 9 accepted-module tests. Full suite 823 lib + 61 db + 66 constraints green, clippy clean in new files.\n\nPENDING (sutra/308, Units E+F — coupled, must land together):\n- E: gate the report path at evaluate_dd head (single chokepoint for review.rs:362 / orient.rs:365 / constraints.rs:222) with migrate_db_to_file THEN ensure_cache_fresh; guard read-only path (evaluate_raw ~642) uses resolve_waivers_for_guard on stale; orient.rs:350/354 + constraints.rs:84/367 direct display reads also need the gate.\n- F: rewire handle_waive->upsert_waiver, handle_ack/handle_baseline->upsert_ack, each followed by reproject; switch handle_unwaive/handle_unack from waiver_id/ack_id to KEY-based (projection re-mints row ids each reproject, so ids are unstable); update the 305 DB-id-based tests.\n\nHAZARDS for 308 (discovered during this session):\n1. E-without-F truncates freshly-written DB waivers (report reprojects from a file that lacks them) — land coupled.\n2. Empty/absent accepted.toml reprojects to EMPTY -> wipes pre-existing DB waivers. Order MUST be migrate(seed once, file-existence-gated) then ensure. Add regression test: DB waivers + no file -> nothing lost after first review.\n3. AcceptedWarning surfacing: CheckOutcome has no warnings channel; decide log-only vs. structured report field (relates to sutra/306 acked-instance surfacing).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "chitta/50",
+      "label": "sibling finding from same adoption"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786118885507,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 303
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786201957363,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786206443722,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Core design (file-authoritative, name-keyed, DB as projection) is sound with strong hazard test coverage. Three medium findings for follow-up: (1) waiving a nameless constraint silently produces an inert entry, (2) write_accepted_file is non-atomic (O_TRUNC + write, no temp+rename), (3) no file-level lock on read-modify-write mutations. All bounded in current usage.",
+      "ts": 1786206858808
+    }
+  ],
+  "created_at": 1786118885507,
+  "updated_at": 1786206443722,
+  "completed_at": 1786206443722,
+  "edges": []
+}

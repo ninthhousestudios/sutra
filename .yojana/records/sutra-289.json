@@ -1,0 +1,112 @@
+{
+  "id": "019f955a-d9db-78f3-b131-0e978824a093",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/289",
+  "sequence_number": 289,
+  "title": "Remove dead ConventionsConfig plumbing left over from the deviation-engine swap",
+  "description": "sutra/234 (bc7704e) replaced convention violations with an on-the-fly deviation report, but left the FCA-era config surface in place. It parses and does nothing:\n\n- `Rules.conventions: ConventionsConfig` (src/rules.rs:446, struct at :523) — `suppress` + `exempt`, both still deserialized from `.sutra/rules.toml`\n- `ConventionExemption` (src/rules.rs:531)\n- `FcaEngine::check` (src/conventions/engine.rs:222) — the only reader of `config.suppress`/`config.exempt`; every caller is inside its own `mod tests`\n- `ConventionViolation` and its re-export in src/conventions/mod.rs, if nothing else uses them\n\nThe live path is `conventions::detect_deviations` (src/conventions/engine.rs:432), called from src/tools/review.rs:459. It takes no ConventionsConfig.\n\nWhy this matters beyond dead code: `sutra_conventions` still mines and lists conventions (2048 in the arjuna workspace), so a suppress list looks live. During arjuna/3 an agent spent real effort semantically re-resolving 54 suppress hashes across a workspace re-root before discovering nothing consumes them.\n\nKnown affected file: sutra's own .sutra/rules.toml:373 carries a 9-entry suppress block. It is the only rules.toml under ~/soft and ~/nhs that still has one (arjuna's was removed in arjuna@5ad3f5b).\n\nNote on scope: this is removal of the orphaned FCA config only. Whether the deviation engine should grow its own suppression surface is deliberately NOT part of this task — Josh is waiting on real-world deviation-report output before deciding. Don't design a replacement here.\n\nSequencing: since Josh may still want a suppression surface later, consider whether to delete the `[conventions]` parse outright or keep it as a deprecation shim for one cycle. Leaning delete — but see the acceptance criterion about silence.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "ConventionsConfig, ConventionExemption, FcaEngine::check and their tests are gone, along with any now-unused ConventionViolation plumbing"
+    },
+    {
+      "done": false,
+      "text": "A [conventions] block in a rules.toml no longer parses silently into a no-op. Rules has no deny_unknown_fields, so simply deleting the field swaps one silence for another — emit a ConstraintParseError (or equivalent surfaced warning) naming the block as removed, so existing workspaces are told rather than ignored"
+    },
+    {
+      "done": false,
+      "text": "sutra's own .sutra/rules.toml:373 suppress block is removed in the same change"
+    },
+    {
+      "done": false,
+      "text": "cargo test passes; sutra_review on the sutra workspace still returns deviations"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Went as planned. Removed ConventionsConfig, ConventionExemption, FcaEngine::check + its 10 tests + setup helper, and ConventionViolation (struct + mod.rs re-export). check_inverse/ConventionMatch left intact — out of scope and not FCA-config readers.\n\nFor the deny_unknown_fields gap: kept the Rules.conventions field as a private Option<toml::Value> catch-all; when Some, all_constraints pushes a ConstraintParseError(name=\"conventions\") telling the user the block is removed. Rewrote the three old parse_* tests to assert this deprecation behavior instead of the old suppress/exempt fields.\n\nVerification: cargo test (1524 passed, 2 ignored); cargo clippy clean on changed files (378 pre-existing warnings elsewhere, none new); sutra_review on the workspace runs end-to-end with the deviation engine intact and no spurious conventions parse error (rules.toml block removed). Cargo.toml was already modified in the working tree at session start; left untouched and unstaged.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "arjuna/4",
+      "label": "where the dead config was discovered"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/234",
+      "label": "the swap that orphaned this"
+    },
+    {
+      "type": "git:commit",
+      "value": "bc7704e",
+      "label": "replace convention violations with deviation report"
+    },
+    {
+      "type": "git:commit",
+      "value": "ba37661",
+      "label": "prior demolition of drift/template/waiver subsystems"
+    },
+    {
+      "type": "git:commit",
+      "value": "b7f6a4a"
+    }
+  ],
+  "files": [
+    "src/rules.rs",
+    "src/conventions/engine.rs",
+    "src/conventions/mod.rs",
+    ".sutra/rules.toml"
+  ],
+  "tags": [
+    "cleanup",
+    "conventions",
+    "dead-code"
+  ],
+  "history": [
+    {
+      "ts": 1784917187035,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 289
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785432472807,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785432923724,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (b7f6a4a vs de925f9) — verdict: needs-attention (1 medium, no critical/high).\n\nRemovals confirmed correctly scoped: ConventionsConfig, ConventionExemption, FcaEngine::check + tests, ConventionViolation (struct + re-export) all gone; check_inverse/ConventionMatch and detect_deviations untouched; deviation path still wired via src/tools/review.rs. The Option<toml::Value> catch-all + all_constraints ConstraintParseError correctly surfaces the removed block through the MCP tools (constraints list / orient / review include constraint_parse_errors).\n\n[medium] rules.toml guard edit-path drops the removed-block parse error (src/bin/guard.rs:189-204 → src/guard.rs:850). The .sutra/rules.toml guard branch runs only check_proposed_rules_ratchet, which does `let (constraints, _errors) = parsed.all_constraints();` and discards errors. So editing rules.toml to add/keep a [conventions] block is accepted silently at edit time; the warning only appears later in review/list/orient. Verified against source.\n\nAssessment (Claude): valid finding, but pre-existing — this branch has always been ratchet-only and dropped ALL parse errors (unknown kind, invalid glob included). This task added one more error type to a set the guard edit-path already ignored; it is not a regression from b7f6a4a. Filing as follow-up rather than reopening 289.",
+      "ts": 1785433181838
+    }
+  ],
+  "created_at": 1784917187035,
+  "updated_at": 1785432923724,
+  "completed_at": 1785432923724,
+  "edges": []
+}

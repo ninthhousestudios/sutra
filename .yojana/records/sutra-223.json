@@ -1,0 +1,97 @@
+{
+  "id": "019f2ea4-1e86-79d1-83dc-7d6b36a68820",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/223",
+  "sequence_number": 223,
+  "title": "Design: constraint ratchet mode",
+  "description": "Bedrock's rules are append-only — you can add or strengthen rules but never remove or weaken them to make code pass. This is explicitly designed for AI-agent contexts where the agent might silently relax rules to get a green build. The one carve-out is vendored code (shadcn components).\n\nSutra has no monotonicity guarantee on constraints. They can be removed or weakened freely. Waivers exist (with rationale), but the constraints themselves have no ratchet. An AI agent could `sutra_constraints action=delete` its way past a blocking rule.\n\nProposed: an optional ratchet mechanism for constraints.\n\n```toml\n[workspace]\nratchet = true  # or per-constraint: ratchet = true\n\n[[constraints]]\nkind = \"forbidden-dep\"\nfrom = \"domain\"\nto = \"infrastructure\"\nseverity = \"blocking\"\nratchet = true  # cannot be deleted or weakened without a waiver\n```\n\nWhen ratchet is on:\n- Constraint deletion requires a waiver-like ceremony (rationale, human attribution)\n- Severity can only increase (advisory → blocking), not decrease\n- sutra-guard refuses to pass through constraint-weakening edits to `rules.toml`\n- New constraints can always be added (append-only direction)\n\nDesign questions:\n- Workspace-level vs per-constraint ratchet? Both?\n- What constitutes \"weakening\"? Severity decrease, scope narrowing, deletion — anything else?\n- Should ratchet state be in `rules.toml` (editable) or in the durable DB (harder to tamper with)?\n- How does this interact with waivers? A waiver exempts a specific violation but doesn't weaken the constraint itself — that distinction is already clean. But should there be a \"constraint retirement\" waiver type?\n- Escape hatch: what's the human ceremony for genuinely needing to remove a ratcheted constraint? CLI command with confirmation? Separate file?\n- Should guard check `rules.toml` diffs for weakening attempts?\n\nReference: bedrock's append-only rule philosophy documented in README.md and AGENTS.md at https://github.com/JCluzet/bedrock — \"Rules can only be added or strengthened, never removed or weakened to make code pass.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Release ceremony is CLI-only (sutra ratchet release), not an MCP tool",
+      "rationale": "Agents live in MCP, humans live in terminals — CLI-only makes the normative boundary legible even though an agent could technically Bash it; prevention is not the goal, legibility is",
+      "rejected_alternative": "MCP-exposed release with required attribution — puts the bypass one tool call away from the exact actor the ratchet exists to constrain"
+    },
+    {
+      "decision": "ratchet_violation findings are blocking and non-waivable",
+      "rationale": "A waiver on the tamper-detection finding would itself be the bypass; waivers exempt code occurrences, not governance violations",
+      "rejected_alternative": "Waivable like other constraint findings — collapses the distinction between exempting a violation and weakening the rule"
+    },
+    {
+      "decision": "Weakening = ratcheted ID disappearance OR severity below floor; no semantic param diffing",
+      "rationale": "Identity hash (kind, params, scope) makes scope-narrowing and param edits manifest as ID disappearance for free; severity is outside the hash so it gets an explicit monotone floor",
+      "rejected_alternative": "Glob-superset / param-level weakening analysis — a semantic rabbit hole; strengthen-by-modification tripping the ratchet (release + re-add) is acceptable friction"
+    },
+    {
+      "decision": "Workspace-level [ratchet] all = true ships in v1 alongside per-constraint flags",
+      "rationale": "Bedrock-style full append-only mode is the headline use case; registration semantics (flags are triggers, registry never unregisters) make opt-out flags inert so no loophole opens",
+      "rejected_alternative": "Per-constraint only in v1 — saves little implementation and forfeits the strongest agent-trust posture"
+    }
+  ],
+  "implementation_plan": "## Approved design (2026-07-09)\n\n**Threat model:** friction + detection + audit, NOT cryptographic prevention. An agent with shell can bypass guard (redirection) or delete the index DB; target failure mode is path-of-least-resistance rule relaxation. Layers: guard blocks the lazy path, index-time detection catches out-of-band edits, git review of rules.toml is the final backstop.\n\n**Weakening taxonomy (identity scheme does the work):** constraint identity = blake3(kind_tag, params, scope), severity/name excluded. Therefore exactly two detectable weakening events: (1) ratcheted ID disappears — covers deletion, scope narrowing, any param edit, no semantic diffing needed; (2) severity decreases on a surviving ID — severity is outside the hash, tracked as a floor.\n\n**TOML:** per-constraint `ratchet = true` + workspace `[ratchet] all = true` (both in v1). Flags are *triggers*, not state.\n\n**Registry (durable DB, ADR-0002):** table `constraint_ratchets` — constraint_id, name, rendered_description (report what a constraint WAS after deletion), severity_floor, registered_at, released_at/by/rationale. Registered at index time from flags; severity_floor monotone max; removing flag or constraint NEVER unregisters (the ratchet ratchets itself).\n\n**Enforcement 1 — guard:** new branch in bin/guard.rs run() for .sutra/rules.toml, same shape as Cargo.toml branch (line ~120): build_proposed_content → parse_rules in memory → IDs+severities vs active registry. Missing ratcheted ID or severity < floor → blocking deny. Additions + severity increases pass frictionless. Deny message names constraint, provenance, and ceremony (\"a human must run `sutra ratchet release <id>`\").\n\n**Enforcement 2 — detection:** `ratchet_violation` finding kind in check::evaluate (both arms), emitted when an unreleased registry row has no matching ID in current rules or below-floor severity. Blocking, NON-WAIVABLE (a waiver here would be the bypass). Surfaces in review/orient/sutra_constraints violations.\n\n**Enforcement 3 — ceremony:** `sutra ratchet release <id> --rationale \"...\"` + `sutra ratchet list` CLI. CLI-only, deliberately NOT an MCP tool (normative human boundary; agents live in MCP). Release sets released_at, row kept forever (audit trail is the point).\n\n**Waiver interaction:** unchanged — waivers exempt occurrences, never rules; release ceremony IS retirement, separate table/semantics on purpose.\n\n**Accepted limitations:** (a) fresh-machine hole — registry rebuilds from TOML flags at next index; residual hole is tampered-commit-then-fresh-clone, backstopped by git review; (b) strengthen-by-modification trips the ratchet (new ID reads as deletion of old) — ceremony is release-then-re-add, deny message explains; glob-superset analysis explicitly rejected; (c) waiver flooding left to audit visibility.\n\nSlices decomposed into own arc.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/README.md",
+      "label": "bedrock README (append-only rule philosophy)"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/AGENTS.md",
+      "label": "bedrock AGENTS.md (rule governance)"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/manas/sutra/docs/constraints-map.md",
+      "label": "sutra constraints design doc"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "bedrock-inspired",
+    "constraints",
+    "agent-trust",
+    "now"
+  ],
+  "history": [
+    {
+      "ts": 1783193935494,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 223
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783640829324,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783641353561,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783193935494,
+  "updated_at": 1783641353561,
+  "completed_at": 1783641353561,
+  "edges": []
+}

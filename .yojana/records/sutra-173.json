@@ -1,0 +1,111 @@
+{
+  "id": "019ed23c-2175-7d11-9417-17a698b400aa",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/173",
+  "sequence_number": 173,
+  "title": "Adaptive fan-out for sutra_explore",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to build\n\nAdd adaptive fan-out to the explore pipeline: from ranked grep hits, walk call/dep edges to surface the callers and callees that a subagent would discover on its next rounds of calls.\n\n1. Hit-density depth heuristic: 1-3 unique hits after dedup → 2 hops, 4-9 → 1 hop, 10+ → 0 hops (grep matches alone are sufficient).\n2. Walk call graph edges from ranked hits using existing DB call-graph queries. Both callers and callees at each hop.\n3. Score decay: fan-out items get parent_score × 0.5 per hop, so they rank below direct hits.\n4. Provenance tagging: each item carries `reason: \"direct_match\"` or `reason: \"fan_out\"`.\n5. Edges: include call/dep edges between items that appear in the final response (not all edges in the graph — only those connecting response items).\n\n## Acceptance criteria\n\n- [ ] 1-3 grep hits → response includes 2-hop neighbors\n- [ ] 4-9 grep hits → response includes 1-hop neighbors\n- [ ] 10+ grep hits → no fan-out, direct matches only\n- [ ] Fan-out items score below direct matches of equal structural importance\n- [ ] Items tagged with reason field (direct_match / fan_out)\n- [ ] Edges array contains only edges between items in the response\n\n## Blocked by\n\n- sutra/172",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] 1-3 grep hits → response includes 2-hop neighbors"
+    },
+    {
+      "done": false,
+      "text": "[x] 4-9 grep hits → response includes 1-hop neighbors"
+    },
+    {
+      "done": false,
+      "text": "[x] 10+ grep hits → no fan-out, direct matches only"
+    },
+    {
+      "done": false,
+      "text": "[x] Fan-out items score below direct matches of equal structural importance"
+    },
+    {
+      "done": false,
+      "text": "[x] Items tagged with reason field (direct_match / fan_out)"
+    },
+    {
+      "done": false,
+      "text": "[x] Edges array contains only edges between items in the response"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd a fan-out phase to the explore pipeline between scoring and assembly. After direct hits are scored, determine fan-out depth from the unique hit count, BFS-walk call graph edges (both callers and callees) from the top-scored direct hits, apply score decay per hop, merge into the scored list, re-sort, truncate to budget, then collect edges between final items. This keeps the pipeline linear and reuses existing DB primitives (`find_refs_to_symbol`, `find_refs_in_file`, `find_enclosing_symbol`) without touching `calls.rs`.\n\nThe calls.rs BFS functions (`collect_callers`/`collect_callees`) return `Vec<Value>` shaped for the calls tool's response — wrong shape for explore (we need SymbolRows with decayed scores and dedup against direct hits). Writing a purpose-built walker in explore.rs avoids a forced abstraction across two tools with different needs.\n\n## Files\n\n- **Modify**: `src/tools/explore.rs` (~lines 1-209) — add fan-out depth heuristic, neighbor walker, edge collector, reason tags, wire into handle()\n- **Modify**: `tests/mcp_contract_test.rs` (~lines 680-797) — extend setup_explore_db with call refs, add fan-out and edges integration tests\n\n## Steps\n\n### Step 1: Add `fan_out_depth` function\n\nPure function, determines hop depth from unique direct hit count per the PRD thresholds.\n\n```rust\nfn fan_out_depth(unique_hits: usize) -> usize {\n    match unique_hits {\n        0 => 0,\n        1..=3 => 2,\n        4..=9 => 1,\n        _ => 0,\n    }\n}\n```\n\n### Step 2: Add `collect_fan_out` function\n\nBFS walker that takes scored direct hits and walks call edges in both directions. Returns `Vec<(SymbolRow, f64)>` where the f64 is the decayed score. Key design:\n\n- Seeds: all scored direct hits (not just the budget-truncated set — fan-out runs before truncation)\n- Both directions per hop: for each symbol, find callers (via `find_refs_to_symbol` + `find_enclosing_symbol`) AND callees (via `find_refs_in_file` filtering calls within symbol line range + `symbol_by_id` on target)\n- Score decay: `parent_score * 0.5` per hop\n- Dedup: skip symbols already in the direct-hit set (by id) or already visited in BFS\n\n```rust\nfn collect_fan_out(\n    db: &Db,\n    direct_hits: &[(crate::db::SymbolRow, f64)],\n    max_depth: usize,\n) -> Vec<(crate::db::SymbolRow, f64)> {\n    if max_depth == 0 { return vec![]; }\n\n    let direct_ids: HashSet<i64> = direct_hits.iter().map(|(s, _)| s.id).collect();\n    let mut visited = direct_ids.clone();\n    // BFS queue: (symbol_id, file_id, start_line, end_line, parent_score, current_depth)\n    let mut queue: VecDeque<(i64, i64, i64, i64, f64, usize)> = VecDeque::new();\n    let mut fan_out_items: Vec<(crate::db::SymbolRow, f64)> = Vec::new();\n\n    for (sym, score) in direct_hits {\n        queue.push_back((sym.id, sym.file_id, sym.start_line, sym.end_line, *score, 0));\n    }\n\n    while let Some((sid, file_id, start, end, parent_score, depth)) = queue.pop_front() {\n        if depth >= max_depth { continue; }\n        let decayed = parent_score * 0.5;\n\n        // Callers: refs targeting this symbol → enclosing symbol\n        if let Ok(refs) = db.find_refs_to_symbol(sid) {\n            for r in refs.iter().filter(|r| r.context_kind == \"call\") {\n                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line) {\n                    if visited.insert(caller.id) {\n                        let cid = caller.id;\n                        let cfid = caller.file_id;\n                        let cs = caller.start_line;\n                        let ce = caller.end_line;\n                        fan_out_items.push((caller, decayed));\n                        queue.push_back((cid, cfid, cs, ce, decayed, depth + 1));\n                    }\n                }\n            }\n        }\n\n        // Callees: refs within this symbol's body → target symbol\n        if let Ok(refs) = db.find_refs_in_file(file_id) {\n            for r in refs.iter().filter(|r| {\n                r.context_kind == \"call\" && r.line >= start && r.line <= end\n            }) {\n                if let Some(target_id) = r.target_symbol_id {\n                    if let Ok(Some(callee)) = db.symbol_by_id(target_id) {\n                        if visited.insert(callee.id) {\n                            let cid = callee.id;\n                            let cfid = callee.file_id;\n                            let cs = callee.start_line;\n                            let ce = callee.end_line;\n                            fan_out_items.push((callee, decayed));\n                            queue.push_back((cid, cfid, cs, ce, decayed, depth + 1));\n                        }\n                    }\n                }\n            }\n        }\n    }\n\n    fan_out_items\n}\n```\n\n### Step 3: Add `collect_edges` function\n\nAfter the final item set is determined, find call edges that connect items in the response. Iterate each item's outgoing call refs; if the target is also in the response set, emit an edge.\n\n```rust\nfn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {\n    let id_set: HashSet<i64> = items.iter().map(|(s, _)| s.id).collect();\n    let mut edges = Vec::new();\n\n    for (sym, _) in items {\n        // Outgoing: calls from this symbol to others in the set\n        if let Ok(refs) = db.find_refs_in_file(sym.file_id) {\n            for r in refs.iter().filter(|r| {\n                r.context_kind == \"call\"\n                    && r.line >= sym.start_line\n                    && r.line <= sym.end_line\n            }) {\n                if let Some(tid) = r.target_symbol_id {\n                    if id_set.contains(&tid) && tid != sym.id {\n                        edges.push(json!({\n                            \"from\": sym.qualified_name,\n                            \"to\": items.iter()\n                                .find(|(s, _)| s.id == tid)\n                                .map(|(s, _)| s.qualified_name.as_str())\n                                .unwrap_or(\"?\"),\n                            \"kind\": \"call\",\n                        }));\n                    }\n                }\n            }\n        }\n    }\n\n    edges.dedup_by(|a, b| a == b);\n    edges\n}\n```\n\n### Step 4: Wire fan-out and edges into `handle()`\n\nModify the pipeline in `handle()`:\n\n1. After scoring direct hits (line ~143, after `scored` is built), determine fan-out depth: `let depth = fan_out_depth(total_hits);`\n2. Run `collect_fan_out(db, &scored, depth)` to get fan-out items\n3. Merge: extend `scored` with fan-out items tagged appropriately\n4. Re-sort the combined list by score (fan-out items naturally sort lower due to decay)\n5. Truncate combined list to budget\n6. In assembly, tag each item with `\"reason\": \"direct_match\"` or `\"reason\": \"fan_out\"` — track which symbol IDs came from direct hits vs fan-out using a HashSet captured before merge\n7. After assembly, run `collect_edges(db, &final_scored)` and include in response as `\"edges\"` array\n8. Update summary: `direct_matches` = count of direct_match items, `fan_out_items` = count of fan_out items\n\nKey ordering change: budget truncation moves AFTER fan-out merge (currently at line 150, `scored.truncate(budget)`). The scored direct hits feed into fan-out untruncated so that edges from lower-ranked direct hits can still surface useful neighbors. Truncation applies to the merged set.\n\n### Step 5: Add import for VecDeque\n\nAdd `use std::collections::VecDeque;` to the existing imports block (line 4 currently has `HashMap, HashSet`).\n\n### Step 6: Update `select_strategy` signature\n\nPass direct hit count and fan-out count separately so strategy can reason about composition. With fan-out, `total_hits` still reflects grep-level density (drives the depth heuristic), while `returned` includes fan-out items.\n\nNo change to strategy rules needed — the existing rules already key on `total_hits` (grep density) and `returned` (what the user sees), which is the right split.\n\n### Step 7: Unit tests for `fan_out_depth`\n\n```rust\n#[test]\nfn fan_out_depth_thresholds() {\n    assert_eq!(fan_out_depth(0), 0);\n    assert_eq!(fan_out_depth(1), 2);\n    assert_eq!(fan_out_depth(3), 2);\n    assert_eq!(fan_out_depth(4), 1);\n    assert_eq!(fan_out_depth(9), 1);\n    assert_eq!(fan_out_depth(10), 0);\n    assert_eq!(fan_out_depth(100), 0);\n}\n```\n\n### Step 8: Integration tests with call edges\n\nExtend `setup_explore_db` to insert call refs between the existing symbols, creating a small call graph:\n- `parse_imports` calls `resolve_imports` (ref at line 10 in parser.rs, target = resolve_imports)\n- `build_ast` calls `parse_imports` (ref at line 80 in parser.rs, target = parse_imports)\n\nThen add tests:\n\n1. **test_explore_fan_out_few_hits**: Query that matches 2 symbols (1-3 range → 2-hop depth). Assert fan-out items appear with `reason: \"fan_out\"`, direct matches have `reason: \"direct_match\"`, and fan_out_items count in summary > 0.\n\n2. **test_explore_fan_out_many_hits**: Query matching 10+ symbols → 0 hops. Assert fan_out_items == 0.\n\n3. **test_explore_edges**: Query that returns items with call edges between them. Assert `edges` array is present and contains edges only between response items.\n\n4. **test_explore_fan_out_score_decay**: Assert that fan-out items have lower effective ranking than direct matches of similar structural importance (verified by checking item order).\n\n## Acceptance criteria coverage\n\n- [x] \"1-3 grep hits → response includes 2-hop neighbors\" → Steps 1, 2, 4\n- [x] \"4-9 grep hits → response includes 1-hop neighbors\" → Steps 1, 2, 4\n- [x] \"10+ grep hits → no fan-out, direct matches only\" → Steps 1, 4\n- [x] \"Fan-out items score below direct matches of equal structural importance\" → Step 2 (0.5 decay per hop)\n- [x] \"Items tagged with reason field (direct_match / fan_out)\" → Step 4\n- [x] \"Edges array contains only edges between items in the response\" → Steps 3, 4",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "30df0f4"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy"
+  ],
+  "history": [
+    {
+      "ts": 1781643616629,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 173
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781653659976,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781654049427,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781643616629,
+  "updated_at": 1781654049427,
+  "completed_at": 1781654049427,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019ed23c-b999-7970-b253-1f1b19e0a36d",
+      "edge_type": "depends_on",
+      "source": "sutra/173",
+      "target": "sutra/172",
+      "note": null,
+      "created_at": 1781643655577
+    },
+    {
+      "id": "019ed23c-bc01-75d1-8183-8590bd5e53a7",
+      "edge_type": "depends_on",
+      "source": "sutra/174",
+      "target": "sutra/173",
+      "note": null,
+      "created_at": 1781643656193
+    }
+  ]
+}

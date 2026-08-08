@@ -1,0 +1,139 @@
+{
+  "id": "019e8c68-d14b-7203-ab00-3d56291e5de2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/72",
+  "sequence_number": 72,
+  "title": "5d-4: boundary resolver",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nNew `resolver.rs` module in `src/constraints/`. Resolves component-level boundary constraints to file-level `(file_id, file_id)` forbidden pairs by joining against the `component_membership` table. File-level `forbidden_dep` constraints pass through directly. Output feeds into the DD engine's `SetForbiddenPairs` command.\n\nCaches resolved pairs tagged with a generation counter on component_membership. Re-resolves when generation bumps (component recompute or constraint file change). This keeps DD simple — it only sees file IDs.\n\n## Acceptance criteria\n\n- [ ] Resolver module with component_membership join\n- [ ] Feeds resolved pairs into DD\n- [ ] Generation-counter caching\n- [ ] Cache invalidation on membership change\n- [ ] Pass-through for file-level forbidden_deps\n- [ ] Tests for resolution, caching, invalidation\n\n## Blocked by\n\n- sutra/70 — 5d-2: constraint types + rules parsing\n- sutra/71 — 5d-3: DD forbidden pairs maintained view",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "New resolver module (src/constraints/resolver.rs) that joins boundary constraints against component_membership to produce file-level forbidden pairs"
+    },
+    {
+      "done": false,
+      "text": "Resolved pairs feed into DD via SetForbiddenPairs"
+    },
+    {
+      "done": false,
+      "text": "Resolution cached with generation counter on component_membership"
+    },
+    {
+      "done": false,
+      "text": "Cache invalidated and re-resolved when component membership changes"
+    },
+    {
+      "done": false,
+      "text": "Cache hit (no re-resolution) when membership unchanged"
+    },
+    {
+      "done": false,
+      "text": "file-level forbidden_dep constraints pass through resolver without component_membership join"
+    },
+    {
+      "done": false,
+      "text": "Tests cover: boundary constraint resolution with mock membership, cache hit/miss, membership change triggers re-resolution, mixed boundary + forbidden_dep constraints"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nCreate a `ConstraintResolver` struct in `src/constraints/resolver.rs` that translates authored constraints into file-level `(i64, i64)` forbidden pairs for `DdEngine::set_forbidden_pairs`. Boundary constraints join against `component_membership` via `Db`; ForbiddenDep constraints resolve via glob matching against a path map. The resolver caches its output and invalidates when `clustering_meta.clustered_at` changes (the signal that component membership was re-derived).\n\n## Files\n\n- **Create**: `src/constraints/resolver.rs` — `ConstraintResolver` struct, `resolve()` method, internal cache, component lookup helper\n- **Modify**: `src/constraints/mod.rs` (lines 1-4) — add `mod resolver;` and `pub use resolver::ConstraintResolver;`\n- **Create**: `tests/resolver-test.rs` — integration tests with real Db + component_membership setup\n\n## Steps\n\n### Step 1: Add resolver module to constraints/mod.rs\n\nWire the new submodule and re-export.\n\n```rust\n// src/constraints/mod.rs — add after line 2\nmod resolver;\n\n// add after existing pub use\npub use resolver::ConstraintResolver;\n```\n\n### Step 2: Implement ConstraintResolver\n\nCore struct with cached resolution. Key types:\n\n```rust\n// src/constraints/resolver.rs\n\nuse std::collections::HashMap;\nuse glob::{MatchOptions, Pattern};\nuse tracing::warn;\nuse crate::db::Db;\nuse crate::error::{Result, SutraError};\nuse crate::rules::{Constraint, ConstraintKind};\n\nstruct ResolvedCache {\n    pairs: Vec<(i64, i64)>,\n    membership_generation: Option<String>, // clustered_at from clustering_meta_full\n}\n\npub struct ConstraintResolver {\n    cache: Option<ResolvedCache>,\n}\n\nimpl ConstraintResolver {\n    pub fn new() -> Self {\n        Self { cache: None }\n    }\n\n    pub fn resolve(\n        &mut self,\n        constraints: &[Constraint],\n        db: &Db,\n        path_map: &HashMap<i64, String>,\n    ) -> Result<Vec<(i64, i64)>> {\n        // 1. Check generation — clustered_at timestamp from clustering_meta_full\n        let current_gen = db.clustering_meta_full()?\n            .map(|(_, _, clustered_at)| clustered_at);\n\n        if let Some(ref cache) = self.cache {\n            if cache.membership_generation == current_gen {\n                return Ok(cache.pairs.clone());\n            }\n        }\n\n        // 2. Resolve all constraints to file-level pairs\n        let components = db.all_components()?;\n        let mut file_ids_cache: HashMap<String, Vec<i64>> = HashMap::new();\n        let mut pairs = Vec::new();\n\n        let glob_opts = MatchOptions {\n            require_literal_separator: true,\n            ..MatchOptions::default()\n        };\n\n        for constraint in constraints {\n            match &constraint.kind {\n                ConstraintKind::Boundary { from_component, to_component } => {\n                    let from_cid = find_component(&components, from_component);\n                    let to_cid = find_component(&components, to_component);\n                    let (Some(from_cid), Some(to_cid)) = (from_cid, to_cid) else {\n                        warn!(\n                            constraint_id = %constraint.id,\n                            from = %from_component,\n                            to = %to_component,\n                            \"skipping boundary constraint: component not found\"\n                        );\n                        continue;\n                    };\n                    // Cache file_ids per component to avoid repeated queries\n                    let from_files = file_ids_cache.entry(from_cid.clone())\n                        .or_insert_with(|| db.component_file_ids(&from_cid).unwrap_or_default())\n                        .clone();\n                    let to_files = file_ids_cache.entry(to_cid.clone())\n                        .or_insert_with(|| db.component_file_ids(&to_cid).unwrap_or_default())\n                        .clone();\n                    for &f in &from_files {\n                        for &t in &to_files {\n                            pairs.push((f, t));\n                        }\n                    }\n                }\n                ConstraintKind::ForbiddenDep { from, to } => {\n                    let from_pat = Pattern::new(from).map_err(|e|\n                        SutraError::Internal(format!(\"invalid glob from='{}': {e}\", from)))?;\n                    let to_pat = Pattern::new(to).map_err(|e|\n                        SutraError::Internal(format!(\"invalid glob to='{}': {e}\", to)))?;\n                    let from_files: Vec<i64> = path_map.iter()\n                        .filter(|(_, p)| from_pat.matches_with(p, glob_opts))\n                        .map(|(&id, _)| id)\n                        .collect();\n                    for &fid in &from_files {\n                        for (&tid, tpath) in path_map {\n                            if to_pat.matches_with(tpath, glob_opts) {\n                                pairs.push((fid, tid));\n                            }\n                        }\n                    }\n                }\n                _ => {} // MaxFanIn, NoCycles not expressed as forbidden pairs\n            }\n        }\n\n        pairs.sort();\n        pairs.dedup();\n\n        // 3. Cache\n        self.cache = Some(ResolvedCache {\n            pairs: pairs.clone(),\n            membership_generation: current_gen,\n        });\n\n        Ok(pairs)\n    }\n\n    pub fn invalidate(&mut self) {\n        self.cache = None;\n    }\n}\n\nfn find_component(\n    components: &[crate::db::ComponentRow],\n    name_or_id: &str,\n) -> Option<String> {\n    components.iter()\n        .find(|c| c.name == name_or_id || c.id == name_or_id)\n        .map(|c| c.id.clone())\n}\n```\n\n### Step 3: Write integration tests\n\nTest file: `tests/resolver-test.rs`. Uses `Db::open_unchecked` with tempdir and manual component/membership setup.\n\nTest cases:\n1. **boundary_resolution_with_membership** — create two components with known file memberships, add a boundary constraint, assert correct cross-product pairs\n2. **cache_hit_on_unchanged_membership** — resolve twice without changing membership, verify second call returns same result (can verify by checking that the pairs match without re-querying — behavior test)\n3. **cache_miss_on_membership_change** — resolve, then rerun clustering (update clustering_meta), resolve again, verify re-resolution produces updated pairs\n4. **forbidden_dep_passes_through** — ForbiddenDep constraint with glob patterns, no component involvement, assert correct glob-matched pairs\n5. **mixed_boundary_and_forbidden_dep** — both constraint types in one resolve call, verify combined + deduped output\n6. **unknown_component_skipped** — boundary constraint referencing nonexistent component, verify it's skipped (no error, no pairs from it)\n7. **empty_constraints** — resolve with no constraints returns empty vec\n\nSetup helper pattern (matching existing test conventions):\n```rust\nfn setup_db() -> (Db, tempfile::TempDir) {\n    let dir = tempfile::tempdir().unwrap();\n    let db = Db::open_unchecked(\"test\", dir.path()).unwrap();\n    (db, dir)\n}\n\nfn insert_test_files(db: &Db) -> HashMap<i64, String> {\n    // Insert files into db, return path_map\n}\n\nfn setup_components(db: &Db, name: &str, file_ids: &[i64]) -> String {\n    // Create component, insert membership, return component_id\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"New resolver module (src/constraints/resolver.rs) that joins boundary constraints against component_membership to produce file-level forbidden pairs\" → Steps 1-2\n- [x] \"Resolved pairs feed into DD via SetForbiddenPairs\" → Step 2 (resolve returns Vec<(i64, i64)> matching set_forbidden_pairs signature)\n- [x] \"Resolution cached with generation counter on component_membership\" → Step 2 (ResolvedCache with membership_generation from clustering_meta_full.clustered_at)\n- [x] \"Cache invalidated and re-resolved when component membership changes\" → Step 2 (generation check at top of resolve())\n- [x] \"Cache hit (no re-resolution) when membership unchanged\" → Step 2 (early return when generation matches)\n- [x] \"file-level forbidden_dep constraints pass through resolver without component_membership join\" → Step 2 (ForbiddenDep arm uses glob matching against path_map, no component queries)\n- [x] \"Tests cover: boundary constraint resolution with mock membership, cache hit/miss, membership change triggers re-resolution, mixed boundary + forbidden_dep constraints\" → Step 3",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "b65b9f6"
+    },
+    {
+      "type": "git:commit",
+      "value": "dc566a7"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780472140107,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 72
+      }
+    },
+    {
+      "ts": 1780512884979,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780513107175,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780514193492,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention. 2 high findings on resolver cache.\\n\\n1. [high] Cache ignores constraints and path_map inputs — only keyed by clustering_meta. A rules-only change or path_map change returns stale pairs. Fix: key cache by all inputs or always recompute from cached membership lookups.\\n\\n2. [high] clustering_meta is (edge_count, file_count, config_hash), not a membership generation. Membership can change while these values stay identical (e.g. batch_insert_membership doesn't update it). Fix: introduce a real membership generation counter.\\n\\nNext: fix cache invalidation before wiring into DD enforcement. Add tests with changed constraints, changed path maps, and membership changes with unchanged clustering_meta.\"",
+      "ts": 1780513820207
+    }
+  ],
+  "created_at": 1780472140107,
+  "updated_at": 1780514193492,
+  "completed_at": 1780514193492,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-35a1-7fa2-985e-6f8e10ae3887",
+      "edge_type": "depends_on",
+      "source": "sutra/72",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472231329
+    },
+    {
+      "id": "019e8c6a-392c-77c1-bfbb-4db7cec5e807",
+      "edge_type": "depends_on",
+      "source": "sutra/72",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472232236
+    },
+    {
+      "id": "019e8c6a-765e-7bd3-949f-15906af6bc22",
+      "edge_type": "depends_on",
+      "source": "sutra/79",
+      "target": "sutra/72",
+      "note": null,
+      "created_at": 1780472247902
+    }
+  ]
+}

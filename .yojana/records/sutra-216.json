@@ -1,0 +1,46 @@
+{
+  "id": "019f1518-3978-7aa3-951b-1c06a93b36ff",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/216",
+  "sequence_number": 216,
+  "title": "sutra_remember: accept bare-string anchors + fix docs/schema drift",
+  "description": "## Problem\n\n`sutra_remember`'s tool description says \"provide text + location_anchors (symbol names or file paths)\", which reads as a list of strings called `anchors`. The actual schema is `location_anchors: [{kind: \"symbol\"|\"file\"|..., value: string}]`. This docs-vs-schema drift caused a real caller (Claude) to need 6 failed round-trips to store one lesson, discovering the struct shape one missing-field error at a time (`anchors` → `location_anchors` → array → struct → `kind` → `value`).\n\n## Root cause\n\nTwo-field required struct (`LocationAnchor{kind, value}`) with no string-coercion convenience, plus a description that advertises bare strings. Serde deserialize errors surface only the first missing field, so the full shape is only discoverable by iterative poking.\n\n## Fix\n\n1. Make `LocationAnchor` deserialize from EITHER a bare string (kind inferred: `/` or trailing `.ext` → file, else symbol) OR the explicit `{kind, value}` object — via `#[serde(untagged)]` enum. JsonSchema then advertises the union (oneOf string|object).\n2. Update the `sutra_remember` tool description to state the accepted shapes precisely.\n\n## Acceptance\n\n- `location_anchors: [\"_ExploreAppState\"]` stores successfully (inferred symbol)\n- `location_anchors: [\"lib/main.dart\"]` stores as file\n- `location_anchors: [{kind:\"symbol\", value:\"X\"}]` still works\n- Tests updated; `cargo test -p sutra` green",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Made LocationAnchor a #[serde(untagged)] enum: Shorthand(String) | Explicit{kind,value}. Added value()/kind_str() accessors and looks_like_file() heuristic ('::' => symbol; '/' or trailing 1-5 char alnum extension => file; else symbol). Updated the mapping closure and the mcp.rs tool description. Added integration test bare_string_anchors_deserialize_and_infer_kind (mixed shorthand + object). cargo build clean; new test + full enrichment suite (10) + lib suite (550) green. Committed b404483 to sutra main (unpushed, matching repo's local-commits workflow).\n\nOut of scope but noticed: tests/db-test.rs test_fresh_db_creates_schema_migrations and test_migration_reopen_is_idempotent fail on a CLEAN tree (assert 37 migrations) — pre-existing, unrelated. Worth a separate task. Also clippy never_loop deny error pre-exists at src/parser/python.rs:314.",
+  "reproduction": null,
+  "root_cause": "location_anchors required structured [{kind, value}] objects while the tool description advertised bare \"symbol names or file paths\". Serde surfaces only the first missing field per attempt, so the real shape was only discoverable by iterative trial — 6 round-trips for one store.",
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782765336952,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 216
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782765587127,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782765336952,
+  "updated_at": 1782765587127,
+  "completed_at": 1782765587127,
+  "edges": []
+}

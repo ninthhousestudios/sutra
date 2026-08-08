@@ -1,0 +1,101 @@
+{
+  "id": "019e087a-590e-76f3-87a8-319f5827f71b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/14",
+  "sequence_number": 14,
+  "title": "Wave A: quick correctness fixes + cargo fmt",
+  "description": "Quick fixes from the 2026-05-08 checkpoint review. No structural changes. Do these before any Wave B/C work so review fix commits have clean diffs.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Run `cargo fmt` project-wide and commit standalone"
+    },
+    {
+      "done": false,
+      "text": "Fix F1: hoist duplicate `all_symbol_file_map()` call in `compute_pagerank` (src/pipeline.rs:646,666) — move unconditional call above the adjacency branch, delete the inner call"
+    },
+    {
+      "done": false,
+      "text": "Fix F3: replace `let _ =` on `add_workspace` in `sutra_status` (src/mcp.rs:885) with error propagation or logging, matching sutra_add_root behavior"
+    },
+    {
+      "done": false,
+      "text": "Fix clippy collapsible-if warnings in src/tools/winnow.rs"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c3fff6a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-checkpoint"
+  ],
+  "history": [
+    {
+      "ts": 1778258696462,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 14
+      }
+    },
+    {
+      "ts": 1778258734991,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778258866051,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778259174530,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778258696462,
+  "updated_at": 1778259174530,
+  "completed_at": 1778259174530,
+  "edges": [
+    {
+      "id": "019e087b-1726-7c93-965b-345029c97023",
+      "edge_type": "depends_on",
+      "source": "sutra/15",
+      "target": "sutra/14",
+      "note": "Wave B after Wave A (fmt + quick fixes first so diffs are clean)",
+      "created_at": 1778258745126
+    },
+    {
+      "id": "019e087b-1d1a-7342-9dbc-22b10ec3101f",
+      "edge_type": "depends_on",
+      "source": "sutra/16",
+      "target": "sutra/14",
+      "note": "Wave C after Wave A (fmt + quick fixes first so diffs are clean)",
+      "created_at": 1778258746650
+    }
+  ]
+}

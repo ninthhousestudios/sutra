@@ -1,0 +1,89 @@
+{
+  "id": "019f494e-b13b-7fa3-bf24-64151c6727e0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/248",
+  "sequence_number": 248,
+  "title": "sutra ratchet CLI: release + list",
+  "description": "CLI subcommands on the sutra binary: `sutra ratchet release <constraint-id> --rationale \"...\"` (rationale required; optional --by, default from git config user.name) sets released_at/released_by/release_rationale on the registry row — row kept forever, audit trail is the point. Error clearly if id unknown or already released. `sutra ratchet list` shows active + released ratchets: id, name, severity_floor, registered_at, released info.\n\nDeliberately CLI-only — NOT an MCP tool action (decision in sutra/223: normative human boundary; agents live in MCP). Do not add ratchet actions to src/tools/constraints.rs beyond read-only status display (that's sutra/246).\n\nDesign: sutra/223 implementation_plan. Tests: release sets fields + preserves row, double-release errors, unknown id errors, list output includes released history.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/223",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "eb88303"
+    }
+  ],
+  "files": [
+    "src/db/constraints.rs"
+  ],
+  "tags": [
+    "constraints",
+    "agent-trust"
+  ],
+  "history": [
+    {
+      "ts": 1783641321787,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 248
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783702212572,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783702463903,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783641321787,
+  "updated_at": 1783702463903,
+  "completed_at": 1783702463903,
+  "arc_id": "019f494d-e005-7d20-be0c-d682a67b5f8e",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f494e-f735-7042-889c-90864b40d225",
+      "edge_type": "depends_on",
+      "source": "sutra/248",
+      "target": "sutra/245",
+      "note": null,
+      "created_at": 1783641339701
+    },
+    {
+      "id": "019f494f-1715-7572-bf25-d327babdf80d",
+      "edge_type": "depends_on",
+      "source": "sutra/249",
+      "target": "sutra/248",
+      "note": null,
+      "created_at": 1783641347861
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "id": "019eff8e-787b-7c63-b619-18ec144c47b3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/193",
+  "sequence_number": 193,
+  "title": "Deepen Dart ref classifier to reduce Other fallthrough",
+  "description": "Dart's ref classifier (src/parser/dart.rs:758-771) only inspects the immediate parent node, unlike Rust's which walks the parent chain. This causes constructor calls, variable references in expressions, cascade notation, and many type annotations to fall through to RefContextKind::Other instead of being classified as Call, TypeUse, or Construction. This degrades resolution quality and ref-based tool coverage for Dart code relative to other languages.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Add parent-chain analysis to Dart's ref classifier modeled on Rust's approach (src/parser/rust.rs:680-727). Key reclassifications needed: (1) Constructor calls (Foo() and new Foo()) → Call or Construction, (2) type annotations in generics, return types, parameter types → TypeUse, (3) cascade targets (..) → appropriate context based on usage. Validate by comparing ref context distribution before/after on a real Dart project.",
+  "execution_record": "Implemented in a single wave rather than three — the tree-sitter node kind discovery, classifier rewrite, and tests all fit in one pass. Key finding: tree-sitter-dart's `type` node wraps all type contexts uniformly (generics, nullable, extends/implements/on/with), so a single `has_type_ancestor` walker handles all TypeUse cases. The `property` field name on `member_expression` was used instead of node position for FieldAccess precision. Pre-existing test failures in health-test.rs and resolver_test.rs (unrelated insert_import signature change) were not addressed.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "1ee10de"
+    }
+  ],
+  "files": [
+    "src/parser/dart.rs"
+  ],
+  "tags": [
+    "dart",
+    "parser",
+    "ref-quality"
+  ],
+  "history": [
+    {
+      "ts": 1782403987579,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 193
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782412915808,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782412920552,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (verdict: needs-attention → fixed in 0c2172d):\n\n1. (high, CONFIRMED+FIXED) member_expression grandparent check classified receiver as Call — http in http.get() got Call instead of Other. Restricted to property child only via is_property_child helper.\n\n2. (medium, CONFIRMED+FIXED) chained cascade calls (..bar().baz()) left baz as Other — cascade_member_expression parent wasn't handled. Added parallel logic to member_expression handling.",
+      "ts": 1782413487162
+    }
+  ],
+  "created_at": 1782403987579,
+  "updated_at": 1782412920552,
+  "completed_at": 1782412920552,
+  "edges": [
+    {
+      "id": "019eff8e-cde9-73a1-88cc-5300d4f54d19",
+      "edge_type": "depends_on",
+      "source": "sutra/194",
+      "target": "sutra/193",
+      "note": "Dart classifier must be deepened before dropping Other, otherwise legitimate Dart refs are lost",
+      "created_at": 1782404009449
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "id": "019e92b1-3f4c-7661-ad19-e1c564409917",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/89",
+  "sequence_number": 89,
+  "title": "5e-5: structural similarity search",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nStructural similarity search over stored HRR vectors. Given a function symbol, find the top-K most structurally similar functions in the workspace.\\n\\n- similarity/index.rs: load vectors from hrr_vectors table, compute cosine similarity against a query vector, return top-K results with similarity scores. Linear scan is fine at single-workspace scale (sub-ms for 10K vectors).\\n- MCP tool: sutra_similar(symbol, mode=strip|embed, limit=10). Returns ranked list of similar functions with similarity scores and file locations.\\n\\n## Acceptance criteria\\n\\n- [ ] similarity/index.rs with cosine similarity search over stored vectors\\n- [ ] sutra_similar MCP tool with symbol, mode, and limit parameters\\n- [ ] Returns similar functions with similarity scores, qualified names, and file locations\\n- [ ] Strip mode finds structurally similar functions (same shape, different names)\\n- [ ] Embed mode finds semantically similar functions (similar names and shape)\\n- [ ] Reasonable performance: < 100ms for 10K-symbol workspace\\n\\n## Blocked by\\n\\n- sutra/88 (5e-4: HRR encoder)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "865e688"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780577550156,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 89
+      }
+    },
+    {
+      "ts": 1780656259165,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780656267165,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780656300847,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780659129406,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577550156,
+  "updated_at": 1780659129406,
+  "completed_at": 1780659129406,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-e0f0-7371-a196-4cc15a6972e5",
+      "edge_type": "depends_on",
+      "source": "sutra/89",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577657072
+    },
+    {
+      "id": "019e92b2-fe89-7ab1-91c6-2a1f980d1b39",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/89",
+      "note": null,
+      "created_at": 1780577664649
+    }
+  ]
+}

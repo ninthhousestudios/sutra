@@ -1,0 +1,75 @@
+{
+  "id": "019eb425-66d3-7463-8861-4c17d4d88a9f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/143",
+  "sequence_number": 143,
+  "title": "Case-insensitive language matching + warn when workspace walk finds zero files",
+  "description": "extensions_for_languages (src/parser/adapter.rs:145-151) does exact string match (l == a.language_id()), so a workspace registered with languages = [\"Rust\"] matches nothing. redox-kernel silently indexed ZERO files for weeks — 205 empty snapshots accumulated (every ~15min on May 17-18) with no warning anywhere. Discovered during 2026-06-10 perf review; Josh fixed the toml by hand.\n\nFix: (1) normalize language names case-insensitively at registry match and/or at workspace registration/load time, (2) warn! (and ideally surface in sutra_status output) when walk_source_files returns 0 files for a workspace whose root exists and is non-empty — that is never an intentional state.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "languages = [\"Rust\"] indexes .rs files"
+    },
+    {
+      "done": false,
+      "text": "parse of a workspace yielding 0 walked files emits a warning naming the workspace and configured languages"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "extensions_for_languages and adapter_for_language used exact string equality to match workspace language config strings against adapter IDs. Adapter IDs are hardcoded lowercase (\"rust\", \"dart\") but workspace TOML accepts freeform strings, so \"Rust\" matched nothing — yielding an empty extension list and a zero-file walk with no warning.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d9957c0"
+    }
+  ],
+  "files": [
+    "src/parser/adapter.rs",
+    "src/workspace.rs",
+    "src/pipeline.rs"
+  ],
+  "tags": [
+    "perf-review",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1781138810579,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 143
+      }
+    },
+    {
+      "ts": 1781272346961,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781272354715,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781138810579,
+  "updated_at": 1781272354715,
+  "completed_at": 1781272354715,
+  "edges": []
+}

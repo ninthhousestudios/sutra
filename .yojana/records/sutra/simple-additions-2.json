@@ -1,0 +1,79 @@
+{
+  "id": "019e06ec-57aa-7872-8d89-27114dc6e215",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/2",
+  "sequence_number": 2,
+  "title": "sutra_winnow — multi-axis composite query",
+  "description": "Single MCP tool that AND-intersects existing signals (kind, complexity, churn, calls_to, calls_from, file glob, name regex, PageRank importance) with per-axis operators (`gt`, `in`, `matches`, `contains`).\n\nToday an agent answering \"functions calling `db::exec`, complexity > 10, churned in last 30d, ranked by PageRank\" makes 4 calls and merges by hand. This collapses it to one round trip.\n\nEach axis already exists as its own tool — implementation is intersect + rank.\n\nSee docs/feature-ideas.md → \"sutra_winnow\".\n\n**Independent of other simple-additions tasks** — new tool, no shared response-builder edits.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "sutra_winnow accepts at least: kind, complexity, churn, calls_to, file_glob, name_regex, rank_by axes"
+    },
+    {
+      "done": true,
+      "text": "Returns symbols matching all constraints AND-intersected"
+    },
+    {
+      "done": true,
+      "text": "Each result includes the per-axis values that qualified it (importance, complexity, churn) so agents can explain the result"
+    }
+  ],
+  "decisions": [
+    "calls_to requires analysis tier (uses refs table) — guarded at MCP layer",
+    "Churn computed lazily only when min_churn or rank_by=churn is specified",
+    "Per-entry freshness included by default (consistent with task 1)",
+    "WinnowFilter struct keeps tool handler testable without MCP overhead"
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/tools/winnow.rs",
+    "src/tools/mod.rs",
+    "src/mcp.rs",
+    "Cargo.toml",
+    "tests/mcp_contract_test.rs"
+  ],
+  "tags": [
+    "new-tool",
+    "agent-ergonomics"
+  ],
+  "history": [
+    {
+      "ts": 1778232612778,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 2
+      }
+    },
+    {
+      "ts": 1778233933204,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778233941078,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232612778,
+  "updated_at": 1778233941078,
+  "completed_at": 1778233941078,
+  "edges": []
+}

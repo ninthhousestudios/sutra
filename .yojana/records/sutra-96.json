@@ -1,0 +1,107 @@
+{
+  "id": "019e92b2-7c55-7871-bfe3-fa026d6054a3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/96",
+  "sequence_number": 96,
+  "title": "5e-11: orient + health MCP tools",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nHealth context in orient briefings and a dedicated health MCP tool.\\n\\n- Orient integration: when an agent orients on a file, include health findings for that file (active findings with severity, biomarker kind, detail). Include component instability (Martin's Ce/(Ca+Ce)) as context for the component the file belongs to.\\n- sutra_health MCP tool: query per-file or per-component health. Returns: derived score, active findings with full detail, category breakdown, component instability. Accepts file path or component name.\\n- Component instability: Ce/(Ca+Ce) where Ce = efferent coupling (outgoing dependencies) and Ca = afferent coupling (incoming dependencies). Computed from the existing file adjacency graph at component level.\\n\\n## Acceptance criteria\\n\\n- [ ] Orient output includes health findings section for the target file\\n- [ ] Orient includes component instability for the file's component\\n- [ ] sutra_health MCP tool with file and component query modes\\n- [ ] Returns derived score, active findings, category breakdown\\n- [ ] Component instability (Ce/(Ca+Ce)) computed and surfaced\\n- [ ] Coverage gradient finding included when coverage data is available (silent when absent)\\n\\n## Blocked by\\n\\n- sutra/85 (5e-2: health scoring)\\n- sutra/92 (5e-review-2: checkpoint 2 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented in 2 commits: fa1867d (feat) + 8134912 (docs). New module src/health/instability.rs computes Martin's Ce/(Ca+Ce) from import edges. Orient health section injected per component showing health_score, top 5 findings, and instability. sutra_file_health extended with component filter arg and instability in component scores. 7 new integration tests (63 total in health-test.rs). Coverage gradient AC satisfied by existing stub (silent when absent).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "8134912"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780577631317,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 96
+      }
+    },
+    {
+      "ts": 1780682332661,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780683073123,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780683115159,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780684049945,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577631317,
+  "updated_at": 1780684049945,
+  "completed_at": 1780684049945,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b3-48ac-7681-8467-bae5225aed38",
+      "edge_type": "depends_on",
+      "source": "sutra/96",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577683628
+    },
+    {
+      "id": "019e92b3-4cf7-74c2-9d60-4657ea8bc65c",
+      "edge_type": "depends_on",
+      "source": "sutra/96",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577684727
+    },
+    {
+      "id": "019e92b3-6358-7432-b0bc-8c6cdcd5466b",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/96",
+      "note": null,
+      "created_at": 1780577690456
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "id": "019e6e7d-9280-7071-acd2-546bbc2c1bf1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/43",
+  "sequence_number": 43,
+  "title": "5e brainstorm: health metrics + similarity design",
+  "description": "Brainstorm the health and similarity layers using vidhi-brainstorm. Key areas:\n\n- Health metrics per component and per file — complexity, coupling, cohesion, churn, instability (Martin's Ce/(Ca+Ce)), god-class scores. Which are computed from Layer 0 alone vs which need git history?\n- **Git-organizational metrics as first-class health signals** — co_change_scatter, change_entropy (Hassan's HCM), ownership_risk (Bird et al.). Empirically calibrated as stronger defect predictors than structural complexity (repowise corpus AUC ~0.70). See survey doc for full ranking.\n- **Hidden coupling** — files that co-change >=50% but have no static edge. Both an L1 fact and an L4 health signal.\n- **Function-level blame rollup** — project blame onto L0 symbol line ranges for function-granular health (modification count, median age, owner).\n- **Coverage gradient** — continuous signal (not binary threshold); absent != uncovered.\n- **Category capping with proportional scaling** — prevent one category from dominating; keep per-finding attribution linear.\n- **Calibration methodology** — T0 protocol (no future leakage), NLOC control column, leave-one-repo-out CV. Necessary to avoid weighting traps (developer_congestion leakage example).\n- Time-series trends — snapshot model (already started in current code), health deltas in review reports, trend visualization\n- Convention drift detection — tracking convention cohesion as time series. Alert when multi-agent development causes divergence. This bridges L4 and L2.\n- Transitive health metrics via DD — blast radius aggregates, transitive coupling. What benefits from DD's incrementalization vs simple recomputation?\n- HRR vectors for structural similarity (L6) — strip mode (structural shape) vs embed mode (semantic meaning). Validated in spike (4.4x lift structural, 57% transform). How to integrate into the core model.\n- Semantic diff via HRR — not \"what lines changed\" but \"what structural shape changed.\" Small text diff + large HRR delta = subtle behavioral change. Use in review reports.\n- Near-duplicate detection — pattern families, refactoring candidates\n- Incrementality — HRR vectors recompute per changed symbol (sub-ms). Health metrics update from deltas. What's real-time vs on-demand?\n- Storage model — snapshots as ephemeral (recomputable) vs health baselines as durable?\n- **What NOT to invest in** — classic structural code smells (brain_method, LCOM4, bumpy_road) are weak defect predictors. Keep as advisory/informational, don't let them drive scores.\n\nInput: docs/sutra-vision.md (L4 + L6 sections), **docs/survey-repowise-health.md** (repowise comparison with calibrated weights, methodology, and specific biomarker designs), current snapshot/trend code, HRR spike results, 5a/5b/5c decisions\nOutput: shared understanding ready for PRD",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    "Git-organizational data expands L0 — git facts stored alongside structural facts in the same ground truth layer",
+    "Finding-based health model — biomarkers emit findings with severity/provenance, scores derived via category-capping. Health never blocks; constraints are for blocking enforcement.",
+    "Three-tier biomarker set: Tier 1 advisory (co_change_scatter, change_entropy, ownership_risk, function_hotspot), Tier 2 advisory (nested_complexity, hidden_coupling, blast_radius×churn), Tier 3 informational (dead_code_ratio, code_age_volatility, coverage_gradient), plus sutra-specific (convention_drift, component_instability, hrr_shape_change). Classic structural smells excluded.",
+    "HRR strip + embed computed at parse time, 1024 f64s per function. Codebook durable. Bigram deferred to on-demand analysis.",
+    "L6 capabilities: structural similarity search, near-duplicate detection (snapshot-time with trending), semantic diff in review reports (text-Δ × HRR-Δ four-quadrant model).",
+    "Convention drift detected via both FCA (convention conformance over time) and HRR (structural clustering coherence).",
+    "Per-file health scores stored in snapshots for historical drill-down. Component scores aggregated from file scores.",
+    "Multi-agent ownership resolved via configurable alias mapping (owners.toml). Agent authors collapse to human dispatcher.",
+    "Adopt repowise calibrated weights as defaults. Sutra-specific biomarkers start informational, uncalibrated.",
+    "Dependency: sutra/67 widens 0024 migration to add commits(hash, committed_at, author) table for L4 git-organizational metrics."
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-architecture.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/survey-repowise-health.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779970183808,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 43
+      }
+    },
+    {
+      "ts": 1780575732561,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780576853168,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779970183808,
+  "updated_at": 1780576853168,
+  "completed_at": 1780576853168,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "brainstorm",
+  "edges": [
+    {
+      "id": "019e92b3-6639-7750-8271-1804910e059e",
+      "edge_type": "depends_on",
+      "source": "sutra/83",
+      "target": "sutra/43",
+      "note": null,
+      "created_at": 1780577691193
+    }
+  ]
+}

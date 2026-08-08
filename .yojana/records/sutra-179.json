@@ -1,0 +1,78 @@
+{
+  "id": "019ee018-8600-76f3-a84e-4ffb0640db23",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/179",
+  "sequence_number": 179,
+  "title": "sutra_read: suggest similar symbols on not-found errors",
+  "description": "When sutra_read gets a symbol name that doesn't exist, it returns a bare 'not found: symbol X' error. Agents frequently guess plausible-but-wrong names (e.g. Db::save_snapshot instead of Db::insert_snapshot, SutraConfig instead of Config). Adding fuzzy/prefix suggestions in the error message would turn dead-end failures into redirects. Use the existing FTS5 or short_name index to find close matches and include top 3-5 in the error.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented as planned with two post-review fixes. Codex adversarial review caught: (1) unbounded CPU on long symbol inputs — fixed with 128-char cap + length-ratio prefilter before Levenshtein, (2) byte/char mismatch on Unicode — fixed with consistent char counts. The NotFound error Display was also changed to include next_action so suggestions are visible to MCP clients that only show the message field (not in original plan).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "82ee384"
+    }
+  ],
+  "files": [
+    "src/tools/read.rs",
+    "src/db/mod.rs"
+  ],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1781876164096,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 179
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782317420006,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "done"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782317425551,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782317979763,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention.\\n\\n[high] Unbounded fuzzy scan — no length cap on symbol input; O(n*q*c) Levenshtein on every not-found.\\n[medium] Unicode byte/char mismatch — len() is byte-based but levenshtein counts chars; one-char non-ASCII slips past the <2 filter.\\n\\nFixes: cap query length, use char_count consistently for thresholds and normalization.",
+      "ts": 1782317441177
+    }
+  ],
+  "created_at": 1781876164096,
+  "updated_at": 1782317979763,
+  "completed_at": 1782317979763,
+  "edges": []
+}

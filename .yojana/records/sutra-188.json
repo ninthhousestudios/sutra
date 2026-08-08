@@ -1,0 +1,119 @@
+{
+  "id": "019efb43-fdc7-7641-bf8b-f0a0c3d09b6b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/188",
+  "sequence_number": 188,
+  "title": "Python complexity scoring + unresolved-ref effect fallback",
+  "description": "Two independent extensions that can be done in one session:\n\n1. Add Python branches to complexity scoring (walk_cyclomatic, classify_cognitive, is_logical_operator)\n2. Add name-only fallback for unresolved call refs in enrich_with_effects (cross-cutting — benefits Python and retroactively improves C)\n\nCovers plan Steps 4-5 from sutra/116.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "is_logical_operator extended: returns true for Python boolean_operator nodes (and/or)"
+    },
+    {
+      "done": false,
+      "text": "walk_cyclomatic has 'python' arm: if/for/while/conditional_expression/except_clause +1, boolean_operator via is_logical_operator +1, comprehensions (list/dict/set/generator) +1; try_statement and with_statement NOT counted"
+    },
+    {
+      "done": false,
+      "text": "classify_cognitive has 'python' arm: if/conditional_expression (true,true), for/while (true,true), try_statement (true,true), except_clause (true,false), lambda (false,true), comprehensions (true,false); with_statement NOT counted"
+    },
+    {
+      "done": false,
+      "text": "enrich_with_effects has unresolved-ref fallback: for call refs where target_symbol_id is None, match ref name against effect pattern prefixes using . as boundary; dedup against already-tagged attributes"
+    },
+    {
+      "done": false,
+      "text": "Tests: cyclomatic count for Python function with if/for/except/and/or/comprehension; cognitive score for nested Python constructs; effect enrichment fires for unresolved 'open', 'requests.get', 'subprocess.run' patterns"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nThe Python complexity arms and effect patterns already exist from sutra/187, but have gaps against the ACs: `is_logical_operator` doesn't handle `boolean_operator`, comprehensions aren't counted, `classify_cognitive` has wrong `except_clause` nesting and is missing `try_statement`, and `enrich_with_effects` has no unresolved-ref fallback. Four targeted edits to `complexity.rs` and one to `attributes.rs`, plus test coverage.\n\n## Files\n\n- **Modify**: `src/parser/complexity.rs` (lines 11-94, 103-180, 183-218, 256-263) — extend `is_logical_operator`, add comprehensions to `walk_cyclomatic`, fix `classify_cognitive` Python arm, simplify `walk_cognitive` logical-op checks\n- **Modify**: `src/conventions/attributes.rs` (lines 121-165) — add unresolved-ref fallback to `enrich_with_effects`\n- **Test**: `src/parser/complexity.rs` (test module, lines 271+) — Python cyclomatic and cognitive unit tests\n- **Test**: `src/conventions/attributes.rs` (test module, lines 274+) — unresolved-ref effect enrichment tests\n\n## Steps\n\n### Step 1: Extend `is_logical_operator` for Python `boolean_operator`\n\nFile: `src/parser/complexity.rs`, lines 256-263\n\nAdd early return for `boolean_operator` node kind before the existing `binary_expression` check. Python's tree-sitter uses `boolean_operator` as the node kind itself (containing `and`/`or`), so the kind alone is sufficient — no need to inspect children.\n\n```rust\nfn is_logical_operator(node: Node, src: &[u8]) -> bool {\n    if node.kind() == \"boolean_operator\" {\n        return true;\n    }\n    if let Some(op) = node.child_by_field_name(\"operator\")\n        && let Ok(text) = op.utf8_text(src)\n    {\n        return text == \"&&\" || text == \"||\";\n    }\n    false\n}\n```\n\n### Step 2: Update `walk_cyclomatic` Python arm — comprehensions + route through `is_logical_operator`\n\nFile: `src/parser/complexity.rs`, lines 73-86\n\nReplace the direct `\"boolean_operator\"` match with a guard-based `is_logical_operator` check, and add comprehension node kinds (`list_comprehension`, `dictionary_comprehension`, `set_comprehension`, `generator_expression`).\n\n```rust\n\"python\" => match kind {\n    \"if_statement\"\n    | \"elif_clause\"\n    | \"while_statement\"\n    | \"for_statement\"\n    | \"conditional_expression\"\n    | \"except_clause\"\n    | \"list_comprehension\"\n    | \"dictionary_comprehension\"\n    | \"set_comprehension\"\n    | \"generator_expression\" => {\n        *count += 1;\n    }\n    _ if is_logical_operator(node, src) => {\n        *count += 1;\n    }\n    _ => {}\n},\n```\n\n### Step 3: Fix `classify_cognitive` Python arm\n\nFile: `src/parser/complexity.rs`, lines 209-215\n\nThree changes: add `try_statement` → (true, true), change `except_clause` from (true, true) to (true, false), add comprehensions → (true, false).\n\n```rust\n\"python\" => match kind {\n    \"if_statement\" | \"conditional_expression\" => (true, true),\n    \"while_statement\" | \"for_statement\" => (true, true),\n    \"try_statement\" => (true, true),\n    \"except_clause\" => (true, false),\n    \"list_comprehension\" | \"dictionary_comprehension\"\n    | \"set_comprehension\" | \"generator_expression\" => (true, false),\n    \"lambda\" => (false, true),\n    _ => (false, false),\n},\n```\n\n### Step 4: Unify `walk_cognitive` logical-operator checks\n\nFile: `src/parser/complexity.rs`, lines 113-119\n\nThe two separate checks (one for `binary_expression` + `is_logical_operator`, one for Python `boolean_operator`) can now be unified since `is_logical_operator` handles both:\n\n```rust\n// Before (lines 113-119):\nif kind == \"binary_expression\" && is_logical_operator(node, src) {\n    *score += 1;\n}\nif lang == \"python\" && kind == \"boolean_operator\" {\n    *score += 1;\n}\n\n// After:\nif is_logical_operator(node, src) {\n    *score += 1;\n}\n```\n\n### Step 5: Add unresolved-ref fallback to `enrich_with_effects`\n\nFile: `src/conventions/attributes.rs`, after line 146 (after the resolved-callee pattern loop, before the unsafe check)\n\nFor call refs where `target_symbol_id` is None, match `unresolved_name` against effect pattern prefixes using `.` as boundary (Python uses `.` for module paths). Skip patterns already tagged by the resolved path.\n\n```rust\nfor pattern in patterns {\n    if sym_attrs.attributes.contains(&pattern.attr_name.to_string()) {\n        continue;\n    }\n    if call_refs.iter().any(|r| {\n        r.target_symbol_id.is_none()\n            && r.unresolved_name.as_ref().is_some_and(|name| {\n                pattern.callee_prefixes.iter().any(|p| {\n                    name.starts_with(p)\n                        && (name.len() == p.len()\n                            || name.as_bytes().get(p.len()) == Some(&b'.'))\n                })\n            })\n    }) {\n        sym_attrs.attributes.push(pattern.attr_name.to_string());\n    }\n}\n```\n\n### Step 6: Python complexity unit tests\n\nFile: `src/parser/complexity.rs`, test module\n\nAdd `parse_python_fn` helper (using `tree_sitter_python::LANGUAGE`) and `python_body_node` that extracts the `body` field from a `function_definition`.\n\n**Test A — cyclomatic with if/for/except/and/or/comprehension:**\n```python\ndef foo(items, flag):\n    for x in items:\n        if x > 0 and flag:\n            pass\n        elif x < 0 or flag:\n            pass\n    try:\n        pass\n    except ValueError:\n        pass\n    result = [x for x in items]\n```\nExpected: 1(base) + 1(for) + 1(if) + 1(and) + 1(elif) + 1(or) + 1(except) + 1(list_comp) = **8**\n\n**Test B — cognitive with nested constructs:**\n```python\ndef foo(a, b):\n    if a:\n        for x in range(b):\n            if x > 0:\n                pass\n```\nExpected: 1+0(if@0) + 1+1(for@1) + 1+2(if@2) = **6**\n\n**Test C — cognitive with try/except (nesting semantics):**\n```python\ndef foo():\n    try:\n        if True:\n            pass\n    except:\n        pass\n```\nExpected: 1+0(try@0) + 1+1(if@1) + 1+1(except@1, flow_break but nesting=1 from try's child_nesting) = **5**\n\n### Step 7: Effect enrichment unresolved-ref tests\n\nFile: `src/conventions/attributes.rs`, test module\n\nUse existing `make_symbol` helper. Create a `make_unresolved_ref(name, line)` helper returning `RefRow { target_symbol_id: None, unresolved_name: Some(name), context_kind: \"call\", ... }`.\n\n**Test A — unresolved refs match Python effect patterns:**\nRefs: `\"open\"` (→ effect:fs), `\"requests.get\"` (→ effect:net), `\"subprocess.run\"` (→ effect:process). Assert all three effects tagged.\n\n**Test B — dedup: resolved path already tagged, unresolved doesn't duplicate:**\nOne resolved ref tagging `effect:fs`, one unresolved `\"open\"` ref. Assert `effect:fs` appears exactly once.\n\n**Test C — boundary check: `\"open_file\"` does NOT match `\"open\"` prefix:**\nUnresolved ref `\"open_file\"`. Assert no `effect:fs` tag.\n\n## Acceptance criteria coverage\n\n- [x] \"is_logical_operator extended: returns true for Python boolean_operator nodes (and/or)\" → Step 1\n- [x] \"walk_cyclomatic has 'python' arm: if/for/while/conditional_expression/except_clause +1, boolean_operator via is_logical_operator +1, comprehensions +1; try_statement and with_statement NOT counted\" → Step 2\n- [x] \"classify_cognitive has 'python' arm: if/conditional_expression (true,true), for/while (true,true), try_statement (true,true), except_clause (true,false), lambda (false,true), comprehensions (true,false); with_statement NOT counted\" → Step 3\n- [x] \"enrich_with_effects has unresolved-ref fallback\" → Step 5\n- [x] \"Tests: cyclomatic count for Python function with if/for/except/and/or/comprehension\" → Step 6, Test A\n- [x] \"Tests: cognitive score for nested Python constructs\" → Step 6, Tests B+C\n- [x] \"Tests: effect enrichment fires for unresolved 'open', 'requests.get', 'subprocess.run' patterns\" → Step 7, Test A",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "8c887e3"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "language",
+    "python",
+    "complexity",
+    "effects"
+  ],
+  "history": [
+    {
+      "ts": 1782331997639,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 188
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782394771057,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782395002477,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers sutra/188 + sutra/189 together):\n\nVerdict: needs-attention\n\nFindings:\n1. [high] Unresolved Python effect fallback does not see real dotted calls (attributes.rs:155-162) — Python parser records identifier refs only; for `requests.get()`, the call ref is the attribute identifier `get`, not `requests`. Because `enrich_all_effects` passes only `context_kind == \"call\"` refs, dotted prefixes like `requests` or `subprocess` won't match. Tests synthesize dotted RefRows so they pass but don't cover the production parser path.\n2. [high] Greedy prefix resolution can turn invalid imports into local edges (python_imports.rs:160-175) — `try_resolve_segments` walks shorter prefixes until any module/package exists. `import pkg.foo.bar` resolves to `pkg/foo.py` when it exists, even though Python requires `pkg.foo` to be a package.\n3. [medium] Auto-discovered package roots resolve duplicates nondeterministically (python_imports.rs:71-106) — HashSet iteration order means same import can resolve to different files across runs in monorepos with multiple roots containing the same package name.",
+      "ts": 1782396635054
+    }
+  ],
+  "created_at": 1782331997639,
+  "updated_at": 1782395002477,
+  "completed_at": 1782395002477,
+  "arc_id": "019efb43-0c5e-7242-80eb-87939215d6ad",
+  "arc_phase": "Analysis Extensions",
+  "edges": [
+    {
+      "id": "019efb44-afa3-7ee3-84cb-6788bfef9f46",
+      "edge_type": "refines",
+      "source": "sutra/188",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332043171
+    },
+    {
+      "id": "019efb44-b917-7041-85d5-fd17c808326e",
+      "edge_type": "depends_on",
+      "source": "sutra/188",
+      "target": "sutra/187",
+      "note": null,
+      "created_at": 1782332045591
+    },
+    {
+      "id": "019efb44-c06f-7df2-a952-15a2b550a8dd",
+      "edge_type": "depends_on",
+      "source": "sutra/190",
+      "target": "sutra/188",
+      "note": null,
+      "created_at": 1782332047471
+    }
+  ]
+}

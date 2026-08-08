@@ -1,0 +1,130 @@
+{
+  "id": "019f08fb-85a9-7de3-b7c0-648b53a4a042",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/213",
+  "sequence_number": 213,
+  "title": "Split oversized communities after Leiden clustering",
+  "description": "Post-clustering pass that splits communities exceeding a size threshold. After sutra/211 (Leiden integration), the largest community has 40 files — too coarse for meaningful architectural grouping, convention detection, and health scoring.\\n\\nApproach: after run_leiden/auto_tune returns, iterate over communities. For any community exceeding N files (configurable, default ~12), extract the subgraph of that community's nodes and split at weak internal cuts. Options from simplest to most complex:\\n\\n1. Weight-threshold cut: remove edges below a weight threshold within the community, then take connected components of the remainder. Simple, deterministic, no re-clustering needed.\\n2. Re-run Leiden at higher resolution on the subgraph: extract the community's nodes into a new GraphDataBuilder, run Leiden with a higher gamma. More principled but allocates a new graph per oversized community.\\n3. Recursive split until all communities fit budget: option 2 applied recursively. Overkill for current graph sizes.\\n\\nOption 1 is strongly preferred — it reuses the existing graph structure (just filter edges) and doesn't require rebuilding GraphData. The weight threshold can be derived from the community's internal edge weight distribution (e.g., edges below the 25th percentile).\\n\\nKey constraint: this is a post-processing step on the ClusterResult, NOT a change to the Leiden algorithm itself. The split communities get new dense community IDs and flow into the existing build_clusters → reconcile_components pipeline unchanged.\\n\\nKey files:\\n- src/components/clustering.rs: run_clustering (add split step after run_leiden/auto_tune)\\n- ComponentsConfig: add optional max_community_size field\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Communities exceeding threshold are split into smaller subcommunities"
+    },
+    {
+      "done": false,
+      "text": "Threshold is configurable via ComponentsConfig (max_community_size, default ~12)"
+    },
+    {
+      "done": false,
+      "text": "Split preserves the ClusterResult contract — downstream build_clusters and reconcile_components unchanged"
+    },
+    {
+      "done": false,
+      "text": "Existing tests pass, new test covers split behavior on a graph with one oversized community"
+    },
+    {
+      "done": false,
+      "text": "Tested on sutra's own codebase: largest community reduced from 40 files"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Use sub-graph re-clustering (Option 2) instead of weight-threshold cuts (Option 1)",
+      "rationale": "Weight-threshold cuts fail on star-topology graphs: spoke files with single hub connections become singletons at any threshold. Re-clustering the subgraph at higher resolution lets Leiden find natural subdivisions within the community, respecting degree distribution. Slightly more expensive (builds a new GraphData per oversized community) but produces dramatically better results.",
+      "rejected_alternative": "Weight-threshold cut (Option 1) — tried first, produced 88% singletons from the 38-file cluster. The star topology means edges from spoke files to hub files are the only internal edges, so threshold cuts can't split into meaningful groups."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Originally attempted Option 1 (weight-threshold cut from the task description) — produced catastrophic singleton explosion (129 communities, ~100 singletons) because the star topology of sutra's file graph means spoke files only connect through hubs. Any weight threshold either keeps the cluster intact or shatters spokes into singletons.\\n\\nSwitched to Option 2 (re-run Leiden at higher resolution on the subgraph). This works much better: extracts the oversized community's subgraph, tries resolutions [2.0, 3.0, 5.0, 8.0] until max subcommunity fits budget. On sutra's real graph: max community 38→9, with architecturally coherent subclusters (DB infrastructure 9 files, components/graph 7, MCP tools 6, similarity subsystem 5, parser/resolver 3). Only ~4 files from the original mega-cluster became new singletons.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/211"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "run_clustering"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "ClusterResult"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "build_clusters"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "ComponentsConfig"
+    },
+    {
+      "type": "git:commit",
+      "value": "27c0268"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782562129321,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 213
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782562764407,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782563172219,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (sutra/211+212+213):\n\n- [high] max_community_size not in clustering_config_hash (identity.rs:280-302): ComponentsConfig adds max_community_size, but clustering_config_hash only hashes resolution, boundary multipliers, and co-change fields. discover_components skips reclustering when the stored hash matches, so changing .sutra/components.toml max_community_size returns Ok(0) and leaves old oversized components in place. Recommendation: include effective max_community_size in clustering_config_hash, add stale-detection test.\n\n- [medium] split_oversized is best-effort but advertised as hard threshold (clustering.rs:319-337): tries resolutions [2.0, 3.0, 5.0, 8.0], applies last candidate if it produced >1 community even if over budget. No postcondition check. Recommendation: only accept sub-result within budget; otherwise use deterministic fallback; assert no emitted cluster exceeds max_community_size.",
+      "ts": 1782563723098
+    }
+  ],
+  "created_at": 1782562129321,
+  "updated_at": 1782563172219,
+  "completed_at": 1782563172219,
+  "edges": [
+    {
+      "id": "019f08fb-9baa-7fe3-8e66-f433cf854cb4",
+      "edge_type": "depends_on",
+      "source": "sutra/213",
+      "target": "sutra/211",
+      "note": null,
+      "created_at": 1782562134954
+    },
+    {
+      "id": "019f08fb-a045-7cd0-b89f-aadb4b39a5fc",
+      "edge_type": "relates_to",
+      "source": "sutra/213",
+      "target": "sutra/212",
+      "note": "CPM spike outcome may change the quality function before splitting is implemented",
+      "created_at": 1782562136133
+    }
+  ]
+}

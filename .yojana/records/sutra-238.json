@@ -1,0 +1,71 @@
+{
+  "id": "019f482b-4e90-7c10-8dcb-5f1fdeb5fc33",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/238",
+  "sequence_number": 238,
+  "title": "no_cycles named constraint never binds: scope dropped from evaluation (matched_file_count.scope always 0)",
+  "description": "A `[[constraint]] kind = \"no_cycles\"` with a `scope` glob always reports `matched_file_count: {scope: 0}` and a `dead_constraint` warning, regardless of glob form. Its `kind_detail` comes back `{}` — unlike `max_fan_in`, whose kind_detail carries target+threshold — suggesting the scope never makes it into the no_cycles evaluator.\n\nRepro (pyswisseph-rs workspace, 18 files flat under src/): globs `src/**`, `src/**/*.rs`, and `src/*.rs` all yield scope=0, while a sibling `max_fan_in` constraint with `target = \"src/**\"` matches 18 files in the same parse. Meanwhile the *builtin* workspace-wide cycle detector (`builtin:cycles`) correctly finds and blocks a real cycle inside src/ (ephemeris.rs → heliacal.rs → phenomena.rs), so cycle detection itself works — only the named/scoped constraint path is broken.\n\nImpact: scoped no_cycles rules are silently inert in every governed repo; enforcement rides on the builtin only, and waivers attach to `builtin:cycles` instead of the named constraint (loses provenance/severity routing). Found during vidhi-sutra-tend at checkpoint pyswisseph-rs/22.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Three prefix-matching sites, no shared helper exists. Fix = one hybrid helper + three call sites + tests + docs.\n\n## Design decision\nScope accepts EITHER a glob or a directory prefix (hybrid), decided per-value: if the scope string contains glob metacharacters (* ? [), glob-match with MatchOptions{require_literal_separator:true} (same options as count_glob in constraint_coverage); otherwise prefix-match with trailing-slash normalization (append '/' if missing; path.starts_with(prefix) || path == scope). Rationale: glob-only would silently break existing documented prefix scopes (\"src/core/\"); prefix-only contradicts what seeds/users actually write and every sibling field. Rejected alternative: normalizing \"src/**\" → \"src/\" at parse time — fragile for forms like \"src/*.rs\" and hides semantics.\n\nNote: trailing-slash normalization slightly tightens current raw starts_with (scope \"src/core\" no longer matches \"src/corely.rs\"). Intentional fix; call out in commit.\n\n## Steps\n1. **Helper** — add `pub fn scope_matches_path(scope: &str, path: &str) -> bool` in src/rules.rs next to match_no_cycles_constraint (rules.rs is below constraints/mod.rs and tools/orient.rs in the dep graph; both already import crate::rules). Doc-comment the hybrid semantics.\n2. **rules.rs:457-469 match_no_cycles_constraint** — replace `p.starts_with(scope)` with helper. Keep all-cycle-paths-in-scope requirement and longest-scope-wins tiebreak. This fixes attribution in check.rs evaluate_dd (check.rs:328 → builtin:cycles fallback at 329-332), which review.rs build_findings, sutra_constraints violations, and guard --check-constraints all inherit — no changes needed in check.rs itself. evaluate_raw does no cycle detection; unaffected.\n3. **src/constraints/mod.rs:168-174 constraint_coverage NoCycles arm** — replace count_prefix with helper (drop count_prefix if it has no other users). Fixes matched_file_count.scope and the spurious dead_constraint warning.\n4. **src/tools/orient.rs:123-137 constraints_for_component generic scope filter** — replace the inline prefix logic with the helper. CAUTION (refactor contract discipline, lesson L9): this filter runs for ALL scoped constraint kinds, not just no_cycles — diff behavior for each: prefix scopes behave identically (helper reproduces the trailing-slash logic already there); glob scopes go from never-matching to matching, which is the fix. Existing test constraints_in_scope_by_path_prefix (orient.rs:817) must pass unchanged.\n5. **kind_detail**: leave NoCycles as json!({}) — scope is already a top-level field in the list entry (tools/constraints.rs:127); duplicating it into kind_detail creates two sources of truth.\n6. **Tests** (no existing test pins glob-vs-prefix, so nothing to migrate):\n   - rules.rs: helper unit tests — \"src/**\", \"src/*.rs\" (flat only), \"src/**/*.rs\", prefix \"src/core/\", prefix w/o slash \"src/core\" vs \"src/corely.rs\" (must NOT match), exact-file scope.\n   - rules.rs: match_no_cycles_constraint with glob scope binds; one out-of-scope cycle path → None; longest-scope-wins across glob+prefix mix; unscoped still matches all.\n   - constraints/mod.rs: coverage_no_cycles_with_glob_scope counts matches; existing coverage_no_cycles_with_scope_zero_files stays green.\n   - orient.rs: scoped-no_cycles-by-glob appears in component constraint list.\n   - tests/constraints-test.rs (or review-test.rs): end-to-end — cycle whose files all match a glob-scoped no_cycles constraint gets the NAMED constraint_id + its severity, not builtin:cycles; cycle partially outside scope falls back to builtin:cycles.\n7. **Docs** — constraints-map.md: document scope hybrid semantics in TOML section (currently shows only \"src/core/\" and says \"path prefix\"); update Last-updated line. Check README rules.toml docs for the same wording.\n8. **Verify against origin repro** — pyswisseph-rs (~/nhs/soft/astrology/pyswisseph-rs, scope=\"src/**\" already authored in .sutra/rules.toml): reparse, sutra_constraints list → matched_file_count.scope==18, no dead_constraint warning; the real src cycle (ephemeris→heliacal→phenomena) attributes to wrapper-no-cycles. Follow-up for that repo: the existing waiver attached to builtin:cycles must be re-waived under the named constraint id (waivers key on constraint_id); update the rules.toml comment block that documents this bug.\n\n## Invariants\n- Constraint identity (blake3 of kind+params+scope) is untouched — we change matching semantics, not scope strings, so IDs and existing waivers keyed on them are stable.\n- DD worker/engine untouched — cycle DETECTION was never broken, only attribution/coverage.",
+  "execution_record": "Executed per plan with one addition and one caveat. Addition: live verification against the real pyswisseph-rs index (throwaway test opening ~/.sutra/pyswisseph-rs/index.db + real rules.toml through check::evaluate) confirmed the src cycle (ephemeris→heliacal→phenomena) now attributes to wrapper-no-cycles (bfafc04a, blocking) with no dead_constraint warning; it also surfaced a second, legitimate builtin:cycles finding — an 18-module cycle in python/swisseph_rs/*.py, correctly outside src/** (initially looked like a fix failure; it isn't). Caveat: commit is local on sutra main, not pushed, and the deployed daemon binary is NOT rebuilt — live MCP responses still show the old behavior until Josh redeploys (didn't restart the daemon mid-session; it serves this session's MCP). Follow-up filed: pyswisseph-rs/29 (re-anchor waiver from builtin:cycles to named id + stale rules.toml comment). Full suite 1129 passed; pre-existing unrelated clippy never_loop error in src/parser/python.rs noted, untouched.",
+  "reproduction": "In pyswisseph-rs: set wrapper-no-cycles scope to src/** (or src/*.rs), reparse, sutra_constraints action=list → matched_file_count.scope == 0, warning \"zero matches on scope: constraint is inert\", kind_detail == {}.",
+  "root_cause": "Semantics mismatch, not a dropped value: every path that matches a NoCycles scope uses literal prefix matching (starts_with), while every other constraint field (forbidden_dep from/to, max_fan_in target, forbidden_external from) is glob-matched. Seeded rules (vidhi-sutra-seed) write glob scopes like \"src/**\", and \"src/lib.rs\".starts_with(\"src/**\") is false — so coverage counts 0, match_no_cycles_constraint never binds, and cycles fall back to builtin:cycles. A plain prefix scope (\"src/\") would have worked but is undocumented and inconsistent with all sibling fields. kind_detail=={} is by design (scope lives on Constraint, not ConstraintKind::NoCycles, and is emitted as a top-level list field) — it was a misleading symptom, not part of the bug.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "pyswisseph-rs/22",
+      "label": "tend checkpoint that found it"
+    },
+    {
+      "type": "git:commit",
+      "value": "5bfc110"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1783622225552,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 238
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783623669486,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783623680468,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (base 10871c9, commit 5bfc110). Verdict: needs-attention.\n\nFinding [medium] — Literal bracket scopes are now interpreted as globs before prefix matching (src/rules.rs scope_matches_path): any scope containing * ? [ routes through glob::Pattern and never attempts the old literal prefix match. A previously valid literal scope like src/app/[slug]/ no longer matches files under it — [slug] parses as a character class — silently disabling no_cycles attribution and zeroing matched_file_count.scope. Realistic path pattern in web projects, not malformed input; the old starts_with code matched it literally.\n\nRecommendation: prefer literal boundary matching first, then glob fallback; add tests for literal metacharacter directories (e.g. src/app/[slug]/page.tsx).\n\nConfirmed valid — fix tracked as follow-up sutra/239.",
+      "ts": 1783624079841
+    }
+  ],
+  "created_at": 1783622225552,
+  "updated_at": 1783623680468,
+  "completed_at": 1783623680468,
+  "edges": []
+}

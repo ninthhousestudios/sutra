@@ -1,0 +1,93 @@
+{
+  "id": "019e06ec-38b6-7b50-a47b-fbc6880dd033",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/1",
+  "sequence_number": 1,
+  "title": "Per-result freshness + confidence signals",
+  "description": "Attach `_freshness ∈ {fresh, edited_uncommitted, stale_index}` to every result entry by comparing per-file mtime to the last parse timestamp. Aggregate into a `_meta.freshness` summary on each response.\n\nConfidence is opt-in per tool — only meaningful for ranked queries (`sutra_find`, `sutra_grep`). Compute from top-1/top-2 score gap and identity-match presence.\n\n**Session coordination note:** this touches every tool's response builder. Should be done as a single focused session — other simple-additions tasks land afterward and inherit the new metadata automatically. Avoid running this in parallel with any other simple-additions task to prevent merge conflicts on response shapes.\n\nSee docs/feature-ideas.md → \"Per-result freshness + confidence\".",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "All ranked tools include _freshness on each result entry"
+    },
+    {
+      "done": true,
+      "text": "Response root includes _meta.freshness summary (counts of fresh/edited/stale)"
+    },
+    {
+      "done": true,
+      "text": "sutra_find and sutra_grep emit _meta.confidence"
+    },
+    {
+      "done": true,
+      "text": "Confidence value documented (formula + interpretation)"
+    }
+  ],
+  "decisions": [
+    "Per-entry freshness uses disk mtime vs FileRow.last_parsed — lightweight, no content hashing",
+    "SearchTier enum (Exact=1.0, Fts=0.6) — confidence formula embedded in JSON response for self-documentation",
+    "Backward-compatible: original handle() signatures preserved, new handle_with_freshness() variants used by MCP layer"
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/freshness.rs",
+    "src/db.rs",
+    "src/tools/find.rs",
+    "src/tools/grep.rs",
+    "src/tools/map.rs",
+    "src/tools/hotspots.rs",
+    "src/tools/file_health.rs",
+    "src/mcp.rs",
+    "src/lib.rs",
+    "tests/mcp_contract_test.rs"
+  ],
+  "tags": [
+    "foundation",
+    "response-shape"
+  ],
+  "history": [
+    {
+      "ts": 1778232604854,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 1
+      }
+    },
+    {
+      "ts": 1778233379595,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778233384829,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "All 4 acceptance criteria implemented and tested:\n1. Per-entry _freshness on map, find, grep, hotspots, file_health (fresh/edited/stale based on disk mtime vs last_parsed)\n2. _meta.freshness summary with fresh/edited/stale counts at response root\n3. _meta.confidence on find and grep (score + tier + formula)\n4. Confidence formula documented in the JSON response itself\n\nNew files: src/freshness.rs (module with FileStatus, FreshnessCounts, SearchTier, confidence_json)\nModified: db.rs (additive: find_symbols_by_name_tiered), find.rs, grep.rs, map.rs, hotspots.rs, file_health.rs, mcp.rs\nTests: 6 unit tests in freshness module + 7 new contract tests in mcp_contract_test.rs — all 160 tests pass.",
+      "ts": 1778233367623
+    }
+  ],
+  "created_at": 1778232604854,
+  "updated_at": 1778233384829,
+  "completed_at": 1778233384829,
+  "edges": []
+}

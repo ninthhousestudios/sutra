@@ -1,0 +1,100 @@
+{
+  "id": "019e1438-257b-7031-ba49-59030ab0bb4d",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/1",
+  "sequence_number": 1,
+  "title": "Spike: HRR semantic & temporal binding",
+  "description": "Continue the HRR structural encoding spike into semantic/experiential territory. Can HRR serve as the substrate for Sutra's full associative knowledge layer — structural features, agent-contributed annotations, and temporal evolution in one vector space?\n\nFour experiments: semantic tag binding, temporal binding (function diff across commits), codebook scaling limits, composition with structured queries (HRR-ranked impact results).",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "P@5 for mixed structural+semantic queries within 20% of pure structural baseline"
+    },
+    {
+      "done": false,
+      "text": "Temporal diffs recover correct structural change category >40% of the time"
+    },
+    {
+      "done": false,
+      "text": "Codebook saturation point and interference threshold documented"
+    },
+    {
+      "done": false,
+      "text": "Prototype of HRR-ranked impact results exists and qualitatively evaluated"
+    },
+    {
+      "done": false,
+      "text": "Written verdict: viable / viable with caveats / not viable"
+    }
+  ],
+  "decisions": [
+    "HRR is viable as the full associative knowledge substrate for Sutra v1",
+    "Semantic binding uses add(role.bind(filler).scale(0.3)) — 0.3x scaling keeps structural signal dominant",
+    "Subsystem-based context prototypes work better than trait-based for impact re-ranking",
+    "Codebook can safely grow to 500+ entries without interference"
+  ],
+  "implementation_plan": null,
+  "execution_record": "## Results (redox-kernel, 1548 functions, 30 commits)\n\n| Experiment | Status | Key metric |\n|---|---|---|\n| 1a: Mixed retrieval | PASS | 1.05x (struct 80%, mixed 84%) |\n| 1b: Tag recovery | PASS | 100% (480/480) |\n| 1c: Interference | PASS | threshold ~32 tags |\n| 2: Temporal | PASS | 88% category recovery (36/41) |\n| 3: Codebook scaling | PASS | saturation ~516, P@5 stable |\n| 4: Composition | PASS | 88% same-module lift |\n\n**Verdict: VIABLE**\n\n## Key findings\n- Semantic tags bind cleanly into structural vectors without degrading retrieval (1.05x baseline)\n- Tags perfectly recoverable via unbinding at up to ~32 tags per vector\n- Temporal diffs are interpretable: 88% recover correct structural change category, intra-class similarity 6x inter-class\n- Codebook scales to 500+ entries with no P@5 degradation; cleanup remains 100%\n- HRR-ranked impact re-ranking surfaces same-module callers 88% of the time vs random\n\n## Performance envelope\n- dim=1024, ~14s encoding for 1548 functions\n- Interference threshold: ~32 bound tags before 50% structural retention loss\n- 0.3x scaling factor on tag bindings keeps structural signal dominant\n\n## Binary\n`src/bin/hrr-semantic.rs` — `cargo run --bin hrr-semantic -- <root> [--temporal-repo <path> --temporal-commits A..B]`",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/v1-spikes/hrr-semantic.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "4c1969c"
+    }
+  ],
+  "files": [
+    "src/bin/hrr-semantic.rs",
+    "Cargo.toml"
+  ],
+  "tags": [
+    "spike",
+    "hrr",
+    "p1"
+  ],
+  "history": [
+    {
+      "ts": 1778455684475,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 1
+      }
+    },
+    {
+      "ts": 1778502859239,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778502867421,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "## Linux kernel results (18,629 functions, kernel/ subtree)\n\n| Experiment | Status | Key metric |\n|---|---|---|\n| 1a: Mixed retrieval | PASS | 1.12x baseline (+12%, semantic tags help at scale) |\n| 1b: Tag recovery | PASS | 100% (414/414, 42 subsystems) |\n| 1c: Interference | PASS | threshold ~32 tags |\n| 2: Temporal | SKIPPED | shallow clone, 1 commit |\n| 3: Codebook scaling | PASS | saturation ~508, P@5 stable |\n| 4: Composition | CAVEAT | 51% (kernel-wide calls like mutex_lock dilute signal) |\n\nNotable: at 18.6k functions, semantic tags actually *improve* structural retrieval (+19% on loop/match queries). The subsystem diversity of the kernel makes the heuristic tags genuinely informative.\n\nComposition (Exp 4) is marginal at kernel scale because high-fanout utility functions (mutex_lock: 543 callers across all subsystems) dominate the call graph. Subsystem-internal functions (cpu_rq) rank correctly. This suggests a caller-count threshold or fanout normalization for production use.",
+      "ts": 1778503221993
+    }
+  ],
+  "created_at": 1778455684475,
+  "updated_at": 1778502867421,
+  "completed_at": 1778502867421,
+  "edges": []
+}

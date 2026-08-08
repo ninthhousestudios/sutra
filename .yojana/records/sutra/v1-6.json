@@ -1,0 +1,83 @@
+{
+  "id": "019e1cd8-ecad-78f2-a14d-9bbd759758bd",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/6",
+  "sequence_number": 6,
+  "title": "Schema migration runner",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd a schema migration runner to sutra's embedded SQLite database. Introduce a `schema_migrations` table with ordered migration IDs and content hashes per migration. Existing migrations should be registered retroactively. New migrations (conventions table, etc.) must go through this runner. Clear error messages on migration failure. This is required before FCA adds new tables in later slices.\\n\\n## Acceptance criteria\\n\\n- [ ] `schema_migrations` table exists with columns: id, name, content_hash, applied_at\\n- [ ] Existing migrations registered retroactively on first run\\n- [ ] New migrations only apply if not already applied (idempotent)\\n- [ ] Content hash mismatch produces a clear error (not silent corruption)\\n- [ ] Migration failure rolls back cleanly\\n\\n## Blocked by\\n\\nNone — can start immediately.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b764f80"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "infrastructure"
+  ],
+  "history": [
+    {
+      "ts": 1778600438958,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 6
+      }
+    },
+    {
+      "ts": 1778607794930,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778608976075,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — request changes:\\n\\n[high] Retroactive migration registration can hide missing columns permanently (src/db.rs:198-201). The pre-runner detector treats any DB with a `files` table and empty `schema_migrations` as fully migrated, registers all migrations, and returns — without verifying later migration columns (symbols.cyclomatic, snapshots.total_complexity, symbols.flags) actually exist. A DB from an older or partially failed runner gets marked as having applied 0002-0004 even if those ALTERs never ran, causing runtime SQL failures.\\n\\nRecommendation: Before retro-registering each migration, validate schema with PRAGMA table_info, or replay idempotent migrations and only insert a row after the expected schema is present.",
+      "ts": 1778612162885
+    }
+  ],
+  "created_at": 1778600438958,
+  "updated_at": 1778608976075,
+  "completed_at": 1778608976075,
+  "edges": [
+    {
+      "id": "019e1cda-6981-73e3-9948-63c1353a55fb",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/11",
+      "target": "sutra/v1/6",
+      "note": null,
+      "created_at": 1778600536449
+    },
+    {
+      "id": "019e1cda-a0ac-7f11-b8e4-20631f0e364c",
+      "edge_type": "refines",
+      "source": "sutra/v1/6",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600550572
+    }
+  ]
+}

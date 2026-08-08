@@ -1,0 +1,72 @@
+{
+  "id": "019f4d23-6d48-76e2-8070-77cde23ec7f2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/258",
+  "sequence_number": 258,
+  "title": "Tool surface consolidation — the free merges (37 → ~31)",
+  "description": "Merges that are safe on structural grounds alone (no usage data needed — each removes a redundant entry point to an answer another tool already gives; zero capability lost). Analysis from 2026-07-10 session: the real cost of 37 tools is not schema tokens (Claude Code defers MCP schemas) but selection cost — overlapping answers to the same question in the navigation hot path.\n\nMerge 1 — workspace admin (4 → 1): sutra_add_root (\"register + force reparse\"), sutra_status (\"register + return status\"), sutra_parse (\"trigger reparse\"), sutra_tools (tier enable/disable) → single sutra_workspace(workspace, action: status|reparse, tiers?: {...}). status remains the default action. −3 tools.\n\nMerge 2 — find + resolve → explore (7 → 5 in nav): sutra_explore already falls through to exact lookup for qualified names (subsumes sutra_find's main case); sutra_resolve's aliases.toml lookup becomes explore's FIRST ranked tier (alias hit → top result with fetch instruction). Keep sutra_grep (literal patterns are a distinct query), sutra_read, sutra_map, sutra_outline. −2 tools.\n\nMerge 3 — duplicates → similar: sutra_duplicates is sutra_similar with no target (same HRR machinery). Make symbol optional: present → similar-to-X, absent → all near-dupe pairs. −1 tool.\n\nExplicitly OUT of scope (do NOT merge): refs/calls/trace/impact (distinct answers sharing plumbing — mode-enum mega-tools get worse descriptions and more misuse, not less; revisit only after sutra_context usage data exists); dead/hotspots/winnow and pr_risk/diff_impact (debatable — gated on telemetry, see the pruning review task).\n\nCleanup obligations (part of this task, not follow-ups):\n- Update every doc/instruction that names removed tools: sutra CLAUDE.md exploration protocol, ~/soft/manas CLAUDE.md sutra_mcp section, docs/agents/*, sutra_help recipes, MCP server instructions string (v0.9.0 lists all 37 names).\n- Removed names should NOT linger as hidden aliases — agents relearn from list_tools; a clean break with updated descriptions beats a compat shim nobody removes.\n- Contract discipline (L9): sutra_status output shape is consumed by agents (\"run sutra_status first\") — the merged tool's default action must preserve its response contract or docs must be updated in the same change.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Executed as planned with minor deviations: (1) Landed at 32 tools not 31 — the original count was 38 not 37 (the server info string auto-counts from the router map). Net -6 tools. (2) Used Arc<WorkspaceEntry> in sutra_workspace to avoid clone-guard violations from the spawn_blocking pattern. (3) CLI `sutra find` subcommand kept as-is — it calls tools::find::handle directly, which remains a valid internal function. The find and resolve tool modules stay compiled but are no longer registered as MCP tools. (4) Also updated all diagnostic suggestion strings across 8 files (calls, refs, trace, impact, read, context, provenance, guard) that referenced removed tool names. (5) manas-cli instructions updated in a separate commit in that repo, including a new sutra_context pointer.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "952f551"
+    },
+    {
+      "type": "git:commit",
+      "value": "c30a86d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "tool-surface"
+  ],
+  "history": [
+    {
+      "ts": 1783705595208,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 258
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784033500078,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784034799118,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention → 3 findings, all fixed in c30a86d.\\n\\n1. [high] Tier toggles required path (fixed: path now optional, mutation after validation)\\n2. [high] Explore alias short-circuit dropped orphan diagnostics, ignored budget (fixed: filter orphans, respect budget, fall through)\\n3. [medium] README still referenced removed tools (fixed: full table and workflow updates)\"",
+      "ts": 1784035399555
+    }
+  ],
+  "created_at": 1783705595208,
+  "updated_at": 1784035399831,
+  "completed_at": 1784034799118,
+  "edges": []
+}

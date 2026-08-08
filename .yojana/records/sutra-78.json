@@ -1,0 +1,80 @@
+{
+  "id": "019e8c69-e532-7d20-95cd-79ecf463c304",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/78",
+  "sequence_number": 78,
+  "title": "5d-review-1: review foundation (rename, types, DD)",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to review\n\nFoundation checkpoint: 5d-1 (rename), 5d-2 (constraint types), 5d-3 (DD forbidden pairs).\n\n### Focus areas\n\n- **Rename (5d-1)**: clean rename, no stale references, all tests pass\n- **Constraint types (5d-2)**: TOML format ergonomics, backward compat actually works, identity hashing is stable and deterministic, test coverage for parsing edge cases\n- **DD forbidden pairs (5d-3)**: second input collection correctly wired into timely dataflow, violations update incrementally on both edge and forbidden-pair changes, no regression in cycle/blast-radius views, latency within 100ms target\n\n### Stable state after this checkpoint\n\nModule renamed, new constraint format is parseable, DD has a maintained violation view. No end-to-end integration yet — that comes in checkpoints 2 and 3.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780472210738,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 78
+      }
+    },
+    {
+      "ts": 1780503349942,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780472210738,
+  "updated_at": 1780503349942,
+  "completed_at": 1780503349942,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-6cd4-79a1-a656-00df69d2d920",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472245460
+    },
+    {
+      "id": "019e8c6a-705f-7223-8a7c-60d1f7d7b60a",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472246367
+    },
+    {
+      "id": "019e8c6a-7406-7380-ab09-12e8aa6dbf01",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472247302
+    }
+  ]
+}

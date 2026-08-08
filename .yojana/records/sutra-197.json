@@ -1,0 +1,58 @@
+{
+  "id": "019f041b-631c-77c3-afd9-b748023618a7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/197",
+  "sequence_number": 197,
+  "title": "Visual architecture map: interactive graph rendering of components and dependencies",
+  "description": "Sutra has all the data for a visual architecture map (components, deps, call graphs, symbol health) but zero visual output. Design an interactive graph frontend — likely ReactFlow or similar — that renders sutra's component/dependency graph as an explorable canvas.\n\nKey design questions to brainstorm:\n- What graph layers to expose? Component-level (coarse) vs file-level vs symbol-level (fine) — probably tiered drill-down\n- Layout algorithms for graphs with thousands of nodes (lore-map sidesteps this by having ≤7 top-level nodes; sutra can't)\n- Delivery model: standalone web server? MCP-served? VS Code webview? CLI-launched browser?\n- Data flow: live from sutra's SQLite snapshot, or exported static JSON?\n- What edges to show: imports, calls, containment? Toggleable?\n- Filtering/focus: show blast radius of a selected symbol, highlight hot paths, color by health score\n- Prior art: lore-map (ReactFlow, ~7 coarse nodes, LLM-generated), Sourcegraph, CodeSee, Dependency Cruiser\n\nInspired by lore-map's visualization layer, but built on sutra's deterministic, symbol-level data rather than LLM-generated coarse graphs.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Brainstormed via vidhi-brainstorm. Key decisions: Flutter desktop app (Linux-first), direct SQLite read (no server), breadcrumb drill-down (components → files → symbols), three layout engines (force-directed default, layered, circle packing), toggleable overlays for constraints/conventions/health/hotspots. PRD captured in thread/1.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "brainstorm",
+    "visualization"
+  ],
+  "history": [
+    {
+      "ts": 1782480331548,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 197
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782483829388,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782484712393,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782480331548,
+  "updated_at": 1782484712393,
+  "completed_at": 1782484712393,
+  "edges": []
+}

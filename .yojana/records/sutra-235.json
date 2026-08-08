@@ -1,0 +1,89 @@
+{
+  "id": "019f3f7a-7700-7293-9cf0-fd09e3408a69",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/235",
+  "sequence_number": 235,
+  "title": "Rebuild sutra_orient conventions section on the deviation engine",
+  "description": "Per the sutra/176 decision (arc sutra/~12): rebuild `sutra_orient`'s convention section as a descriptive \"what's normal here\" summary computed from the same group-by/pattern engine as the review deviation report — no persisted lifecycle, no preferred/proposal/waiver/template surfacing (those subsystems are gone after demolition).\n\nContent per scope/component: the strongest identity→obligation patterns with counts (\"15/15 Db methods take &self and return Result\") plus 1-2 exemplar symbol pointers each. Cap for context economy — orient is core tier and gets read at session start.\n\nPerf note: orient is core tier (no analysis pass required). If on-the-fly attribute extraction per call is too slow for large components, use the ephemeral conventions cache decided in the review-deviation task; do not reintroduce durable persistence.\n\nThis section's continued existence is provisional — the validation phase (HITL task on this arc) decides whether agents actually use it. Build it thin.\n\nAcceptance: orient output for a component shows top patterns with counts + exemplars and nothing from the deleted subsystems; orient latency unchanged in order of magnitude; conventions-map.md orient section updated.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nReplace orient's convention section (currently reads persisted conventions from DB via `all_conventions()`) with on-the-fly FCA computation using the same engine as `detect_deviations`. The new section shows descriptive \\\"what's normal here\\\" patterns filtered to identity→obligation implications, with counts and 1-2 exemplar symbol pointers. No persistence dependency, no lifecycle surfacing.\n\nPerformance: extraction is component-scoped (only the component's files), not a full-workspace scan. FcaEngine's hash-based cache handles repeat calls. This should be within order-of-magnitude of the current DB read.\n\nDuplication note: `extract_component_sym_attrs` (step 3) duplicates the extraction loop from `build_findings` and `pipeline::rebuild`. Acceptable for \\\"build thin\\\" — if orient survives validation, extract shared helper in a consolidation pass.\n\n## Files\n\n- **Modify**: `src/conventions/engine.rs` (~560) — Add `ObservedPattern` struct and `describe_patterns()` function\\n- **Modify**: `src/conventions/mod.rs` — Re-export `ObservedPattern`, `describe_patterns`\\n- **Modify**: `src/tools/review.rs` (~468) — Make `collect_toolchain_pairs` `pub(crate)`\\n- **Modify**: `src/tools/orient.rs` (~256-575) — Replace DB convention section with on-the-fly patterns; add `extract_component_sym_attrs` helper; add `registry` param to `handle`\\n- **Modify**: `src/mcp.rs` (~381-396) — Create registry, pass to orient handle\\n- **Test**: `src/tools/orient.rs` (tests module) — Update convention-related tests\\n- **Modify**: `docs/conventions-map.md` — Update orient section\\n\\n## Steps\\n\\n### Step 1: Add `ObservedPattern` and `describe_patterns` to engine.rs\\n\\nAfter the `Deviation` struct (~line 127), add:\\n\\n```rust\\n#[derive(Debug, Clone)]\\npub struct ObservedPattern {\\n    pub antecedent: Arc<[String]>,\\n    pub consequent: Arc<[String]>,\\n    pub support: usize,\\n    pub confidence: f64,\\n    pub total_matching: usize,\\n    pub exemplars: Vec<String>,\\n}\\n\\nconst MAX_ORIENT_PATTERNS: usize = 5;\\n\\npub fn describe_patterns(\\n    sym_attrs: &[SymbolAttrs],\\n    component_id: Option<&str>,\\n    toolchain_pairs: &[crate::parser::adapter::ToolchainPair],\\n) -> Vec<ObservedPattern> {\\n    use super::attributes::{AttributeRole, classify_attribute};\\n\\n    if sym_attrs.len() < 2 {\\n        return Vec::new();\\n    }\\n    let min_support = match component_id {\\n        Some(_) => component_min_support(sym_attrs.len()),\\n        None => MIN_SUPPORT,\\n    };\\n    let mut engine = FcaEngine::new();\\n    engine.rebuild_with_params(sym_attrs, min_support, MIN_CONFIDENCE, component_id);\\n    let ctx = match &engine.context {\\n        Some(c) => c,\\n        None => return Vec::new(),\\n    };\\n\\n    let mut patterns: Vec<ObservedPattern> = engine\\n        .conventions()\\n        .iter()\\n        .filter(|c| {\\n            c.antecedent\\n                .iter()\\n                .all(|a| classify_attribute(a) == AttributeRole::Identity)\\n                && c.consequent\\n                    .iter()\\n                    .all(|attr| classify_attribute(attr) == AttributeRole::Obligation)\\n                && c.is_checkable(toolchain_pairs)\\n        })\\n        .map(|c| {\\n            let ante: Vec<&str> = c.antecedent.iter().map(|s| s.as_str()).collect();\\n            let cons: Vec<&str> = c.consequent.iter().map(|s| s.as_str()).collect();\\n            let total_matching = ctx.count_with_attrs(&ante);\\n            let exemplars: Vec<String> = ctx\\n                .exemplars_for(&ante, &cons, 2)\\n                .into_iter()\\n                .map(|s| s.to_string())\\n                .collect();\\n            ObservedPattern {\\n                antecedent: Arc::clone(&c.antecedent),\\n                consequent: Arc::clone(&c.consequent),\\n                support: c.support,\\n                confidence: c.confidence,\\n                total_matching,\\n                exemplars,\\n            }\\n        })\\n        .collect();\\n\\n    let strength = |p: &ObservedPattern| p.support as f64 * p.confidence;\\n    patterns.sort_by(|a, b| {\\n        strength(b)\\n            .partial_cmp(&strength(a))\\n            .unwrap_or(std::cmp::Ordering::Equal)\\n            .then(b.support.cmp(&a.support))\\n    });\\n    patterns.truncate(MAX_ORIENT_PATTERNS);\\n    patterns\\n}\\n```\\n\\nKey reuse: same identity→obligation filter + toolchain exclusion as `detect_deviations`. Same FcaEngine + FormalContext for exemplars.\\n\\n### Step 2: Re-export from mod.rs\\n\\nAdd `ObservedPattern` and `describe_patterns` to the `pub use engine::` line.\\n\\n### Step 3: Make `collect_toolchain_pairs` accessible\\n\\nIn `src/tools/review.rs` line 468, change `fn collect_toolchain_pairs` to `pub(crate) fn collect_toolchain_pairs`.\\n\\n### Step 4: Add `extract_component_sym_attrs` helper to orient.rs\\n\\nLocal helper that extracts SymbolAttrs for a component's files:\\n\\n```rust\\nfn extract_component_sym_attrs(\\n    db: &Db,\\n    component_files: &[String],\\n    registry: &LanguageRegistry,\\n) -> Result<Vec<conventions::SymbolAttrs>> {\\n    let all_files = db.all_files()?;\\n    let file_set: HashSet<&str> = component_files.iter().map(|s| s.as_str()).collect();\\n    let mut sym_attrs = Vec::new();\\n\\n    for f in &all_files {\\n        if !file_set.contains(f.path.as_str()) {\\n            continue;\\n        }\\n        let syms = db.find_symbols_by_file(f.id)?;\\n        let refs = db.find_refs_in_file(f.id)?;\\n\\n        let target_ids: Vec<i64> = refs\\n            .iter()\\n            .filter(|r| r.context_kind == \\\"call\\\")\\n            .filter_map(|r| r.target_symbol_id)\\n            .collect();\\n        let mut callee_cache: HashMap<i64, conventions::ResolvedCallee> = HashMap::new();\\n        for id in &target_ids {\\n            if !callee_cache.contains_key(id)\\n                && let Some(sym) = db.symbol_by_id(*id)?\\n            {\\n                callee_cache.insert(\\n                    *id,\\n                    conventions::ResolvedCallee {\\n                        qualified_name: sym.qualified_name.to_string(),\\n                        signature: sym.signature,\\n                    },\\n                );\\n            }\\n        }\\n\\n        let dart_import_packages = if f.language == \\\"dart\\\" {\\n            conventions::dart_effect_packages(&db.imports_for_file(f.id)?)\\n        } else {\\n            None\\n        };\\n\\n        for s in &syms {\\n            if let Some(mut attrs) =\\n                conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)\\n            {\\n                if let Some(adapter) = registry.adapter_for_language(&f.language)\\n                    && let Some(fca_source) = adapter.as_fca_source()\\n                {\\n                    conventions::enrich_all_effects(\\n                        &mut attrs,\\n                        s,\\n                        &refs,\\n                        &callee_cache,\\n                        fca_source,\\n                        dart_import_packages.as_ref(),\\n                    );\\n                }\\n                sym_attrs.push(attrs);\\n            }\\n        }\\n    }\\n\\n    Ok(sym_attrs)\\n}\\n```\\n\\n### Step 5: Modify orient::handle\\n\\nSignature change — add `registry: &LanguageRegistry`:\\n```rust\\npub fn handle(\\n    db: &Db,\\n    scope: &str,\\n    workspace_root: &Path,\\n    dd_engine: Option<&DdEngine>,\\n    lessons_db: Option<&LessonsDb>,\\n    registry: &LanguageRegistry,\\n) -> Result<serde_json::Value> {\\n```\\n\\n**Remove** line 275 `let all_conventions = db.all_conventions()?;`\\n\\n**Replace** lines 331-366 (the `in_scope` filter + `observed` rendering + `observed_patterns` section) with:\\n\\n```rust\\nlet sym_attrs = extract_component_sym_attrs(db, &comp.files, registry)?;\\nlet toolchain_pairs = super::review::collect_toolchain_pairs(registry);\\nlet patterns = conventions::describe_patterns(&sym_attrs, Some(&comp.id), &toolchain_pairs);\\n\\nif !patterns.is_empty() {\\n    let pattern_json: Vec<_> = patterns\\n        .iter()\\n        .map(|p| {\\n            json!({\\n                \\\"pattern\\\": format!(\\\"{} → {}\\\",\\n                    p.antecedent.join(\\\", \\\"),\\n                    p.consequent.join(\\\", \\\")),\\n                \\\"evidence\\\": format!(\\\"{}/{} conform\\\", p.support, p.total_matching),\\n                \\\"support\\\": p.support,\\n                \\\"confidence\\\": p.confidence,\\n                \\\"exemplars\\\": p.exemplars,\\n            })\\n        })\\n        .collect();\\n    section[\\\"observed_patterns\\\"] = json!(pattern_json);\\n}\\n```\\n\\nThe `sketch_mode_note` (lines 356-359) stays as-is — it's independent of the convention section.\\n\\n### Step 6: Update SutraServer::sutra_orient in mcp.rs\\n\\nAdd registry creation before the handle call:\\n```rust\\nlet registry = crate::parser::adapter::default_registry();\\nlet result = tools::orient::handle(\\n    ctx.db(),\\n    &args.scope,\\n    ctx.workspace_root(),\\n    Some(&dd),\\n    Some(&self.lessons_db),\\n    &registry,\\n)\\n```\\n\\n### Step 7: Update tests\\n\\n- `handle_empty_conventions`: No change needed (no symbols → no patterns → `observed_patterns` absent).\\n- `handle_global_convention_included`: Remove or replace — on-the-fly engine computes patterns per component, there's no \\\"global\\\" vs \\\"component\\\" scope distinction in the output. Replace with a test that inserts symbols into the DB and verifies patterns appear.\\n- `handle_observed_patterns_informational`: Remove the \\\"guidance\\\" / \\\"informational only\\\" assertion. Replace with assertion that `observed_patterns` is a flat array of pattern objects with `pattern`, `evidence`, `exemplars` fields.\\n- `handle_sketch_mode_note`: Update to check patterns appear alongside sketch_mode_note.\\n\\nNew test skeleton:\\n```rust\\nfn insert_symbols_with_attrs(db: &Db, file_id: i64, symbols: &[(&str, &str, &str)]) {\\n    // Insert symbols that will produce FCA patterns when extracted\\n}\\n\\n#[test]\\nfn handle_shows_patterns_with_exemplars() {\\n    // Create component with enough symbols sharing identity→obligation patterns\\n    // Verify observed_patterns array has pattern/evidence/exemplars fields\\n}\\n```\\n\\n### Step 8: Update conventions-map.md\\n\\nUpdate orient.rs entry:\\n```\\norient.rs         — sutra_orient MCP tool: convention-aware orientation\\n                    per scope. Computes patterns on-the-fly via FcaEngine\\n                    (same engine as review deviation report).\\n```\\n\\nUpdate data flow to add orient path and note pipeline conventions table is no longer read by orient.\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"orient output for a component shows top patterns with counts + exemplars\\\" → Steps 1, 4, 5\\n- [x] \\\"nothing from the deleted subsystems\\\" → Step 5 (no preferred/proposal/waiver/template)\\n- [x] \\\"orient latency unchanged in order of magnitude\\\" → Step 4 (component-scoped, not full workspace)\\n- [x] \\\"conventions-map.md orient section updated\\\" → Step 8",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "9309a31"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "deviation-report"
+  ],
+  "history": [
+    {
+      "ts": 1783476418304,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 235
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783605949565,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783607200273,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes. Two findings addressed in 9309a31:\\n- (medium) `db.all_files()` was called inside the per-component loop — hoisted to reuse the existing `all_files` from handle scope.\\n- (low) conventions table purpose in conventions-map.md still said \\\"persisted for orient\\\" — corrected to \\\"persisted for sutra_conventions list\\\".",
+      "ts": 1783607153092
+    }
+  ],
+  "created_at": 1783476418304,
+  "updated_at": 1783607200273,
+  "completed_at": 1783607200273,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "deviation-report",
+  "edges": [
+    {
+      "id": "019f3f7a-d8a1-7521-b0f9-bdba00db4f24",
+      "edge_type": "depends_on",
+      "source": "sutra/235",
+      "target": "sutra/234",
+      "note": null,
+      "created_at": 1783476443297
+    },
+    {
+      "id": "019f3f7a-da9d-7892-9438-e2e19da5391a",
+      "edge_type": "depends_on",
+      "source": "sutra/236",
+      "target": "sutra/235",
+      "note": null,
+      "created_at": 1783476443805
+    }
+  ]
+}

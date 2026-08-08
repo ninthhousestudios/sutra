@@ -1,0 +1,57 @@
+{
+  "id": "019e6a52-b6ef-7b00-adeb-47186f277c98",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/38",
+  "sequence_number": 38,
+  "title": "Dart extract_method_symbol bug",
+  "description": " Dart extract_method_symbol has a pre-existing bug: when static is the first child of method_signature, it gets picked as the inner signature\n  node, causing child_by_field_name(name) to return None. Static methods inside classes are silently dropped from the index. This predates this\n   task — worth filing as a follow-up.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "extract_method_symbol took .next() on method_signature children — for static members, the 'static' keyword is the first child, not the signature node, so child_by_field_name('name') returned None and the method was silently dropped.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f2d3b8a"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1779900266223,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 38
+      }
+    },
+    {
+      "ts": 1780704820299,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780704824304,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779900266223,
+  "updated_at": 1780704824304,
+  "completed_at": 1780704824304,
+  "edges": []
+}

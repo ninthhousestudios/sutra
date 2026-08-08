@@ -1,0 +1,63 @@
+{
+  "id": "019ed0da-6c47-72b1-9e28-b8022f3bc81f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/168",
+  "sequence_number": 168,
+  "title": "Add project_origin scoping to LessonsDb::query_for_context",
+  "description": "Codex review finding from sutra/152: query_for_context() ignores project_origin, so a lesson stored for project A on a common symbol (main, init, build) will surface in project B's sutra_read. Add workspace/project identity parameter and default to same-origin plus explicitly global lessons.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Added project parameter to query_for_context. SQL filter: project_origin IS NULL OR project_origin = ?2 OR ?2 IS NULL. sutra_read derives project slug from workspace_root dir name. Test covers 3-lesson cross-project isolation scenario.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "49b15c8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "review-followup"
+  ],
+  "history": [
+    {
+      "ts": 1781620436039,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 168
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781620651672,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781620655756,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781620436039,
+  "updated_at": 1781620655756,
+  "completed_at": 1781620655756,
+  "edges": []
+}

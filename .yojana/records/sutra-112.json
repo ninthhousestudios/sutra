@@ -1,0 +1,72 @@
+{
+  "id": "019e9a93-08cc-7e11-95c1-0471aeef232f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/112",
+  "sequence_number": 112,
+  "title": "Function-level change classification in diff_impact",
+  "description": "diff_impact reports which symbols are affected by a change but not *how* they changed. Add per-symbol change classification: added, deleted, signature_changed, body_changed.\n\nApproach: compare symbol table (name, kind, signature_hash) between current index and prior ref parsed on-the-fly via `git show`. Sutra already stores signature_hash per symbol — diffing two snapshots classifies each symbol. The HRR semantic diff (shape changes) is a complementary signal, not a replacement — this is structured metadata, that is anomaly detection.\n\nAlso thread callee graph into diff_impact: when a symbol's body changed, diff its callee set (added/removed calls). `sutra_calls` already has the data, it's just not wired into the diff path. Small effort, high review value — \"process_order now calls charge_card instead of authorize_payment\" is the most useful signal for reviewing implementation changes.\n\nReplaces old tasks: sutra/needs-designing/11, sutra/needs-designing/12.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "7501bb626fff31a9a42066502f7ec6cd19cb8743"
+    }
+  ],
+  "files": [
+    "src/tools/diff_impact.rs",
+    "src/tools/review.rs"
+  ],
+  "tags": [
+    "diff",
+    "review",
+    "graph"
+  ],
+  "history": [
+    {
+      "ts": 1780709787852,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 112
+      }
+    },
+    {
+      "ts": 1781366927606,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781445650595,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention. Three findings:\\n1. [high] qualified_name HashMap collapses struct Foo / impl Foo — same qualified_name, different kind. Fix: compound key (name, kind).\\n2. [medium] callee diff uses raw ExtractedRef.name — by design, since old version has no resolved refs. Acknowledged.\\n3. [medium] unwrap_or_default silently swallows parse/git errors. Fix: surface per-file error indicator.",
+      "ts": 1781367643100
+    }
+  ],
+  "created_at": 1780709787852,
+  "updated_at": 1781445650595,
+  "completed_at": 1781445650595,
+  "edges": []
+}

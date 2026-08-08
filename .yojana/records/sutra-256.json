@@ -1,0 +1,81 @@
+{
+  "id": "019f4d1b-9fb2-7fb0-a2b4-10f27160126c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/256",
+  "sequence_number": 256,
+  "title": "Resolver Phase C: Python LEGB scope resolution + import aliasing",
+  "description": "Phase C of scope-aware resolution (Phase A = sutra/230, Phase B = Dart type tracking). Python-specific: LEGB rule (local → enclosing → global → builtin) over the Phase A scope arena, plus import aliasing (`import numpy as np`, `from x import y as z`) which sutra's find_via_imports `::`-split heuristic (resolver.rs:175-229) handles poorly for Python syntax.\n\nDeliberately left needs-triage: detailed design should happen AFTER Phase A lands and validates the two-tier architecture — the scope arena shape may shift during implementation. Constructor tracking for Python (`x = Foo()`) comes nearly free from Phase B's machinery once the arena exists for python.rs.\n\nReference: sem scope_resolve.rs Python sections + AssignmentStrategy::LeftRight, InitStrategy::ConstructorBody (self.attr = param scanning).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Three deliverables, built sequentially:\n\n1. **Scope arena for Python** — Port the Rust `Scope`/`ScopeKind`/`build_scope_arena`/`build_scopes_recursive`/`find_tightest_scope`/`resolve_refs_locally`/`resolve_in_scope_chain` pattern to python.rs. Python-specific scope kinds: Module, Class, Function (LEGB maps to function scopes being the \"enclosing\" layer). Bindings come from: assignments (`x = ...`), for-loop targets, with-as targets, except-as targets, function parameters. Wire into `parse()` the same way rust.rs does: `flatten_symbols → build_scope_arena → resolve_refs_locally`.\n\n2. **Import alias tracking** — `import numpy as np` currently emits `raw_path: \"numpy\"` and drops the alias. `from x import y as z` emits `raw_path: \"x.y\"` and drops `z`. The resolver's `find_via_imports` splits on `::` which doesn't match Python's `.`-separated paths. Fix: (a) store the alias in `ExtractedImport` (new optional field), (b) teach `find_via_imports` to also match against the alias, and (c) normalize Python dot-paths to `::` in `raw_path` so the existing `::`-split heuristic works.\n\n3. **Constructor type tracking** — Port the Dart `DartTypeBinding`/`collect_dart_type_bindings`/`lookup_receiver_type` pattern: `x = Foo()` binds `x` to type `Foo`, so `x.bar()` resolves via `TYPE_TRACKING_PREFIX`. Wire into `walk_refs_recursive` to capture receivers from Python `attribute` nodes.",
+  "execution_record": "Three commits landed on main:\n\n1. **e81adcc** — Core implementation: scope arena (ScopeKind::{Module, Class, Function}), LEGB resolution with class scope exclusion, constructor type tracking (PyTypeBinding → TYPE_TRACKING_PREFIX), receiver capture in walk_refs_recursive, import alias field on ExtractedImport (+ migration 0052), find_via_imports updated to handle both `.` and `::` separators and alias matching.\n\n2. **1ae3a25** — Tests: 12 parser-level tests (scope local/param/class/module/nested/for-loop/decorated, import alias, type tracking), 3 resolver-level tests (alias via import, dot-separated import, from-import alias).\n\n3. **754b48e** — Fix: decorated function scope registration uses decorator start_line; extracted add_function_scope/add_class_scope helpers.\n\n4. **024a80c** — Two Codex adversarial review fixes: (a) collect_local_bindings recurses into if/while/for/with/try blocks for function-wide Python scoping; (b) constructor type bindings no longer leak from class bodies.\n\nDesign divergence from plan: originally planned to normalize Python `.` paths to `::` in raw_path, but this broke python_imports.rs file-path resolution which relies on `.`-separated paths. Instead kept `.` in raw_path and taught find_via_imports to split on both separators.\n\nKnown limitation: import alias member calls (np.array() for import numpy as np) don't fully resolve — the alias matching only triggers on exact name match.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "754b48e"
+    },
+    {
+      "type": "git:commit",
+      "value": "024a80c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783705083826,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 256
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783972860143,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783974244452,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: 3 findings, 2 fixed.\\n\\n[high] FIXED: collect_local_bindings only inspected direct children of function body — assignments inside if/while/for/try blocks were missed. Now recurses into block statements while skipping nested function/class scopes.\\n\\n[high] FIXED: Constructor type bindings leaked from class bodies — class attribute assignments like `c = Cache()` at class level could create false type-tracking hints for same-named variables in later functions. Fixed with is_inside_class_body guard and enclosing_function_end_py stopping at class boundaries.\\n\\n[medium] NOTED: Import alias member calls (np.array() for import numpy as np) don't resolve — the alias matching only triggers on exact name match, not on receiver-prefixed calls. Filed as a known limitation; the dotted chain ref np.array can still match via segment matching in some cases.\"",
+      "ts": 1783974687128
+    }
+  ],
+  "created_at": 1783705083826,
+  "updated_at": 1783974701874,
+  "completed_at": 1783974244452,
+  "edges": [
+    {
+      "id": "019f4d1c-88e7-73f3-ad69-fb26d37400fa",
+      "edge_type": "depends_on",
+      "source": "sutra/256",
+      "target": "sutra/255",
+      "note": "Python constructor tracking reuses Phase B machinery",
+      "created_at": 1783705143527
+    }
+  ]
+}

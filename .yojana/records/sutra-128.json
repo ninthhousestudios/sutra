@@ -1,0 +1,89 @@
+{
+  "id": "019eae91-c65b-7a32-86c5-a035fd62be50",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/128",
+  "sequence_number": 128,
+  "title": "Wave 0: fmt + clippy sweep + enforcement gates",
+  "description": "Tree has 8,465-line rustfmt drift and 126 clippy warnings (66 auto-fixable). Mechanical cleanup as separate commits, then standing enforcement so drift cannot re-accumulate. Finding: fmt-clippy-hygiene.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "cargo fmt applied as its own commit; hash added to .git-blame-ignore-revs"
+    },
+    {
+      "done": false,
+      "text": "cargo clippy --fix sweep applied; remaining warnings triaged or fixed; cargo clippy --all-targets --no-deps exits warning-free or with documented allows"
+    },
+    {
+      "done": false,
+      "text": "pre-commit hook runs cargo fmt --check and clippy gate (language-aware dispatch, see arc notes)"
+    },
+    {
+      "done": false,
+      "text": "cargo test still 738/738 green after sweeps"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Three commits:\\n1. c7e0e98 — cargo fmt sweep (67 files, 3100+/1408-)\\n2. 44c5e80 — .git-blame-ignore-revs pointing at fmt commit\\n3. 265c560 — clippy sweep: 126 warnings → 0 (auto-fix + manual fixes + 8 targeted #[allow] annotations)\\n\\nAll acceptance criteria met:\\n- cargo fmt applied as own commit, hash in .git-blame-ignore-revs ✓\\n- cargo clippy --all-targets --no-deps exits warning-free ✓\\n- 738/738 tests green ✓\\n\\nStanding enforcement (pre-commit hooks, format-on-edit hook) was already live per task comment — not in scope here.\\n\\nClipy gate placement: NOT added to pre-commit (too slow — compiles). Recommend CI or session-end check.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "finding: fmt-clippy-hygiene"
+    },
+    {
+      "type": "git:commit",
+      "value": "265c560"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045249627,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 128
+      }
+    },
+    {
+      "ts": 1781046423657,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781046997197,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Standing enforcement is now live (2026-06-09, done outside this task): (1) global PostToolUse Edit|Write|MultiEdit hook ~/.claude/hooks/format-on-edit.sh auto-formats .rs/.dart/.py on every agent edit (rustfmt with Cargo.toml edition detection / dart format / ruff when installed); (2) global git pre-commit dispatcher ~/.config/git/hooks/pre-commit (core.hooksPath) format-checks STAGED files per language and chains to repo-local hooks. Both verified live. Remaining scope here: the one-time cargo fmt sweep + .git-blame-ignore-revs, the clippy --fix sweep, and deciding the clippy gate placement (deliberately NOT in pre-commit — clippy compiles, too slow per-commit; consider CI or session-end). NOTE: until the fmt sweep lands, any edit to a sutra file will auto-format the whole file and drag formatting noise into content commits — do this task FIRST.",
+      "ts": 1781045838112
+    }
+  ],
+  "created_at": 1781045249627,
+  "updated_at": 1781046997197,
+  "completed_at": 1781046997197,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "hygiene",
+  "edges": []
+}

@@ -1,0 +1,86 @@
+{
+  "id": "019e084c-9f94-7700-99bf-7483e0c81eca",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/11",
+  "sequence_number": 11,
+  "title": "sutra_file_health: foundational types penalised unfairly by blast/fan-in",
+  "description": "`sutra_file_health` rates `chitta/src/error.rs` (health 43) and `envelope.rs` (55) as the *worst* files in the workspace. They aren't — they're foundational types that every other module imports. The current score weights `blast_radius_penalty: 25` and `fan_in_penalty: 11-15` for these files even though their `complexity_penalty` is 0 and `dead_symbol_penalty` is 0.\n\n**Surfaced during:** chitta release-review spike. I had to manually annotate the SUMMARY.md to tell reviewers \"ignore error.rs/envelope.rs at the top\" — every consumer of file_health will hit the same friction.\n\n## Two possible fixes\n\n**Cheap:** add a `min_avg_cognitive` filter parameter (or a default threshold). High-blast/high-fan-in files with low cognitive complexity are *correctly* foundational and should drop out of \"worst-first\" output.\n\n**Better:** decompose the score. Surface `complexity_health`, `dead_health`, `coupling_health` as separate axes. A reviewer reading \"high coupling, low complexity\" understands \"this is a hub, not a problem\"; a single-number score collapses that distinction.\n\nI'd file the cheap fix first as a quick win; the decomposition is a bigger ask.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Add filter parameter to sutra_file_health: foundational files (high fan-in + low complexity + low dead ratio) drop out of default 'worst first' ranking"
+    },
+    {
+      "done": false,
+      "text": "OR decompose health_score into complexity_health / dead_health / coupling_health axes; tool returns all three plus an overall"
+    },
+    {
+      "done": false,
+      "text": "Re-run on chitta workspace: error.rs and envelope.rs no longer top the list"
+    },
+    {
+      "done": false,
+      "text": "Tool description explains foundational-type behaviour explicitly so reviewers know what they're seeing"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "11e8851"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-chitta-spike",
+    "code-intel",
+    "scoring"
+  ],
+  "history": [
+    {
+      "ts": 1778255699860,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 11
+      }
+    },
+    {
+      "ts": 1778257072777,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778257250848,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778257254858,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778255699860,
+  "updated_at": 1778257254858,
+  "completed_at": 1778257254858,
+  "edges": []
+}

@@ -1,0 +1,99 @@
+{
+  "id": "019e9e4e-906c-7933-85a3-668da3edc19e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/124",
+  "sequence_number": 124,
+  "title": "Narrow @override dead-code suppression to framework callbacks",
+  "description": "Codex review finding from sutra/111. Currently every `@override` method sets FLAG_FFI_ENTRY (0x04), which suppresses it from dead-code analysis via `(s.flags & 7) = 0`. In Dart, `@override` is ubiquitous for any interface/superclass contract — this hides genuinely dead overridden methods in project-internal hierarchies.\\n\\nThe original intent was to prevent false positives for Flutter lifecycle methods (build, initState, dispose) that are called by the framework, not by indexed code. But the blanket @override approach is too broad.\\n\\nOptions:\\n1. Only suppress for known Flutter lifecycle method names (build, initState, dispose, didChangeDependencies, etc.) with @override\\n2. Introduce a separate FLAG_OVERRIDE bit (0x08) that dead-code analysis can treat differently from FLAG_FFI_ENTRY — e.g., only suppress overrides in classes extending framework base classes\\n3. Don't flag @override at all; instead add framework superclass detection (extends State, StatelessWidget, etc.) and flag the whole class\\n4. Keep current behavior but document the trade-off — broader suppression prevents false positives at the cost of missing some dead overrides\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "@override methods whose name is NOT in the Dart lifecycle allowlist are no longer suppressed from sutra_dead results"
+    },
+    {
+      "done": false,
+      "text": "Known lifecycle methods (build, initState, dispose, didChangeDependencies, didUpdateWidget, deactivate, reassemble) with @override still suppressed from dead-code"
+    },
+    {
+      "done": false,
+      "text": "@pragma('vm:entry-point') still suppresses unconditionally"
+    },
+    {
+      "done": false,
+      "text": "A new FLAG_OVERRIDE (0x08) bit is set on all @override methods, not included in the dead-code suppression mask"
+    },
+    {
+      "done": false,
+      "text": "The lifecycle method list is shared between dart.rs and trace.rs (single source of truth)"
+    },
+    {
+      "done": false,
+      "text": "Existing tests pass; new test covers the narrowed suppression behavior"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "# Implementation Plan\n\n## Approach\n\nSplit the current blanket `@override → FLAG_FFI_ENTRY` into two concerns: (1) a new informational `FLAG_OVERRIDE` (0x08) set on all `@override` methods, and (2) `FLAG_FFI_ENTRY` set only when the overriding method name is in a shared Dart lifecycle allowlist. The dead-code mask `(s.flags & 7) = 0` stays unchanged — bit 0x08 passes through, so non-lifecycle overrides become visible to `sutra_dead`. The lifecycle list already exists in `trace.rs`; extract it to `dart.rs` as a `pub const` and reuse from both sites.\n\n## Files\n\n- **Modify**: `src/parser/rust.rs` (line 41) — add `FLAG_OVERRIDE = 0x08`\n- **Modify**: `src/parser/dart.rs` (lines 3, 533–562) — add shared lifecycle const, narrow the `@override` flag logic, pass short_name into `extract_flags`\n- **Modify**: `src/tools/trace.rs` (lines 25–34, 279) — import and reuse the shared lifecycle list from `dart.rs`\n- **Test**: `src/parser/dart.rs` (existing test module) — add test for narrowed override behavior\n\n## Steps\n\n### Step 1: Add FLAG_OVERRIDE constant\n\nIn `src/parser/rust.rs`, add the new flag constant alongside the existing ones:\n\n```rust\npub const FLAG_TEST: u32 = 0x01;\npub const FLAG_CFG_TEST: u32 = 0x02;\npub const FLAG_FFI_ENTRY: u32 = 0x04;\npub const FLAG_OVERRIDE: u32 = 0x08;\n```\n\nNo other changes in this file. The dead-code query mask `& 7` already excludes bit 0x08.\n\n### Step 2: Add shared lifecycle constant and narrow extract_flags in dart.rs\n\nAdd a `pub const` lifecycle array in `dart.rs`:\n\n```rust\npub const DART_LIFECYCLE_METHODS: &[&str] = &[\n    \"build\", \"initState\", \"dispose\",\n    \"didChangeDependencies\", \"didUpdateWidget\",\n    \"deactivate\", \"reassemble\",\n];\n```\n\nUpdate the import line to also bring in `FLAG_OVERRIDE`:\n\n```rust\nuse crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_OVERRIDE, FLAG_TEST};\n```\n\nChange `extract_flags` signature to accept the short name:\n\n```rust\nfn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&str>) -> u32 {\n```\n\nReplace the override block (lines 547–549):\n\n```rust\nif has_annotation(node, src, \"override\") {\n    flags |= FLAG_OVERRIDE;\n    if short_name.is_some_and(|n| DART_LIFECYCLE_METHODS.contains(&n)) {\n        flags |= FLAG_FFI_ENTRY;\n    }\n}\n```\n\n### Step 3: Update all extract_flags call sites in dart.rs\n\nThere are ~13 call sites. Methods/functions have `sym.short_name` available; classes/enums/type_aliases pass `None`:\n\n- Lines 56, 73, 88, 103: class/mixin/extension/enum declarations → `extract_flags(child, src, file_path, None)`\n- Lines 116, 131, 161, 179, 185: method/function/declaration/constructor → `extract_flags(child, src, file_path, Some(&sym.short_name))`\n- Lines 366, 387, 411: nested method extraction sites → `extract_flags(node, src, file_path, Some(&sym.short_name))`\n\n### Step 4: Refactor trace.rs to reuse shared list\n\nIn `src/tools/trace.rs`, import the shared constant:\n\n```rust\nuse crate::parser::dart::DART_LIFECYCLE_METHODS;\n```\n\nRewrite `is_known_entry_point`:\n\n```rust\npub fn is_known_entry_point(short_name: &str, kind: &str) -> bool {\n    match short_name {\n        \"main\" => true,\n        name if kind == \"method\" => DART_LIFECYCLE_METHODS.contains(&name),\n        _ => false,\n    }\n}\n```\n\nUpdate `entry_point_rules_doc` (line 279) to reference the constant instead of a hardcoded list:\n\n```rust\n\"dart\": std::iter::once(\"main\")\n    .chain(DART_LIFECYCLE_METHODS.iter().copied())\n    .collect::<Vec<_>>(),\n```\n\n### Step 5: Add tests\n\nAdd a test in `dart.rs` test module that parses a Dart snippet with:\n- `@override void build(...)` → has both `FLAG_OVERRIDE` and `FLAG_FFI_ENTRY`\n- `@override void fetchItems(...)` → has `FLAG_OVERRIDE` only, NOT `FLAG_FFI_ENTRY`\n- `@pragma('vm:entry-point') void main(...)` → has `FLAG_FFI_ENTRY` only\n\nVerify the first two via `sym.flags & FLAG_FFI_ENTRY` and `sym.flags & FLAG_OVERRIDE` assertions.\n\n## Acceptance criteria coverage\n\n- [x] \"Non-lifecycle @override methods visible to sutra_dead\" → Steps 2–3 (narrowed flag logic)\n- [x] \"Lifecycle methods still suppressed\" → Step 2 (allowlist check before FLAG_FFI_ENTRY)\n- [x] \"@pragma('vm:entry-point') still suppresses\" → Step 2 (pragma block unchanged)\n- [x] \"FLAG_OVERRIDE (0x08) set on all overrides\" → Steps 1–2\n- [x] \"Shared lifecycle list\" → Steps 2, 4\n- [x] \"Tests\" → Step 5",
+  "execution_record": "Went as planned — all 5 steps executed without divergence. 886 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "79ade35"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "dart",
+    "dead-code",
+    "flags"
+  ],
+  "history": [
+    {
+      "ts": 1780772409452,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 124
+      }
+    },
+    {
+      "ts": 1781473457838,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781473710542,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention. One medium finding — variable extraction branches (lines 376-421) pass Some(&sym.short_name) to extract_flags, so an @override field named 'build' or 'dispose' would get FLAG_FFI_ENTRY and be hidden from dead-code. Should pass None for variable/field call sites since fields can't be lifecycle callbacks.",
+      "ts": 1781473873037
+    },
+    {
+      "author": "agent",
+      "text": "Fixed codex finding in f9e143e: variable extraction call sites now pass None instead of Some(&sym.short_name). Fields can't be lifecycle callbacks.\"",
+      "ts": 1781473927745
+    }
+  ],
+  "created_at": 1780772409452,
+  "updated_at": 1781473710542,
+  "completed_at": 1781473710542,
+  "edges": []
+}

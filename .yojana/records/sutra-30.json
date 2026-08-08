@@ -1,0 +1,78 @@
+{
+  "id": "019e69c0-3516-7f42-92f6-d1719a0cf712",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/30",
+  "sequence_number": 30,
+  "title": "5a PRD: core model redesign",
+  "description": "Write the capability PRD for the core model redesign (L0 + storage + adapter interface). Consumes the brainstorm decisions from sutra/29.\\n\\nScope:\\n- Ephemeral/durable storage partition (single DB, table-level, name-based refs, reconciliation)\\n- LanguageAdapter trait + FcaAttributeSource extension trait\\n- ParseContext: core owns tree-sitter, adapter does extraction\\n- Tree-structured ParseResult (replaces flat list + parent_qualified_name)\\n- language_attrs JSON column for language-specific structured data\\n- Signature (human display) vs language_attrs (machine readable) split\\n- Evolution path as 5 sequential PRs\\n\\nInput: sutra/29 decisions, docs/sutra-architecture.md, docs/sutra-vision.md, current codebase\\nOutput: docs/prd/core-model.md ready for decompose into implementation slices\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/prd-core-model.md"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/29"
+    }
+  ],
+  "files": [
+    "docs/prd-core-model.md"
+  ],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779890664726,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 30
+      }
+    },
+    {
+      "ts": 1779890907716,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779890912622,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779890664726,
+  "updated_at": 1779890912622,
+  "completed_at": 1779890912622,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "prd",
+  "edges": [
+    {
+      "id": "019e69c0-8a3f-7cb1-9ad3-365b457d0bf5",
+      "edge_type": "depends_on",
+      "source": "sutra/30",
+      "target": "sutra/29",
+      "note": null,
+      "created_at": 1779890686527
+    }
+  ]
+}

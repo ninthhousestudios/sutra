@@ -1,0 +1,60 @@
+{
+  "id": "019e990f-bed4-7853-ad2f-54e34b377140",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/101",
+  "sequence_number": 101,
+  "title": "release review: HRR + similarity — mathematical correctness",
+  "description": "Correctness review of the similarity subsystem. This is pure math — if HRR encoding, cosine similarity, or the codebook is wrong, every downstream consumer (clustering, similarity search, semantic diff, convention coherence) is silently corrupted.\n\n## Approach\n\nRead all files below, understand the math, and review for correctness. Produce findings in standard YAML schema. Focus on correctness bugs and subtle numerical issues, not style.\n\n## Files (~2k LOC)\n\nsrc/similarity/hrr.rs, src/similarity/codebook.rs, src/similarity/encoder.rs, src/similarity/diff.rs, src/similarity/duplicates.rs, src/similarity/search.rs, src/similarity/mod.rs\n\n## Mandate\n\n- Is circular convolution correctly implemented? Does the FFT path match the naive path?\n- Is cosine similarity correctly normalized? Edge cases: zero vectors, near-identical vectors, very short vectors.\n- Does the codebook produce deterministic, reproducible vectors for the same symbol kind? Is the RNG seeding sound?\n- Does the encoder correctly map tree-sitter AST structure into HRR strips? Are node kinds handled exhaustively?\n- In diff.rs: is the four-quadrant classification (text_delta × hrr_delta) using the right thresholds and the right normalization (hrr_delta_raw * n_children)? Could the normalization produce nonsensical results for trivial functions?\n- In duplicates.rs and search.rs: are similarity thresholds applied correctly? Could floating-point edge cases produce wrong rankings?",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Reviewed all 7 files (~2065 LOC). All 34 similarity tests pass. No mathematical correctness bugs found. Detailed findings posted as comment covering all mandate questions: FFT, bind/unbind, cosine similarity, codebook determinism, encoder AST mapping, diff normalization, duplicates thresholds, search rankings.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "release-review"
+  ],
+  "history": [
+    {
+      "ts": 1780684406484,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 101
+      }
+    },
+    {
+      "ts": 1780684858081,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780684979146,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "claude",
+      "text": "## Review: HRR + similarity mathematical correctness\n\n**Verdict: PASS — no correctness bugs found.**\n\nAll 34 similarity tests pass. Reviewed ~2k LOC across 7 files. Below are findings organized by the mandate questions.\n\n---\n\n### 1. Circular convolution (hrr.rs:51-138) — CORRECT\n\nFFT is standard iterative Cooley-Tukey radix-2 DIT using convention 2 (positive exponential forward). Bit-reversal, butterfly, and 1/N inverse scaling are all correct. `bind` = IFFT(FFT(a) · FFT(b)) computes circular convolution. Verified algebraically that this matches the standard HRR bind operation.\n\n### 2. Circular correlation / unbind (hrr.rs:140-149) — CORRECT\n\n`unbind` = IFFT(FFT(self) · conj(FFT(other))) computes circular cross-correlation, which is the standard HRR approximate inverse. For random Gaussian vectors scaled by 1/√N, the frequency-domain magnitude is ≈1 per component, so conjugation alone (without dividing by |·|²) is a valid approximate inverse. Recovery quality depends on the number of bundled components, which is the expected HRR behavior.\n\n### 3. Cosine similarity (hrr.rs:151-159) — CORRECT\n\nStandard formula `dot / (‖a‖·‖b‖)`. Zero-vector guard at 1e-15 returns 0.0. \n\n**Observation (not a bug):** No clamping to [-1,1]. Floating-point arithmetic can produce values like 1.0000000000000002 for identical vectors (confirmed by the test output showing `-0.0000` hrr_delta_raw for trivial changes). This is fine for the current thresholding usage but would produce NaN if ever passed to `acos`. Currently no downstream code does this.\n\n### 4. Codebook determinism (codebook.rs:12-19) — MINOR REPRODUCIBILITY CONCERN\n\nThe RNG seed for new entries is `0x5554_5241 ^ entries.len()` — depends only on the *count* of existing entries, not their content. Combined with `get_or_create` being order-dependent, this means:\n\n- Different runs encountering new node kinds in different file-iteration orders (via `compute_hrr_vectors`'s HashMap iteration) will assign different random vectors to the same kind.\n- Once a kind is persisted to DB, it's stable.\n\n**Not a correctness bug** — any random vector is as good as any other for HRR. The mathematical properties (approximate orthogonality, bind/unbind recovery) hold regardless of which specific vector is assigned. But it means HRR vectors are not bitwise reproducible across fresh reindexes.\n\n### 5. Encoder AST mapping (encoder.rs:19-63) — CORRECT\n\nRecursive encoding: kind_vec.bind(bundle(position-permuted children)). Named children are recursively encoded; unnamed children are included only if they're operators. Position permutation starts at 1 (correct — permute(0) is identity and would fail to encode position). MAX_DEPTH=20 truncation is a practical bound, not an error.\n\nNode kinds are handled dynamically via codebook lookup (not exhaustive matching) — this is language-agnostic by design.\n\n### 6. Diff normalization (diff.rs:237-239) — CORRECT, WITH DESIGN NOTES\n\n`hrr_delta = hrr_delta_raw * n_children` where `hrr_delta_raw = 1.0 - cosine_similarity(old, new)`.\n\nThe `*n` normalization is well-justified by the test data (CV=0.059, far better than raw CV=0.667, *sqrt(n) CV=0.331, *ln(n) CV=0.373). It correctly compensates for the HRR bundling property where changing 1-of-N components shifts cosine similarity by ≈1/N.\n\n**Trivial functions (n_children=1):** Normalization is identity. A complete structural overhaul produces hrr_delta ≈ 0.5-1.0, correctly exceeding the 0.15 threshold. No nonsensical amplification.\n\n**Large functions:** Single structural change produces hrr_delta_raw ≈ 0.007 (at n=40), normalized to ≈ 0.28 — correctly above threshold.\n\n**Value-only renames:** hrr_delta ≈ 0 regardless of function size (strip encoding ignores identifiers). ✓\n\n**Design note:** Uses old tree's `fn_body_child_count`, not new tree's. If a function grew significantly, the normalization factor reflects the old size. This is the conservative choice — changes look larger relative to the original baseline.\n\n### 7. Duplicates thresholds (duplicates.rs:134-139, 156-159) — CORRECT\n\n`SimCache.get_or_compute` uses `dot_product` on pre-normalized vectors, which is mathematically equivalent to `cosine_similarity` for unit vectors. This avoids redundant sqrt operations. The pre-normalization at line 156-159 ensures this equivalence holds.\n\nUnion-find + complete-link pruning correctly prevents transitive chain artifacts. The greedy removal (worst-min-similarity member first) converges because each iteration either proves all_pass or removes a member.\n\nLSH SimHash uses deterministic seed (LSH_SEED), so hash tables are consistent across runs. Random Gaussian hyperplanes give uniformly random directions (correct for cosine-similarity LSH).\n\n### 8. Search rankings (search.rs:8-34) — CORRECT\n\nSelf-exclusion by id, threshold filtering, descending sort with NaN-safe comparison, truncation. The `unwrap_or(Ordering::Equal)` on `partial_cmp` handles the theoretical NaN case (already filtered by the threshold check). No floating-point edge cases produce wrong rankings.\n\n---\n\n### Non-findings (mandate questions answered)\n\n- **FFT path vs naive path:** No naive path exists in the codebase to compare against, but the FFT implementation is textbook-correct and tested via bind/unbind roundtrip recovery (sim > 0.6).\n- **Near-identical vectors:** cosine_similarity handles these correctly; dot/(na*nb) → 1.0 (modulo the tiny floating-point overshoot noted above).\n- **Very short vectors:** The fixed dimension DEFAULT_DIM=1024 means all operational vectors are 1024-dimensional. The only short-vector risk is from `from_bytes` with wrong-length input, which would panic at the FFT assert — a serialization bug, not a math bug.\n- **RNG seeding:** xoroshiro128+ with mixed seeding avoids degenerate zero state. Box-Muller transform with u1.max(1e-15) guard is correct.",
+      "ts": 1780684973622
+    }
+  ],
+  "created_at": 1780684406484,
+  "updated_at": 1780684979146,
+  "completed_at": 1780684979146,
+  "edges": []
+}

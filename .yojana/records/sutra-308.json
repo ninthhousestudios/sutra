@@ -1,0 +1,70 @@
+{
+  "id": "019fe20d-80b5-7ef3-a98a-e114ccddd991",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/308",
+  "sequence_number": 308,
+  "title": "Wire accepted.toml freshness gate + rewire MCP write actions (sutra/303 integration)",
+  "description": "Finishes sutra/303. The portable-acceptance ENGINE landed (commits 877b5ec, 7a5059e): src/constraints/accepted.rs (file schema, resolve, ensure_cache_fresh, resolve_waivers_for_guard, file-first mutations, migrate_db_to_file), db reproject_accepted + get_accepted_sync_marker, migration 0059 accepted_sync, parse-time name uniqueness. This task WIRES it into the read/write surfaces so .sutra/accepted.toml actually governs.\n\nUnits E and F are COUPLED — land together or the tree regresses (E alone truncates DB waivers that F-era writes still put in the DB).\n\n=== Unit E: freshness gate on read surfaces ===\n- Report chokepoint: at the HEAD of check::evaluate_dd (src/constraints/check.rs:154, after all_constraints on line 162), call accepted::migrate_db_to_file(db, workspace_root)? THEN accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?. This single point covers review.rs:362, orient.rs:365, constraints.rs:222 (all route through check::evaluate). db is writable &Db here.\n- Guard read-only path: evaluate_raw (src/constraints/check.rs:642) has a read-only Connection, cannot reproject. When the cache is stale (accepted::is_cache_fresh false), resolve waivers via accepted::resolve_waivers_for_guard(root, &constraints) instead of the DB cache — identical data, no write on the latency path. Acks are report-only; guard never needs them.\n- Direct display reads that bypass evaluate: orient.rs:350 (get_constraint_waivers) + 354 (get_all_constraint_instance_acks), constraints.rs:84 (handle_list waivers), constraints.rs:367 (acked_instances_json). Gate these handlers at their top too (writable Db).\n\n=== Unit F: rewire MCP write actions onto the file ===\ntools/constraints.rs handlers currently write the DB directly:\n- handle_waive (293): build accepted::WaiverEntry from args, accepted::upsert_waiver(root, entry)?, then reproject (ensure_cache_fresh). Keep the constraint NAME (args.constraint_name or resolve id->name); the file keys by name.\n- handle_baseline (405) + handle_ack (516): keep the disk pattern-match count logic, but persist via accepted::upsert_ack(root, AckEntry{..count})? + reproject, not db.create_constraint_instance_ack.\n- handle_unwaive (327) + handle_unack (610): CONTRACT CHANGE — they take waiver_id/ack_id today, but reproject re-mints row ids every sync, so ids are unstable. Switch to KEY-based removal (accepted::remove_waiver / remove_ack by constraint+file+symbol[+snippet]). Update ConstraintsArgs + the tool schema doc accordingly.\n- Update the sutra/305 tests that assert DB-row/id behavior (tools/constraints.rs #[cfg(test)]: baseline_clears..., ack_requires_rationale...).\n\n=== HAZARDS (must have regression tests) ===\n1. Ordering/data-loss: empty or absent accepted.toml reprojects to EMPTY and wipes pre-existing DB waivers. ALWAYS migrate_db_to_file (file-existence-gated, seeds once from DB) BEFORE ensure_cache_fresh. Test: seed DB waivers, no file, run review -> waivers preserved (now in file + cache).\n2. Coupling: do not land E without F.\n3. Guard must predict the audit (lesson 019f9add): the guard stale-path (resolve_waivers_for_guard) and the server reproject must derive from the SAME file — assert a test where a hand-edited file is honored identically by guard and by review.\n4. AcceptedWarning surfacing: ensure_cache_fresh returns Vec<AcceptedWarning> (unknown/ambiguous constraint refs). CheckOutcome has no warnings channel — decide log-via-tracing vs. a structured report field; do not silently drop (relates to sutra/306). \n\nVerify: full suite + db-test + constraints-test + review-test + a new accepted-integration test; clippy + fmt. Confirm the guard still denies a newly-introduced clone with an unrelated hand-edited accepted.toml present (guard never honors acks).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Landed as one commit (d70bf20), Units E+F coupled as required. Full suite green: 40 suites / 1581 tests, clippy exit 0, fmt clean.\n\nFreshness helper: added accepted::refresh_cache (migrate_db_to_file THEN ensure_cache_fresh) as the single read-surface gate, enforcing hazard-1 ordering in one place; called at evaluate_dd head, orient::handle top, handle_list top. Write handlers call migrate_db_to_file before their first upsert for the same reason.\n\nGuard stale path: added db::accepted_sync_marker_from_conn + accepted::is_cache_fresh_conn (read the freshness marker off a read-only Connection; missing accepted_sync table reads as stale -> file path). evaluate_raw reads the DB cache only when fresh, else resolve_waivers_for_guard from the file.\n\nWarnings channel (hazard 4): chose a structured CheckOutcome.accepted_warnings: Vec<String> over tracing, surfaced as accepted_warnings in violations/review/orient/list JSON — consistent with the existing parse_errors surface and sutra/306 direction.\n\nDivergences from plan / surprises:\n- The array key is #[serde(rename=\\\"waiver\\\"/\\\"ack\\\")], so test accepted.toml must use [[waiver]]/[[ack]] not [[waivers]] — first drafts silently parsed to zero entries (no error).\n- Existing tests that seeded DB waivers and expected the GUARD (raw path) to honor them had to move the waiver into accepted.toml: guard.rs check_file_constraints_respects_waivers, waiver_on_source_does_suppress, external_waiver_suppresses; constraints-test.rs evaluate_raw_pattern_waiver_on_edgeless_file. This is correct under the new model (file is the guard's source of truth when cache stale) but was not called out in the plan.\n- review-test build_findings_partitions_constraint_waivers used the legacy nameless [constraints].forbidden_deps format; a nameless constraint cannot carry a portable (name-keyed) waiver, so its rule was given a name and the seeded DB waiver now carries constraint_name so migration resolves it.\n- unwaive/unack: dropped waiver_id/ack_id fields from ConstraintsArgs and updated the sutra_constraints tool description in mcp.rs.\n\nConfirmed data_generation (the evaluate retry-loop guard) is bumped only by index mutations in db/mod.rs, never by reproject_accepted, so the head-of-evaluate_dd reproject does not trip the retry loop.\n\nNot done / follow-up: baseline/ack persist per-key via upsert_ack, which reloads+rewrites the file once per content key (O(n) file writes for a large baseline) — correct but could batch; left as-is for a rare admin op. docs/constraints-map.md not updated to describe the wired freshness gate.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d70bf20"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "waivers",
+    "accepted-file"
+  ],
+  "history": [
+    {
+      "ts": 1786203963573,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 308
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786204120822,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786206088699,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Freshness gate correctly wired into all DD-backed read surfaces and orient/list. Guard stale-path resolves from file correctly. MCP write handlers are uniformly file-first. All four identified hazards tested. Same three medium follow-ups as sutra/303 (they live in the shared accepted.rs module). Additionally: baseline N-ack loop does N full file rewrites (batchable).",
+      "ts": 1786206861727
+    }
+  ],
+  "created_at": 1786203963573,
+  "updated_at": 1786206088699,
+  "completed_at": 1786206088699,
+  "edges": []
+}

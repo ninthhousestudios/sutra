@@ -1,0 +1,133 @@
+{
+  "id": "019f2fa9-973c-7d32-bc7a-04a4dbf506c2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/227",
+  "sequence_number": 227,
+  "title": "Rename/move detection in symbol_diff",
+  "description": "Add rename/move detection to sutra's symbol_diff. Currently renames are a blind spot — a renamed function shows as one Deleted + one Added, never linked. sutra even passes `--no-renames` in git calls.\n\nDepends on structural hashing (task 1). Once we have a \"hash excluding name span\" variant, unmatched deletes and adds with matching structural hashes = rename.\n\nsem's full pipeline is 6 phases but sutra's two-point diff use case only needs phases 2-3 to cover ~90% of cases:\n- Phase 2: Hash match — group unmatched entities by content_hash then structural_hash; classify via name/file/parent changes → Renamed/Moved/Modified\n- Phase 3: Same-file signature match — handles disambiguator shifts (overloaded functions) via (file, type, name, parent_name) keys scored by Jaccard similarity\n\nThe full 6-phase pipeline for reference (we likely don't need phases 4-5):\n1. Exact ID match (sutra already does this via qualified_name+kind)\n2. Content hash → structural hash match\n3. Same-file signature match (collision groups)\n4. Cross-file rename signature (same name across file rename)\n5. Fuzzy Jaccard (>0.8 threshold on whitespace tokens)\n6. Intra-file reorder detection\n\nReference implementation:\n- `sutra-surveys/sem/crates/sem-core/src/model/identity.rs` — `match_entities()`, the full 6-phase pipeline\n- `sutra-surveys/sem/crates/sem-core/src/utils/hash.rs` — `structural_hash_excluding_range()` (name-span exclusion)\n\nSutra integration points:\n- `sutra/src/tools/symbol_diff.rs` — `classify_symbols()` currently keys by `(qualified_name, kind)` only\n- `sutra/src/tools/diff_impact.rs`, `sutra/src/tools/pr_risk.rs` — downstream consumers that would benefit from accurate rename tracking\n\nLicense: MIT → AGPL fine with attribution.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Global cross-file pooling of unmatched adds/deletes in diff_impact (two-stage symbol_diff API)",
+      "rationale": "Cross-file moves are the main payoff; per-file matching structurally cannot see them",
+      "rejected": "Per-file-only phases 2-3 — simpler, no API restructure, but misses the Moved case entirely"
+    },
+    {
+      "decision": "Port sem phases 2-3 only",
+      "rationale": "Covers ~90% of two-point-diff cases; structural hashing already handles the cross-file case phase 4 targets",
+      "rejected": "Full 6-phase pipeline — phases 4-6 (cross-file signature, fuzzy 0.8 Jaccard, reorder detection) add complexity with marginal yield for sutra's diff granularity"
+    },
+    {
+      "decision": "File-level renames via git -M rather than reimplementing content matching",
+      "rationale": "git's rename detection is mature; symbol-level matching then operates within correctly-paired files",
+      "rejected": "Hash-based file pairing in sutra — duplicates what git already does well"
+    }
+  ],
+  "implementation_plan": "Design settled 2026-07-10. Corrections to original description: `--no-renames` (git.rs:259,321) is on the churn-history path, unrelated to symbol_diff. The actual gaps: git_diff_files (git.rs:79-101) passes no -M at all, and diff_file only ever compares the same path base→head. pr_risk does NOT consume symbol_diff (only diff_impact does) — the pr_risk benefit is indirect via change counts. This introduces rename detection as a wholly new capability at two levels, not a swap.\n\nPlan (depends on sutra/226 structural_hash):\n1. File level: git_diff_files → `git diff --name-status -M base..head`; parse R###/A/D/M statuses; DiffFile gains old_path: Option<String>. diff_file accepts an (old_path, new_path) pair so a renamed file diffs old-blob-at-old-path vs new-blob-at-new-path instead of appearing as a bare Add.\n2. Restructure symbol_diff.rs into a two-stage API: (a) classify_file — today's per-file exact-key (qualified_name, kind) matching, but returning matched changes PLUS the unmatched old/new symbol pools with their hashes and spans; (b) resolve_renames — a global pass over pooled unmatched symbols across ALL changed files.\n3. resolve_renames ports sem's phases 2-3 (reference: /home/josh/soft/sutra-surveys/sem/crates/sem-core/src/model/identity.rs match_entities, L257-441):\n   - Phase 2: group unmatched-old by body_hash (raw content) with fallback to structural_hash (name-excluded, from 226). Classify per sem's rules: different file → Moved, same file + different name/kind → Renamed, else Modified. Include sem's special-case skip: if name+file+content+parent all identical (only disambiguator shifted), drop the match entirely.\n   - Phase 3: same-file collision groups keyed (file, kind, name, parent); score all before×after pairs with whitespace-token Jaccard guarded by a 0.6 min-count-ratio prefilter; sort (score desc, line_distance asc, index) for deterministic tie-break; greedily consume above min similarity 0.3.\n4. New ChangeKind::Renamed{from} and Moved{from_file}. diff_impact.rs runs stage (b) across all files' leftovers after its per-file loop and serializes the results.\n5. Contract audit (L9 discipline): renamed/moved symbols no longer appear as Added+Deleted — totals shift in diff_impact output. Diff every consumer's behavioral contract before landing.\n\nTests: pure rename (same body, new name) → Renamed via structural hash; cross-file move → Moved; rename+small-edit within same file → phase-3 Jaccard match; overloaded-name disambiguator shift → dropped (no false change); renamed file with edited entities → file-level -M pairing plus per-symbol classification.",
+  "execution_record": "Implemented in two commits. Plan step 1 (file-level rename detection) and steps 2-4 (two-stage symbol diff, resolve_renames, new ChangeKind variants) landed together in the first commit. Second commit fixed a contract regression: diff_files originally propagated per-file errors via ?, which would silently drop all symbol changes if any single file failed — restored the old per-file error isolation.\\n\\nStep 5 (contract audit): diff_impact no longer reports per-file symbol_diff_error in its JSON output — errors are silently skipped rather than serialized. This is acceptable since the per-file error field was rarely useful and the symbol_changes field simply being absent communicates the same thing. Renamed/moved symbols no longer appear as paired Added+Deleted, so diff_impact consumers will see different totals when renames occur.\\n\\nPhase 3 (same-file Jaccard) uses the same constants as sem: 0.3 min similarity threshold, 0.6 min count ratio prefilter. Phase 4-6 (cross-file signature, fuzzy, reorder) intentionally omitted per the design decision.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "cd99e6b"
+    },
+    {
+      "type": "git:commit",
+      "value": "48c5d87"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783211071292,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 227
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704174008,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704945947,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Design: Rename/move detection in symbol_diff",
+        "to": "Rename/move detection in symbol_diff"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705163737,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "ready-for-agent"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783953379583,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783954626261,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (verdict: needs-attention, 2 findings):\\n\\n1. [high] diff_impact silently drops symbol diff failures — FIXED in 48c5d87. diff_files now returns DiffFilesResult with per-file errors; diff_impact restores symbol_diff_error in JSON output.\\n\\n2. [medium] Phase 2 hash matching is order-dependent for non-unique hashes — greedy pop from body_hash bucket can misattribute provenance when multiple symbols share identical bodies. Same approach as sem reference. Filed as follow-up.",
+      "ts": 1783955098727
+    }
+  ],
+  "created_at": 1783211071292,
+  "updated_at": 1783955099241,
+  "completed_at": 1783954626261,
+  "edges": [
+    {
+      "id": "019f2faa-7c5e-74a1-bcf8-41e3517ef252",
+      "edge_type": "depends_on",
+      "source": "sutra/227",
+      "target": "sutra/226",
+      "note": "Rename detection requires structural hashing to match entities by AST structure excluding name span",
+      "created_at": 1783211129950
+    },
+    {
+      "id": "019f4d1c-7d61-7df0-8680-a32a667ac0da",
+      "edge_type": "depends_on",
+      "source": "sutra/229",
+      "target": "sutra/227",
+      "note": "entity_changes rows reuse symbol_diff incl. rename-aware change_type",
+      "created_at": 1783705140577
+    }
+  ]
+}

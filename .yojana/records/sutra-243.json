@@ -1,0 +1,108 @@
+{
+  "id": "019f4941-5e67-78e3-9df3-db2bb560a11a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/243",
+  "sequence_number": 243,
+  "title": "Guard introduced-only pattern enforcement + justification-gate deny message",
+  "description": "Guard PreToolUse path for forbidden_pattern: new proposed-content entry point (shape of check_pubspec_raw) — apply the proposed edit in memory, parse result, count query matches; parse on-disk version, count; a blocking pattern constraint denies ONLY if the count increased (introduced-only — grandfathers legacy idiomatic uses). Advisory → stderr as usual. Waived symbols excluded from both counts (needs enclosing-symbol resolution from patterns.rs).\n\nDeny message (format_constraint_deny extension) must teach the justification gate, roughly: \"N new match(es) of <name> (<provenance>) at <file>:<line>: <snippet>. If this use is genuinely idiomatic (shared ownership, cheap copy, API requires owned), waive for this symbol via sutra_constraints action=waive with a rationale naming the reason. Otherwise restructure (references/lifetimes) instead of suppressing.\"\n\nKnown accepted limitation (do not fix in this slice): remove-one-add-one nets to zero and passes. Fingerprint-based diff is a designed follow-up if it bites in practice.\n\nDesign: sutra/221 implementation_plan. Tests in src/guard.rs #[cfg(test)]: introduced vs pre-existing, waiver bypass at symbol level, advisory passthrough, Write-tool full-content path.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented as a standalone `check_proposed_patterns` function in guard.rs (shape of check_pubspec_raw as designed) that loads rules, runs check_forbidden_patterns on both proposed and on-disk content, partitions both through waivers, then does per-constraint count comparison. Hoisted `proposed` computation in bin/guard.rs before the file_row lookup so pattern checks run even on unindexed files. Added `format_pattern_deny` with the justification-gate teaching message. Five tests: introduced-denied, preexisting-allowed, waiver-bypass-at-symbol-level, advisory-passthrough, write-tool-new-file.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/221",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "fdcc825"
+    }
+  ],
+  "files": [
+    "src/guard.rs",
+    "src/bin/guard.rs"
+  ],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1783640448615,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 243
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783686671150,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783686921023,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention → fixed.\\n\\n[medium] Guard labelled every proposed match as newly introduced when the count increased (src/guard.rs:641-645). With 10 pre-existing + 1 new, all 11 were returned as active and format_pattern_deny reported 11 new matches. Fix: multiset diff by (constraint_id, enclosing_symbol, snippet) — each disk match cancels one proposed match, leaving only genuinely introduced findings. Regression test: `pattern_introduced_only_reports_delta`.\\n\\nFixed in a835d08.\"",
+      "ts": 1783687601033
+    },
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Introduced-only semantics correct after a835d08 multiset fix. One medium finding: guard fallback to check_file_constraints runs pattern checks without introduced-only filtering — latent false-deny for blocking patterns when import extraction fails. Deny message is Rust-specific (low, follow-up).",
+      "ts": 1783693209940
+    }
+  ],
+  "created_at": 1783640448615,
+  "updated_at": 1783686921023,
+  "completed_at": 1783686921023,
+  "arc_id": "019f4940-0dd5-72a2-b954-24e8f9443602",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f4941-a20e-7523-a2d1-815a0dee40a5",
+      "edge_type": "depends_on",
+      "source": "sutra/243",
+      "target": "sutra/241",
+      "note": null,
+      "created_at": 1783640465934
+    },
+    {
+      "id": "019f4941-a8c3-7cc3-a527-e127ca1be456",
+      "edge_type": "depends_on",
+      "source": "sutra/244",
+      "target": "sutra/243",
+      "note": null,
+      "created_at": 1783640467651
+    },
+    {
+      "id": "019f494f-1753-7002-987a-afdd7b3a01ad",
+      "edge_type": "relates_to",
+      "source": "sutra/247",
+      "target": "sutra/243",
+      "note": "both touch src/guard.rs + src/bin/guard.rs — coordinate merge order, no logical dependency",
+      "created_at": 1783641347923
+    }
+  ]
+}

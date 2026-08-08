@@ -1,0 +1,97 @@
+{
+  "id": "019e087a-72b2-7f81-8ead-8b9957463b79",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/15",
+  "sequence_number": 15,
+  "title": "Wave B: daemon error handling + workspace registration consolidation",
+  "description": "Fix error handling in the daemon integration path and consolidate duplicated workspace registration logic. From 2026-05-08 checkpoint review findings F2 and architecture candidate #5.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Fix F2: replace `map_err(|_| ())` in try_daemon_register (src/mcp.rs:920) with a richer error enum (ConnectFailed, DaemonError, ParseError). Only fall back to local on ConnectFailed. Surface daemon errors in sutra_status response."
+    },
+    {
+      "done": false,
+      "text": "Extract shared `register_workspace` method from sutra_add_root (mcp.rs:786-801) and sutra_status (mcp.rs:876-888). Both become thin wrappers calling the shared method."
+    },
+    {
+      "done": false,
+      "text": "Consistent error handling in both code paths after consolidation"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "52161cb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-checkpoint"
+  ],
+  "history": [
+    {
+      "ts": 1778258703026,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 15
+      }
+    },
+    {
+      "ts": 1778258735913,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778259561428,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778259841531,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778258703026,
+  "updated_at": 1778259841531,
+  "completed_at": 1778259841531,
+  "edges": [
+    {
+      "id": "019e087b-1726-7c93-965b-345029c97023",
+      "edge_type": "depends_on",
+      "source": "sutra/15",
+      "target": "sutra/14",
+      "note": "Wave B after Wave A (fmt + quick fixes first so diffs are clean)",
+      "created_at": 1778258745126
+    },
+    {
+      "id": "019e087b-21e5-7283-b108-abebc17bdb24",
+      "edge_type": "relates_to",
+      "source": "sutra/16",
+      "target": "sutra/15",
+      "note": "Wave C MCP thinning builds on Wave B workspace consolidation",
+      "created_at": 1778258747877
+    }
+  ]
+}

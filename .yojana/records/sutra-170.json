@@ -1,0 +1,116 @@
+{
+  "id": "019ed23b-7ea8-74a2-9f61-b1becdcc3b78",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/170",
+  "sequence_number": 170,
+  "title": "End-to-end skeleton: sutra_explore with grep + basic ranking",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to build\n\nWire up `sutra_explore(query, workspace, budget)` end-to-end as a new MCP tool. Register the handler in `src/mcp.rs` and `src/tools/mod.rs`. Create `src/tools/explore.rs` with the full pipeline skeleton:\n\n1. Basic pattern expansion: literal match + snake_case split (e.g. \"import parsing\" → `import_pars`, `import.*pars`)\n2. Grep against the symbol index via the existing sutra_grep path\n3. Match-density-only ranking (count of expanded patterns that hit each symbol)\n4. Assembly: flat item list with symbol, file, kind, lines, estimated_tokens (line_count × ~4), and literal `sutra_read(symbol='...')` fetch string\n5. Trivial strategy: `read_all` if ≤3 hits, `narrow_query` if 10+ hits, `read_top_n` otherwise\n\nResponse shape must match the PRD spec (items array, strategy object with action/n/rationale, summary object). Zero grep hits return empty items with `narrow_query` action.\n\nIntegration test: call the tool with a known topic, verify response structure and that items have valid fetch strings.\n\n## Acceptance criteria\n\n- [ ] `sutra_explore` registered as MCP tool, callable with query/workspace/budget args\n- [ ] Budget parameter defaults to 10, controls max items returned\n- [ ] Pattern expansion produces at least literal + snake_case split variants\n- [ ] Items include symbol, file, kind, lines, estimated_tokens, fetch fields\n- [ ] Strategy hint present with action enum and rationale string\n- [ ] Zero-hit case returns empty items with narrow_query strategy\n- [ ] Integration test passes\n\n## Blocked by\n\nNone — can start immediately.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] sutra_explore registered as MCP tool, callable with query/workspace/budget args"
+    },
+    {
+      "done": false,
+      "text": "[x] Budget parameter defaults to 10, controls max items returned"
+    },
+    {
+      "done": false,
+      "text": "[x] Pattern expansion produces at least literal + snake_case split variants"
+    },
+    {
+      "done": false,
+      "text": "[x] Items include symbol, file, kind, lines, estimated_tokens, fetch fields"
+    },
+    {
+      "done": false,
+      "text": "[x] Strategy hint present with action enum and rationale string"
+    },
+    {
+      "done": false,
+      "text": "[x] Zero-hit case returns empty items with narrow_query strategy"
+    },
+    {
+      "done": false,
+      "text": "[x] Integration test passes"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nCreate `src/tools/explore.rs` with a deterministic pipeline: pattern expansion → multi-pattern grep against the symbol index → match-density scoring → budget truncation → item assembly with fetch strings → trivial strategy selection. Register as an MCP tool following the existing `sutra_grep` wiring pattern. The handler takes `(db, query, budget)` and returns JSON matching the PRD response shape (items, strategy, summary). Two internal pure functions (`expand_patterns`, `select_strategy`) are independently testable.\n\nKey simplifications vs. PRD (deferred to later tasks): no fan-out, no component tagging, no edges, no qualified-name fallthrough, no structural_importance scoring (match density only).\n\n## Files\n\n- **Create**: `src/tools/explore.rs` — full pipeline: args struct, pattern expander, grep+score, assembly, strategy\n- **Modify**: `src/tools/mod.rs` — add `pub mod explore;`\n- **Modify**: `src/mcp.rs` (~line 80 imports, ~line 470 handler) — register tool + import ExploreArgs\n- **Modify**: `tests/mcp_contract_test.rs` — integration tests for basic and zero-hit cases\n\n## Steps\n\n### Step 1: Create `src/tools/explore.rs` — args struct + pattern expander\n\nExploreArgs follows the same derive pattern as GrepArgs. `expand_patterns` is a pure function generating search variants from the query string.\n\n```rust\nuse schemars::JsonSchema;\nuse serde::Deserialize;\nuse serde_json::{json, Value};\nuse std::collections::HashMap;\n\nuse crate::db::{Db, SymbolRow};\nuse crate::error::Result;\n\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct ExploreArgs {\n    pub workspace: String,\n    /// Topic to explore — symbol names, concepts, feature areas\n    pub query: String,\n    /// Max items to return (default 10)\n    #[serde(default)]\n    pub budget: Option<i64>,\n}\n\nfn expand_patterns(query: &str) -> Vec<String> {\n    let mut patterns = Vec::new();\n    let words: Vec<&str> = query.split_whitespace().collect();\n    // Always include literal\n    patterns.push(query.to_string());\n    if words.len() > 1 {\n        // snake_case join: \"import parsing\" → \"import_parsing\"\n        patterns.push(words.join(\"_\"));\n        // Individual words (skip short ones that would match too broadly)\n        for word in &words {\n            if word.len() >= 3 {\n                patterns.push(word.to_string());\n            }\n        }\n    }\n    patterns\n}\n```\n\n### Step 2: Implement grep + match-density scoring in `handle()`\n\nFor each expanded pattern, call `db.find_symbols_by_name_tiered(pattern, None, 50)` and accumulate hits in a HashMap keyed by symbol id. The match count (how many patterns hit a symbol) is the sole ranking signal for this skeleton.\n\n```rust\npub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {\n    let patterns = expand_patterns(query);\n\n    let mut hits: HashMap<i64, (SymbolRow, usize)> = HashMap::new();\n    for pattern in &patterns {\n        let (symbols, _tier) = db.find_symbols_by_name_tiered(pattern, None, 50)?;\n        for sym in symbols {\n            hits.entry(sym.id)\n                .and_modify(|(_, count)| *count += 1)\n                .or_insert((sym, 1));\n        }\n    }\n\n    let mut scored: Vec<_> = hits.into_values().collect();\n    scored.sort_by(|a, b| b.1.cmp(&a.1));\n    let total_hits = scored.len();\n    scored.truncate(budget as usize);\n\n    // ... assembly (step 3) and response (step 5)\n}\n```\n\n### Step 3: Assemble item list\n\nFor each scored symbol, resolve its file path via `db.file_by_id(sym.file_id)`, compute line count and estimated tokens, build the literal fetch string.\n\n```rust\nlet items: Vec<Value> = scored.iter().map(|(sym, _score)| {\n    let file_path = db.file_by_id(sym.file_id)\n        .ok().flatten()\n        .map(|f| f.path.clone())\n        .unwrap_or_default();\n    let lines = sym.end_line - sym.start_line + 1;\n    json!({\n        \"symbol\": sym.qualified_name,\n        \"file\": file_path,\n        \"kind\": sym.kind,\n        \"lines\": lines,\n        \"estimated_tokens\": lines * 4,\n        \"fetch\": format!(\"sutra_read(symbol='{}')\", sym.qualified_name),\n    })\n}).collect();\n```\n\n### Step 4: Implement strategy selector\n\nPure function — takes hit counts, returns strategy JSON. Rules from the task description:\n\n```rust\nfn select_strategy(total_hits: usize, returned: usize) -> Value {\n    if total_hits == 0 {\n        json!({\n            \"action\": \"narrow_query\",\n            \"rationale\": \"No symbols matched the query. Try a more specific or different term.\"\n        })\n    } else if total_hits <= 3 {\n        json!({\n            \"action\": \"read_all\",\n            \"rationale\": format!(\"Only {} items — read them all.\", total_hits)\n        })\n    } else if total_hits >= 10 {\n        json!({\n            \"action\": \"narrow_query\",\n            \"rationale\": format!(\"{} hits — query is too broad. Consider narrowing.\", total_hits)\n        })\n    } else {\n        json!({\n            \"action\": \"read_top_n\",\n            \"n\": std::cmp::min(3, returned),\n            \"rationale\": format!(\"{} items found. Start with the top matches.\", returned)\n        })\n    }\n}\n```\n\n### Step 5: Build final response with summary\n\n```rust\nlet total_tokens: i64 = items.iter()\n    .filter_map(|i| i[\"estimated_tokens\"].as_i64())\n    .sum();\n\nOk(json!({\n    \"items\": items,\n    \"strategy\": select_strategy(total_hits, items.len()),\n    \"summary\": {\n        \"total_items\": items.len(),\n        \"total_estimated_tokens\": total_tokens,\n    },\n}))\n```\n\n### Step 6: Register in `src/tools/mod.rs` and `src/mcp.rs`\n\nIn `src/tools/mod.rs`, add `pub mod explore;` in alphabetical order (between `duplicates` and `file_health`).\n\nIn `src/mcp.rs`:\n- Add `use crate::tools::explore::ExploreArgs;` near the other tool arg imports (~line 80)\n- Add handler method in the `#[tool_router]` impl block (~line 470, near sutra_grep):\n\n```rust\n#[tool(description = \"Explore a topic in the codebase. Returns a ranked list of matching symbols with literal sutra_read fetch instructions and a strategy recommendation. One call replaces iterative map/outline/grep exploration.\")]\npub async fn sutra_explore(\n    &self,\n    Parameters(args): Parameters<ExploreArgs>,\n) -> Result<String, ErrorData> {\n    let ctx = self.tool_context(&args.workspace)?;\n    let budget = args.budget.unwrap_or(10);\n    let result = tools::explore::handle(ctx.db(), &args.query, budget)\n        .map_err(sutra_to_rmcp)?;\n    to_compact_json(ctx.wrap(result))\n}\n```\n\n### Step 7: Integration tests in `tests/mcp_contract_test.rs`\n\nTwo tests: basic query with hits, and zero-hit case. Follow existing pattern — `setup_test_db()`, insert symbols with greppable names, call `explore::handle()` directly, assert on response structure.\n\n```rust\n#[test]\nfn test_explore_basic() {\n    let (_dir, db) = setup_test_db();\n    // Insert symbols: \"parse_imports\" (fn), \"resolve_imports\" (fn), \"handle_exports\" (fn)\n    // via db.insert_symbol(&InsertSymbolParams { short_name: \"parse_imports\", ... })\n    let result = explore::handle(&db, \"import\", 10).unwrap();\n\n    let items = result[\"items\"].as_array().expect(\"items array\");\n    assert!(items.len() >= 2, \"should match parse_imports and resolve_imports\");\n    for item in items {\n        assert!(item[\"symbol\"].is_string());\n        assert!(item[\"file\"].is_string());\n        assert!(item[\"kind\"].is_string());\n        assert!(item[\"lines\"].is_i64());\n        assert!(item[\"estimated_tokens\"].is_i64());\n        let fetch = item[\"fetch\"].as_str().unwrap();\n        assert!(fetch.starts_with(\"sutra_read(symbol='\"), \"fetch must be a literal sutra_read call\");\n    }\n    assert!(result[\"strategy\"][\"action\"].is_string());\n    assert!(result[\"strategy\"][\"rationale\"].is_string());\n    assert!(result[\"summary\"][\"total_items\"].is_i64());\n    assert!(result[\"summary\"][\"total_estimated_tokens\"].is_i64());\n}\n\n#[test]\nfn test_explore_zero_hits() {\n    let (_dir, db) = setup_test_db();\n    let result = explore::handle(&db, \"nonexistent_xyzzy\", 10).unwrap();\n    let items = result[\"items\"].as_array().unwrap();\n    assert!(items.is_empty());\n    assert_eq!(result[\"strategy\"][\"action\"].as_str().unwrap(), \"narrow_query\");\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"sutra_explore registered as MCP tool, callable with query/workspace/budget args\" → Step 6\n- [x] \"Budget parameter defaults to 10, controls max items returned\" → Step 1 (ExploreArgs default), Step 2 (truncation), Step 6 (unwrap_or(10))\n- [x] \"Pattern expansion produces at least literal + snake_case split variants\" → Step 1 (expand_patterns)\n- [x] \"Items include symbol, file, kind, lines, estimated_tokens, fetch fields\" → Step 3\n- [x] \"Strategy hint present with action enum and rationale string\" → Step 4\n- [x] \"Zero-hit case returns empty items with narrow_query strategy\" → Step 4 (total_hits == 0 branch)\n- [x] \"Integration test passes\" → Step 7",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "c7961e5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1781643574952,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 170
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781651494196,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781651678873,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781643574952,
+  "updated_at": 1781651678873,
+  "completed_at": 1781651678873,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019ed23c-b3ae-7c11-835e-c42662c6afdd",
+      "edge_type": "depends_on",
+      "source": "sutra/171",
+      "target": "sutra/170",
+      "note": null,
+      "created_at": 1781643654062
+    },
+    {
+      "id": "019ed23c-c0dd-7720-a334-5a06600a2131",
+      "edge_type": "refines",
+      "source": "sutra/170",
+      "target": "sutra/169",
+      "note": null,
+      "created_at": 1781643657437
+    }
+  ]
+}

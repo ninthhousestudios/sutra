@@ -1,0 +1,94 @@
+{
+  "id": "019e8c6a-1a5f-7961-a142-970951a6b555",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/80",
+  "sequence_number": 80,
+  "title": "5d-review-3: review integration (review, orient, guard, MCP)",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to review\n\nIntegration checkpoint: 5d-6 (review), 5d-7 (orient), 5d-8 (guard), 5d-9 (MCP tools).\n\n### Focus areas\n\n- **Review (5d-6)**: violation enrichment has enough context, diffing correctly identifies introduced vs resolved violations, waiver partition parallels convention pattern, no regression in convention review output\n- **Orient (5d-7)**: constraint section is useful to agents (right level of detail), scope resolution matches convention orient behavior, waivers surfaced clearly\n- **Guard (5d-8)**: blocking/advisory/informational filtering correct, waived violations never block, convention behavior unchanged\n- **MCP tools (5d-9)**: tool actions follow existing conventions, JSON output is clean, waive/unwaive flow is intuitive\n- **Independence**: constraint and convention systems have no data dependency — verify no accidental coupling was introduced\n\n### Stable state after this checkpoint\n\nFull 5d constraint system is live. End-to-end: author constraint in rules.toml → DD checks incrementally → review reports violations → orient briefs agents → guard enforces at commit → MCP tools manage waivers.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780472224351,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 80
+      }
+    },
+    {
+      "ts": 1780567875183,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Integration is clean — constraint system wired end-to-end (review, orient, guard, MCP tools) without convention coupling. 1 medium finding: constraint matching logic duplicated between guard.rs and constraints/mod.rs (should share). 4 low findings: severity via Debug format, delta source-only edge removal, guard loads all waivers, shared engine mutation for delta. Test coverage thorough (24 new tests across 3 files).",
+      "ts": 1780567447619
+    }
+  ],
+  "created_at": 1780472224351,
+  "updated_at": 1780567875183,
+  "completed_at": 1780567875183,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-7d25-78f3-9a6b-ea244213f587",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/74",
+      "note": null,
+      "created_at": 1780472249637
+    },
+    {
+      "id": "019e8c6a-7ec5-7892-9ba6-4f55ebefba77",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/75",
+      "note": null,
+      "created_at": 1780472250053
+    },
+    {
+      "id": "019e8c6a-826d-7212-b592-70de95daf3e8",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/76",
+      "note": null,
+      "created_at": 1780472250989
+    },
+    {
+      "id": "019e8c6a-84d2-7a33-81fd-75d27c82fd38",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/77",
+      "note": null,
+      "created_at": 1780472251602
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "id": "019e9a88-ec2d-7083-9c25-d4c477ea87a7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/111",
+  "sequence_number": 111,
+  "title": "Close Dart FCA/flags gap to reach Rust parity",
+  "description": "Dart parsing is at full parity with Rust for Layer 0 (symbols, refs, imports, complexity). Two gaps remain in higher layers:\n\n1. **FCA attribute source**: DartAdapter::as_fca_source() returns None. Rust gets language-specific attributes (returns_result, is_async, is_unsafe, has_lifetime, has_self, etc.) and effect patterns. Dart conventions are discovered using only cross-language attrs, producing shallower FCA results.\n\n2. **Flags (test/lifecycle detection)**: Rust has extract_flags for #[test], #[cfg(test)], #[no_mangle], #[bench]. Dart has no equivalent, causing potential false positives in sutra_dead for test helpers and framework lifecycle methods.\n\nClosing these gaps means:\n- Implement FcaAttributeSource for DartAdapter with Dart-specific attributes (is_async, is_factory, is_static, is_getter, is_setter, has_override, is_abstract, returns_future, etc.) and effect patterns\n- Add extract_flags for Dart: detect @test annotations, test file patterns, Flutter lifecycle methods (@override in State subclasses), FFI annotations",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "DartAdapter::as_fca_source() returns Some(self) instead of default None"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource impl for DartAdapter: extract_attributes merges cross-language attrs with Dart language_attrs JSON booleans (same pattern as RustAdapter)"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource impl for DartAdapter: effect_patterns returns Dart-specific patterns (dart:io→effect:fs, http/dio→effect:net, sqflite/drift→effect:db)"
+    },
+    {
+      "done": false,
+      "text": "Dart extract_language_attrs enhanced with: is_getter (getter_signature), is_setter (setter_signature), has_override (@override annotation), returns_future (Future/FutureOr return type)"
+    },
+    {
+      "done": false,
+      "text": "Dart extract_flags function detects: @isTest/@isTestGroup/@Test annotations → FLAG_TEST; _test.dart file pattern → FLAG_CFG_TEST; @override and @pragma('vm:entry-point') → FLAG_FFI_ENTRY"
+    },
+    {
+      "done": false,
+      "text": "extract_flags wired into collect_symbols for all Dart declaration types (same pattern as Rust parser)"
+    },
+    {
+      "done": false,
+      "text": "Tests in parse-dart-test.rs covering: FCA attribute extraction, getter/setter/override/returns_future attrs, flag extraction for test annotations, flag extraction for test file paths, flag extraction for override/pragma"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "# Implementation Plan\n\n## Approach\n\nTwo parallel tracks that touch different layers: (A) wire DartAdapter into the FCA attribute pipeline by implementing FcaAttributeSource and enriching `extract_language_attrs`, and (B) add flag extraction so Dart symbols get test/lifecycle/FFI flags that suppress dead-code false positives. Both follow the existing Rust adapter pattern exactly — same trait, same flag constants, same JSON merge strategy.\n\n## Files\n\n- **Modify**: `src/parser/dart.rs` (~lines 240-301, plus new function) — add `extract_flags` function, enhance `extract_language_attrs` with getter/setter/override/returns_future, wire flags into `collect_symbols`\n- **Modify**: `src/parser/adapter.rs` (~lines 219-237) — implement `FcaAttributeSource` for DartAdapter, add `DART_EFFECT_PATTERNS`, override `as_fca_source`\n- **Modify**: `tests/parse-dart-test.rs` — add tests for new attrs and flags\n\n## Steps\n\n### Step 1: Enhance `extract_language_attrs` in dart.rs\n\nAdd detection for `is_getter`, `is_setter`, `has_override`, and `returns_future` to the existing function.\n\nFor getters/setters, check `sig_node` kind. For `has_override`, walk annotation children of the declaration node. For `returns_future`, inspect the return type node in the signature.\n\n```rust\n// Inside the Function | Method match arm, after existing sig_node handling:\n\n// Getter/setter detection from signature node kind\nif let Some(sig) = sig_node {\n    let inner = if sig.kind() == \\\"method_signature\\\" {\n        let mut c = sig.walk();\n        sig.children(&c).find(|n| is_dart_signature_node(n.kind())).unwrap_or(sig)\n    } else { sig };\n    \n    if inner.kind() == \\\"getter_signature\\\" {\n        attrs.insert(\\\"is_getter\\\".into(), true.into());\n    }\n    if inner.kind() == \\\"setter_signature\\\" {\n        attrs.insert(\\\"is_setter\\\".into(), true.into());\n    }\n}\n\n// After the match block (applies to all kinds):\n// has_override — check for @override annotation\nif has_annotation(node, \\\"override\\\") {\n    attrs.insert(\\\"has_override\\\".into(), true.into());\n}\n```\n\nFor `returns_future`, inspect the return type in the function signature node:\n\n```rust\n// Inside Function | Method arm, check return type for Future/FutureOr\nif let Some(sig) = sig_node {\n    let inner = /* resolve through method_signature as above */;\n    if let Some(ret_type) = inner.child_by_field_name(\\\"return_type\\\")\n        .or_else(|| inner.child_by_field_name(\\\"type\\\"))\n    {\n        let type_text = ret_type.utf8_text(src).unwrap_or(\\\"\\\");\n        if type_text.starts_with(\\\"Future\\\") || type_text.starts_with(\\\"FutureOr\\\") {\n            attrs.insert(\\\"returns_future\\\".into(), true.into());\n        }\n    }\n}\n```\n\nNote: the `_src` parameter in the current signature needs to be renamed to `src` (remove underscore prefix) since we'll now use it for `returns_future` text extraction.\n\n### Step 2: Add annotation helper in dart.rs\n\nAdd a helper function to detect Dart annotations by name, used by both `extract_language_attrs` (for @override) and `extract_flags` (for @test etc.):\n\n```rust\nfn has_annotation(node: Node, name: &str) -> bool {\n    let mut cursor = node.walk();\n    node.children(&mut cursor).any(|c| {\n        c.kind() == \\\"annotation\\\"\n            && c.child_by_field_name(\\\"name\\\")\n                .and_then(|n| n.utf8_text(src).ok())  // needs src passed in, or use node text\n                .is_some_and(|text| text == name)\n    })\n}\n```\n\nActually, since we need `src` for text comparison, this should take `src: &[u8]` as a parameter. Alternatively, check annotation children' text. Let me refine — the helper should be:\n\n```rust\nfn has_annotation(node: Node, src: &[u8], name: &str) -> bool {\n    let mut cursor = node.walk();\n    node.children(&mut cursor).any(|c| {\n        c.kind() == \\\"annotation\\\"\n            && c.child_by_field_name(\\\"name\\\")\n                .and_then(|n| n.utf8_text(src).ok())\n                .is_some_and(|text| text == name)\n    })\n}\n```\n\nThis also means `extract_language_attrs` needs to actually use `src` (currently named `_src`).\n\n### Step 3: Add `extract_flags` in dart.rs\n\nImport the flag constants from the Rust parser module and implement Dart-specific flag extraction:\n\n```rust\nuse super::rust::{FLAG_TEST, FLAG_CFG_TEST, FLAG_FFI_ENTRY};\n\nfn extract_flags(node: Node, src: &[u8], file_path: &str) -> u32 {\n    let mut flags = 0u32;\n    \n    // @isTest, @isTestGroup, @Test annotations → FLAG_TEST\n    if has_annotation(node, src, \\\"isTest\\\")\n        || has_annotation(node, src, \\\"isTestGroup\\\")\n        || has_annotation(node, src, \\\"Test\\\")\n    {\n        flags |= FLAG_TEST;\n    }\n    \n    // Test file patterns → FLAG_CFG_TEST\n    if file_path.ends_with(\\\"_test.dart\\\") || file_path.starts_with(\\\"test/\\\") {\n        flags |= FLAG_CFG_TEST;\n    }\n    \n    // @override → FLAG_FFI_ENTRY (framework entry point, suppresses dead-code)\n    if has_annotation(node, src, \\\"override\\\") {\n        flags |= FLAG_FFI_ENTRY;\n    }\n    \n    // @pragma('vm:entry-point') → FLAG_FFI_ENTRY\n    if has_annotation(node, src, \\\"pragma\\\") {\n        // Check if it's specifically vm:entry-point\n        let mut cursor = node.walk();\n        for child in node.children(&mut cursor) {\n            if child.kind() == \\\"annotation\\\" {\n                if let Ok(text) = child.utf8_text(src) {\n                    if text.contains(\\\"vm:entry-point\\\") {\n                        flags |= FLAG_FFI_ENTRY;\n                    }\n                }\n            }\n        }\n    }\n    \n    flags\n}\n```\n\nNote: `file_path` is added as a parameter (unlike Rust's version) because Dart test detection relies partly on file paths, not just annotations. This is acceptable since `file_path` is available at the call site in `parse()`.\n\n### Step 4: Wire `extract_flags` into `collect_symbols` in dart.rs\n\nThread `file_path` through `collect_symbols` and apply `extract_flags` after each `build_symbol` call. This matches the Rust pattern where every symbol kind gets `sym.flags |= extract_flags(child, src)`.\n\n```rust\nfn collect_symbols(\n    node: Node,\n    src: &[u8],\n    name_context: &[String],\n    file_path: &str,           // NEW parameter\n) -> Vec<ExtractedSymbol> {\n    // ... existing code ...\n    // After each build_symbol / extract_fn_symbol / extract_method_symbol call:\n    sym.flags = extract_flags(child, src, file_path);\n    // ... existing recursive calls also pass file_path through ...\n}\n```\n\nUpdate the `parse()` function call site to pass `file_path`:\n\n```rust\n// In parse() (~line 15):\nlet symbols = collect_symbols(root, src, &[], &ctx.path);\n```\n\nWait, let me check if `ctx.path` or `file_path` is available. Looking at `parse()` (lines 9-33), the `ParseContext` has a path field. Let me verify.\n\n### Step 5: Implement `FcaAttributeSource` for DartAdapter in adapter.rs\n\nAdd Dart effect patterns and the trait implementation, following the exact same pattern as `RustAdapter`:\n\n```rust\nconst DART_EFFECT_PATTERNS: &[EffectPattern] = &[\n    EffectPattern {\n        attr_name: \\\"effect:fs\\\",\n        callee_prefixes: &[\\\"dart:io::\\\", \\\"File::\\\", \\\"Directory::\\\", \\\"FileSystem::\\\"],\n    },\n    EffectPattern {\n        attr_name: \\\"effect:net\\\",\n        callee_prefixes: &[\\\"http::\\\", \\\"dio::\\\", \\\"HttpClient::\\\", \\\"dart:io::Socket\\\"],\n    },\n    EffectPattern {\n        attr_name: \\\"effect:db\\\",\n        callee_prefixes: &[\\\"sqflite::\\\", \\\"drift::\\\", \\\"isar::\\\", \\\"hive::\\\"],\n    },\n];\n\nimpl FcaAttributeSource for DartAdapter {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n        let mut sa = extract_cross_language_attrs(sym, file_path)?;\n        if let Some(ref la_json) = sym.language_attrs {\n            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {\n                Ok(map) => {\n                    for (key, val) in &map {\n                        if val.as_bool() == Some(true) {\n                            sa.attributes.push(key.clone());\n                        }\n                    }\n                }\n                Err(e) => {\n                    tracing::warn!(\n                        symbol = %sym.qualified_name,\n                        file = %file_path,\n                        error = %e,\n                        \\\"malformed language_attrs JSON, skipping language-specific attributes\\\"\n                    );\n                }\n            }\n        }\n        Some(sa)\n    }\n\n    fn effect_patterns(&self) -> &[EffectPattern] {\n        DART_EFFECT_PATTERNS\n    }\n}\n```\n\n### Step 6: Override `as_fca_source` in DartAdapter's LanguageAdapter impl\n\nIn the existing `impl LanguageAdapter for DartAdapter` block (~line 221), add the override:\n\n```rust\nfn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {\n    Some(self)\n}\n```\n\n### Step 7: Add tests in parse-dart-test.rs\n\nAdd tests covering:\n\n1. **Getter/setter attrs**: Parse a class with `get` and `set` methods, verify `is_getter`/`is_setter` in language_attrs.\n2. **Override attr**: Parse a method with `@override`, verify `has_override` in language_attrs.\n3. **Returns future**: Parse a method returning `Future<void>`, verify `returns_future` in language_attrs.\n4. **Flag: test annotation**: Parse `@isTest void myTest() {}`, verify `flags & FLAG_TEST != 0`.\n5. **Flag: test file path**: Parse any symbol with file path `test/foo_test.dart`, verify `flags & FLAG_CFG_TEST != 0`.\n6. **Flag: override**: Parse `@override void build() {}`, verify `flags & FLAG_FFI_ENTRY != 0`.\n7. **FCA integration**: Verify that `DartAdapter::as_fca_source()` returns `Some` and that the adapter test pattern from `fca_source_capability` (~line 318 in adapter.rs) works for Dart.\n\n```rust\n#[test]\nfn test_language_attrs_getter_setter() {\n    let src = r#\\\"\nclass Config {\n    String get name => 'test';\n    set name(String v) {}\n}\n\\\"#;\n    let result = parser::parse_file(src, \\\"dart\\\", \\\"lib/config.dart\\\").unwrap();\n    let flat = flatten_symbols(&result.symbols);\n    \n    let getter = flat.iter().find(|s| s.short_name == \\\"name\\\" && /* is_getter check */).unwrap();\n    let attrs: serde_json::Value = serde_json::from_str(getter.language_attrs.as_deref().unwrap()).unwrap();\n    assert_eq!(attrs[\\\"is_getter\\\"], true);\n    // similar for setter\n}\n\n#[test]\nfn test_flags_test_annotation() {\n    let src = r#\\\"\n@isTest\nvoid myTestHelper() {}\n\\\"#;\n    let result = parser::parse_file(src, \\\"dart\\\", \\\"lib/helpers.dart\\\").unwrap();\n    assert_ne!(result.symbols[0].flags & 0x01, 0, \\\"@isTest should set FLAG_TEST\\\");\n}\n\n#[test]\nfn test_flags_test_file_path() {\n    let src = \\\"void helper() {}\\\";\n    let result = parser::parse_file(src, \\\"dart\\\", \\\"test/widget_test.dart\\\").unwrap();\n    assert_ne!(result.symbols[0].flags & 0x02, 0, \\\"test file should set FLAG_CFG_TEST\\\");\n}\n\n#[test]\nfn test_flags_override() {\n    let src = r#\\\"\nclass MyWidget {\n    @override\n    void build() {}\n}\n\\\"#;\n    let result = parser::parse_file(src, \\\"dart\\\", \\\"lib/widget.dart\\\").unwrap();\n    let flat = flatten_symbols(&result.symbols);\n    let build = flat.iter().find(|s| s.short_name == \\\"build\\\").unwrap();\n    assert_ne!(build.flags & 0x04, 0, \\\"@override should set FLAG_FFI_ENTRY\\\");\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \\\"DartAdapter::as_fca_source() returns Some(self)\\\" → Step 6\n- [x] \\\"FcaAttributeSource extract_attributes merges cross-language with language_attrs\\\" → Step 5\n- [x] \\\"FcaAttributeSource effect_patterns returns Dart-specific patterns\\\" → Step 5\n- [x] \\\"extract_language_attrs enhanced with is_getter, is_setter, has_override, returns_future\\\" → Steps 1, 2\n- [x] \\\"extract_flags detects @isTest/@isTestGroup, _test.dart, @override, @pragma\\\" → Step 3\n- [x] \\\"extract_flags wired into collect_symbols\\\" → Step 4\n- [x] \\\"Tests covering FCA attrs, getter/setter/override/returns_future, flags\\\" → Step 7\"}",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "fbbb77c"
+    }
+  ],
+  "files": [
+    "src/parser/adapter.rs",
+    "src/parser/dart.rs",
+    "src/conventions/attributes.rs"
+  ],
+  "tags": [
+    "dart",
+    "fca",
+    "parity"
+  ],
+  "history": [
+    {
+      "ts": 1780709125165,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 111
+      }
+    },
+    {
+      "ts": 1780771118154,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780771417391,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention (3 findings)\\n\\n1. [high] Missing Dart declaration forms — getter_declaration, setter_declaration, external_function_declaration etc. are not handled by collect_symbols, so annotations/flags on those forms are never applied.\\n2. [high] Dart effect patterns unreachable — callee prefix matching requires resolved call refs with target symbol IDs, but Dart external package calls (http.get, dio.get) are classified as field access and not resolved. Effect attrs are effectively a no-op.\\n3. [medium] @override → FLAG_FFI_ENTRY is too broad — suppresses dead-code for all overridden methods, not just framework entry points. Will hide dead overrides in project-internal hierarchies.\"",
+      "ts": 1780771747044
+    }
+  ],
+  "created_at": 1780709125165,
+  "updated_at": 1780771417391,
+  "completed_at": 1780771417391,
+  "edges": []
+}

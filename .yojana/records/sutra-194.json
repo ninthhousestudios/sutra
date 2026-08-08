@@ -1,0 +1,83 @@
+{
+  "id": "019eff8e-a1df-7032-b31e-c5692d7b78ee",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/194",
+  "sequence_number": 194,
+  "title": "Stop extracting Other refs across all language parsers",
+  "description": "RefContextKind::Other is a catch-all for identifiers the classifier couldn't categorize. It participates in resolution with no kind filtering, meaning it matches against any symbol kind — more likely to produce false positives than useful edges. Downstream tools (calls, impact, trace, winnow, explore, conventions) all hard-filter to call-only, so Other refs are never consumed by graph tools either. Dropping them is a net quality improvement: fewer false resolution matches, smaller DB, no loss of useful signal. Refs currently landing in Other either belong in a real category (fix the classifier — see Dart task) or aren't semantically meaningful.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "In each language parser's ref extraction loop, skip identifiers that would be classified as Other instead of pushing them to the refs vec. Approximately one conditional per parser (rust.rs, dart.rs, c.rs, python.rs). Run before/after on a real project to verify resolution quality doesn't regress — expect it to improve slightly due to fewer false matches. Order: do the Dart classifier deepening first so fewer legitimate refs are lost.",
+  "execution_record": "One guard per parser call site: `if context_kind != RefContextKind::Other { ... }` (or equivalent). Python needed a slightly different shape to preserve the `if ctx == Call` dotted-chain logic after the guard. Updated 5 test assertions across parse-dart-test.rs (2 tests) and rust.rs inline tests (3 tests) — all flipped from asserting Other to asserting absence. Enum variant and DB deserialization fallback left intact for backward compat.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c2f28a5"
+    }
+  ],
+  "files": [
+    "src/parser/rust.rs",
+    "src/parser/dart.rs",
+    "src/parser/c.rs",
+    "src/parser/python.rs"
+  ],
+  "tags": [
+    "parser",
+    "ref-quality"
+  ],
+  "history": [
+    {
+      "ts": 1782403998175,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 194
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782416410002,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782416414512,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (verdict: needs-attention, 1 finding):\n\n- [medium] Stale `other` refs persist in existing databases (src/pipeline.rs:208-213). The parser change only affects files that are reparsed, but the pipeline skips files with unchanged content hashes. Existing workspaces indexed before this change retain `refs.context_kind = 'other'` rows indefinitely. Those rows are still deserialized as `RefContextKind::Other` and the resolver still treats `Other` as compatible with any symbol kind, so the false-positive resolution behavior remains for unchanged files. Recommendation: bump the parser/index version to force a full reparse, or add a DB migration deleting `other` refs rows.",
+      "ts": 1782416607405
+    }
+  ],
+  "created_at": 1782403998175,
+  "updated_at": 1782416414512,
+  "completed_at": 1782416414512,
+  "edges": [
+    {
+      "id": "019eff8e-cde9-73a1-88cc-5300d4f54d19",
+      "edge_type": "depends_on",
+      "source": "sutra/194",
+      "target": "sutra/193",
+      "note": "Dart classifier must be deepened before dropping Other, otherwise legitimate Dart refs are lost",
+      "created_at": 1782404009449
+    }
+  ]
+}

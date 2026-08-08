@@ -1,0 +1,363 @@
+{"id":"sutra/1","title":"prd for sutra watcher daemon","status":"done","closed_at":1778185927242}
+{"id":"sutra/2","title":"triage todo/steal list and put into yojana","status":"done","closed_at":1778232777651}
+{"id":"sutra/3","title":"--explain / explain flag on analysis tools","status":"wontfix","closed_at":null}
+{"id":"sutra/4","title":"incremental parse pipeline","status":"done","closed_at":1778182181363}
+{"id":"sutra/5","title":"REST endpoints + service install","status":"done","closed_at":1778184470545}
+{"id":"sutra/6","title":"smriti event reader + cursor persistence","status":"done","closed_at":1778182467342}
+{"id":"sutra/7","title":"smriti watcher loop","status":"done","closed_at":1778182981820}
+{"id":"sutra/8","title":"sutra_status MCP tool","status":"done","closed_at":1778185222668}
+{"id":"sutra/9","title":"manas-cli sutra health integration","status":"done","closed_at":1778184847177}
+{"id":"sutra/10","title":"Verify tier-2 freshness enforcement on sutra_read","status":"done","closed_at":1778334357470}
+{"id":"sutra/11","title":"sutra_file_health: foundational types penalised unfairly by blast/fan-in","status":"done","closed_at":1778257254858}
+{"id":"sutra/12","title":"sutra_cochange: git pretty-format error 'invalid --pretty format: COMMIT_SEP'","status":"done","closed_at":1778257245625}
+{"id":"sutra/13","title":"sutra_dead: detect Rust test exemptions and FFI entrypoints","status":"done","closed_at":1778257254413}
+{"id":"sutra/14","title":"Wave A: quick correctness fixes + cargo fmt","status":"done","closed_at":1778259174530}
+{"id":"sutra/15","title":"Wave B: daemon error handling + workspace registration consolidation","status":"done","closed_at":1778259841531}
+{"id":"sutra/16","title":"Wave C: structural extraction (graph module, pipeline unification, MCP thinning)","status":"done","closed_at":1778261009467}
+{"id":"sutra/17","title":"winnow.rs predicate composition","status":"done","closed_at":1778333975679}
+{"id":"sutra/18","title":"Fix sutra_dead auto-exclusion for test helpers and integration test files","status":"done","closed_at":1778259450428}
+{"id":"sutra/19","title":"Construction-site detection for struct fields","status":"done","closed_at":1778335590909}
+{"id":"sutra/20","title":"Add lens-based parallel review to vidhi","status":"wontfix","closed_at":null}
+{"id":"sutra/21","title":"Scheduler wedges on a single workspace, leaves all indexes stale","status":"done","closed_at":1778323059034}
+{"id":"sutra/22","title":"Parse coordination gaps: timeout, lock coverage, path canonicalization","status":"done","closed_at":1778588350487}
+{"id":"sutra/23","title":"look into stale indexes","status":"wontfix","closed_at":null}
+{"id":"sutra/24","title":"Investigate slow/red MCP indicator during sutra_status calls","status":"wontfix","closed_at":null}
+{"id":"sutra/25","title":"index top-level variables?","status":"wontfix","closed_at":null}
+{"id":"sutra/26","title":"Phase 2: domain vocabulary session (vidhi-domain)","status":"done","closed_at":1779559049541}
+{"id":"sutra/27","title":"Phase 3: software architecture brainstorm","status":"done","closed_at":1779827627706}
+{"id":"sutra/28","title":"Phase 4: spike graph clustering for component discovery (L1)","status":"done","closed_at":1779524740017}
+{"id":"sutra/29","title":"5a brainstorm: core model design","status":"done","closed_at":1779890651833}
+{"id":"sutra/30","title":"5a PRD: core model redesign","status":"done","closed_at":1779890912622}
+{"id":"sutra/31","title":"5a-1: LanguageAdapter trait + registry + pipeline dispatch","status":"done","closed_at":1779895561493}
+{"id":"sutra/32","title":"5a-2: ParseContext + core-owned tree-sitter infrastructure","status":"done","closed_at":1779897010517}
+{"id":"sutra/33","title":"5a-3: tree-structured ParseResult","status":"done","closed_at":1779898136097}
+{"id":"sutra/34","title":"5a-4: language_attrs column + adapter population","status":"done","closed_at":1779907526802}
+{"id":"sutra/35","title":"5a-5: FcaAttributeSource trait + extraction split","status":"done","closed_at":1779943237595}
+{"id":"sutra/36","title":"5a-6: ephemeral/durable storage partition","status":"done","closed_at":1780203431598}
+{"id":"sutra/37","title":"5a-7: durable companion pattern (conventions split)","status":"done","closed_at":1780203436229}
+{"id":"sutra/38","title":"Dart extract_method_symbol bug","status":"done","closed_at":1780704824304}
+{"id":"sutra/39","title":"Fix stale-index FCA gap + silent JSON parse failures","status":"done","closed_at":1779943997425}
+{"id":"sutra/40","title":"5b brainstorm: component discovery + vocabulary design","status":"done","closed_at":1780255324446}
+{"id":"sutra/41","title":"5c brainstorm: convention system design","status":"done","closed_at":1780360299567}
+{"id":"sutra/42","title":"5d brainstorm: constraint system + DD design","status":"done","closed_at":1780471409354}
+{"id":"sutra/43","title":"5e brainstorm: health metrics + similarity design","status":"done","closed_at":1780576853168}
+{"id":"sutra/44","title":"5b PRD: component discovery + vocabulary","status":"done","closed_at":1780324847889}
+{"id":"sutra/45","title":"5b-1: basic component discovery — schema + Louvain + MCP","status":"done","closed_at":1780283447954}
+{"id":"sutra/46","title":"5b-2: component reconciliation + architectural events","status":"done","closed_at":1780317931216}
+{"id":"sutra/47","title":"5b-3: staleness detection + lazy recompute trigger","status":"done","closed_at":1780318857585}
+{"id":"sutra/48","title":"5b-4: semantic anchors per component","status":"done","closed_at":1780320518081}
+{"id":"sutra/49","title":"5b-5: concept density metric","status":"done","closed_at":1780324199961}
+{"id":"sutra/50","title":"5b-6: vocabulary layer — aliases + resolution","status":"done","closed_at":1780324203893}
+{"id":"sutra/51","title":"5b-7: module boundary hints in adapter trait","status":"done","closed_at":1780323473913}
+{"id":"sutra/52","title":"Function-level structural diffs in diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/53","title":"Thread callee graph into diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/54","title":"Before/after snapshots and per-commit manifests","status":"wontfix","closed_at":null}
+{"id":"sutra/55","title":"vocabulary resolve: enrich output with code locations","status":"done","closed_at":1780324790725}
+{"id":"sutra/56","title":"concept density: normalize stems by stripping common affixes","status":"done","closed_at":1780324794109}
+{"id":"sutra/57","title":"5c PRD: convention system design","status":"done","closed_at":1780429509101}
+{"id":"sutra/58","title":"5c-1: module rename fca/ → conventions/ + convention_state migration","status":"done","closed_at":1780400583403}
+{"id":"sutra/59","title":"5c-2: optimized FCA rebuild with hash caching","status":"done","closed_at":1780400894802}
+{"id":"sutra/60","title":"5c-3: one-hop effect attributes for FCA","status":"done","closed_at":1780401240392}
+{"id":"sutra/61","title":"5c-4: per-component convention discovery","status":"done","closed_at":1780415976905}
+{"id":"sutra/62","title":"5c-5: propose-and-confirm convention lifecycle","status":"done","closed_at":1780415977385}
+{"id":"sutra/63","title":"5c-6: convention drift detection","status":"done","closed_at":1780429417073}
+{"id":"sutra/64","title":"5c-7: convention waiver tracking","status":"done","closed_at":1780415977825}
+{"id":"sutra/65","title":"5c-8: structural convention templates","status":"done","closed_at":1780429417698}
+{"id":"sutra/66","title":"5c-9: convention-aware orient integration","status":"done","closed_at":1780429418005}
+{"id":"sutra/67","title":"L1: incorporate co-change edges into component clustering","status":"done","closed_at":1780580520169}
+{"id":"sutra/68","title":"5d PRD: constraint system + DD integration","status":"done","closed_at":1780472078045}
+{"id":"sutra/69","title":"5d-1: rename dd/ → constraints/","status":"done","closed_at":1780503319577}
+{"id":"sutra/70","title":"5d-2: constraint types + rules parsing","status":"done","closed_at":1780503319914}
+{"id":"sutra/71","title":"5d-3: DD forbidden pairs maintained view","status":"done","closed_at":1780503320823}
+{"id":"sutra/72","title":"5d-4: boundary resolver","status":"done","closed_at":1780514193492}
+{"id":"sutra/73","title":"5d-5: constraint waivers (DB)","status":"done","closed_at":1780514194066}
+{"id":"sutra/74","title":"5d-6: review integration — violations + diffing + waivers","status":"done","closed_at":1780568958744}
+{"id":"sutra/75","title":"5d-7: orient constraint section","status":"done","closed_at":1780568959664}
+{"id":"sutra/76","title":"5d-8: guard severity filtering","status":"done","closed_at":1780568960073}
+{"id":"sutra/77","title":"5d-9: MCP constraint tools","status":"done","closed_at":1780568960894}
+{"id":"sutra/78","title":"5d-review-1: review foundation (rename, types, DD)","status":"done","closed_at":1780503349942}
+{"id":"sutra/79","title":"5d-review-2: review core (resolver, waivers)","status":"done","closed_at":1780565713147}
+{"id":"sutra/80","title":"5d-review-3: review integration (review, orient, guard, MCP)","status":"done","closed_at":1780567875183}
+{"id":"sutra/81","title":"L1: surface hidden coupling in orient output","status":"done","closed_at":1780580524206}
+{"id":"sutra/82","title":"L1: surface behavioral coupling in review output","status":"done","closed_at":1780580533835}
+{"id":"sutra/83","title":"5e PRD: health metrics + similarity system","status":"done","closed_at":1780684047523}
+{"id":"sutra/84","title":"5e-1: health finding model + first biomarker","status":"done","closed_at":1780589369484}
+{"id":"sutra/85","title":"5e-2: health scoring with category capping","status":"done","closed_at":1780589372345}
+{"id":"sutra/86","title":"5e-3: git-organizational biomarkers","status":"done","closed_at":1780589375225}
+{"id":"sutra/87","title":"5e-review-1: review health foundation (findings, scoring, git metrics)","status":"done","closed_at":1780589378665}
+{"id":"sutra/88","title":"5e-4: HRR encoder + codebook + pipeline","status":"done","closed_at":1780659125495}
+{"id":"sutra/89","title":"5e-5: structural similarity search","status":"done","closed_at":1780659129406}
+{"id":"sutra/90","title":"5e-6: near-duplicate detection + trending","status":"done","closed_at":1780661650397}
+{"id":"sutra/91","title":"5e-7: health snapshots + per-file history","status":"done","closed_at":1780659133695}
+{"id":"sutra/92","title":"5e-review-2: review HRR + similarity + snapshots","status":"done","closed_at":1780661653461}
+{"id":"sutra/93","title":"5e-8: semantic diff for review","status":"done","closed_at":1780684047796}
+{"id":"sutra/94","title":"5e-9: review integration — health delta + on-demand biomarkers","status":"done","closed_at":1780684048356}
+{"id":"sutra/95","title":"5e-10: convention drift detection","status":"done","closed_at":1780684049341}
+{"id":"sutra/96","title":"5e-11: orient + health MCP tools","status":"done","closed_at":1780684049945}
+{"id":"sutra/97","title":"5e-review-3: review integration (review, drift, orient, MCP tools)","status":"done","closed_at":1780684056125}
+{"id":"sutra/98","title":"Performance review: quadratic pattern families + general scaling","status":"done","closed_at":1780660840213}
+{"id":"sutra/99","title":"LSH bucketing for pattern family detection","status":"done","closed_at":1780661472278}
+{"id":"sutra/100","title":"Calibrate HRR shape diff thresholds / granularity","status":"done","closed_at":1780665645433}
+{"id":"sutra/101","title":"release review: HRR + similarity — mathematical correctness","status":"done","closed_at":1780684979146}
+{"id":"sutra/102","title":"release review: FCA + conventions — algorithmic correctness","status":"done","closed_at":1780685573282}
+{"id":"sutra/103","title":"release review: DD + constraints + DB — data integrity","status":"done","closed_at":1780706009739}
+{"id":"sutra/104","title":"release review: health + review + orient — integration correctness","status":"done","closed_at":1780707691891}
+{"id":"sutra/105","title":"design review observations from FCA correctness audit (sutra/102)","status":"done","closed_at":1783476339961}
+{"id":"sutra/106","title":"fix: constraint_violations_total undercounts (missing cycle violations)","status":"done","closed_at":1780707938079}
+{"id":"sutra/107","title":"fix: orient resolve_scope uses alias text instead of canonical component name","status":"done","closed_at":1780708051459}
+{"id":"sutra/108","title":"fix: convention drift findings get nondeterministic file_id from HashMap iteration","status":"done","closed_at":1780708111995}
+{"id":"sutra/109","title":"fix: file_health component filter doesn't apply to components summary section","status":"done","closed_at":1780708181423}
+{"id":"sutra/110","title":"fix: degraded review emits misleading zero-findings risk score","status":"done","closed_at":1780708330717}
+{"id":"sutra/111","title":"Close Dart FCA/flags gap to reach Rust parity","status":"done","closed_at":1780771417391}
+{"id":"sutra/112","title":"Function-level change classification in diff_impact","status":"done","closed_at":1781445650595}
+{"id":"sutra/113","title":"Explain flag on scored/ranked tools","status":"done","closed_at":1781470709786}
+{"id":"sutra/114","title":"Index top-level variables and constants","status":"done","closed_at":1781444185365}
+{"id":"sutra/115","title":"C language adapter","status":"done","closed_at":1782330501342}
+{"id":"sutra/116","title":"Python language adapter","status":"done","closed_at":1782403057977}
+{"id":"sutra/117","title":"Per-commit structural manifests in review","status":"done","closed_at":1781442738909}
+{"id":"sutra/118","title":"performance review","status":"done","closed_at":1781329399041}
+{"id":"sutra/119","title":"Dart import resolution: package: URIs not producing file-level edges","status":"done","closed_at":1780755609700}
+{"id":"sutra/120","title":"Drop pretty-printing from MCP JSON responses","status":"done","closed_at":1780756717667}
+{"id":"sutra/121","title":"Tiered output for sutra_grep and sutra_find","status":"done","closed_at":1780757087142}
+{"id":"sutra/122","title":"Add line cap to sutra_read","status":"done","closed_at":1780756718503}
+{"id":"sutra/123","title":"Dart effect patterns unreachable for external package calls","status":"done","closed_at":1781472419984}
+{"id":"sutra/124","title":"Narrow @override dead-code suppression to framework callbacks","status":"done","closed_at":1781473710542}
+{"id":"sutra/125","title":"Wave 1: index integrity — atomic replace, cross-process lock, heal sweep","status":"done","closed_at":1781048838462}
+{"id":"sutra/126","title":"Wave 2: Rust ref precision — extract method-call names","status":"done","closed_at":1781095868476}
+{"id":"sutra/127","title":"Wave 3: cochange from commit_files + behavioral tests","status":"done","closed_at":1781096491426}
+{"id":"sutra/128","title":"Wave 0: fmt + clippy sweep + enforcement gates","status":"done","closed_at":1781046997197}
+{"id":"sutra/129","title":"Wave 4: guard semantics decision + canonical waiver-match rule","status":"done","closed_at":1781097824335}
+{"id":"sutra/130","title":"Wave 5: contract batch — version/roster, rules error partition, [introduced] honesty","status":"done","closed_at":1781108161792}
+{"id":"sutra/131","title":"Wave 6: slop — dead_symbol_ratio_by_file, SKIP_DIRS dedup","status":"done","closed_at":1781108852648}
+{"id":"sutra/132","title":"Architectural deepening: 7 candidates from 2026-06-09 review (grilling first)","status":"done","closed_at":1781109476763}
+{"id":"sutra/133","title":"Unify constraint evaluation into constraints::check::evaluate","status":"done","closed_at":1781111876112}
+{"id":"sutra/134","title":"Extract convention rebuild from review.rs into conventions::pipeline","status":"done","closed_at":1781118623252}
+{"id":"sutra/135","title":"Unify waiver partition logic into a waivers module (code seam)","status":"done","closed_at":1781121514106}
+{"id":"sutra/136","title":"Consolidate health rollup into scoring::score_workspace","status":"done","closed_at":1781128043437}
+{"id":"sutra/137","title":"Unify change-risk signal gathering into tools::change_signals","status":"done","closed_at":1781129320920}
+{"id":"sutra/138","title":"Split components.rs into clustering/identity/anchors modules","status":"done","closed_at":1781132810709}
+{"id":"sutra/139","title":"Collapse tool handler/freshness pairs into ToolContext seam","status":"done","closed_at":1781136865106}
+{"id":"sutra/140","title":"Persistent post-parse completion tracking (replaces dart-import fast-path gate, fixes interrupted-parse poisoning)","status":"done","closed_at":1781157250772}
+{"id":"sutra/141","title":"Batch ref/codebook/import DB writes + set PRAGMA synchronous=NORMAL","status":"done","closed_at":1781269015350}
+{"id":"sutra/142","title":"Incremental HRR vector computation via per-file content hash","status":"done","closed_at":1781270946285}
+{"id":"sutra/143","title":"Case-insensitive language matching + warn when workspace walk finds zero files","status":"done","closed_at":1781272354715}
+{"id":"sutra/144","title":"Prune old snapshots (keep last N)","status":"done","closed_at":1781362261925}
+{"id":"sutra/145","title":"Post-parse micro-cleanups: shared adjacency, single git spawn, imports index, prepare_cached, Louvain sigma_tot","status":"done","closed_at":1781363927014}
+{"id":"sutra/146","title":"Break constraints import-cycle SCC: extract ConstraintFinding/FindingDelta to a leaf module","status":"done","closed_at":1781365013829}
+{"id":"sutra/147","title":"Validate constraint glob patterns at parse time — typo'd glob makes constraint silently inert","status":"done","closed_at":1781365923377}
+{"id":"sutra/148","title":"External-crate constraint signal gaps: leading-:: imports, target-specific deps, workspace-dep renames, pubspec manifests","status":"done","closed_at":1781192882548}
+{"id":"sutra/149","title":"Guard: re-check member manifests when root workspace renames change","status":"done","closed_at":1781193920791}
+{"id":"sutra/150","title":"Code-anchored lessons: sutra_remember / contextual surfacing","status":"done","closed_at":1781732642423}
+{"id":"sutra/151","title":"Lessons store + sutra_remember + sutra_read injection","status":"done","closed_at":1781620004491}
+{"id":"sutra/152","title":"5x-review-1: review lessons foundation (schema, LessonsDb, sutra_read injection)","status":"done","closed_at":1781620455481}
+{"id":"sutra/153","title":"File glob + import pattern + directory anchor matching","status":"done","closed_at":1781662941824}
+{"id":"sutra/154","title":"FTS5 + sutra_lessons query tool","status":"done","closed_at":1781663393700}
+{"id":"sutra/155","title":"Categories + cross-project filtering","status":"done","closed_at":1781664026677}
+{"id":"sutra/156","title":"sutra_impact + sutra_orient lesson injection","status":"done","closed_at":1781664853974}
+{"id":"sutra/157","title":"5x-review-2: review matching + surfacing channels","status":"done","closed_at":1781666423889}
+{"id":"sutra/158","title":"Confidence lifecycle + surfacing priority","status":"done","closed_at":1781702064673}
+{"id":"sutra/159","title":"Anchor enrichment on write","status":"done","closed_at":1781703226259}
+{"id":"sutra/160","title":"Staleness detection","status":"done","closed_at":1781705019596}
+{"id":"sutra/161","title":"Decay + archive","status":"done","closed_at":1781705282554}
+{"id":"sutra/162","title":"5x-review-3: review quality lifecycle","status":"done","closed_at":1781706729405}
+{"id":"sutra/163","title":"vidhi-reflect evolution: write/prune lessons store","status":"done","closed_at":1781721190649}
+{"id":"sutra/164","title":"Migration of ledger.md + CLAUDE.md update","status":"done","closed_at":1781720324139}
+{"id":"sutra/165","title":"5x-review-4: review ecosystem integration","status":"done","closed_at":1781721196118}
+{"id":"sutra/166","title":"Pack relevant imports into sutra_read symbol responses","status":"done","closed_at":1781622130459}
+{"id":"sutra/167","title":"Design sutra_explore: deterministic structural exploration tool","status":"done","closed_at":1781643557987}
+{"id":"sutra/168","title":"Add project_origin scoping to LessonsDb::query_for_context","status":"done","closed_at":1781620655756}
+{"id":"sutra/169","title":"PRD: sutra_explore — deterministic structural exploration tool","status":"done","closed_at":1781655526800}
+{"id":"sutra/170","title":"End-to-end skeleton: sutra_explore with grep + basic ranking","status":"done","closed_at":1781651678873}
+{"id":"sutra/171","title":"5x-review-1: review sutra_explore skeleton + initial sutra-tend","status":"done","closed_at":1781652333791}
+{"id":"sutra/172","title":"Structural ranking + component metadata for sutra_explore","status":"done","closed_at":1781653433117}
+{"id":"sutra/173","title":"Adaptive fan-out for sutra_explore","status":"done","closed_at":1781654049427}
+{"id":"sutra/174","title":"Strategy refinement + pattern hardening for sutra_explore","status":"done","closed_at":1781654635858}
+{"id":"sutra/175","title":"5x-review-2: review complete sutra_explore feature","status":"done","closed_at":1781655489548}
+{"id":"sutra/176","title":"Design: convention promotion pipeline — reduce noise or replace","status":"done","closed_at":1783476356863}
+{"id":"sutra/177","title":"Anchor enrichment: exclude high-frequency import patterns","status":"done","closed_at":1781721838487}
+{"id":"sutra/178","title":"Consolidate duplicated staleness check between mcp.rs and main.rs","status":"done","closed_at":1782317925692}
+{"id":"sutra/179","title":"sutra_read: suggest similar symbols on not-found errors","status":"done","closed_at":1782317979763}
+{"id":"sutra/180","title":"check out workspace arg on sutra_read","status":"done","closed_at":1782257128351}
+{"id":"sutra/181","title":"Clone cleanup: remaining Arc<str> tiers and borrow-checker fixes","status":"done","closed_at":1782314381550}
+{"id":"sutra/182","title":"C parser module + complexity branches","status":"done","closed_at":1782324346776}
+{"id":"sutra/183","title":"C adapter wiring + import resolver","status":"done","closed_at":1782325864118}
+{"id":"sutra/184","title":"C adapter test suite","status":"done","closed_at":1782330201224}
+{"id":"sutra/185","title":"C import resolver: per-TU include path scoping from compile_commands.json","status":"done","closed_at":1782329274176}
+{"id":"sutra/186","title":"enable sutra_review to be able to handle root commits","status":"needs-triage","closed_at":null}
+{"id":"sutra/187","title":"Python parser module + adapter registration","status":"done","closed_at":1782392876634}
+{"id":"sutra/188","title":"Python complexity scoring + unresolved-ref effect fallback","status":"done","closed_at":1782395002477}
+{"id":"sutra/189","title":"Python import resolver + pipeline wiring","status":"done","closed_at":1782396268116}
+{"id":"sutra/190","title":"Python adapter integration tests + end-to-end verification","status":"done","closed_at":1782402500825}
+{"id":"sutra/191","title":"Fix C parser/index scaling before retrying Linux kernel stress parse","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/192","title":"Fix Python effect fallback and greedy import prefix resolution","status":"done","closed_at":1782397736102}
+{"id":"sutra/193","title":"Deepen Dart ref classifier to reduce Other fallthrough","status":"done","closed_at":1782412920552}
+{"id":"sutra/194","title":"Stop extracting Other refs across all language parsers","status":"done","closed_at":1782416414512}
+{"id":"sutra/195","title":"Wire field_access refs into resolution and impact analysis","status":"done","closed_at":1782405813793}
+{"id":"sutra/196","title":"Pattern family detection scales poorly on large workspaces","status":"done","closed_at":1782411363346}
+{"id":"sutra/197","title":"Visual architecture map: interactive graph rendering of components and dependencies","status":"done","closed_at":1782484712393}
+{"id":"sutra/198","title":"Persistent orientation artifact: generate a committable architecture summary file","status":"ready-for-human","closed_at":null}
+{"id":"sutra/199","title":"Automatic component inference from graph topology","status":"done","closed_at":1782592883559}
+{"id":"sutra/200","title":"Typed edge labels in the graph layer","status":"done","closed_at":1782749480893}
+{"id":"sutra/201","title":"Surprising connections analysis","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/202","title":"Auto-generated architectural questions","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/203","title":"Import cycle detection at file level","status":"done","closed_at":1782776064035}
+{"id":"sutra/204","title":"Confidence hierarchy on edges","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/205","title":"Graph structural diff between snapshots","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/206","title":"Complement HRR duplicate detection with MinHash/LSH","status":"done","closed_at":1785764449678}
+{"id":"sutra/207","title":"Lessons time-decay and corroboration model","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/208","title":"Spike: verify and fix clustering determinism","status":"done","closed_at":1782560235920}
+{"id":"sutra/209","title":"Spike: hub-node exclusion and community splitting quality","status":"wontfix","closed_at":1782560681098}
+{"id":"sutra/210","title":"Spike: check community connectedness (Leiden necessity test)","status":"wontfix","closed_at":1782560681296}
+{"id":"sutra/211","title":"Replace Louvain with leiden-rs for community detection","status":"done","closed_at":1782561613050}
+{"id":"sutra/212","title":"Spike: CPM vs Modularity quality function for community detection","status":"done","closed_at":1782562714157}
+{"id":"sutra/213","title":"Split oversized communities after Leiden clustering","status":"done","closed_at":1782563172219}
+{"id":"sutra/214","title":"fix clippy warnings","status":"done","closed_at":1783699114624}
+{"id":"sutra/215","title":"Annotate sutra_trace and sutra_deps output with edge types","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/216","title":"sutra_remember: accept bare-string anchors + fix docs/schema drift","status":"done","closed_at":1782765587127}
+{"id":"sutra/217","title":"db-test: migration-count assertions stale (expect 41, actual 43)","status":"done","closed_at":1782774613249}
+{"id":"sutra/218","title":"Modification guard should key on diff content, not file blast radius","status":"done","closed_at":1782775093140}
+{"id":"sutra/219","title":"sutra_constraints bug","status":"done","closed_at":1782997470594}
+{"id":"sutra/220","title":"stale DD engine cycles with resolvable IDs still produce false constraint findings","status":"done","closed_at":1782998309872}
+{"id":"sutra/221","title":"Design: AST-pattern constraints","status":"done","closed_at":1783640394859}
+{"id":"sutra/222","title":"Design: structural template constraints","status":"wontfix","closed_at":1783640842225}
+{"id":"sutra/223","title":"Design: constraint ratchet mode","status":"done","closed_at":1783641353561}
+{"id":"sutra/224","title":"Design: constraint violation messages that teach","status":"ready-for-human","closed_at":null}
+{"id":"sutra/225","title":"Design: guard scope expansion beyond import edges","status":"ready-for-human","closed_at":null}
+{"id":"sutra/226","title":"Structural hashing (AST-based, whitespace/comment-invariant)","status":"done","closed_at":1783952914164}
+{"id":"sutra/227","title":"Rename/move detection in symbol_diff","status":"done","closed_at":1783954626261}
+{"id":"sutra/228","title":"Token-budgeted context packing tool (sutra_context)","status":"done","closed_at":1783958203775}
+{"id":"sutra/229","title":"Entity-level co-change (function granularity)","status":"done","closed_at":1783956616797}
+{"id":"sutra/230","title":"Scope-aware symbol resolution — Phase A: two-tier resolution + Rust scope arena","status":"done","closed_at":1783969495335}
+{"id":"sutra/231","title":"Demolition: remove convention promotion/lifecycle/proposal machinery","status":"done","closed_at":1783518625078}
+{"id":"sutra/232","title":"Demolition: remove drift, template, and waiver subsystems","status":"done","closed_at":1783520475422}
+{"id":"sutra/233","title":"Attribute role typing: identity vs obligation + adapter-declared trivial implications","status":"done","closed_at":1783603117607}
+{"id":"sutra/234","title":"Diff-scoped deviation report in sutra_review","status":"done","closed_at":1783604716181}
+{"id":"sutra/235","title":"Rebuild sutra_orient conventions section on the deviation engine","status":"done","closed_at":1783607200273}
+{"id":"sutra/236","title":"Validate: does the deviation report earn its place?","status":"needs-info","closed_at":null}
+{"id":"sutra/237","title":"Track Rust mod/use statements as import edges","status":"done","closed_at":1783611983315}
+{"id":"sutra/238","title":"no_cycles named constraint never binds: scope dropped from evaluation (matched_file_count.scope always 0)","status":"done","closed_at":1783623680468}
+{"id":"sutra/239","title":"scope_matches_path: literal bracket directories misrouted to glob matching","status":"done","closed_at":1783624178357}
+{"id":"sutra/240","title":"forbidden_pattern kind: rules parsing + query validation","status":"done","closed_at":1783684041450}
+{"id":"sutra/241","title":"Pattern match engine (src/constraints/patterns.rs) + finding location fields","status":"done","closed_at":1783684904375}
+{"id":"sutra/242","title":"Wire pattern checks into check::evaluate + surfaces (review, constraints tool, orient)","status":"done","closed_at":1783686327724}
+{"id":"sutra/243","title":"Guard introduced-only pattern enforcement + justification-gate deny message","status":"done","closed_at":1783686921023}
+{"id":"sutra/244","title":"Review: AST-pattern constraints arc (240-243)","status":"done","closed_at":1783695986132}
+{"id":"sutra/245","title":"Ratchet flags parsing + durable registry + index-time registration","status":"done","closed_at":1783700951076}
+{"id":"sutra/246","title":"ratchet_violation drift detection in check::evaluate + surfaces","status":"done","closed_at":1783701710332}
+{"id":"sutra/247","title":"Guard block on weakening rules.toml edits","status":"done","closed_at":1783702195077}
+{"id":"sutra/248","title":"sutra ratchet CLI: release + list","status":"done","closed_at":1783702463903}
+{"id":"sutra/249","title":"Review: constraint ratchet arc (245-248)","status":"done","closed_at":1783704203337}
+{"id":"sutra/250","title":"Fix pattern constraint review findings (guard fallback leak, deny message, coverage)","status":"done","closed_at":1783693396228}
+{"id":"sutra/251","title":"Audit .clone() calls — waive idiomatic, remove reflexive","status":"done","closed_at":1783698019604}
+{"id":"sutra/252","title":"Design: Rust-module-aware cycle detection","status":"ready-for-human","closed_at":null}
+{"id":"sutra/253","title":"Attention ledger for sutra_context (repeat-fill dedup)","status":"needs-triage","closed_at":null}
+{"id":"sutra/254","title":"Resolver Phase 0: wire parent_symbol_id through to resolution","status":"done","closed_at":1783947124629}
+{"id":"sutra/255","title":"Resolver Phase B: receiver capture + Dart constructor type tracking","status":"done","closed_at":1783971739910}
+{"id":"sutra/256","title":"Resolver Phase C: Python LEGB scope resolution + import aliasing","status":"done","closed_at":1783974244452}
+{"id":"sutra/257","title":"Tool-call telemetry: log MCP tool usage to sutra.db","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/258","title":"Tool surface consolidation — the free merges (37 → ~31)","status":"done","closed_at":1784034799118}
+{"id":"sutra/259","title":"Data-gated tool pruning review (dead/hotspots/winnow, pr_risk/diff_impact, calls/refs/impact)","status":"ready-for-human","closed_at":null}
+{"id":"sutra/260","title":"Tier gating at list_tools level (hide disabled tools from schema surface)","status":"needs-triage","closed_at":null}
+{"id":"sutra/261","title":"Wire C and Python into symbol_diff's language_for_path","status":"done","closed_at":1785765503504}
+{"id":"sutra/262","title":"Disambiguate phase-2 hash matches when multiple symbols share identical bodies","status":"needs-triage","closed_at":null}
+{"id":"sutra/263","title":"Grammar deps + adapter scaffold + registry wiring","status":"done","closed_at":1784567900188}
+{"id":"sutra/264","title":"JavaScript symbol extraction","status":"done","closed_at":1784568785598}
+{"id":"sutra/265","title":"JavaScript reference + import extraction","status":"done","closed_at":1784569790085}
+{"id":"sutra/266","title":"JavaScript scope resolution","status":"done","closed_at":1784570149181}
+{"id":"sutra/267","title":"TypeScript extension layer","status":"done","closed_at":1784571897484}
+{"id":"sutra/268","title":"JS/TS complexity rules + convention patterns","status":"done","closed_at":1784577321530}
+{"id":"sutra/269","title":"JS/TS end-to-end integration + validation","status":"done","closed_at":1784579194868}
+{"id":"sutra/270","title":"Scope resolution: use byte offsets instead of line-only ranges","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/271","title":"JS/TS effect patterns: align with actual ref representation","status":"done","closed_at":1784578056460}
+{"id":"sutra/272","title":"JS/TS FCA: extract language_attrs for toolchain pair matching","status":"done","closed_at":1784578692091}
+{"id":"sutra/273","title":"JS/TS cross-file import resolution","status":"done","closed_at":1784579658151}
+{"id":"sutra/274","title":"tsconfig.json paths/baseUrl import resolution","status":"done","closed_at":1784638715557}
+{"id":"sutra/275","title":"Index .pyi stub files so constraints can reach Python type stubs","status":"done","closed_at":1784732923605}
+{"id":"sutra/276","title":"Surface lessons at the write boundary (guard PreToolUse hook)","status":"done","closed_at":1784735221045}
+{"id":"sutra/277","title":"orient lessons cap applied per-file, not to merged component set","status":"done","closed_at":1784741903906}
+{"id":"sutra/278","title":"Rank surfaced lessons by anchor specificity","status":"done","closed_at":1784742143730}
+{"id":"sutra/279","title":"Categories as a positive retrieval tier for intent-shaped lookup","status":"done","closed_at":1784742736659}
+{"id":"sutra/280","title":"KNOWN_LANGUAGE_CATEGORIES hardcoded to rust/dart — noise in other workspaces","status":"done","closed_at":1784735633900}
+{"id":"sutra/281","title":"Intent-shaped lessons directive in manas-instructions.md","status":"done","closed_at":1784745852609}
+{"id":"sutra/282","title":"Bound the guard lessons path — no unbounded sqlite work on every write","status":"done","closed_at":1784736631903}
+{"id":"sutra/283","title":"guard language_from_path hardcodes rust/dart — import_pattern lessons dead for Python/TS/JS/C","status":"done","closed_at":1784736616690}
+{"id":"sutra/284","title":"Language-tag filter still fails open for alias tags (ts/py/cpp/golang)","status":"done","closed_at":1784744931129}
+{"id":"sutra/285","title":"orient refreshes decay timers for lessons it never emits","status":"done","closed_at":1784744078023}
+{"id":"sutra/286","title":"Semantic invariant store: PRD invariants anchored to symbols","status":"needs-triage","closed_at":null}
+{"id":"sutra/287","title":"sutra-guard deadlock: forbidden_dep blocks the very edit that removes the import","status":"done","closed_at":1785761795661}
+{"id":"sutra/288","title":"sutra_dead: Dart false positives — intra-file references to private symbols not resolved","status":"done","closed_at":1785434767225}
+{"id":"sutra/289","title":"Remove dead ConventionsConfig plumbing left over from the deviation-engine swap","status":"done","closed_at":1785432923724}
+{"id":"sutra/290","title":"forbidden_pattern and no_cycles ignore #[cfg(test)], drowning real signal","status":"done","closed_at":1784994556038}
+{"id":"sutra/291","title":"confined_external is unusable for single-crate packages: manifest is never in allowed_in","status":"done","closed_at":1785008769697}
+{"id":"sutra/292","title":"Test-scope detection misses Rust tests/*.rs and all Dart test code","status":"done","closed_at":1785005956198}
+{"id":"sutra/293","title":"cfg detection false negatives and missing is_test backfill mute blocking rules","status":"done","closed_at":1784995990802}
+{"id":"sutra/294","title":"Test-scope exclusion misses production self-loops and external-crate constraints","status":"done","closed_at":1784996750406}
+{"id":"sutra/295","title":"Wire Python/C/JS-TS test-file detection into constraint test-scope exclusion","status":"done","closed_at":1785006503016}
+{"id":"sutra/296","title":"Test-directed escape hatch is missing from dep, cycle and external constraint evaluation","status":"done","closed_at":1785008063854}
+{"id":"sutra/297","title":"forbidden_dep violations stop being reported after the first query in a server session","status":"done","closed_at":1785078356271}
+{"id":"sutra/298","title":"Constraint evaluation reads files and edges across separate snapshots — coherence gap under concurrent reparse","status":"done","closed_at":1785086587468}
+{"id":"sutra/299","title":"DdEngine driven concurrently with file-id reminting hangs the reparse thread in an unbounded SQLite write loop","status":"wontfix","closed_at":1785088129420}
+{"id":"sutra/300","title":"Parse lock overloaded by 298: parsing_in_progress reports evaluators; serialization fix has no CI regression","status":"done","closed_at":1785089172894}
+{"id":"sutra/301","title":"Guard's rules.toml edit-path drops all_constraints parse errors","status":"done","closed_at":1785436676764}
+{"id":"sutra/302","title":"Dart dead-analysis: identifier_list self-reference + LIKE underscore over-match (sutra/288 follow-up)","status":"done","closed_at":1785436067625}
+{"id":"sutra/303","title":"Make constraint waivers portable / version-controllable","status":"done","closed_at":1786206443722}
+{"id":"sutra/304","title":"Reduce builtin cycle-detector noise (idiomatic mod.rs re-export cycles)","status":"done","closed_at":1786200679245}
+{"id":"sutra/305","title":"Explore instance-based (per-match) constraint waivers","status":"done","closed_at":1786123693226}
+{"id":"sutra/306","title":"Surface acked instances on sutra_review and orient (transparency parity with violations)","status":"done","closed_at":1786125194747}
+{"id":"sutra/307","title":"Cycle detection: subtract only pure-mod edges, not any pair carrying a mod declaration","status":"done","closed_at":1786201354398}
+{"id":"sutra/308","title":"Wire accepted.toml freshness gate + rewire MCP write actions (sutra/303 integration)","status":"done","closed_at":1786206088699}
+{"id":"sutra/309","title":"Document accepted.toml freshness gate in constraints-map.md","status":"done","closed_at":1786206382650}
+{"id":"sutra/310","title":"Harden accepted.toml mutations: reject nameless waive, atomic write, file lock","status":"in-progress","closed_at":null}
+{"id":"sutra/needs-designing/1","title":"Design: sutra_plan_refactoring","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/2","title":"Design: sutra_dupes — clone detection","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/3","title":"Design: sutra_boundaries — architectural-zone enforcement","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/4","title":"Design: sutra_search_ast — structural pattern matching","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/5","title":"Design: sutra_refactor_targets — ranked recommendations","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/6","title":"Design: compact wire format (MUNCH-style)","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/7","title":"Structural motif discovery over the symbol/call/import graph","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/8","title":"HDC AST encoding experiment for structural code search","status":"done","closed_at":1778360037385}
+{"id":"sutra/needs-designing/9","title":"HDC design decision: practical evaluation for binary MAP vs HRR vs hybrid","status":"done","closed_at":1778360058486}
+{"id":"sutra/needs-designing/10","title":"PRD: HRR structural search integration into sutra","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/11","title":"Function-level structural diffs in diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/12","title":"Thread callee graph into diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/13","title":"Before/after snapshots and per-commit manifests","status":"wontfix","closed_at":null}
+{"id":"sutra/needs-designing/14","title":"External-crate dependency constraints — forbidden_external kind","status":"done","closed_at":1781166295583}
+{"id":"sutra/needs-designing/15","title":"Multi-crate Cargo workspace import resolution — cross-crate edges never resolve","status":"done","closed_at":1781200575594}
+{"id":"sutra/simple-additions/1","title":"Per-result freshness + confidence signals","status":"done","closed_at":1778233384829}
+{"id":"sutra/simple-additions/2","title":"sutra_winnow — multi-axis composite query","status":"done","closed_at":1778233941078}
+{"id":"sutra/simple-additions/3","title":"sutra_trend — snapshot diff + aggregate metrics","status":"done","closed_at":1778235260604}
+{"id":"sutra/simple-additions/4","title":"sutra_pr_risk — branch risk profile","status":"done","closed_at":1778235954570}
+{"id":"sutra/simple-additions/5","title":"sutra_signal_chains / sutra_trace — entry-point traversal","status":"done","closed_at":1778236637511}
+{"id":"sutra/simple-additions/6","title":"sutra_provenance — git archaeology per symbol","status":"done","closed_at":1778236267614}
+{"id":"sutra/simple-additions/7","title":"Warn on constraints whose globs match zero files (dead constraint detection)","status":"done","closed_at":1781190490444}
+{"id":"sutra/simple-additions/8","title":"max_fan_in constraints are parsed but never evaluated","status":"done","closed_at":1781190489728}
+{"id":"sutra/v1/1","title":"Spike: HRR semantic & temporal binding","status":"done","closed_at":1778502867421}
+{"id":"sutra/v1/2","title":"Spike: differential dataflow for structured reasoning","status":"done","closed_at":1778505448795}
+{"id":"sutra/v1/3","title":"Spike: formal concept analysis for convention detection","status":"done","closed_at":1778508848517}
+{"id":"sutra/v1/4","title":"Spike: Salsa incremental computation (boundary-finding)","status":"done","closed_at":1778509758661}
+{"id":"sutra/v1/5","title":"PRD: sutra v1 — review intelligence engine","status":"done","closed_at":1778706546681}
+{"id":"sutra/v1/6","title":"Schema migration runner","status":"done","closed_at":1778608976075}
+{"id":"sutra/v1/7","title":"Diagnostics module + retrofit existing tools","status":"done","closed_at":1778609620286}
+{"id":"sutra/v1/8","title":"DD engine: cycle detection + lazy population + eviction","status":"done","closed_at":1778611760637}
+{"id":"sutra/v1/9","title":"DD: blast-radius rollups","status":"done","closed_at":1778619944902}
+{"id":"sutra/v1/10","title":"DD: forbidden deps + rules.toml [constraints]","status":"done","closed_at":1778620389886}
+{"id":"sutra/v1/11","title":"FCA: convention extraction + persistence","status":"done","closed_at":1778670658930}
+{"id":"sutra/v1/12","title":"FCA: convention checking + suppressions","status":"done","closed_at":1778671570598}
+{"id":"sutra/v1/13","title":"sutra_review: structural core","status":"done","closed_at":1778677185779}
+{"id":"sutra/v1/14","title":"sutra_review: integrate DD + FCA findings","status":"done","closed_at":1778678492886}
+{"id":"sutra/v1/15","title":"sutra_help with recipes","status":"done","closed_at":1778688640872}
+{"id":"sutra/v1/16","title":"Fix codex review findings for tasks 6, 7, 8","status":"done","closed_at":null}
+{"id":"sutra/v1/17","title":"FCA: file-qualified symbol identity in convention checking","status":"done","closed_at":1778672097068}
+{"id":"sutra/v1/18","title":"sutra_review: fix codex review findings","status":"done","closed_at":1778679331296}
+{"id":"sutra/v1/19","title":"Daemon: hot-reload workspaces + fix registration timeout","status":"done","closed_at":1778681431274}
+{"id":"sutra/v1/20","title":"Fix hardcoded \"main\" in review branch diff mode","status":"done","closed_at":1778690464542}
+{"id":"sutra/v1/21","title":"Clean up stale spike entries and add deleted-file pruning","status":"done","closed_at":1778690576473}
+{"id":"sutra/v1/22","title":"Pre-release cleanup: cargo fmt, version string, help text accuracy","status":"done","closed_at":1778690403736}
+{"id":"sutra/v1/23","title":"Wire FCA convention persistence into production path","status":"done","closed_at":1778691104238}
+{"id":"sutra/v1/24","title":"Daemon-resident DD engine with incremental updates","status":"done","closed_at":1778691843479}
+{"id":"sutra/v1/25","title":"Add per-entry freshness to sutra_review responses","status":"done","closed_at":1778698020903}
+{"id":"sutra/v1/26","title":"Extract shared risk scoring module from pr_risk and review","status":"done","closed_at":1778698854216}
+{"id":"sutra/v1/27","title":"Split Db into migrations layer and query facades","status":"done","closed_at":1778705350870}
+{"id":"sutra/v1/28","title":"Guard binary consolidation","status":"done","closed_at":1778705634716}
+{"id":"sutra/v1/29","title":"FCA scaling cap, DD accumulator hardening, and slop cleanup","status":"done","closed_at":1778705915801}
+{"id":"sutra/v1/30","title":"Fix stale DD engine race: shared engine ignores fresh edges after reparse","status":"done","closed_at":1778692690004}

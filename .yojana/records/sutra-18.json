@@ -1,0 +1,84 @@
+{
+  "id": "019e087a-cb36-7793-b47e-f9b4f8fed57e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/18",
+  "sequence_number": 18,
+  "title": "Fix sutra_dead auto-exclusion for test helpers and integration test files",
+  "description": "sutra/13 added auto-exclusion for #[test] functions and #[cfg(test)] modules, but integration test files (tests/*.rs) and helper functions within test files/modules still appear in dead output. Three tool-side fixes available.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Exclude all symbols from integration test files (tests/*.rs) from sutra_dead output"
+    },
+    {
+      "done": false,
+      "text": "Propagate cfg(test) flags to child items — helper fns inside #[cfg(test)] mod tests should be excluded"
+    },
+    {
+      "done": false,
+      "text": "Non-#[test] helper functions in test files (setup_db, make_config, sym) excluded via file-level exclusion"
+    },
+    {
+      "done": false,
+      "text": "MCP-registered tool handlers remain a pack-side filtering concern (not a sutra fix)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "15ddd7e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-checkpoint"
+  ],
+  "history": [
+    {
+      "ts": 1778258725686,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 18
+      }
+    },
+    {
+      "ts": 1778258737131,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778259175171,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778259450428,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778258725686,
+  "updated_at": 1778259450428,
+  "completed_at": 1778259450428,
+  "edges": []
+}

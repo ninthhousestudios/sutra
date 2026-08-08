@@ -1,0 +1,136 @@
+{
+  "id": "019f8040-2d0e-7723-97dd-a28de5bdbbbf",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/264",
+  "sequence_number": 264,
+  "title": "JavaScript symbol extraction",
+  "description": "Implement symbol extraction in `src/parser/javascript.rs`. This is the core of JS parsing — extracting all named definitions from JavaScript source files using the tree-sitter-javascript grammar.\n\nSymbol kinds to extract (mapped to sutra's SymbolKind enum):\n- `function_declaration` → Function\n- `arrow_function` (when assigned to named variable/const) → Function  \n- `generator_function_declaration` → Function\n- `class_declaration` → Class\n- `method_definition` → Method (including get/set accessors → Method)\n- `field_definition` → Field (class fields)\n- `variable_declarator` (const/let/var with identifier) → Variable/Constant\n- `export_statement` wrapping any of the above → affects visibility\n- Nested functions/classes maintain qualified names via name_context\n\nExtraction details per symbol:\n- **qualified_name**: Build from name_context stack (e.g., `ClassName::methodName`, `outerFn::innerFn`)\n- **visibility**: `\"export\"` if wrapped in export_statement, `\"export default\"` for default exports, None otherwise\n- **signature**: For functions: `(param1, param2, ...param3) => returnType` or `function(params)`. For classes: None. For methods: `methodName(params)`.\n- **docstring**: Extract JSDoc comments (block comments starting with `/**`) immediately preceding the node\n- **language_attrs**: JSON object with relevant flags — `{\"async\": true}`, `{\"generator\": true}`, `{\"arrow\": true}`, `{\"computed\": true}` for computed property names\n- **flags**: FLAG_TEST (0x1) for functions inside `describe`/`it`/`test`/`beforeEach`/`afterEach` call expressions\n- **cyclomatic/cognitive/max_nesting**: Call shared `complexity::cyclomatic/cognitive/max_nesting` with lang=\"javascript\" (complexity rules added in task 6, but the call site goes here)\n- **structural_hash**: Call shared `structural_hash::compute`\n\nReference patterns: follow `src/parser/rust.rs::collect_symbols_inner` and `src/parser/python.rs` for the recursive tree walk pattern with name_context accumulation.\n\nDesign note: The extraction logic in javascript.rs should be structured so typescript.rs can reuse it. Make `collect_symbols` and helper functions `pub(super)` so the typescript module can call into them, extending with TS-specific node kinds.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "function_declaration, arrow_function, generator_function extracted as Function kind"
+    },
+    {
+      "done": false,
+      "text": "class_declaration extracted as Class kind with nested method/field children"
+    },
+    {
+      "done": false,
+      "text": "method_definition (including getters/setters) extracted as Method kind"
+    },
+    {
+      "done": false,
+      "text": "variable_declarator extracted as Variable kind with const/let/var distinction in language_attrs"
+    },
+    {
+      "done": false,
+      "text": "export/export default correctly sets visibility"
+    },
+    {
+      "done": false,
+      "text": "Qualified names built correctly for nested classes/functions"
+    },
+    {
+      "done": false,
+      "text": "JSDoc comments extracted as docstrings"
+    },
+    {
+      "done": false,
+      "text": "language_attrs captures async, generator, arrow, computed flags"
+    },
+    {
+      "done": false,
+      "text": "FLAG_TEST set for symbols inside describe/it/test calls"
+    },
+    {
+      "done": false,
+      "text": "structural_hash computed for all extracted symbols"
+    },
+    {
+      "done": false,
+      "text": "collect_symbols and key helpers are pub(super) for typescript.rs reuse"
+    },
+    {
+      "done": false,
+      "text": "Tests cover each symbol kind with at least one case"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Used &[&str] for name_context (not &[String]) to avoid clone-driven-dev violations — &str refs are Copy so extending the context stack requires no heap allocation. Complexity wiring calls through to the shared module with lang=\\\"javascript\\\" but the complexity module doesn't have JS-specific node kind branches yet (returns 1/0/0) — that's task 6 in the arc. SymbolKind::Variable doesn't exist; used Const for const declarations and Static for let/var, matching Python's pattern.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "07147cb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563117326,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 264
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784567962043,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784568785598,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review (verdict: needs-attention). Three findings:\n1. [high] TS stub silently produces zero symbols — accepted risk, TS extraction is a later task and adapter won't be used until full arc lands.\n2. [high] Named export clauses (`export { foo }`) ignored — FIXED in e4a3396.\n3. [medium] JSDoc lost for exported declarations — FIXED in e4a3396.",
+      "ts": 1784569312222
+    }
+  ],
+  "created_at": 1784563117326,
+  "updated_at": 1784568785598,
+  "completed_at": 1784568785598,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "js-core",
+  "edges": [
+    {
+      "id": "019f8042-1b77-7b31-bff5-eb645e2a3c0f",
+      "edge_type": "depends_on",
+      "source": "sutra/264",
+      "target": "sutra/263",
+      "note": null,
+      "created_at": 1784563243895
+    },
+    {
+      "id": "019f8042-1cb7-7032-8d1d-003da1ebdbca",
+      "edge_type": "depends_on",
+      "source": "sutra/265",
+      "target": "sutra/264",
+      "note": null,
+      "created_at": 1784563244215
+    }
+  ]
+}

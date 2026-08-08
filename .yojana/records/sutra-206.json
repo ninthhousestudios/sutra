@@ -1,0 +1,104 @@
+{
+  "id": "019f0609-2aa7-7501-94fd-d2263757a0e1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/206",
+  "sequence_number": 206,
+  "title": "Complement HRR duplicate detection with MinHash/LSH",
+  "description": "## Problem\n\nSutra's duplicate detection uses HRR (Holographic Reduced Representations) — vector embeddings of function AST structure with cosine similarity. This catches structural clones (same AST shape, different names) but misses name-based near-duplicates and doesn't have a pre-filtering step to avoid O(n^2) comparisons at scale.\n\n## Prior art: graphify\n\n`graphify/dedup.py` + `graphify/_minhash.py` use a five-stage pipeline:\n1. **Exact normalization** — Unicode NFKC, casefold, collapse non-alnum to spaces\n2. **Entropy gate** — skip labels with Shannon entropy <2.5 bits/char (prevents merging `M1`/`M2`)\n3. **MinHash/LSH blocking** — 128 permutations, 3-gram shingles, 0.7 threshold for candidate pairs\n4. **Jaro-Winkler verification** — merge if >=92.0 normalized similarity\n5. **Union-find merge** with edge rewiring\n\nNotable: code nodes are explicitly excluded from fuzzy merging (qualified IDs already encode identity). Short-label blocking and numeric-token-difference detection prevent false positives.\n\n`_minhash.py` is a datasketch-compatible drop-in without scipy, using Mersenne-prime permutation families.\n\nReference: `graphify/dedup.py`, `graphify/_minhash.py`\n\n## What to build\n\nAdd MinHash/LSH as a candidate-pair pre-filter for `sutra_duplicates`, complementing the existing HRR approach. This would improve scalability (LSH is sub-quadratic) and catch a different class of duplicates (name-similar but structurally divergent functions).\n\n## Design work needed\n\n**Minimal for the algorithm, moderate for integration.** The MinHash/LSH algorithm is well-understood and graphify provides a clean reference implementation. Integration decisions: whether to run LSH as a pre-filter before HRR (reducing the comparison space) or as a parallel detection mode (catching different clone types). The entropy gate and short-label blocking are cheap pre-filters worth porting regardless.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Parallel detection mode, not pre-filter",
+      "rationale": "MinHash name-similarity and SimHash HRR-similarity produce different candidate sets with different semantics — merging them via union-find across heterogeneous metrics would create families whose members aren't all similar by either metric",
+      "rejected_alternative": "Run MinHash as pre-filter before HRR to reduce comparison space"
+    },
+    {
+      "decision": "Sørensen-Dice coefficient for verification, not Jaro-Winkler",
+      "rationale": "Dice is naturally computable from the shingle sets already built for MinHash, avoids adding a string-distance crate dependency, and has no prefix bonus bias",
+      "rejected_alternative": "Jaro-Winkler (graphify's approach) — adds dependency and requires cross-file/short-label mitigations"
+    },
+    {
+      "decision": "Qualified name with immediate parent, not bare name",
+      "rationale": "Bare names produce too many false positives (many unrelated functions named process/handle/build); full paths are too specific. Parent::name balances specificity",
+      "rejected_alternative": "Full qualified path or bare function name"
+    },
+    {
+      "decision": "Present families separately with detection tag, not merged",
+      "rationale": "A structural clone pair and a name-similar pair sharing one member would merge into a family whose members aren't all similar by either metric — the consumer can spot cross-mode overlap",
+      "rejected_alternative": "Union-find merge across both detection modes"
+    },
+    {
+      "decision": "handle_duplicates only, not handle_similar",
+      "rationale": "handle_similar is single-symbol structural query — adding name-similarity there is a different feature (fuzzy symbol search), orthogonal to this task",
+      "rejected_alternative": "Add name-similarity mode to handle_similar as well"
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Migration 0057 initially set ephemeral_only=false, causing the determinism_same_tree_same_vector test to fail: reindex() drops ephemeral pattern_families table and deletes its migration record, but the ALTER TABLE migration record survived (not ephemeral), so the column was never re-added after table recreation. Fixed by setting ephemeral_only=true since the migration modifies an ephemeral table.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/graphify/graphify/dedup.py",
+      "label": "graphify dedup pipeline"
+    },
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/graphify/graphify/_minhash.py",
+      "label": "graphify MinHash implementation"
+    },
+    {
+      "type": "git:commit",
+      "value": "c764f26"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "graphify-informed"
+  ],
+  "history": [
+    {
+      "ts": 1782512691879,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 206
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785763156994,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785764449678,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (verdict: needs-attention). Four findings, all fixed in 75570e8:\\n1. [high] Oversized LSH buckets silently dropped — fixed: truncate instead of skip\\n2. [high] No complete-link pruning on name families — fixed: ported pruning loop from structural detection\\n3. [medium] Tool threshold ignored for name detection — fixed: pass through\\n4. [medium] Byte-window shingles broke Unicode — fixed: use char indices\"",
+      "ts": 1785765169109
+    }
+  ],
+  "created_at": 1782512691879,
+  "updated_at": 1785764449678,
+  "completed_at": 1785764449678,
+  "edges": []
+}

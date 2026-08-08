@@ -1,0 +1,83 @@
+{
+  "id": "019f8a79-589a-7d31-93b1-6509a810093d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/277",
+  "sequence_number": 277,
+  "title": "orient lessons cap applied per-file, not to merged component set",
+  "description": "src/tools/orient.rs:579-603 loops every file in a component, calls query_for_context per file, and dedupes into comp_lessons. But CONTEXT_SURFACING_CAP = 10 (src/lessons.rs:441) is applied INSIDE each per-file call. The merged component set is never capped.\n\nA component with many files and directory-anchored lessons can therefore emit far more than 10 lessons into the orient response. This must be fixed before pushing agents toward orient more aggressively, or increased orient usage makes the token problem worse.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Component orient section emits at most the cap regardless of file count"
+    },
+    {
+      "done": false,
+      "text": "omitted count reflects the merged total, not a per-file total"
+    },
+    {
+      "done": false,
+      "text": "Regression test with a directory-anchored lesson across a multi-file component"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Dedupe across all component files first, then apply a single cap to the merged set with an accurate omitted count in the section. Consider a lower cap for orient than for single-symbol surfacing, since orient is inherently broader.",
+  "execution_record": "Extracting the body into query_for_context_capped tripped the no-clone-driven-dev guard: two pre-existing `id.clone()` calls moved into a newly-named symbol and read as new violations. Waived symbol-scoped (waiver 147) rather than restructuring — the id String is genuinely owned twice (seen HashSet key + matched_anchors map key). Orient passes usize::MAX per file so the merged total is honest; accepted trade is that last_surfaced bookkeeping marks lessons orient then drops at its own cap, same trade the guard already makes with GUARD_LESSON_CAP.",
+  "reproduction": null,
+  "root_cause": "The cap lived inside query_for_context, a per-context primitive, while orient's unit of output is a whole component. Orient's loop over component files made N capped calls and merged the results, so the cap bounded each call but nothing bounded the union — and each call's `omitted` was a per-file number orient discarded rather than aggregating.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "7bec06d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "orient",
+    "tokens"
+  ],
+  "history": [
+    {
+      "ts": 1784734636186,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 277
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784741898390,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784741903906,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review (vidhi-review, f114fa5..45eaaee): verdict needs-attention, one medium finding against this task — orient's usize::MAX query refreshed last_surfaced for the whole candidate set, including lessons dropped by ORIENT_LESSON_CAP, keeping them unarchivable via archive_decayed's recency exemption. The trade documented on close (\"same as GUARD_LESSON_CAP\") was wrong in kind: bounded 10-to-2 vs an unbounded candidate set. Fixed in sutra/285 (commit 50e8780). sutra/278 and sutra/279 drew no findings; codex confirmed the search bind arithmetic and the no-query path's contract parity.",
+      "ts": 1784744084665
+    }
+  ],
+  "created_at": 1784734636186,
+  "updated_at": 1784741903906,
+  "completed_at": 1784741903906,
+  "edges": []
+}

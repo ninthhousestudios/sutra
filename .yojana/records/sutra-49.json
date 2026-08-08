@@ -1,0 +1,89 @@
+{
+  "id": "019e7f84-c405-75e0-a82a-2cf0128b9dff",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/49",
+  "sequence_number": 49,
+  "title": "5b-5: concept density metric",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nCompute concept density per component as a review-prioritization signal. v1 metric from Layer 0 data: `(unique_symbol_kinds × naming_stem_diversity) / LOC`. High density = conceptually varied code needing more review attention. Low density = repetitive handlers, lighter review. Store per component, include in component listing output.\n\n## Acceptance criteria\n\n- [ ] Concept density computed as (unique_symbol_kinds × naming_stem_diversity) / LOC per component\n- [ ] Naming stem diversity extracted from symbol names (strip common prefixes/suffixes, count unique stems)\n- [ ] Density included in sutra_components output\n- [ ] Test: known symbol distribution → expected density score (high for diverse, low for repetitive)\n\n## Blocked by\n\n- sutra/45 (5b-1: basic component discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Concept density computed as (unique_symbol_kinds × naming_stem_diversity) / LOC per component"
+    },
+    {
+      "done": false,
+      "text": "Naming stem diversity extracted from symbol names (strip common prefixes/suffixes, count unique stems)"
+    },
+    {
+      "done": false,
+      "text": "Density included in sutra_components output"
+    },
+    {
+      "done": false,
+      "text": "Test: known symbol distribution → expected density score (high for diverse, low for repetitive)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780255867909,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 49
+      }
+    },
+    {
+      "ts": 1780322158837,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780324199961,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, tasks 49/50/51):\\n\\n- [medium] Concept density is computed from anchor-only subset, not all symbols in the component. Drops kinds like module, impl, macro, class, mixin.\\n- [medium] Stem extraction does not strip common prefixes/suffixes as specified in AC. Shared tokens like 'handle' inflate diversity.\"",
+      "ts": 1780323781409
+    }
+  ],
+  "created_at": 1780255867909,
+  "updated_at": 1780324199961,
+  "completed_at": 1780324199961,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-2dd1-7d83-8da0-95f36c2f2342",
+      "edge_type": "depends_on",
+      "source": "sutra/49",
+      "target": "sutra/45",
+      "note": null,
+      "created_at": 1780255894993
+    }
+  ]
+}

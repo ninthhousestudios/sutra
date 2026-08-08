@@ -1,0 +1,127 @@
+{
+  "id": "019ece4b-08e0-7022-bff6-e7dd79ffb403",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/153",
+  "sequence_number": 153,
+  "title": "File glob + import pattern + directory anchor matching",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nExtend anchor matching beyond exact symbol name to support file globs, import patterns, and directory globs. The `MatchContext` gains a file path and imports list. The anchor matching engine resolves lessons whose anchors match any of these dimensions.\n\nMatching mechanisms:\n- **File glob**: `anchors.kind = 'file'`, `anchors.value` is a glob pattern matched against the context file path. Use the `glob` crate (already a dependency).\n- **Import pattern**: `anchors.kind = 'import'`, `anchors.value` matched against `ImportRow.imported_path` strings for the context file. E.g., `rusqlite` matches any file importing rusqlite.\n- **Directory glob**: `anchors.kind = 'directory'`, `anchors.value` is a directory glob matched against the context file path. E.g., `crates/sutra-core/src/extract/**`.\n\nThe `sutra_read` injection (from sutra/151) already builds a MatchContext — this slice enriches it with file path and imports, and the matching engine handles the new anchor kinds.\n\n## Acceptance criteria\n\n- [ ] Lessons with file glob anchors match files whose paths match the glob\n- [ ] Lessons with import pattern anchors match files that import a matching path\n- [ ] Lessons with directory glob anchors match files under the matching directory\n- [ ] Multiple anchor kinds on one lesson use OR semantics (any match surfaces the lesson)\n- [ ] MatchContext populated with file path and imports from workspace DB in sutra_read\n- [ ] Tests: glob matching, import pattern matching, directory matching, multi-anchor OR, no false positives on non-matching contexts\n\n## Blocked by\n\n- sutra/152 — 5x-review-1",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Lessons with file glob anchors match files whose paths match the glob"
+    },
+    {
+      "done": false,
+      "text": "Lessons with import pattern anchors match files that import a matching path"
+    },
+    {
+      "done": false,
+      "text": "Lessons with directory glob anchors match files under the matching directory"
+    },
+    {
+      "done": false,
+      "text": "Multiple anchor kinds on one lesson use OR semantics (any match surfaces the lesson)"
+    },
+    {
+      "done": false,
+      "text": "MatchContext populated with file path and imports from workspace DB in sutra_read"
+    },
+    {
+      "done": false,
+      "text": "Tests: glob matching, import pattern matching, directory matching, multi-anchor OR, no false positives"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nExpand `query_for_context` from symbol-only exact matching to a two-phase query: exact symbol match (fast, indexed) + Rust-side glob evaluation for file/import/directory anchors. Introduce a `MatchContext` struct to carry the file path and imports from the workspace DB into the matching logic. This avoids SQL-side glob evaluation (SQLite has no glob index) and keeps the anchors table scan bounded — lesson counts are agent-scale (dozens–hundreds), not data-scale.\n\n## Files\n\n- **Modify**: `src/lessons.rs` (lines ~170-225) — add `MatchContext` struct, rewrite `query_for_context` to accept it and implement file/import/directory matching\n- **Modify**: `src/tools/read.rs` (lines ~167-173) — populate `MatchContext` from workspace DB before calling `query_for_context`\n- **Test**: `tests/lessons-test.rs` — add tests for glob, import, directory matching, multi-anchor OR, false positive guards\n\n## Steps\n\n### Step 1: Add `MatchContext` struct to `src/lessons.rs`\n\nPlace it in the Query section (~line 170) alongside `SurfacedLesson`.\n\n```rust\npub struct MatchContext<'a> {\n    pub symbol_name: &'a str,\n    pub file_path: Option<&'a str>,\n    pub imports: &'a [String],\n    pub project: Option<&'a str>,\n}\n```\n\n`file_path` is `Option` because the read handler already has it from the resolved `FileRow.path`. `imports` is a slice of import paths extracted from the workspace DB via `Db::imports_for_file`. `project` absorbs the existing `project: Option<&str>` parameter.\n\n### Step 2: Rewrite `query_for_context` to accept `MatchContext`\n\nChange signature from `(&self, symbol_name: &str, project: Option<&str>)` to `(&self, ctx: &MatchContext<'_>)`.\n\nInternally, two phases:\n\n**Phase 1 — Symbol match (existing, refined):**\nKeep the existing indexed query `WHERE a.kind = 'symbol' AND a.value = ?1` but also check the short name (last `::` segment of `ctx.symbol_name`) to handle the review finding from sutra/152. Run two queries or use `OR a.value = ?2`.\n\n```rust\n// Extract short name: \"LessonsDb::query_for_context\" -> \"query_for_context\"\nlet short_name = ctx.symbol_name.rsplit(\"::\").next().unwrap_or(ctx.symbol_name);\nlet has_qualifier = short_name != ctx.symbol_name;\n\n// Query: match by qualified name OR short name (if different)\nlet sql = \"SELECT DISTINCT l.id, l.text, l.verified, l.confidence,\n                  l.project_origin, l.created_at\n           FROM lessons l\n           JOIN anchors a ON a.lesson_id = l.id\n           WHERE a.kind = 'symbol' AND (a.value = ?1 OR (?3 AND a.value = ?2))\n             AND l.archived = 0\n             AND (l.project_origin IS NULL OR l.project_origin = ?4 OR ?4 IS NULL)\n           ORDER BY l.verified DESC, l.confidence DESC\";\n// params: [qualified_name, short_name, has_qualifier, project]\n```\n\n**Phase 2 — File/import/directory match (new):**\nLoad all non-symbol anchors for non-archived, project-scoped lessons, then filter in Rust:\n\n```rust\nlet sql = \"SELECT l.id, l.text, l.verified, l.confidence,\n                  l.project_origin, l.created_at, a.kind, a.value\n           FROM lessons l\n           JOIN anchors a ON a.lesson_id = l.id\n           WHERE a.kind IN ('file', 'import_pattern', 'directory')\n             AND l.archived = 0\n             AND (l.project_origin IS NULL OR l.project_origin = ?1 OR ?1 IS NULL)\";\n```\n\nThen for each row, test:\n- `kind = 'file'`: `glob::Pattern::new(anchor_value)?.matches(file_path)`\n- `kind = 'import_pattern'`: any import path matches `glob::Pattern::new(anchor_value)?`\n- `kind = 'directory'`: `file_path.starts_with(normalized_dir)` where normalized_dir ensures a trailing `/` (or use glob with appended `/**`)\n\nCollect matching lesson IDs, deduplicate against Phase 1 results, combine.\n\n```rust\nfn matches_anchor(kind: &str, value: &str, ctx: &MatchContext<'_>) -> bool {\n    match kind {\n        \"file\" => {\n            let Some(fp) = ctx.file_path else { return false };\n            glob::Pattern::new(value).map(|p| p.matches(fp)).unwrap_or(false)\n        }\n        \"import_pattern\" => {\n            let Ok(pat) = glob::Pattern::new(value) else { return false };\n            ctx.imports.iter().any(|imp| pat.matches(imp))\n        }\n        \"directory\" => {\n            let Some(fp) = ctx.file_path else { return false };\n            let dir = value.trim_end_matches('/');\n            fp.starts_with(dir) && fp.as_bytes().get(dir.len()) == Some(&b'/')\n        }\n        _ => false,\n    }\n}\n```\n\n**Combine & deduplicate:**\nUse a `HashSet<String>` of seen IDs. Phase 1 results go in first; Phase 2 results skip already-seen IDs.\n\n**Update last_surfaced** on the combined set (existing behavior).\n\n### Step 3: Update call site in `src/tools/read.rs`\n\nIn the `handle` function (line ~167-173), populate `MatchContext` before calling `query_for_context`:\n\n```rust\nif let Some(ldb) = lessons_db {\n    let project_slug = workspace_root.file_name().and_then(|n| n.to_str());\n    let import_paths: Vec<String> = db\n        .imports_for_file(sym.file_id)\n        .unwrap_or_default()\n        .into_iter()\n        .map(|i| i.imported_path)\n        .collect();\n    let ctx = MatchContext {\n        symbol_name: &sym.qualified_name,\n        file_path: Some(&file.path),\n        imports: &import_paths,\n        project: project_slug,\n    };\n    let lessons = ldb.query_for_context(&ctx)?;\n    if !lessons.is_empty() {\n        result[\"lessons\"] = serde_json::to_value(&lessons).unwrap_or_default();\n    }\n}\n```\n\n### Step 4: Add tests to `tests/lessons-test.rs`\n\nSix new tests:\n\n1. **`file_glob_matches_path`**: Store lesson with `(File, \"src/db/*.rs\")`, query with context `file_path = \"src/db/mod.rs\"` → match. Query with `file_path = \"src/tools/read.rs\"` → no match.\n\n2. **`import_pattern_matches_imports`**: Store lesson with `(ImportPattern, \"rusqlite::*\")`, query with imports `[\"rusqlite::params\", \"serde_json::json\"]` → match. Query with imports `[\"serde_json::json\"]` → no match.\n\n3. **`directory_anchor_matches_files_under_dir`**: Store lesson with `(Directory, \"src/db\")`, query with `file_path = \"src/db/mod.rs\"` → match. `file_path = \"src/tools/read.rs\"` → no match. `file_path = \"src/dba/foo.rs\"` → no match (no false prefix).\n\n4. **`multi_anchor_or_semantics`**: Store lesson with `[(Symbol, \"nonexistent\"), (File, \"src/*.rs\")]`, query with symbol `\"other\"` and file_path `\"src/main.rs\"` → match (OR: file glob hits even though symbol misses).\n\n5. **`no_false_positives_across_kinds`**: Store lessons with anchors that look similar but shouldn't match the query context. Verify zero results.\n\n6. **`symbol_short_name_match`**: Store lesson with `(Symbol, \"query_for_context\")`, query with `symbol_name = \"LessonsDb::query_for_context\"` → match (short name fallback).\n\nTests will construct `MatchContext` directly and call `query_for_context` — no workspace DB needed since LessonsDb is independent.\n\n## Acceptance criteria coverage\n\n- [x] \"Lessons with file glob anchors match files whose paths match the glob\" → Step 2 (file matching) + Step 4 test 1\n- [x] \"Lessons with import pattern anchors match files that import a matching path\" → Step 2 (import matching) + Step 4 test 2\n- [x] \"Lessons with directory glob anchors match files under the matching directory\" → Step 2 (directory matching) + Step 4 test 3\n- [x] \"Multiple anchor kinds on one lesson use OR semantics (any match surfaces the lesson)\" → Step 2 (deduplicated union) + Step 4 test 4\n- [x] \"MatchContext populated with file path and imports from workspace DB in sutra_read\" → Step 1 (struct) + Step 3 (populated in read handler)\n- [x] \"Tests: glob matching, import pattern matching, directory matching, multi-anchor OR, no false positives\" → Step 4 (all 6 tests)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "002b8ae"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "needs-plan",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577484512,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 153
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781662698678,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781662941824,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review finding from sutra/152: sutra_read queries lessons by sym.qualified_name only, but agents may store anchors using short names. When implementing anchor matching, ensure both qualified_name and short_name are checked (or normalize at write time).",
+      "ts": 1781620431402
+    }
+  ],
+  "created_at": 1781577484512,
+  "updated_at": 1781662941824,
+  "completed_at": 1781662941824,
+  "edges": [
+    {
+      "id": "019ece4b-98cd-7912-92ea-0a9d1f0ea676",
+      "edge_type": "depends_on",
+      "source": "sutra/153",
+      "target": "sutra/152",
+      "note": null,
+      "created_at": 1781577521357
+    },
+    {
+      "id": "019ece4b-a5fc-7200-a594-97ca95becdab",
+      "edge_type": "motivated_by",
+      "source": "sutra/153",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577524732
+    },
+    {
+      "id": "019ece4b-fed6-76e2-9786-f7b467137ead",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/153",
+      "note": null,
+      "created_at": 1781577547478
+    },
+    {
+      "id": "019ece4c-ec92-7492-8111-39640cd57e8f",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/153",
+      "note": null,
+      "created_at": 1781577608338
+    }
+  ]
+}

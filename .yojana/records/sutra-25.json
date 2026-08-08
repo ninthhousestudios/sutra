@@ -1,0 +1,44 @@
+{
+  "id": "019e2882-6661-7061-b7da-d5c683327d07",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/25",
+  "sequence_number": 25,
+  "title": "index top-level variables?",
+  "description": "an agent used sutra_grep to find a variable name but fell back to grep since it said sutra does not index these. seems like it would be helpful to index top-level variables?",
+  "category": null,
+  "status": "wontfix",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1778796095073,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 25
+      }
+    },
+    {
+      "ts": 1780709737614,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778796095073,
+  "updated_at": 1780709737614,
+  "completed_at": null,
+  "edges": []
+}

@@ -1,0 +1,101 @@
+{
+  "id": "019e211a-3adc-77b3-8838-0fcbeb05c54b",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/17",
+  "sequence_number": 17,
+  "title": "FCA: file-qualified symbol identity in convention checking",
+  "description": "## Motivation\n\nCodex review of sutra/v1/12 found that `SymbolAttrs.name` (qualified_name) isn't globally unique across files. Two symbols named `process` in different files would both be exempted if one is listed in `conventions.exempt`. Same ambiguity in `ConventionViolation` — downstream consumers can't disambiguate.\n\n## What to build\n\nAdd file path to `SymbolAttrs` so convention checking can use file-qualified identity. Update exemption matching and violation reporting to use the file-qualified key.\n\n## Changes\n\n1. Add `file: String` field to `SymbolAttrs`\n2. Update `extract_symbol_attrs` to pass through the file path (it already receives `file_path: &str`)\n3. Update `FcaEngine::check()` exemption matching to use `file::name` or similar composite key\n4. Add `file: String` to `ConventionViolation` for downstream disambiguation\n5. Update `ConventionExemption` to support file-qualified symbol names (e.g. `src/foo.rs::process`)\n6. Regression test: two symbols with same name in different files, exempt one, assert the other still violates\n\n## Acceptance criteria\n\n- [ ] `SymbolAttrs` carries file path\n- [ ] Exemptions match on file-qualified identity, not bare name\n- [ ] `ConventionViolation` includes file path\n- [ ] Regression test: same-name symbols in different files, exemption scoped correctly\n- [ ] Existing tests still pass",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "SymbolAttrs carries file path"
+    },
+    {
+      "done": true,
+      "text": "Exemptions match on file-qualified identity, not bare name"
+    },
+    {
+      "done": true,
+      "text": "ConventionViolation includes file path"
+    },
+    {
+      "done": true,
+      "text": "Regression test: same-name symbols in different files, exemption scoped correctly"
+    },
+    {
+      "done": true,
+      "text": "Existing tests still pass"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5fbbf2e"
+    }
+  ],
+  "files": [
+    "src/fca/engine.rs",
+    "src/fca/attributes.rs"
+  ],
+  "tags": [
+    "v1",
+    "fca"
+  ],
+  "history": [
+    {
+      "ts": 1778671827676,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 17
+      }
+    },
+    {
+      "ts": 1778671836814,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778672097068,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778671827676,
+  "updated_at": 1778672097068,
+  "completed_at": 1778672097068,
+  "edges": [
+    {
+      "id": "019e211a-4aa0-7ca3-bd9f-d442e6a29fcd",
+      "edge_type": "motivated_by",
+      "source": "sutra/v1/17",
+      "target": "sutra/v1/12",
+      "note": "Codex review finding on sutra/v1/12",
+      "created_at": 1778671831712
+    },
+    {
+      "id": "019e211a-4e3a-7272-bf41-b86c4c3e9f4a",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/17",
+      "note": "Integration needs unambiguous symbol identity",
+      "created_at": 1778671832634
+    }
+  ]
+}

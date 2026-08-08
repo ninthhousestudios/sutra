@@ -1,0 +1,141 @@
+{
+  "id": "019e92b2-2db8-7b71-b4ae-be6324325a13",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/94",
+  "sequence_number": 94,
+  "title": "5e-9: review integration — health delta + on-demand biomarkers",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nFull health delta section in sutra_review reports, plus on-demand biomarkers that only run at review time.\\n\\nHealth delta: for each file in the diff, compare current health score against the most recent snapshot. Report files that degraded (with which biomarkers triggered) and files that improved. Order in review report: constraint violations → convention deviations → health findings → shape changes → score deltas summary.\\n\\nOn-demand biomarkers (too expensive for parse-time):\\n- function_hotspot: per-function modification count (from git blame projected onto symbol line ranges) >= repo p80 AND CCN >= 10 or nesting >= 3. Advisory severity.\\n- code_age_volatility: function with median line age >= 365d that got >= 2 commits in last 30d. Informational severity.\\n\\nBoth require git blame per file, which is I/O-bound. Cache blame results per file with invalidation on commit.\\n\\n## Acceptance criteria\\n\\n- [ ] Health delta section in sutra_review output with per-file degradation/improvement\\n- [ ] Report ordering: constraints → conventions → health → shape changes → score deltas\\n- [ ] function_hotspot biomarker: blame rollup × complexity, computed at review time\\n- [ ] code_age_volatility biomarker: dormant code suddenly modified, computed at review time\\n- [ ] Blame result caching with commit-based invalidation\\n- [ ] Degraded files highlighted with specific biomarker findings that drove the decline\\n\\n## Blocked by\\n\\n- sutra/85 (5e-2: health scoring)\\n- sutra/91 (5e-7: health snapshots)\\n- sutra/93 (5e-8: semantic diff)\\n- sutra/92 (5e-review-2: checkpoint 2 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] Health delta section in sutra_review output with per-file degradation/improvement"
+    },
+    {
+      "done": false,
+      "text": "[x] Report ordering: constraints → conventions → health → shape changes → score deltas"
+    },
+    {
+      "done": false,
+      "text": "[x] function_hotspot biomarker: blame rollup × complexity, computed at review time"
+    },
+    {
+      "done": false,
+      "text": "[x] code_age_volatility biomarker: dormant code suddenly modified, computed at review time"
+    },
+    {
+      "done": false,
+      "text": "[x] Blame result caching with commit-based invalidation"
+    },
+    {
+      "done": false,
+      "text": "[x] Degraded files highlighted with specific biomarker findings that drove the decline"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nTwo new pieces in the review pipeline: (1) on-demand biomarkers (`function_hotspot`, `code_age_volatility`) computed via git blame at review time — too expensive for the parse-time pipeline, and (2) a health delta section comparing current per-file health scores (stored findings + on-demand findings) against the latest snapshot. Both share a `BlameCache` to avoid redundant git calls within a single review run.\n\nAlternative considered: persisting blame in the DB for cross-run caching. Rejected — blame is only needed at review time, an in-memory cache within a single invocation is sufficient, and avoids a new migration. \"Commit-based invalidation\" is natural: each review invocation is at a fixed HEAD, dedupe is by file path within that run.\n\nThe `FunctionHotspot` and `CodeAgeVolatility` variants already exist in the `BiomarkerKind` enum with weights and categories assigned — no schema or enum changes needed.\n\n## Files\n\n- **Create**: `src/health/ondemand.rs` — blame cache, on-demand biomarker computation, health delta\n- **Modify**: `src/health/mod.rs` (line 1) — add `pub mod ondemand;` and re-exports\n- **Modify**: `src/git.rs` (after line 284) — add `BlameLine` struct, `parse_blame_porcelain`, `git_blame_porcelain`\n- **Modify**: `src/health/findings.rs` (after line 108) — add `HealthFinding::to_row()` for HealthFinding→HealthFindingRow conversion\n- **Modify**: `src/tools/review.rs` — `handle` (lines 116-198): wire on-demand + delta; output section in `handle` (after line 165): inject `health_findings`, `health_delta`, reorder `hrr_shape_changes` before delta\n- **Test**: `tests/health-test.rs` — blame parsing, both biomarkers, health delta\n\n## Steps\n\n### Step 1: Add git blame parsing to `src/git.rs`\n\nAdd `BlameLine` struct and two functions: `parse_blame_porcelain` (pure parsing function, unit-testable) and `git_blame_porcelain` (shells out to git, calls parser). Follow the `git_file_content_at` pattern for error handling.\n\n```rust\n#[derive(Debug, Clone)]\npub struct BlameLine {\n    pub commit: String,\n    pub author_time: i64,\n    pub line_no: usize,\n}\n\n/// Parse `git blame --porcelain` output into per-line records.\npub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {\n    // Porcelain format: blocks of header + \"\\t<content>\"\n    // First line per block: <40-char sha> <orig_line> <final_line> [count]\n    // Subsequent: key-value headers including \"author-time <unix_ts>\"\n    // Block ends with tab-prefixed content line → emit BlameLine\n    let mut results = Vec::new();\n    let mut current_commit = String::new();\n    let mut current_time: i64 = 0;\n    let mut current_line: usize = 0;\n\n    for line in input.lines() {\n        if line.starts_with('\\t') {\n            results.push(BlameLine {\n                commit: current_commit.clone(),\n                author_time: current_time,\n                line_no: current_line,\n            });\n        } else if let Some(ts) = line.strip_prefix(\"author-time \") {\n            current_time = ts.trim().parse().unwrap_or(0);\n        } else {\n            let bytes = line.as_bytes();\n            if bytes.len() > 40\n                && bytes[40] == b' '\n                && bytes[..40].iter().all(|b| b.is_ascii_hexdigit())\n            {\n                current_commit = line[..40].to_string();\n                let parts: Vec<&str> = line[41..].split_whitespace().collect();\n                if parts.len() >= 2 {\n                    current_line = parts[1].parse().unwrap_or(0);\n                }\n            }\n        }\n    }\n    results\n}\n\npub fn git_blame_porcelain(workspace_root: &Path, path: &str) -> Result<Vec<BlameLine>> {\n    let output = Command::new(\"git\")\n        .arg(\"-C\").arg(workspace_root)\n        .args([\"blame\", \"--porcelain\", path])\n        .output()\n        .map_err(|e| SutraError::Internal(format!(\"git blame failed: {e}\")))?;\n\n    if !output.status.success() {\n        let stderr = String::from_utf8_lossy(&output.stderr);\n        if stderr.contains(\"no such path\") || stderr.contains(\"bad revision\") {\n            return Ok(vec![]);\n        }\n        return Err(SutraError::Internal(format!(\"git blame: {stderr}\")));\n    }\n\n    let text = String::from_utf8(output.stdout)\n        .map_err(|e| SutraError::Internal(format!(\"git blame: non-UTF8: {e}\")))?;\n    Ok(parse_blame_porcelain(&text))\n}\n```\n\n### Step 2: Add `HealthFinding::to_row()` in `src/health/findings.rs`\n\nConverts `HealthFinding` to `HealthFindingRow` for use with `score_file`. On-demand findings aren't persisted, so `id` is passed in (use negative IDs to distinguish from DB rows).\n\n```rust\nimpl HealthFinding {\n    pub fn to_row(&self, id: i64) -> crate::db::HealthFindingRow {\n        crate::db::HealthFindingRow {\n            id,\n            file_id: self.file_id,\n            symbol_id: self.symbol_id,\n            biomarker_kind: self.biomarker_kind.as_str().to_string(),\n            severity: self.severity.as_str().to_string(),\n            confidence: self.confidence,\n            provenance: self.provenance.clone(),\n            metric_value: self.metric_value,\n            threshold: self.threshold,\n            detail: self.detail.clone(),\n        }\n    }\n}\n```\n\n### Step 3: Create `src/health/ondemand.rs` — blame cache + on-demand biomarker computation\n\nThree logical sections: `BlameCache`, `compute_ondemand_findings` (runs both biomarkers), and `compute_health_delta`.\n\n**BlameCache**: HashMap keyed by file path, deduplicates `git_blame_porcelain` calls within one review invocation.\n\n```rust\npub struct BlameCache {\n    cache: HashMap<String, Vec<BlameLine>>,\n}\n\nimpl BlameCache {\n    pub fn new() -> Self { Self { cache: HashMap::new() } }\n    pub fn get_or_compute(&mut self, workspace_root: &Path, path: &str) -> Result<&[BlameLine]> {\n        if !self.cache.contains_key(path) {\n            self.cache.insert(path.to_string(), git::git_blame_porcelain(workspace_root, path)?);\n        }\n        Ok(self.cache.get(path).unwrap())\n    }\n}\n```\n\n**Biomarker computation**: Two-pass approach. Pass 1: collect per-function blame stats (distinct commits, median line age, recent commits) for all functions in changed files. Pass 2: compute p80 threshold from the distribution, then emit findings.\n\n```rust\nconst HOTSPOT_CCN_THRESHOLD: i64 = 10;\nconst HOTSPOT_NESTING_THRESHOLD: i64 = 3;\nconst HOTSPOT_MIN_P80: usize = 5;\nconst AGE_DORMANT_DAYS: i64 = 365;\nconst AGE_RECENT_DAYS: i64 = 30;\nconst AGE_RECENT_COMMITS_THRESHOLD: usize = 2;\n\nstruct FunctionBlameStats {\n    symbol_id: i64,\n    file_id: i64,\n    qualified_name: String,\n    distinct_commits: usize,\n    cyclomatic: Option<i64>,\n    max_nesting: Option<i64>,\n    median_age_days: f64,\n    recent_commits: usize,\n}\n\npub fn compute_ondemand_findings(\n    db: &Db, workspace_root: &Path, changed_paths: &[String],\n) -> Vec<HealthFinding> {\n    // 1. Build BlameCache, collect FunctionBlameStats for all functions in changed files\n    //    - Filter symbols to function-like kinds via is_function_kind()\n    //    - Per function: count distinct commits in line range, compute median line age,\n    //      count distinct commits in last 30d\n    // 2. Compute p80 of distinct_commits across all stats, floor at HOTSPOT_MIN_P80\n    // 3. Emit FunctionHotspot findings where commits >= p80 AND (ccn >= 10 OR nesting >= 3)\n    // 4. Emit CodeAgeVolatility findings where median_age >= 365d AND recent_commits >= 2\n}\n\nfn is_function_kind(kind: &str) -> bool {\n    matches!(kind, \"function\" | \"method\" | \"function_item\"\n        | \"function_declaration\" | \"method_declaration\")\n}\n```\n\n**function_hotspot** triggers when: `distinct_commits >= p80` AND (`cyclomatic >= 10` OR `max_nesting >= 3`). Severity: Advisory (from enum default). Weight: 1.16, category: Structural.\n\n**code_age_volatility** triggers when: `median_line_age >= 365 days` AND `distinct_commits_in_last_30d >= 2`. Severity: Informational (from enum default). Weight: 1.10, category: Freshness.\n\n### Step 4: Add health delta computation to `src/health/ondemand.rs`\n\nCompares current health scores (stored findings + on-demand findings per file) against the latest snapshot. For degraded files, includes the specific on-demand findings that contributed.\n\n```rust\npub struct HealthDeltaEntry {\n    pub path: String,\n    pub previous_score: f64,\n    pub current_score: f64,\n    pub delta: f64,\n    pub driving_findings: Vec<HealthFindingRow>,\n}\n\npub struct HealthDelta {\n    pub degraded: Vec<HealthDeltaEntry>,\n    pub improved: Vec<HealthDeltaEntry>,\n}\n\npub fn compute_health_delta(\n    db: &Db, changed_paths: &[String], ondemand_findings: &[HealthFinding],\n) -> Result<HealthDelta> {\n    // 1. Get latest snapshot via db.latest_snapshots(1)\n    // 2. Build path→score map from db.snapshot_file_scores(snap.id)\n    // 3. For each changed file:\n    //    a. Get stored findings: db.get_health_findings(Some(file_id), None)\n    //    b. Convert on-demand findings for this file via .to_row() with negative IDs\n    //    c. Combine → score_file → current_score\n    //    d. previous_score from snapshot map (default 10.0 for new files)\n    //    e. delta = current - previous; skip if |delta| < 0.005\n    //    f. For degraded: attach on-demand findings as \"driving_findings\"\n    // 4. Sort degraded by delta ascending (worst first), improved by delta descending\n}\n```\n\n### Step 5: Wire into review pipeline (`src/tools/review.rs`)\n\nModify `handle` (lines 116-198) to call on-demand biomarkers and health delta after `build_findings` and `detect_shape_changes`. Inject `health_findings`, `health_delta`, and ensure `hrr_shape_changes` comes before `health_delta` in the output.\n\n```rust\n// After line 163 (shape_changes computed), before line 165 (compute):\nlet ondemand_findings = crate::health::ondemand::compute_ondemand_findings(\n    db, workspace_root, &changed_paths,\n);\nlet health_delta = crate::health::ondemand::compute_health_delta(\n    db, &changed_paths, &ondemand_findings,\n).ok();\n\n// After line 165 (result = compute(...)):\n// Inject into result object:\n// 1. \"health_findings\" — array of on-demand findings (biomarker, severity, detail, etc.)\n// 2. \"hrr_shape_changes\" — existing, moved to come before delta\n// 3. \"health_delta\" — { degraded: [...], improved: [...] } with driving_findings on degraded entries\n```\n\nOutput ordering within the result JSON (serde_json::Map preserves insertion order):\n1. `changed_files`, `changed_symbols`, `affected_files`, `affected_symbols`, `affected_total` (context)\n2. `risk_score`, `risk_breakdown` (summary)\n3. `constraint_violations`, `resolved_constraint_violations`, `waived_constraint_violations` (constraints)\n4. `convention_violations`, `convention_matches`, `waived_violations`, `drift_alerts` (conventions)\n5. `health_findings` (new — on-demand biomarker findings)\n6. `hrr_shape_changes` (existing — shape changes)\n7. `health_delta` (new — per-file score deltas with attribution)\n8. `recommended_reads`, `behavioral_coupling` (navigation)\n\n### Step 6: Register module in `src/health/mod.rs`\n\nAdd `pub mod ondemand;` after line 3.\n\n### Step 7: Tests in `tests/health-test.rs`\n\n```rust\n#[test]\nfn test_parse_blame_porcelain() {\n    // Construct realistic porcelain output with known SHAs, timestamps, line numbers\n    // Verify BlameLine extraction: correct commit, author_time, line_no\n    // Edge cases: boundary commits (0000...0), multi-block same commit\n}\n\n#[test]\nfn test_function_hotspot_detection() {\n    // Seed DB: file with two functions\n    //   fn_a: 20 distinct blame commits, cyclomatic=12, nesting=4 → should trigger\n    //   fn_b: 2 distinct blame commits, cyclomatic=15 → should NOT trigger (below p80)\n    // Run compute_ondemand_findings\n    // Assert exactly 1 FunctionHotspot finding for fn_a\n}\n\n#[test]\nfn test_code_age_volatility_detection() {\n    // Seed DB: file with one function\n    //   blame lines: median age 400d, 3 commits in last 30d → should trigger\n    // Run compute_ondemand_findings\n    // Assert 1 CodeAgeVolatility finding\n}\n\n#[test]\nfn test_health_delta_degradation() {\n    // Seed DB: file with snapshot score 8.5\n    // Add findings that drop score to 6.0\n    // Run compute_health_delta\n    // Assert degraded entry: delta ≈ -2.5, driving_findings populated\n}\n\n#[test]\nfn test_health_delta_no_snapshot_graceful() {\n    // No snapshots exist → all files get previous_score=10.0\n    // Only files with findings show delta\n}\n```\n\n## Dependency note\n\nsutra/93 is in `needs-review` (not `done`), but its code (detect_shape_changes, hrr_shape_changes in review output) is already merged and functional. This plan is compatible with sutra/93's current code. If sutra/93 review results in API changes to ShapeChange or the review output structure, Step 5 would need adjustment.\n\n## Acceptance criteria coverage\n\n- [x] \"Health delta section in sutra_review output with per-file degradation/improvement\" → Steps 4, 5\n- [x] \"Report ordering: constraints → conventions → health → shape changes → score deltas\" → Step 5\n- [x] \"function_hotspot biomarker: blame rollup × complexity, computed at review time\" → Steps 1, 3\n- [x] \"code_age_volatility biomarker: dormant code suddenly modified, computed at review time\" → Steps 1, 3\n- [x] \"Blame result caching with commit-based invalidation\" → Step 3 (BlameCache, per-file dedup within review run)\n- [x] \"Degraded files highlighted with specific biomarker findings that drove the decline\" → Steps 4, 5",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "6f85495"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577611192,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 94
+      }
+    },
+    {
+      "ts": 1780666385180,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780666777564,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780684048356,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577611192,
+  "updated_at": 1780684048356,
+  "completed_at": 1780684048356,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b3-34a8-7130-b9b9-e179888bab25",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577678504
+    },
+    {
+      "id": "019e92b3-35fb-7510-8894-fbd2fc42dae1",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577678843
+    },
+    {
+      "id": "019e92b3-366a-7f92-a14d-ac96823af1b4",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/93",
+      "note": null,
+      "created_at": 1780577678954
+    },
+    {
+      "id": "019e92b3-3778-7591-b2b8-2a976fd0e472",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577679224
+    },
+    {
+      "id": "019e92b3-53ac-7473-a6c4-8c31a27903e6",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/94",
+      "note": null,
+      "created_at": 1780577686444
+    }
+  ]
+}

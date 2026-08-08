@@ -1,0 +1,73 @@
+{
+  "id": "019e7f7f-982c-71f3-9d2b-54ca6985adce",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/44",
+  "sequence_number": 44,
+  "title": "5b PRD: component discovery + vocabulary",
+  "description": "## Problem Statement\n\nSutra discovers structural facts (Layer 0) and detects conventions (Layer 2), but has no notion of **components** — coherent groups of related code that form the architectural building blocks of a codebase. Without components, sutra cannot answer \"what are the pieces of this system?\", cannot scope conventions or constraints to a subsystem, cannot identify load-bearing code within a subsystem, and cannot map human concepts (\"the parser\", \"auth flow\") to code locations.\n\nAgents starting a new session have no persistent vocabulary for navigating the codebase at an architectural level. They rediscover the same subsystem boundaries each time.\n\n## Solution\n\nBuild the component discovery engine (Layer 1) and vocabulary layer (Layer 5) as new modules in sutra. Components are discovered via Louvain graph clustering on the file-level call/dependency graph, reconciled against persistent durable entities that carry human intent (names, lifecycle state, aliases). The vocabulary layer provides a human-to-code mapping so agents and humans can refer to code by concept (\"the parser\") rather than path.\n\n## User Stories\n\n1. As a developer, I want sutra to automatically discover the major subsystems in my codebase from its call graph, so that I have an architectural map without manual annotation.\n2. As a developer, I want components to persist across recomputation with stable names and IDs, so that my annotations (names, aliases, lifecycle) survive when the code evolves.\n3. As a developer, I want to see when components merge, split, or drift between clustering runs, so that I'm alerted to architectural changes I didn't intend.\n4. As a developer, I want to mark a component as \"sketching\" so that conventions become informational rather than enforced while I'm prototyping.\n5. As a developer, I want sutra to identify semantic anchors (load-bearing types/functions) per component, so that agents and humans know where to start reading.\n6. As a developer, I want a concept density metric per component, so that I can prioritize review attention on dense (hard to understand per LOC) areas.\n7. As an agent, I want to resolve human concepts (\"the parser\", \"auth flow\") to specific files and components, so that I can navigate the codebase using the vocabulary humans use.\n8. As a developer, I want to define aliases in `.sutra/aliases.toml` that map my terminology to code locations, so that the vocabulary reflects how I think about my codebase.\n9. As a developer, I want sutra to detect when my aliases point at dissolved components or deleted paths, so that I can fix stale vocabulary.\n10. As a developer, I want component discovery to respect language-specific module boundaries (Rust's `mod` system as strong signal, weaker for Python/C), so that clustering aligns with language idioms.\n11. As a developer, I want clustering to recompute lazily only when the structural graph has changed meaningfully, so that it's not wasted on lint fixes or comment edits.\n12. As a developer, I want to override the clustering resolution parameter in `.sutra/components.toml`, so that I can control granularity when auto-tuning doesn't match my architecture.\n13. As an agent, I want `sutra orient` to include which component I'm working in plus its semantic anchors, so that I have architectural context before writing code.\n\n## Implementation Decisions\n\n- **Algorithm:** Louvain community detection on file-level call/dependency graph with 1/ambiguity edge weighting. Single-level sufficient at tested scales. Resolution parameter auto-tuned (target reasonable component count per codebase size) with human override via `.sutra/components.toml`.\n- **Recomputation trigger:** Lazy — on first query after staleness detected. Stale when (a) files added/removed, or (b) >10% of inter-file edges changed since last clustering run. Edge count at last clustering stored in a metadata row.\n- **Component identity:** Components are durable entities (UUID, name, lifecycle_state, created_at, updated_at). Membership is ephemeral (recomputed). Reconciliation on recompute via Jaccard overlap: >0.6 → match existing component; no match → create new; existing component unmatched → mark dissolved (kept in DB, hidden from normal queries).\n- **Events:** Merge (two components collapsed), split (one became two), drift (>30% file shift). Stored durably in `component_events` table, surfaced in review reports.\n- **Lifecycle:** Per-component, not per-file. Enum: `sketching | stable`. Sketching flattens conventions to informational; constraints remain enforced.\n- **Semantic anchors:** Identified by in-degree within component, betweenness centrality, git stability, naming alignment. 3-7 per component. Stored ephemeral, recomputed alongside membership.\n- **Concept density:** v1 metric from Layer 0 data: `(unique_symbol_kinds × naming_stem_diversity) / LOC`. Richer FCA-based version deferred to 5c.\n- **Vocabulary resolution priority:** (1) human aliases from `.sutra/aliases.toml`, (2) component names, (3) semantic anchor names. HRR fuzzy matching deferred to post-v1.\n- **Auto-learning:** Not in v1. Explicit aliases only.\n- **Auto-naming:** Longest common path prefix of member files, stripped to last segment. Fallback: most-central file's parent directory.\n- **Dissolved components:** Kept in DB marked dissolved with timestamp. Aliases pointing at them become orphaned, surfaced in reconciliation report.\n- **Adapter extension:** `module_boundary_hints()` added to `LanguageAdapter` trait with default `Weak`. Rust → `Strong`, Dart → `Moderate`. Clustering uses this to weight language module boundaries in the graph.\n- **Storage partition:** `components` (durable), `component_membership` (ephemeral), `semantic_anchors` (ephemeral), `component_events` (durable), `aliases` (durable). Follows 5a ephemeral/durable pattern — durable tables reference by name/path, not integer PK.\n- **New modules:** `src/components/mod.rs` (discovery engine), `src/components/anchors.rs` (anchor identification), `src/components/config.rs` (configuration), `src/vocabulary/mod.rs` (alias CRUD + resolution), `src/db/components.rs` (schema + queries).\n- **Dependency:** Builds on `graph.rs::build_file_adjacency` for the call graph input. Adds `louvain` algorithm (likely vendored or thin crate — community_detection or petgraph-based).\n\n## Testing Decisions\n\nTests should verify external behavior through the module's public interface, not implementation details.\n\n**Modules under test:**\n\n1. **Discovery engine (`src/components/mod.rs`)** — integration tests with synthetic call graphs:\n   - Known file adjacency → produces expected cluster count and composition\n   - Reconciliation: given prior components + new clustering → correct match/create/dissolve decisions\n   - Merge detection: two prior components whose files now cluster together → merge event emitted\n   - Split detection: one prior component whose files now span two clusters → split event emitted\n   - Drift detection: >30% file shift → drift event emitted\n   - Staleness: edge changes below threshold → no recompute; above threshold → recompute\n\n2. **Vocabulary resolver (`src/vocabulary/mod.rs`)** — unit tests:\n   - Alias defined in DB → resolves correctly\n   - Component name match → resolves when no alias exists\n   - Anchor name match → resolves as fallback\n   - Priority: alias wins over component name wins over anchor\n   - Orphan detection: alias pointing at dissolved component → flagged\n   - `.sutra/aliases.toml` parsing: valid TOML → correct alias entries\n\n**Prior art:** Existing tests in `tests/` (integration style, use `Db::open_unchecked` with temp dirs). Follow the same pattern.\n\n## Out of Scope\n\n- HRR embed-mode fuzzy matching for vocabulary (deferred — no HRR infrastructure yet)\n- Auto-learning from agent sessions (deferred to post-v1 with curation UX)\n- Convention scoping to components (that's 5c's concern, but will consume component membership)\n- Constraint scoping to components (that's 5d's concern)\n- Component visualization / UI (separate concern per architecture doc)\n- Multi-level Louvain / hierarchical components (not needed at tested scales)\n- Health metrics per component (that's 5e's concern, but will consume component membership)\n\n## Further Notes\n\n- The Louvain implementation should be pure Rust with no external process. The `louvain_communities` crate or a custom implementation on petgraph are both viable — evaluate at implementation time.\n- The reconciliation algorithm is the most subtle part. Edge cases: a codebase's first clustering (no prior components — all creates), a major refactor that shuffles everything (many dissolves + creates vs. few drifts), and the degenerate case where the whole codebase is one cluster.\n- Component events feed directly into the review report (5b produces the data; the review tool in `tools/review.rs` will consume it). The event schema should be designed for easy rendering.\n- The `.sutra/components.toml` file is optional — sutra works with pure auto-tuning by default (zero-config principle from the vision doc).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-architecture.md"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/40"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/28"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery",
+    "prd"
+  ],
+  "history": [
+    {
+      "ts": 1780255529004,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 44
+      }
+    },
+    {
+      "ts": 1780256054279,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780324847889,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780255529004,
+  "updated_at": 1780324847889,
+  "completed_at": 1780324847889,
+  "edges": []
+}

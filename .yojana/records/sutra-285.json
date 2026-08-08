@@ -1,0 +1,68 @@
+{
+  "id": "019f8b09-454b-7d70-ba57-01ea18f5297e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/285",
+  "sequence_number": 285,
+  "title": "orient refreshes decay timers for lessons it never emits",
+  "description": "Found by codex adversarial review of sutra/277-279.\n\nsutra/277 made orient call query_for_context_capped(ctx, usize::MAX) per component file so the merged `lessons_omitted` count would be honest. But that helper records `last_surfaced` for everything it returns, so orient marked the entire candidate set across every file in the component — including the lessons its own ORIENT_LESSON_CAP then dropped.\n\narchive_decayed (src/lessons.rs) spares any unverified lesson whose last_surfaced is within the 90-day window. So a broad directory-anchored lesson — matching every file in the component, and the least useful thing in the response — was kept permanently unarchivable without ever being shown to anyone. The decay lifecycle became a function of internal candidate matching rather than actual surfacing.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Only lessons actually serialized into the orient response refresh last_surfaced"
+    },
+    {
+      "done": false,
+      "text": "Lessons dropped by ORIENT_LESSON_CAP keep last_surfaced NULL and stay archiveable"
+    },
+    {
+      "done": false,
+      "text": "Regression test verified to fail under the previous behaviour"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Fix splits the two concerns with a Surfacing::{Record,Deferred} flag plus a public mark_surfaced(ids); orient defers, caps the merged set, then marks exactly what it serialized. Added LessonsDb::last_surfaced as an observable for the regression test, which was verified to fail under the old Record semantics before being accepted.\n\nNOTE: the commit message says \"(sutra/280)\" — wrong task number, sutra/280 was already used by 91fedc7. The correct reference is sutra/285. Not amended because that rewrites history; flagged to Josh instead.\n\nAlso in the same commit: a search test exercising query+category+symbol+verified+project simultaneously, closing the bind-index coverage gap from sutra/279 (each tier allocates its own bind slots, and `verified` adds a condition with no bind, so an off-by-one binds the wrong value silently rather than erroring). Writing it surfaced a test-fixture trap: citations are idempotent per task_id, so citing twice with task_id=None leaves confidence at 1 and never verifies.",
+  "reproduction": null,
+  "root_cause": "query_for_context_capped conflated retrieval with surfacing bookkeeping: it recorded last_surfaced for every lesson it returned, which is correct only when the caller shows everything it receives. sutra/277 introduced a caller that deliberately over-fetches (usize::MAX) in order to compute an honest merged omitted count, and that broke the helper's implicit assumption — the write happened at the wrong layer, one cap too early.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "50e8780"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "orient",
+    "lifecycle"
+  ],
+  "history": [
+    {
+      "ts": 1784744068427,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 285
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784744078023,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784744068427,
+  "updated_at": 1784744078023,
+  "completed_at": 1784744078023,
+  "edges": []
+}

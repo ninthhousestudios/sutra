@@ -1,0 +1,89 @@
+{
+  "id": "019e222a-a102-7be2-8582-9188e5918ffd",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/29",
+  "sequence_number": 29,
+  "title": "FCA scaling cap, DD accumulator hardening, and slop cleanup",
+  "description": "Three items from the v1 review:\\n\\n1. FCA approximate_implications is O(n_attrs^2). Add MAX_ATTRS cap (~100) that drops low-frequency attributes before building formal context. 'in:' path attributes are the main growth vector.\\n\\n2. DD blast_counts retraction uses fragile exact-match equality. Consider matching the simpler cycle_nodes HashSet pattern or snapshotting the DD collection directly.\\n\\n3. Slop: partial_cmp().unwrap() on f64 (context.rs:150, review.rs:326), #[allow(dead_code)] on Response::Error (worker.rs:29), unused dd_idle_timeout_sec config, sort_by/dedup_by key mismatch (review.rs:293-297).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "FCA has MAX_ATTRS cap preventing quadratic blowup"
+    },
+    {
+      "done": false,
+      "text": "DD blast_counts uses simpler accumulator pattern"
+    },
+    {
+      "done": false,
+      "text": "partial_cmp().unwrap() replaced with safe alternative"
+    },
+    {
+      "done": false,
+      "text": "All slop items addressed"
+    }
+  ],
+  "decisions": [
+    "dd_idle_timeout_sec is NOT unused — it's consumed in mcp.rs:178 to configure DdEngine idle timeout. Left as-is."
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "18740a2"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-c"
+  ],
+  "history": [
+    {
+      "ts": 1778689679618,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 29
+      }
+    },
+    {
+      "ts": 1778705685506,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778705915801,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689679618,
+  "updated_at": 1778705915801,
+  "completed_at": 1778705915801,
+  "edges": [
+    {
+      "id": "019e222a-d4e7-7ad1-b0f5-5d66f49bbb6c",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/29",
+      "target": "sutra/v1/24",
+      "note": "DD accumulator hardening builds on daemon-resident DD",
+      "created_at": 1778689692903
+    }
+  ]
+}

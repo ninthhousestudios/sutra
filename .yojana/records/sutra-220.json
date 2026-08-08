@@ -1,0 +1,72 @@
+{
+  "id": "019f22f6-53e8-7152-a241-b3da8f289f85",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/220",
+  "sequence_number": 220,
+  "title": "stale DD engine cycles with resolvable IDs still produce false constraint findings",
+  "description": "After sutra/219, unresolvable file_ids in stale engine cycles are skipped. But a second staleness class remains: if a file is reparsed and its imports change (edge removed) while its row ID is preserved (normal upsert_file path), the DD engine still reports the old cycle with all IDs valid in path_map. The len() guard doesn't fire, and a false no_cycles finding is emitted for a cycle that sutra_deps no longer reports.\\n\\nReproduction: load DD engine with edges A→B→C→A, then remove the C→A import in the DB (reparse C without that import). Engine still reports the cycle; all three file IDs still exist; evaluate_dd emits a finding for a nonexistent cycle.\\n\\nRoot issue: evaluate_dd trusts the provided DD engine's cycles without validating them against current DB edges.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "evaluate_dd validated stale engine cycles only by checking file_id resolution in path_map (sutra/219). When files are reparsed and keep their row IDs but lose import edges, all IDs still resolve and the guard doesn't fire, producing a false no_cycles finding for a cycle that no longer exists in the current edge set.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/219"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "evaluate_dd"
+    },
+    {
+      "type": "git:commit",
+      "value": "6ce098e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "dd-engine",
+    "staleness"
+  ],
+  "history": [
+    {
+      "ts": 1782997996520,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 220
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782998303811,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782998309872,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782997996520,
+  "updated_at": 1782998309872,
+  "completed_at": 1782998309872,
+  "edges": []
+}

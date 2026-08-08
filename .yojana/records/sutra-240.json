@@ -1,0 +1,91 @@
+{
+  "id": "019f4940-c254-74f2-b515-72c1f3e7662c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/240",
+  "sequence_number": 240,
+  "title": "forbidden_pattern kind: rules parsing + query validation",
+  "description": "Add `ForbiddenPattern { language, query }` to ConstraintKind in src/rules.rs. TOML fields: kind=\"forbidden_pattern\", language (required), query (required, tree-sitter S-expression), plus shared name/severity/scope/provenance. Compile the query against the declared language's grammar at parse_rules time — compilation failure becomes a constraint parse error (existing constraint_parse_errors channel), not a runtime surprise. Severity default: Advisory. Identity: blake3(kind_tag, language, query, scope). Scope reuses scope_matches_path (glob-or-prefix, sutra/238/239).\n\nGrammar selection needs a language-name → tree_sitter::Language mapping — check the existing parser registry/adapter layer before inventing one.\n\nDesign: sutra/221 implementation_plan. Tests in src/rules.rs #[cfg(test)] following the existing 22-test pattern (parsing, identity, defaults, invalid query error, unknown language error).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Used LanguageRegistry::adapter_for_language + grammar() for query validation as directed. Threaded the registry internally through all_constraints → into_constraint (no public API change). Had to add ForbiddenPattern arms to 3 exhaustive matches in constraints/mod.rs, tools/constraints.rs, and tools/orient.rs. 12 new tests covering parsing, defaults, required fields, unknown language, invalid query, identity determinism, and scope interaction.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/221",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "dc1daf0"
+    }
+  ],
+  "files": [
+    "src/rules.rs"
+  ],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1783640408660,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 240
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783683744017,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783684041450,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Codex adversarial review found no defects in the rules parsing implementation. The two findings (engine not wired into production evaluators; symbol-scoped waivers can't match) are both out-of-scope — covered by sutra/242 and sutra/243 respectively. Minor note: all_constraints() now unconditionally creates default_registry() even when no forbidden_pattern constraints exist — small allocation (4 unit structs) but unnecessary overhead for workspaces without pattern rules. Consider lazy creation if profiling shows it matters.\"",
+      "ts": 1783685222055
+    },
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Rules parsing clean — query validation at parse time, identity hash, 12 tests. No issues.",
+      "ts": 1783693203301
+    }
+  ],
+  "created_at": 1783640408660,
+  "updated_at": 1783684041450,
+  "completed_at": 1783684041450,
+  "arc_id": "019f4940-0dd5-72a2-b954-24e8f9443602",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f4941-9a52-7d53-8af2-17a9a701274c",
+      "edge_type": "depends_on",
+      "source": "sutra/241",
+      "target": "sutra/240",
+      "note": null,
+      "created_at": 1783640463954
+    }
+  ]
+}

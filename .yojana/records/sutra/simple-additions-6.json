@@ -1,0 +1,78 @@
+{
+  "id": "019e06ec-cae7-78b0-8985-70e604dd102f",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/6",
+  "sequence_number": 6,
+  "title": "sutra_provenance — git archaeology per symbol",
+  "description": "Walk every commit that touched a symbol's byte range. Classify each commit (creation / bugfix / refactor / feature / perf / rename / revert) from commit-message heuristics. Emit a narrative.\n\nSymbol → file:byte-range is already known. Commit classification is a small rule table (`fix:` prefix → bugfix, `feat:` → feature, etc.). Narrative is template-based.\n\nWorst case heuristics are mediocre — graceful degradation (just show classified-or-unknown commit list).\n\nTool shape: `sutra_provenance(symbol)` → ordered commit list with classification, author, summary string.\n\nSee docs/feature-ideas.md → \"sutra_provenance\".\n\n**Independent of other simple-additions tasks.**",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "sutra_provenance(symbol) returns commit list ordered chronologically"
+    },
+    {
+      "done": true,
+      "text": "Each commit tagged with classification (or 'unknown')"
+    },
+    {
+      "done": true,
+      "text": "Classification rules documented; new categories easy to add"
+    },
+    {
+      "done": true,
+      "text": "Handles symbol-rename history (follow file rename via git log --follow)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/tools/provenance.rs",
+    "src/tools/mod.rs",
+    "src/tools/tools_meta.rs",
+    "src/mcp.rs",
+    "tests/provenance-test.rs"
+  ],
+  "tags": [
+    "new-tool",
+    "git-integration"
+  ],
+  "history": [
+    {
+      "ts": 1778232642279,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 6
+      }
+    },
+    {
+      "ts": 1778236262696,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778236267614,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232642279,
+  "updated_at": 1778236267614,
+  "completed_at": 1778236267614,
+  "edges": []
+}

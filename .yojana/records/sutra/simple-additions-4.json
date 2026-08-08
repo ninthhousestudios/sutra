@@ -1,0 +1,84 @@
+{
+  "id": "019e06ec-873a-7991-87a3-ebfd7f099f16",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/4",
+  "sequence_number": 4,
+  "title": "sutra_pr_risk — branch risk profile",
+  "description": "Composite risk score (0.0–1.0) for a branch/PR — fuses blast radius, complexity delta, churn, and change volume into a single number with breakdown.\n\nSame shape as `sutra_file_health` but at branch scope. Every input already exists via `sutra_diff_impact`, `sutra_file_health`, `sutra_hotspots`.\n\nTool shape: `sutra_pr_risk(base, head)` → score, per-signal breakdown, top-N riskiest changed symbols, recommendations.\n\nSee docs/feature-ideas.md → \"sutra_pr_risk\".\n\n**Independent of other simple-additions tasks.**",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "sutra_pr_risk(base, head) returns composite score 0.0–1.0"
+    },
+    {
+      "done": true,
+      "text": "Per-signal breakdown (blast_radius, complexity_delta, churn, volume) included"
+    },
+    {
+      "done": true,
+      "text": "Top-N riskiest changed symbols listed with their individual scores"
+    },
+    {
+      "done": true,
+      "text": "Documented weight choices (rationale, not just numbers)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/tools/pr_risk.rs",
+    "src/tools/mod.rs",
+    "src/tools/tools_meta.rs",
+    "src/mcp.rs",
+    "tests/pr-risk-test.rs"
+  ],
+  "tags": [
+    "new-tool",
+    "review-workflow"
+  ],
+  "history": [
+    {
+      "ts": 1778232624954,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 4
+      }
+    },
+    {
+      "ts": 1778235950291,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778235954570,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Implementation complete. 6 tests pass (empty diff, low-risk file, composite scoring, symbol ranking, weight documentation, score clamping). MCP tool wired as sutra_pr_risk in the analysis tier. Files: src/tools/pr_risk.rs, tests/pr-risk-test.rs, mcp.rs updated, tools_meta.rs updated.",
+      "ts": 1778235938514
+    }
+  ],
+  "created_at": 1778232624954,
+  "updated_at": 1778235954570,
+  "completed_at": 1778235954570,
+  "edges": []
+}

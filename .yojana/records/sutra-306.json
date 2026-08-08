@@ -1,0 +1,89 @@
+{
+  "id": "019fdd4f-1a86-7f32-a357-e7f916e1e71f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/306",
+  "sequence_number": 306,
+  "title": "Surface acked instances on sutra_review and orient (transparency parity with violations)",
+  "description": "Follow-up from vidhi-review of sutra/305 (e389fb7). Report-only instance acks were chosen over guard-honored waivers specifically to preserve auditability, but the acked state is surfaced on only one of the three report surfaces.\n\n- `sutra_constraints action=violations` surfaces an `acknowledged` array (get_all_constraint_instance_acks + ack_to_json, src/tools/constraints.rs:245-249).\n- `sutra_review` (src/tools/review.rs build_findings output) emits only constraint_violations / resolved / waived / total. Acked instances are subtracted out of constraint_violations_total with NO trace, whereas waivers ARE surfaced (waived_constraint_violations). A reviewer reading a PR through sutra_review sees the clones simply gone.\n- `orient` (src/tools/orient.rs) likewise surfaces nothing.\n\nAlso fold in two lows from the same review:\n- baseline/ack load the rules tree twice per call: resolve_constraint() calls rules::load_rules, then the caller calls it again for all_constraints (src/tools/constraints.rs handle_baseline/handle_ack). Have resolve_constraint return the loaded constraints or thread the loaded set through.\n- src/tools/constraints.rs:247 `get_all_constraint_instance_acks().unwrap_or_default()` swallows a DB error (display-only, but the exact nothing-there-vs-failed-to-look conflation the module's own lesson warns against).",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_review output surfaces acked instances (an acknowledged array and/or an acked_total alongside constraint_violations_total), parity with how waived_constraint_violations is surfaced"
+    },
+    {
+      "done": false,
+      "text": "orient surfaces acked state rather than silently dropping it"
+    },
+    {
+      "done": false,
+      "text": "resolve_constraint no longer causes a second full rules::load_rules per baseline/ack call"
+    },
+    {
+      "done": false,
+      "text": "constraints.rs:247 no longer silently swallows a DB error when listing acks"
+    },
+    {
+      "done": false,
+      "text": "tests cover the review/orient acked-surface"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Shared display path rather than threading a new field through CheckOutcome: ~19 CheckOutcome struct-literal sites (incl. the load-bearing guard path in guard.rs) would each need the field, and a report-only field populated on only 2 of 19 construction paths is a contract smell. Instead extracted acked_instances_json (scope-filterable, error-propagating) in tools/constraints.rs, reused by violations (scope=None) and review (scope=changed files); orient mirrors the waiver surface inline via the now-pub(crate) ack_to_json. The subtraction chokepoint (apply_instance_acks in check.rs) is untouched. AC#4 (swallow) fixed for free by routing violations through the ?-propagating helper. AC#3 (double load) fixed by having resolve_constraint take already-loaded &[Constraint]; reordered handle_ack so constraint resolution still precedes the file read (preserving original error ordering). Verification: cargo test lib 812 + review-test + constraints-test 58 + db-test 30 all green; two new tests (review-test::instance_acks_surface_on_review end-to-end build_findings→compute; orient::tests::instance_acks_shown); clippy --lib --tests clean on the non-test edits (0 errors; remaining unwrap warnings are pre-existing test-code noise). Committed to main e6d7507.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/305"
+    },
+    {
+      "type": "git:commit",
+      "value": "e389fb7"
+    },
+    {
+      "type": "git:commit",
+      "value": "e6d7507"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786124376710,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 306
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786124380315,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786125194747,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786124376710,
+  "updated_at": 1786125194747,
+  "completed_at": 1786125194747,
+  "edges": []
+}

@@ -1,0 +1,163 @@
+{
+  "id": "019e8ba6-2289-7533-91ca-1d68d43bac88",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/67",
+  "sequence_number": 67,
+  "title": "L1: incorporate co-change edges into component clustering",
+  "description": "Hidden coupling (files that co-change >=50% of shared commits but have no static import edge) reveals architectural relationships invisible to the dependency graph. When clustering for component discovery, these co-change edges should be weighted alongside static edges — they're evidence of behavioral coupling the import graph misses.\n\nConcrete proposal: when building the graph for Louvain/Leiden clustering, add weighted edges for co-change pairs that exceed a correlation threshold (repowise uses 0.5). Weight them below static edges (they're noisier) but above nothing. This should improve component boundary detection for code that's architecturally coupled through shared protocols, parallel config, or implicit contracts rather than explicit imports.\n\nAlso surface in orient: \"these files are coupled but not by imports\" and in review: \"your change touched A; B is behaviorally coupled and may need changes too.\"\n\nReference: repowise's hidden_coupling biomarker — `repowise/packages/core/src/repowise/core/analysis/health/biomarkers/hidden_coupling.py`. Their implementation joins co_change_partners_json with the static graph edges and fires when correlation >= 0.5 with no import edge in either direction. They exclude test<->production pairs.\n\nPrior art: D'Ambros et al. on co-change as defect signal; the correlation threshold and test-pair exclusion are the key design choices.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "commits table (hash PK, committed_at INTEGER, author TEXT) and commit_files table (commit_hash FK, file_id FK) populated during parse pipeline from git history"
+    },
+    {
+      "done": false,
+      "text": "Jaccard coefficient computed from commit_files for all file pairs exceeding the configured threshold"
+    },
+    {
+      "done": false,
+      "text": "Hidden co-change edges (above threshold, no static ref edge) are added to the clustering graph in build_weighted_adjacency"
+    },
+    {
+      "done": false,
+      "text": "Test-production file pairs excluded from co-change edges via path heuristic"
+    },
+    {
+      "done": false,
+      "text": "New config keys in .sutra/components.toml: cochange_threshold (f64, default 0.5), cochange_weight (f64, blending factor), cochange_window_days (u32, default 90)"
+    },
+    {
+      "done": false,
+      "text": "Staleness guard updated to account for co-change data freshness"
+    },
+    {
+      "done": false,
+      "text": "Existing sutra_cochange tool continues to work (no regression)"
+    }
+  ],
+  "decisions": [
+    "Persist co-change data in a commit_files table (not on-demand git log). Shared substrate for L4 metrics later.",
+    "Use Jaccard coefficient for correlation, configurable threshold defaulting to 0.5 in .sutra/components.toml",
+    "Hidden-only edges: only add co-change edges where NO static reference edge exists between the pair",
+    "Reasonable default weight with config knob in components.toml for blending factor",
+    "Exclude test-production pairs via path heuristic (test/tests/spec/__tests__)",
+    "Git history window matches existing cochange tool (90 days) with config override in components.toml",
+    "Orient and review surfacing are separate tasks — this task is clustering infrastructure only",
+    "Normalized commits(hash, committed_at, author) table alongside commit_files — avoids repeating metadata per file row, gives L4 time-decay and ownership data. Per-function blame rollup is separate/on-demand."
+  ],
+  "implementation_plan": "## Approach\n\nAdd a normalized `commits` + `commit_files` schema populated from `git log` during the parse pipeline. Compute Jaccard coefficients between file pairs, filter to hidden-only edges (no static ref edge, no test-prod pairs), and inject them into the clustering graph with a configurable weight below static edges. The `commits` table includes `committed_at` and `author` for L4 reuse (change_entropy time-decay, ownership_risk).\n\n## Files\n\n- **Create**: `migrations/0024_commit_files.sql` — commits and commit_files tables, clustering_meta column\n- **Modify**: `src/git.rs` — add `git_commit_files()` bulk indexing function returning commit metadata + file paths\n- **Modify**: `src/db/mod.rs` — add `CommitRow`, row struct\n- **Modify**: `src/db/graph.rs` — add commit/commit_files insert, Jaccard query, hidden coupling query\n- **Modify**: `src/components.rs` — extend `ComponentsConfig`, add `is_test_file`, integrate co-change edges into `build_weighted_adjacency`, update `clustering_config_hash`, update staleness guard\n- **Modify**: `src/pipeline.rs` — add git history population step in `post_parse_sequence`\n- **Test**: `tests/cochange-test.rs` — extend with Jaccard, hidden coupling, and config tests\n\n## Steps\n\n### Step 1: Migration 0024 — commits + commit_files tables\n\n```sql\nCREATE TABLE IF NOT EXISTS commits (\n    hash         TEXT PRIMARY KEY,\n    committed_at INTEGER NOT NULL,\n    author       TEXT NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS commit_files (\n    commit_hash TEXT NOT NULL REFERENCES commits(hash) ON DELETE CASCADE,\n    file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,\n    PRIMARY KEY (commit_hash, file_id)\n);\nCREATE INDEX idx_commit_files_file ON commit_files(file_id);\n\nALTER TABLE component_clustering_meta ADD COLUMN commit_file_count INTEGER DEFAULT 0;\n```\n\nNormalized: commit metadata lives once in `commits`, file associations in `commit_files`. The FK on `commits(hash)` cascades so clearing commits clears commit_files. The FK on `files(id)` cascades so pruned files clean up automatically.\n\n### Step 2: git.rs — bulk commit-file indexing function\n\nAdd `git_commit_files(workspace_root, window_days) -> Result<Vec<CommitFile>>` where `CommitFile { hash, timestamp, author, path }`.\n\n```rust\npub struct CommitFile {\n    pub hash: String,\n    pub timestamp: i64,   // unix epoch\n    pub author: String,\n    pub path: String,\n}\n\npub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<CommitFile>> {\n    // git log --format=\"COMMIT_SEP %H %at %ae\" --name-only --no-renames --since \"{window_days} days ago\"\n    // %H = full hash, %at = author timestamp (unix), %ae = author email\n    // Parse: COMMIT_SEP lines give metadata, subsequent non-empty lines are file paths.\n    // Return one CommitFile per (commit, file) pair.\n}\n```\n\nUses `%at` (unix timestamp) and `%ae` (author email) — compact, unambiguous, no timezone parsing. Similar pattern to existing `git_churn`.\n\n### Step 3: db — commits/commit_files operations and Jaccard query\n\nIn `src/db/mod.rs`, add:\n```rust\npub struct CommitRow {\n    pub hash: String,\n    pub committed_at: i64,\n    pub author: String,\n}\n```\n\nIn `src/db/graph.rs`, add:\n\n```rust\n/// Clear and repopulate commits + commit_files for the current window.\n/// Accepts deduplicated commits and (commit_hash, file_id) pairs.\npub fn replace_commit_files(&self, commits: &[CommitRow], pairs: &[(String, i64)]) -> Result<usize>\n\n/// All file pairs with Jaccard >= threshold. Returns (file_a, file_b, jaccard, shared_count).\npub fn cochange_pairs_above_threshold(&self, threshold: f64) -> Result<Vec<(i64, i64, f64, i64)>>\n```\n\nJaccard SQL:\n```sql\nWITH file_commit_counts AS (\n    SELECT file_id, COUNT(*) AS cnt FROM commit_files GROUP BY file_id\n),\nshared AS (\n    SELECT a.file_id AS fa, b.file_id AS fb, COUNT(*) AS shared_cnt\n    FROM commit_files a\n    JOIN commit_files b ON a.commit_hash = b.commit_hash AND a.file_id < b.file_id\n    GROUP BY a.file_id, b.file_id\n)\nSELECT s.fa, s.fb, s.shared_cnt,\n       CAST(s.shared_cnt AS REAL) / (ca.cnt + cb.cnt - s.shared_cnt) AS jaccard\nFROM shared s\nJOIN file_commit_counts ca ON ca.file_id = s.fa\nJOIN file_commit_counts cb ON cb.file_id = s.fb\nWHERE CAST(s.shared_cnt AS REAL) / (ca.cnt + cb.cnt - s.shared_cnt) >= ?1\n```\n\nHidden-edge filter (no static ref) and test-pair exclusion applied in Rust post-query, keeping SQL simple and logic testable.\n\n### Step 4: Test-file heuristic\n\nAdd in `src/components.rs`:\n\n```rust\nfn is_test_file(path: &str) -> bool {\n    let segments: Vec<&str> = path.split('/').collect();\n    segments.iter().any(|s| matches!(*s, \"test\" | \"tests\" | \"spec\" | \"__tests__\"))\n        || path.contains(\"_test.\") || path.contains(\".test.\")\n        || path.contains(\"_spec.\") || path.contains(\".spec.\")\n        || segments.last().map_or(false, |s| s.starts_with(\"test_\"))\n}\n```\n\n### Step 5: Extend ComponentsConfig\n\n```rust\n#[derive(Debug, Clone, Default, Deserialize)]\npub struct ComponentsConfig {\n    pub resolution: Option<f64>,\n    pub staleness_threshold: Option<f64>,\n    pub cochange_threshold: Option<f64>,      // Jaccard cutoff, default 0.5\n    pub cochange_weight: Option<f64>,          // scaling factor, default 5.0\n    pub cochange_window_days: Option<u32>,     // git history window, default 90\n}\n```\n\nUpdate `clustering_config_hash` to include the three new fields.\n\n### Step 6: Integrate into clustering graph\n\n```rust\nfn add_cochange_edges(\n    adj: &mut WeightedAdj,\n    db: &Db,\n    files: &[FileRow],\n    config: &ComponentsConfig,\n) -> Result<usize> {\n    let threshold = config.cochange_threshold.unwrap_or(0.5);\n    let weight_scale = config.cochange_weight.unwrap_or(5.0);\n\n    let pairs = db.cochange_pairs_above_threshold(threshold)?;\n\n    // file_id -> path for test heuristic\n    let id_to_path: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.path.as_str())).collect();\n\n    // Set of static edges (canonical order) for hidden-only filter\n    let static_edges: HashSet<(i64, i64)> = adj.iter()\n        .flat_map(|(&a, neighbors)| neighbors.iter().map(move |&(b, _)| (a.min(b), a.max(b))))\n        .collect();\n\n    let mut added = 0;\n    for (fa, fb, jaccard, _shared) in pairs {\n        let (lo, hi) = (fa.min(fb), fa.max(fb));\n        if static_edges.contains(&(lo, hi)) { continue; }\n        if let (Some(pa), Some(pb)) = (id_to_path.get(&fa), id_to_path.get(&fb)) {\n            if is_test_file(pa) != is_test_file(pb) { continue; }\n        }\n        let w = weight_scale * jaccard;\n        adj.entry(fa).or_default().push((fb, w));\n        adj.entry(fb).or_default().push((fa, w));\n        added += 1;\n    }\n    Ok(added)\n}\n```\n\nCalled from `run_clustering` after `apply_boundary_hints`, before `louvain`/`auto_tune`.\n\n### Step 7: Pipeline integration\n\nIn `post_parse_sequence`, between pagerank and discover_components:\n\n```rust\nlet cochange_config = components::load_config(workspace_root)?;\nlet window = cochange_config.cochange_window_days.unwrap_or(90);\nlet commit_file_data = git::git_commit_files(workspace_root, window)?;\n\n// Deduplicate commits, resolve paths to file_ids\nlet mut commits_map: HashMap<&str, &CommitFile> = HashMap::new();\nfor cf in &commit_file_data {\n    commits_map.entry(cf.hash.as_str()).or_insert(cf);\n}\nlet commit_rows: Vec<CommitRow> = commits_map.values()\n    .map(|cf| CommitRow { hash: cf.hash.clone(), committed_at: cf.timestamp, author: cf.author.clone() })\n    .collect();\n\nlet path_to_id: HashMap<&str, i64> = all_files.iter().map(|f| (f.path.as_str(), f.id)).collect();\nlet db_pairs: Vec<(String, i64)> = commit_file_data.iter()\n    .filter_map(|cf| path_to_id.get(cf.path.as_str()).map(|&id| (cf.hash.clone(), id)))\n    .collect();\n\ndb.replace_commit_files(&commit_rows, &db_pairs)?;\n```\n\n### Step 8: Update staleness guard\n\n1. `clustering_config_hash` includes cochange_threshold, cochange_weight, cochange_window_days.\n2. `is_clustering_stale` checks `commit_file_count` delta alongside `edge_count` — same ratio threshold.\n3. After clustering, `upsert_clustering_meta` stores the new `commit_file_count`.\n\n### Step 9: Tests\n\n1. `git_commit_files` returns correct `CommitFile` structs with hash, timestamp, author, path\n2. `replace_commit_files` populates both tables, `cochange_pairs_above_threshold` returns correct Jaccard values\n3. Hidden-only filter: pair with static ref edge is excluded from `add_cochange_edges`\n4. Test-prod exclusion: `src/foo.rs` + `tests/foo_test.rs` pair excluded\n5. `is_test_file` heuristic: various path patterns\n6. Config parsing with new fields\n7. End-to-end: co-change edges appear in weighted adjacency when threshold is met\n\n## Acceptance criteria coverage\n\n- [x] \\\"commits + commit_files tables populated during parse pipeline\\\" → Steps 1, 2, 3, 7\n- [x] \\\"Jaccard coefficient computed from commit_files\\\" → Step 3\n- [x] \\\"Hidden co-change edges added to clustering graph\\\" → Step 6\n- [x] \\\"Test-production pairs excluded\\\" → Steps 4, 6\n- [x] \\\"New config keys in components.toml\\\" → Step 5\n- [x] \\\"Staleness guard updated\\\" → Step 8\n- [x] \\\"Existing sutra_cochange tool continues to work\\\" → No changes to cochange.rs; commit_files is additive",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/survey-repowise-health.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "a729467"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "L1",
+    "component-discovery",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1780459381385,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 67
+      }
+    },
+    {
+      "ts": 1780575877376,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1780576441695,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780577300123,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780577343804,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780580520169,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Schema request from 5e brainstorm (sutra/43): L4 health metrics need a normalized commits table alongside commit_files. Requested schema: commits(hash TEXT PK, committed_at INTEGER, author TEXT). This enables change_entropy (time decay), ownership_risk (author attribution), and code_age_volatility (line age) without a separate git log pass. Please widen migration 0024 before it lands.",
+      "ts": 1780576856074
+    },
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\n[high] Clustering staleness ignores co-change graph content changes (src/components.rs:728-738)\nis_clustering_stale compares only total commit_file_count. If the 90-day window rolls forward or replace_commit_files swaps rows with different rows but the same count, staleness returns false and clustering uses stale co-change edges. Recommend persisting a freshness token (digest of rows, max committed_at + count, or computed edge digest) and reclustering when it changes.\n\n[high] Failed or empty git-history refresh leaves old co-change rows active (src/pipeline.rs:552-578)\ngit_commit_files errors are converted to empty vec via unwrap_or_default, and empty results skip replace_commit_files entirely. Transient git failure or valid empty window leaves previous commit_files rows active, silently driving clustering/orient/review with stale data. Recommend distinguishing successful empty history from git failure; clear tables on successful empty scans; propagate/log error on git failures.",
+      "ts": 1780579536756
+    }
+  ],
+  "created_at": 1780459381385,
+  "updated_at": 1780580520169,
+  "completed_at": 1780580520169,
+  "edges": [
+    {
+      "id": "019e9297-ee9a-7f52-8eeb-b2c7cf84fbe7",
+      "edge_type": "depends_on",
+      "source": "sutra/81",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780575891098
+    },
+    {
+      "id": "019e9297-f0f4-7600-8f99-fa9fb2841f73",
+      "edge_type": "depends_on",
+      "source": "sutra/82",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780575891700
+    },
+    {
+      "id": "019e92b2-c7c4-7f73-94c1-7e5cebb24c25",
+      "edge_type": "depends_on",
+      "source": "sutra/86",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780577650628
+    }
+  ]
+}

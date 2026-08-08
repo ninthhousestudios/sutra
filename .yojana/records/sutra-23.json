@@ -1,0 +1,44 @@
+{
+  "id": "019e0d83-4141-7af0-866b-b4476ed5e095",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/23",
+  "sequence_number": 23,
+  "title": "look into stale indexes",
+  "description": "twice the index has been stale when it shouldnt be. i.e., we werent working in the dir for a while. the computer was on. we were just working in sutra/ and that happened...but then i look at the logs: May 09 12:08:42 amma sutra[107899]: 2026-05-09T16:08:42.359185Z  INFO sutra::daemon: workspace sutra is stale, triggering reparse\nMay 09 12:08:42 amma sutra[107899]: 2026-05-09T16:08:42.365666Z  INFO sutra::pipeline: walked workspace workspace=sutra files_found=62\nMay 09 12:08:42 amma sutra[107899]: 2026-05-09T16:08:42.382710Z  INFO sutra::daemon: reparsed sutra: 0/62 files changed, 0 symbols in 18ms...so it looks like parsed right after...was the check the impetus for the parse? so there is some kind mismatch betwen stale checks, the sutra watcher, and how sutra parses",
+  "category": null,
+  "status": "wontfix",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1778343166273,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 23
+      }
+    },
+    {
+      "ts": 1780709739875,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778343166273,
+  "updated_at": 1780709739875,
+  "completed_at": null,
+  "edges": []
+}

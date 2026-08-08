@@ -1,0 +1,111 @@
+{
+  "id": "019ed23c-68e1-7192-8565-fcf4fbaa01b7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/174",
+  "sequence_number": 174,
+  "title": "Strategy refinement + pattern hardening for sutra_explore",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to build\n\nComplete the strategy selector and pattern expansion to their full PRD spec.\n\n**Strategy refinement:**\n1. Full 5-rule selector: top score > 2× second → read_top_n n=1; top 2-3 within 2× → read_top_n n=2-3; <3 total → read_all; 10+ diffuse hits → narrow_query; 80%+ same component → explore_component.\n2. narrow_query rationale includes suggested refinement patterns based on component clustering of the diffuse hits.\n3. Summary section: total_items, direct_matches, fan_out_items, components_touched, total_estimated_tokens.\n\n**Pattern hardening:**\n4. CamelCase pattern variants (e.g. \"import parsing\" → `ImportPars`).\n5. Qualified-name detection: query containing `::` falls through to sutra_find behavior, result wrapped in same response shape with read_top_n n=1 strategy.\n\n**Tests:**\n6. Strategy selector unit tests covering all 5 rules with mock result sets.\n\n## Acceptance criteria\n\n- [ ] All 5 strategy rules produce correct action + rationale\n- [ ] narrow_query suggests refinements based on component clustering\n- [ ] Summary section present with all fields\n- [ ] CamelCase pattern variants generated\n- [ ] Query with `::` detected and handled via sutra_find fallthrough\n- [ ] Strategy selector unit tests cover all 5 rules\n\n## Blocked by\n\n- sutra/173",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "All 5 strategy rules produce correct action + rationale"
+    },
+    {
+      "done": false,
+      "text": "narrow_query suggests refinements based on component clustering"
+    },
+    {
+      "done": false,
+      "text": "Summary section present with all fields"
+    },
+    {
+      "done": false,
+      "text": "CamelCase pattern variants generated"
+    },
+    {
+      "done": false,
+      "text": "Query with :: detected and handled via sutra_find fallthrough"
+    },
+    {
+      "done": false,
+      "text": "Strategy selector unit tests cover all 5 rules"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "All 6 acceptance criteria landed in one commit. Key decisions: (1) select_strategy takes scores slice + component counts instead of bare hit counts — enables score-distribution and component-concentration rules; (2) 0.4 threshold for weak top score in narrow_query rule — tunable without contract change; (3) CamelCase truncation takes first 4 chars of last word (matching PRD example ImportPars); (4) :: fallthrough short-circuits handle() entirely, wrapping sutra_find results in explore response shape. No plan deviation — SymbolRow has all-public fields, so tests construct mock data directly without needing an intermediate struct.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "6aeafbd"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy"
+  ],
+  "history": [
+    {
+      "ts": 1781643634913,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 174
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781654628811,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781654635858,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781643634913,
+  "updated_at": 1781654635858,
+  "completed_at": 1781654635858,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019ed23c-bc01-75d1-8183-8590bd5e53a7",
+      "edge_type": "depends_on",
+      "source": "sutra/174",
+      "target": "sutra/173",
+      "note": null,
+      "created_at": 1781643656193
+    },
+    {
+      "id": "019ed23c-be69-7933-b08f-af31138b5283",
+      "edge_type": "depends_on",
+      "source": "sutra/175",
+      "target": "sutra/174",
+      "note": null,
+      "created_at": 1781643656809
+    }
+  ]
+}

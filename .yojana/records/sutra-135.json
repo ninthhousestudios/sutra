@@ -1,0 +1,86 @@
+{
+  "id": "019eb262-0af1-7460-a347-83d94f044a06",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/135",
+  "sequence_number": 135,
+  "title": "Unify waiver partition logic into a waivers module (code seam)",
+  "description": "Create a waivers module with WaiverTarget enum (Constraint, Convention, HealthFinding), a Waivable trait (finding → match key), and a single partition(findings, waivers) -> (active, waived) function. Replace the six hand-rolled partition loops at call sites. Three DB impls stay as row adapters behind the module. Add reconcile-orphans for health waivers (currently missing). Schema merge into one durable table deferred per ADR-0002 — separate change if ever pursued.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Wave 1: waivers module + constraint impl. Wave 2: convention impl. Wave 3: health impl + reconcile-orphans. See plan file for details.",
+  "execution_record": "Three commits: (1) waivers module with Waivable trait, partition fn, ConstraintFinding impl — replaces both evaluate_dd and evaluate_raw hand-rolled loops, fixes evaluate_raw symbol_qualified_name inconsistency. (2) ConventionViolation impl with ConventionWaiverSet — replaces 4-way probe in review.rs, removes WaivedViolation. (3) ResolvedHealthFinding impl — get_health_findings_with_waiver_status routes through partition internally, adds reconcile_orphaned_health_waivers. Net +110 lines (125 new module, -171 deleted partition loops + types, +156 tests/adapters). All 805 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/133",
+      "label": "do after: constraint eval unification"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/134",
+      "label": "do after: convention rebuild extraction"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 3"
+    },
+    {
+      "type": "git:commit",
+      "value": "9af0401"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "waivers"
+  ],
+  "history": [
+    {
+      "ts": 1781109230321,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 135
+      }
+    },
+    {
+      "ts": 1781120558036,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781121514106,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention.\n\nFinding (medium): `reconcile_orphaned_health_waivers` (src/db/health.rs:281-288) only joins on `biomarker_kind` + `file_path`, ignoring `symbol_qualified_name`. A symbol-scoped waiver for `src/foo.rs::old_fn` won't be flagged as orphaned if another `nested_complexity` finding exists in `src/foo.rs` for a different symbol. This leaves stale durable waivers that could silently reactivate if a future symbol reuses the qualified name.\n\nRecommendation: Mirror the matcher semantics in SQL — for `w.symbol_qualified_name IS NULL`, require any finding for the same biomarker/file; for non-null symbol waivers, join `health_findings` → `symbols` and require `s.qualified_name = w.symbol_qualified_name`. Add a regression test with two findings in one file where the waived symbol disappears but another same-biomarker finding remains.",
+      "ts": 1781121788943
+    }
+  ],
+  "created_at": 1781109230321,
+  "updated_at": 1781127916910,
+  "completed_at": 1781121514106,
+  "edges": []
+}

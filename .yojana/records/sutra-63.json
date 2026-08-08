@@ -1,0 +1,124 @@
+{
+  "id": "019e85c5-8ed1-7f71-a978-bf8d60bc1b1f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/63",
+  "sequence_number": 63,
+  "title": "5c-6: convention drift detection",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nDetect convention drift via attribute distribution entropy per component, tracked over time.\n\nKey pieces:\n- `convention_snapshots` table (ephemeral, append-only): component_id, snapshot_ts, entropy, symbol_count, attribute_distribution_hash\n- For each component at each FCA rebuild: collect symbols, compute attribute proportions, calculate Shannon entropy\n- Drift alert when entropy increases by > 0.15 over 3 consecutive snapshots\n- Drift report includes which attributes are diverging (proportion moving toward 0.5)\n- Suppress drift alerts for components in sketch mode (ADR-0001)\n- Surface in review output and as a health metric\n\n## Acceptance criteria\n\n- [ ] convention_snapshots table stores entropy per component per rebuild\n- [ ] Shannon entropy correctly computed from attribute distributions\n- [ ] Drift alert fires when entropy increases > 0.15 over 3 snapshots\n- [ ] No drift alert on flat or decreasing entropy\n- [ ] Sketch mode components don't trigger drift alerts\n- [ ] Drift report identifies which specific attributes are diverging\n- [ ] Tests: entropy computation with known distributions, trend detection, sketch mode suppression\n\n## Blocked by\n\n- sutra/61 (per-component convention discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] convention_snapshots table stores entropy per component per rebuild"
+    },
+    {
+      "done": false,
+      "text": "[x] Shannon entropy correctly computed from attribute distributions"
+    },
+    {
+      "done": false,
+      "text": "[x] Drift alert fires when entropy increases > 0.15 over 3 snapshots"
+    },
+    {
+      "done": false,
+      "text": "[x] No drift alert on flat or decreasing entropy"
+    },
+    {
+      "done": false,
+      "text": "[x] Sketch mode components don't trigger drift alerts"
+    },
+    {
+      "done": false,
+      "text": "[x] Drift report identifies which specific attributes are diverging"
+    },
+    {
+      "done": false,
+      "text": "[x] Tests: entropy computation with known distributions, trend detection, sketch mode suppression"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nHook into the existing FCA rebuild flow in `build_findings`. After computing per-component conventions, compute Shannon entropy of each active component's attribute distribution, store an append-only snapshot, and check whether the last 3 snapshots show monotonically increasing entropy with net delta > 0.15. Drift alerts carry a report of which specific attributes are diverging (proportion moving toward 0.5). A `lifecycle_state` column on `components` enables sketch-mode suppression — sketch components skip both recording and alerting.\n\nTwo migrations: one ephemeral (convention_snapshots table, dropped on reindex — drift detection gracefully resets) and one durable (ALTER TABLE components for lifecycle_state). This follows the convention_history precedent: derived temporal data is ephemeral, human-set state is durable.\n\nThe attribute_distribution is stored as JSON alongside a blake3 hash. The hash enables quick \"did anything change?\" checks; the full distribution enables \"which attributes diverged?\" reporting. This deviates slightly from the task description's column list (which only mentions hash) but is necessary to satisfy the \"drift report identifies diverging attributes\" AC.\n\n## Files\n\n- **Create**: `migrations/0020_convention_snapshots.sql` — ephemeral snapshot table with index\n- **Create**: `migrations/0021_component_lifecycle.sql` — durable lifecycle_state column on components\n- **Modify**: `src/db/migrations.rs` (append to MIGRATIONS array) — register both migrations\n- **Modify**: `src/db/mod.rs` (~line 53) — add TABLE_REGISTRY entry for convention_snapshots\n- **Modify**: `src/db/conventions.rs` — add ConventionSnapshotRow struct, insert_convention_snapshot, recent_convention_snapshots\n- **Modify**: `src/db/components.rs` — add component_lifecycle_state, set_component_lifecycle\n- **Create**: `src/conventions/drift.rs` — entropy math, distribution computation, drift detection, divergence analysis\n- **Modify**: `src/conventions/mod.rs` — add `pub mod drift;`\n- **Modify**: `src/tools/review.rs` — add drift_alerts to ReviewFindings, call drift detection in build_findings, serialize in compute()\n\n## Steps\n\n### Step 1: Migration — convention_snapshots table\n\nCreate `migrations/0020_convention_snapshots.sql`:\n\n```sql\nCREATE TABLE IF NOT EXISTS convention_snapshots (\n    id                          INTEGER PRIMARY KEY AUTOINCREMENT,\n    component_id                TEXT    NOT NULL,\n    snapshot_ts                 TEXT    NOT NULL DEFAULT (datetime('now')),\n    entropy                     REAL    NOT NULL,\n    symbol_count                INTEGER NOT NULL,\n    attribute_distribution      TEXT    NOT NULL,\n    attribute_distribution_hash TEXT    NOT NULL\n);\n\nCREATE INDEX IF NOT EXISTS idx_conv_snapshots_component_ts\n    ON convention_snapshots(component_id, snapshot_ts DESC);\n```\n\n### Step 2: Migration — component lifecycle_state column\n\nCreate `migrations/0021_component_lifecycle.sql`:\n\n```sql\nALTER TABLE components ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'stable';\n```\n\n### Step 3: Register migrations and table metadata\n\nIn `src/db/migrations.rs`, append to MIGRATIONS (after the 0019 entry):\n\n```rust\n(\n    \"0020_convention_snapshots\",\n    include_str!(\"../../migrations/0020_convention_snapshots.sql\"),\n    true,  // ephemeral — recomputable, resets on reindex\n),\n(\n    \"0021_component_lifecycle\",\n    include_str!(\"../../migrations/0021_component_lifecycle.sql\"),\n    false,  // durable — human-set state\n),\n```\n\nIn `src/db/mod.rs` TABLE_REGISTRY, after the convention_waivers entry:\n\n```rust\nTableMeta { name: \"convention_snapshots\", partition: TablePartition::Ephemeral, is_virtual: false },\n```\n\n### Step 4: DB layer — snapshot row type and methods\n\nIn `src/db/conventions.rs`, add struct after ConventionWaiverRow:\n\n```rust\n#[derive(Debug, Clone)]\npub struct ConventionSnapshotRow {\n    pub id: i64,\n    pub component_id: String,\n    pub snapshot_ts: String,\n    pub entropy: f64,\n    pub symbol_count: i64,\n    pub attribute_distribution: String,\n    pub attribute_distribution_hash: String,\n}\n```\n\nAdd to the `impl Db` block:\n\n```rust\npub fn insert_convention_snapshot(\n    &self,\n    component_id: &str,\n    entropy: f64,\n    symbol_count: i64,\n    attribute_distribution: &str,\n    attribute_distribution_hash: &str,\n) -> Result<i64> {\n    let conn = self.conn.lock();\n    conn.execute(\n        \"INSERT INTO convention_snapshots\n         (component_id, entropy, symbol_count, attribute_distribution, attribute_distribution_hash)\n         VALUES (?1, ?2, ?3, ?4, ?5)\",\n        params![component_id, entropy, symbol_count, attribute_distribution, attribute_distribution_hash],\n    )?;\n    Ok(conn.last_insert_rowid())\n}\n\npub fn recent_convention_snapshots(\n    &self,\n    component_id: &str,\n    limit: usize,\n) -> Result<Vec<ConventionSnapshotRow>> {\n    let conn = self.conn.lock();\n    let mut stmt = conn.prepare(\n        \"SELECT id, component_id, snapshot_ts, entropy, symbol_count,\n                attribute_distribution, attribute_distribution_hash\n         FROM convention_snapshots\n         WHERE component_id = ?1\n         ORDER BY snapshot_ts DESC\n         LIMIT ?2\",\n    )?;\n    let rows = stmt.query_map(params![component_id, limit as i64], |row| {\n        Ok(ConventionSnapshotRow {\n            id: row.get(0)?,\n            component_id: row.get(1)?,\n            snapshot_ts: row.get(2)?,\n            entropy: row.get(3)?,\n            symbol_count: row.get(4)?,\n            attribute_distribution: row.get(5)?,\n            attribute_distribution_hash: row.get(6)?,\n        })\n    })?.collect::<rusqlite::Result<Vec<_>>>()?;\n    Ok(rows)\n}\n```\n\n### Step 5: DB layer — component lifecycle methods\n\nIn `src/db/components.rs`, add to the `impl Db` block:\n\n```rust\npub fn component_lifecycle_state(&self, component_id: &str) -> Result<String> {\n    let conn = self.conn.lock();\n    conn.query_row(\n        \"SELECT lifecycle_state FROM components WHERE id = ?1\",\n        params![component_id],\n        |row| row.get(0),\n    ).or_else(|e| match e {\n        rusqlite::Error::QueryReturnedNoRows => Ok(\"stable\".to_string()),\n        other => Err(other.into()),\n    })\n}\n\npub fn set_component_lifecycle(&self, component_id: &str, state: &str) -> Result<()> {\n    let conn = self.conn.lock();\n    conn.execute(\n        \"UPDATE components SET lifecycle_state = ?1, updated_at = datetime('now') WHERE id = ?2\",\n        params![state, component_id],\n    )?;\n    Ok(())\n}\n```\n\n### Step 6: Drift detection module\n\nCreate `src/conventions/drift.rs`:\n\nCore types:\n```rust\npub struct DriftAlert {\n    pub component_id: String,\n    pub component_name: String,\n    pub entropy_old: f64,\n    pub entropy_new: f64,\n    pub delta: f64,\n    pub diverging_attributes: Vec<DivergingAttribute>,\n}\n\npub struct DivergingAttribute {\n    pub attribute: String,\n    pub old_proportion: f64,\n    pub new_proportion: f64,\n}\n```\n\nCore functions:\n- `shannon_entropy(distribution: &HashMap<String, f64>) -> f64` — standard `-Σ p·log₂(p)` over values, skipping p=0 and p=1\n- `compute_attribute_distribution(symbols: &[SymbolAttrs]) -> HashMap<String, f64>` — for each attribute, count(symbols having it) / total_symbols\n- `detect_drift(db, component_id, name, current_dist, current_entropy) -> Result<Option<DriftAlert>>` — fetches last DRIFT_WINDOW-1 snapshots, checks net delta > 0.15 AND monotonically non-decreasing, identifies diverging attributes\n- `find_diverging_attributes(old, new) -> Vec<DivergingAttribute>` — attributes where `|new_p - 0.5| < |old_p - 0.5|`, sorted by magnitude of shift\n- `record_and_detect_drift(db, components: &[(id, name, symbols)]) -> Result<Vec<DriftAlert>>` — top-level entry point: skips sketch-mode components, computes distribution + entropy, runs detection, stores snapshot\n\nConstants: `DRIFT_THRESHOLD = 0.15`, `DRIFT_WINDOW = 3`\n\nKey detail: `detect_drift` is called BEFORE `insert_convention_snapshot` — the current entropy is compared against the previous window, not included in it.\n\n### Step 7: Register drift module\n\nIn `src/conventions/mod.rs`, add `pub mod drift;` after the `engine` line.\n\n### Step 8: Integrate into review pipeline\n\nIn `src/tools/review.rs`:\n\n**ReviewFindings** — add field:\n```rust\npub drift_alerts: Vec<conventions::drift::DriftAlert>,\n```\n(Vec<T> implements Default, so #[derive(Default)] still works.)\n\n**build_findings** — after the per-component FCA loop (after line ~312, before line 315), collect per-component symbol groups and run drift detection:\n\n```rust\nlet mut comp_symbol_groups: Vec<(String, String, Vec<conventions::SymbolAttrs>)> = Vec::new();\nfor (comp_id, name, paths) in &comp_with_paths {\n    let path_set: std::collections::HashSet<&str> = paths.iter().map(|p| p.as_str()).collect();\n    let comp_syms: Vec<_> = all_sym_attrs.iter()\n        .filter(|s| path_set.contains(s.file.as_str()))\n        .cloned().collect();\n    if comp_syms.len() >= 2 {\n        comp_symbol_groups.push((comp_id.clone(), name.clone(), comp_syms));\n    }\n}\nlet drift_alerts = conventions::drift::record_and_detect_drift(db, &comp_symbol_groups)\n    .unwrap_or_default();\n```\n\nReturn `drift_alerts` in the ReviewFindings struct.\n\n**compute** — serialize drift alerts into JSON:\n\n```rust\nlet drift_alerts_out: Vec<_> = findings.drift_alerts.iter().map(|a| {\n    let diverging: Vec<_> = a.diverging_attributes.iter().map(|d| {\n        json!({\n            \"attribute\": d.attribute,\n            \"old_proportion\": scoring::round3(d.old_proportion),\n            \"new_proportion\": scoring::round3(d.new_proportion),\n        })\n    }).collect();\n    json!({\n        \"component_id\": a.component_id,\n        \"component_name\": a.component_name,\n        \"entropy_old\": scoring::round3(a.entropy_old),\n        \"entropy_new\": scoring::round3(a.entropy_new),\n        \"delta\": scoring::round3(a.delta),\n        \"diverging_attributes\": diverging,\n    })\n}).collect();\n```\n\nAdd `\"drift_alerts\": drift_alerts_out` to the JSON object (and `\"drift_alerts\": []` to the empty-diff early return).\n\n### Step 9: Tests\n\nIn `src/conventions/drift.rs` `#[cfg(test)]` module:\n\n**Entropy math:**\n- `entropy_uniform_distribution` — 4 equiprobable attrs → H = 2.0\n- `entropy_single_attribute` — p=1.0 → H = 0.0\n- `entropy_empty_distribution` — H = 0.0\n- `entropy_known_binary` — two attrs at p=0.5 → H = 1.0\n\n**Distribution computation:**\n- `compute_distribution_from_symbols` — two symbols, verify proportions\n\n**Drift detection:**\n- `drift_detected_increasing_entropy` — 3 monotonically increasing snapshots with delta > 0.15 → alert fires\n- `drift_not_detected_flat_entropy` — constant entropy → no alert\n- `drift_not_detected_decreasing_entropy` — entropy drops → no alert\n- `drift_not_detected_non_monotonic` — net increase > 0.15 but middle dips → no alert\n- `drift_not_detected_insufficient_snapshots` — fewer than DRIFT_WINDOW → no alert\n\n**Sketch mode suppression:**\n- `sketch_mode_suppresses_drift` — component in sketch mode → no alert, no snapshot recorded\n\n**Diverging attribute identification:**\n- `find_diverging_identifies_attrs_moving_toward_half` — attrs that moved closer to 0.5 are reported; unchanged attrs are not\n\n## Acceptance criteria coverage\n\n- [x] \"convention_snapshots table stores entropy per component per rebuild\" → Steps 1, 3, 4, 6\n- [x] \"Shannon entropy correctly computed from attribute distributions\" → Step 6 + tests\n- [x] \"Drift alert fires when entropy increases > 0.15 over 3 snapshots\" → Step 6 (detect_drift) + tests\n- [x] \"No drift alert on flat or decreasing entropy\" → Step 6 (monotonic check) + tests\n- [x] \"Sketch mode components don't trigger drift alerts\" → Steps 2, 5, 6 + tests\n- [x] \"Drift report identifies which specific attributes are diverging\" → Step 6 (find_diverging_attributes) + tests\n- [x] \"Tests: entropy computation with known distributions, trend detection, sketch mode suppression\" → Step 9",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "a8b4ede"
+    },
+    {
+      "type": "git:commit",
+      "value": "ca21a29"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "needs-plan",
+    "review-c"
+  ],
+  "history": [
+    {
+      "ts": 1780360777425,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 63
+      }
+    },
+    {
+      "ts": 1780425134823,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780425570544,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780425723978,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780429417073,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780360777425,
+  "updated_at": 1780429417073,
+  "completed_at": 1780429417073,
+  "edges": [
+    {
+      "id": "019e85c6-6b02-7fa2-baa7-8903d39c6a8d",
+      "edge_type": "depends_on",
+      "source": "sutra/63",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360833794
+    }
+  ]
+}

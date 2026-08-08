@@ -1,0 +1,92 @@
+{
+  "id": "019eae92-0811-77d0-a64f-911d292705f0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/130",
+  "sequence_number": 130,
+  "title": "Wave 5: contract batch — version/roster, rules error partition, [introduced] honesty",
+  "description": "Three contract-drift findings, one commit: (a) get_info() hardcodes \"sutra v0.2.1\" and lists 21 of 33 tools (Cargo.toml: 0.7.2; README claims 28) — misled this review's own pack build; (b) one malformed constraint in rules.toml silently disables ALL constraints in orient and guard (unwrap_or_default / fail-open) while sutra_review hard-errors — inconsistent contracts for the same human mistake on the durable tier; (c) review labels pre-existing violations from changed files as [introduced]. Findings: server-contract-drift, rules-error-silently-disables-constraints, review-introduced-label-overclaims (all MEDIUM). Locations: src/mcp.rs:990-998, src/tools/orient.rs:400, src/guard.rs:304-306, src/rules.rs:184-224, src/tools/review.rs:340-380.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "get_info uses env!(CARGO_PKG_VERSION); tool roster generated from the tool router, not hand-maintained prose"
+    },
+    {
+      "done": false,
+      "text": "README tool count corrected"
+    },
+    {
+      "done": false,
+      "text": "Rules::all_constraints partitions into (valid, errors); valid constraints enforced everywhere; errors surfaced as blocking-severity findings in orient/review/guard — no silent loss, no wholesale failure"
+    },
+    {
+      "done": false,
+      "text": "[introduced] computed from merge-base actual imports, or label renamed until baseline is honest"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Three commits landing all three findings:\n\n1. 76d6b59 — get_info() uses env!(CARGO_PKG_VERSION) and generates tool roster from tool_router.map.keys(). README count corrected to 33, added missing sutra_add_root.\n\n2. fce43db — Rules::all_constraints() returns (Vec<Constraint>, Vec<ConstraintParseError>) instead of Result. Valid constraints still enforced; parse errors surface as blocking findings in orient, guard, review, and constraints tools. Fail-open gap closed.\n\n3. bc76546 — [introduced] label computed from merge-base actual imports via git show + parse_file. Only edges new in the diff are removed for baseline computation. Pre-existing violations no longer overclaimed.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "findings: server-contract-drift, rules-error-silently-disables-constraints, review-introduced-label-overclaims"
+    },
+    {
+      "type": "git:commit",
+      "value": "bc76546"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045266449,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 130
+      }
+    },
+    {
+      "ts": 1781108108106,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781108161792,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045266449,
+  "updated_at": 1781108161792,
+  "completed_at": 1781108161792,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "contract-batch",
+  "edges": [
+    {
+      "id": "019eae92-8449-75a0-b50e-bb1a328df15c",
+      "edge_type": "relates_to",
+      "source": "sutra/130",
+      "target": "sutra/129",
+      "note": null,
+      "created_at": 1781045298249
+    }
+  ]
+}

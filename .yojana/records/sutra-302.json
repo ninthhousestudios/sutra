@@ -1,0 +1,77 @@
+{
+  "id": "019fb442-c28c-7d52-91fc-aacd76e685ac",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/302",
+  "sequence_number": 302,
+  "title": "Dart dead-analysis: identifier_list self-reference + LIKE underscore over-match (sutra/288 follow-up)",
+  "description": "Two confirmed bugs found reviewing e3ded9b (sutra/288 fix). Both verified empirically, not speculative.\n\nBUG 1 [high] — src/parser/dart.rs is_dart_binding_name misses `identifier_list`. Private symbols declared via the bare `identifier_list` form (e.g. `external static var _count;`, and static/field vars without an initializer) have their DECLARATION identifier emit a RefContextKind::Read. The kind-agnostic resolver binds that read back to the same symbol → self-inbound-ref → hidden from find_dead_symbols. This is a false-negative that masks genuine dead private symbols — the inverse of the false-positive sutra/288 fixed. Verified: parsing `class Foo { external static var _dead; }` emits a Read for `_dead` at its own declaration site. Correctly-handled forms (no self-read): `int _count;`, `int _a, _b;` (declared_identifier / initialized_identifier). Catch-clause `catch (_err)` and for-in `for (var _x in ...)` bindings also emit self-Reads but are NOT indexed as dead-checkable symbols, so they are harmless noise (still worth silencing for cleanliness). Fix: recognize identifier_list declaration children as binding names — prefer checking the declaration container / field-name rather than extending the immediate-parent allowlist, since the allowlist has already missed one form. Regression test: private `external static var _dead;` yields zero Read refs at the declaration.\n\nBUG 2 [medium] — src/db/mod.rs:1286-1288 find_unreachable_files. The `%_test.dart` / `%/integration_test/%` LIKE patterns leave `_` as a single-char wildcard. Verified in sqlite: `'latest.dart' LIKE '%_test.dart'` = 1 and `'contest.dart' LIKE '%_test.dart'` = 1 — production Dart files ending in \"…test.dart\" are wrongly exempted, hiding genuinely unreachable production files. Fix: `ESCAPE '\\'` with escaped underscores (verified `'%\\_test.dart' ESCAPE '\\'` = 0 for latest.dart) or GLOB. Tests: foo_test.dart excluded; latest.dart / contest.dart still reported.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Private symbols declared via identifier_list (e.g. `external static var _dead;`) emit no Read ref at their own declaration site, and a genuinely-unused such symbol is reported by sutra_dead"
+    },
+    {
+      "done": false,
+      "text": "Catch-clause and for-in private bindings no longer emit spurious self-Read refs (cleanliness)"
+    },
+    {
+      "done": false,
+      "text": "find_unreachable_files LIKE patterns escape literal underscores (or use GLOB); latest.dart and contest.dart are still reported as unreachable while foo_test.dart / test/*.dart remain exempt"
+    },
+    {
+      "done": false,
+      "text": "Regression tests cover both the identifier_list declaration case and the LIKE over-match case"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Verified both bugs empirically before and after the fix (scratch tree-dump + ref-dump tests, sqlite LIKE checks), not from grammar/SQL reasoning alone — the identifier_list vs initialized_identifier distinction was only visible in the actual parse tree. Fix for (1): added `identifier_list` and `catch_clause` to the whole-subtree binding arm and a field-guarded `for_statement` arm (loop `name` is a binding; `value` iterable must still emit a Read). Fix for (2): `ESCAPE '\\'` with escaped underscores. Also silenced harmless catch/for-in binding self-reads (those locals aren't indexed as dead-checkable symbols, so they didn't mask anything, but were noise). Scratch verification files kept out of the repo (moved to /tmp). Pre-existing clippy warnings in test files are unrelated.",
+  "reproduction": null,
+  "root_cause": "Two independent mechanisms in the sutra/288 fix. (1) is_dart_binding_name was built as an immediate-parent allowlist of Dart declaration node kinds, but tree-sitter-dart represents a bare (uninitialized) field/var declaration — `external static var _x;` — as `(declaration (identifier_list (identifier)))`, and that parent kind wasn't in the list; the declared identifier therefore fell through to the private-value-read branch and emitted a Read of itself, which the kind-agnostic resolver bound back to the same symbol. (2) The dead-file query used SQL LIKE with unescaped `_`, which is a single-char wildcard, so `%_test.dart` matched any \"...test.dart\" (latest.dart, contest.dart) rather than a literal underscore.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b1025de"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1785435701900,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 302
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785435807602,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785436067625,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1785435701900,
+  "updated_at": 1785436067625,
+  "completed_at": 1785436067625,
+  "edges": []
+}

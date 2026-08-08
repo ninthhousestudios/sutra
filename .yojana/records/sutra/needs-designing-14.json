@@ -1,0 +1,73 @@
+{
+  "id": "019eb5a4-b21e-78a2-a0b2-8000428ef926",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/14",
+  "sequence_number": 14,
+  "title": "External-crate dependency constraints — forbidden_external kind",
+  "description": "Current constraint kinds (forbidden_dep, boundary, no_cycles, max_fan_in) operate on workspace-internal file/component edges. They cannot express \"crate X must not depend on external crate Y\".\n\nMotivating cases from the adityas/backend PRD: \"report crate knows nothing of Axum, Supabase, or Stripe\"; \"quiver-client is the only place Quiver's protos appear\"; \"nothing links Arjuna\" (AGPL network boundary — legally load-bearing). These are the highest-stakes architectural rules in that project and sutra is blind to all of them.\n\nDesign questions: enforce over use-statements (tree-sitter already sees them) vs Cargo.toml/pubspec.yaml manifest edges vs both? Per-crate scoping in a workspace (\"from = report/**, to_external = axum\")? Guard behavior on manifest edits? An allowlist variant (\"quiver-client is the ONLY crate that may import tonic-generated modules\") may be the more useful primitive than per-pair forbids.",
+  "category": null,
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Design agreed 2026-06-11 (Josh + Claude). Key enabling fact: imports table already persists raw imported_path for external imports (resolved_file_id NULL); zero schema changes needed.\n\n**Two new constraint kinds:**\n- `forbidden_external` { from: path-glob (default \"**\"), crates: [name-globs] } — deny these external crates in scope.\n- `confined_external` { crates: [name-globs], allowed_in: [path-globs] } — crate may ONLY be imported from listed paths.\nCrate identity: first segment of import path (axum::Router → axum), hyphens→underscores, globs allowed. Dart: package:flutter/... → flutter; dart:io literal. No crate-membership modeling — path globs only, like existing resolver.\n\n**Two enforcement signals (both in this task, staged):**\n1. Use-statements: SQL over imports WHERE resolved_file_id IS NULL (no DD engine — cheap direct check in check.rs evaluate paths). Guard: extract_proposed_outgoing_edges (guard.rs:318) already parses all imports before normalize_to_crate_segments discards externals — add raw-import check loop.\n2. Manifest: parse [dependencies] of each Cargo.toml at scan; guard checks Edit/Write on */Cargo.toml by parsing proposed TOML. [dependencies] only — dev/build deps exempt, per-constraint include_dev=true escape hatch. Handle package= renames: match both lib name and package name.\n\n**Known limit (accepted):** cargo add via Bash bypasses PreToolUse guard; manifest violations from shell surface at next parse/review only.\n\n**Plumbing (file:line from exploration):** ConstraintKind enum rules.rs:21; RawConstraint/into_constraint rules.rs:116/134; check arms in constraints/check.rs:71 (evaluate_dd) + evaluate_raw; guard wiring bin/guard.rs:147; display tools/constraints.rs:80; MCP description mcp.rs:405. Findings flow through existing ConstraintFinding (to_path = \"crate:axum\"); waivers unchanged.\n\nSeverity default: blocking (matches forbidden_dep).",
+  "execution_record": "Implemented + landed as sutra commit bafae79 (2026-06-11). Two kinds: forbidden_external {from, crates, include_dev}, confined_external {crates, allowed_in, include_dev}. Both signals shipped: unresolved-import check (SQL over imports WHERE resolved_file_id IS NULL — rust use-paths + dart package:/dart: URIs) and Cargo manifest check ([dependencies] incl. package= renames; dev/build exempt unless include_dev; pubspec.yaml not checked v1). Guard: proposed-content external extraction for rust+dart, new Cargo.toml edit branch (manifests aren't indexed files). Findings flow through ConstraintFinding (to_path = \"crate:NAME\"); waivers, sutra_constraints, sutra_review, orient all wired. Verified: 329 lib tests pass (28 new); live sutra-guard smoke in temp workspace — use-statement edit denied, Cargo.toml dep denied, clean edit silent. Binaries reinstalled to ~/.cargo/bin. Docs: README + vidhi-sutra SKILL.md reference table.\n\nDISCOVERY: in multi-crate Cargo workspaces, sibling-crate imports (use server::… from report/) never resolve (normalize_to_crate_segments handles only crate::/self::/super::/root-crate-name) → forbidden_dep/boundary between workspace crates are silently inert. The new external kinds cover crate-to-crate seams as a side effect. Gap filed: sutra/needs-designing/15.\n\nPending Josh review of commit bafae79 → then mark done.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "bafae79f27ae22261429af5ecaea101fa190857e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781163930142,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 14
+      }
+    },
+    {
+      "ts": 1781164262952,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781165693720,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1781166295583,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Implementation (bafae79) matches the agreed design — both signals staged, dev-dep exemption with include_dev escape hatch, package= rename handling, waivers flow through unchanged, guard covers proposed imports and Cargo.toml edits. Full test suite passes (700+, 0 failures). Notes filed as follow-ups: sutra/146 (check↔external mutual import joins the pre-existing waivers/review/check cycle SCC), sutra/147 (invalid globs silently disable a constraint — bad for the AGPL use case), sutra/148 (signal gaps: leading ::, target-specific deps, workspace-level renames bypass both signals, pubspec parity).",
+      "ts": 1781166288911
+    }
+  ],
+  "created_at": 1781163930142,
+  "updated_at": 1781166295583,
+  "completed_at": 1781166295583,
+  "edges": []
+}

@@ -1,0 +1,140 @@
+{
+  "id": "019e85c6-4a06-7fd2-aa62-2228a0d7c6d8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/66",
+  "sequence_number": 66,
+  "title": "5c-9: convention-aware orient integration",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nAssemble convention-aware orientation responses for agents. When an agent asks about a component/file scope, serve preferred conventions with templates, anti-pattern warnings, drift alerts, and waiver context.\n\nKey pieces:\n- Orient module that pulls from all convention subsystems: preferred conventions (with templates), deprecated/forbidden warnings, drift alerts, active waivers in scope\n- Lifecycle state determines messaging: descriptive = \"observed pattern\" (informational), preferred = \"follow this\" + template, deprecated = \"avoid this\", forbidden = \"anti-pattern\"\n- Integration with existing MCP tools (sutra_impact or new sutra_orient) to include convention data in orientation responses\n- Pending lifecycle proposals surfaced as \"sutra suggests promoting/deprecating X\"\n\n## Acceptance criteria\n\n- [ ] Orientation response includes preferred conventions with templates for the target component\n- [ ] Deprecated/forbidden conventions surfaced as warnings\n- [ ] Drift alerts included when component shows rising entropy\n- [ ] Waived violations in scope noted in orientation\n- [ ] Pending proposals surfaced\n- [ ] Descriptive conventions shown as informational only (no violation language)\n- [ ] Convention data accessible via MCP tool\n\n## Blocked by\n\n- sutra/61 (per-component convention discovery)\n- sutra/62 (propose-and-confirm lifecycle)\n- sutra/64 (waiver tracking)\n- sutra/65 (structural templates)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "Orientation response includes preferred conventions with templates for the target component"
+    },
+    {
+      "done": true,
+      "text": "Deprecated/forbidden conventions surfaced as warnings"
+    },
+    {
+      "done": true,
+      "text": "Drift alerts included when component shows rising entropy"
+    },
+    {
+      "done": true,
+      "text": "Waived violations in scope noted in orientation"
+    },
+    {
+      "done": true,
+      "text": "Pending proposals surfaced"
+    },
+    {
+      "done": true,
+      "text": "Descriptive conventions shown as informational only (no violation language)"
+    },
+    {
+      "done": true,
+      "text": "Convention data accessible via MCP tool"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nNew `sutra_orient` MCP tool that assembles convention-aware orientation for a given scope (component name, component ID, or file path). It reads from the DB — conventions, templates, snapshots, waivers, proposals — without triggering FCA recomputation. Placed in the **core** tier so agents can call it routinely without enabling analysis. The scope resolves to zero or more components; the response includes both component-scoped and global conventions, grouped by lifecycle state with appropriate messaging.\n\n## Files\n\n- **Create**: `src/tools/orient.rs` — orient module: args struct, handle function, scope resolution, JSON assembly\n- **Modify**: `src/tools/mod.rs` (line 1) — add `pub mod orient;` declaration\n- **Modify**: `src/mcp.rs` (~line 354, after sutra_components) — register `sutra_orient` tool method\n- **Modify**: `src/tools/tools_meta.rs` (line 44) — add `sutra_orient` to core tier tool list\n- **Modify**: `src/tools/help.rs` — add orientation workflow recipe\n- **Modify**: `src/conventions/drift.rs` — make `find_diverging_attributes` pub for reuse\n- **Modify**: `src/conventions/mod.rs` — re-export `find_diverging_attributes` and drift constants\n- **Modify**: `docs/conventions-map.md` — document orient module\n- **Test**: unit tests in `src/tools/orient.rs` `#[cfg(test)]` module\n\n## Steps\n\n### Step 1: Export drift utilities for reuse\n\nMake `find_diverging_attributes`, `DRIFT_THRESHOLD`, and `DRIFT_WINDOW` public in `src/conventions/drift.rs` so the orient module can check for drift from stored snapshots without duplicating logic.\n\n```rust\n// drift.rs — change visibility\npub const DRIFT_THRESHOLD: f64 = 0.15;\npub const DRIFT_WINDOW: usize = 3;\n\npub fn find_diverging_attributes(\n    old: &HashMap<String, f64>,\n    new: &HashMap<String, f64>,\n) -> Vec<DivergingAttribute> {\n    // ... existing code unchanged\n}\n```\n\nRe-export from `src/conventions/mod.rs`:\n```rust\npub use drift::{find_diverging_attributes, DivergingAttribute, DriftAlert, DRIFT_THRESHOLD, DRIFT_WINDOW};\n```\n\n### Step 2: Create `src/tools/orient.rs`\n\n#### Args\n\n```rust\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct OrientArgs {\n    pub workspace: String,\n    /// Component name, component ID, or file path to orient on.\n    pub scope: String,\n}\n```\n\n#### Scope resolution\n\n```rust\nfn resolve_scope(db: &Db, scope: &str) -> Result<Vec<(String, String, String)>>\n// Returns Vec<(component_id, component_name, lifecycle_state)>\n// Resolution order:\n//   1. Exact component name match (case-insensitive)\n//   2. Exact component ID match\n//   3. Alias lookup via db.find_alias(scope) → component\n//   4. File path → component via active_components_with_paths reverse lookup\n//   5. Path prefix match (scope as directory → all components with files under it)\n// Returns empty vec if nothing matches (caller reports \"no component found\").\n```\n\n#### Drift check from snapshots\n\n```rust\nfn check_drift_from_snapshots(\n    db: &Db,\n    component_id: &str,\n    component_name: &str,\n) -> Option<serde_json::Value>\n// Reads last DRIFT_WINDOW snapshots via db.recent_convention_snapshots\n// Checks: enough snapshots, monotonic non-decreasing, delta > DRIFT_THRESHOLD\n// If triggered: parse oldest+newest attribute_distribution JSON,\n//   call find_diverging_attributes, return alert JSON\n// Returns None if no drift detected or insufficient data\n```\n\n#### Main handle function\n\n```rust\npub fn handle(db: &Db, scope: &str) -> Result<serde_json::Value> {\n    let components = resolve_scope(db, scope)?;\n    if components.is_empty() {\n        return Ok(json!({\n            \"scope\": scope,\n            \"error\": \"no component found matching scope\",\n            \"hint\": \"use sutra_components to list available components\"\n        }));\n    }\n\n    let all_conventions = db.all_conventions_merged()?;\n    let all_proposals = db.pending_proposals()?;\n\n    let mut orientation_sections = Vec::new();\n\n    for (comp_id, comp_name, comp_lifecycle) in &components {\n        let is_sketch = comp_lifecycle == \"sketch\";\n\n        // Filter conventions: component-scoped + global\n        let in_scope: Vec<_> = all_conventions.iter()\n            .filter(|c| c.component_id.as_deref() == Some(comp_id) \n                        || c.component_id.is_none())\n            .collect();\n\n        let conv_ids: Vec<&str> = in_scope.iter().map(|c| c.id.as_str()).collect();\n        let templates = db.templates_for_conventions(&conv_ids)?;\n        let template_map: HashMap<&str, &str> = templates.iter()\n            .map(|t| (t.convention_id.as_str(), t.template_text.as_str()))\n            .collect();\n\n        let waivers = db.list_waivers(None)?;\n        let in_scope_waivers: Vec<_> = waivers.iter()\n            .filter(|w| conv_ids.contains(&w.convention_id.as_str())\n                        && (w.component_id == *comp_id || w.component_id.is_empty()))\n            .collect();\n\n        let in_scope_proposals: Vec<_> = all_proposals.iter()\n            .filter(|p| conv_ids.contains(&p.convention_id.as_str()))\n            .collect();\n\n        // Group conventions by effective lifecycle\n        // In sketch mode, all conventions flatten to informational\n        let mut preferred = Vec::new();\n        let mut deprecated = Vec::new();\n        let mut forbidden = Vec::new();\n        let mut descriptive = Vec::new();\n\n        for c in &in_scope {\n            let state = if is_sketch {\n                \"descriptive\" // sketch mode flattens everything\n            } else {\n                c.lifecycle_state.as_deref().unwrap_or(\"descriptive\")\n            };\n            let template = template_map.get(c.id.as_str());\n            let entry = json!({\n                \"convention_id\": c.id,\n                \"antecedent\": c.antecedent,\n                \"consequent\": c.consequent,\n                \"support\": c.support,\n                \"confidence\": c.confidence,\n                \"scope\": if c.component_id.is_some() { \"component\" } else { \"global\" },\n                \"template\": template,\n            });\n            match state {\n                \"preferred\" => preferred.push(entry),\n                \"deprecated\" => deprecated.push(entry),\n                \"forbidden\" => forbidden.push(entry),\n                _ => descriptive.push(entry),\n            }\n        }\n\n        // Drift check\n        let drift = check_drift_from_snapshots(db, comp_id, comp_name);\n\n        // Build section\n        let mut section = json!({\n            \"component_id\": comp_id,\n            \"component_name\": comp_name,\n            \"lifecycle_state\": comp_lifecycle,\n        });\n\n        if is_sketch {\n            section[\"sketch_mode_note\"] = json!(\n                \"Component is in sketch mode — all conventions are informational only\"\n            );\n        }\n\n        if !preferred.is_empty() {\n            section[\"preferred\"] = json!({\n                \"guidance\": \"Follow these conventions. Templates show the expected signature shape.\",\n                \"conventions\": preferred,\n            });\n        }\n        if !deprecated.is_empty() {\n            section[\"warnings\"] = json!({\n                \"guidance\": \"Avoid these patterns — they are being phased out.\",\n                \"conventions\": deprecated,\n            });\n        }\n        if !forbidden.is_empty() {\n            section[\"anti_patterns\"] = json!({\n                \"guidance\": \"Do not use these patterns.\",\n                \"conventions\": forbidden,\n            });\n        }\n        if !descriptive.is_empty() {\n            section[\"observed_patterns\"] = json!({\n                \"guidance\": \"Observed patterns in this scope (informational only).\",\n                \"conventions\": descriptive,\n            });\n        }\n        if let Some(drift_alert) = drift {\n            section[\"drift_alert\"] = drift_alert;\n        }\n        if !in_scope_waivers.is_empty() {\n            section[\"active_waivers\"] = json!(in_scope_waivers.iter().map(|w| {\n                json!({\n                    \"waiver_id\": w.id,\n                    \"convention_id\": w.convention_id,\n                    \"symbol\": w.symbol_qualified_name,\n                    \"rationale\": w.rationale,\n                    \"waived_by\": w.waived_by,\n                    \"created_at\": w.created_at,\n                })\n            }).collect::<Vec<_>>());\n        }\n        if !in_scope_proposals.is_empty() {\n            section[\"pending_proposals\"] = json!(in_scope_proposals.iter().map(|p| {\n                json!({\n                    \"proposal_id\": p.id,\n                    \"convention_id\": p.convention_id,\n                    \"proposed_transition\": p.proposed_transition,\n                    \"signal_rationale\": p.signal_rationale,\n                    \"created_at\": p.created_at,\n                })\n            }).collect::<Vec<_>>());\n        }\n\n        orientation_sections.push(section);\n    }\n\n    Ok(json!({\n        \"scope\": scope,\n        \"orientation\": orientation_sections,\n    }))\n}\n```\n\n### Step 3: Register `sutra_orient` in `src/tools/mod.rs`\n\n```rust\npub mod orient;  // add alongside existing module declarations\n```\n\n### Step 4: Register `sutra_orient` MCP tool in `src/mcp.rs`\n\nAdd after `sutra_components` (line ~354), in the core tool block (no `require_analysis()`):\n\n```rust\n#[tool(\n    description = \"Convention-aware orientation for a component or file scope. \\\n    Returns preferred conventions with signature templates, deprecated/forbidden \\\n    warnings, drift alerts, active waivers, and pending lifecycle proposals. \\\n    Scope can be a component name, component ID, or file path.\"\n)]\npub async fn sutra_orient(\n    &self,\n    Parameters(args): Parameters<tools::orient::OrientArgs>,\n) -> Result<String, ErrorData> {\n    let _ws = self.resolve_workspace(&args.workspace)?;\n    let db = self.get_db(&args.workspace)?;\n    let result = tools::orient::handle(&db, &args.scope).map_err(sutra_to_rmcp)?;\n    self.wrap_response(&db, result)\n}\n```\n\n### Step 5: Add to core tier in `src/tools/tools_meta.rs`\n\nAdd `\"sutra_orient\"` to the core tools array (line 44):\n\n```rust\n\"tools\": [\"sutra_health\", \"sutra_map\", \"sutra_outline\", \"sutra_find\",\n          \"sutra_grep\", \"sutra_read\", \"sutra_impact\", \"sutra_deps\",\n          \"sutra_parse\", \"sutra_tools\", \"sutra_components\", \"sutra_orient\"],\n```\n\n### Step 6: Add help recipe in `src/tools/help.rs`\n\nAdd a new topic entry for convention orientation workflow:\n\n```rust\nHelpTopic {\n    name: \"orient\",\n    summary: \"Get convention-aware orientation for a component\",\n    content: \"## Orient to a component's conventions\\n\\\n        ```\\n\\\n        sutra_orient(workspace=\\\"myproject\\\", scope=\\\"conventions\\\")\\n\\\n        ```\\n\\\n        Returns preferred conventions with templates, anti-pattern warnings, \\\n        drift alerts, waivers, and pending proposals for the target scope.\\n\\n\\\n        Scope can be a component name, component ID, or a file path. \\\n        When given a file path, the tool resolves it to the owning component.\\n\\n\\\n        Use this before writing new code in a component to understand \\\n        what patterns to follow and what to avoid.\",\n},\n```\n\n### Step 7: Update `docs/conventions-map.md`\n\nAdd orient module to the module layout section and document its role:\n\n```\nsrc/tools/\n  orient.rs       — sutra_orient MCP tool: convention-aware orientation\n                    per scope. Resolves component, assembles preferred\n                    conventions + templates, warnings, drift, waivers,\n                    pending proposals. Core tier (no analysis required).\n```\n\n### Step 8: Tests\n\nIn `src/tools/orient.rs` `#[cfg(test)]` module:\n\n- **test_resolve_scope_by_name**: create components, verify name resolution (case-insensitive)\n- **test_resolve_scope_by_file**: create component + membership, verify file path resolves\n- **test_resolve_scope_not_found**: verify empty vec for unknown scope\n- **test_handle_empty_conventions**: verify orient returns informational-only when no conventions exist\n- **test_handle_preferred_with_template**: insert convention + state + template, verify orient groups it under preferred with template text\n- **test_handle_deprecated_warning**: insert deprecated convention, verify it appears under warnings\n- **test_handle_sketch_mode_flattens**: set component to sketch, verify all conventions appear as observed_patterns\n- **test_drift_from_snapshots**: insert 3 monotonically-increasing entropy snapshots, verify drift alert appears\n- **test_waivers_in_scope**: insert waivers for in-scope conventions, verify they appear in orientation\n\nTest setup pattern: `Db::open_unchecked(\"test\", dir.path())` with tempdir, insert test data via existing Db methods.\n\n## Acceptance criteria coverage\n\n- [x] \"Orientation response includes preferred conventions with templates for the target component\" → Steps 2, 4 (preferred group with template field from templates_for_conventions)\n- [x] \"Deprecated/forbidden conventions surfaced as warnings\" → Step 2 (warnings and anti_patterns groups with guidance strings)\n- [x] \"Drift alerts included when component shows rising entropy\" → Steps 1, 2 (check_drift_from_snapshots reads stored snapshots, replicates detect_drift logic)\n- [x] \"Waived violations in scope noted in orientation\" → Step 2 (active_waivers section filtered to in-scope conventions)\n- [x] \"Pending proposals surfaced\" → Step 2 (pending_proposals section filtered to in-scope conventions)\n- [x] \"Descriptive conventions shown as informational only (no violation language)\" → Step 2 (observed_patterns group with \"informational only\" guidance, no violation framing)\n- [x] \"Convention data accessible via MCP tool\" → Steps 3, 4 (sutra_orient registered as core-tier MCP tool)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "d9a0cfd"
+    },
+    {
+      "type": "git:commit",
+      "value": "ca21a29"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "needs-plan",
+    "review-c"
+  ],
+  "history": [
+    {
+      "ts": 1780360825350,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 66
+      }
+    },
+    {
+      "ts": 1780427342174,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780427740323,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780429418005,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780360825350,
+  "updated_at": 1780429418005,
+  "completed_at": 1780429418005,
+  "edges": [
+    {
+      "id": "019e85c6-7255-7d22-8f7b-a49f492a06a2",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360835669
+    },
+    {
+      "id": "019e85c6-744e-7600-aad6-d734c89965a5",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/62",
+      "note": null,
+      "created_at": 1780360836174
+    },
+    {
+      "id": "019e85c6-77fe-78e2-93a0-fddc4d2001a1",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/64",
+      "note": null,
+      "created_at": 1780360837118
+    },
+    {
+      "id": "019e85c6-79fa-7761-a64e-345f0a7ec626",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/65",
+      "note": null,
+      "created_at": 1780360837626
+    }
+  ]
+}

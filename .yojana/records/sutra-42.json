@@ -1,0 +1,73 @@
+{
+  "id": "019e6e7d-6096-7bc0-9933-7b1c2faaf396",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/42",
+  "sequence_number": 42,
+  "title": "5d brainstorm: constraint system + DD design",
+  "description": "Brainstorm the constraint system and differential dataflow integration using vidhi-brainstorm. Key areas:\n\n- DD scope — what lives in DD maintained views vs what stays as ad-hoc queries? Current spike covers cycles, blast radius, forbidden deps. What else benefits from incrementalization?\n- Constraint authoring — how architects express rules. Current rules.toml format, evolution toward richer constraint language. Datalog-like view definitions?\n- Boundary enforcement — component boundaries (from 5b) as first-class constraints. \"Module X must not import from module Y\" as a live DD view.\n- ADRs as live constraints — parsing architectural decision records, extracting checkable constraints, making decisions self-enforcing\n- Real-time constraint checking — DD's incremental update from Layer 0 deltas during active development. Latency requirements, what can be real-time vs on-save vs on-review\n- How the current DD engine evolves — the spike validated viability with caveats. What were the caveats? Memory model, startup cost, serialization.\n- Interaction with trust model — constraint violations as blocking vs advisory, waiver mechanics\n- The module rename (dd/ → constraints/) — when and how\n- Independence from 5c — constraints and conventions are parallel tracks, how do they stay decoupled?\n\nInput: docs/sutra-vision.md (L3 section), current DD engine code, spike results, 5a decisions\nOutput: shared understanding ready for PRD",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    "DD scope: maintained views for cycles, blast radius, forbidden deps, boundary enforcement, transitive reachability. Ad-hoc for PageRank, co-change, one-shot queries. Component-level aggregations deferred.",
+    "Constraint authoring: hybrid — well-typed structured TOML patterns for common kinds (forbidden_dep, boundary, max_fan_in, no_cycles), future Datalog escape hatch. Per-instance severity, optional provenance field.",
+    "Boundary enforcement: DD operates on file IDs only. Boundary constraints resolved to file-level forbidden pairs via component_membership join. Resolution triggers on both edge changes and component recomputation.",
+    "ADRs as live constraints: not auto-parsed. Workflow is human+agent writes constraint alongside ADR, provenance field links them. Human-supervised authoring.",
+    "Latency tiers: on-save (<100ms), on-review (seconds OK), on-hook (<2s). No on-keystroke.",
+    "DD engine: add second input collection for forbidden pairs (maintained view). Richer violation output with constraint_kind, severity, provenance. Memory-only state, DB is source of truth, no persistence of DD graph.",
+    "Trust model: per-instance severity on constraints. Constraint waivers as durable table (same pattern as convention_waivers). Sketch mode: constraints remain enforced per ADR-0001.",
+    "Module rename: dd/ → constraints/ as first PR of 5d implementation.",
+    "5c/5d independence: clean — share review pipeline, rules file, guard, orient, DB infrastructure. No data dependency between convention and constraint tables."
+  ],
+  "implementation_plan": null,
+  "execution_record": "Brainstorm session. Read vision doc (L3 constraints section), architecture doc, core model PRD (5a), DD spike results (spike/hdc-ast-encoding branch), current DD engine code (src/dd/), rules.rs format, conventions-map.md for 5c state. Worked through all 9 brainstorm areas. Output: docs/brainstorm-constraints.md with consolidated decisions ready for PRD.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/brainstorm-constraints.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779970171030,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 42
+      }
+    },
+    {
+      "ts": 1780470833441,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780471409354,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779970171030,
+  "updated_at": 1780471409354,
+  "completed_at": 1780471409354,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "brainstorm",
+  "edges": []
+}

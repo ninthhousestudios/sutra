@@ -1,0 +1,76 @@
+{
+  "id": "019ed238-3325-7922-80a9-3e96692f0422",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/169",
+  "sequence_number": 169,
+  "title": "PRD: sutra_explore — deterministic structural exploration tool",
+  "description": "## Problem Statement\n\nAgents exploring unfamiliar codebases burn 15-20K+ tokens on iterative sutra_map → sutra_outline → sutra_read → backtrack cycles, with expensive LLM reasoning between each step. When a main agent spawns a Sonnet subagent to \"explore the codebase,\" the subagent reinvents the navigation sequence every time — two subagents exploring for sutra/166 consumed ~200K tokens in ~2 minutes, most of it unnecessary wandering. The waste is in the reasoning tokens between calls and breadth-first exploration when the agent doesn't know what it's looking for precisely enough.\n\n## Solution\n\nA new MCP tool `sutra_explore(query, workspace, budget)` that takes a topic string, runs a deterministic pipeline internally (pattern expansion → grep → structural ranking → adaptive fan-out → assembly), and returns a compact ranked map (~600-800 tokens for 10 items) with literal `sutra_read` fetch instructions and a strategy recommendation.\n\nOne call replaces 5-8 tool calls + subagent reasoning. The primary consumer is the main agent — it calls sutra_explore to either act directly (reading the suggested symbols via sutra_read) or to write a laser-focused subagent prompt with specific file/symbol targets, eliminating the Explore subagent pattern for most cases. Secondary consumer: when a subagent IS needed for deeper work, sutra_explore is its first call instead of the wandering pattern.\n\n## User Stories\n\n1. As a main agent, I want to understand what code exists for a topic in one tool call, so that I can skip spawning an Explore subagent entirely for most exploration tasks.\n2. As a main agent, I want literal `sutra_read` fetch instructions in the response, so that I can copy them directly without figuring out how to navigate to the code.\n3. As a main agent, I want estimated token costs per item, so that I can decide whether to read everything myself or delegate to a subagent for expensive reads.\n4. As a main agent, I want a strategy recommendation telling me what to do next, so that I don't waste reasoning tokens deciding my own exploration strategy.\n5. As a main agent, I want to know which components the results touch, so that I understand the terrain without making a separate sutra_components call.\n6. As a main agent, I want the tool to tell me when my query is too broad, so that I refine it instead of reading 12 diffuse matches.\n7. As a main agent, I want graph edges between result items, so that I understand how the matched code connects without a separate sutra_calls call.\n8. As a subagent, I want a single first call that gives me a prioritized read queue, so that I don't reinvent the navigation sequence from scratch.\n9. As a main agent, I want the response to be compact (~600-800 tokens for 10 items), so that orientation doesn't pollute my context when I have other work to do.\n10. As a main agent, I want the tool to detect when my query looks like a qualified symbol name, so that it falls through to sutra_find behavior without me choosing the right tool.\n11. As a main agent, I want fan-out items tagged with their provenance (direct_match vs fan_out), so that I know which items are primary matches and which are structural context.\n12. As a main agent, I want the `narrow_query` strategy to suggest specific refinements, so that I know how to improve my query without guessing.\n\n## Implementation Decisions\n\n### Interface\n- `sutra_explore(query: string, workspace: string, budget: int = 10)`\n- `budget` is item count (not token budget) — each item is ~50-80 tokens, so response size is predictable and never blows up context\n- No `depth` parameter — fan-out depth is adaptive internally, not caller-controlled\n- Query string used directly as grep input plus mechanical pattern expansion (snake_case split, CamelCase variant, partial glob). No NL interpretation.\n- If query contains `::` or matches a qualified symbol name pattern, falls through to sutra_find behavior and wraps the result in the same response shape\n\n### Pipeline (4 stages, all deterministic, all in-process)\n1. **Pattern expansion + grep:** Query → 3-5 patterns (literal, snake_case split, CamelCase, partial glob) → run against symbol index via sutra_grep path\n2. **Rank:** Score each hit: match_density × 0.5 + structural_importance (fan_in + blast_radius) × 0.3 + definition_priority × 0.2. Weights are starting points, tunable without changing response contract.\n3. **Adaptive fan-out:** Based on unique symbol count after dedup: 1-3 hits → 2 hops (callers + callees of callers), 4-9 hits → 1 hop (direct callers + callees), 10+ hits → 0 hops. Fan-out items get decayed score (parent_score × 0.5 per hop), tagged with `reason: \"fan_out\"`.\n4. **Assemble + strategize:** Top `budget` items annotated with component, estimated_tokens (line_count × ~4), literal fetch string. Strategy hint generated from deterministic rules.\n\n### Response shape\n- Flat ranked list of items, each with: symbol, file, kind, lines, component, reason (direct_match/fan_out), estimated_tokens, fetch (literal sutra_read call)\n- Structured strategy hint: action enum (read_top_n, read_all, narrow_query, explore_component) + n (when applicable) + rationale string\n- Summary: total_items, direct_matches, fan_out_items, components_touched, total_estimated_tokens\n- Edges: only between items already in the response (calls/dep edges)\n\n### Strategy selection rules\n- Top item score > 2× second item → read_top_n, n=1\n- Top 2-3 direct matches with scores within 2× → read_top_n, n=2-3\n- <3 items total after fan-out → read_all\n- 10+ grep hits, no scores above threshold → narrow_query (with suggested narrower patterns based on component clustering)\n- 80%+ items share one component → explore_component\n\n### Module structure\n- Single file: `src/tools/explore.rs` (follows orient.rs / review.rs pattern)\n- Three internal testable functions: pattern expander (query → patterns), structural ranker (hits + index → scored items), strategy selector (result set → strategy hint)\n- No new DB module — uses existing grep, fan-in/blast-radius, and call-graph queries from `src/db/mod.rs`\n\n### Relationship to existing tools\n- Complementary to sutra_orient: explore = \"what code exists here\" (descriptive), orient = \"how should I write code here\" (prescriptive)\n- Feeds into sutra_read for actual content (two-phase: map then fetch)\n- Uses same index data as sutra_map (fan_in, blast_radius) and sutra_grep (FTS5 search)\n\n### Archex scout prior art — what we borrow and what we don't\n- **Borrow:** Fetch plan with budget estimation, strategy recommendation, handles as protocol (literal next-call instructions)\n- **Don't borrow:** Retrieval engine (BM25, embeddings, reranking), opaque handle IDs (sutra's qualified names are better), two-phase protocol formalism, intent classification\n\n## Testing Decisions\n\nGood tests for this tool exercise external behavior through the response shape, not internal pipeline stages.\n\n**Pattern Expander** — unit tests: given a query string, assert the generated patterns include expected variants (snake_case, CamelCase, glob). Test qualified-name detection (input with `::` → treated as symbol lookup). Pure function, no index needed.\n\n**Strategy Selector** — unit tests: given mock result sets with known score distributions and component clustering, assert correct strategy action and n values. Cover all 5 rules in the selection table. Pure function.\n\n**End-to-end pipeline** — integration tests via the MCP tool interface (same pattern as orient/review tests in the codebase). Verify: a focused query returns few high-scored items with read_top_n strategy; a broad query returns narrow_query strategy; fan-out items appear with correct provenance tags; edges connect items in the response.\n\n## Out of Scope\n\n- NL intent classification (no 6-bucket routing like archex)\n- Content bundling in the response (map only — content comes from sutra_read)\n- Retrieval engine (BM25, vector search, embeddings)\n- Token budget parameter (item count is simpler and more predictable)\n- Caching of explore results (each call is cheap index queries)\n- Modifications to sutra_read or other existing tools\n\n## Further Notes\n\n- The scoring weights (0.5/0.3/0.2) and fan-out thresholds (1-3/4-9/10+) are starting points. They should be easy to tune based on real usage without changing the response contract.\n- The `narrow_query` strategy is the most important innovation beyond \"better grep\" — when the tool can't give a good answer, it says so and suggests refinements, preventing the subagent wandering pattern.\n- Zero grep hits should return empty items with narrow_query action and helpful rationale, not a silent empty response.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/167",
+      "label": "design task (brainstorm source)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "archex-inspired",
+    "prd"
+  ],
+  "history": [
+    {
+      "ts": 1781643359013,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 169
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781651078454,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1781655526800,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781643359013,
+  "updated_at": 1781655526800,
+  "completed_at": 1781655526800,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "prd",
+  "edges": [
+    {
+      "id": "019ed23c-c0dd-7720-a334-5a06600a2131",
+      "edge_type": "refines",
+      "source": "sutra/170",
+      "target": "sutra/169",
+      "note": null,
+      "created_at": 1781643657437
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "id": "019e9297-ce22-7460-8847-4c37761fcdb3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/81",
+  "sequence_number": 81,
+  "title": "L1: surface hidden coupling in orient output",
+  "description": "Add a hidden_coupling section to orient's per-component output. For each component, show file pairs that are behaviorally coupled (high co-change Jaccard) but have no static import edge — \"these files are coupled but not by imports.\" Depends on the commit_files table and co-change infrastructure from sutra/67.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Orient output includes a hidden_coupling key per component section"
+    },
+    {
+      "done": false,
+      "text": "Each entry shows the file pair, Jaccard coefficient, and shared commit count"
+    },
+    {
+      "done": false,
+      "text": "Only pairs above the configured cochange_threshold are included"
+    },
+    {
+      "done": false,
+      "text": "Test-production pairs excluded"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "L1",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780575882786,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 81
+      }
+    },
+    {
+      "ts": 1780578038953,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780580524206,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\n[medium] Hidden coupling filter uses import_edges only, not full resolved-reference graph (shared with sutra/82)\nOrient's hidden_coupling_for_component filters pairs using only import_edges. Clustering defines static edges from resolved symbol refs (not just imports), so call/use refs without an import row are treated as \"hidden\" here but are already statically linked for clustering purposes. Recommend building the exclusion set from the same resolved-reference graph used by clustering.",
+      "ts": 1780579541668
+    }
+  ],
+  "created_at": 1780575882786,
+  "updated_at": 1780580524206,
+  "completed_at": 1780580524206,
+  "edges": [
+    {
+      "id": "019e9297-ee9a-7f52-8eeb-b2c7cf84fbe7",
+      "edge_type": "depends_on",
+      "source": "sutra/81",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780575891098
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "id": "019e85c6-150c-7650-a732-94be83099433",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/65",
+  "sequence_number": 65,
+  "title": "5c-8: structural convention templates",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nAuto-generate signature-level skeleton templates from exemplar symbols for each convention. Templates give agents a concrete \"here's what functions look like here\" when oriented.\n\nKey pieces:\n- `convention_templates` table (ephemeral, recomputable): convention_id, template_text, exemplar_symbols (JSON array of qualified names), generated_at\n- Exemplar selection: for each convention, find symbols satisfying it. Rank by attribute coverage (how many convention attrs they match beyond the minimum), median complexity (not simplest/not most complex), recency\n- Signature skeleton extraction via tree-sitter: pull visibility, async, fn name pattern, parameter types/patterns, return type from exemplars. Identify common structural elements, replace varying parts with metavariables\n- Scope: signature-level only (visibility through return type). No body structure for v1\n- Templates regenerated on FCA rebuild. No human authoring\n\n## Acceptance criteria\n\n- [ ] convention_templates table stores templates per convention\n- [ ] Exemplar selection ranks by coverage, complexity, recency\n- [ ] Signature extraction produces parameterized skeleton from exemplars\n- [ ] Metavariables replace varying parts (function name, specific types)\n- [ ] Templates regenerated on rebuild (ephemeral, not stale)\n- [ ] Tests: exemplar ranking with known symbol sets, skeleton extraction from known Rust functions\n\n## Blocked by\n\n- sutra/61 (per-component convention discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "convention_templates table stores templates per convention"
+    },
+    {
+      "done": false,
+      "text": "Exemplar selection ranks by coverage, complexity, recency"
+    },
+    {
+      "done": false,
+      "text": "Signature extraction produces parameterized skeleton from exemplars"
+    },
+    {
+      "done": false,
+      "text": "Metavariables replace varying parts (function name, specific types)"
+    },
+    {
+      "done": false,
+      "text": "Templates regenerated on rebuild (ephemeral, not stale)"
+    },
+    {
+      "done": false,
+      "text": "Tests: exemplar ranking with known symbol sets, skeleton extraction from known Rust functions"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nUse the existing FCA output (conventions + symbol attributes) combined with `SymbolRow.signature` and `SymbolRow.language_attrs` to generate signature-level skeleton templates. For each convention, select exemplar symbols that satisfy it, decompose their signatures into structural elements, identify common vs varying parts, and emit a parameterized template with metavariables for the varying parts.\n\nNo new tree-sitter parsing needed — the Rust parser already captures the full signature string and structured boolean flags (`is_async`, `is_unsafe`, `returns_result`, `takes_self_ref`, etc.) in `language_attrs` JSON at parse time. Template generation operates on this already-extracted data.\n\nAlternative considered: re-parsing source files with tree-sitter at template time. Rejected because signature data is already available in `SymbolRow`, and re-parsing would couple templates to having source on disk (breaking test scenarios and adding latency).\n\n## Files\n\n- **Create**: `migrations/0022_convention_templates.sql` — ephemeral table schema\n- **Create**: `src/conventions/templates.rs` — exemplar selection, signature parsing, template generation (~250 lines)\n- **Modify**: `src/db/migrations.rs` (line ~114) — register migration 0022\n- **Modify**: `src/db/mod.rs` (line ~57) — add `convention_templates` to TABLE_REGISTRY\n- **Modify**: `src/db/conventions.rs` (after line ~613) — add DB methods: upsert_convention_template, templates_for_conventions, delete_orphan_templates\n- **Modify**: `src/conventions/mod.rs` (line ~6) — add `pub mod templates;`\n- **Modify**: `src/tools/review.rs` (lines ~346-350) — hook template generation after convention upsert\n- **Test**: `src/conventions/templates.rs` `#[cfg(test)] mod tests` — exemplar ranking, signature parsing, template generation\n\n## Steps\n\n### Step 1: Migration — convention_templates table\n\nEphemeral table, dropped on reindex, recomputed on every FCA rebuild. One row per convention.\n\n```sql\n-- migrations/0022_convention_templates.sql\nCREATE TABLE IF NOT EXISTS convention_templates (\n    convention_id TEXT NOT NULL PRIMARY KEY,\n    template_text TEXT NOT NULL,\n    exemplar_symbols TEXT NOT NULL,  -- JSON array of qualified names\n    generated_at TEXT NOT NULL DEFAULT (datetime('now'))\n);\n```\n\nRegister in `src/db/migrations.rs` MIGRATIONS array:\n```rust\n(\n    \"0022_convention_templates\",\n    include_str!(\"../../migrations/0022_convention_templates.sql\"),\n    true,  // ephemeral\n),\n```\n\nRegister in `src/db/mod.rs` TABLE_REGISTRY:\n```rust\nTableMeta { name: \"convention_templates\", partition: TablePartition::Ephemeral, is_virtual: false },\n```\n\n### Step 2: DB methods for convention_templates\n\nAdd to `src/db/conventions.rs` on the `impl Db` block:\n\n```rust\npub fn upsert_convention_template(\n    &self,\n    convention_id: &str,\n    template_text: &str,\n    exemplar_symbols: &[String],  // qualified names\n) -> Result<()> {\n    let conn = self.conn.lock();\n    let exemplars_json = serde_json::to_string(exemplar_symbols)\n        .map_err(|e| SutraError::Internal(e.to_string()))?;\n    conn.execute(\n        \"INSERT INTO convention_templates (convention_id, template_text, exemplar_symbols, generated_at)\n         VALUES (?1, ?2, ?3, datetime('now'))\n         ON CONFLICT(convention_id) DO UPDATE SET\n           template_text = excluded.template_text,\n           exemplar_symbols = excluded.exemplar_symbols,\n           generated_at = excluded.generated_at\",\n        params![convention_id, template_text, exemplars_json],\n    )?;\n    Ok(())\n}\n\npub fn templates_for_conventions(\n    &self,\n    convention_ids: &[String],\n) -> Result<Vec<ConventionTemplateRow>> {\n    // query with IN clause, return rows\n}\n\npub fn delete_orphan_templates(&self, live_convention_ids: &[String]) -> Result<usize> {\n    // delete templates whose convention_id is not in the live set\n}\n```\n\nRow type:\n```rust\n#[derive(Debug, Clone)]\npub struct ConventionTemplateRow {\n    pub convention_id: String,\n    pub template_text: String,\n    pub exemplar_symbols: Vec<String>,  // deserialized from JSON\n    pub generated_at: String,\n}\n```\n\n### Step 3: Template module — exemplar selection\n\n`src/conventions/templates.rs` — the core logic.\n\n**Exemplar selection** for a given convention:\n\n```rust\nstruct RankedSymbol {\n    qualified_name: String,\n    file: String,\n    signature: Option<String>,\n    language_attrs: Option<String>,\n    coverage_score: usize,    // attrs matched beyond antecedent∪consequent minimum\n    complexity_rank: u32,     // distance from median cognitive complexity\n}\n\nfn select_exemplars(\n    convention: &Convention,\n    sym_attrs: &[SymbolAttrs],\n    db: &Db,\n    max_exemplars: usize,  // default 3\n) -> Vec<RankedSymbol>\n```\n\nAlgorithm:\n1. Filter `sym_attrs` to those whose `attributes` superset includes `convention.antecedent ∪ convention.consequent`\n2. For each match, compute coverage_score = `|sym.attributes ∩ (all_convention_attrs)| - |antecedent ∪ consequent|` (extra attrs matched)\n3. Query DB for `SymbolRow` to get `cognitive` complexity — compute median across candidates, rank by distance from median (prefer middle)\n4. Sort by `(-coverage_score, complexity_rank, file_id DESC)` — file_id DESC is recency proxy\n5. Take top `max_exemplars`, filtering to those with `signature.is_some()`\n\n### Step 4: Template module — signature decomposition\n\nParse `SymbolRow.signature` string into structural elements. The signature format from `build_fn_signature` is: `fn name<T: Bound>(params) -> RetType`\n\n```rust\n#[derive(Debug, Clone)]\nstruct SignatureElements {\n    name: String,\n    generics: Option<String>,      // e.g. \"<T: Clone>\"\n    params: Vec<String>,           // each param as text, e.g. \"&self\", \"x: i32\"\n    return_type: Option<String>,   // e.g. \"Result<Config>\"\n    // from language_attrs:\n    is_async: bool,\n    is_unsafe: bool,\n    // from SymbolRow:\n    visibility: Option<String>,    // \"pub\", \"pub(crate)\", None\n}\n\nfn decompose_signature(\n    signature: &str,\n    visibility: Option<&str>,\n    language_attrs: Option<&str>,\n) -> Option<SignatureElements>\n```\n\nParsing strategy for the signature string:\n1. Strip leading `fn ` prefix\n2. Name: text up to first `(` or `<`\n3. Generics: balanced `<...>` extraction (handle nesting)\n4. Params: balanced `(...)` extraction, split by top-level commas\n5. Return type: text after ` -> ` if present\n6. Async/unsafe: from `language_attrs` JSON\n\n### Step 5: Template module — template generation\n\nCompare structural elements across exemplars to build a parameterized skeleton:\n\n```rust\nfn generate_template(exemplars: &[SignatureElements]) -> String\n```\n\nAlgorithm:\n1. **Visibility**: if all same → literal; if varies → omit (rare, conventions usually fix this)\n2. **Modifiers**: `is_async`/`is_unsafe` — if all same → include/exclude; if varies → omit\n3. **Name**: always → `$NAME` (names always vary)\n4. **Generics**: if all have same generics → literal; if some have/some don't → `$GENERICS`; if all absent → omit\n5. **Parameters**:\n   - If all have same count and same types at each position → literal types with `$param_N` names\n   - If `&self`/`&mut self` is universal first param → keep literal, rest → `$PARAMS`\n   - Otherwise → `$PARAMS`\n6. **Return type**:\n   - If all identical → literal\n   - If all are `Result<X>` (varying X) → `Result<$T>`\n   - If all are `Option<X>` → `Option<$T>`\n   - Otherwise → `$RETURN`\n\nOutput example: `pub async fn $NAME(&self, $PARAMS) -> Result<$T>`\n\n### Step 6: Orchestrator function\n\n```rust\npub fn generate_templates_for_conventions(\n    conventions: &[Convention],\n    sym_attrs: &[SymbolAttrs],\n    db: &Db,\n) -> Result<Vec<(String, String, Vec<String>)>>\n// Returns: Vec<(convention_id, template_text, exemplar_qualified_names)>\n```\n\nFlow:\n1. For each convention with support ≥ 3 (need enough exemplars to find patterns)\n2. `select_exemplars` → ranked list\n3. For each exemplar, `decompose_signature` → `SignatureElements`\n4. Filter to exemplars where decomposition succeeded\n5. If ≥ 2 decomposed exemplars: `generate_template` → template_text\n6. Collect results\n\n### Step 7: Wire into build_findings\n\nIn `src/tools/review.rs`, after the convention upsert block (around line 346), add:\n\n```rust\n// Generate templates for discovered conventions\nlet template_results = templates::generate_templates_for_conventions(\n    &all_convs, &all_sym_attrs, db,\n)?;\nfor (conv_id, template_text, exemplar_names) in &template_results {\n    db.upsert_convention_template(conv_id, template_text, exemplar_names)?;\n}\nlet live_ids: Vec<String> = all_convs.iter().map(|c| c.id.clone()).collect();\ndb.delete_orphan_templates(&live_ids)?;\n```\n\nAlso add `use crate::conventions::templates;` at the top.\n\n### Step 8: Module wiring\n\nIn `src/conventions/mod.rs`, add:\n```rust\npub mod templates;\n```\n\n### Step 9: Tests\n\nIn `src/conventions/templates.rs`, `#[cfg(test)] mod tests`:\n\n**Test 1: exemplar_ranking_prefers_coverage_then_complexity**\n- Create 5 SymbolAttrs with varying attribute counts\n- Create a convention\n- Assert the top-ranked exemplars are those with highest coverage and median complexity\n\n**Test 2: signature_decomposition_basic_fn**\n- Input: `\"fn parse_config(path: &Path) -> Result<Config>\"`\n- Assert: name=`parse_config`, params=[`path: &Path`], return_type=`Result<Config>`\n\n**Test 3: signature_decomposition_method_with_self**\n- Input: `\"fn process(&mut self, data: Vec<u8>) -> Result<()>\"`\n- Assert: params include `&mut self`, return_type=`Result<()>`\n\n**Test 4: signature_decomposition_with_generics**\n- Input: `\"fn convert<T: Into<String>>(value: T) -> String\"`\n- Assert: generics=`<T: Into<String>>`, params=[`value: T`]\n\n**Test 5: template_generation_common_return_type**\n- 3 exemplars all returning `Result<X>` with different X\n- Assert template contains `Result<$T>`\n\n**Test 6: template_generation_common_self_param**\n- 3 exemplars all with `&self` first param, different other params\n- Assert template keeps `&self` literal, rest is `$PARAMS`\n\n**Test 7: template_generation_all_async**\n- 3 exemplars all async\n- Assert template includes `async`\n\n**Test 8: template_generation_mixed_visibility**\n- Exemplars with different visibility\n- Assert visibility omitted or uses most common\n\n**Test 9: end_to_end_with_db**\n- Use test DB, insert symbols + conventions\n- Run `generate_templates_for_conventions`\n- Assert templates stored and retrievable\n- Run again with changed conventions → assert stale templates cleaned up\n\n## Acceptance criteria coverage\n\n- [x] \\\"convention_templates table stores templates per convention\\\" → Steps 1, 2\n- [x] \\\"Exemplar selection ranks by coverage, complexity, recency\\\" → Step 3\n- [x] \\\"Signature extraction produces parameterized skeleton from exemplars\\\" → Steps 4, 5\n- [x] \\\"Metavariables replace varying parts (function name, specific types)\\\" → Step 5\n- [x] \\\"Templates regenerated on rebuild (ephemeral, not stale)\\\" → Steps 1, 7 (ephemeral table + hook in build_findings)\n- [x] \\\"Tests: exemplar ranking with known symbol sets, skeleton extraction from known Rust functions\\\" → Step 9 (tests 1-8 are unit, test 9 is integration)",
+  "execution_record": "## Delivered\\n\\n### Files created\\n- `migrations/0022_convention_templates.sql` — ephemeral table (convention_id PK, template_text, exemplar_symbols JSON, generated_at)\\n- `src/conventions/templates.rs` — 300 lines: SymbolSignatureInfo, decompose_signature, select_exemplars, generate_template, generate_templates_for_conventions + 12 unit tests\\n\\n### Files modified\\n- `src/db/migrations.rs` — registered migration 0022\\n- `src/db/mod.rs` — added convention_templates to TABLE_REGISTRY\\n- `src/db/conventions.rs` — ConventionTemplateRow + upsert/query/delete_orphan methods\\n- `src/conventions/mod.rs` — added `pub mod templates`\\n- `src/tools/review.rs` — sig_info_map collection during attr extraction loop + template generation hook after convention persistence\\n- `tests/db-test.rs` — updated migration count 21→22\\n- `docs/conventions-map.md` — documented templates module, table, data flow, and generation rules\\n\\n### Design decisions\\n- Reuses existing SymbolRow.signature text + language_attrs JSON rather than re-parsing source with tree-sitter\\n- sig_info_map built during existing symbol extraction loop to avoid N+1 DB queries\\n- Metavariable heuristics: $NAME always, &self/&mut self preserved when universal, Result<$T>/Option<$T> for common wrappers\\n- Skip conventions with support < 3 or < 2 decomposable exemplars\\n\\n### Tests\\n- 12 unit tests: signature decomposition (basic, self, generics, no-params, nested generics), exemplar selection (ranking, no-sig skip, component scope), template generation (common Result, self param, async, mixed returns)\\n- Full suite: 494 tests, 0 failures\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "2017132"
+    },
+    {
+      "type": "git:commit",
+      "value": "ca21a29"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "review-c"
+  ],
+  "history": [
+    {
+      "ts": 1780360811788,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 65
+      }
+    },
+    {
+      "ts": 1780426323775,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780426835849,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780429417698,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780360811788,
+  "updated_at": 1780429417698,
+  "completed_at": 1780429417698,
+  "edges": [
+    {
+      "id": "019e85c6-6e67-77a1-930d-db6e024d4d9b",
+      "edge_type": "depends_on",
+      "source": "sutra/65",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360834663
+    },
+    {
+      "id": "019e85c6-79fa-7761-a64e-345f0a7ec626",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/65",
+      "note": null,
+      "created_at": 1780360837626
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "id": "019f3f7a-0d17-7af0-a3ba-9d1f91594bc3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/233",
+  "sequence_number": 233,
+  "title": "Attribute role typing: identity vs obligation + adapter-declared trivial implications",
+  "description": "Per the sutra/176 decision (arc sutra/~12): type the attribute vocabulary so deviation checking is structurally constrained to actionable direction, instead of post-hoc rule denylists.\n\nClassify every attribute at extraction (`src/conventions/attributes.rs`, per-language `as_fca_source` extractors):\n- **identity** — what a symbol *is*: `kind:*`, `in:*` / component membership, language, method-ness/receiver. Never a consequent.\n- **obligation** — what a symbol *should have/do*: `has_doc`, `naming:*`, `returns_result`/`returns_option`, `effect:*`, async-ness. The only valid consequents.\n\nOnly identity(+obligation) → obligation implications are checkable. This structurally kills the tautologies (component-membership restatements) and backwards correlations (`has_doc → vis:pub`) that made up most of the 176 noise taxonomy.\n\nAdditionally: let language adapters declare **toolchain-enforced pairs** to exclude from checking (Rust: `kind:function → naming:snake_case`, `kind:const → naming:SCREAMING`, etc. — rustc/clippy already enforce these). Hang this off the `as_fca_source` trait so each adapter owns its own trivia list.\n\n`vis:*` is ambiguous (identity-ish as antecedent, occasionally obligation-ish) — default it to identity/antecedent-only and note the call in the code.\n\nAcceptance: attribute role encoded in the type (enum or tagged newtype, not string prefix convention alone); unit tests covering role assignment per extractor; a test that a tautological and a backwards implication are excluded from checkable set while `vis:pub → has_doc` survives.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nIntroduce an `AttributeRole` enum (`Identity`, `Obligation`) in `src/conventions/attributes.rs` and a classification function that maps every attribute string to its role. Add a `toolchain_enforced_pairs` method to the `FcaAttributeSource` trait so each language adapter can declare implications that the compiler/linter already enforces (e.g., Rust: `kind:function → naming:snake_case`). Use both to provide an `is_checkable` predicate on `Convention` that sutra/234 will call as a direction filter.\n\nThis is purely additive — no existing behavior changes. The filtering happens downstream in sutra/234's deviation report, not in the existing `FcaEngine::check` path (which is being replaced anyway).\n\n## Files\n\n- **Modify**: `src/conventions/attributes.rs` (lines ~8-105) — add `AttributeRole` enum, `classify_attribute()` function, and `ToolchainPair` struct\n- **Modify**: `src/parser/adapter.rs` (lines ~68-73) — add `toolchain_enforced_pairs()` default method to `FcaAttributeSource` trait; implement for `RustAdapter`, `DartAdapter`; default empty for `CAdapter`, `PythonAdapter`\n- **Modify**: `src/conventions/engine.rs` (lines ~15-23) — add `Convention::is_checkable()` method using the role classifier\n- **Modify**: `src/conventions/mod.rs` — re-export new public types (`AttributeRole`, `classify_attribute`, `ToolchainPair`)\n- **Test**: `src/conventions/attributes.rs` tests module — role assignment tests per extractor\n- **Test**: `src/conventions/engine.rs` tests module — checkability filter tests (tautology excluded, backwards excluded, `vis:pub → has_doc` survives)\n\n## Steps\n\n### Step 1: Define `AttributeRole` enum and classifier in `attributes.rs`\n\nAdd the role enum and a function that classifies any attribute string. The classifier uses prefix matching on the known vocabulary.\n\n```rust\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum AttributeRole {\n    Identity,\n    Obligation,\n}\n\npub fn classify_attribute(attr: &str) -> AttributeRole {\n    match attr {\n        // Obligation: what a symbol should have/do\n        \"has_doc\"\n        | \"is_async\"\n        | \"returns_result\"\n        | \"returns_option\"\n        | \"returns_future\" => AttributeRole::Obligation,\n        a if a.starts_with(\"naming:\") => AttributeRole::Obligation,\n        a if a.starts_with(\"effect:\") => AttributeRole::Obligation,\n\n        // Identity: everything else — kind, vis, in, is_method, has_sig, complexity\n        _ => AttributeRole::Identity,\n    }\n}\n```\n\n`vis:*` defaults to Identity (antecedent-only) per the task description — it's what a symbol *is* in terms of exposure, not what it *should* be. Note this call in a comment.\n\n### Step 2: Define `ToolchainPair` and add to `FcaAttributeSource` trait\n\nIn `src/parser/adapter.rs`, add a struct for toolchain-enforced attribute pairs and a default method on the trait:\n\n```rust\n#[derive(Debug, Clone)]\npub struct ToolchainPair {\n    pub antecedent: &'static str,\n    pub consequent: &'static str,\n}\n\npub trait FcaAttributeSource: Send + Sync {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;\n    fn effect_patterns(&self) -> &[EffectPattern] { &[] }\n    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] { &[] }\n}\n```\n\n### Step 3: Implement `toolchain_enforced_pairs` for `RustAdapter`\n\n```rust\nconst RUST_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[\n    ToolchainPair { antecedent: \"kind:function\", consequent: \"naming:snake_case\" },\n    ToolchainPair { antecedent: \"kind:const\", consequent: \"naming:SCREAMING\" },\n    ToolchainPair { antecedent: \"kind:struct\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:enum\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:trait\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:type_alias\", consequent: \"naming:CamelCase\" },\n];\n\nimpl FcaAttributeSource for RustAdapter {\n    // ... existing extract_attributes ...\n    fn toolchain_enforced_pairs(&self) -> &[ToolchainPair] {\n        RUST_TOOLCHAIN_PAIRS\n    }\n}\n```\n\n### Step 4: Implement `toolchain_enforced_pairs` for `DartAdapter`\n\n```rust\nconst DART_TOOLCHAIN_PAIRS: &[ToolchainPair] = &[\n    ToolchainPair { antecedent: \"kind:class\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:mixin\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:enum\", consequent: \"naming:CamelCase\" },\n    ToolchainPair { antecedent: \"kind:type_alias\", consequent: \"naming:CamelCase\" },\n];\n```\n\nC and Python adapters keep the default empty `&[]` — no strong toolchain enforcement.\n\n### Step 5: Add `Convention::is_checkable()` in `engine.rs`\n\n```rust\nimpl Convention {\n    pub fn is_checkable(&self, toolchain_pairs: &[ToolchainPair]) -> bool {\n        use crate::conventions::attributes::{classify_attribute, AttributeRole};\n\n        // All consequents must be obligations\n        let consequents_ok = self.consequent.iter().all(|c| {\n            classify_attribute(c) == AttributeRole::Obligation\n        });\n        if !consequents_ok {\n            return false;\n        }\n\n        // Antecedents must be identity or obligation (both allowed)\n        // — this is always true by exhaustive enum, but documents the constraint\n\n        // Exclude toolchain-enforced pairs\n        for pair in toolchain_pairs {\n            if self.antecedent.iter().any(|a| a == pair.antecedent)\n                && self.consequent.iter().any(|c| c == pair.consequent)\n                && self.consequent.len() == 1\n            {\n                return false;\n            }\n        }\n\n        true\n    }\n}\n```\n\n### Step 6: Re-export new types from `mod.rs`\n\n```rust\npub use attributes::{\n    AttributeRole, EffectPattern, ResolvedCallee, classify_attribute,\n    dart_effect_packages, enrich_all_effects,\n    enrich_with_dart_import_effects, enrich_with_effects, extract_attrs_for_symbol,\n    extract_cross_language_attrs,\n};\n```\n\nAlso re-export `ToolchainPair` from the parser adapter (already pub via `crate::parser::adapter`).\n\n### Step 7: Unit tests for role classification\n\nIn `src/conventions/attributes.rs` tests module:\n\n```rust\n#[test]\nfn classify_identity_attributes() {\n    use super::*;\n    assert_eq!(classify_attribute(\"kind:function\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"kind:struct\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"vis:pub\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"vis:private\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"in:src/db\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"is_method\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"has_sig\"), AttributeRole::Identity);\n    assert_eq!(classify_attribute(\"complexity:high\"), AttributeRole::Identity);\n}\n\n#[test]\nfn classify_obligation_attributes() {\n    use super::*;\n    assert_eq!(classify_attribute(\"has_doc\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"naming:snake_case\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"naming:CamelCase\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"returns_result\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"returns_option\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"is_async\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"effect:io\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"effect:db\"), AttributeRole::Obligation);\n    assert_eq!(classify_attribute(\"returns_future\"), AttributeRole::Obligation);\n}\n```\n\n### Step 8: Unit tests for `is_checkable` filter\n\nIn `src/conventions/engine.rs` tests module:\n\n```rust\n#[test]\nfn is_checkable_excludes_tautological_convention() {\n    // in:src/db → kind:function is identity → identity — not checkable\n    let conv = Convention {\n        id: Arc::from(\"test-tautology\"),\n        antecedent: Arc::from(vec![\"in:src/db\".into()]),\n        consequent: Arc::from(vec![\"kind:function\".into()]),\n        support: 10, confidence: 0.9,\n        component_id: None,\n    };\n    assert!(!conv.is_checkable(&[]));\n}\n\n#[test]\nfn is_checkable_excludes_backwards_convention() {\n    // has_doc → vis:pub is obligation → identity — not checkable\n    let conv = Convention {\n        id: Arc::from(\"test-backwards\"),\n        antecedent: Arc::from(vec![\"has_doc\".into()]),\n        consequent: Arc::from(vec![\"vis:pub\".into()]),\n        support: 10, confidence: 0.9,\n        component_id: None,\n    };\n    assert!(!conv.is_checkable(&[]));\n}\n\n#[test]\nfn is_checkable_allows_vis_pub_implies_has_doc() {\n    // vis:pub → has_doc is identity → obligation — checkable\n    let conv = Convention {\n        id: Arc::from(\"test-valid\"),\n        antecedent: Arc::from(vec![\"vis:pub\".into()]),\n        consequent: Arc::from(vec![\"has_doc\".into()]),\n        support: 10, confidence: 0.9,\n        component_id: None,\n    };\n    assert!(conv.is_checkable(&[]));\n}\n\n#[test]\nfn is_checkable_excludes_toolchain_enforced() {\n    use crate::parser::adapter::ToolchainPair;\n    let conv = Convention {\n        id: Arc::from(\"test-toolchain\"),\n        antecedent: Arc::from(vec![\"kind:function\".into()]),\n        consequent: Arc::from(vec![\"naming:snake_case\".into()]),\n        support: 50, confidence: 1.0,\n        component_id: None,\n    };\n    let pairs = &[ToolchainPair {\n        antecedent: \"kind:function\",\n        consequent: \"naming:snake_case\",\n    }];\n    assert!(!conv.is_checkable(pairs));\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"attribute role encoded in the type (enum or tagged newtype, not string prefix convention alone)\" → Steps 1, 6 (`AttributeRole` enum + `classify_attribute`)\n- [x] \"unit tests covering role assignment per extractor\" → Step 7 (tests cover every attribute from cross-language, Rust, and Dart extractors)\n- [x] \"a test that a tautological and a backwards implication are excluded from checkable set while `vis:pub → has_doc` survives\" → Step 8 (three tests: tautology excluded, backwards excluded, `vis:pub → has_doc` passes)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "345e0f0"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "deviation-report"
+  ],
+  "history": [
+    {
+      "ts": 1783476391191,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 233
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783602842915,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783603117607,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review: verdict needs-attention, 2 findings.\\n\\n1. [high] is_checkable not wired into pipeline/rebuild — DISMISSED: task is intentionally additive infrastructure for sutra/234. The existing pipeline is being replaced by the deviation report (sutra/234); wiring the filter into the outgoing code path would be waste.\\n\\n2. [medium] multi-consequent + language-scoping gaps — ACKNOWLEDGED, no action: (a) consequent.len()==1 guard is intentionally conservative — a convention with mixed toolchain+real consequents should remain checkable for the real part; (b) language scoping is handled at the call site where the adapter is in scope; mixed-language components don't exist in practice.\\n\\nNo changes required. Task remains done.",
+      "ts": 1783603399876
+    }
+  ],
+  "created_at": 1783476391191,
+  "updated_at": 1783603117607,
+  "completed_at": 1783603117607,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "deviation-report",
+  "edges": [
+    {
+      "id": "019f3f7a-d742-7873-86f7-cac675a501bd",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/233",
+      "note": null,
+      "created_at": 1783476442946
+    }
+  ]
+}

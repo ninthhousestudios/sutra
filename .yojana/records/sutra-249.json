@@ -1,0 +1,102 @@
+{
+  "id": "019f494e-d95e-7270-a010-62d356aed7b4",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/249",
+  "sequence_number": 249,
+  "title": "Review: constraint ratchet arc (245-248)",
+  "description": "HITL review of the ratchet arc: registry monotonicity semantics (floor never lowers, unregistration impossible except via release), non-waivability of ratchet_violation actually holds through the waiver partition, guard deny message quality (does it teach the release ceremony and the strengthen-by-release-then-re-add path?), fresh-machine re-registration behavior, and a live dogfood — ratchet the no-clone-driven-dev rule from the pattern arc (~13) and attempt to weaken it via Edit tool + via shell to verify both enforcement layers. Update docs/constraints-map.md after landing.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Agent review had 1 high finding (re-registration after release silently fails) and 3 low findings. All were false positives or inconsequential style nits:\n\n- HIGH (false positive): The ON CONFLICT clause at line 233 already sets released_at = NULL — re-registration works correctly. Verified via live dogfood: ratchet → release → re-index → status returns to active.\n- LOW (severity_ordinal duplication): guard.rs inlines a 2-line pattern; db/constraints.rs has the helper. Intentional — guard operates on raw conn, minimal coupling.\n- LOW (ratchet row mapper in check.rs): guard.rs uses ad-hoc 4-field tuples, not ConstraintRatchetRow. Intentional — only needs 4 fields, no import coupling.\n- LOW (byte-index slice): Does not exist in the codebase. False positive.\n\nLive dogfood verified: ratcheted no-clone-driven-dev, attempted weakening via guard (blocked), attempted deletion (blocked), released (allowed), re-registered (reactivates). All enforcement layers confirmed working.\n\nUpdated docs/constraints-map.md and README.md with ratchet system documentation.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/223",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "a024fa5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "agent-trust",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1783641332062,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 249
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704195028,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704203337,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. 1 high finding (re-registration after release silently fails to reactivate — upsert doesn't clear released_at), 3 low findings (duplicated severity_ordinal, duplicated ratchet row mapper in check.rs, byte-index slice in rendered_description). Non-waivability, guard logic, drift detection, CLI, and surfaces all correct. Test coverage thorough. Recommend fixing the re-registration gap before closing the arc.",
+      "ts": 1783702984156
+    }
+  ],
+  "created_at": 1783641332062,
+  "updated_at": 1783704203337,
+  "completed_at": 1783704203337,
+  "arc_id": "019f494d-e005-7d20-be0c-d682a67b5f8e",
+  "arc_phase": "review",
+  "edges": [
+    {
+      "id": "019f494e-fac7-7ae2-b141-2bbb6d33aac6",
+      "edge_type": "depends_on",
+      "source": "sutra/249",
+      "target": "sutra/246",
+      "note": null,
+      "created_at": 1783641340615
+    },
+    {
+      "id": "019f494e-fe70-70e3-b554-91c83f5acff9",
+      "edge_type": "depends_on",
+      "source": "sutra/249",
+      "target": "sutra/247",
+      "note": null,
+      "created_at": 1783641341552
+    },
+    {
+      "id": "019f494f-1715-7572-bf25-d327babdf80d",
+      "edge_type": "depends_on",
+      "source": "sutra/249",
+      "target": "sutra/248",
+      "note": null,
+      "created_at": 1783641347861
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "id": "019ece65-6c49-7d00-ab98-c95a8117308e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/167",
+  "sequence_number": 167,
+  "title": "Design sutra_explore: deterministic structural exploration tool",
+  "description": "Agents exploring unfamiliar codebases burn 15-20K tokens on iterative sutra_map → sutra_outline → sutra_read → backtrack cycles, with expensive LLM reasoning between each step. The exploration patterns are regular enough to codify as a deterministic pipeline inside sutra — one tool call, no LLM in the loop, ~1-2K token response.\n\n**The problem:** When a main agent spawns a Sonnet subagent to \"explore the codebase,\" the subagent reinvents the navigation sequence every time. The waste isn't in sutra's response sizes — it's in the reasoning tokens between calls and the breadth-first wandering when the subagent doesn't know what it's looking for precisely enough.\n\n**Proposed tool: sutra_explore(query)** — takes a query string (topic, not a symbol name), runs a deterministic pipeline internally: grep(query) → rank by match density + PageRank + dep fan-in → fan out via deps → return ranked fetchable items with cost estimates. One call replaces 5-8 tool calls + subagent reasoning.\n\n**Key design principle: fetch plan, not just a summary.** Inspired by archex's scout mode (see context_refs), the response should not just describe what's there — it should tell the agent exactly what to do next. Each item includes an estimated token cost for fetching it and a literal `fetch` instruction (the sutra_read call to make). The agent doesn't have to figure out *how* to get the code, it copies the instruction.\n\n**Response shape (draft):**\n```json\n{\n  \"items\": [\n    {\n      \"symbol\": \"mcp::handle_tool_call\",\n      \"file\": \"src/mcp.rs\",\n      \"kind\": \"function\",\n      \"lines\": [142, 208],\n      \"estimated_tokens\": 320,\n      \"match_confidence\": \"high\",\n      \"fetch\": \"sutra_read(symbol='mcp::handle_tool_call')\"\n    }\n  ],\n  \"strategy\": \"top 2 symbols are high-confidence matches — read those first\",\n  \"total_estimated_tokens\": 640,\n  \"coverage\": \"3 files, 5 symbols across 2 components\",\n  \"graph_edges\": [\n    {\"source\": \"mcp::handle_tool_call\", \"target\": \"tools::read::handle\", \"kind\": \"calls\"}\n  ]\n}\n```\n\n**Strategy hint:** Instead of the agent deciding what to do next, the tool tells it. \"The top 2 symbols are high-confidence matches, read those\" vs. \"matches are spread thin across 12 files, consider narrowing your question.\" This is the guidance that prevents subagent wandering.\n\n**Relationship to sutra_orient:** Complementary, not overlapping. orient is prescriptive (\"how should I write code here\" — conventions, constraints, drift). explore is descriptive (\"what code exists here and how does it connect\" — files, symbols, edges). An agent would call explore to understand, then orient before editing.\n\n**Archex prior art — scout mode:** archex's scout (see context_refs) is a two-phase retrieval protocol: phase 1 returns ~1K tokens of structural handles with a ScoutFetchPlan (budget estimates, coverage score, strategy recommendation); phase 2 the agent fetches only the handles it needs. Key differences from what we're proposing:\n- Scout relies on BM25 + vector retrieval for relevance ranking. sutra_explore should use structural heuristics (grep match density, PageRank, dep fan-in) — keeps sutra deterministic and dependency-free.\n- Scout uses opaque handles (chunk:abc123, symbol:42). sutra_explore uses natural handles (qualified symbol names, file paths) — already stable and human-readable.\n- Scout has three-level handle granularity (file/symbol/chunk). sutra only needs symbol names and file paths.\n- Scout's fetch plan includes coverage_score_mass and projected_precision metrics. Worth considering for sutra_explore but may be over-engineered for structural heuristics.\n\n**What we're borrowing from scout:**\n1. Fetch plan with budget estimation — each item has estimated_tokens so the agent can weigh cost before fetching\n2. Strategy recommendation — the tool tells the agent what to do next instead of leaving it to reason\n3. Handles as a protocol — the `fetch` field is the literal next call, eliminating navigation overhead\n\n**What we're NOT borrowing:**\n- Retrieval engine (BM25, embeddings, reranking, intent classification)\n- Opaque handle IDs (sutra's qualified names are better)\n- Two-phase protocol formalism (sutra_explore + sutra_read is naturally two-phase without special machinery)\n\n**Design questions:**\n1. Response shape — flat ranked list (as above) or grouped by component?\n2. Fan-out depth — grep hits only, or follow dep edges 1-2 hops? How does this interact with the strategy hint?\n3. Should graph_edges be included in the default response or opt-in (token cost tradeoff)?\n4. How to rank without a retrieval engine — grep match density × PageRank × dep fan-in? What weights?\n5. Should sutra_explore leverage component boundaries from sutra_components?\n6. Should the strategy hint be a fixed enum (\"read_top_n\", \"narrow_query\", \"broaden_scope\") or free-form text?",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Brainstormed in session → design confirmed → PRD published as sutra/169 → decomposed into 4 impl slices + 2 review tasks under arc sutra/~8. No divergence from plan.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/archex/src/archex/scout.py",
+      "label": "archex scout mode"
+    },
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/archex/src/archex/serve/intent.py",
+      "label": "archex intent routing"
+    },
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/archex/src/archex/models.py",
+      "label": "archex data models (ScoutResult, ScoutFetchPlan, ScoutFile, ScoutSymbol, etc.)"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/166",
+      "label": "import packing (related token-economy enhancement)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "archex-inspired",
+    "needs-designing"
+  ],
+  "history": [
+    {
+      "ts": 1781579213897,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 167
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781643553937,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781643557987,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781579213897,
+  "updated_at": 1781643557987,
+  "completed_at": 1781643557987,
+  "edges": []
+}

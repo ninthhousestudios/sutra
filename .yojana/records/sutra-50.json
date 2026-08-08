@@ -1,0 +1,127 @@
+{
+  "id": "019e7f84-ea13-7733-8a75-ae28e4c07957",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/50",
+  "sequence_number": 50,
+  "title": "5b-6: vocabulary layer — aliases + resolution",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nVocabulary layer mapping human concepts to code locations. Parse `.sutra/aliases.toml` (term → target with kind: component/file/symbol). Store in `aliases` table (durable). Resolution logic with priority: (1) human aliases, (2) component names, (3) semantic anchor names. Orphan detection: aliases pointing at dissolved components or deleted paths flagged in reconciliation report. MCP tool for vocabulary queries (e.g., `sutra_resolve`).\n\n## Acceptance criteria\n\n- [ ] `.sutra/aliases.toml` parsed: term → target_kind (component/file/symbol) + target_ref\n- [ ] Aliases stored in durable table, survive reindex\n- [ ] Resolution returns matches in priority order: alias > component name > anchor name\n- [ ] Orphan detection: alias targeting dissolved component or missing path flagged\n- [ ] MCP tool resolves a query term to matching code locations\n- [ ] Test: priority ordering (alias wins over component name wins over anchor)\n- [ ] Test: orphan detection for dissolved component target\n- [ ] Test: valid TOML parsing → correct alias entries\n\n## Blocked by\n\n- sutra/45 (5b-1: basic component discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] `.sutra/aliases.toml` parsed: term → target_kind (component/file/symbol) + target_ref"
+    },
+    {
+      "done": false,
+      "text": "[x] Aliases stored in durable table, survive reindex"
+    },
+    {
+      "done": false,
+      "text": "[x] Resolution returns matches in priority order: alias > component name > anchor name"
+    },
+    {
+      "done": false,
+      "text": "[x] Orphan detection: alias targeting dissolved component or missing path flagged"
+    },
+    {
+      "done": false,
+      "text": "[x] MCP tool resolves a query term to matching code locations"
+    },
+    {
+      "done": false,
+      "text": "[x] Test: priority ordering (alias wins over component name wins over anchor)"
+    },
+    {
+      "done": false,
+      "text": "[x] Test: orphan detection for dissolved component target"
+    },
+    {
+      "done": false,
+      "text": "[x] Test: valid TOML parsing → correct alias entries"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nRepurpose the existing empty `aliases` table (currently component-scoped, never populated) to support all three target kinds (component/file/symbol). Add a TOML config loader for `.sutra/aliases.toml`, sync aliases to DB during pipeline, and add a new `sutra_resolve` MCP tool that unifies alias lookup, component name matching, and anchor name matching with priority ordering. Orphan detection happens at resolution time — check whether the target still exists in the DB.\n\nThe existing table schema (`component_id` FK, `canonical` column) doesn't fit the `term → target_kind + target_ref` model. Since the table is empty and unused everywhere except cascade deletes, a migration drops and recreates it with the right shape.\n\n## Files\n\n- **Create**: `migrations/0012_vocabulary_aliases.sql` — drop + recreate aliases table\n- **Create**: `src/vocabulary.rs` — TOML parsing, alias sync, resolution logic\n- **Create**: `src/tools/resolve.rs` — `sutra_resolve` MCP tool handler\n- **Create**: `tests/vocabulary_test.rs` — integration tests\n- **Modify**: `src/db/mod.rs` (~line 49) — add `AliasRow` struct\n- **Modify**: `src/db/components.rs` (~line 33) — update `delete_all_components` cascade\n- **Modify**: `src/tools/mod.rs` — add `pub mod resolve;`\n- **Modify**: `src/mcp.rs` (~line 65-86, ~line 345) — import `ResolveArgs`, add `sutra_resolve` tool method\n- **Modify**: `src/lib.rs` — add `pub mod vocabulary;`\n- **Modify**: `src/pipeline.rs` (~line 547-555) — call alias sync after component discovery\n\n## Steps\n\n### Step 1: Migration — recreate aliases table\n\n`migrations/0012_vocabulary_aliases.sql`:\n```sql\nDROP TABLE IF EXISTS aliases;\nCREATE TABLE IF NOT EXISTS aliases (\n    id TEXT PRIMARY KEY,\n    term TEXT NOT NULL UNIQUE,\n    target_kind TEXT NOT NULL CHECK(target_kind IN ('component', 'file', 'symbol')),\n    target_ref TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now'))\n);\n```\n\nUpdate `delete_all_components` in `src/db/components.rs` — remove `DELETE FROM aliases;` from the batch since aliases are no longer component-scoped. Component-targeting aliases get orphan-flagged at resolution time instead.\n\n### Step 2: Row type and DB methods\n\nAdd `AliasRow` to `src/db/mod.rs`:\n```rust\n#[derive(Debug, Clone)]\npub struct AliasRow {\n    pub id: String,\n    pub term: String,\n    pub target_kind: String,\n    pub target_ref: String,\n}\n```\n\nAdd DB methods in a new section of `src/db/components.rs` (or a new `src/db/vocabulary.rs`):\n```rust\npub fn replace_all_aliases(&self, aliases: &[(String, String, String, String)]) -> Result<()>\n// (id, term, target_kind, target_ref) — DELETE all, INSERT batch\n\npub fn all_aliases(&self) -> Result<Vec<AliasRow>>\n\npub fn find_alias(&self, term: &str) -> Result<Option<AliasRow>>\n// exact match on term column\n```\n\n### Step 3: TOML parsing and sync — `src/vocabulary.rs`\n\nTOML format for `.sutra/aliases.toml`:\n```toml\n[component]\nauth = \"authentication\"\ndb-layer = \"db\"\n\n[file]\nconfig = \"src/config.rs\"\n\n[symbol]\nUP = \"UserProfile\"\n```\n\nEach section key is the `target_kind`, each entry is `term = target_ref`.\n\n```rust\n#[derive(Debug, Default, Deserialize)]\npub struct AliasConfig {\n    #[serde(default)]\n    pub component: HashMap<String, String>,\n    #[serde(default)]\n    pub file: HashMap<String, String>,\n    #[serde(default)]\n    pub symbol: HashMap<String, String>,\n}\n\npub fn load_aliases(root: &Path) -> Result<AliasConfig>\n// reads .sutra/aliases.toml, returns default if missing\n\npub fn parse_aliases(content: &str) -> Result<AliasConfig>\n// testable twin — just parses string\n\npub fn sync_aliases(db: &Db, root: &Path) -> Result<usize>\n// load_aliases → flatten into (id, term, kind, ref) tuples → db.replace_all_aliases\n// returns count of aliases synced\n```\n\n### Step 4: Resolution logic — `src/vocabulary.rs`\n\n```rust\n#[derive(Debug, Serialize)]\npub struct ResolveMatch {\n    pub source: String,      // \"alias\", \"component\", \"anchor\"\n    pub target_kind: String, // \"component\", \"file\", \"symbol\"\n    pub target_ref: String,  // component name, file path, symbol qname\n    pub component_id: Option<String>,\n    pub orphan: bool,        // true if target dissolved/missing\n}\n\npub fn resolve(db: &Db, query: &str) -> Result<Vec<ResolveMatch>>\n```\n\nResolution algorithm — collect matches in priority order:\n1. **Alias**: exact match via `db.find_alias(query)`. If found, check orphan status:\n   - component target: check `db.all_components()` for a match on name or id; orphan if dissolved/missing\n   - file target: check `db.file_by_path()` or similar; orphan if not in index\n   - symbol target: check `db.find_symbols_by_name()` for existence; orphan if not found\n2. **Component name**: case-insensitive substring/prefix match against `db.all_components()` names\n3. **Anchor name**: search `db.all_anchors_grouped()` for symbol_name matching query\n\nReturn all matches as a Vec, ordered by source priority (alias first, then component, then anchor).\n\n### Step 5: MCP tool — `src/tools/resolve.rs`\n\n```rust\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct ResolveArgs {\n    pub workspace: String,\n    pub query: String,\n}\n\npub fn handle(db: &Db, query: &str) -> Result<serde_json::Value>\n// calls vocabulary::resolve, formats as JSON:\n// { \"query\": \"...\", \"matches\": [...], \"orphans\": [...] }\n```\n\nWire up in `src/mcp.rs`:\n- Import `ResolveArgs`\n- Add `sutra_resolve` method on `SutraServer` with `#[tool(description = \"Resolve a vocabulary term...\")]`\n\nWire up in `src/tools/mod.rs`:\n- Add `pub mod resolve;`\n\n### Step 6: Pipeline integration — `src/pipeline.rs`\n\nAfter component discovery + semantic anchors (line ~555), sync aliases:\n```rust\nlet alias_count = vocabulary::sync_aliases(db, workspace_root)?;\nif alias_count > 0 {\n    info!(alias_count, \"synced vocabulary aliases\");\n}\n```\n\nThis runs on every index, ensuring aliases are always in sync with the TOML.\n\n### Step 7: Tests — `tests/vocabulary_test.rs`\n\n**Test: TOML parsing**\n```rust\nfn test_parse_aliases_valid_toml() {\n    // parse \"[component]\\nauth = \\\"authentication\\\"\\n[file]\\nconfig = \\\"src/config.rs\\\"\"\n    // assert 1 component alias, 1 file alias, correct terms and refs\n}\n\nfn test_parse_aliases_empty() {\n    // empty string → default (all empty maps)\n}\n```\n\n**Test: priority ordering**\n```rust\nfn test_resolve_alias_wins_over_component_name() {\n    // set up: component named \"auth\", alias \"auth\" → file target\n    // resolve(\"auth\") → first match is alias (file), second is component\n}\n\nfn test_resolve_component_wins_over_anchor() {\n    // set up: component named \"core\", anchor named \"core_fn\" (contains \"core\")\n    // resolve(\"core\") → component match before anchor match\n}\n```\n\n**Test: orphan detection**\n```rust\nfn test_orphan_detected_for_dissolved_component() {\n    // set up: alias \"auth\" → component \"authentication\"\n    // dissolve the component\n    // resolve(\"auth\") → match with orphan=true\n}\n\nfn test_orphan_detected_for_missing_file() {\n    // set up: alias \"config\" → file \"src/missing.rs\" (not in index)\n    // resolve(\"config\") → match with orphan=true\n}\n```\n\n**Test: sync round-trip**\n```rust\nfn test_sync_aliases_from_toml() {\n    // write .sutra/aliases.toml, call sync_aliases, verify DB rows\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"`.sutra/aliases.toml` parsed: term → target_kind + target_ref\" → Steps 3, 6\n- [x] \"Aliases stored in durable table, survive reindex\" → Step 1 (table in Durable partition, already registered)\n- [x] \"Resolution returns matches in priority order: alias > component name > anchor name\" → Step 4\n- [x] \"Orphan detection: alias targeting dissolved component or missing path flagged\" → Step 4 (orphan field)\n- [x] \"MCP tool resolves a query term to matching code locations\" → Step 5\n- [x] \"Test: priority ordering\" → Step 7\n- [x] \"Test: orphan detection for dissolved component target\" → Step 7\n- [x] \"Test: valid TOML parsing → correct alias entries\" → Step 7",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "905b6ae"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780255877651,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 50
+      }
+    },
+    {
+      "ts": 1780322451535,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780322788856,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780322841171,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780324203893,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, tasks 49/50/51):\\n\\n- [high] Resolve output does not include code locations (file paths, line ranges) for component/symbol matches — just names/refs. AC says 'resolves to matching code locations'.\\n- [high] replace_all_aliases DELETEs before INSERT outside a transaction. Duplicate terms across alias sections can leave table empty on constraint violation.\"",
+      "ts": 1780323784294
+    }
+  ],
+  "created_at": 1780255877651,
+  "updated_at": 1780324203893,
+  "completed_at": 1780324203893,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-3347-7241-96a6-e37d472a61be",
+      "edge_type": "depends_on",
+      "source": "sutra/50",
+      "target": "sutra/45",
+      "note": null,
+      "created_at": 1780255896391
+    }
+  ]
+}

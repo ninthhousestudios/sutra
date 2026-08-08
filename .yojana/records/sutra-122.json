@@ -1,0 +1,66 @@
+{
+  "id": "019e9d53-f25b-7cb1-bf49-7f416adb2077",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/122",
+  "sequence_number": 122,
+  "title": "Add line cap to sutra_read",
+  "description": "sutra_read returns full symbol source unconditionally — a 2000-line function gets 2000 lines. Add a default line cap (500 lines), with a `full: bool` or `limit: usize` parameter to override. When truncated, include a hint in the response like \"truncated at 500 lines, call with full=true or offset=500 to continue\". Clean MCP caps get_source at 500 lines (2000 for function-targeted reads) for the same reason.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "bed2c5d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "clean-mcp-survey"
+  ],
+  "history": [
+    {
+      "ts": 1780755984987,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 122
+      }
+    },
+    {
+      "ts": 1780756714495,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780756718503,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention.\\n\\n[high] sutra_read truncation can omit the symbol body when context_lines is large relative to limit — the cap is applied from `start` (which includes leading context) so the symbol span may fall past display_end.\\n\\n[medium] Recursive strip_nulls removes `as_of: null` from freshness (breaking always-present contract) and strips null optionals from detail=true responses (signature, visibility, docstring), making detail indistinguishable from compact for null-valued fields.",
+      "ts": 1780757343665
+    }
+  ],
+  "created_at": 1780755984987,
+  "updated_at": 1780756718503,
+  "completed_at": 1780756718503,
+  "edges": []
+}

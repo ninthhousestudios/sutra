@@ -1,0 +1,149 @@
+{
+  "id": "019e92b1-8b66-7490-b80b-6b60220edcbd",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/91",
+  "sequence_number": 91,
+  "title": "5e-7: health snapshots + per-file history",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nExtend the snapshot system to store per-file health scores for historical drill-down, plus per-component aggregates. Rewrite the trend tool to compute meaningful deltas.\\n\\n- DB migration: health_snapshot_files(snapshot_id, file_id, score REAL, category_scores TEXT/JSON). Extend snapshots table with per-component health scores.\\n- Snapshot capture: compute per-file scores from current findings, aggregate to per-component, store both.\\n- Trend tool rewrite: diff two snapshots with per-file deltas (files that improved/degraded, by how much), per-component deltas, biomarker category breakdown.\\n- Historical query: \\\"show me auth.rs health over the last N snapshots.\\\"\\n\\n## Acceptance criteria\\n\\n- [ ] health_snapshot_files table storing per-file scores at each snapshot\\n- [ ] Per-component scores stored in snapshots (NLOC-weighted from file scores)\\n- [ ] Snapshot capture includes per-file and per-component health data\\n- [ ] Trend tool rewritten: per-file deltas (degraded/improved files), per-component deltas, category breakdown\\n- [ ] Per-file historical query API (file × snapshot range → score time series)\\n- [ ] Pattern family counts from 5e-6 included in snapshot data (if 5e-6 has landed)\\n\\n## Blocked by\\n\\n- sutra/85 (5e-2: health scoring)\\n- sutra/87 (5e-review-1: checkpoint 1 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] health_snapshot_files table storing per-file scores at each snapshot"
+    },
+    {
+      "done": false,
+      "text": "[x] Per-component scores stored in snapshots (NLOC-weighted from file scores)"
+    },
+    {
+      "done": false,
+      "text": "[x] Snapshot capture includes per-file and per-component health data"
+    },
+    {
+      "done": false,
+      "text": "[x] Trend tool rewritten: per-file deltas (degraded/improved files), per-component deltas, category breakdown"
+    },
+    {
+      "done": false,
+      "text": "[x] Per-file historical query API (file × snapshot range → score time series)"
+    },
+    {
+      "done": false,
+      "text": "[x] Pattern family counts from 5e-6 included in snapshot data (already landed — wire into SnapshotRow + trend output)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nReplace the legacy snapshot aggregation (0–100 ad-hoc formula) with the new `scoring::score_file` system (1.0–10.0, category-capped). Store per-file and per-component health scores at each snapshot for historical drill-down. Rewrite the trend tool to diff at file/component/category granularity, plus a per-file history mode.\n\nKey design choice: both new tables are **Ephemeral** (dropped on reindex, consistent with `snapshots` itself). File paths stored alongside file_ids so historical queries work within a session. SQLite dynamic typing lets us store f64 health_score in the existing INTEGER-affinity column without a schema migration for that field.\n\n## Files\n\n- **Create**: `migrations/0033_health_snapshot_details.sql` — DDL for `health_snapshot_files` and `health_snapshot_components` tables\n- **Modify**: `src/db/migrations.rs` (lines ~168) — register migration 0033 (ephemeral)\n- **Modify**: `src/db/mod.rs` (lines ~186-218, ~992-1063, ~1133-1147) — SnapshotRow/SnapshotParams type changes, pattern_family_count in row/queries, new insert/query methods for snapshot detail tables\n- **Modify**: `src/pipeline.rs` (lines ~688-746) — rewrite `compute_snapshot_aggregates` and `record_snapshot` to use `scoring::score_file`, store per-file + per-component data\n- **Modify**: `src/tools/file_health.rs` (lines ~25-68) — remove legacy `FileScores` + `compute_file_scores`\n- **Modify**: `src/tools/trend.rs` (all) — rewrite with per-file deltas, per-component deltas, category breakdown, per-file history mode\n- **Modify**: `src/mcp.rs` (lines ~772-786) — update sutra_trend wiring for new TrendArgs (path param)\n- **Test**: `tests/health-test.rs` — new tests for snapshot storage, trend computation, file history\n\n## Steps\n\n### Step 1: Migration 0033 — health_snapshot_files + health_snapshot_components\n\nCreate `migrations/0033_health_snapshot_details.sql`:\n\n```sql\nCREATE TABLE IF NOT EXISTS health_snapshot_files (\n    snapshot_id     INTEGER NOT NULL,\n    file_id         INTEGER NOT NULL,\n    file_path       TEXT    NOT NULL,\n    score           REAL    NOT NULL,\n    category_scores TEXT    NOT NULL DEFAULT '{}',\n    PRIMARY KEY (snapshot_id, file_id)\n);\n\nCREATE INDEX IF NOT EXISTS idx_hsf_path_snapshot\n    ON health_snapshot_files(file_path, snapshot_id);\n\nCREATE TABLE IF NOT EXISTS health_snapshot_components (\n    snapshot_id    INTEGER NOT NULL,\n    component_id   TEXT    NOT NULL,\n    component_name TEXT    NOT NULL,\n    score          REAL    NOT NULL,\n    member_count   INTEGER NOT NULL,\n    total_nloc     INTEGER NOT NULL,\n    PRIMARY KEY (snapshot_id, component_id)\n);\n```\n\nRegister in `src/db/migrations.rs` MIGRATIONS array (ephemeral = `true`).\n\n### Step 2: TABLE_REGISTRY + SnapshotRow/SnapshotParams type fixes\n\nIn `src/db/mod.rs`:\n\n1. Add `health_snapshot_files` and `health_snapshot_components` to TABLE_REGISTRY as Ephemeral.\n\n2. Change `SnapshotRow`:\n```rust\npub struct SnapshotRow {\n    pub id: i64,\n    pub timestamp: String,\n    pub files_parsed: i64,\n    pub symbols_extracted: i64,\n    pub refs_extracted: i64,\n    pub parse_errors: i64,\n    pub duration_ms: i64,\n    pub total_complexity: i64,\n    pub dead_symbol_count: i64,\n    pub hotspot_count: i64,\n    pub health_score: f64,          // was i64\n    pub pattern_family_count: i64,  // new\n}\n```\n\n3. Change `SnapshotParams.health_score` to `f64`.\n\n4. Update `map_snapshot_row`:\n```rust\nfn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {\n    Ok(SnapshotRow {\n        id: row.get(0)?,\n        timestamp: row.get(1)?,\n        files_parsed: row.get(2)?,\n        symbols_extracted: row.get(3)?,\n        refs_extracted: row.get(4)?,\n        parse_errors: row.get(5)?,\n        duration_ms: row.get(6)?,\n        total_complexity: row.get(7)?,\n        dead_symbol_count: row.get(8)?,\n        hotspot_count: row.get(9)?,\n        health_score: row.get(10)?,\n        pattern_family_count: row.get(11)?,\n    })\n}\n```\n\n5. Update SELECT in `latest_snapshots` and `snapshots_between` to include `pattern_family_count` as column 11.\n\n### Step 3: New DB methods for snapshot detail tables\n\nAdd to `src/db/mod.rs` (or `src/db/health.rs` if it fits better — but mod.rs already has all snapshot methods):\n\n```rust\npub struct SnapshotFileRow {\n    pub file_id: i64,\n    pub file_path: String,\n    pub score: f64,\n    pub category_scores: String, // JSON\n}\n\npub struct SnapshotComponentRow {\n    pub component_id: String,\n    pub component_name: String,\n    pub score: f64,\n    pub member_count: i64,\n    pub total_nloc: i64,\n}\n\nimpl Db {\n    pub fn insert_snapshot_files(\n        &self,\n        snapshot_id: i64,\n        files: &[SnapshotFileRow],\n    ) -> Result<()> {\n        let conn = self.conn.lock();\n        let mut stmt = conn.prepare(\n            \"INSERT INTO health_snapshot_files\n             (snapshot_id, file_id, file_path, score, category_scores)\n             VALUES (?1, ?2, ?3, ?4, ?5)\"\n        )?;\n        for f in files {\n            stmt.execute(params![snapshot_id, f.file_id, f.file_path, f.score, f.category_scores])?;\n        }\n        Ok(())\n    }\n\n    pub fn insert_snapshot_components(\n        &self,\n        snapshot_id: i64,\n        components: &[SnapshotComponentRow],\n    ) -> Result<()> {\n        let conn = self.conn.lock();\n        let mut stmt = conn.prepare(\n            \"INSERT INTO health_snapshot_components\n             (snapshot_id, component_id, component_name, score, member_count, total_nloc)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6)\"\n        )?;\n        for c in components {\n            stmt.execute(params![snapshot_id, c.component_id, c.component_name,\n                                 c.score, c.member_count, c.total_nloc])?;\n        }\n        Ok(())\n    }\n\n    pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {\n        // SELECT file_id, file_path, score, category_scores\n        // FROM health_snapshot_files WHERE snapshot_id = ?1\n    }\n\n    pub fn snapshot_component_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotComponentRow>> {\n        // SELECT component_id, component_name, score, member_count, total_nloc\n        // FROM health_snapshot_components WHERE snapshot_id = ?1\n    }\n\n    pub fn file_health_history(\n        &self,\n        file_path: &str,\n        limit: usize,\n    ) -> Result<Vec<(String, f64, String)>> {\n        // Returns (timestamp, score, category_scores) for a file across snapshots\n        // SELECT s.timestamp, hsf.score, hsf.category_scores\n        // FROM health_snapshot_files hsf\n        // JOIN snapshots s ON s.id = hsf.snapshot_id\n        // WHERE hsf.file_path = ?1\n        // ORDER BY s.timestamp DESC LIMIT ?2\n    }\n}\n```\n\n### Step 4: Rewrite pipeline snapshot aggregation\n\nIn `src/pipeline.rs`, replace `compute_snapshot_aggregates`:\n\n```rust\nstruct SnapshotHealthData {\n    total_complexity: i64,\n    dead_symbol_count: i64,\n    hotspot_count: i64,\n    health_score: f64,\n    pattern_family_count: i64,\n    file_scores: Vec<SnapshotFileRow>,\n    component_scores: Vec<SnapshotComponentRow>,\n}\n\nfn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {\n    let files = db.all_files()?;\n    let complexity = db.complexity_by_file()?;\n\n    let total_complexity: i64 = complexity.values().map(|&(_, avg_cog)| avg_cog as i64).sum();\n    let dead_symbols = db.find_dead_symbols(false, None)?;\n    let dead_symbol_count = dead_symbols.len() as i64;\n\n    // Hotspot count (unchanged logic)\n    let mut hotspot_count: i64 = 0;\n    for f in &files {\n        let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));\n        if f.blast_radius >= 5 && avg_cog >= 5.0 {\n            hotspot_count += 1;\n        }\n    }\n\n    // Per-file health scores using new scoring system\n    let all_with_waivers = db.get_health_findings_with_waiver_status()?;\n    let active: Vec<HealthFindingRow> = all_with_waivers\n        .into_iter()\n        .filter(|(_, waived)| !waived)\n        .map(|(f, _)| f)\n        .collect();\n\n    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();\n    for f in active {\n        findings_by_file.entry(f.file_id).or_default().push(f);\n    }\n\n    let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();\n    let mut file_scores = Vec::new();\n    let mut health_sum = 0.0;\n\n    for f in &files {\n        let findings = findings_by_file.get(&f.id)\n            .map(|v| v.as_slice()).unwrap_or(&[]);\n        let result = scoring::score_file(findings);\n\n        let mut cat_totals: HashMap<&str, f64> = HashMap::new();\n        for d in &result.deductions {\n            *cat_totals.entry(d.category.as_str()).or_default() += d.scaled_deduction;\n        }\n        let cat_json = serde_json::to_string(&cat_totals).unwrap_or_default();\n\n        file_scores.push(SnapshotFileRow {\n            file_id: f.id,\n            file_path: f.path.clone(),\n            score: result.score,\n            category_scores: cat_json,\n        });\n        health_sum += result.score;\n    }\n\n    let health_score = if files.is_empty() { 10.0 } else { health_sum / files.len() as f64 };\n\n    // Per-component scores\n    let components = db.all_components()?;\n    let memberships = db.component_members_with_line_count()?;\n    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();\n    for (comp_id, file_id, lc) in &memberships {\n        comp_files.entry(comp_id.as_str()).or_default().push((*file_id, *lc));\n    }\n\n    let file_score_map: HashMap<i64, f64> = file_scores.iter()\n        .map(|fs| (fs.file_id, fs.score)).collect();\n\n    let mut component_scores = Vec::new();\n    for comp in &components {\n        let Some(members) = comp_files.get(comp.id.as_str()) else { continue };\n        let pairs: Vec<(f64, i64)> = members.iter()\n            .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&10.0), lc))\n            .collect();\n        let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();\n        let comp_score = scoring::score_component(&pairs);\n        component_scores.push(SnapshotComponentRow {\n            component_id: comp.id.clone(),\n            component_name: comp.name.clone(),\n            score: comp_score,\n            member_count: members.len() as i64,\n            total_nloc,\n        });\n    }\n\n    let pattern_family_count = db.pattern_family_count()?;\n\n    Ok(SnapshotHealthData {\n        total_complexity, dead_symbol_count, hotspot_count,\n        health_score, pattern_family_count,\n        file_scores, component_scores,\n    })\n}\n```\n\nUpdate `record_snapshot` to call `insert_snapshot_files` and `insert_snapshot_components` after `insert_snapshot`.\n\n### Step 5: Remove legacy scoring\n\nIn `src/tools/file_health.rs`:\n- Delete `FileScores` struct (lines 29-37)\n- Delete `compute_file_scores` function (lines 39-68)\n- Delete the comment about legacy scoring (lines 25-27)\n\n### Step 6: Rewrite trend tool\n\nIn `src/tools/trend.rs`:\n\n```rust\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct TrendArgs {\n    pub workspace: String,\n    #[serde(default)]\n    pub from: Option<String>,\n    #[serde(default)]\n    pub to: Option<String>,\n    /// File path for per-file historical health query.\n    /// When set, returns a time series instead of a comparison.\n    #[serde(default)]\n    pub path: Option<String>,\n    /// Max snapshots for per-file history (default 10).\n    #[serde(default)]\n    pub limit: Option<usize>,\n}\n\npub fn handle(db: &Db, args: &TrendArgs) -> Result<serde_json::Value> {\n    // If path is set, return per-file history\n    if let Some(path) = &args.path {\n        let limit = args.limit.unwrap_or(10);\n        let history = db.file_health_history(path, limit)?;\n        return Ok(json!({\n            \"mode\": \"history\",\n            \"path\": path,\n            \"snapshots\": history.iter().map(|(ts, score, cats)| json!({\n                \"timestamp\": ts,\n                \"health_score\": score,\n                \"category_deductions\": serde_json::from_str::<serde_json::Value>(cats)\n                    .unwrap_or(json!({})),\n            })).collect::<Vec<_>>(),\n        }));\n    }\n\n    // Comparison mode\n    let (snap_from, snap_to) = resolve_snapshots(db, args.from.as_deref(), args.to.as_deref())?;\n\n    // Aggregate deltas (existing + pattern_family_count)\n    let aggregate_deltas = json!({ /* existing fields + pattern_family_count */ });\n\n    // Per-file deltas\n    let from_files = db.snapshot_file_scores(snap_from.id)?;\n    let to_files = db.snapshot_file_scores(snap_to.id)?;\n    let to_map: HashMap<&str, &SnapshotFileRow> = to_files.iter()\n        .map(|f| (f.file_path.as_str(), f)).collect();\n    let from_map: HashMap<&str, &SnapshotFileRow> = from_files.iter()\n        .map(|f| (f.file_path.as_str(), f)).collect();\n\n    let mut file_deltas = Vec::new();\n    // For each file in to_snapshot, compute delta vs from_snapshot\n    // Sort by absolute delta descending, split into improved/degraded\n\n    // Per-component deltas (similar pattern)\n    let from_comps = db.snapshot_component_scores(snap_from.id)?;\n    let to_comps = db.snapshot_component_scores(snap_to.id)?;\n    // Diff by component_id\n\n    // Category breakdown: aggregate category_scores across all files in each snapshot\n    // Show per-category delta\n\n    Ok(json!({\n        \"from\": snapshot_to_json(&snap_from),\n        \"to\": snapshot_to_json(&snap_to),\n        \"deltas\": aggregate_deltas,\n        \"files\": {\n            \"improved\": improved_files,    // sorted by improvement magnitude\n            \"degraded\": degraded_files,    // sorted by degradation magnitude\n        },\n        \"components\": component_deltas,\n        \"categories\": category_deltas,     // per HealthCategory\n    }))\n}\n```\n\nUpdate `snapshot_to_json` to include `pattern_family_count` and f64 `health_score`.\n\n### Step 7: Update MCP wiring\n\nIn `src/mcp.rs`, update `sutra_trend` to pass the full args struct:\n```rust\nlet result = tools::trend::handle(&db, &args).map_err(sutra_to_rmcp)?;\n```\n\n### Step 8: Integration tests\n\nIn `tests/health-test.rs`, add:\n\n1. **test_snapshot_stores_per_file_health** — insert findings, run snapshot capture, verify health_snapshot_files has correct per-file scores\n2. **test_snapshot_stores_per_component_health** — same for components, verify NLOC-weighted scores\n3. **test_trend_per_file_deltas** — create two snapshots with different findings, verify trend shows correct improved/degraded files\n4. **test_file_health_history** — create multiple snapshots, verify per-file time series query\n5. **test_trend_category_breakdown** — verify category deduction deltas in trend output\n6. **test_snapshot_pattern_family_count** — verify pattern_family_count flows through SnapshotRow and trend\n\n## Acceptance criteria coverage\n\n- [x] \"health_snapshot_files table storing per-file scores at each snapshot\" → Steps 1, 2, 3, 4\n- [x] \"Per-component scores stored in snapshots (NLOC-weighted from file scores)\" → Steps 1, 2, 3, 4\n- [x] \"Snapshot capture includes per-file and per-component health data\" → Step 4\n- [x] \"Trend tool rewritten: per-file deltas, per-component deltas, category breakdown\" → Steps 6, 7\n- [x] \"Per-file historical query API (file × snapshot range → score time series)\" → Steps 3, 6\n- [x] \"Pattern family counts from 5e-6 included in snapshot data\" → Steps 2, 6",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "e6172b5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577569638,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 91
+      }
+    },
+    {
+      "ts": 1780656718942,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780657659701,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780657702433,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780659133695,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577569638,
+  "updated_at": 1780659133695,
+  "completed_at": 1780659133695,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-e823-73d0-9434-bd97c49571ef",
+      "edge_type": "depends_on",
+      "source": "sutra/91",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577658915
+    },
+    {
+      "id": "019e92b2-ea8d-78c1-97f1-e077600b594e",
+      "edge_type": "depends_on",
+      "source": "sutra/91",
+      "target": "sutra/87",
+      "note": null,
+      "created_at": 1780577659533
+    },
+    {
+      "id": "019e92b3-046b-78f3-9a85-48326af65146",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577666155
+    },
+    {
+      "id": "019e92b3-35fb-7510-8894-fbd2fc42dae1",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577678843
+    },
+    {
+      "id": "019e92b3-3af3-7830-b4e3-05013fef04f6",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577680115
+    }
+  ]
+}

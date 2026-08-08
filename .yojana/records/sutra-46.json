@@ -1,0 +1,152 @@
+{
+  "id": "019e7f84-7169-7331-b1e1-1057e47ae92a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/46",
+  "sequence_number": 46,
+  "title": "5b-2: component reconciliation + architectural events",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nRecompute path for component discovery. When Louvain runs again on a changed graph, reconcile new clusters against existing durable components using Jaccard overlap (>0.6 → match). Unmatched new clusters create new components. Unmatched existing components are marked dissolved. Detect and store architectural events: merge (two prior components collapsed into one cluster), split (one prior component spans two clusters), drift (>30% file shift between components). Events stored in `component_events` table (durable).\n\n## Acceptance criteria\n\n- [ ] Reconciliation matches new clusters to existing components via Jaccard overlap (threshold 0.6)\n- [ ] Unmatched clusters create new components with auto-names\n- [ ] Unmatched existing components marked dissolved with timestamp, hidden from normal queries\n- [ ] Merge event emitted when two prior components map to one new cluster\n- [ ] Split event emitted when one prior component's files span two new clusters\n- [ ] Drift event emitted when >30% of a component's files shift to another component\n- [ ] Events stored in component_events with type, involved component IDs, and timestamp\n- [ ] Test: given prior components + new clustering → correct match/create/dissolve decisions\n- [ ] Test: merge, split, drift detection with synthetic data\n\n## Blocked by\n\n- sutra/45 (5b-1: basic component discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "Reconciliation matches new clusters to existing components via Jaccard overlap (threshold 0.6)"
+    },
+    {
+      "done": true,
+      "text": "Unmatched clusters create new components with auto-names"
+    },
+    {
+      "done": true,
+      "text": "Unmatched existing components marked dissolved with timestamp, hidden from normal queries"
+    },
+    {
+      "done": true,
+      "text": "Merge event emitted when two prior components map to one new cluster"
+    },
+    {
+      "done": true,
+      "text": "Split event emitted when one prior component's files span two new clusters"
+    },
+    {
+      "done": true,
+      "text": "Drift event emitted when >30% of a component's files shift to another component"
+    },
+    {
+      "done": true,
+      "text": "Events stored in component_events with type, involved component IDs, and timestamp"
+    },
+    {
+      "done": true,
+      "text": "Test: given prior components + new clustering → correct match/create/dissolve decisions"
+    },
+    {
+      "done": true,
+      "text": "Test: merge, split, drift detection with synthetic data"
+    }
+  ],
+  "decisions": [
+    "Jaccard threshold >= 0.6 (inclusive) per AC wording 'threshold 0.6'",
+    "Split events fire for dissolved components too — a 50/50 split produces two below-threshold clusters that dissolve the original",
+    "Merge events attributed to surviving or newly-created component with absorbed[] detail listing dissolved components",
+    "Tests pin resolution=1.0 via .sutra/components.toml to avoid auto_tune fragmenting small test cliques"
+  ],
+  "implementation_plan": "## Approach\n\nAdd `prior_paths` (JSON array of file paths) and `dissolved_at` columns to the durable `components` table so that file-to-component membership snapshots survive reindex. Replace the current \"skip or delete-all\" logic in `discover_components` with Jaccard-based reconciliation: match new Louvain clusters to existing components by path overlap (>0.6 threshold), create new components for unmatched clusters, dissolve unmatched existing ones, and detect merge/split/drift events from file-movement patterns.\n\nWhy `prior_paths` JSON on the component row rather than a separate snapshot table: no extra joins, single UPDATE to refresh, easy to parse in Rust with serde_json. Reconciliation only runs after reindex (when membership was wiped but durable component rows survive). The fast-path (both `components` and `component_membership` populated) still returns 0 immediately.\n\nKey design constraint: `files` table is ephemeral (file_ids change on reindex), so reconciliation must compare by **file path** (stable across reindexes), not by file_id. The `prior_paths` snapshot stores paths, and new clusters are mapped to paths via the `FileRow` struct.\n\nEvents go in the existing `component_events` table (ephemeral — re-derived each reconciliation), with `detail` JSON holding involved component IDs for multi-component events (merge, split, drift).\n\n## Files\n\n- **Create**: `migrations/0009_reconciliation.sql` — add dissolved_at + prior_paths columns, backfill\n- **Modify**: `src/db/migrations.rs` (line ~48) — register migration as non-ephemeral\n- **Modify**: `src/db/mod.rs` (lines ~136-141) — add fields to ComponentRow\n- **Modify**: `src/db/components.rs` — new DB methods, update all_components to filter dissolved\n- **Modify**: `src/components.rs` (lines ~273-325) — reconciliation algorithm, refactor discover_components\n- **Test**: `tests/components_test.rs` — reconciliation + event detection tests, update orphan test\n\n## Steps\n\n### Step 1: Schema migration — `migrations/0009_reconciliation.sql`\n\n```sql\nALTER TABLE components ADD COLUMN dissolved_at TEXT;\nALTER TABLE components ADD COLUMN prior_paths TEXT;\n\nUPDATE components SET prior_paths = (\n    SELECT json_group_array(f.path)\n    FROM component_membership cm\n    JOIN files f ON f.id = cm.file_id\n    WHERE cm.component_id = components.id\n);\n```\n\nRegister in `src/db/migrations.rs` as `ephemeral_only: false`. This is critical — ALTER TABLE ADD COLUMN is not idempotent; it must run once. All existing migrations are `ephemeral_only: true` (re-run on reindex) because they use `CREATE TABLE IF NOT EXISTS` on ephemeral tables. This migration alters a durable table.\n\n```rust\n// append to MIGRATIONS array:\n(\n    \"0009_reconciliation\",\n    include_str!(\"../../migrations/0009_reconciliation.sql\"),\n    false,\n),\n```\n\n### Step 2: Update ComponentRow and DB methods\n\n**`src/db/mod.rs`** — extend struct:\n```rust\npub struct ComponentRow {\n    pub id: String,\n    pub name: String,\n    pub created_at: String,\n    pub updated_at: String,\n    pub dissolved_at: Option<String>,\n    pub prior_paths: Option<String>,\n}\n```\n\n**`src/db/components.rs`** — update `all_components` to filter dissolved and return new fields:\n```rust\npub fn all_components(&self) -> Result<Vec<ComponentRow>> {\n    conn.prepare(\n        \"SELECT id, name, created_at, updated_at, dissolved_at, prior_paths \\\n         FROM components WHERE dissolved_at IS NULL ORDER BY name\"\n    )?;\n    // map rows with dissolved_at: row.get(4)?, prior_paths: row.get(5)?\n}\n```\n\nNew methods on `Db`:\n\n```rust\n/// Load active components with parsed prior_paths for reconciliation.\npub fn active_components_with_paths(&self) -> Result<Vec<(String, String, Vec<String>)>> {\n    // SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL\n    // Parse prior_paths JSON into Vec<String>; empty vec if NULL or \"[]\"\n}\n\npub fn dissolve_component(&self, id: &str) -> Result<()> {\n    // UPDATE components SET dissolved_at = datetime('now') WHERE id = ?1\n}\n\npub fn update_component_paths(&self, id: &str, prior_paths_json: &str) -> Result<()> {\n    // UPDATE components SET prior_paths = ?2, updated_at = datetime('now') WHERE id = ?1\n}\n\npub fn insert_component_event(&self, component_id: &str, event_type: &str, detail: &str) -> Result<()> {\n    // INSERT INTO component_events (component_id, event_type, detail) VALUES (?1, ?2, ?3)\n}\n\npub fn clear_membership(&self) -> Result<()> {\n    // DELETE FROM component_membership\n}\n```\n\nUpdate `batch_create_components` to accept `prior_paths`:\n```rust\npub fn batch_create_components(\n    &self,\n    components: &[(String, String, String)],  // (id, name, prior_paths_json)\n    membership: &[(String, i64)],\n) -> Result<()> {\n    // INSERT INTO components (id, name, prior_paths) VALUES (?1, ?2, ?3)\n    // + membership inserts as before\n}\n```\n\n### Step 3: Reconciliation algorithm — `src/components.rs`\n\nExtract cluster-building from `discover_components` into a shared helper, then add `reconcile_components` and `create_fresh_components`:\n\n```rust\nfn build_clusters(\n    result: &LouvainResult,\n) -> Vec<Vec<i64>> {\n    let mut by_comm: HashMap<usize, Vec<i64>> = HashMap::new();\n    for (&file_id, &comm) in &result.communities {\n        by_comm.entry(comm).or_default().push(file_id);\n    }\n    by_comm.into_values().collect()\n}\n\nfn create_fresh_components(\n    db: &Db,\n    clusters: &[Vec<i64>],\n    file_map: &HashMap<i64, &FileRow>,\n) -> Result<usize> {\n    let mut components = Vec::new();\n    let mut membership = Vec::new();\n    for fids in clusters {\n        let paths: Vec<&str> = fids.iter()\n            .filter_map(|id| file_map.get(id).map(|f| f.path.as_str()))\n            .collect();\n        let name = auto_name(&paths);\n        let id = Uuid::now_v7().to_string();\n        let paths_json = serde_json::to_string(&paths).unwrap_or_default();\n        components.push((id.clone(), name, paths_json));\n        for &fid in fids {\n            membership.push((id.clone(), fid));\n        }\n    }\n    db.batch_create_components(&components, &membership)?;\n    Ok(clusters.len())\n}\n\nfn reconcile_components(\n    db: &Db,\n    clusters: &[Vec<i64>],\n    file_map: &HashMap<i64, &FileRow>,\n) -> Result<usize> {\n    let existing = db.active_components_with_paths()?;\n\n    // Build cluster path sets (HashSet<String> for each cluster)\n    let cluster_paths: Vec<HashSet<String>> = clusters.iter().map(|fids| {\n        fids.iter()\n            .filter_map(|id| file_map.get(id).map(|f| f.path.clone()))\n            .collect()\n    }).collect();\n\n    // Build prior path sets\n    let prior_sets: Vec<HashSet<&str>> = existing.iter()\n        .map(|(_, _, paths)| paths.iter().map(|s| s.as_str()).collect())\n        .collect();\n\n    // --- Jaccard matrix + greedy matching ---\n    let mut candidates: Vec<(usize, usize, f64)> = Vec::new();\n    for (ci, prior_set) in prior_sets.iter().enumerate() {\n        if prior_set.is_empty() { continue; }\n        for (ki, cluster_set) in cluster_paths.iter().enumerate() {\n            let inter = prior_set.iter()\n                .filter(|p| cluster_set.contains(**p))\n                .count();\n            let union = prior_set.len() + cluster_set.len() - inter;\n            if union > 0 {\n                let j = inter as f64 / union as f64;\n                if j > 0.6 { candidates.push((ci, ki, j)); }\n            }\n        }\n    }\n    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());\n\n    let mut matched_comps: HashSet<usize> = HashSet::new();\n    let mut matched_clusters: HashSet<usize> = HashSet::new();\n    let mut matches: Vec<(usize, usize)> = Vec::new();\n    for (ci, ki, _) in &candidates {\n        if !matched_comps.contains(ci) && !matched_clusters.contains(ki) {\n            matches.push((*ci, *ki));\n            matched_comps.insert(*ci);\n            matched_clusters.insert(*ki);\n        }\n    }\n\n    // --- Apply ---\n    db.clear_membership()?;\n    let mut all_membership: Vec<(String, i64)> = Vec::new();\n\n    // Matched components: update prior_paths, collect membership\n    for &(ci, ki) in &matches {\n        let (id, _, _) = &existing[ci];\n        let paths_json = serde_json::to_string(\n            &cluster_paths[ki].iter().collect::<Vec<_>>()\n        )?;\n        db.update_component_paths(id, &paths_json)?;\n        for &fid in &clusters[ki] {\n            all_membership.push((id.clone(), fid));\n        }\n    }\n\n    // Unmatched clusters → new components\n    let mut new_components: Vec<(String, String, String)> = Vec::new();\n    for (ki, fids) in clusters.iter().enumerate() {\n        if matched_clusters.contains(&ki) { continue; }\n        let paths: Vec<&str> = fids.iter()\n            .filter_map(|id| file_map.get(id).map(|f| f.path.as_str()))\n            .collect();\n        let name = auto_name(&paths);\n        let id = Uuid::now_v7().to_string();\n        let paths_json = serde_json::to_string(&paths)?;\n        new_components.push((id.clone(), name, paths_json));\n        for &fid in fids {\n            all_membership.push((id.clone(), fid));\n        }\n    }\n\n    // Unmatched existing → dissolve\n    for (ci, (id, _, _)) in existing.iter().enumerate() {\n        if !matched_comps.contains(&ci) {\n            db.dissolve_component(id)?;\n        }\n    }\n\n    // Persist new components + all membership\n    if !new_components.is_empty() {\n        db.batch_create_components(&new_components, &all_membership)?;\n    } else {\n        db.batch_insert_membership(&all_membership)?;\n    }\n\n    // --- Events ---\n    detect_events(db, &existing, &cluster_paths, &matches, &matched_comps)?;\n\n    Ok(matches.len() + new_components.len())\n}\n```\n\n### Step 4: Event detection — `src/components.rs`\n\n```rust\nfn detect_events(\n    db: &Db,\n    existing: &[(String, String, Vec<String>)],\n    cluster_paths: &[HashSet<String>],\n    matches: &[(usize, usize)],\n    matched_comps: &HashSet<usize>,\n) -> Result<()> {\n    // file → cluster index\n    let mut file_to_cluster: HashMap<&str, usize> = HashMap::new();\n    for (ki, paths) in cluster_paths.iter().enumerate() {\n        for p in paths { file_to_cluster.insert(p.as_str(), ki); }\n    }\n\n    // cluster → matched component id\n    let mut cluster_to_comp: HashMap<usize, &str> = HashMap::new();\n    for &(ci, ki) in matches {\n        cluster_to_comp.insert(ki, &existing[ci].0);\n    }\n\n    // MERGE: a cluster absorbed files from 2+ prior components\n    for (ki, cset) in cluster_paths.iter().enumerate() {\n        let mut contributors: Vec<(usize, usize)> = Vec::new(); // (comp_idx, overlap)\n        for (ci, (_, _, prior)) in existing.iter().enumerate() {\n            let overlap = prior.iter().filter(|p| cset.contains(p.as_str())).count();\n            if overlap > 0 { contributors.push((ci, overlap)); }\n        }\n        if contributors.len() >= 2 {\n            // surviving = the matched component for this cluster (or new)\n            if let Some(surviving_id) = cluster_to_comp.get(&ki) {\n                let absorbed: Vec<_> = contributors.iter()\n                    .filter(|(ci, _)| !matched_comps.contains(ci)\n                        || matches.iter().any(|(mc, mk)| *mc == *ci && *mk != ki))\n                    .map(|(ci, _)| json!({\"id\": &existing[*ci].0, \"name\": &existing[*ci].1}))\n                    .collect();\n                if !absorbed.is_empty() {\n                    let detail = json!({\"absorbed\": absorbed});\n                    db.insert_component_event(surviving_id, \"merge\", &detail.to_string())?;\n                }\n            }\n        }\n    }\n\n    // SPLIT: a matched component's prior files span 2+ clusters\n    for &(ci, ki) in matches {\n        let (id, _, prior) = &existing[ci];\n        let mut in_other_clusters = 0usize;\n        for p in prior {\n            if let Some(&target) = file_to_cluster.get(p.as_str()) {\n                if target != ki { in_other_clusters += 1; }\n            }\n        }\n        if in_other_clusters > 0 && !prior.is_empty() {\n            let detail = json!({\n                \"files_in_matched_cluster\": prior.len() - in_other_clusters,\n                \"files_in_other_clusters\": in_other_clusters,\n            });\n            db.insert_component_event(id, \"split\", &detail.to_string())?;\n        }\n    }\n\n    // DRIFT: >30% of a matched component's prior files now in a specific other component\n    for &(ci, ki) in matches {\n        let (id, _, prior) = &existing[ci];\n        if prior.is_empty() { continue; }\n        let mut moved_to: HashMap<&str, usize> = HashMap::new();\n        for p in prior {\n            if let Some(&target_ki) = file_to_cluster.get(p.as_str()) {\n                if target_ki != ki {\n                    if let Some(target_id) = cluster_to_comp.get(&target_ki) {\n                        *moved_to.entry(target_id).or_default() += 1;\n                    }\n                }\n            }\n        }\n        for (target_id, count) in moved_to {\n            let ratio = count as f64 / prior.len() as f64;\n            if ratio > 0.3 {\n                let detail = json!({\n                    \"to_component\": target_id,\n                    \"shifted_files\": count,\n                    \"ratio\": (ratio * 100.0).round() / 100.0,\n                });\n                db.insert_component_event(id, \"drift\", &detail.to_string())?;\n            }\n        }\n    }\n\n    Ok(())\n}\n```\n\n### Step 5: Refactor discover_components entry point\n\n```rust\npub fn discover_components(db: &Db, files: &[FileRow], workspace_root: &Path) -> Result<usize> {\n    if files.is_empty() { return Ok(0); }\n\n    let has_existing = db.component_count()? > 0;\n    if has_existing && db.membership_count()? > 0 {\n        return Ok(0);  // no reindex happened\n    }\n\n    let config = load_config(workspace_root)?;\n    let adj = build_weighted_adjacency(files, db)?;\n    if !adj.values().any(|nbrs| !nbrs.is_empty()) {\n        return Ok(0);\n    }\n\n    let result = if let Some(gamma) = config.resolution {\n        louvain(&adj, gamma)\n    } else {\n        auto_tune(&adj)\n    };\n\n    let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();\n    let clusters = build_clusters(&result);\n\n    if has_existing {\n        reconcile_components(db, &clusters, &file_map)\n    } else {\n        create_fresh_components(db, &clusters, &file_map)\n    }\n}\n```\n\n### Step 6: Tests\n\n**Update** `test_orphan_cleanup_rediscovers_after_membership_wiped` → verify ID stability (reconciliation preserves component identity when clustering is unchanged).\n\n**New tests:**\n\n```rust\n#[test]\nfn test_reconciliation_preserves_component_identity() {\n    // 2 clusters (core: a1,a2,a3 / tools: b1,b2,b3), discover\n    // Capture original component IDs\n    // reindex(), re-insert identical files+refs, re-discover\n    // Assert: same component IDs, same names, same file assignments\n}\n\n#[test]\nfn test_merge_event_detected() {\n    // 2 separate clusters → 2 components\n    // reindex(), add cross-cluster refs so Louvain produces 1 cluster\n    // Assert: 1 active component, 1 dissolved, merge event on survivor\n    // Assert: event detail contains absorbed component ID\n}\n\n#[test]\nfn test_split_event_detected() {\n    // 1 cluster of 6 files → 1 component\n    // reindex(), remove intra-cluster refs to split into 2 clusters\n    // Assert: original component matches one cluster, split event emitted\n    // Assert: new component created for the other cluster\n}\n\n#[test]\nfn test_drift_event_detected() {\n    // 2 clusters of 5 files each → 2 components\n    // reindex(), move 2 files from cluster A to cluster B (40% drift)\n    // Assert: drift event on component A with ratio > 0.3\n}\n\n#[test]\nfn test_unmatched_cluster_creates_new_component() {\n    // 1 cluster → 1 component\n    // reindex(), add 3 new files forming a second cluster\n    // Assert: original component preserved, new component created\n}\n\n#[test]\nfn test_dissolved_components_hidden_from_queries() {\n    // 2 clusters → 2 components\n    // reindex() and trigger dissolution of one\n    // Assert: all_components() returns 1, dissolved component not visible\n    // Assert: sutra_components tool returns 1 component\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"Reconciliation matches new clusters to existing components via Jaccard overlap (threshold 0.6)\" → Step 3 (Jaccard matrix + greedy bipartite matching in `reconcile_components`)\n- [x] \"Unmatched clusters create new components with auto-names\" → Step 3 (unmatched cluster branch creates with `auto_name` + new UUID)\n- [x] \"Unmatched existing components marked dissolved with timestamp, hidden from normal queries\" → Steps 2-3 (`dissolve_component` sets `dissolved_at`, `all_components` filters `WHERE dissolved_at IS NULL`)\n- [x] \"Merge event emitted when two prior components map to one new cluster\" → Step 4 (contributor analysis per cluster in `detect_events`)\n- [x] \"Split event emitted when one prior component's files span two new clusters\" → Step 4 (per-component cluster distribution check)\n- [x] \"Drift event emitted when >30% of a component's files shift to another component\" → Step 4 (per-component drift ratio with 0.3 threshold)\n- [x] \"Events stored in component_events with type, involved component IDs, and timestamp\" → Steps 2+4 (`insert_component_event` writes to existing table, detail JSON carries related IDs)\n- [x] \"Test: given prior components + new clustering → correct match/create/dissolve decisions\" → Step 6 (identity preservation, new cluster, dissolved component tests)\n- [x] \"Test: merge, split, drift detection with synthetic data\" → Step 6 (dedicated event detection tests with controlled synthetic graphs)",
+  "execution_record": "3 commits: schema+DB layer, core reconciliation+events+tests, orphan test rename. 367 tests pass (13 component tests: 7 existing + 6 new). Key decisions during implementation: (1) Jaccard threshold is >= 0.6 (inclusive), not > 0.6; (2) split/merge events also fire for dissolved components (not just matched); (3) tests use pinned resolution=1.0 to avoid auto_tune fragmentation on small cliques.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5e14d7d"
+    },
+    {
+      "type": "git:commit",
+      "value": "9fbd8ad"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780255846761,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 46
+      }
+    },
+    {
+      "ts": 1780285094932,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780286168605,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780286204555,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780317931216,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial):\n\nVerdict: needs-attention\n\n1. [high] Merge detection treats any overlap as absorption — drift/split can produce false merge events. `detect_events` marks every cluster with files from 2+ prior components as a merge, then only excludes the component matched to *that same cluster*. A surviving component matched to a *different* cluster still appears in `absorbed[]`. In the drift test shape (A keeps 3 files, shifts 2 to B), this would emit a spurious merge on B absorbing A even though A is alive and matched elsewhere.\n\n   Recommendation: Only include dissolved/unmatched components in `absorbed[]`. Add regression test that drift does not emit merge.\n\n2. [medium] Split events omit resulting component IDs — detail only has file counts. `cluster_to_comp` is available but not used. This fails the AC requirement that events store involved component IDs. Makes split history hard to consume.\n\n   Recommendation: Include target component IDs per cluster in split detail. Add test assertions.",
+      "ts": 1780317767284
+    },
+    {
+      "author": "agent",
+      "text": "Fixed both codex review findings:\\n1. Merge filter now uses `!matched_comps.contains(ci)` — only dissolved components appear in absorbed[]. Regression test confirms drift does not emit merge.\\n2. Split detail now includes `targets` array with component_id + files per cluster. Test asserts presence.\"",
+      "ts": 1780317904006
+    }
+  ],
+  "created_at": 1780255846761,
+  "updated_at": 1780317931216,
+  "completed_at": 1780317931216,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-24bd-7440-aa17-c98799ac079e",
+      "edge_type": "depends_on",
+      "source": "sutra/46",
+      "target": "sutra/45",
+      "note": null,
+      "created_at": 1780255892669
+    },
+    {
+      "id": "019e7f85-2884-7742-a8b8-2415e68700bc",
+      "edge_type": "depends_on",
+      "source": "sutra/47",
+      "target": "sutra/46",
+      "note": null,
+      "created_at": 1780255893636
+    }
+  ]
+}

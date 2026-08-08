@@ -1,0 +1,137 @@
+{
+  "id": "019e1cd9-df21-7b33-bf2f-e9f40a5112fa",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/12",
+  "sequence_number": 12,
+  "title": "FCA: convention checking + suppressions",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd convention violation checking to the FCA engine. Given a set of changed symbols, check them against active conventions and return violations. Parse `.sutra/rules.toml` `[conventions]` section for suppressions (by stable hash) and per-symbol exemptions. Extend the rules.toml parser introduced by the forbidden deps slice.\\n\\nExample config:\\n```toml\\n[conventions]\\nsuppress = [\\\"a1b4c2d1\\\"]\\n\\n[[conventions.exempt]]\\nconvention = \\\"e5f6g7h8\\\"\\nsymbols = [\\\"InternalError\\\"]\\n```\\n\\n## Acceptance criteria\\n\\n- [ ] `check(symbols) -> Vec<Violation>` returns convention violations for changed symbols\\n- [ ] Suppressed conventions (by hash) produce no violations\\n- [ ] Per-symbol exemptions work correctly\\n- [ ] Convention violations are distinct type from DD constraint violations\\n- [ ] `.sutra/rules.toml` `[conventions]` section parsed correctly\\n- [ ] Tests: violation detection, suppression, exemption, no false positives on unchanged code\\n\\n## Blocked by\\n\\n- sutra/v1/10 — DD: forbidden deps + rules.toml (rules.toml parser)\\n- sutra/v1/11 — FCA: convention extraction + persistence",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "check(symbols) -> Vec<Violation> returns convention violations for changed symbols"
+    },
+    {
+      "done": true,
+      "text": "Suppressed conventions (by hash) produce no violations"
+    },
+    {
+      "done": true,
+      "text": "Per-symbol exemptions work correctly"
+    },
+    {
+      "done": true,
+      "text": "Convention violations are distinct type from DD constraint violations"
+    },
+    {
+      "done": true,
+      "text": ".sutra/rules.toml [conventions] section parsed correctly"
+    },
+    {
+      "done": true,
+      "text": "Tests: violation detection, suppression, exemption, no false positives on unchanged code"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f2caa0c"
+    }
+  ],
+  "files": [
+    "src/fca/engine.rs",
+    "src/fca/mod.rs",
+    "src/rules.rs"
+  ],
+  "tags": [
+    "v1",
+    "fca",
+    "config"
+  ],
+  "history": [
+    {
+      "ts": 1778600501025,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 12
+      }
+    },
+    {
+      "ts": 1778671366325,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778671570598,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention.\\n\\n[medium] Per-symbol exemptions match on `sym.name` (qualified_name) which isn't globally unique — two symbols named `process` in different files would both be exempted if one is listed. ConventionViolation also lacks file/id context for downstream disambiguation.\\n\\nRecommendation: carry file-qualified identity through FCA checking and match exemptions against that. Include in ConventionViolation for downstream sutra_review integration.",
+      "ts": 1778671768740
+    }
+  ],
+  "created_at": 1778600501025,
+  "updated_at": 1778671570598,
+  "completed_at": 1778671570598,
+  "edges": [
+    {
+      "id": "019e1cda-6d11-70b3-9bb8-8f208288708d",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/12",
+      "target": "sutra/v1/10",
+      "note": null,
+      "created_at": 1778600537361
+    },
+    {
+      "id": "019e1cda-70b5-70b0-917a-627637bda630",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/12",
+      "target": "sutra/v1/11",
+      "note": null,
+      "created_at": 1778600538293
+    },
+    {
+      "id": "019e1cda-7d9f-7940-91a8-e61517d777d1",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/12",
+      "note": null,
+      "created_at": 1778600541599
+    },
+    {
+      "id": "019e1cda-b45f-76e0-b6e4-6ed8a6be8c4a",
+      "edge_type": "refines",
+      "source": "sutra/v1/12",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600555615
+    },
+    {
+      "id": "019e211a-4aa0-7ca3-bd9f-d442e6a29fcd",
+      "edge_type": "motivated_by",
+      "source": "sutra/v1/17",
+      "target": "sutra/v1/12",
+      "note": "Codex review finding on sutra/v1/12",
+      "created_at": 1778671831712
+    }
+  ]
+}

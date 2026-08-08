@@ -1,0 +1,59 @@
+{
+  "id": "019e06ed-bafd-7bb1-977f-b4b7729a053c",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/6",
+  "sequence_number": 6,
+  "title": "Design: compact wire format (MUNCH-style)",
+  "description": "Design a compact response encoding for high-volume sutra tools (`sutra_map`, `sutra_outline`, `sutra_calls`, `sutra_refs`). jcodemunch reports ~45% byte savings via path interning + packed homogeneous rows.\n\n**Open questions:**\n- Wire compatibility — current MCP clients expect JSON. Negotiate via `format=compact|auto|json` arg per tool? Auto-threshold (only when savings ≥ 15%)?\n- Encoder/decoder symmetry — agents need to decode it, which means either the harness understands it or we ship a decoder skill.\n- Is response size *actually* a pain point today? Sutra's responses are generally small.\n\n**Recommendation already in docs/feature-ideas.md:** **defer this**. Revisit when a specific tool's output measurably bloats agent context. Listed as a task so it isn't lost, but should be lowest priority.\n\n**Output:** decision in docs/plans/ — either ship a design or formally defer with the trigger condition that would re-open it.\n\nReference: docs/feature-ideas.md → \"Compact wire format (MUNCH-style)\".",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Decision recorded: ship-now design OR formal deferral with trigger condition"
+    },
+    {
+      "done": false,
+      "text": "If shipping: protocol negotiation strategy + auto-threshold rule + decoder distribution plan"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "docs/feature-ideas.md"
+  ],
+  "tags": [
+    "design",
+    "wire-format",
+    "deferred-recommended"
+  ],
+  "history": [
+    {
+      "ts": 1778232703741,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 6
+      }
+    },
+    {
+      "ts": 1780709740480,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232703741,
+  "updated_at": 1780709740480,
+  "completed_at": null,
+  "edges": []
+}

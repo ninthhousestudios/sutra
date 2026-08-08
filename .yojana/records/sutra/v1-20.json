@@ -1,0 +1,91 @@
+{
+  "id": "019e2229-c151-7bc3-b30b-3ee689b6c611",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/20",
+  "sequence_number": 20,
+  "title": "Fix hardcoded \"main\" in review branch diff mode",
+  "description": "sutra_review branch diff hardcodes \"main\" as merge-base target (src/tools/review.rs:76). Projects using \"master\" or other default branches get an opaque git error.\\n\\nAuto-detect: try `git symbolic-ref refs/remotes/origin/HEAD`, fall back to checking \"main\"/\"master\" existence, fail with clear diagnostic.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_review works on repos with 'master' as default branch"
+    },
+    {
+      "done": false,
+      "text": "sutra_review works on repos with no remote (falls back to checking local branches)"
+    },
+    {
+      "done": false,
+      "text": "Clear error message when no default branch can be detected"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "3b17d96"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review:2026-05-13-v1",
+    "wave-a"
+  ],
+  "history": [
+    {
+      "ts": 1778689622353,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 20
+      }
+    },
+    {
+      "ts": 1778690407831,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778690464542,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689622353,
+  "updated_at": 1778690464542,
+  "completed_at": 1778690464542,
+  "edges": [
+    {
+      "id": "019e222a-c82b-7771-bf39-bc72cf7ea7a4",
+      "edge_type": "relates_to",
+      "source": "sutra/v1/23",
+      "target": "sutra/v1/20",
+      "note": "Wave B relates to Wave A",
+      "created_at": 1778689689643
+    },
+    {
+      "id": "019e222a-cab1-7872-860a-779c626f9678",
+      "edge_type": "relates_to",
+      "source": "sutra/v1/24",
+      "target": "sutra/v1/20",
+      "note": "Wave B relates to Wave A",
+      "created_at": 1778689690289
+    }
+  ]
+}

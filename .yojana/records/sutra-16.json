@@ -1,0 +1,113 @@
+{
+  "id": "019e087a-a2c0-74c1-80fe-67fbfc324051",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/16",
+  "sequence_number": 16,
+  "title": "Wave C: structural extraction (graph module, pipeline unification, MCP thinning)",
+  "description": "Major structural refactor from 2026-05-08 checkpoint review. Architecture candidates #1, #2, #3 plus review findings F4, F5. This is the big refactor wave.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Extract graph module: pull PageRank, BFS blast_radius, rollup computation from pipeline.rs into src/graph.rs. Interface: compute_rollups(db, files, changed_ids) and compute_pagerank(db, files)."
+    },
+    {
+      "done": false,
+      "text": "Unify pipeline orchestration: shared post-parse sequence (resolve refs, build adjacency, compute rollups, compute PageRank, record snapshot) called by both parse_workspace and parse_changed_files."
+    },
+    {
+      "done": false,
+      "text": "MCP thinning: move arg structs from mcp.rs into their respective src/tools/*.rs modules. Investigate whether rmcp #[tool] can apply directly to tool module functions."
+    },
+    {
+      "done": false,
+      "text": "Fix F4: replace spawn_blocking + block_on in daemon.rs:173,266 with tokio::spawn for async parse functions."
+    },
+    {
+      "done": false,
+      "text": "Fix F5: introduce SnapshotParams struct for insert_snapshot (db.rs:841) to replace 9 positional i64 args."
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "All 5 ACs completed in a single commit (d2f229a). 230 tests pass, cargo check clean, cargo fmt applied.\\n\\nAC1: Extracted graph.rs with build_file_adjacency, compute_rollups[_with_adjacency], compute_pagerank[_with_adjacency], bfs_blast_radius. Pipeline.rs shrunk from 865 to ~540 lines.\\nAC2: Shared post_parse_sequence + record_snapshot functions called by both parse_workspace and parse_changed_files.\\nAC3: Moved 20 arg structs from mcp.rs (1080 lines) to their tool modules. mcp.rs shrunk to ~850 lines.\\nAC4: Three spawn_blocking+block_on sites in daemon.rs replaced with tokio::spawn.\\nAC5: SnapshotParams struct with Default derive replaces 9 positional i64 args in insert_snapshot.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d2f229a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-checkpoint"
+  ],
+  "history": [
+    {
+      "ts": 1778258715328,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 16
+      }
+    },
+    {
+      "ts": 1778258736034,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778259961355,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778261009467,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778258715328,
+  "updated_at": 1778261009467,
+  "completed_at": 1778261009467,
+  "edges": [
+    {
+      "id": "019e087b-1d1a-7342-9dbc-22b10ec3101f",
+      "edge_type": "depends_on",
+      "source": "sutra/16",
+      "target": "sutra/14",
+      "note": "Wave C after Wave A (fmt + quick fixes first so diffs are clean)",
+      "created_at": 1778258746650
+    },
+    {
+      "id": "019e087b-21e5-7283-b108-abebc17bdb24",
+      "edge_type": "relates_to",
+      "source": "sutra/16",
+      "target": "sutra/15",
+      "note": "Wave C MCP thinning builds on Wave B workspace consolidation",
+      "created_at": 1778258747877
+    },
+    {
+      "id": "019e087b-258f-7f71-aa88-d0f2e74b5486",
+      "edge_type": "depends_on",
+      "source": "sutra/17",
+      "target": "sutra/16",
+      "note": "Wave D deepening builds on Wave C structural extraction",
+      "created_at": 1778258748815
+    }
+  ]
+}

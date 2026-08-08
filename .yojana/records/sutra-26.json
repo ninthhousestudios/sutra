@@ -1,0 +1,63 @@
+{
+  "id": "019e4071-c0d1-78b2-b9e6-7d8ca209c960",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/26",
+  "sequence_number": 26,
+  "title": "Phase 2: domain vocabulary session (vidhi-domain)",
+  "description": "One vidhi-domain session to sharpen vocabulary across all layers of the sutra architectural model. Terms like \"component,\" \"convention,\" \"constraint,\" \"verification\" need precise definitions — they'll appear in every PRD, API, and tool name.\\n\\nInput: docs/sutra-vision.md (the seven-layer model)\\nOutput: shared domain vocabulary with precise definitions",
+  "category": null,
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Domain vocabulary session covering 16 terms across core model, rules/patterns, provenance, trust model, core loop verbs, and artifacts. Created CONTEXT.md with glossary, relationships, example dialogue, and flagged ambiguities. One ADR (sketch mode affects conventions only, not constraints).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    }
+  ],
+  "files": [
+    "CONTEXT.md",
+    "docs/adr/0001-sketch-mode-conventions-only.md"
+  ],
+  "tags": [
+    "design",
+    "phase-2"
+  ],
+  "history": [
+    {
+      "ts": 1779197657297,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 26
+      }
+    },
+    {
+      "ts": 1779557859760,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779559049541,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779197657297,
+  "updated_at": 1779559049541,
+  "completed_at": 1779559049541,
+  "edges": []
+}

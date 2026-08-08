@@ -1,0 +1,65 @@
+{
+  "id": "019eb5a4-c81d-7792-ac9c-3a81c0c8e804",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/7",
+  "sequence_number": 7,
+  "title": "Warn on constraints whose globs match zero files (dead constraint detection)",
+  "description": "A constraint whose from/to/scope glob matches zero indexed files enforces nothing but reads as protection — false confidence. This becomes acute with PRD-seeded rules.toml (vidhi-sutra-seed, see vidhi project) where globs are written before or during scaffolding and a path rename silently kills the rule. Analogous to existing alias orphan detection.\n\nSurface it in sutra_constraints(action=\"list\") output (e.g. matched_file_count per constraint, warning when 0) and as a finding in sutra_review. Zero matches on `to` of a forbidden_dep may be legitimate (the target was deleted — rule is vestigial); zero on `from` means the rule guards nothing. Either way the human should see it.",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "30331bd"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781163935773,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 7
+      }
+    },
+    {
+      "ts": 1781190486057,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781190490444,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (bb2f504..30331bd):\n\nVerdict: needs-attention\n\n[medium] Boundary coverage falsely flags component-id rules as dead (src/constraints/mod.rs:150-156)\nconstraint_coverage checks boundary references only against component names. The resolver accepts both component names and component ids, so a valid boundary rule written with stable component ids will get zero coverage and appear as a dead_constraint warning/finding in list and review output. That can push users to remove valid protection.\nRecommendation: Pass both component ids and names into constraint_coverage and use the same name-or-id matching semantics as boundary resolution. Add a unit test where from_component/to_component are component ids.",
+      "ts": 1781190826938
+    }
+  ],
+  "created_at": 1781163935773,
+  "updated_at": 1781190490444,
+  "completed_at": 1781190490444,
+  "edges": []
+}

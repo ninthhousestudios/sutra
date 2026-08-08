@@ -1,0 +1,60 @@
+{
+  "id": "019f151d-b45b-7ea2-8da8-c3101a1c5d67",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/217",
+  "sequence_number": 217,
+  "title": "db-test: migration-count assertions stale (expect 41, actual 43)",
+  "description": "## Problem\n\n`cargo test -p sutra --test db-test` has two failing tests on a clean `main` tree:\n\n- `test_fresh_db_creates_schema_migrations` (tests/db-test.rs:786)\n- `test_migration_reopen_is_idempotent` (tests/db-test.rs:799)\n\nBoth assert `count == 41` against `SELECT COUNT(*) FROM schema_migrations`, but a fresh DB now registers **43** migrations. The assertion message is even staler — it still says \"all 37 existing migrations\". Migrations were added (e.g. recent lessons/graph work) without bumping these hard-coded counts.\n\n```\nassertion `left == right` failed: fresh DB should register all 37 existing migrations\n  left: 43\n right: 41\n```\n\n## Root cause\n\nThe expected migration count is a magic literal duplicated across two tests (and a wrong message string). Every migration addition requires manually updating them, and they drift.\n\n## Fix\n\nMinimum: update both literals to 43 and correct the message. Better (prevents recurrence): derive the expected count from the migration registry/list the code applies (single source of truth) instead of hard-coding, so the test asserts \"DB count == number of defined migrations\" and never goes stale again.\n\n## Acceptance\n\n- `cargo test -p sutra --test db-test` fully green\n- Expected count no longer a bare magic number duplicated across tests (or, if kept literal, message text matches)\n\n## Notes\n\nFound incidentally while fixing sutra/216 (sutra_remember anchors). Unrelated to that change — pre-existing on clean tree. Clippy `never_loop` deny error at src/parser/python.rs:314 is covered by the existing clippy-warnings task, not this one.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "Migration count assertions in db-test.rs hardcoded 41 (with a message still saying 37). Migrations were added for lessons/graph work without bumping these literals, so the actual count (43) diverged.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "59b36f7"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782765696091,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 217
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782774515414,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782774613249,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782765696091,
+  "updated_at": 1782774613249,
+  "completed_at": 1782774613249,
+  "edges": []
+}

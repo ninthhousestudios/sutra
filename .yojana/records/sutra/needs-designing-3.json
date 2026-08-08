@@ -1,0 +1,79 @@
+{
+  "id": "019e06ed-4a2d-7fe2-8a3f-7aa7d338072c",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/3",
+  "sequence_number": 3,
+  "title": "Design: sutra_boundaries — architectural-zone enforcement",
+  "description": "Design zone-based architectural enforcement. The analysis (graph traversal flagging cross-zone edges) is trivial — **the config schema is the feature**.\n\n**Open questions:**\n- Config location: `.sutra.toml` at workspace root? Or `.jcodemunch.jsonc`-style sidecar?\n- Zone definition: glob patterns? Module paths? Crate names? Mix?\n- Rule vocabulary: only `may_not_import`, or also `must_export_through`, `private_to_zone`, `test_only`?\n- Preset packs for common Rust patterns (crate layering, test isolation, mod-root-only-exports, hexagonal).\n- Surfacing: separate tool (`sutra_boundaries`)? Fold into `sutra_dead` and `sutra_pr_risk`? Both?\n\n**Output:** design doc in docs/plans/ specifying config schema, rule vocabulary, preset packs, and surfacing strategy.\n\nReference: docs/feature-ideas.md → \"sutra_boundaries\" (fallow #8, jcodemunch's `architecture.layers` config).",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Design doc committed to docs/plans/"
+    },
+    {
+      "done": false,
+      "text": "Config schema (TOML or JSONC) specified with example"
+    },
+    {
+      "done": false,
+      "text": "Rule vocabulary frozen for v1"
+    },
+    {
+      "done": false,
+      "text": "At least 2 preset packs designed (e.g. crate-layering, test-isolation)"
+    },
+    {
+      "done": false,
+      "text": "Surfacing strategy decided"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "docs/feature-ideas.md"
+  ],
+  "tags": [
+    "design",
+    "architecture"
+  ],
+  "history": [
+    {
+      "ts": 1778232674861,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 3
+      }
+    },
+    {
+      "ts": 1780709742342,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232674861,
+  "updated_at": 1780709742342,
+  "completed_at": null,
+  "edges": [
+    {
+      "id": "019e06ed-d2f9-7e60-b6bb-fba74c4ed905",
+      "edge_type": "depends_on",
+      "source": "sutra/needs-designing/5",
+      "target": "sutra/needs-designing/3",
+      "note": "refactor_targets layers on boundaries output",
+      "created_at": 1778232709881
+    }
+  ]
+}

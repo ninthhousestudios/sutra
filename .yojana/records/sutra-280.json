@@ -1,0 +1,82 @@
+{
+  "id": "019f8a79-a74d-7e00-a2f4-ed6ada1badf1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/280",
+  "sequence_number": 280,
+  "title": "KNOWN_LANGUAGE_CATEGORIES hardcoded to rust/dart — noise in other workspaces",
+  "description": "src/lessons.rs:192 hardcodes KNOWN_LANGUAGE_CATEGORIES = [\"rust\", \"dart\"]. The Phase 3 filter only excludes a lesson when its language tags are recognized AS language tags and none match the workspace.\n\nConsequence: in a Python or TypeScript workspace, a lesson tagged `python` has no recognized language tag, so `lang_tags.is_empty()` is true and it passes unconditionally — and so does every rust/dart lesson if the workspace language list doesn't line up. Once write-boundary surfacing (sutra/276) runs in non-manas repos this turns the guard into a noise generator.\n\nDerive the language category set from the indexed language adapters rather than a literal.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Language category set derived from available language adapters, not a hardcoded literal"
+    },
+    {
+      "done": false,
+      "text": "Rust-tagged lesson does not surface in a workspace with no Rust files"
+    },
+    {
+      "done": false,
+      "text": "Test covering a language tag outside the current hardcoded pair"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "LANGUAGE_CATEGORIES is now a LazyLock built from default_registry().language_ids() (added LanguageRegistry::language_ids()). Alignment argument: remember::enrich seeds language categories from `file.language` lowercased, which is exactly an adapter's language_id — verified against the indexed corpus, where distinct files.language values across ~12 workspaces are exactly rust/dart/python.\n\nFound and fixed a second latent bug in the same block that the task description did not anticipate: is_language_category compared case-insensitively but the workspace membership test used exact equality on a HashSet<&str>. A \"Rust\"-tagged lesson would therefore be recognised as language-tagged and then fail to match a workspace reporting \"rust\" — dropping the lesson from its own language's workspace. Both sides are lowercased now.\n\nTest coverage: the existing suite already covered rust-vs-dart exclusion, uncategorised-everywhere, and technology-tag-everywhere, so I trimmed the new tests down to the four genuinely uncovered cases (non-rust/dart language tag, python workspace, case-insensitive match, OR semantics across multiple language tags) and reused the existing lang_ctx helper rather than adding a second one.\n\nVerification beyond the suite passing: temporarily reverted is_language_category to the hardcoded pair in place and confirmed language_tag_outside_the_formerly_hardcoded_pair_is_filtered fails with the old behaviour, then restored. Note that rust_tag_filtered_out_of_a_python_workspace passes under BOTH old and new code — \"rust\" was already in the literal — so it guards the invariant without demonstrating the bug.\n\nScope note: this is preventative today. The lessons store currently holds no python/js/ts-tagged lessons (only rust=41, dart=13), so no live leak was observed. It becomes load-bearing as soon as lessons are captured in a non-Rust/Dart repo, which sutra/276 makes likely.\n\n1446 tests pass, clippy clean on touched files, guard E2E re-verified after the change.",
+  "reproduction": null,
+  "root_cause": "Phase 3 category filtering is subtractive: it only excludes a lesson when the lesson's tags are recognised as language tags AND none match the workspace. Recognition ran off a hardcoded KNOWN_LANGUAGE_CATEGORIES = [\"rust\",\"dart\"], so any other language tag (python, typescript, ...) fell through the `lang_tags.is_empty() -> return true` branch and the lesson was treated as language-neutral rather than as belonging to a language. The failure mode is inverted from what the literal suggests: an unlisted language leaks everywhere instead of being filtered nowhere.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "91fedc7"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "guard"
+  ],
+  "history": [
+    {
+      "ts": 1784734656333,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 280
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784735623737,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784735633900,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (range 6369fc3..91fedc7) — verdict: approve with notes; the fix is correct as far as it goes.\n\nVerified: LANGUAGE_CATEGORIES now derives from default_registry().language_ids() = {rust, dart, c, python, javascript, typescript}, lowercased on both the recognition and the matching side (the case-asymmetry bug the comment describes is genuinely closed).\n\n[medium] Fail-open on unrecognized tags is unchanged, so the class of bug persists for alias tags. is_language_category matches only exact adapter language_ids. A lesson tagged `ts`, `js`, `py`, `golang`, `cpp`, or any language sutra has no adapter for still produces lang_tags.is_empty() == true and passes unconditionally into every workspace. remember::enrich seeds from file.language so its own writes line up, but tags supplied by a caller do not have to. Once sutra/276's write-boundary surfacing runs in non-manas repos this is still a noise vector, just a narrower one.\nSuggested follow-up: either an alias table mapping common shorthands to adapter ids, or flip the default so a tag that looks like a language but is unrecognized is treated as a language claim (fail closed) rather than as language-neutral.\n\n[low] Cross-task interaction: src/guard.rs:405 language_from_path still hardcodes rust/dart, so the adapter-derived set here is broader than what the guard can actually produce imports for. See sutra/276 review comment.",
+      "ts": 1784736047840
+    }
+  ],
+  "created_at": 1784734656333,
+  "updated_at": 1784735633900,
+  "completed_at": 1784735633900,
+  "edges": []
+}

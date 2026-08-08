@@ -1,0 +1,130 @@
+{
+  "id": "019f2faa-4796-7191-95b4-537f9c442afc",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/230",
+  "sequence_number": 230,
+  "title": "Scope-aware symbol resolution — Phase A: two-tier resolution + Rust scope arena",
+  "description": "Improve sutra's symbol resolution from flat name/import-heuristic matching to scope-aware resolution with lightweight type inference. Currently sutra's resolver.rs does: local scope (nearest preceding declaration) → import-filtered match → global short-name fallback (pick shortest qualified name if ambiguous). This misresolves overloaded names, shadowed bindings, and method calls through constructor-assigned variables.\n\nsem's scope resolver (6858 lines) builds real nested scope trees (module → class → function → block), distinguishes definition from reference sites, and does lightweight type inference by tracking variable assignments (`x = Foo()` then `x.method()` resolves through `Foo`) across Python/TS/Rust/Go constructor patterns.\n\nThis is the highest-effort item and should be approached incrementally rather than as a big-bang rewrite. Suggested phased approach:\n- Phase A: Nested scope trees for Rust (module → impl → fn → block) — biggest win for sutra's primary language\n- Phase B: Constructor-tracking type inference for Dart (common `final x = Foo(); x.bar()` pattern)\n- Phase C: Python scope resolution (LEGB rule, import aliasing)\n\nsem uses `PreBuiltLookups` (symbol_table, class_members, owner_members, entity_ranges, go_pkg_index) shared between graph build and resolver to avoid redundant O(E) passes — worth studying for sutra's pipeline.\n\nReference implementation:\n- `sutra-surveys/sem/crates/sem-core/src/parser/scope_resolve.rs` — full scope-aware resolver (6858 lines, the core module)\n- `sutra-surveys/sem/crates/sem-core/src/parser/graph.rs` — `PreBuiltLookups`, `build_direct_dependencies()` combining scope + import + fallback edges\n\nSutra integration points:\n- `sutra/src/resolver.rs` — current flat resolution logic (pick_nearest_local, import-filtered, global fallback)\n- `sutra/src/graph.rs` — GraphData construction\n- `sutra/src/pipeline.rs` — `post_parse_sequence` where resolution runs\n\nNote: Unlike tasks 1-3, this is NOT a direct port — sem's resolver is deeply language-specific. The value is in the architecture (nested scopes, assignment tracking, PreBuiltLookups pattern) rather than line-for-line code reuse.\n\nLicense: MIT → AGPL fine with attribution for any adapted code.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Two-tier: parse-time local scope resolution (AST alive) + existing global post-pass for cross-file",
+      "rationale": "Scope/binding data is used exactly once at resolution — persisting full scope trees serializes throwaway data; full fusion into parse loses cross-file context the post-pass needs",
+      "rejected": "Option (a) persist scope trees/bindings to DB and keep resolution purely post-pass — heavy schema for once-used data; option (b) fuse all resolution into parse — structurally cannot see other files' symbols"
+    },
+    {
+      "decision": "Local resolutions travel as hints on ExtractedRef (resolved_local_target), not parser-emitted DB edges",
+      "rationale": "Symbol ids don't exist until DB insert; hints keep the parse→insert→resolve pipeline shape intact with minimal plumbing",
+      "rejected": "Parser emitting edges directly — requires ids-at-parse-time or a fixup pass, more invasive for no gain"
+    },
+    {
+      "decision": "resolution_method provenance column on resolved refs",
+      "rationale": "Resolver regressions are currently undiagnosable (no record of HOW a ref resolved); also a future confidence signal for graph edges",
+      "rejected": "Status quo (no provenance) — saves a migration but keeps the resolver a black box"
+    },
+    {
+      "decision": "Phased by language, Rust first; sutra-sized scope arena per language rather than sem's multi-language mega-function",
+      "rationale": "Rust is sutra's primary language and biggest win; sem's 6858 lines are bulk from 18 inline language configs we don't need",
+      "rejected": "Big-bang multi-language port — highest-effort path with the architecture unvalidated"
+    }
+  ],
+  "implementation_plan": "Design settled 2026-07-10. Architecture: TWO-TIER (approved) — resolve file-local references at parse time while the AST is alive; leave only genuinely cross-file references for the existing global post-pass. This task is Phase A (Rust). Phase 0 = sutra/254 (parent_symbol_id wiring, independent, do first). Phase B = sutra/255 (receiver capture + Dart type tracking). Phase C = sutra/256 (Python LEGB, deferred).\n\nHard facts from exploration that shape this: resolution today is AST-free — pipeline.rs parse_single_file (167-275) writes flat rows and drops trees; post_parse_sequence (541-547) reconstructs symbols from SQL with children:vec![] hardcoded (pipeline.rs:304) even though parent_symbol_id IS persisted. ExtractedRef (parser/mod.rs:126-131) has NO receiver field in any language (rust.rs tests assert the receiver is dropped). Resolved refs carry no provenance.\n\nPlan:\n1. Scope arena in src/parser/rust.rs during the existing collect_symbols walk: Vec<Scope{parent: Option<usize>, defs: HashMap<String,SymbolPath>, bindings: HashSet<String>, kind}> with parent-index links (module → impl → fn → block) — sem's exact structure (scope_resolve.rs:50-115), but per-language and small (~few hundred lines, NOT sem's 6858-line multi-language mega-function; we gate on Rust only).\n2. Local resolution at parse time: for each ExtractedRef, walk the scope chain (defs at each level, then parent). On a hit, record the resolution as a HINT on the ref — new field ExtractedRef.resolved_local_target: Option<String> (qualified name within the file) — rather than emitting DB edges from the parser. This keeps the parse → insert → resolve pipeline stages intact; the resolver honors the hint and short-circuits.\n3. Local bindings (let x = ...) that shadow real symbols: record in Scope.bindings; a ref matching a nearer binding than any def resolves to NOTHING cross-file (suppressed, method=\"local_binding\") instead of misresolving to a same-named global — this is the shadowing fix.\n4. Resolution provenance: migration adding resolution_method column to resolved refs (values: scope_chain | local_binding | import | global_fallback | type_tracking). resolver.rs stamps the method on every edge. First-time diagnosability for resolver regressions; downstream, graph edges gain a confidence signal (graph.rs EdgeKind weighting can consume it later).\n5. Precedence: scope_chain hints win over import-heuristic wins over global fallback — mirror sem's dedupe-by-insertion-order (graph.rs:1340-1401) + consumed-words suppression: a ref resolved by the scope walker is not re-resolved by later stages.\n6. PreBuiltLookups analogue (shared with sutra/255): build once in post_parse_sequence — symbol_table: HashMap<short_name, Vec<(id, qualified_name, kind, file_id)>> replacing resolver.rs's flat 4-tuple scan (all_symbols_summary currently drops file_path and parent_symbol_id; widen it).\n\nTests: shadowed binding no longer resolves to same-named global; nested fn-in-impl resolves to sibling method over cross-file candidate; hint short-circuit produces identical edges to pre-change for non-shadowed cases (regression harness against tests/resolver_test.rs fixtures); resolution_method populated on every edge.\n\nReference (architecture only, NOT line-port): /home/josh/soft/sutra-surveys/sem/crates/sem-core/src/parser/scope_resolve.rs (Scope/AstRef types L50-115, lookup_scope_chain L6577-6587), graph.rs build_direct_dependencies L1335-1401.",
+  "execution_record": "Three commits: f56c8a6 (core implementation), bb3e3f3 (tests), f345eb7 (clippy fixes).\n\nArchitecture implemented as designed: two-tier resolution with parse-time scope arena (module → impl → fn → block) in rust.rs, qualified-name hints on ExtractedRef, and resolver Step 0 consuming hints before existing local/import/global pipeline.\n\nKey design adjustments during implementation:\n- Scope arena stores symbol indices (Vec<usize>) instead of owned name strings — avoids clone-driven-dev violations while providing O(n) per-scope lookup (n is tiny: symbols per scope).\n- Defs registered during AST walk (structurally) rather than by line containment — fixes a bug where a function's definition would land in its own body scope because the body node starts at the same line as the function signature.\n- Nested functions inside function bodies are NOT extracted as symbols by sutra's parser (only mod/impl/trait bodies recurse), so nested-fn shadowing is not tested — that behavior is correct for sutra's current extraction model.\n- Let-binding detection works via collect_let_bindings walking let_declaration patterns in block nodes; patterns like `let (a, b) = ...` are handled via recursive collect_pattern_names.\n\nresolution_method provenance column added to refs table (migration 0049). Values: scope_chain, local_binding, import, global_fallback. Stamped on every resolved ref via the ResolvedRef struct.\n\nCodex adversarial review (08b160c) caught two bugs: (1) parse-time hints were dropped during DB insert — InsertRefParams/RefRow/refs table now carry resolved_local_target through the full pipeline (migration 0050), (2) let-bindings shadowed refs before the declaration — bindings now store (name, decl_line) and only shadow when ref_line >= decl_line.\n\nFull reindex of sutra's own codebase successful: 144 files, 2470 symbols, 18010 refs. 1245 tests pass (12 new).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f345eb7"
+    },
+    {
+      "type": "git:commit",
+      "value": "08b160c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783211116438,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 230
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704175772,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705035280,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Design: Scope-aware symbol resolution",
+        "to": "Scope-aware symbol resolution — Phase A: two-tier resolution + Rust scope arena"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705163760,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "ready-for-agent"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783968052501,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783969495335,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention → fixed in 08b160c.\\n\\n1. [high] Parse-time scope hints dropped before post-parse resolution — InsertRefParams lacked resolved_local_target, so resolver Step 0 was unreachable in production. Fixed: threaded hint through InsertRefParams → refs table (migration 0050) → RefRow → resolve_file_refs reconstruction.\\n\\n2. [medium] Let bindings shadowed refs appearing before the declaration — collect_let_bindings stored bare names without line positions. Fixed: bindings now store (name, decl_line), resolve_in_scope_chain only shadows when ref_line >= decl_line. New test: scope_use_before_let_not_shadowed.\\n\\nBoth findings have regression tests.",
+      "ts": 1783970156090
+    }
+  ],
+  "created_at": 1783211116438,
+  "updated_at": 1783970176080,
+  "completed_at": 1783969495335,
+  "edges": [
+    {
+      "id": "019f4d1c-82d3-7161-9292-597c27d259d2",
+      "edge_type": "depends_on",
+      "source": "sutra/255",
+      "target": "sutra/230",
+      "note": "type tracking builds on Phase A scope arena + resolution_method column",
+      "created_at": 1783705141971
+    }
+  ]
+}

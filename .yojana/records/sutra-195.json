@@ -1,0 +1,96 @@
+{
+  "id": "019eff8e-b93e-71d3-8c30-a9f07240456f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/195",
+  "sequence_number": 195,
+  "title": "Wire field_access refs into resolution and impact analysis",
+  "description": "field_access refs are extracted by all four language parsers and stored to DB, but the resolver skips them (skipped=true, target_symbol_id=None) and no downstream tool consumes them. This means if a struct field's type or semantics change, sutra_impact won't find the read sites — only call sites. Wiring field_access into resolution and impact/trace would close a real blind spot in impact analysis, especially for Rust where field access is common and fields are part of the public contract.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Field variant exists in SymbolKind and is extracted from struct/class definitions in Rust, Dart, and C parsers"
+    },
+    {
+      "done": false,
+      "text": "sutra_outline shows struct fields as children of their parent struct"
+    },
+    {
+      "done": false,
+      "text": "field_access refs are resolved against Field symbols using same-file heuristic"
+    },
+    {
+      "done": false,
+      "text": "sutra_impact naturally follows field_access edges in its BFS (no code change needed, just verify)"
+    },
+    {
+      "done": false,
+      "text": "sutra_trace has follow_fields option that includes field edges in caller/callee chains"
+    },
+    {
+      "done": false,
+      "text": "sutra_refs returns resolved field_access refs without any code change (verify)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Prerequisite: struct fields are not currently extracted as symbols (no Field variant in SymbolKind). The child symbol infrastructure exists (ExtractedSymbol.children, parent_symbol_id in DB, flatten_symbols()) but is unused for fields. Three phases:\n\nPhase 1 — Add Field symbol kind and extract struct fields (independently valuable for outline/grep/explore):\n- src/parser/mod.rs: Add Field variant to SymbolKind, wire as_str/from_str → \"field\"\n- src/parser/rust.rs (~line 126-134): After pushing struct symbol, walk field_declaration_list → for each field_declaration, push child ExtractedSymbol with kind=Field, short_name=field_name, qualified_name=StructName::field_name\n- src/parser/dart.rs: Same for class body field declarations\n- src/parser/c.rs: Same for struct_specifier → field_declaration children\n- Python deferred — field detection via __init__ assignment is a different problem\n- No DB schema change needed (kinds are strings). Requires re-index.\n\nPhase 2 — Resolve field_access refs:\n- src/resolver.rs:47-57: Remove FieldAccess from the skip arm\n- src/resolver.rs:27-37: Add FieldAccess arm to kind_compatible() → match against \"field\" kind\n- Resolution heuristic: filter all_symbols for kind==\"field\" + short_name==ref.name. If multiple matches, prefer one whose qualified_name prefix (StructName) is referenced in the same file. Fall through to existing Steps 1-4 as fallback.\n\nPhase 3 — Trace follow_fields option:\n- src/tools/trace.rs: Add follow_fields: Option<bool> to TraceArgs\n- dfs_callers (line 143) and dfs_callees (lines 249-250): extend filter to include field_access when follow_fields is set\n\nNo changes needed in:\n- src/tools/refs.rs — gate is target_symbol_id.is_some(), works once resolution populates it\n- src/tools/impact.rs — BFS frontier uses find_refs_to_symbol with no context_kind filter, field edges flow through automatically",
+  "execution_record": "All three phases landed in two commits. Phase 1 (e9ec6a8): added SymbolKind::Field and extraction in Rust, C, and Dart parsers. Phase 2-3 (c08e685): removed FieldAccess from resolver skip arm, added kind_compatible mapping for field_access→field|method, added follow_fields option to sutra_trace. Impact analysis needed no code change — its BFS already follows all resolved ref kinds. sutra_refs also needed no change — its only gate was target_symbol_id.is_some(). Python field extraction deferred (requires __init__ assignment analysis, different problem). Dart instance fields reclassified from Const/Static to Field, which required updating extract_language_attrs to include Field in the keyword-attrs arm — caught by existing test.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c08e685"
+    }
+  ],
+  "files": [
+    "src/parser/mod.rs",
+    "src/parser/rust.rs",
+    "src/parser/dart.rs",
+    "src/parser/c.rs",
+    "src/resolver.rs",
+    "src/tools/trace.rs"
+  ],
+  "tags": [
+    "resolver",
+    "impact",
+    "ref-quality"
+  ],
+  "history": [
+    {
+      "ts": 1782404004158,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 195
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782404884811,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782405813793,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782404004158,
+  "updated_at": 1782405813793,
+  "completed_at": 1782405813793,
+  "edges": []
+}

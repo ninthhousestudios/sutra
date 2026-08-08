@@ -1,0 +1,54 @@
+{
+  "id": "019e9910-26e5-7a11-a529-04fbe86fd320",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/104",
+  "sequence_number": 104,
+  "title": "release review: health + review + orient — integration correctness",
+  "description": "Correctness review of the output layer that assembles signals from all lower layers into reports. Bugs here produce wrong reports — the architect makes decisions based on wrong data.\n\n## Approach\n\nRead all files below and review for integration correctness. Produce findings in standard YAML schema. Focus on whether signals from lower layers are correctly consumed, combined, and surfaced.\n\n## Files (~5.4k LOC)\n\nsrc/health/findings.rs, src/health/scoring.rs, src/health/git_metrics.rs, src/health/drift.rs, src/health/ondemand.rs, src/health/instability.rs, src/health/mod.rs, src/tools/review.rs, src/tools/orient.rs, src/tools/file_health.rs, src/git.rs, src/mcp.rs\n\n## Mandate\n\n- Health findings: Are biomarker calculations correct? Is nested_complexity counting the right AST nodes? Is co_change_scatter using the right statistical measure?\n- Scoring: Are the risk score weights reasonable? Does normalization produce sensible 0–1 values, or could extreme inputs produce out-of-range or NaN results?\n- Git metrics (git.rs, git_metrics.rs): Are git_churn, git_merge_base, git_diff_files correctly parsing git output? Are there other parsing assumptions like the blame timestamp bug we just fixed?\n- Health delta: Does compute_health_delta correctly compare before/after snapshots? Could it report improvements as regressions or vice versa?\n- Review compositor (review.rs): Does build_findings correctly assemble all signals? Are any sections silently dropped on error? Does the compute function produce a coherent JSON structure?\n- Orient (orient.rs): Does it serve the right conventions for a given scope? Could a component in sketch mode still receive blocking convention violations?\n- MCP dispatch (mcp.rs): Are tool arguments correctly validated and forwarded? Could malformed input reach lower layers?\n- Component instability (instability.rs): Is Martin's Ce/(Ca+Ce) correctly computed? Are afferent/efferent edges correctly partitioned?",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Reviewed 12 files (~5.4k LOC) across 5 parallel review agents. Produced 18 findings (1 high, 7 medium, 10 low). Verified top findings against source code. Created 5 follow-up tasks for actionable fixes: sutra/106 (cycle total undercount), sutra/107 (orient alias name), sutra/108 (drift nondeterministic file_id), sutra/109 (file_health component filter leak), sutra/110 (degraded review risk score). Full report at docs/reviews/2026-06-05-health-integration-review.md.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "release-review"
+  ],
+  "history": [
+    {
+      "ts": 1780684433125,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 104
+      }
+    },
+    {
+      "ts": 1780707527225,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780707691891,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780684433125,
+  "updated_at": 1780707691891,
+  "completed_at": 1780707691891,
+  "edges": []
+}

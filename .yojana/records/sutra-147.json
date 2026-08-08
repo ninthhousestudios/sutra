@@ -1,0 +1,62 @@
+{
+  "id": "019eb5c8-5bb9-7e22-b6ae-9516fb8ae57e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/147",
+  "sequence_number": 147,
+  "title": "Validate constraint glob patterns at parse time — typo'd glob makes constraint silently inert",
+  "description": "crate_matches and path_matches in constraints/external.rs use Pattern::new(p).ok() — an invalid glob (e.g. unclosed bracket \"foo[\") compiles to None and the pattern simply never matches. For forbidden_external/confined_external this means a typo'd `crates`/`from`/`allowed_in` entry silently disables the constraint — worst possible failure mode for legally load-bearing rules like the AGPL boundary (\"nothing links Arjuna\").\n\nFix: compile all glob fields in RawConstraint::into_constraint (rules.rs) and return a ConstraintParseError on invalid patterns, so the error surfaces through the existing parse_errors channel (blocking findings). Audit whether the pre-existing kinds (forbidden_dep from/to, boundary) have the same silent-inertness via the resolver and cover them in the same pass.\n\nFound by vidhi-review of sutra/needs-designing/14.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Single-file change to src/rules.rs as planned. Added validate_glob and validate_crate_glob helpers that compile patterns at parse time in RawConstraint::into_constraint(), returning Err on invalid patterns. Also added validation to the old-format forbidden_deps loop in all_constraints(). Crate glob validation normalizes hyphens to underscores before compiling, matching external.rs::normalize_crate(). 9 new tests covering all glob-bearing variants plus old-format path. Downstream .ok() sites left as defense-in-depth — they're now unreachable for invalid patterns.",
+  "reproduction": null,
+  "root_cause": "Glob pattern fields in constraint kinds were compiled with Pattern::new(p).ok() at match time across 7 call sites. An invalid glob (e.g. unclosed bracket) compiles to None, causing the pattern to silently never match — making the entire constraint inert. No validation existed at parse time to catch malformed patterns.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5a068f8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review-followup",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781166267321,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 147
+      }
+    },
+    {
+      "ts": 1781365918154,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781365923377,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781166267321,
+  "updated_at": 1781365923377,
+  "completed_at": 1781365923377,
+  "edges": []
+}

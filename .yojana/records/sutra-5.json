@@ -1,0 +1,111 @@
+{
+  "id": "019e027a-bc5e-7753-b2dd-3429d3e5d799",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/5",
+  "sequence_number": 5,
+  "title": "REST endpoints + service install",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\nAdd REST endpoints to the existing axum router alongside `/mcp`: `GET /health` (200 + `{\\\"status\\\": \\\"ok\\\"}`, same pattern as yojana), `GET /status` (workspace list with last-parse times, staleness, file/symbol counts, smriti connection status), `POST /workspaces` (register a workspace, trigger parse if not already parsed).\n\nAdd `sutra install-services [--enable]` CLI command following smriti's pattern: writes `sutra.service` systemd user unit to `~/.config/systemd/user/`, runs `daemon-reload`, optional `enable --now`. Unit: `ExecStart=$HOME/.cargo/bin/sutra serve-http`, `Restart=always`, `RestartSec=2`.\n\n## Acceptance criteria\n\n- [ ] `GET /health` returns 200 + `{\\\"status\\\": \\\"ok\\\"}`\n- [ ] `GET /status` returns workspace list with freshness info\n- [ ] `POST /workspaces` registers a new workspace and triggers parse if needed\n- [ ] `sutra install-services` writes systemd unit file and reloads daemon\n- [ ] `sutra install-services --enable` also enables and starts the service\n- [ ] Verifiable: `curl localhost:3201/health` returns ok\n\n## Blocked by\n\nNone — can start immediately.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "GET /health returns 200 + {status: ok}"
+    },
+    {
+      "done": true,
+      "text": "GET /status returns workspace list with freshness info"
+    },
+    {
+      "done": true,
+      "text": "POST /workspaces registers workspace and triggers parse if needed"
+    },
+    {
+      "done": true,
+      "text": "sutra install-services writes systemd unit file and reloads daemon"
+    },
+    {
+      "done": true,
+      "text": "sutra install-services --enable also enables and starts the service"
+    },
+    {
+      "done": true,
+      "text": "curl localhost:3201/health returns ok"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "4ce5ecb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "watcher",
+    "daemon",
+    "systemd"
+  ],
+  "history": [
+    {
+      "ts": 1778158058590,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 5
+      }
+    },
+    {
+      "ts": 1778183468756,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778184470545,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158058590,
+  "updated_at": 1778184470545,
+  "completed_at": 1778184470545,
+  "edges": [
+    {
+      "id": "019e027b-873b-7a80-bb9b-aa65140a80a3",
+      "edge_type": "depends_on",
+      "source": "sutra/8",
+      "target": "sutra/5",
+      "note": null,
+      "created_at": 1778158110523
+    },
+    {
+      "id": "019e027b-8ac8-7de0-b1f5-5e519bb569cc",
+      "edge_type": "depends_on",
+      "source": "sutra/9",
+      "target": "sutra/5",
+      "note": null,
+      "created_at": 1778158111432
+    },
+    {
+      "id": "019e027b-9257-7243-b4e5-d2060dfe6090",
+      "edge_type": "refines",
+      "source": "sutra/5",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158113367
+    }
+  ]
+}

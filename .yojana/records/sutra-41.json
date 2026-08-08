@@ -1,0 +1,67 @@
+{
+  "id": "019e6e7d-3633-7930-92a8-80d19a1c6717",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/41",
+  "sequence_number": 41,
+  "title": "5c brainstorm: convention system design",
+  "description": "Brainstorm the full convention system using vidhi-brainstorm. Key areas:\n\n- Convention lifecycle enforcement — how descriptive/preferred/deprecated/forbidden states drive agent orientation and violation reporting. What triggers promotion/demotion?\n- Per-component conventions — conventions scoped to components (from 5b), not just global. \"Handlers in this component look like X\" vs \"all functions return Result\"\n- Structural templates — when FCA detects a convention, extract a concrete template with metavariables for agent orientation. Representation format, serving to agents.\n- Effect tracking as FCA attributes — enriching the attribute matrix with side effects (filesystem, network, DB, mutable state). Rust gives async/unsafe hints. Transitive effect reachability.\n- Convention drift detection — time-series tracking of convention cohesion. Alert when multi-agent development causes divergence within a component.\n- Incremental FCA — checking changed symbols against existing implications without full recomputation\n- How the current FCA engine + convention_overrides durable companion (from 5a) evolves into the full system\n- Interaction with the trust model — confidence levels on conventions, waiver tracking for convention violations\n- The module rename (fca/ → conventions/) — when and how\n\nInput: docs/sutra-vision.md (L2 section), current FCA engine code, 5a decisions (adapter traits, storage partition, durable companion pattern)\nOutput: shared understanding ready for PRD",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-architecture.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779970160179,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 41
+      }
+    },
+    {
+      "ts": 1780358750933,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780360299567,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779970160179,
+  "updated_at": 1780360299567,
+  "completed_at": 1780360299567,
+  "arc_id": "019e6e7c-a89c-7793-9662-e8260e1819d3",
+  "arc_phase": "brainstorm",
+  "edges": []
+}

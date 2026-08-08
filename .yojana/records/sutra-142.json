@@ -1,0 +1,89 @@
+{
+  "id": "019eb425-4f3d-7df3-856b-a2c494c4920a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/142",
+  "sequence_number": 142,
+  "title": "Incremental HRR vector computation via per-file content hash",
+  "description": "compute_hrr_vectors (src/similarity/mod.rs:17) re-reads every file from disk, re-parses with tree-sitter, and re-encodes ALL function/method symbols (two FFT-heavy 1024-dim encodings each, measured ~8ms/symbol) then DELETE FROM hrr_vectors + full reinsert — on every parse, regardless of what changed. Measured: 7.0s on swe_dashboard (811 fn symbols), 13.6s on sutra (1,663). This is the dominant cost of every changed-file parse (editing 2 files in sutra = 25.8s total, 14.2s of it HRR).\n\nFix: store the source file's content_hash alongside its vectors (per-file, atomically with the vector rows); on parse, recompute only files whose current hash differs, delete vectors only for changed/deleted files. Gate compute_pattern_families (6.2s on sutra) on \"any vector changed\" since its input is the vector set. Crash-safety note: hash and vectors must commit in the same transaction so an interrupted run can't record a hash for vectors it didn't write (see sutra/140 for the general completion-tracking mechanism).\n\nExpected: changed-file parse post-parse cost drops from 8-26s to sub-second + (changed files × ~8ms/symbol).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "No-change parse recomputes zero HRR vectors"
+    },
+    {
+      "done": false,
+      "text": "1-file change recomputes only that file's vectors"
+    },
+    {
+      "done": false,
+      "text": "pattern families skipped when vector set unchanged"
+    },
+    {
+      "done": false,
+      "text": "vectors+hash written atomically per file"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "59967be832072b628addaaa6097d5c0f1383011b"
+    }
+  ],
+  "files": [
+    "src/similarity/mod.rs",
+    "src/db/similarity.rs",
+    "src/pipeline.rs"
+  ],
+  "tags": [
+    "perf-review",
+    "parse-pipeline",
+    "similarity"
+  ],
+  "history": [
+    {
+      "ts": 1781138804541,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 142
+      }
+    },
+    {
+      "ts": 1781269650689,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781270946285,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: **needs-attention** (3 high findings, all addressed in 3e847a6)\n\n**Finding 1 [high]: Pattern families gate misses same-count edits** (src/pipeline.rs)\nCount comparison fails when a file is edited but keeps the same number of functions — CASCADE removes old vectors before the count snapshot, compute_hrr_vectors inserts new ones, counts match, families skipped despite changed vector contents.\nFix: gate on `changed` flag from compute_hrr_vectors instead of count comparison.\n\n**Finding 2 [high]: Codebook entries persist in separate transaction** (src/similarity/mod.rs)\nVectors+hashes committed before codebook entries. Crash between commits leaves vectors encoded against missing codebook entries. The codebook RNG seed depends on entry count, so lost entries change future random vectors.\nFix: include codebook entries in the same atomic transaction as vectors and file hashes.\n\n**Finding 3 [high]: Hash written for files that failed vector generation** (src/similarity/mod.rs)\nFiles that fail read/adapter/parse get `continue` but their hashes still commit, permanently marking them current. Next parse skips them, leaving missing HRR vectors.\nFix: only write hash for files that successfully produced vectors (track completed_file_ids set).",
+      "ts": 1781270602310
+    }
+  ],
+  "created_at": 1781138804541,
+  "updated_at": 1781270946285,
+  "completed_at": 1781270946285,
+  "edges": []
+}

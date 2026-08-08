@@ -1,0 +1,80 @@
+{
+  "id": "019f99f6-8372-76f2-a55d-b63069a65e8a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/292",
+  "sequence_number": 292,
+  "title": "Test-scope detection misses Rust tests/*.rs and all Dart test code",
+  "description": "sutra/290 excluded `#[cfg(test)]` code from constraint evaluation via `LanguageAdapter::test_line_ranges`, which is attribute-driven. Two gaps remain:\n\n1. **Rust integration tests.** Files under a crate's `tests/` (and `benches/`) directory are test targets in their entirety but carry no `cfg(test)` attribute, so every match in them still reports. The current mitigation is scoping rules to `src/` — which the vidhi catalog does, so this is latent rather than actively painful.\n\n2. **Dart.** `DartAdapter` uses the default empty `test_line_ranges`. Dart's conventions are path-based (`test/` directory) plus `@visibleForTesting`, so the fix shape differs from Rust's.\n\nBoth want a path-based classifier alongside the range-based one. The design question that stopped sutra/290 from just doing it: a rule deliberately scoped to `tests/` would go silently inert under a blanket path exclusion. Options considered but not decided — (a) skip path exclusion when the constraint's own scope resolves into a test path, (b) require `include_tests` and surface a dead_constraint finding when a test-scoped rule matches nothing, (c) leave path exclusion opt-in via a workspace-level setting.\n\nNot urgent: the `src/`-scoping mitigation is what every adopted catalog already does.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Test-path exclusion steps aside when a constraint's own scope literal-prefixes into a test path (option a), rather than requiring include_tests plus a dead_constraint finding (b) or a workspace-level opt-in setting (c).",
+      "rationale": "Needs no new user-facing concept and no new config surface: a rule written for `tests/**` obviously means tests, and that intent is readable from data already on the constraint. Only the literal prefix counts, so `**/*.rs` and unscoped rules still get the default exclusion.",
+      "rejected_alternatives": "(b) require include_tests + emit a dead_constraint finding — makes the common case (a rule genuinely aimed at tests) fail first and teach second, and adds a finding kind to the coverage machinery for one narrow case. (c) workspace-level opt-in setting — leaves the false-positive flood on by default for every unconfigured adopter, which is the failure sutra/290 was filed for."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Landed as designed; no failed approaches. Two things worth knowing for the next editor:\n\n- The Dart `test/` prefix check already existed in `dart::extract_flags` (symbol FLAG_CFG_TEST) but was narrower — `starts_with(\"test/\")` only, missing monorepo paths like `packages/ui/test/`. Extracting `dart::is_test_path` widened symbol flagging as a side effect; intended, but it is a behavioral change beyond constraints.\n- Checked the contract boundary explicitly: `Graph::import_edges()` (pagerank, impact, blast radius) is unfiltered and stays that way; only `production_import_edges()` honours is_test. Flagging test-target imports therefore does not move any ranking or impact number.\n\nPython/C/JS-TS were left at the default `is_test_path == false`, even though python.rs and c.rs already have `is_test_file` helpers feeding symbol flags. Wiring those into constraint evaluation is a real follow-up (their test files still report), deliberately out of scope here — filed as sutra/295.\n\nMeasurement (sutra's own tests/, unscoped no-unwrap rule): 2989 matches before, 0 after, all 2989 still reachable with include_tests = true. Full suite 1501 passed; clippy warning count identical to baseline (677).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "723ac70"
+    }
+  ],
+  "files": [
+    "src/parser/adapter.rs",
+    "src/parser/rust.rs",
+    "src/parser/dart.rs"
+  ],
+  "tags": [
+    "governance",
+    "forbidden_pattern",
+    "false-positives"
+  ],
+  "history": [
+    {
+      "ts": 1784994497394,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 292
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785005933047,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785005956198,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of c483406..77b48f8 (sutra/292 293 294 295). Verdict: needs-attention.\n\n[high] Test-scoped dep and cycle rules are still dropped by production-edge filtering (src/constraints/check.rs:336, 435)\nThe `scope_targets_tests` escape hatch introduced by this task exists ONLY in patterns.rs (confirmed: `rg scope_targets_tests` returns 5 hits, all in src/constraints/patterns.rs). The DD dep path filters on `!c.include_tests && !production_edges.contains(...)` and the cycle path on `matched.is_some_and(|c| c.include_tests)` — neither consults the constraint's own scope. Since `is_test_path` now marks every import under `tests/` as is_test, a `forbidden_dep from = \"tests/**\"` or a `no_cycles` scoped to `tests/**` matches the raw DD graph and is then discarded unless the author also sets `include_tests = true`. That is the escape-hatch contract holding for one constraint kind and silently not for the others — and it fails in the dangerous direction (a deliberately test-targeted blocking rule goes inert with no signal).\nRecommendation: apply the same literal test-target detection before dropping test-only edges in the dep and cycle paths; regression tests for `forbidden_dep from = \"tests/**\"` and `no_cycles scope = \"tests/**\"` without include_tests.\n\n[medium] External include_tests can be shadowed by an earlier default rule (src/constraints/external.rs:228-235)\n`check_import_items` takes the FIRST match from `match_external`, then applies test filtering. A broad rule appearing before a narrower `include_tests = true` rule wins the match, the test item is skipped, and the opt-in rule never evaluates. Same first-match behaviour blocks a test-path-specific external rule (`from = \"tests/**\"`) from firing by default. Rule-order-dependent false negative in a blocking path. Note first-match semantics predate this change; the new filter inherits the property.\nRecommendation: iterate all matching external constraints, apply test filtering per constraint (including the test-directed escape hatch), and dedupe by `(constraint_id, from_path, crate)` rather than `(from_path, crate)`.\n\n[low, documented tradeoff] Guard edge enforcement ignores include_tests (src/guard.rs:552-579)\nCodex flagged this as medium; downgrading — the code carries an explicit comment stating the guard drops is_test imports unconditionally by design, because the review path still enforces and an edit-time deny on test wiring is the sutra/290 failure mode. Raising only so the tradeoff is a conscious one: with `include_tests = true` explicitly set, the guard still will not enforce.\n\nClean: Codex found no defect in the structural cfg predicate parser (sutra/293), the 0054/0055/0056 content_hash-clearing migrations, the singleton-SCC production self-loop fix, or the per-language is_test_path overrides (sutra/295).",
+      "ts": 1785007386392
+    }
+  ],
+  "created_at": 1784994497394,
+  "updated_at": 1785005956198,
+  "completed_at": 1785005956198,
+  "edges": []
+}

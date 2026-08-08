@@ -1,0 +1,64 @@
+{
+  "id": "019f4c66-f240-7483-9719-3d5ffc30d1ba",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/250",
+  "sequence_number": 250,
+  "title": "Fix pattern constraint review findings (guard fallback leak, deny message, coverage)",
+  "description": "Three findings from vidhi-review of sutra/240-243 arc:\\n\\n1. **guard-fallback-pattern-leak (medium/correctness)**: When extract_proposed_imports returns None, guard falls back to check_file_constraints which calls evaluate_raw with SingleFile scope. evaluate_raw's pattern scan reads disk content and reports ALL matches without introduced-only filtering — pre-existing blocking patterns cause a false deny even though check_proposed_patterns already passed. Fix: filter forbidden_pattern findings from the fallback constraint_findings in bin/guard.rs.\\n\\n2. **deny-message-language-specific (low/design)**: format_pattern_deny hardcodes Rust concepts (\\\"shared ownership\\\", \\\"references/lifetimes\\\"). Confusing for non-Rust patterns. Fix: make guidance generic or language-aware.\\n\\n3. **coverage-ignores-language (low/design)**: constraint_coverage for ForbiddenPattern counts all files in scope regardless of language, suppressing dead-constraint warnings for language-mismatched scopes. Fix: filter by extension match.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Guard fallback path does not produce false denials from pre-existing pattern matches"
+    },
+    {
+      "done": false,
+      "text": "format_pattern_deny message is language-generic or adapts to the constraint's language"
+    },
+    {
+      "done": false,
+      "text": "constraint_coverage for ForbiddenPattern filters by the constraint's language extensions"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "Three issues from arc 240-243: (1) evaluate_raw pattern scan runs without introduced-only semantics, leaking through when guard falls back to check_file_constraints; (2) deny message hardcoded Rust idioms from the initial design spec; (3) constraint_coverage counted all files in scope without filtering by the constraint's target language extensions.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b65d24e"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1783693242944,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 250
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783693396228,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783693242944,
+  "updated_at": 1783693396228,
+  "completed_at": 1783693396228,
+  "edges": []
+}

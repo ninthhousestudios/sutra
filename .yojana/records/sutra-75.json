@@ -1,0 +1,142 @@
+{
+  "id": "019e8c69-600a-7703-b7de-f25170ad0cde",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/75",
+  "sequence_number": 75,
+  "title": "5d-7: orient constraint section",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nAdd a constraints section to `sutra_orient` output. When an agent asks for orientation on an area, include: active constraints scoped to that area, any active waivers, and any current violations. Follows the same scope-resolution logic as convention orientation (5c-9).\n\n## Acceptance criteria\n\n- [ ] Orient output includes constraints section\n- [ ] Constraints with kind, severity, name, provenance\n- [ ] Active waivers shown\n- [ ] Current violations listed\n- [ ] Scope resolution matches convention orient pattern\n\n## Blocked by\n\n- sutra/70 — 5d-2: constraint types + rules parsing\n- sutra/73 — 5d-5: constraint waivers (DB)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_orient output includes a constraints section listing active constraints scoped to the target area"
+    },
+    {
+      "done": false,
+      "text": "Constraints shown with kind, severity, name (if set), provenance (if set)"
+    },
+    {
+      "done": false,
+      "text": "Active waivers in the target area shown alongside constraints"
+    },
+    {
+      "done": false,
+      "text": "Current violations in the target area listed"
+    },
+    {
+      "done": false,
+      "text": "Scope resolution: path-prefix constraints match files in scope, component constraints match via membership"
+    },
+    {
+      "done": false,
+      "text": "Follows same scope-resolution pattern as convention orientation"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "d717e18"
+    },
+    {
+      "type": "git:commit",
+      "value": "71aa254"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1780472176650,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 75
+      }
+    },
+    {
+      "ts": 1780558855552,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780558858913,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780558888199,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780568959664,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, scope: 50a59cd..74bd52e):\n\nVerdict: needs-attention\n\nFinding hitting this task:\n1. [high] Shared DD engines reused without freshness check (constraints.rs:131-136) — orient reuses an already-loaded DD engine and skips ingest when is_loaded() is true. After a workspace reparse/import graph change, orient can query stale violations.",
+      "ts": 1780568209692
+    }
+  ],
+  "created_at": 1780472176650,
+  "updated_at": 1780568959664,
+  "completed_at": 1780568959664,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-465f-7a11-ba10-7088dc099b95",
+      "edge_type": "depends_on",
+      "source": "sutra/75",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472235615
+    },
+    {
+      "id": "019e8c6a-4a09-79b3-ace6-20c2131d5f61",
+      "edge_type": "depends_on",
+      "source": "sutra/75",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472236553
+    },
+    {
+      "id": "019e8c6a-7ec5-7892-9ba6-4f55ebefba77",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/75",
+      "note": null,
+      "created_at": 1780472250053
+    }
+  ]
+}

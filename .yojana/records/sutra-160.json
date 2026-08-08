@@ -1,0 +1,123 @@
+{
+  "id": "019ece4c-b056-7f22-a24e-a61f1cb4a6d3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/160",
+  "sequence_number": 160,
+  "title": "Staleness detection",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nVerified lessons carry a `verified_at` timestamp and `content_hash_at_verification` — a hash of the anchored code at the time of verification. When surfacing, if the symbol/file has changed since verification, the lesson surfaces with a `stale: true` flag. Stale lessons are still shown (the lesson may still apply) but flagged for human review.\n\nSutra already tracks file content via its index. The content hash can be derived from the file's indexed state. On verification (confidence threshold crossed), snapshot the current content hash. On surfacing, compare against current.\n\n## Acceptance criteria\n\n- [ ] `verified_at` and `content_hash_at_verification` stored on lessons\n- [ ] Content hash snapshotted when a lesson becomes verified\n- [ ] Lessons whose anchored code has changed since verification surface with `stale: true`\n- [ ] Lessons whose anchored code is unchanged surface without stale flag\n- [ ] Stale flag is per-lesson, not per-response\n- [ ] Tests: stale detection after code change, not-stale when unchanged\n\n## Blocked by\n\n- sutra/158 — Confidence lifecycle + surfacing priority",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "verified_at and content_hash_at_verification stored on lessons"
+    },
+    {
+      "done": false,
+      "text": "Content hash snapshotted when lesson becomes verified"
+    },
+    {
+      "done": false,
+      "text": "Changed code triggers stale: true on surfacing"
+    },
+    {
+      "done": false,
+      "text": "Unchanged code surfaces without stale flag"
+    },
+    {
+      "done": false,
+      "text": "Stale flag is per-lesson"
+    },
+    {
+      "done": false,
+      "text": "Tests: stale detection after code change, not-stale when unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Wave 1: Schema (0004_staleness migration, anchor_verification table, verified_at column). Wave 2: Plumb hash resolver into cite path. Wave 3: Stale detection on surfacing (check_staleness, SurfacedLesson.stale, call-site integration). Wave 4: Tests.",
+  "execution_record": "Implemented as planned. Key decisions: file-level content_hash (from sutra's existing FileRow.content_hash) rather than symbol-level; separate anchor_verification table rather than columns on anchors; HashResolver closure param to keep LessonsDb decoupled from Db; staleness applied as post-processing at call sites (read/impact/orient) rather than inside query_for_context. No surprises or divergences from plan.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5f008aa"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577592918,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 160
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781704624802,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781705019596,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention.\\n\\n[high] apply_staleness converts missing stale_map entries to Some(false) — verified lessons without anchor_verification snapshots (pre-migration, no resolver at cite time, unresolvable anchors) get a false not-stale signal. Should leave stale=None when no baseline exists.\\n\\n[medium] (sutra/161) archive_decayed requires last_cited IS NULL — any citation permanently immunizes from decay even when last_cited is far outside the window.",
+      "ts": 1781705623855
+    },
+    {
+      "author": "agent",
+      "text": "Review fixes landed in 14d4c21. Both codex findings addressed: stale=None for no-snapshot verified lessons, last_cited compared against decay window.\" ",
+      "ts": 1781705724720
+    }
+  ],
+  "created_at": 1781577592918,
+  "updated_at": 1781705019596,
+  "completed_at": 1781705019596,
+  "edges": [
+    {
+      "id": "019ece4c-f40b-7160-abf0-98d5afa2cb37",
+      "edge_type": "depends_on",
+      "source": "sutra/160",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577610251
+    },
+    {
+      "id": "019ece4d-020a-70e0-8000-687040ebdea7",
+      "edge_type": "motivated_by",
+      "source": "sutra/160",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577613834
+    },
+    {
+      "id": "019ece4d-8035-7942-b6ec-152a2aafb447",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/160",
+      "note": null,
+      "created_at": 1781577646133
+    }
+  ]
+}

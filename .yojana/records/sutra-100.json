@@ -1,0 +1,71 @@
+{
+  "id": "019e97e7-22ac-7590-b693-3d27bdffe005",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/100",
+  "sequence_number": 100,
+  "title": "Calibrate HRR shape diff thresholds / granularity",
+  "description": "## Parent\\n\\nsutra/93 (5e-8: semantic diff for review)\\n\\n## Problem\\n\\nWhole-function HRR comparison dilutes small structural changes. A single-line change in a 15-line function produces ~0.035 HRR delta — well below the 0.40 threshold. The SubtleStructural quadrant is hard to reach with real code because the bundle vector averages over all children.\\n\\n## Options\\n\\n1. **Lower hrr_delta_threshold** (e.g. 0.10–0.15) — catches more subtle changes but risks false positives from trivial reformatting\\n2. **Sub-function granularity** — compare per-block or per-statement HRR vectors instead of whole-function. Higher sensitivity but more complex matching\\n3. **Normalize by function size** — scale the hrr_delta threshold inversely with function line count so small functions have a higher bar and large functions a lower one\\n\\n## Evidence\\n\\nFrom sutra/93 verification:\\n- if→match on a 7-line function: hrr_delta=0.176, text_delta=0.857\\n- 1 line changed in 15-line function: hrr_delta=0.035, text_delta=0.071\\n- Full rewrite of search function: hrr_delta=0.126, text_delta=0.759\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    "Use *n normalization (hrr_delta × body_child_count) — CV=0.06 vs 0.67 raw, 0.33 sqrt(n), 0.37 ln(n). Empirically validated across 4–40 statement functions with 4 change types.",
+    "Set hrr_delta_threshold to 0.15 — all structural changes produce ≥0.20 normalized, trivial changes produce 0.0"
+  ],
+  "implementation_plan": null,
+  "execution_record": "Empirical benchmark: generated functions of 4/7/10/15/25/40 statements, tested assignment→for+if, if→match, add-let, and value-edit changes. *n normalization produced consistent normalized deltas (CV=0.06) across all sizes. Structural changes: mean 0.23–0.27, trivial: 0.0, minor structural (add-let): 0.38 but routed to MajorRewrite by text_delta axis.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/93"
+    },
+    {
+      "type": "git:commit",
+      "value": "91601e5"
+    },
+    {
+      "type": "git:commit",
+      "value": "add53bb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780664967852,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 100
+      }
+    },
+    {
+      "ts": 1780665640501,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780665645433,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780664967852,
+  "updated_at": 1780665645433,
+  "completed_at": 1780665645433,
+  "edges": []
+}

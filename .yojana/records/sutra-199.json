@@ -1,0 +1,90 @@
+{
+  "id": "019f0607-d22e-7182-86ef-c8d902198c85",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/199",
+  "sequence_number": 199,
+  "title": "Automatic component inference from graph topology",
+  "description": "this was done in sutra/211 and 213",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/graphify/graphify/cluster.py",
+      "label": "graphify community detection"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "graphify-informed",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1782512603694,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 199
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782592883559,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782512603694,
+  "updated_at": 1782592883559,
+  "completed_at": 1782592883559,
+  "arc_id": "019f08d9-c3f8-7bd1-8e9c-f3afebc13c2b",
+  "arc_phase": "spike",
+  "edges": [
+    {
+      "id": "019f08da-a338-73e2-801c-025d525d59ce",
+      "edge_type": "refines",
+      "source": "sutra/208",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559974200
+    },
+    {
+      "id": "019f08da-a6fd-7173-9653-ee2041e4db98",
+      "edge_type": "refines",
+      "source": "sutra/209",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559975165
+    },
+    {
+      "id": "019f08da-a8db-70b1-8215-f91e2ffdd06b",
+      "edge_type": "refines",
+      "source": "sutra/210",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559975643
+    },
+    {
+      "id": "019f08e5-d6de-79a1-b961-b71e61c24bf2",
+      "edge_type": "refines",
+      "source": "sutra/211",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782560708318
+    }
+  ]
+}

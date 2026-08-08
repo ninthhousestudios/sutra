@@ -1,0 +1,123 @@
+{
+  "id": "019ece4c-d5bc-7a32-994a-2ec6e8f44f55",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/161",
+  "sequence_number": 161,
+  "title": "Decay + archive",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nUnverified lessons that haven't been cited or surfaced within a time window get auto-archived. Archived lessons stop surfacing but aren't deleted — recoverable if the pattern becomes relevant again.\n\n`LessonsDb::archive_decayed(window: Duration)` bulk-archives lessons where: `verified = false AND last_cited IS NULL AND (last_surfaced IS NULL OR last_surfaced < now - window) AND created_at < now - window`. The `last_surfaced` timestamp is updated by `query_for_context()` whenever a lesson is included in results.\n\nThis provides the `archive_decayed()` operation that vidhi-reflect will call during its pruning passes. It can also be exposed as a maintenance tool if needed.\n\n## Acceptance criteria\n\n- [ ] `last_surfaced` updated when a lesson is included in query results\n- [ ] `archive_decayed(window)` archives unverified lessons past the window\n- [ ] Archived lessons do not appear in `query_for_context()` results\n- [ ] Archived lessons are still queryable via `sutra_lessons` with an explicit filter\n- [ ] Verified lessons are never auto-archived regardless of surfacing/citation activity\n- [ ] Tests: decay window logic, archive excludes from surfacing, verified immunity\n\n## Blocked by\n\n- sutra/158 — Confidence lifecycle + surfacing priority",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "last_surfaced updated when a lesson is included in query results"
+    },
+    {
+      "done": false,
+      "text": "archive_decayed(window) archives unverified lessons past the window"
+    },
+    {
+      "done": false,
+      "text": "Archived lessons excluded from query_for_context() results"
+    },
+    {
+      "done": false,
+      "text": "Archived lessons queryable via sutra_lessons with explicit filter"
+    },
+    {
+      "done": false,
+      "text": "Verified lessons never auto-archived"
+    },
+    {
+      "done": false,
+      "text": "Tests: decay window, archive exclusion, verified immunity"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Straightforward implementation. Most acceptance criteria (last_surfaced updates, archived exclusion from query_for_context) were already in place from sutra/158. New code: archive_decayed() method, include_archived on search/sutra_lessons, 5 tests. One minor fix during testing: empty WHERE clause when include_archived=true with no other filters.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "9ec5287"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577602492,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 161
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781705074183,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781705282554,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention.\\n\\n[medium] archive_decayed requires last_cited IS NULL — any citation permanently immunizes unverified lessons from decay, even when last_cited is far outside the window. Should compare last_cited against the window like last_surfaced.",
+      "ts": 1781705625099
+    },
+    {
+      "author": "agent",
+      "text": "Review fix landed in 14d4c21. last_cited now compared against decay window instead of permanent immunity.",
+      "ts": 1781705725315
+    }
+  ],
+  "created_at": 1781577602492,
+  "updated_at": 1781705282554,
+  "completed_at": 1781705282554,
+  "edges": [
+    {
+      "id": "019ece4c-f872-73d2-8c20-8bef227ee90b",
+      "edge_type": "depends_on",
+      "source": "sutra/161",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577611378
+    },
+    {
+      "id": "019ece4d-02d0-73e0-939a-bcb894b7b6dd",
+      "edge_type": "motivated_by",
+      "source": "sutra/161",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577614032
+    },
+    {
+      "id": "019ece4d-80d2-7af0-9c68-5fe022448294",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/161",
+      "note": null,
+      "created_at": 1781577646290
+    }
+  ]
+}

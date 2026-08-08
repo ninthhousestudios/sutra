@@ -1,0 +1,76 @@
+{
+  "id": "019eb425-a33e-7ad1-926b-a485899f359d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/145",
+  "sequence_number": 145,
+  "title": "Post-parse micro-cleanups: shared adjacency, single git spawn, imports index, prepare_cached, Louvain sigma_tot",
+  "description": "Grab-bag of measured-but-small inefficiencies from the 2026-06-10 perf review (each <0.5s at current workspace sizes, but they compound and scale badly):\n\n1. all_symbol_file_map + all_resolved_refs are loaded 3-4x per parse: build_file_adjacency (src/graph.rs), inside compute_pagerank_with_adjacency (graph.rs:152-153), identity::edge_count staleness check (src/components/identity.rs:273), compute_semantic_anchors (src/components/anchors.rs:93-95). Load once, pass through.\n2. Two git subprocesses per parse with the same 90-day window: git_commit_files (pipeline.rs) and git_churn inside anchors.rs:96. Derive churn from the already-loaded commit_files data.\n3. No index on imports(file_id) — imports_for_file and has_unresolved_dart_imports full-scan. Add idx_imports_file.\n4. replace_file_data's per-symbol loop (src/db/mod.rs:662-811) uses uncached prepare + 3 statements per symbol (symbol INSERT, FTS DELETE, FTS INSERT); switch to prepare_cached.\n5. Louvain inner loop recomputes sigma_tot by iterating all nodes per node (src/components/clustering.rs:186-190) — makes each pass O(n^2) instead of O(n+m); auto_tune runs Louvain 7x, multiplying it. Maintain sigma_tot incrementally.\n6. parse_changed_files (src/pipeline.rs:512) has zero callers — revive it for an incremental trigger path or delete it.\n7. FcaEngine::new() is constructed fresh every conventions rebuild (src/conventions/pipeline.rs:110,127), so its last_matrix_hash skip never fires — persist the matrix hash so the FCA skip works across parses.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "All 7 items implemented across 4 commits:\n\nWave 1 (d4da4c7): Items 3, 4, 6 — imports index, prepare_cached, dead code removal\nWave 2 (b1fcc26): Item 5 — Louvain sigma_tot O(n²) → O(n+m) per pass\nWave 3 (19f020d): Items 1+2 — GraphData struct (single load), churn derived from commit_files (no second git subprocess)\nWave 4 (93e0180): Item 7 — FCA hash cached in DB instead of threading FcaEngine through call chain; rebuild() short-circuits when symbols unchanged\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "93e0180"
+    }
+  ],
+  "files": [
+    "src/graph.rs",
+    "src/components/anchors.rs",
+    "src/components/clustering.rs",
+    "src/db/mod.rs",
+    "src/conventions/pipeline.rs",
+    "src/pipeline.rs",
+    "migrations/"
+  ],
+  "tags": [
+    "perf-review",
+    "parse-pipeline"
+  ],
+  "history": [
+    {
+      "ts": 1781138826046,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 145
+      }
+    },
+    {
+      "ts": 1781363920975,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781363927014,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: **needs-attention**\n\n**Finding 1 [high] — Migrations 0039/0040 not registered**\n`MIGRATIONS` in src/db/migrations.rs ends at 0038. The new migration files (0039_idx_imports_file.sql, 0040_fca_cache.sql) exist on disk but aren't in the static list, so fresh/upgraded databases won't create idx_imports_file_id or fca_cache table. FCA cache silently degrades (get_fca_hash errors on missing table), imports index never created.\n\n**Finding 2 [high] — FCA cache hit clears drift state and skips rebuild side effects**\nsrc/conventions/pipeline.rs:125-133: on hash match, rebuild() returns empty drift_alerts and convention_drift_findings before running record_and_detect_drift, convention history, lifecycle proposals, stale convention cleanup, or template cleanup. post_parse_sequence then calls replace_drift_alerts with the empty vec, actively deleting any previously persisted drift alerts. Cache hit changes user-visible review/health state.\n\nRecommendation: Cache only the expensive FCA convention generation; on cache hit, load existing conventions and still run drift/lifecycle/template pipeline. Register migrations 0039/0040.",
+      "ts": 1781364206329
+    }
+  ],
+  "created_at": 1781138826046,
+  "updated_at": 1781363927014,
+  "completed_at": 1781363927014,
+  "edges": []
+}

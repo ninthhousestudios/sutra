@@ -1,0 +1,88 @@
+{
+  "id": "019f08da-0dbd-79c3-be3f-841b9215c6a5",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/208",
+  "sequence_number": 208,
+  "title": "Spike: verify and fix clustering determinism",
+  "description": "The Louvain implementation iterates HashMap keys, which have random order in Rust. This likely causes non-deterministic community assignments across identical inputs, triggering reconciliation churn even when nothing changed.\\n\\nExperiment:\\n1. Run discover_components twice on the same DB state (or call louvain directly on the same WeightedAdj)\\n2. Diff community assignments — if they differ, the hypothesis is confirmed\\n3. Fix: sort node IDs (collect to sorted Vec<i64>) before the main Louvain loop\\n4. Re-run and verify results are now stable\\n\\nKey files:\\n- src/components/clustering.rs: louvain() at line 130 — `adj.keys().copied().collect()` is the non-deterministic line\\n- src/components/clustering.rs: build_weighted_adjacency() — HashMap output order also non-deterministic",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Demonstrated whether current clustering is deterministic or not"
+    },
+    {
+      "done": false,
+      "text": "If non-deterministic: fix landed and verified stable across repeated runs"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Confirmed the bug: without the fix, insertion order [4, 6, 2, 5, 1, 3] produces flipped community assignments ({4:0,1:1,2:1,6:0,5:0,3:1} vs {3:0,2:0,4:1,6:1,5:1,1:0}). Two-line fix — sort node IDs, add tie-breaking. 546 lib tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/199"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "louvain"
+    },
+    {
+      "type": "git:commit",
+      "value": "0e684d3"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782559935933,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 208
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560056921,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560235920,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782559935933,
+  "updated_at": 1782560235920,
+  "completed_at": 1782560235920,
+  "arc_id": "019f08d9-c3f8-7bd1-8e9c-f3afebc13c2b",
+  "arc_phase": "spike",
+  "edges": [
+    {
+      "id": "019f08da-a338-73e2-801c-025d525d59ce",
+      "edge_type": "refines",
+      "source": "sutra/208",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559974200
+    }
+  ]
+}

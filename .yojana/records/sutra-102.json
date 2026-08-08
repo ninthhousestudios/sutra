@@ -1,0 +1,60 @@
+{
+  "id": "019e990f-e9a3-7273-bb07-f3683a829071",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/102",
+  "sequence_number": 102,
+  "title": "release review: FCA + conventions — algorithmic correctness",
+  "description": "Correctness review of the convention detection subsystem. FCA is the foundation — if the lattice computation or attribute extraction is wrong, conventions are wrong, violations are wrong, templates are wrong.\n\n## Approach\n\nRead all files below, understand the FCA algorithm, and review for correctness. Produce findings in standard YAML schema. Focus on algorithmic correctness and false positive/negative scenarios.\n\n## Files (~3.6k LOC)\n\nsrc/conventions/engine.rs, src/conventions/bitset.rs, src/conventions/attributes.rs, src/conventions/drift.rs, src/conventions/lifecycle.rs, src/conventions/templates.rs, src/conventions/context.rs, src/conventions/mod.rs\n\n## Mandate\n\n- Does FcaEngine compute correct formal concepts? Does it produce the right implications from a given attribute matrix? Test mentally with small examples.\n- Is BitSet correct? Intersection, union, subset — are edge cases handled (empty sets, single-element, full-width)?\n- Is attribute extraction (attributes.rs) complete? Could a valid Rust/Dart symbol have attributes that aren't captured, leading to silent convention gaps?\n- Are convention violations correctly computed? Could a symbol be flagged as violating a convention it actually satisfies (or vice versa)?\n- Is the lifecycle state machine (descriptive → preferred → deprecated → forbidden) correctly enforced? Can invalid transitions happen?\n- Do templates (templates.rs) correctly extract metavariables from exemplar symbols? Could they produce templates that don't match their originating convention?\n- Is drift detection (drift.rs) using the right statistical measures? Is Shannon entropy correctly computed?\n- Effect enrichment in attributes.rs — are effect patterns correctly matched against call refs?",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Reviewed all 8 files in src/conventions/ (~1.7k LOC production code). FCA core (Ganter's Next Closure) is correct. Found 4 findings: F1 (medium) shannon_entropy on non-probability distribution, F2 (low) SCREAMING_CASE misclassifies short acronyms, F3 (low-latent) cache hash omits thresholds, F4 (low-latent) BitSet ops wrong for different-length operands. 3 design observations noted. No critical bugs found.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "release-review"
+  ],
+  "history": [
+    {
+      "ts": 1780684417443,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 102
+      }
+    },
+    {
+      "ts": 1780685082350,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780685573282,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "## Correctness review complete\n\nReviewed all 8 files (~1.7k LOC production code). FCA core algorithm (Ganter's Next Closure) is correctly implemented. Convention mining, violation checking, component scoping, lifecycle signals, drift detection, and template generation are all algorithmically sound.\n\n### Findings (2 medium, 2 low-latent)\n\n**F1 (medium)** — shannon_entropy (drift.rs:28-36) applies the Shannon formula to independent attribute proportions that don't sum to 1.0. Drift detection works (compares trends of a consistent metric) but the reported entropy values aren't information-theoretically meaningful. Fix: rename to attribute_diversity_score, or normalize/sum binary entropies.\n\n**F2 (low)** — SCREAMING_CASE detection (attributes.rs:66-79) misclassifies short all-caps type names (IO, DB, API) as SCREAMING. Fix: require at least one underscore.\n\n**F3 (low, latent)** — hash_matrix (engine.rs:276-298) omits min_support/min_confidence. Would return stale cache if same symbols used with different thresholds on same engine instance. Not triggerable with current call sites (fresh engines per component).\n\n**F4 (low, latent)** — BitSet::intersect/is_subset_of (bitset.rs:46-59) silently wrong for different-length operands via zip truncation. Not triggerable due to FCA context invariants. Fix: add debug_assert_eq on len.\n\n### Design observations (not actionable as bugs)\n\n- O1: Pairwise-only implication mining (single-attr → single-attr). Multi-attribute conventions undiscoverable.\n- O2: confidence < 1.0 filter means lifecycle never sees 100% adherence patterns until first violation.\n- O3: No automated deprecated→forbidden transition signal.\n\n### Verified correct: Ganter's algorithm, closure operator, concept enumeration, convention ID hashing, component-scoped checking, check_inverse, deduplication, adaptive thresholds, drift windowing/monotonicity, lifecycle signals, template decomposition/exemplar selection/metavariable rules.",
+      "ts": 1780685567321
+    }
+  ],
+  "created_at": 1780684417443,
+  "updated_at": 1780685573282,
+  "completed_at": 1780685573282,
+  "edges": []
+}

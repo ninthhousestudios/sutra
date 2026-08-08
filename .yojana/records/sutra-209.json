@@ -1,0 +1,119 @@
+{
+  "id": "019f08da-44d8-7dc2-bf70-3b1203b7cd6e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/209",
+  "sequence_number": 209,
+  "title": "Spike: hub-node exclusion and community splitting quality",
+  "description": "Two gaps from graphify's approach that sutra lacks:\\n\\n**Hub-node exclusion:** High-degree files (mod.rs, index.ts, barrel exports, shared types) bridge otherwise-separate subsystems. Without excluding them, Louvain merges their neighborhoods into one community. graphify excludes nodes above a degree percentile, then reattaches by majority-vote of neighbor communities.\\n\\n**Oversized/low-cohesion splitting:** graphify splits communities >25% of graph size (min 10 nodes) via a second Louvain pass on the subgraph, then re-splits communities with cohesion (intra_edges / possible_edges) below 0.05.\\n\\nExperiment (run on sutra's own codebase):\\n1. Compute degree distribution of the file adjacency graph. Identify files above 95th percentile. Check: are they the expected hub files?\\n2. Run clustering WITH hub exclusion (percentile-based, reattach by majority vote). Compare community assignments vs. current.\\n3. Compute cohesion score for all communities (with and without hub exclusion).\\n4. Apply oversized-community splitting. Check if it produces more intuitive groupings.\\n5. Output: before/after comparison — community names, sizes, cohesion scores, whether the groupings match architectural intuition.\\n\\nKey files:\\n- src/components/clustering.rs: run_clustering(), louvain(), auto_tune()\\n- graphify reference: /home/josh/soft/sutra-surveys/graphify/graphify/cluster.py (cluster(), cohesion_score(), _split_community())",
+  "category": "experiment",
+  "status": "wontfix",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Degree distribution computed, hub files identified"
+    },
+    {
+      "done": false,
+      "text": "Before/after community comparison with hub exclusion"
+    },
+    {
+      "done": false,
+      "text": "Cohesion scores computed for all communities"
+    },
+    {
+      "done": false,
+      "text": "Concrete recommendation: implement hub exclusion yes/no, splitting yes/no, with quality evidence"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/199"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "run_clustering"
+    },
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/graphify/graphify/cluster.py",
+      "label": "graphify cluster.py"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782559950040,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 209
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560676547,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782560681098,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Superseded: leiden-rs (0.8.1) exists as a mature crate with weighted edges, resolution parameter, and CPM quality. Integrating it directly is faster than spiking on Louvain improvements — the integration IS the experiment. Hub exclusion and splitting can be evaluated on Leiden output if needed.",
+      "ts": 1782560667300
+    }
+  ],
+  "created_at": 1782559950040,
+  "updated_at": 1782560681098,
+  "completed_at": 1782560681098,
+  "arc_id": "019f08d9-c3f8-7bd1-8e9c-f3afebc13c2b",
+  "arc_phase": "spike",
+  "edges": [
+    {
+      "id": "019f08da-9f92-7911-bf7f-6373a222ffb5",
+      "edge_type": "depends_on",
+      "source": "sutra/210",
+      "target": "sutra/209",
+      "note": "Connectedness check should run on the best hub-exclusion configuration",
+      "created_at": 1782559973266
+    },
+    {
+      "id": "019f08da-a6fd-7173-9653-ee2041e4db98",
+      "edge_type": "refines",
+      "source": "sutra/209",
+      "target": "sutra/199",
+      "note": null,
+      "created_at": 1782559975165
+    },
+    {
+      "id": "019f08e5-da76-7441-b5b4-af0c1e935439",
+      "edge_type": "supersedes",
+      "source": "sutra/211",
+      "target": "sutra/209",
+      "note": null,
+      "created_at": 1782560709238
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "id": "019f0608-9555-7e11-9df0-6d6398c13dd1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/203",
+  "sequence_number": 203,
+  "title": "Import cycle detection at file level",
+  "description": "## Problem\n\nSutra has the `imports` table with resolved file→file import edges, but no cycle detection. Circular imports are a common source of build failures, init-order bugs, and architectural confusion. This is a cheap addition given the data already exists.\n\n## Prior art: graphify\n\n`graphify/analyze.py`'s `find_import_cycles()` collapses symbol-level edges to file-level, then runs `nx.simple_cycles(length_bound=N)` to find all cycles up to a configurable length. The length bound prevents combinatorial explosion in large graphs.\n\nReference: `graphify/analyze.py`, `find_import_cycles()` function\n\n## What to build\n\nA cycle detection pass over the `imports` table. Could surface as:\n- A standalone tool (`sutra_cycles` or flag on `sutra_deps`)\n- A health biomarker (files participating in import cycles get a health deduction)\n- Both\n\n## Design work needed\n\n**Minimal.** Standard DFS/BFS cycle detection on a directed graph. The `imports` table already gives us the directed file→file edges. Decisions: cycle length bound, whether to include in health scoring (and what weight), output format (list of cycle paths vs. just \"these files are in cycles\").",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd import cycle detection as a `cycles` flag on `sutra_deps` (no new tool) and an `ImportCycle` health biomarker. Both share a standalone Tarjan SCC function in `src/graph.rs`.\n\n**Why Tarjan over DdEngine?** The DD engine spawns a Datalog subprocess — appropriate for the constraint system's long-lived evaluation, but overkill for a parse-time biomarker and a tool query. Tarjan is O(V+E), runs in-process, and needs only the `import_edges` vec that both callers already have access to.\n\n**Why SCC (strongly connected components) over enumerating all simple cycles?** Graphify uses `nx.simple_cycles(length_bound=N)` which is Johnson's algorithm — potentially exponential. SCC tells you which files are mutually reachable (= participate in at least one import cycle). That's the right granularity for both the tool (show cycle groups) and the biomarker (flag files in cycles). Individual cycle paths are reconstructable by tracing edges within an SCC, but the membership is what matters for health scoring.\n\n## Files\n\n- **Modify**: `src/graph.rs` (~lines after `bfs_blast_radius`) — add `find_import_sccs(&[(i64, i64)]) -> Vec<Vec<i64>>`\n- **Modify**: `src/tools/deps.rs` — add `cycles: Option<bool>` to `DepsArgs`, add cycle-detection branch to `handle`\n- **Modify**: `src/mcp.rs` (~line 588) — update `sutra_deps` tool description to mention cycles flag\n- **Modify**: `src/health/findings.rs` — add `ImportCycle` variant to `BiomarkerKind`, add `compute_import_cycle_membership`, wire into `compute_all_health_findings`\n- **Modify**: `src/health/scoring.rs` — add `ImportCycle` to `category()` (→ Coupling), `default_weight()` (→ 0.50)\n- **Test**: `tests/health-test.rs` — seed files with import cycle, verify biomarker fires\n- **Test**: existing test infrastructure for deps tool, or unit tests in `src/graph.rs`\n\n## Steps\n\n### Step 1: Tarjan SCC in `src/graph.rs`\n\nAdd a standalone function that takes directed edges and returns SCCs with >1 member (i.e., actual cycles — singletons without self-loops are excluded).\n\n```rust\n/// Find strongly connected components with >1 member in a directed graph.\n/// Returns each SCC as a sorted vec of node IDs.\npub fn find_import_sccs(edges: &[(i64, i64)]) -> Vec<Vec<i64>> {\n    // Build adjacency list\n    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();\n    let mut nodes: HashSet<i64> = HashSet::new();\n    for &(from, to) in edges {\n        adj.entry(from).or_default().push(to);\n        nodes.insert(from);\n        nodes.insert(to);\n    }\n\n    // Tarjan's algorithm state\n    let mut index_counter: i64 = 0;\n    let mut stack: Vec<i64> = Vec::new();\n    let mut on_stack: HashSet<i64> = HashSet::new();\n    let mut index: HashMap<i64, i64> = HashMap::new();\n    let mut lowlink: HashMap<i64, i64> = HashMap::new();\n    let mut sccs: Vec<Vec<i64>> = Vec::new();\n\n    // Iterative Tarjan (avoids stack overflow on deep graphs)\n    for &node in &nodes {\n        if index.contains_key(&node) { continue; }\n        // iterative DFS with explicit frame stack\n        // ... (standard iterative Tarjan implementation)\n    }\n\n    // Filter to SCCs with >1 member, sort each\n    sccs.into_iter()\n        .filter(|scc| scc.len() > 1)\n        .map(|mut scc| { scc.sort(); scc })\n        .collect()\n}\n```\n\nUses iterative DFS (not recursive) to avoid stack overflow on large import graphs.\n\n### Step 2: `cycles` flag on `sutra_deps`\n\nAdd `cycles: Option<bool>` to `DepsArgs`. When `cycles=true`:\n- Call `db.import_edges()` → `find_import_sccs()`\n- Resolve file IDs to paths\n- Return `{ \"cycles\": [[\"a.rs\", \"b.rs\"], ...], \"files_in_cycles\": N, \"total_sccs\": N }`\n\nWhen `path` is also set, filter to SCCs containing that file. `depth` is ignored for cycles mode.\n\n```rust\n// In DepsArgs:\n#[serde(default)]\npub cycles: Option<bool>,\n\n// In handle():\nif args.cycles.unwrap_or(false) {\n    let edges = db.import_edges()?;\n    let sccs = graph::find_import_sccs(&edges);\n    // resolve to paths, optionally filter by args.path\n    // return JSON\n}\n```\n\n### Step 3: Update `sutra_deps` tool description\n\nIn `src/mcp.rs`, update the description string to mention the cycles flag:\n\n```rust\n#[tool(description = \"File dependency graph from import edges. \\\n    If path given, BFS from that file to depth. \\\n    If cycles=true, detect import cycle groups (SCCs) instead of listing edges.\")]\n```\n\n### Step 4: `ImportCycle` biomarker variant\n\nAdd to `BiomarkerKind` enum in `src/health/findings.rs`:\n\n```rust\npub enum BiomarkerKind {\n    // ... existing variants ...\n    ImportCycle,\n}\n```\n\nUpdate all match arms:\n- `as_str()` → `\"import_cycle\"`\n- `parse()` → `\"import_cycle\" => Some(Self::ImportCycle)`\n- `default_severity()` → `Informational` (sutra-specific, uncalibrated)\n\n### Step 5: `ImportCycle` scoring\n\nIn `src/health/scoring.rs`:\n- `category()` → `HealthCategory::Coupling` (alongside `HiddenCoupling`, `ComponentInstability`)\n- `default_weight()` → `0.50` (uncalibrated, same tier as other sutra-specific biomarkers)\n\n### Step 6: `compute_import_cycle_membership` in health pipeline\n\nIn `src/health/findings.rs`, add:\n\n```rust\nfn compute_import_cycle_membership(db: &Db) -> Result<Vec<HealthFinding>> {\n    let edges = db.import_edges()?;\n    let sccs = crate::graph::find_import_sccs(&edges);\n\n    let mut file_ids_in_cycles: HashSet<i64> = HashSet::new();\n    let mut file_cycle_count: HashMap<i64, usize> = HashMap::new();\n    for scc in &sccs {\n        for &fid in scc {\n            file_ids_in_cycles.insert(fid);\n            *file_cycle_count.entry(fid).or_default() += 1;\n        }\n    }\n\n    let findings = file_ids_in_cycles.iter().map(|&file_id| {\n        let cycle_count = file_cycle_count[&file_id];\n        HealthFinding {\n            file_id,\n            symbol_id: None,\n            biomarker_kind: BiomarkerKind::ImportCycle,\n            severity: BiomarkerKind::ImportCycle.default_severity(),\n            confidence: 1.0,\n            provenance: \"computed\".into(),\n            metric_value: cycle_count as f64,\n            threshold: 1.0,\n            detail: format!(\"file participates in {cycle_count} import cycle group(s)\"),\n        }\n    }).collect();\n\n    Ok(findings)\n}\n```\n\nWire into `compute_all_health_findings`:\n```rust\nfindings.extend(compute_import_cycle_membership(db)?);\n```\n\n### Step 7: Tests\n\n**Unit test in `src/graph.rs`** — test `find_import_sccs`:\n- Empty graph → no SCCs\n- Acyclic graph (A→B→C) → no SCCs  \n- Simple cycle (A→B→A) → one SCC of [A, B]\n- Two disjoint cycles → two SCCs\n- Self-loop (A→A) → excluded (single-node SCC)\n- Complex graph with shared nodes → correct grouping\n\n**Integration test in `tests/health-test.rs`**:\n- Seed files + imports forming a cycle → verify `ImportCycle` finding emitted for each file in cycle\n- Seed acyclic imports → no `ImportCycle` findings\n- Verify `metric_value` = cycle group count\n- Verify biomarker kind string roundtrips through DB\n\n## Acceptance criteria coverage\n\nNo explicit acceptance criteria on the task — derived from description + Josh's \"make take\":\n- [x] \"flag on sutra_deps\" → Steps 2, 3\n- [x] \"a health biomarker\" → Steps 4, 5, 6\n- [x] \"cycle detection pass over the imports table\" → Steps 1, 6\n- [x] \"cycle length bound\" decision → Approach section (SCC, not simple_cycles — no bound needed)\n- [x] \"whether to include in health scoring (and what weight)\" → Step 5 (Coupling, 0.50)\n- [x] \"output format\" → Step 2 (cycle groups as SCC path lists)",
+  "execution_record": "Implemented as planned. One minor deviation: used `Vec<_>` type inference for `Arc<str>` paths in deps.rs cycle output (file_by_id returns Arc<str>, not String). Pre-existing test_field_access_skipped failure in resolver_test.rs confirmed unrelated.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/sutra-surveys/graphify/graphify/analyze.py",
+      "label": "graphify import cycle detection"
+    },
+    {
+      "type": "git:commit",
+      "value": "a75e539"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "graphify-informed"
+  ],
+  "history": [
+    {
+      "ts": 1782512653653,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 203
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782775492090,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782776064035,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (verdict: needs-attention):\\n\\n[medium] Self-import cycles silently excluded (src/graph.rs:388-399). find_import_sccs drops every singleton SCC with `if scc.len() > 1`, and the unit test asserts (1,1) is not a cycle. This conflicts with file-level SCC semantics: a node with a self-edge is cyclic. It also diverges from DdEngine cycle path which derives cycle nodes from reachable self-loops. Impact: sutra_deps(cycles=true) and ImportCycle biomarker can report no cycle for a resolved self-import that the constraints pipeline would flag as no_cycles.\\n\\nRecommendation: Treat singleton SCCs as cycles when the edge set contains (node, node). Keep excluding singletons without self-edges. Replace self_loop_excluded test with coverage verifying self-imports surface through both find_import_sccs and health/tool paths.\"",
+      "ts": 1782776364012
+    }
+  ],
+  "created_at": 1782512653653,
+  "updated_at": 1782776064035,
+  "completed_at": 1782776064035,
+  "edges": []
+}

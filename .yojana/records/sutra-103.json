@@ -1,0 +1,60 @@
+{
+  "id": "019e9910-1467-7850-bd02-c73d2d60fef7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/103",
+  "sequence_number": 103,
+  "title": "release review: DD + constraints + DB — data integrity",
+  "description": "Correctness review of the persistence and enforcement backbone. Every query the rest of the system makes trusts the DB layer. The DD constraint engine is a complex concurrent system.\n\n## Approach\n\nRead all files below and review for data integrity, concurrency, and SQL correctness. Produce findings in standard YAML schema. Focus on correctness bugs, race conditions, and silent data corruption.\n\n## Files (~5.5k LOC)\n\nsrc/constraints/engine.rs, src/constraints/worker.rs, src/constraints/resolver.rs, src/constraints/mod.rs, src/db/mod.rs, src/db/graph.rs, src/db/migrations.rs, src/db/components.rs, src/db/conventions.rs, src/db/constraints.rs, src/db/health.rs, src/db/similarity.rs, src/rules.rs\n\n## Mandate\n\n- DD engine: Is the worker thread correctly synchronized? Could a delta update race with a query? Are cycle detection and forbidden-pair queries correct for all graph shapes (including degenerate: single node, self-loop, empty graph)?\n- Constraint resolution: Does the resolver correctly map high-level constraint declarations (TOML) to file-pair forbidden lists? Are component-scoped constraints correctly expanded?\n- SQL correctness: Scan every query in src/db/ for: missing WHERE clauses, wrong JOIN types, potential SQL injection (string interpolation into queries), missing indexes for frequent query patterns, incorrect ON CONFLICT behavior.\n- Migration completeness: Do the migrations create every table/index that the code expects? Are column types consistent with how Rust reads them (especially i64 vs TEXT for IDs)?\n- Rules parsing (rules.rs): Is TOML parsing robust? Could malformed constraint files produce silent partial parses instead of errors?\n- DB abstraction: Are there places where a caller can observe inconsistent state because operations that should be transactional aren't?",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Review complete. 12 findings (2 high, 5 medium, 5 low, 0 critical). Written to docs/reviews/2026-06-05-dd-db-integrity-review.md.\n\nHigh: Two DELETE + bulk INSERT patterns without transactions (replace_health_findings, replace_hrr_vectors) — crash mid-loop loses data.\n\nMedium: blast_counts inspect callback order-dependent in DD worker; reload() silently discards forbidden_pairs; no_cycles scope parsed but never enforced; delete_file_cascade not transactional; create_waiver returns wrong ID on upsert path.\n\nLow: .ok() swallows DB errors in get_convention_state; codebook entries return value wrong; health_score INTEGER/f64 mismatch; snapshot bulk inserts no txn; recursive DFS stack depth.\n\nClean categories: SQL injection (all parameterized), WHERE clauses, JOIN types, ON CONFLICT, migration completeness, DD thread sync, DD state machine, TOML parsing, constraint identity hashing.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-dd-db-integrity-review.md",
+      "label": "review findings"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review"
+  ],
+  "history": [
+    {
+      "ts": 1780684428391,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 103
+      }
+    },
+    {
+      "ts": 1780705889359,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780706009739,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780684428391,
+  "updated_at": 1780706009739,
+  "completed_at": 1780706009739,
+  "edges": []
+}

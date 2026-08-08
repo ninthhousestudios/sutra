@@ -1,0 +1,121 @@
+{
+  "id": "019f2faa-0743-7dc2-9c88-6837016cd695",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/229",
+  "sequence_number": 229,
+  "title": "Entity-level co-change (function granularity)",
+  "description": "Lift sutra_cochange from file-level to function-level granularity. Currently sutra computes co-change as file-level Jaccard similarity over the git commit×file matrix within a 90-day window. This is useful but coarse — \"these two files change together\" is less actionable than \"these two functions change together.\"\n\nsem's approach: walks git history once (bounded by max_commits), intersects commit diffs with entity line ranges to get per-commit entity change sets, then computes both hotspot churn counts and co-change pairs simultaneously. `CoChangePair { a_name, a_file, b_name, b_file, together, a_commits, b_commits, confidence }` where `confidence = together / min(a_commits, b_commits)`. Caps commits with too many entity changes (`MAX_PAIR_ENTITIES`) to avoid combinatorial blowup on giant refactors.\n\nKey design consideration: sem also has an `entity_changes` table in its MCP cache (persisted commit→entity index: commit_sha, entity_name/type/file, change_type, old_name/path, structural flag). This avoids re-walking git on every query. Sutra should consider a similar persistent index — the git walk + line-range intersection is the expensive part.\n\nReference implementation:\n- `sutra-surveys/sem/crates/sem-core/src/parser/hotspot.rs` — `CoChangePair`, `compute_history_analytics()`, `aggregate_history_analytics()`, `MAX_PAIR_ENTITIES`\n- `sutra-surveys/sem/crates/sem-mcp/src/cache.rs` — `entity_changes` table schema\n\nSutra integration points:\n- `sutra/src/tools/cochange.rs` — current file-level implementation\n- `sutra/src/tools/trend.rs` — existing git history walking\n- `sutra/src/health/ondemand.rs` — FunctionHotspot biomarker already intersects git blame lines with symbol ranges (similar technique, different purpose)\n\nLicense: MIT → AGPL fine with attribution.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Per-commit blob re-parse via symbol_diff (sem's model) over blame-based intersection",
+      "rationale": "Blame maps only current-HEAD lines — structurally blind to deleted/renamed entities and limited to changed-paths call sites; symbol_diff gives historically-accurate ranges per commit and is nearly free to reuse after 226/227",
+      "rejected": "FunctionHotspot-style git-blame × current symbol ranges — cheaper per query but wrong tool for a persistent history index"
+    },
+    {
+      "decision": "Incremental sha-keyed append-only store, separate tables from commit_files",
+      "rationale": "commit_files is wholesale-wiped every index run; entity walk is too expensive to redo and history should accumulate past any window; sha-keying makes it branch-agnostic with no invalidation story needed",
+      "rejected": "Extending commit_files / the 90-day wipe-and-rebuild model — repeated reparse cost and permanent history loss"
+    },
+    {
+      "decision": "Report both jaccard and confidence per pair",
+      "rationale": "They answer different questions (symmetric coupling strength vs 'the rarer entity never moves alone'); both are cheap from the same counts",
+      "rejected": "Picking one metric — sem's confidence-only loses comparability with sutra's existing file-level jaccard output"
+    }
+  ],
+  "implementation_plan": "Design settled 2026-07-10. Corrections to original description: trend.rs is the WRONG pointer — it diffs health snapshots, no git walking. Real precedents: git.rs/pipeline.rs file-level commit walk (commit_files, wholesale-rebuilt every index over a rolling 90-day window via replace_commit_files, graph.rs:73-97) and health/ondemand.rs FunctionHotspot (blame × current-HEAD ranges — cheap but blind to deleted/renamed entities and changed-paths-only).\n\nCore move: reuse symbol_diff as the per-commit entity differ. diff_file already re-parses two git blobs and classifies per symbol — exactly sem's compute_semantic_diff. After sutra/227 it also tracks renames, so co-change chains survive renames (better than sem).\n\nPlan (depends on sutra/227):\n1. Migration: new tables entity_commits(hash PK, committed_at, author) + entity_changes(commit_hash, qualified_name, kind, file_path, change_type, old_qualified_name, old_file_path, pair_eligible), indexed on commit_hash and qualified_name. MUST be separate from commits/commit_files — those are wiped every index run by replace_commit_files; these are append-only and sha-keyed (branch-agnostic, immutable, never re-diffed).\n2. Index-time incremental walk (pipeline post-index step): git rev-list --first-parent bounded by max_commits (default 500 for initial backfill; steady state only new shas). Skip shas already in entity_commits. Per new commit: changed files vs first parent, run symbol_diff::diff_file per file (reusing 226/227 machinery — renames land as change_type=renamed with old_qualified_name), insert rows. Merge commits → row in entity_commits, zero entity_changes (first-parent diffs of individual commits already cover the content, per sem cache.rs:301-309).\n3. Guards ported from sem hotspot.rs: dedup entity keys per commit; if a commit touches > MAX_PAIR_ENTITIES=50 entities, mark its rows pair_eligible=false (skipped for pair-counting, still counted for churn) — kills quadratic blowup on bulk refactors. Log/store a pair_commits_skipped count.\n4. Query side: cochange.rs gains granularity: file|function param (default file, existing behavior untouched). Function-level aggregation over entity_changes: pair counts per commit (pair_eligible only), filter together >= 2, report BOTH metrics per pair: jaccard = together/(a+b-together) AND confidence = together/min(a,b) (sem hotspot.rs:252). Threshold param applies to jaccard for consistency with the file-level tool.\n5. Rename continuity: when aggregating, chase old_qualified_name → qualified_name renames so a renamed function's history counts as one entity (single-hop is enough; multi-hop chains are rare and can be iterative).\n\nTests: two functions co-edited across 3 commits → pair with correct together/confidence/jaccard; bulk commit >50 entities → excluded from pairs, present in churn; renamed function keeps accumulating with its pre-rename identity; merge commits contribute no rows; re-run of walk is a no-op for seen shas.",
+  "execution_record": "Implementation followed the plan closely. Two commits on main:\n\n1. `78c78e2` — Core implementation: migration 0048 (entity_commits + entity_changes tables, Durable partition), git history walking (git_first_parent_commits with merge detection, git_commit_changed_files), DB layer (insert_entity_commit_with_changes with MAX_PAIR_ENTITIES=50 guard, entity_cochange_for_symbol with rename continuity via old_qualified_name chasing, both jaccard and confidence metrics), pipeline integration (entity_change_walk in post_parse_sequence after commit_files), cochange tool update (granularity param: file|function).\n\n2. `a8a810e` — Tests + idempotent insert guard: 8 entity-level tests (two-function co-edit, bulk commit exclusion, rename continuity, merge commits, idempotent insert, min-shared filter, known_hashes). Fixed insert_entity_commit_with_changes to skip entity_changes when commit hash already exists.\n\nLive validation on sutra itself: 499 commits indexed, 9549 entity changes, 44 commits pair_ineligible (>50 entities). Initial backfill completed within the normal 15s parse window. Steady-state overhead: zero (all SHAs already known).\n\nNo divergence from plan. symbol_diff::diff_file reuse worked exactly as designed — renames land with old_qualified_name populated from 227 work.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a8a810e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783211099971,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 229
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704175192,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705004160,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Design: Entity-level co-change (function granularity)",
+        "to": "Entity-level co-change (function granularity)"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705163752,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "ready-for-agent"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783955261755,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783956616797,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (3 findings):\n\n1. [high] Partial indexing failures recorded as successful commits — FIXED in 7143532. git_commit_changed_files failures now skip instead of inserting empty entity_commits rows.\n\n2. [high] Root commits miss entity changes (git diff-tree without --root) — FIXED in 7143532. Added --root flag.\n\n3. [medium] Rename continuity only follows one hop — BY DESIGN per implementation plan: \"single-hop is enough; multi-hop chains are rare and can be iterative.\" Not a bug.",
+      "ts": 1783957014415
+    }
+  ],
+  "created_at": 1783211099971,
+  "updated_at": 1783956616797,
+  "completed_at": 1783956616797,
+  "edges": [
+    {
+      "id": "019f4d1c-7d61-7df0-8680-a32a667ac0da",
+      "edge_type": "depends_on",
+      "source": "sutra/229",
+      "target": "sutra/227",
+      "note": "entity_changes rows reuse symbol_diff incl. rename-aware change_type",
+      "created_at": 1783705140577
+    }
+  ]
+}

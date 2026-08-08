@@ -1,0 +1,71 @@
+{
+  "id": "019fdcfb-7211-7f83-bff5-0ba58a21a625",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/304",
+  "sequence_number": 304,
+  "title": "Reduce builtin cycle-detector noise (idiomatic mod.rs re-export cycles)",
+  "description": "The builtin `no_cycles` constraint (constraint_id `builtin:cycles`, always-on, blocking) consistently fires on idiomatic Rust module re-export cycles: a `mod.rs` doing `pub use child::X` while the children do `use super::Y` forms an import SCC that is NOT architectural debt. We hit this on essentially every manas adoption.\n\nConcrete example from chitta adoption: `builtin:cycles` reported two SCCs — a genuine one (`consolidated → db → facets → tools/search`, real debt, tracked in chitta/50) AND a harmless one (the entire `src/synthesis/` module, purely `mod.rs` re-export wiring). Because the detector is builtin and blocking, the harmless SCC can't be suppressed from `.sutra/rules.toml` and becomes standing noise that dilutes the real finding. The vidhi-sutra-adopt skill already tells authors NOT to add `no_cycles` for this exact reason — but the builtin fires anyway.\n\nExamine options:\n- (a) Classify and exclude pure re-export cycles — SCCs whose edges are only `pub use`/re-export edges (no call/type edges) are not real coupling. Requires distinguishing re-export edges from substantive import edges in the graph.\n- (b) Allow waiving or suppressing `builtin:cycles` per-SCC from rules.toml (today it appears unwaivable since it's not a user constraint).\n- (c) Make the builtin's severity/enablement configurable (e.g. downgrade to advisory, or opt-in).\n\n(a) is the highest-value fix because it removes the noise everywhere without per-project config. Recurring cross-project pain; worth a proper look.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented option (a) but the mechanism differed from the task's guess. Verified against live chitta index (~/.sutra/chitta/index.db): the src/synthesis/ SCC is a star — mod.rs -> each child via `mod self::child` (kind='mod'), children -> mod.rs via `use super::X` (kind='import') for items hoisted into mod.rs. Crucially, `pub use` re-exports do NOT resolve to graph edges at all (the Rust parser keeps \"pub use foo::Bar\" as raw_path, which fails resolution), so the task's \"pure pub use / re-export edge\" framing wouldn't have matched anything. The real closing edges are the `mod` module-declarations.\n\nFix: new Db::module_declaration_edges() (SELECT DISTINCT file_id,resolved_file_id WHERE kind='mod'); evaluate_dd subtracts this set before re-running compute_sccs for cycle findings, unifying with the existing test-edge narrowing (both include_tests and production branches now recompute over base_edges - module_edges). Left the DD engine graph whole so blast-radius/fan-in are unaffected. Two tests added: module_declaration_cycle_not_reported (suppression) and genuine_use_cycle_survives_module_edge_filtering (a real a<->b use-cycle still fires alongside module wiring). Full constraints suite 60 pass, clippy clean on touched files.\n\nNote: verified behavior via unit tests reproducing the exact topology; did not reparse chitta with the new binary to observe the review output there.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "chitta/50",
+      "label": "the genuine cycle found alongside the noise"
+    },
+    {
+      "type": "git:commit",
+      "value": "37be36b"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786118894097,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 304
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786200030853,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786200679245,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, claude): approve with notes. Core fix is correct — subtracting kind='mod' edges before SCC re-run removes idiomatic mod.rs re-export noise without per-project config (task option a), verified against parser (rust.rs:1301 emits kind='mod' for bodyless mod decls) and 19 cycle tests pass. One medium finding: the subtraction is PAIR-granular, not edge-kind-granular — module_declaration_edges() returns DISTINCT (file_id,resolved_file_id) where kind='mod', so a parent that both `mod child;` AND `use child::Foo;` collapses to one pair that gets dropped, suppressing a genuine parent<->child mutual-use 2-cycle even though a real use edge exists. Contract mismatch with docstring (\"exists *only* because of the mod edge\"). Larger SCCs are protected by the re-run; window is parent-child 2-cycles. Tests only cover disjoint pairs. Fix: narrow query to pure-mod pairs (NOT EXISTS non-mod row for same pair) OR document the broader intent + add overlapping-pair test. Low finding: module_declaration_edges() queried one line before the edges.is_empty() early return.",
+      "ts": 1786201138124
+    }
+  ],
+  "created_at": 1786118894097,
+  "updated_at": 1786200679245,
+  "completed_at": 1786200679245,
+  "edges": []
+}

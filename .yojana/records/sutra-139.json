@@ -1,0 +1,92 @@
+{
+  "id": "019eb265-7bee-7332-8850-e8b91cc0be7b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/139",
+  "sequence_number": 139,
+  "title": "Collapse tool handler/freshness pairs into ToolContext seam",
+  "description": "Introduce ToolContext { db, workspace_root, annotate_freshness } passed to tool handlers. Collapse handle/handle_with_freshness pairs into single functions. Add FreshnessCounts annotator used uniformly. Fold the mcp.rs four-line ritual (require_analysis/resolve_workspace/get_db/wrap_response) into one helper on SutraServer. Wide but shallow — mechanical edits across tools/ and mcp.rs, contract tests unaffected (JSON shape unchanged).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Introduced ToolContext (tools/mod.rs) + FreshnessAnnotator (freshness.rs). Collapsed handle/handle_with_freshness pairs into handle/handle_ctx/handle_inner in 5 modules (map, grep, find, hotspots, file_health). Migrated all 22 standard mcp.rs handlers to tool_context() + ctx.wrap(). Fixed double workspace resolution. Two commits: 72b20f6, e7e6538. All 732 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 7"
+    },
+    {
+      "type": "git:commit",
+      "value": "e7e6538"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "tools"
+  ],
+  "history": [
+    {
+      "ts": 1781109455854,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 139
+      }
+    },
+    {
+      "ts": 1781132903218,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781132909464,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1781133000876,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1781136865106,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial-review, base=32a88fb):\n\nVerdict: needs-attention\n\nFinding (medium): ToolContext snapshots response freshness at request start, not wrap time.\n- `tool_context()` computes `response_freshness` up front; `ctx.wrap(result)` copies that cached value.\n- Old `wrap_response()` called `self.freshness(db)` after the handler completed.\n- For long-running handlers overlapping a parse, top-level `is_stale`/`as_of`/`parsing_in_progress` can now describe request start instead of response time.\n- Recommendation: compute freshness at wrap time, not context creation time.\n\nConvention violations (from sutra_review): SutraServer::await_parse is async but not pub and doesn't return Result (breaks two FCA conventions, confidence 0.97).\n\nHealth degradation: find.rs handle_inner 7.2→6.04, file_health.rs handle_inner 6.69→5.53 (both hotspot-driven).",
+      "ts": 1781136792148
+    }
+  ],
+  "created_at": 1781109455854,
+  "updated_at": 1781136865106,
+  "completed_at": 1781136865106,
+  "edges": []
+}

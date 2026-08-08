@@ -1,0 +1,112 @@
+{
+  "id": "019e85c4-966b-76f1-a284-dbcf24b2d2a8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/58",
+  "sequence_number": 58,
+  "title": "5c-1: module rename fca/ → conventions/ + convention_state migration",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nRename `src/fca/` to `src/conventions/` and rename the `convention_overrides` table to `convention_state`. All existing functionality must work unchanged after the rename. This is a mechanical change — no logic modifications.\n\n- Move `src/fca/*.rs` → `src/conventions/*.rs`\n- Update `mod.rs` and all import paths across the codebase\n- Add a migration renaming `convention_overrides` → `convention_state`\n- Update all DB methods and types referencing the old table/type names (`ConventionOverrideRow` → `ConventionStateRow`, etc.)\n\n## Acceptance criteria\n\n- [ ] `src/fca/` no longer exists; all FCA code lives under `src/conventions/`\n- [ ] `convention_overrides` table renamed to `convention_state` via migration\n- [ ] All Rust types/methods referencing the old names updated\n- [ ] All existing tests pass\n- [ ] `cargo check` and `cargo clippy` clean\n\n## Blocked by\n\nNone — can start immediately",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "fdf8e7a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "review-a"
+  ],
+  "history": [
+    {
+      "ts": 1780360713835,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 58
+      }
+    },
+    {
+      "ts": 1780400580718,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780400583403,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "opus-review",
+      "text": "Code review: APPROVE. Rename is complete and clean — src/fca/ removed, all types/methods updated, migration 0014 added, no stale references outside historical migration 0007. All tests pass, clippy clean (pre-existing warnings only).",
+      "ts": 1780401418865
+    }
+  ],
+  "created_at": 1780360713835,
+  "updated_at": 1780400583403,
+  "completed_at": 1780400583403,
+  "edges": [
+    {
+      "id": "019e85c6-5c66-74e2-9dc1-ad6291b98556",
+      "edge_type": "depends_on",
+      "source": "sutra/59",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360830054
+    },
+    {
+      "id": "019e85c6-5e66-7fb3-8049-ae01420eb08a",
+      "edge_type": "depends_on",
+      "source": "sutra/60",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360830566
+    },
+    {
+      "id": "019e85c6-61fe-7da1-a0bd-1ce8e3a4f37e",
+      "edge_type": "depends_on",
+      "source": "sutra/61",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360831486
+    },
+    {
+      "id": "019e85c6-6587-7f63-b643-cb7a0dffc86a",
+      "edge_type": "depends_on",
+      "source": "sutra/62",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360832391
+    },
+    {
+      "id": "019e85c6-6807-7dc3-9a7e-f3e568417b16",
+      "edge_type": "depends_on",
+      "source": "sutra/64",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360833031
+    }
+  ]
+}

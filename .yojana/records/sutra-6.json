@@ -1,0 +1,100 @@
+{
+  "id": "019e027a-d5e7-7a02-88cc-abf01d66cd1c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/6",
+  "sequence_number": 6,
+  "title": "smriti event reader + cursor persistence",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\nNew module that opens smriti's `index.db` read-only (SQLite WAL allows concurrent readers) and wraps the `events_since` query. Handles cursor persistence: read/write `~/.sutra/smriti_cursor` (single i64 file). Detects cursor invalidation (smriti pruned events past cursor) and returns a \\\"full reparse needed\\\" signal.\n\nConfig: `SUTRA_SMRITI_DB` env var defaulting to `~/.smriti/index.db`.\n\n## Acceptance criteria\n\n- [ ] New module opens smriti DB read-only and queries events_since\n- [ ] Cursor persisted to `~/.sutra/smriti_cursor`, read on startup\n- [ ] Missing cursor file starts from 0\n- [ ] Cursor invalidation detected and signaled (cursor_valid: false)\n- [ ] `SUTRA_SMRITI_DB` env var with `~/.smriti/index.db` default\n- [ ] Unit tests with a synthetic smriti DB: normal pagination, cursor invalidation, empty table\n\n## Blocked by\n\nNone — can start immediately.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "New module opens smriti DB read-only and queries events_since"
+    },
+    {
+      "done": true,
+      "text": "Cursor persisted to ~/.sutra/smriti_cursor, read on startup"
+    },
+    {
+      "done": true,
+      "text": "Missing cursor file starts from 0"
+    },
+    {
+      "done": true,
+      "text": "Cursor invalidation detected and signaled"
+    },
+    {
+      "done": true,
+      "text": "SUTRA_SMRITI_DB env var with ~/.smriti/index.db default"
+    },
+    {
+      "done": true,
+      "text": "Unit tests: normal pagination, cursor invalidation, empty table"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/smriti.rs",
+    "src/lib.rs"
+  ],
+  "tags": [
+    "watcher",
+    "smriti"
+  ],
+  "history": [
+    {
+      "ts": 1778158065127,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 6
+      }
+    },
+    {
+      "ts": 1778182313524,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778182467342,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158065127,
+  "updated_at": 1778182467342,
+  "completed_at": 1778182467342,
+  "edges": [
+    {
+      "id": "019e027b-83ad-77a1-b175-1959b5039d4d",
+      "edge_type": "depends_on",
+      "source": "sutra/7",
+      "target": "sutra/6",
+      "note": null,
+      "created_at": 1778158109613
+    },
+    {
+      "id": "019e027b-93a6-7253-8796-25200f250a14",
+      "edge_type": "refines",
+      "source": "sutra/6",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158113702
+    }
+  ]
+}

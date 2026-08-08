@@ -1,0 +1,87 @@
+{
+  "id": "019e9297-df6d-7291-b87d-8fe68377cf0e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/82",
+  "sequence_number": 82,
+  "title": "L1: surface behavioral coupling in review output",
+  "description": "Add behavioral coupling warnings to review output. When a changed file has co-change partners above the Jaccard threshold with no static import edge, surface them: \"your change touched A; B is behaviorally coupled and may need changes too.\" Depends on the commit_files table and co-change infrastructure from sutra/67.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Review output includes a behavioral_coupling key (or similar) listing co-change partners of changed files that lack static edges"
+    },
+    {
+      "done": false,
+      "text": "Each entry shows the partner file, Jaccard coefficient, and shared commit count"
+    },
+    {
+      "done": false,
+      "text": "Only pairs above the configured cochange_threshold are included"
+    },
+    {
+      "done": false,
+      "text": "Behavioral coupling partners appear in recommended_reads if not already present"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "L1",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780575887213,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 82
+      }
+    },
+    {
+      "ts": 1780578440247,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780580533835,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\n[medium] Behavioral coupling filter does not exclude all static reference edges (src/tools/review.rs:807-825)\nThe review output filters \"hidden\" partners using only import_edges. Clustering defines static edges from resolved symbol refs, so call/use refs without an import row still count as static edges for clustering but are reported here as behavioral coupling. This can send reviewers to already-statically-linked files as if they were hidden coupling. Same pattern appears in orient (sutra/81). Recommend building the exclusion set from the same resolved-reference graph used by clustering: map all_resolved_refs() through all_symbol_file_map() into canonical file pairs.",
+      "ts": 1780579545334
+    }
+  ],
+  "created_at": 1780575887213,
+  "updated_at": 1780580533835,
+  "completed_at": 1780580533835,
+  "edges": [
+    {
+      "id": "019e9297-f0f4-7600-8f99-fa9fb2841f73",
+      "edge_type": "depends_on",
+      "source": "sutra/82",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780575891700
+    }
+  ]
+}

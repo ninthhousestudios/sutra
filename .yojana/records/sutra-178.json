@@ -1,0 +1,85 @@
+{
+  "id": "019ee018-6f90-74c1-99f2-6a032e8fb50b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/178",
+  "sequence_number": 178,
+  "title": "Consolidate duplicated staleness check between mcp.rs and main.rs",
+  "description": "The staleness check logic (parse timestamp, compute age, call workspace_has_changed) is duplicated between SutraServer::freshness() in mcp.rs and maybe_reparse_cwd() in main.rs. Both were updated independently in the is_stale rework (d604ae7, ae75a02). Extract a single function that takes the DB, workspace root, and threshold, and returns the freshness JSON or stale bool.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "A single public function `is_workspace_stale(db, workspace_root, threshold_sec) -> (Option<String>, bool)` exists in `src/freshness.rs`"
+    },
+    {
+      "done": false,
+      "text": "`SutraServer::freshness` in `src/mcp.rs` delegates to the new function (no inline staleness logic)"
+    },
+    {
+      "done": false,
+      "text": "`maybe_reparse_cwd` in `src/main.rs` delegates to the new function (no inline staleness logic)"
+    },
+    {
+      "done": false,
+      "text": "Behavioral parity: both call sites produce identical results as before"
+    },
+    {
+      "done": false,
+      "text": "`cargo test` passes"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nExtract the duplicated \"parse last_parse_info → check age threshold → call workspace_has_changed\" logic into a new `is_workspace_stale` function in `src/freshness.rs`. Both call sites become one-liners. The function returns `(Option<String>, bool)` — the as_of timestamp and staleness flag — so the MCP caller uses both parts and the main.rs caller discards the timestamp.\n\n## Files\n\n- **Modify**: `src/freshness.rs` (after `workspace_has_changed`, ~line 156) — add `is_workspace_stale`\n- **Modify**: `src/mcp.rs` (lines 254-275) — replace inline staleness logic with call to `freshness::is_workspace_stale`\n- **Modify**: `src/main.rs` (lines 400-417) — replace inline staleness logic with call to `freshness::is_workspace_stale`\n\n## Steps\n\n### Step 1: Add `is_workspace_stale` to `src/freshness.rs`\n\nAdd `use crate::db::Db;` to imports (intra-crate cross-ref, no circularity issue — `db` already imports `freshness::SearchTier`).\n\nInsert after `workspace_has_changed` (line 156):\n\n```rust\n/// Check whether a workspace needs reparsing.\n///\n/// Returns `(as_of_timestamp, is_stale)`. `as_of` is `None` when no\n/// snapshot exists yet.\npub fn is_workspace_stale(\n    db: &Db,\n    workspace_root: &Path,\n    stale_threshold_sec: u64,\n) -> (Option<String>, bool) {\n    match db.last_parse_info() {\n        Ok(Some((ts, head_commit))) => {\n            let is_stale = chrono::DateTime::parse_from_rfc3339(&ts)\n                .map(|dt| {\n                    let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);\n                    if age.num_seconds() as u64 <= stale_threshold_sec {\n                        return false;\n                    }\n                    let paths = db.all_indexed_paths().unwrap_or_default();\n                    workspace_has_changed(workspace_root, &ts, head_commit.as_deref(), &paths)\n                })\n                .unwrap_or(true);\n            (Some(ts), is_stale)\n        }\n        _ => (None, true),\n    }\n}\n```\n\nNote: `chrono` is already an indirect dependency (used by callers); add `use chrono;` or use fully-qualified paths. Check whether `freshness.rs` already uses chrono — it doesn't currently, so use fully-qualified `chrono::DateTime` and `chrono::Utc`.\n\n### Step 2: Simplify `SutraServer::freshness` in `src/mcp.rs`\n\nReplace lines 255-275 with:\n\n```rust\nfn freshness(&self, db: &Db, workspace_root: &Path) -> serde_json::Value {\n    let (as_of, is_stale) = crate::freshness::is_workspace_stale(\n        db,\n        workspace_root,\n        self.config.stale_threshold_sec,\n    );\n\n    let parsing = self.parse_coord.is_locked(db.workspace_id());\n\n    let mut val = serde_json::json!({\n        \"as_of\": as_of,\n        \"is_stale\": is_stale,\n    });\n    if parsing {\n        val[\"parsing_in_progress\"] = serde_json::Value::Bool(true);\n    }\n    val\n}\n```\n\n### Step 3: Simplify staleness check in `maybe_reparse_cwd` in `src/main.rs`\n\nReplace lines 400-417 with:\n\n```rust\nlet (_, is_stale) = sutra::freshness::is_workspace_stale(\n    &db,\n    &entry.root,\n    config.stale_threshold_sec,\n);\n```\n\nEverything after (the `if !is_stale { return; }` guard and the reparse spawn) stays unchanged.\n\n### Step 4: Verify\n\n`cargo check` then `cargo test` — no behavioral change expected.\n\n## Acceptance criteria coverage\n\n- [x] \"Single public function in freshness.rs\" → Step 1\n- [x] \"SutraServer::freshness delegates\" → Step 2\n- [x] \"maybe_reparse_cwd delegates\" → Step 3\n- [x] \"Behavioral parity\" → function is a mechanical extraction of the identical logic\n- [x] \"cargo test passes\" → Step 4",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "4f71177"
+    }
+  ],
+  "files": [
+    "src/mcp.rs",
+    "src/main.rs",
+    "src/freshness.rs"
+  ],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1781876158352,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 178
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782317836035,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782317925692,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781876158352,
+  "updated_at": 1782317925692,
+  "completed_at": 1782317925692,
+  "edges": []
+}

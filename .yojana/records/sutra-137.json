@@ -1,0 +1,81 @@
+{
+  "id": "019eb263-e95f-7290-ba3b-868cbed3cdf3",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/137",
+  "sequence_number": 137,
+  "title": "Unify change-risk signal gathering into tools::change_signals",
+  "description": "Extract gather(db, changed_paths, churn) -> ChangeSignals from the triplicated implementations in diff_impact.rs, pr_risk.rs, and review.rs (gather_change_stats, gather_affected, behavioral_coupling, build_recommended_reads). ChangeSignals carries per_file, total_blast, max_cognitive, affected_files, affected_symbols. diff_impact becomes a threshold-verdict view (~30 lines), pr_risk a weighted-composite view (~60), review a consumer. Fold tools/scoring.rs constants (BLAST_NORM etc.) into the module.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Created tools::change_signals module with ChangeSignals struct and gather(db, changed_paths, churn) function. Moved BLAST_NORM/COMPLEXITY_NORM/CHURN_NORM/CHURN_WINDOW_DAYS and ChurnMap from scoring.rs. Rewrote diff_impact as thin verdict view (~100 lines, -20 net), pr_risk::compute as thin weighted-composite view (net -1 line), and review::compute to use ChangeSignals (net -77 lines). Deleted ChangeStats, gather_change_stats, gather_affected from review.rs. scoring.rs retains general-purpose utilities (normalize, round3, weighted_score, Signal). All 808 tests pass, clippy clean.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/134",
+      "label": "do after: convention rebuild extraction"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 5"
+    },
+    {
+      "type": "git:commit",
+      "value": "808541d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "tools"
+  ],
+  "history": [
+    {
+      "ts": 1781109352799,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 137
+      }
+    },
+    {
+      "ts": 1781128859484,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781129320920,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, against 2427929):\\n\\nVerdict: needs-attention\\n\\n1. [high] gather() always computes affected files+symbols, but pr_risk never uses them and diff_impact only needs file paths. New unbounded work on callers that didn't pay for it before.\\n\\n2. [medium] diff_impact lost the \\\"complexity data unavailable\\\" sentinel — old code checked Option<i64> max_cognitive, new code checks f.indexed which is a different predicate. Indexed files with null cognitive silently report max_cognitive=0.",
+      "ts": 1781129530168
+    }
+  ],
+  "created_at": 1781109352799,
+  "updated_at": 1781129320920,
+  "completed_at": 1781129320920,
+  "edges": []
+}

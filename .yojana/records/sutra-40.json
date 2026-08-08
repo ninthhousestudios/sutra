@@ -1,0 +1,81 @@
+{
+  "id": "019e6e7d-0cc0-7261-974e-dcc2a577ff35",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/40",
+  "sequence_number": 40,
+  "title": "5b brainstorm: component discovery + vocabulary design",
+  "description": "Brainstorm the component discovery and vocabulary layers using vidhi-brainstorm. Key areas:\n\n- Graph clustering approach (Louvain/Leiden on call/dependency graph) — algorithm choice, stability across edits, performance on real codebases\n- Component identity and lifecycle — how do components survive recomputation? Merge/split/drift tracking. Stable IDs.\n- Component lifecycle state (sketching vs stable) — how this interacts with convention enforcement\n- Semantic anchors — identifying load-bearing types/functions per component via graph centrality\n- Concept density — metric for review prioritization (dense = needs more human attention)\n- Vocabulary layer (L5) — mapping human concepts to code locations: auto-computed labels, human aliases (.sutra/aliases.toml), fuzzy matching via HRR embed-mode vectors\n- Auto-learning from agent sessions — should concept mappings learn automatically or only accept explicit aliases?\n- How components compose with the adapter trait interface from 5a — do language adapters declare component-relevant capabilities?\n- Storage model — components as durable entities (they carry human intent via names, lifecycle state, aliases)\n\nInput: docs/sutra-vision.md (L1 + L5 sections), docs/sutra-architecture.md, phase 4 spike results (if any), 5a decisions\nOutput: shared understanding ready for PRD",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    "Louvain on file-level call/dependency graph with 1/ambiguity weighting. Single-level sufficient. Resolution parameter auto-tuned with human override via .sutra/components.toml. HRR edge reweighting deferred to post-v1.",
+    "Recompute clustering lazily: triggered on first query after staleness detected. Stale when (a) files added/removed, or (b) >10% of inter-file edges changed since last clustering run.",
+    "Components are durable entities (UUID, name, lifecycle, timestamps). component_membership is ephemeral (recomputed from clustering). Reconciliation via Jaccard overlap: >0.6 overlap → match to existing component; no match → create new; no matching cluster → mark dissolved with timestamp.",
+    "Component events (merge, split, drift) are durable and surfaced in review reports. Merge = two components collapsed. Split = one became two. Drift = >30% file shift between components.",
+    "Lifecycle state is per-component (sketching | stable), not per-file. Sketching flattens conventions to informational; constraints still enforced.",
+    "Semantic anchors identified by: high in-degree within component, betweenness centrality, git stability, naming alignment. 3-7 per component. Stored as ephemeral (recomputed from graph metrics). Used for orient (start-here pointers), review (anchor-modified = deeper inspection), drift detection.",
+    "Concept density built in v1. Initial metric from Layer 0 data: (unique symbol kinds × naming stem diversity) / LOC. Richer FCA-based version (unique attribute combinations / total symbols) comes when 5c convention system lands.",
+    "Vocabulary layer (L5): human aliases via .sutra/aliases.toml (highest trust), component names, semantic anchor names, HRR embed-mode fuzzy matching (lowest trust). aliases table is durable.",
+    "No auto-learning from agent sessions in v1. Explicit aliases only. Auto-learning deferred until there's a curation/review UX for proposed mappings.",
+    "Component auto-naming: longest common path prefix of member files, stripped to last segment. Fallback: most-central file's parent directory. Human can rename anytime (durable).",
+    "Dissolved components: kept in DB marked dissolved with timestamp, hidden from normal queries. Aliases pointing at them become orphaned (surfaced in reconciliation report). No silent deletion.",
+    "Adapters provide module_boundary_hints() — tells clustering how much to weight the language's own module structure vs purely structural clustering. Rust mod = strong boundary prior; Python packages = mild hint; C directories = weak signal.",
+    "Storage: components (durable), component_membership (ephemeral), aliases (durable), semantic_anchors (ephemeral), component_events (durable)."
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-architecture.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779970149568,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 40
+      }
+    },
+    {
+      "ts": 1780254833040,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780255324446,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779970149568,
+  "updated_at": 1780255324446,
+  "completed_at": 1780255324446,
+  "arc_id": "019e6e7c-95aa-7602-beb2-12b8f6b2081d",
+  "arc_phase": "brainstorm",
+  "edges": []
+}

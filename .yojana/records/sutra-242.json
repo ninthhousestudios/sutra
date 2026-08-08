@@ -1,0 +1,102 @@
+{
+  "id": "019f4941-24bf-72e0-bb92-bb3d47094112",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/242",
+  "sequence_number": 242,
+  "title": "Wire pattern checks into check::evaluate + surfaces (review, constraints tool, orient)",
+  "description": "Dispatch the patterns.rs pass from BOTH check::evaluate arms (evaluate_dd and evaluate_raw) so review, orient, sutra_constraints violations, and guard get it uniformly. EvalScope handling: SingleFile → that file only if scope-matched; changed-files/workspace → all scope-matched files of the constraint's language.\n\nWaiver partition: pattern findings match constraint_waivers on (constraint_id, file_path, symbol_qualified_name) — a symbol-level waiver suppresses matches inside that symbol only; file-level waiver (null symbol) suppresses whole file. Surfaces: sutra_constraints list shows forbidden_pattern with matched_file_count + waiver counts (dead-constraint warning if scope matches nothing); violations action includes pattern findings with line/snippet; review includes them in constraint_violations with severity-based risk contribution; orient constraints_for_component scope-matches them like other scoped kinds.\n\nReview scans changed files only. violations action scans scope-matched files on demand — do NOT build caching in this slice; note timing in execution_record if slow (cache by (file_hash, constraint_id) is the designed follow-up).\n\nDesign: sutra/221 implementation_plan. Integration tests in tests/review-test.rs + constraints tool tests.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Pattern checks wired into check::evaluate cleanly. Key structural decision: pattern scanning must run BEFORE the early-return-on-empty-edges in both evaluate_dd and evaluate_raw, since patterns are per-file (not edge-based). Both early returns were initially missed, caught by integration tests on first run. Waiver matching updated to support symbol-level granularity for pattern findings — file-level waiver (null symbol) suppresses whole file, symbol-level waiver only suppresses matches inside that symbol. Review compute output was missing line/snippet/enclosing_symbol fields — added to match finding_to_json in constraints tool. orient constraints_for_component already had ForbiddenPattern => true which is correct (scope check at top handles scoped patterns; unscoped patterns apply everywhere). 6 integration tests added covering: evaluate_dd workspace scan, ChangedFiles scope filtering, symbol-level waiver partitioning, review build_findings pattern inclusion, scope-based file filtering, and file-level waiver suppression.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/221",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "41389f3"
+    }
+  ],
+  "files": [
+    "src/constraints/check.rs",
+    "src/tools/constraints.rs",
+    "src/tools/review.rs",
+    "src/tools/orient.rs"
+  ],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1783640433855,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 242
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783685354846,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783686327724,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention → fixed.\\n\\n[high] RawConn pattern scans dropped waivers for files without import edges (src/constraints/check.rs:595-620). `relevant_paths` was derived only from `path_map` (import edges) + external findings. A SingleFile with no resolved imports but with pattern findings never had its waivers loaded. Fix: resolve SingleFile path early and include in relevant_paths. Regression test: `evaluate_raw_pattern_waiver_on_edgeless_file`.\\n\\nFixed in a835d08.\"",
+      "ts": 1783687593320
+    },
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Wiring correct across both evaluate arms. Waiver semantics change (symbol-level matching) is backwards-compatible. Two bugs (edgeless waiver loading, delta reporting) fixed in a835d08. Minor: constraint_coverage for ForbiddenPattern ignores language when counting scope matches.",
+      "ts": 1783693208105
+    }
+  ],
+  "created_at": 1783640433855,
+  "updated_at": 1783686327724,
+  "completed_at": 1783686327724,
+  "arc_id": "019f4940-0dd5-72a2-b954-24e8f9443602",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f4941-9e8d-7413-a2ef-750f27c2fb4c",
+      "edge_type": "depends_on",
+      "source": "sutra/242",
+      "target": "sutra/241",
+      "note": null,
+      "created_at": 1783640465037
+    },
+    {
+      "id": "019f4941-a58b-76c1-a49f-621fbf4a8540",
+      "edge_type": "depends_on",
+      "source": "sutra/244",
+      "target": "sutra/242",
+      "note": null,
+      "created_at": 1783640466827
+    }
+  ]
+}

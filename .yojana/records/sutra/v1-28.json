@@ -1,0 +1,80 @@
+{
+  "id": "019e222a-815e-7a40-adbd-fd2dd4e9b473",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/28",
+  "sequence_number": 28,
+  "title": "Guard binary consolidation",
+  "description": "Guard feature sprawls across 3 locations: src/guard.rs (325 lines), src/bin/guard.rs (5,174 lines — largest file by 4x), and main.rs guard install/uninstall (130 lines).\\n\\nThin the binary by reusing library code. Move install/uninstall logic from main.rs to guard module. Investigate whether the 5k-line binary contains significant duplicated utility code.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Guard-related code consolidated into fewer locations"
+    },
+    {
+      "done": false,
+      "text": "Install/uninstall logic moved out of main.rs"
+    },
+    {
+      "done": false,
+      "text": "Binary reuses library code instead of duplicating"
+    },
+    {
+      "done": false,
+      "text": "Guard functionality unchanged"
+    }
+  ],
+  "decisions": [
+    "Left bin/guard.rs (166 lines) as-is — its raw rusqlite is intentional for hook-path performance, avoiding Db::open() migration overhead"
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "824c92d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-c"
+  ],
+  "history": [
+    {
+      "ts": 1778689671518,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 28
+      }
+    },
+    {
+      "ts": 1778705389677,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778705634716,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689671518,
+  "updated_at": 1778705634716,
+  "completed_at": 1778705634716,
+  "edges": []
+}

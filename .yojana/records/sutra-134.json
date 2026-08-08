@@ -1,0 +1,81 @@
+{
+  "id": "019eb261-307f-7a00-b0e9-d663d24fdd87",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/134",
+  "sequence_number": 134,
+  "title": "Extract convention rebuild from review.rs into conventions::pipeline",
+  "description": "Extract the FCA convention pipeline (attribute extraction, effect enrichment, global+per-component FCA rebuild, dedup, convention upsert, history snapshots, stale-convention deletion, lifecycle proposals, drift recording, template generation) from review.rs::build_findings lines 503-715 into conventions::pipeline::rebuild(db, registry, workspace_root). Call from post_parse_sequence so conventions become parse-fresh like every other derived layer. Review keeps only check/check_inverse of changed symbols against persisted model + convention-waiver partition. build_findings drops from ~500 to ~150 lines.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Extracted FCA convention pipeline from review.rs::build_findings into conventions::pipeline::rebuild, called from post_parse_sequence. New drift_alerts DB table (migration 0036). Convention drift findings merge into health_findings. build_findings reduced from ~360 to ~254 lines (constraint eval + changed-symbol check/check_inverse + waiver partition remain). All 802 tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/133",
+      "label": "do after: constraint eval unification"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 2"
+    },
+    {
+      "type": "git:commit",
+      "value": "8f2fe19"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "conventions"
+  ],
+  "history": [
+    {
+      "ts": 1781109174399,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 134
+      }
+    },
+    {
+      "ts": 1781117840278,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781118623252,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, against 8f2fe19^):\n\nVerdict: needs-attention\n\n1. [high] Zero-symbol rebuild leaves stale conventions persisted (pipeline.rs:106-112) — early return when all_sym_attrs is empty skips delete_stale_conventions, history recording, and orphan template cleanup. Stale conventions persist in DB, review reads them via all_conventions_merged.\n\n2. [high] Convention drift uses stale HRR vectors (pipeline.rs:752-765) — post_parse_sequence calls conventions::pipeline::rebuild before compute_hrr_vectors, but rebuild computes HRR coherence from hrr_vectors table. After a parse that changes symbols, drift is computed against previous parse's vectors.",
+      "ts": 1781118919863
+    }
+  ],
+  "created_at": 1781109174399,
+  "updated_at": 1781118623252,
+  "completed_at": 1781118623252,
+  "edges": []
+}

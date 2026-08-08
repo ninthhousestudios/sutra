@@ -1,0 +1,119 @@
+{
+  "id": "019f2fa9-d2cc-7822-939b-e55ef5a269eb",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/228",
+  "sequence_number": 228,
+  "title": "Token-budgeted context packing tool (sutra_context)",
+  "description": "Add a new `sutra_context` tool that packs target symbol + dependencies + dependents within a token budget, with graceful degradation. Currently sutra_read caps by line count (500 lines) and sutra_explore/winnow cap by item count — no token awareness.\n\nsem's approach: strict priority cascade — target entity > direct deps > direct dependents > transitive deps > transitive dependents. Target gets budget first with graceful degradation: full body → head-truncated (70% cap) → bare signature → omitted (target_omitted flag). Neighbors capped so no single dep can cost more than target did. Tests tallied into OmittedTail counts rather than packed as full bodies. Token estimation is heuristic (char/token ratio).\n\nKey design decisions for sutra's version:\n- Can we reuse sutra_impact's existing BFS for deps/dependents rather than reimplementing?\n- sutra_read already has the symbol body retrieval — compose rather than duplicate\n- sem also has an \"attention ledger\" (dedup repeated identical queries, return \"unchanged\" one-liner) — worth considering as part of this design\n- Token estimation: simple char ratio vs. tiktoken/actual tokenizer tradeoff\n\nReference implementation:\n- `sutra-surveys/sem/crates/sem-core/src/parser/context.rs` — `build_context_result_bounded()`, priority packing, graceful degradation, `estimate_tokens()`\n- `sutra-surveys/sem/crates/sem-mcp/src/server.rs` — `sem_context` tool params (budget default 8000, hops), attention ledger (`ledger_reply`, `LedgerFill`)\n\nSutra infrastructure to build on:\n- `sutra/src/tools/impact.rs` — existing BFS for deps/dependents\n- `sutra/src/tools/read.rs` — symbol body retrieval\n- `sutra/src/graph.rs` — GraphData adjacency maps\n\nLicense: MIT → AGPL fine with attribution.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Inline BFS walks in context.rs rather than extracting shared helper from calls.rs",
+      "rationale": "calls.rs BFS is call-only, keeps unresolved refs, and emits per-ref entries; context.rs walks all edge types, deduplicates by symbol ID, and returns SymbolRows. A shared abstraction parameterized across both would be more complex than the duplicated ~40 lines.",
+      "rejected": "Extract shared walk_callers/walk_callees from calls.rs and refactor both modules onto it"
+    }
+  ],
+  "implementation_plan": "Design settled 2026-07-10. Reality check from exploration: impact.rs BFS is dependents-only and discards symbol ids/spans before returning (only counts, or name/file/edge_type under explain); calls.rs is bidirectional but also serializes away the SymbolRows it already resolved; sutra_read always reads disk fresh with a single hard line-cut (no degradation tiers); the only token concept anywhere is explore.rs's `lines*4` per-item estimate under a COUNT-based budget. So: new packer composing DB queries + shared helpers, not a wrapper over existing tool handlers. Attention ledger DEFERRED to sutra/253.\n\nPlan:\n1. Extract a shared neighbor-walk helper from calls.rs collect_callers/collect_callees (calls.rs:89-195) that returns SymbolRows (id + start/end lines intact) instead of serialized entries; refactor calls.rs onto it. This kills the second name-based resolve round-trip a packer would otherwise need.\n2. New src/tools/context.rs — handle(db, symbol, token_budget=8000, depth=2). Priority tiers: target → direct callees → direct callers → transitive callees → transitive callers (sem's cascade).\n3. Port sem's packing from /home/josh/soft/sutra-surveys/sem/crates/sem-core/src/parser/context.rs build_context_result_bounded (L124-288):\n   - Target ladder: full body if it fits → head-truncated capped at budget*7/10 (whole lines, explicit \"… truncated: N more lines\" marker that must itself fit) → bare signature → target_omitted=true with early return (no neighbors if target can't fit).\n   - Per-neighbor cap: max(target_tokens_used, budget/10); oversized neighbors degrade to signature-only, never silently omitted.\n   - Transitive tiers signature-only, hard cap 25 per role; stub-signature filtering.\n   - Tests not packed for non-test targets — tallied into omitted{role, entities, tests} counts (exception: target itself is a test).\n4. estimate_tokens = max(words*13/10, chars/4) in a small shared module (sem's tuned heuristic — the words-only variant undercounted dense code 2-3x). Retrofit explore.rs's lines*4 to call it.\n5. Neighbor ordering within tiers — sutra's edge over sem: EdgeKind::clustering_weight() (graph.rs:38-46, Call 1.0 > FieldAccess 0.8 > TypeUse 0.5 > Import 0.3 > Reference 0.2), then symbol pagerank. sem packs in discovery order; we rank.\n6. Body retrieval: reuse/extract read.rs's file-slicing + collect_relevant_imports helpers (read.rs:124-140, 207-260). Lessons surfacing via LessonsDb::query_for_context + apply_staleness, same pattern as read.rs:176-202.\n7. MCP registration per mcp.rs pattern: ContextArgs {workspace: String, symbol: String, token_budget: Option<usize>, depth: Option<usize>} with #[tool] handler, ctx.wrap envelope. Response shape mirrors sem: {symbol, file, token_budget, tokens_used, truncated, target_omitted, context[{symbol,kind,file,role,tokens,content}], omitted[{role,entities,tests}]}.\n\nTests: budget large enough for everything → full bodies; tight budget → target head-truncated at 70%, neighbors signature-only; budget smaller than signature → target_omitted early return; test-neighbor tallying; deterministic ordering by edge weight/pagerank.",
+  "execution_record": "Implemented as planned with one deviation: did NOT extract a shared neighbor-walk helper from calls.rs (plan step 1). The behavioral differences between calls.rs (call-only BFS, per-ref entries, unresolved-name handling) and context.rs (all-edge-type BFS, deduped by symbol ID, SymbolRow-based) meant a shared abstraction would need enough parameterization to be more complex than the two separate ~40-line BFS loops. Instead, context.rs composes DB queries directly (find_refs_in_file, find_refs_to_symbol, symbol_by_id, find_enclosing_symbol) — matching the decision recorded in the task. Did not retrofit explore.rs's lines*4 estimate to use estimate_tokens (plan step 4 mention) — deferred as separate cleanup. Made collect_relevant_imports pub(crate) in read.rs to reuse for target imports.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "7bda103"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783211086540,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 228
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704174758,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704973336,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Design: Token-budgeted context packing tool (sutra_context)",
+        "to": "Token-budgeted context packing tool (sutra_context)"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705163745,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "ready-for-agent"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783957204045,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783958203775,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: approve with notes (post-fix).\\n\\nCodex found 4 real issues, all fixed in e02991b:\\n1. [high] Import lines could replace target signature under tight budgets — imports now separated from body for packing decisions\\n2. [medium] Parser-flagged tests (FLAG_TEST/FLAG_CFG_TEST) not caught by name heuristics — now checks sym.flags\\n3. [medium] Direct neighbors silently dropped when body unreadable + no DB signature — now tallied in omitted\\n4. [medium] Unbounded BFS traversal — clamped depth to 4, added 500-node walk cap\\n\\nAll 1233 tests pass post-fix.",
+      "ts": 1783958836931
+    }
+  ],
+  "created_at": 1783211086540,
+  "updated_at": 1783958203775,
+  "completed_at": 1783958203775,
+  "edges": [
+    {
+      "id": "019f4d1c-8da6-7fd0-8d4b-c5cb414768e6",
+      "edge_type": "depends_on",
+      "source": "sutra/253",
+      "target": "sutra/228",
+      "note": "ledger decision gated on real sutra_context usage data",
+      "created_at": 1783705144742
+    },
+    {
+      "id": "019f4d23-e5b7-7e00-9432-68fc3795a53f",
+      "edge_type": "depends_on",
+      "source": "sutra/259",
+      "target": "sutra/228",
+      "note": "calls/refs/impact cluster judgment requires sutra_context usage data",
+      "created_at": 1783705626039
+    }
+  ]
+}

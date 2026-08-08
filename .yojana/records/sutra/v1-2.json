@@ -1,0 +1,93 @@
+{
+  "id": "019e1438-4119-79f0-bdd7-c923d4248803",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/2",
+  "sequence_number": 2,
+  "title": "Spike: differential dataflow for structured reasoning",
+  "description": "Evaluate differential dataflow as Sutra's structured reasoning backbone. Port deps, impact, and co-change analyses into differential dataflow computations. Test incremental update latency, architectural constraints as maintained views, and temporal queries.\n\nKey question: can differential dataflow replace Sutra's ad-hoc graph analyses with a unified, automatically incremental, temporally aware reasoning engine?",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "3 core analyses ported and producing identical results to current impl"
+    },
+    {
+      "done": false,
+      "text": "Incremental update < 100ms for single-file change on 1K-function codebase"
+    },
+    {
+      "done": false,
+      "text": "At least 2 architectural constraints expressed as maintained views"
+    },
+    {
+      "done": false,
+      "text": "Temporal query demonstrated"
+    },
+    {
+      "done": false,
+      "text": "LOC comparison and ergonomics assessment written"
+    },
+    {
+      "done": false,
+      "text": "Written verdict: viable / viable with caveats / not viable"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Phase 1: Scaffolding — dd deps, spike binary, input collections from SQLite\\nPhase 2: Deps in DD — BFS reachability via iterate\\nPhase 3: Impact in DD — symbol-level transitive closure\\nPhase 4: Co-change in DD — self-join on commit\\nPhase 5: Incremental update benchmark (<100ms target)\\nPhase 6: Architectural constraints as maintained views (>=2)\\nPhase 7: Temporal query demo\\nPhase 8: Pagerank in DD\\nPhase 9: Write-up and verdict\\n\\nTest codebases: sutra itself (~955 symbols), redox-kernel, linux/kernel",
+  "execution_record": "Verdict: viable with caveats.\\n\\n3/3 analyses ported (deps exact match, impact superset, co-change 69/69 match).\\nIncremental: 19us simple views, 59us transitive reachability (well under 100ms).\\n2 constraints: cycle detection (49 files in cycles), forbidden deps.\\nTemporal: demonstrated multi-epoch fan-in queries.\\nPageRank: doesn't fit DD's monotone iterate — keep current impl.\\n\\nRecommendation: use DD for maintained views (cycles, constraints, rollups),\\nkeep imperative code for one-shot parameterized queries.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/v1-spikes/differential-dataflow.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "af852d8"
+    }
+  ],
+  "files": [
+    "src/bin/dd-spike.rs",
+    "docs/v1-spikes/differential-dataflow.md"
+  ],
+  "tags": [
+    "spike",
+    "differential-dataflow",
+    "p1"
+  ],
+  "history": [
+    {
+      "ts": 1778455691545,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 2
+      }
+    },
+    {
+      "ts": 1778503670975,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778505448795,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778455691545,
+  "updated_at": 1778505448795,
+  "completed_at": 1778505448795,
+  "edges": []
+}

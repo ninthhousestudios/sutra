@@ -1,0 +1,120 @@
+{
+  "id": "019e92b1-f7c8-76f3-8980-2a59c20f3f8d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/93",
+  "sequence_number": 93,
+  "title": "5e-8: semantic diff for review",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nSemantic diff using HRR vectors — detect when a small text change causes a large structural shape change. Four-quadrant classification model:\\n\\n| | Small HRR Δ | Large HRR Δ |\\n|---|---|---|\\n| Small text Δ | Trivial | **Subtle structural change — flag** |\\n| Large text Δ | Safe refactoring | Major rewrite (expected) |\\n\\n- similarity/diff.rs: compare before/after strip vectors (cosine similarity) against text diff size (lines changed). Classify into quadrants. Emit hrr_shape_change HealthFinding for the top-right quadrant (small text, large structural).\\n- Review integration: hrr_shape_change findings appear in sutra_review output.\\n- \\\"Before\\\" vectors: from the previous parse or from git (parse the pre-change version of modified files).\\n\\n## Acceptance criteria\\n\\n- [ ] similarity/diff.rs with four-quadrant classification\\n- [ ] hrr_shape_change finding emitted for subtle structural changes (small text Δ + large HRR Δ)\\n- [ ] Configurable thresholds for text-Δ and HRR-Δ boundaries\\n- [ ] Integrated into sutra_review output\\n- [ ] Tests: quadrant classification correctness — given vector pairs and text diff sizes, verify correct quadrant selection and finding emission\\n\\n## Blocked by\\n\\n- sutra/84 (5e-1: health finding model)\\n- sutra/88 (5e-4: HRR encoder)\\n- sutra/92 (5e-review-2: checkpoint 2 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "1. git_file_content_at in src/git.rs — retrieves old file content via git show\\n2. src/similarity/diff.rs — core module: ShapeChangeConfig, DiffQuadrant, detect_shape_changes, shape_changes_to_findings\\n3. Integration in src/tools/review.rs — extracts base revision, calls shape detection, adds hrr_shape_changes to output JSON\\n4. 8 unit tests passing (quadrant classification, text delta, finding conversion)",
+  "execution_record": "Pipeline verified end-to-end:\\n- git_file_content_at correctly retrieves old source\\n- extract_functions finds function nodes in tree-sitter trees\\n- HRR strip vectors computed and compared via cosine_similarity\\n- Four-quadrant classification works correctly\\n- Review integration: hrr_shape_changes JSON section emitted for SubtleStructural findings\\n- Live test with permissive thresholds confirmed full pipeline: 7 functions detected in search.rs, find_similar classified as subtle_structural (text=0.759, hrr=0.126)\\n\\nCalibration note: default thresholds (text≤0.15, hrr≥0.40) are conservative. Whole-function HRR comparison dilutes small changes (1 line in 15 → hrr_delta=0.035). May need threshold tuning or sub-function comparison in a follow-up.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "add53bb",
+      "label": "HRR size normalization (sutra/100)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780577597384,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 93
+      }
+    },
+    {
+      "ts": 1780664255342,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780664873004,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780664997843,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780684047796,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577597384,
+  "updated_at": 1780684047796,
+  "completed_at": 1780684047796,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b3-0887-7bb0-90db-d28cc9d1668d",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577667207
+    },
+    {
+      "id": "019e92b3-0af1-7fa3-b398-0aee973a192f",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577667825
+    },
+    {
+      "id": "019e92b3-0db9-7ec0-bc22-2b109e3fe422",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577668537
+    },
+    {
+      "id": "019e92b3-366a-7f92-a14d-ac96823af1b4",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/93",
+      "note": null,
+      "created_at": 1780577678954
+    },
+    {
+      "id": "019e92b3-5087-7dc0-88d6-9bee09e66a88",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/93",
+      "note": null,
+      "created_at": 1780577685639
+    }
+  ]
+}

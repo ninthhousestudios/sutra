@@ -1,0 +1,113 @@
+{
+  "id": "019e222a-2750-7351-9550-ad8437a6ea35",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/24",
+  "sequence_number": 24,
+  "title": "Daemon-resident DD engine with incremental updates",
+  "description": "DD engine is created and destroyed on every sutra_review call. PRD specifies lazy-populated, daemon-resident DD with incremental updates and idle eviction.\\n\\nHold Option<DdEngine> per workspace in daemon state. Ingest on first DD query, update on incremental parse, evict after dd_idle_timeout_sec (config field already exists but is dead). Review compositor borrows shared engine.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "DD engine persists across sutra_review calls for the same workspace"
+    },
+    {
+      "done": false,
+      "text": "Incremental parse triggers engine.update() with delta edges"
+    },
+    {
+      "done": false,
+      "text": "Engine evicted after dd_idle_timeout_sec idle period"
+    },
+    {
+      "done": false,
+      "text": "dd_idle_timeout_sec config field is wired up"
+    },
+    {
+      "done": false,
+      "text": "Review results identical to per-call creation"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "390462c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-b"
+  ],
+  "history": [
+    {
+      "ts": 1778689648464,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 24
+      }
+    },
+    {
+      "ts": 1778691154720,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778691843479,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (c480f64..390462c):\n\nVerdict: needs-attention\n\n[high] Shared DD engine can ignore fresh DB edges after concurrent reparse (src/tools/review.rs:120-128). build_findings reads current db.import_edges() but when shared engine is already loaded it discards those edges and queries old in-memory graph. Reparse invalidation removes map entry but can't invalidate Arc<DdEngine> already handed to in-flight sutra_review. Violates requirement that shared-engine results remain identical to per-call creation.\n\n[medium] Idle eviction leaves cached engine resident indefinitely (src/daemon.rs:278-285). Scheduler logs eviction when evict_if_idle() returns true but never removes the map entry. DdEngine::evict_if_idle preserves the full edge list (Warm->Loaded), and Loaded engines are never eligible for eviction. dd_idle_timeout_sec does not bound daemon memory as required.\n\nRecommendation: On idle timeout, remove workspace entry from dd_engines or add true unload state. Add test that daemon cache drops idle workspace after configured timeout.",
+      "ts": 1778692343886
+    }
+  ],
+  "created_at": 1778689648464,
+  "updated_at": 1778691843479,
+  "completed_at": 1778691843479,
+  "edges": [
+    {
+      "id": "019e222a-cab1-7872-860a-779c626f9678",
+      "edge_type": "relates_to",
+      "source": "sutra/v1/24",
+      "target": "sutra/v1/20",
+      "note": "Wave B relates to Wave A",
+      "created_at": 1778689690289
+    },
+    {
+      "id": "019e222a-d4e7-7ad1-b0f5-5d66f49bbb6c",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/29",
+      "target": "sutra/v1/24",
+      "note": "DD accumulator hardening builds on daemon-resident DD",
+      "created_at": 1778689692903
+    },
+    {
+      "id": "019e2254-e2c3-7760-9124-b08575004f02",
+      "edge_type": "motivated_by",
+      "source": "sutra/v1/30",
+      "target": "sutra/v1/24",
+      "note": "Codex review finding on shared DD engine",
+      "created_at": 1778692448963
+    }
+  ]
+}

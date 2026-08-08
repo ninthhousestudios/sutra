@@ -1,0 +1,110 @@
+{
+  "id": "019ed23c-9cf0-7813-9897-1280db8553f1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/175",
+  "sequence_number": 175,
+  "title": "5x-review-2: review complete sutra_explore feature",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to review\n\nAll sutra_explore features are complete after slices sutra/172, sutra/173, sutra/174. Review:\n\n- Structural ranking: do high fan-in definitions surface above low-importance references?\n- Adaptive fan-out: does depth adapt correctly to hit density? Do fan-out items add useful context without noise?\n- Strategy hints: are the 5 rules actionable? Does narrow_query give useful refinement suggestions?\n- Pattern expansion: do CamelCase and qualified-name fallthrough work correctly?\n- End-to-end: run sutra_explore on 3-5 real topics of varying breadth. Does the response give a main agent enough context to skip spawning a subagent?\n- Token economy: measure response sizes. Are they in the ~600-800 token range for budget=10?\n\n## Acceptance criteria\n\n- [ ] Ranking quality verified on real queries\n- [ ] Fan-out depth adapts correctly for narrow vs broad queries\n- [ ] Strategy hints are actionable across query types\n- [ ] Response sizes within expected range\n- [ ] Full PRD spec compliance verified\n\n## Blocked by\n\n- sutra/174",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Ranking quality verified on real queries"
+    },
+    {
+      "done": false,
+      "text": "Fan-out depth adapts correctly for narrow vs broad queries"
+    },
+    {
+      "done": false,
+      "text": "Strategy hints are actionable across query types"
+    },
+    {
+      "done": false,
+      "text": "Response sizes within expected range"
+    },
+    {
+      "done": false,
+      "text": "Full PRD spec compliance verified"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Review + tend completed in one pass. Codex adversarial review dispatched first (2 findings, both incorrect — fan-out displacement is by-design score decay, strategy action matches PRD spec). Inline review found 3 low-severity slop items (redundant sort, side-effectful map, no-op .max(2)), all fixed. 8 live queries verified ranking, strategy hints, fan-out, token economy, and qualified-name fallthrough. Governance tend: 2 new explore isolation constraints, 15 tautological convention proposals dismissed, enforcement ledger backfilled from rules.toml provenance. manas-instructions.md updated with sutra_explore usage note (uncommitted in manas-cli repo).\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "99a7bf5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1781643648240,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 175
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781655485145,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781655489548,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. All 5 acceptance criteria pass — ranking quality verified on 8 live queries, fan-out adapts correctly (depth 0/1/2 thresholds verified via unit + integration tests), strategy hints are actionable across all query types, response sizes within ~500-700 token range, full PRD spec compliance. Three low-severity slop findings (redundant first sort, side-effectful map for counting, redundant .max(2) floor). No correctness issues. Codex review surfaced 2 findings, both assessed as incorrect against the PRD spec.",
+      "ts": 1781655140284
+    },
+    {
+      "author": "codex",
+      "text": "Codex review:\\nVerdict: needs-attention\\n\\nFinding 1 (high): Fan-out results can displace direct matches under tight budgets (src/tools/explore.rs:411-420). After scoring, fan-out items are merged and globally sorted, so a fan-out from a strong parent can outrank weaker direct hits.\\nRecommendation: Preserve direct matches ahead of fan-out when applying budget.\\n\\nFinding 2 (medium): Dominant-top strategy returns read_top_n with n=1 instead of read_top_1.\\nRecommendation: Return action read_top_1.\\n\\nAssessment: Both findings incorrect. Finding 1 — score decay is the designed mechanism per PRD; no mandate that direct matches always outrank fan-out. Finding 2 — PRD specifies 'read_top_n, n=1', not 'read_top_1'.",
+      "ts": 1781655145579
+    }
+  ],
+  "created_at": 1781643648240,
+  "updated_at": 1781655489548,
+  "completed_at": 1781655489548,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "review",
+  "edges": [
+    {
+      "id": "019ed23c-be69-7933-b08f-af31138b5283",
+      "edge_type": "depends_on",
+      "source": "sutra/175",
+      "target": "sutra/174",
+      "note": null,
+      "created_at": 1781643656809
+    }
+  ]
+}

@@ -1,0 +1,196 @@
+{
+  "id": "019e9a93-6963-7ac2-8f79-7cc5e1dd6c6c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/115",
+  "sequence_number": 115,
+  "title": "C language adapter",
+  "description": "Add C language support via tree-sitter-c. See docs/adding-languages.md for the full sketch.\n\nKey work:\n- Parser: functions, structs, enums, typedefs, macros, global variables\n- Import resolution: #include directives — resolve relative and project-root-relative, system includes as unresolved external edges\n- Complexity: add \"c\" branches to classify_cognitive\n- FCA attributes: returns_ptr, takes_ptr, is_static, is_inline, is_variadic, has_const, returns_void\n- Effect patterns: heap (malloc/free), fs (fopen/fwrite), net (socket/connect), io (printf)\n- Flags: test file heuristics, __attribute__ for FFI\n- Module boundary strength: Weak\n\nEstimated effort: ~5 days. Validates the adapter interface on a third language.\n\nRisks: header file indexing strategy (index .h as peers or .c only?), preprocessor conditionals invisible to tree-sitter, forward declaration deduplication.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "CAdapter implements LanguageAdapter with language_id \"c\", extensions [\"c\", \"h\"]"
+    },
+    {
+      "done": false,
+      "text": "Parser extracts functions, structs, enums, typedefs, function-like macros (Macro), value macros (Const with header-guard filtering), and global variables"
+    },
+    {
+      "done": false,
+      "text": "Visibility: static → private, else → pub"
+    },
+    {
+      "done": false,
+      "text": "Signatures extracted for functions: return_type name(params)"
+    },
+    {
+      "done": false,
+      "text": "Docstrings extracted from preceding block/line comments"
+    },
+    {
+      "done": false,
+      "text": "References classified: call_expression→Call, field_expression→FieldAccess, type_identifier in param/return→TypeUse, struct initializer→Construction"
+    },
+    {
+      "done": false,
+      "text": "#include directives produce ExtractedImport with raw_path preserving quotes/angles"
+    },
+    {
+      "done": false,
+      "text": "resolve_c_imports resolves quoted includes (relative + project-root-relative) and compile_commands.json -I paths; angle-bracket includes stored as unresolved external edges"
+    },
+    {
+      "done": false,
+      "text": "compile_commands.json parsed for -I/-isystem paths when present"
+    },
+    {
+      "done": false,
+      "text": "classify_cognitive and walk_cyclomatic have \"c\" branches covering if/for/while/do/switch/case/goto and logical operators"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource implemented with returns_ptr, takes_ptr, is_static, is_inline, is_variadic, has_const, returns_void, has_struct_param"
+    },
+    {
+      "done": false,
+      "text": "C_EFFECT_PATTERNS covers heap (malloc/free), fs (fopen/fwrite), net (socket/connect), io (printf/puts)"
+    },
+    {
+      "done": false,
+      "text": "module_boundary_hints returns Weak"
+    },
+    {
+      "done": false,
+      "text": "CAdapter registered in default_registry"
+    },
+    {
+      "done": false,
+      "text": "Test file heuristics: *_test.c, test_*.c, tests/*.c; function test_* in test files flagged"
+    },
+    {
+      "done": false,
+      "text": "__attribute__ entries flagged as FFI entry points"
+    },
+    {
+      "done": false,
+      "text": "All existing tests pass (cargo test)"
+    },
+    {
+      "done": false,
+      "text": "Smoke parse test, symbol extraction test, reference classification test, import edge test, and complexity test for C adapter"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Index both .c and .h files",
+      "rationale": "C's public API lives almost entirely in headers — structs, enums, typedefs, macros. Indexing .c only would make most of a project's API invisible to sutra.",
+      "rejected_alternative": ".c only — avoids forward declaration duplicates but loses all header-only symbols"
+    },
+    {
+      "decision": "Accept forward declaration duplicates, let resolver handle via confidence scoring",
+      "rationale": "Least invasive approach; existing resolver already handles same-name symbols across files. Forward declarations naturally lack bodies, giving downstream tools enough signal to deprioritize them.",
+      "rejected_alternative": "Dedup at DB insert time — would require a new post-insert pass in post_parse_sequence"
+    },
+    {
+      "decision": "Store all #include directives as imports including system headers",
+      "rationale": "Consistency with Rust's treatment of std:: imports. System includes become unresolved external edges, available to constraint checking.",
+      "rejected_alternative": "Filter system includes at parse time — less DB noise but loses dependency information"
+    },
+    {
+      "decision": "Filter header guard #defines at parse time",
+      "rationale": "Header guards (_H, _H_, _INCLUDED suffixes) are noise in symbol tables. Value and function-like macros are worth indexing for sutra_grep discovery.",
+      "rejected_alternative": "Index all #defines — simple but pollutes symbol tables with meaningless guards"
+    },
+    {
+      "decision": "Include compile_commands.json support in initial implementation",
+      "rationale": "Determines how many include paths resolve successfully. The format is simple JSON; parsing -I/-isystem flags from the command field is straightforward.",
+      "rejected_alternative": "Defer to follow-up — simpler initial scope but many includes would stay unresolved"
+    }
+  ],
+  "implementation_plan": "# C Language Adapter — Implementation Plan\n\n## Approach\n\nAdd a C language adapter following the established Rust/Dart pattern: a parser module (`src/parser/c.rs`), an adapter struct with FCA support in `adapter.rs`, an import resolver (`src/c_imports.rs`), and complexity branches. The parser walks tree-sitter-c AST nodes for functions, structs, enums, typedefs, macros, and global variables. Import resolution handles `#include` directives with relative, project-root-relative, and `compile_commands.json` `-I` path resolution. System includes (`<...>`) are stored as unresolved external edges.\n\n## Files\n\n- **Create**: `src/parser/c.rs` — C parser: symbol extraction, reference classification, import collection, signatures, docstrings, flags, language_attrs\n- **Create**: `src/c_imports.rs` — `resolve_c_imports`: quoted include resolution (relative, project-root, compile_commands.json -I paths)\n- **Modify**: `src/parser/adapter.rs` — `CAdapter` struct, `LanguageAdapter` impl, `FcaAttributeSource` impl, `C_EFFECT_PATTERNS`, register in `default_registry()`\n- **Modify**: `src/parser/complexity.rs` — add `\"c\"` branches to `classify_cognitive` (lines 126-147) and `walk_cyclomatic` (lines 11-52)\n- **Modify**: `src/parser/mod.rs` — add `pub mod c;`\n- **Modify**: `src/lib.rs` — add `pub mod c_imports;`\n- **Modify**: `src/pipeline.rs` — wire `resolve_c_imports` into `post_parse_sequence` (after line 568)\n- **Modify**: `Cargo.toml` — add `tree-sitter-c` dependency\n- **Create**: `tests/parse_c_test.rs` — smoke parse, symbol extraction, reference classification, import edges, complexity tests\n\n## Steps\n\n### Step 1: Add tree-sitter-c dependency\n\nAdd `tree-sitter-c` to `Cargo.toml` dependencies, matching the pattern of existing tree-sitter crates.\n\n```toml\ntree-sitter-c = \"0.23\"  # match version style of tree-sitter-rust\n```\n\n### Step 2: Create C parser module (`src/parser/c.rs`)\n\nCore parse function following `rust::parse` pattern. Key functions:\n\n```rust\npub fn parse(ctx: &ParseContext) -> Result<ParseResult> {\n    let symbols = collect_symbols(ctx.tree.root_node(), ctx.source, ctx.file_path);\n    let references = collect_references(ctx.tree.root_node(), ctx.source);\n    let imports = collect_includes(ctx.tree.root_node(), ctx.source);\n    Ok(ParseResult {\n        file_path: ctx.file_path.to_string(),\n        language: \"c\".into(),\n        symbols, references, imports,\n        parsed_ok: true,\n        line_count: ctx.source.iter().filter(|&&b| b == b'\\n').count(),\n    })\n}\n```\n\n**Symbol extraction** (`collect_symbols`):\n- Walk tree-sitter nodes, match on `function_definition` → Function, `struct_specifier` (with body) → Struct, `enum_specifier` (with body) → Enum, `type_definition` → TypeAlias, `preproc_function_def` → Macro, `preproc_def` → Const (with header guard filter), top-level `declaration` with non-function type → Static/Const\n- Visibility: check for `static` storage class → \"private\", else → \"pub\"\n- Qualified names: just `short_name` (C has no namespaces)\n- Signatures: `return_type function_name(param_type param, ...)` from declarator nodes\n- Docstrings: preceding `comment` siblings (`/* */` or `//`)\n- Complexity: call `complexity::cyclomatic`, `complexity::cognitive`, `complexity::max_nesting_depth` for function bodies\n- Flags: test heuristics (file pattern + function name `test_*`), `__attribute__` → FFI entry\n- `language_attrs` JSON: `{\"returns_ptr\": bool, \"takes_ptr\": bool, \"is_static\": bool, \"is_inline\": bool, \"is_variadic\": bool, \"has_const\": bool, \"returns_void\": bool, \"has_struct_param\": bool}`\n\nHeader guard filter for `preproc_def`:\n```rust\nfn is_header_guard(name: &str) -> bool {\n    name.ends_with(\"_H\") || name.ends_with(\"_H_\") || name.ends_with(\"_INCLUDED\")\n        || name.ends_with(\"_INCLUDED_\")\n}\n```\n\n**Reference extraction** (`collect_references`):\n- Walk all `identifier` and `type_identifier` nodes that aren't definition names\n- `classify_ref_context`: parent `call_expression` → Call, parent `field_expression` → FieldAccess, `type_identifier` in parameter/return → TypeUse, `struct_specifier` in initializer → Construction, else → Other\n\n**Import extraction** (`collect_includes`):\n- Walk `preproc_include` nodes\n- Extract the path from the `string_literal` or `system_lib_string` child\n- Store raw path including delimiters (`\"foo.h\"` or `<stdio.h>`) in `ExtractedImport::raw_path`\n\n### Step 3: Add complexity branches\n\nIn `src/parser/complexity.rs`:\n\n```rust\n// classify_cognitive — add before the _ => fallback\n\"c\" => match kind {\n    \"if_statement\" => (true, true),\n    \"while_statement\" | \"for_statement\" | \"do_statement\" => (true, true),\n    \"switch_statement\" => (true, false),\n    \"case_statement\" | \"goto_statement\" => (true, false),\n    _ => (false, false),\n},\n\n// walk_cyclomatic — add before the _ => {} fallback\n\"c\" => match kind {\n    \"if_statement\" | \"while_statement\" | \"for_statement\" | \"do_statement\" => {\n        *count += 1;\n    }\n    \"case_statement\" => {\n        *count += 1;\n    }\n    \"switch_statement\" => {\n        *count = count.saturating_sub(1);\n    }\n    \"binary_expression\" if is_logical_operator(node, src) => {\n        *count += 1;\n    }\n    \"goto_statement\" => {\n        *count += 1;\n    }\n    _ => {}\n},\n```\n\n### Step 4: Add CAdapter to adapter.rs\n\n```rust\npub struct CAdapter;\n\nimpl LanguageAdapter for CAdapter {\n    fn language_id(&self) -> &str { \"c\" }\n    fn extensions(&self) -> &[&str] { &[\"c\", \"h\"] }\n    fn grammar(&self) -> Language { tree_sitter_c::LANGUAGE.into() }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {\n        super::c::parse(ctx)\n    }\n    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> { Some(self) }\n    fn module_boundary_hints(&self) -> ModuleBoundaryStrength {\n        ModuleBoundaryStrength::Weak\n    }\n}\n\nconst C_EFFECT_PATTERNS: &[EffectPattern] = &[\n    EffectPattern { attr_name: \"effect:heap\", callee_prefixes: &[\"malloc\", \"calloc\", \"realloc\", \"free\"] },\n    EffectPattern { attr_name: \"effect:fs\", callee_prefixes: &[\"fopen\", \"fclose\", \"fread\", \"fwrite\", \"fprintf\"] },\n    EffectPattern { attr_name: \"effect:net\", callee_prefixes: &[\"socket\", \"connect\", \"send\", \"recv\"] },\n    EffectPattern { attr_name: \"effect:io\", callee_prefixes: &[\"printf\", \"puts\", \"fputs\"] },\n];\n\nimpl FcaAttributeSource for CAdapter {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n        let mut sa = extract_cross_language_attrs(sym, file_path)?;\n        // Same pattern as RustAdapter — read booleans from language_attrs JSON\n        if let Some(ref la_json) = sym.language_attrs {\n            if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {\n                for (key, val) in &map {\n                    if val.as_bool() == Some(true) {\n                        sa.attributes.push(key.clone());\n                    }\n                }\n            }\n        }\n        Some(sa)\n    }\n    fn effect_patterns(&self) -> &[EffectPattern] { C_EFFECT_PATTERNS }\n}\n```\n\nRegister in `default_registry()`:\n```rust\nr.register(Box::new(CAdapter));\n```\n\n### Step 5: Create import resolver (`src/c_imports.rs`)\n\n```rust\npub fn resolve_c_imports(db: &Db, workspace_root: &Path) -> Result<usize> {\n    let unresolved = db.unresolved_c_imports()?;\n    if unresolved.is_empty() { return Ok(0); }\n\n    let all_files = db.all_files()?;\n    let path_to_id: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();\n    let id_to_path: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();\n\n    let extra_include_dirs = parse_compile_commands(workspace_root);\n\n    let mut updates = Vec::new();\n    for (import_id, file_id, raw_path) in &unresolved {\n        if raw_path.starts_with('<') { continue; } // system include — stays unresolved\n\n        let include_path = raw_path.trim_matches('\"');\n        let resolved = resolve_c_include(\n            include_path, *file_id, &id_to_path, &path_to_id,\n            workspace_root, &extra_include_dirs,\n        );\n        if let Some(target_id) = resolved && target_id != *file_id {\n            updates.push((*import_id, target_id));\n        }\n    }\n    let count = updates.len();\n    db.batch_update_import_resolved_file_ids(&updates)?;\n    Ok(count)\n}\n```\n\nResolution order for quoted includes:\n1. Relative to the including file's directory\n2. Relative to workspace root\n3. Each `-I`/`-isystem` path from `compile_commands.json`\n\n`parse_compile_commands`:\n```rust\nfn parse_compile_commands(workspace_root: &Path) -> Vec<PathBuf> {\n    let path = workspace_root.join(\"compile_commands.json\");\n    // Parse JSON array, extract -I and -isystem arguments from \"command\"/\"arguments\" fields\n    // Deduplicate, return as absolute paths resolved against workspace_root\n}\n```\n\n### Step 6: Wire into pipeline and module declarations\n\n- `src/parser/mod.rs`: add `pub mod c;`\n- `src/lib.rs`: add `pub mod c_imports;`\n- `src/pipeline.rs` `post_parse_sequence`: add after Rust import resolution block:\n```rust\nlet c_resolved = crate::c_imports::resolve_c_imports(db, workspace_root)?;\nif c_resolved > 0 {\n    info!(count = c_resolved, \"resolved C import edges\");\n}\n```\n\n### Step 7: Add `unresolved_c_imports` to DB\n\nIn `src/db/mod.rs`, add query method matching `unresolved_rust_imports` pattern:\n```rust\npub fn unresolved_c_imports(&self) -> Result<Vec<(i64, i64, String)>> {\n    // SELECT i.id, i.file_id, i.imported_path FROM imports i\n    // JOIN files f ON f.id = i.file_id\n    // WHERE i.resolved_file_id IS NULL AND f.language = 'c'\n}\n```\n\n### Step 8: Tests\n\nCreate `tests/parse_c_test.rs`:\n\n- **Smoke parse**: parse a simple C file with a function, verify ParseResult has symbols and parsed_ok\n- **Symbol extraction**: file with function, struct, enum, typedef, macro, const define, global var — verify all kinds extracted with correct qualified names, visibility, signatures\n- **Header guard filtering**: verify `#define FOO_H` is excluded, `#define MAX_SIZE 1024` is included\n- **Reference classification**: call expression → Call, field access → FieldAccess, type use → TypeUse\n- **Import edges**: `#include \"foo.h\"` and `#include <stdio.h>` both produce ExtractedImport entries with correct raw_path\n- **Complexity**: function with if/for/while/switch/goto — verify cyclomatic and cognitive scores\n- **Language attrs**: function with `static`, `inline`, pointer return, pointer param — verify JSON attrs\n- **Flags**: test file heuristic, `__attribute__` detection\n\n## Acceptance criteria coverage\n\n- [x] \"CAdapter implements LanguageAdapter\" → Step 4\n- [x] \"Parser extracts functions, structs, enums, typedefs, macros, consts, global vars\" → Step 2\n- [x] \"Visibility: static → private, else → pub\" → Step 2\n- [x] \"Signatures extracted\" → Step 2\n- [x] \"Docstrings extracted\" → Step 2\n- [x] \"References classified\" → Step 2\n- [x] \"#include produces ExtractedImport\" → Step 2\n- [x] \"resolve_c_imports resolves quoted includes + compile_commands.json\" → Steps 5, 7\n- [x] \"compile_commands.json parsed for -I/-isystem\" → Step 5\n- [x] \"classify_cognitive and walk_cyclomatic have c branches\" → Step 3\n- [x] \"FcaAttributeSource implemented\" → Step 4\n- [x] \"C_EFFECT_PATTERNS covers heap/fs/net/io\" → Step 4\n- [x] \"module_boundary_hints returns Weak\" → Step 4\n- [x] \"CAdapter registered in default_registry\" → Step 4\n- [x] \"Test file heuristics and function flags\" → Step 2\n- [x] \"__attribute__ flagged as FFI\" → Step 2\n- [x] \"All existing tests pass\" → Step 8 (verify)\n- [x] \"Smoke, symbol, reference, import, complexity tests\" → Step 8",
+  "execution_record": "Implemented across sessions 1-3 (sutra/182, 183, 184). Parser, adapter, import resolver, complexity branches, effect patterns, and pipeline wiring landed in commits 79610e7 through 16c30f2. Real-world validation: swisseph (78 files, 2461 symbols, 99 import edges resolved). Linux kernel parse in progress as stress test. No significant surprises — the implementation plan held. Header guard filtering and compile_commands.json support worked as designed. The only structural decision not in the original plan was per-TU include path scoping (68df395), which was a follow-up refinement to the import resolver.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/parser/adapter.rs",
+    "docs/adding-languages.md"
+  ],
+  "tags": [
+    "language",
+    "c",
+    "adapter"
+  ],
+  "history": [
+    {
+      "ts": 1780709812579,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 115
+      }
+    },
+    {
+      "ts": 1782315491354,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782323196804,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782330501342,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1780709812579,
+  "updated_at": 1782330501342,
+  "completed_at": 1782330501342,
+  "arc_id": "019efa49-d9e0-7c50-84fa-7da989b05b78",
+  "arc_phase": "parser",
+  "edges": [
+    {
+      "id": "019efa4b-aba5-7df1-9341-eee0f488b470",
+      "edge_type": "refines",
+      "source": "sutra/182",
+      "target": "sutra/115",
+      "note": null,
+      "created_at": 1782315723685
+    },
+    {
+      "id": "019efa4b-af33-7092-96f3-da45928eb284",
+      "edge_type": "refines",
+      "source": "sutra/183",
+      "target": "sutra/115",
+      "note": null,
+      "created_at": 1782315724595
+    },
+    {
+      "id": "019efa4b-b1a4-7122-8dac-e03f740f47c8",
+      "edge_type": "refines",
+      "source": "sutra/184",
+      "target": "sutra/115",
+      "note": null,
+      "created_at": 1782315725220
+    }
+  ]
+}

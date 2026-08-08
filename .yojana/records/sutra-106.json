@@ -1,0 +1,70 @@
+{
+  "id": "019e9a72-a914-7b61-92be-7737b50d9896",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/106",
+  "sequence_number": 106,
+  "title": "fix: constraint_violations_total undercounts (missing cycle violations)",
+  "description": "From sutra/104 review. `constraint_violations_total` is set at line 340 from DD forbidden-pair violations only. Cycle violations appended at lines 442-466 never increment the total. Fix: add increment inside the cycle push block, or recompute as `constraint_violations.len()` after both loops.\\n\\nFile: src/tools/review.rs:340,442-468",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Approach B: recompute constraint_violations_total after both DD and cycle loops.\\n\\n1. Remove line 340 assignment. Move constraint_violations_total assignment to after line 468 as `constraint_violations_total = constraint_violations.len()`.\\n2. Add integration test: seed files + imports forming a cycle, call build_findings, assert total includes cycle violations.\\n3. Build + test.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/104",
+      "label": "source review"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-health-integration-review.md",
+      "label": "finding: cycle-violations-total-undercount"
+    },
+    {
+      "type": "git:commit",
+      "value": "7aa0ea5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review-followup",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1780707666196,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 106
+      }
+    },
+    {
+      "ts": 1780707855326,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780707938079,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780707666196,
+  "updated_at": 1780707938079,
+  "completed_at": 1780707938079,
+  "edges": []
+}

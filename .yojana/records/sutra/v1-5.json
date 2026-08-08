@@ -1,0 +1,141 @@
+{
+  "id": "019e1cd2-0be8-76b3-b859-4a03f9f807f1",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/5",
+  "sequence_number": 5,
+  "title": "PRD: sutra v1 — review intelligence engine",
+  "description": "Product requirements for sutra v1, incorporating findings from all four foundation spikes (sutra/v1/1–4). Covers four milestones: review workflow (sutra_review), structured diagnostics + help, DD maintained views (cycles, blast radius, forbidden deps), and FCA-backed convention detection. Full PRD at docs/sutra-v1-prd.md.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-v1-prd.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "prd",
+    "v1"
+  ],
+  "history": [
+    {
+      "ts": 1778599988200,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 5
+      }
+    },
+    {
+      "ts": 1778607066271,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778706546681,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778599988200,
+  "updated_at": 1778706546681,
+  "completed_at": 1778706546681,
+  "edges": [
+    {
+      "id": "019e1cda-a0ac-7f11-b8e4-20631f0e364c",
+      "edge_type": "refines",
+      "source": "sutra/v1/6",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600550572
+    },
+    {
+      "id": "019e1cda-a454-7e12-9053-f1f36c27f0fd",
+      "edge_type": "refines",
+      "source": "sutra/v1/7",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600551508
+    },
+    {
+      "id": "019e1cda-a77c-7fa2-b1b8-ad07daf3b9cb",
+      "edge_type": "refines",
+      "source": "sutra/v1/8",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600552316
+    },
+    {
+      "id": "019e1cda-a984-70f0-b76e-fc104aad964d",
+      "edge_type": "refines",
+      "source": "sutra/v1/9",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600552836
+    },
+    {
+      "id": "019e1cda-ad73-7470-b683-895911ed59e2",
+      "edge_type": "refines",
+      "source": "sutra/v1/10",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600553843
+    },
+    {
+      "id": "019e1cda-b178-7fc3-b6a3-233b8a43e7b7",
+      "edge_type": "refines",
+      "source": "sutra/v1/11",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600554872
+    },
+    {
+      "id": "019e1cda-b45f-76e0-b6e4-6ed8a6be8c4a",
+      "edge_type": "refines",
+      "source": "sutra/v1/12",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600555615
+    },
+    {
+      "id": "019e1cda-b64f-7da1-aad2-de9f4ac1b12e",
+      "edge_type": "refines",
+      "source": "sutra/v1/13",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600556111
+    },
+    {
+      "id": "019e1cda-b9db-7e82-bf60-dfcd3b264829",
+      "edge_type": "refines",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600557019
+    },
+    {
+      "id": "019e1cda-bd7f-7480-bacb-e9a1f0d886bc",
+      "edge_type": "refines",
+      "source": "sutra/v1/15",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600557951
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+{
+  "id": "019e1cd9-977b-7840-a805-a967099724f3",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/10",
+  "sequence_number": 10,
+  "title": "DD: forbidden deps + rules.toml [constraints]",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd a third DD maintained view: forbidden dependency enforcement. Parse `.sutra/rules.toml` `[constraints]` section (glob-based `from`/`to` patterns). Check graph edges against rules, report violations as structural constraint violations (zero false positives). Introduces the rules.toml parser module (shared with FCA suppressions later).\\n\\nExample config:\\n```toml\\n[constraints]\\nforbidden_deps = [\\n  { from = \\\"src/tools/*\\\", to = \\\"src/daemon.rs\\\" },\\n]\\n```\\n\\n## Acceptance criteria\\n\\n- [ ] `.sutra/rules.toml` `[constraints]` section parsed correctly\\n- [ ] Glob patterns in `from`/`to` match file paths\\n- [ ] `query_forbidden_deps(rules)` returns violations for edges that match forbidden patterns\\n- [ ] Clean graph produces no violations\\n- [ ] Delta update: adding a forbidden edge triggers new violation\\n- [ ] Tests: fixture with known violations, clean graph, glob edge cases\\n\\n## Blocked by\\n\\n- sutra/v1/8 — DD engine: cycle detection + lazy population + eviction",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": ".sutra/rules.toml [constraints] section parsed correctly"
+    },
+    {
+      "done": true,
+      "text": "Glob patterns in from/to match file paths"
+    },
+    {
+      "done": true,
+      "text": "query_forbidden_deps(rules) returns violations for edges that match forbidden patterns"
+    },
+    {
+      "done": true,
+      "text": "Clean graph produces no violations"
+    },
+    {
+      "done": true,
+      "text": "Delta update: adding a forbidden edge triggers new violation"
+    },
+    {
+      "done": true,
+      "text": "Tests: fixture with known violations, clean graph, glob edge cases"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ba8dd05"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "dd",
+    "config"
+  ],
+  "history": [
+    {
+      "ts": 1778600482683,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 10
+      }
+    },
+    {
+      "ts": 1778620076730,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778620389886,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\nFindings:\n- [high] Malformed forbidden-dependency globs disable rules silently (src/dd/engine.rs:184-190). Pattern::new(...).ok()? inside filter_map drops invalid globs without error. A typo in rules.toml silently disables enforcement.\n- [medium] Warm-up failure loses the loaded graph (src/dd/engine.rs:272-285). Shared finding with v1/9 — ensure_warm state transition can lose edge set on worker failure.\n\nRecommendation: Fail closed on invalid constraint glob patterns (return error identifying the bad rule). Add tests asserting malformed globs fail closed.",
+      "ts": 1778622572766
+    },
+    {
+      "author": "agent",
+      "text": "Review fix: invalid glob patterns in forbidden_deps now fail closed with an error identifying the bad rule and pattern (was silently dropped via filter_map+ok). Added test asserting malformed globs produce an error.",
+      "ts": 1778622853794
+    }
+  ],
+  "created_at": 1778600482683,
+  "updated_at": 1778620389886,
+  "completed_at": 1778620389886,
+  "edges": [
+    {
+      "id": "019e1cda-6847-7961-88d6-0a168a7ad73c",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/10",
+      "target": "sutra/v1/8",
+      "note": null,
+      "created_at": 1778600536135
+    },
+    {
+      "id": "019e1cda-6d11-70b3-9bb8-8f208288708d",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/12",
+      "target": "sutra/v1/10",
+      "note": null,
+      "created_at": 1778600537361
+    },
+    {
+      "id": "019e1cda-7a3f-7d83-a2e9-6d12623e2b1d",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/10",
+      "note": null,
+      "created_at": 1778600540735
+    },
+    {
+      "id": "019e1cda-ad73-7470-b683-895911ed59e2",
+      "edge_type": "refines",
+      "source": "sutra/v1/10",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600553843
+    }
+  ]
+}

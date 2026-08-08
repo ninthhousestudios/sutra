@@ -1,0 +1,113 @@
+{
+  "id": "019f3f7a-3fda-75b2-ae23-ee04041b749e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/234",
+  "sequence_number": 234,
+  "title": "Diff-scoped deviation report in sutra_review",
+  "description": "Per the sutra/176 decision (arc sutra/~12): replace the persisted-convention violation dump in `sutra_review` with an on-the-fly, diff-scoped deviation report. This is the payoff task.\n\nModel: for each changed/added symbol, compare its attribute vector against the dominant patterns of its component siblings (computed at review time via FormalContext over extracted attributes — no persisted conventions, no lifecycle). Report deviations from strong patterns only.\n\nRequirements:\n- **Include confidence == 1.0 patterns.** Remove the `confidence < 1.0` exclusion in `FormalContext::approximate_implications` (src/conventions/context.rs) — a 100%-adherence pattern is the strongest thing to check a diff against (sutra/105 O2).\n- **Direction filter**: only identity→obligation patterns are checkable, per the attribute-typing task; toolchain-enforced pairs excluded via adapter declarations.\n- **Ranking**: pattern strength (support × confidence) × deviation surprise; cap output at top-5 per review.\n- **Evidence format**: counts + exemplars, e.g. \"14/15 pub fns in src/db return Result<T>; insert_foo returns bool — see insert_symbol, insert_ref\". Exemplar pointers, not templates (LLMs generalize from examples natively).\n- **Persistence**: decide whether the ephemeral `conventions` table survives as a rebuild cache (orient perf) or is dropped entirely with patterns computed per call. If dropped, the conventions table + its migrations go too; if kept, strip it to id/antecedent/consequent/support/confidence with no lifecycle semantics.\n- **Output contract**: replaces `convention_violations`/`convention_matches` in review JSON. Mind the refactor contract discipline (CLAUDE.md) — this is an intentional contract change; version it explicitly in the output shape and document in conventions-map.md.\n- Sketch-mode components (ADR-0001): deviation findings flatten to informational, same as conventions did.\n\nAcceptance: sutra_review on a synthetic component with a strong pattern + one deviating changed symbol reports exactly that deviation with correct counts and exemplars; a review touching only conforming symbols reports nothing; output capped at 5; integration test in tests/review-test.rs; conventions-map.md rewritten to describe the new pipeline.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nReplace the persisted-convention lookup in `build_findings` with an on-the-fly FCA computation scoped to the changed symbols' components. Instead of loading `db.all_conventions()` and checking against them, rebuild the FormalContext from component siblings at review time, extract implications (including confidence=1.0), filter to identity→obligation direction, and report deviations with counts + exemplars. The conventions table stays (orient perf cache for sutra/235), but review no longer reads from it.\n\n## Files\n\n- **Modify**: `src/conventions/context.rs` (lines 116-155) — remove `confidence < 1.0` exclusion in `approximate_implications`; add method to query exemplars from the FormalContext\n- **Modify**: `src/conventions/engine.rs` (lines 90-99, 200-269) — replace `ConventionViolation` with `Deviation` struct (adds exemplars, strength score); new `detect_deviations` method that does on-the-fly FCA + direction filter + ranking + cap\n- **Modify**: `src/tools/review.rs` (lines 47-54, 310-456, 608-867) — replace `convention_violations` field in `ReviewFindings` with `deviations`; rewrite `build_findings` convention section to call `detect_deviations`; update `compute` to emit new `deviations` output shape instead of `convention_violations`; update risk score signal\n- **Modify**: `src/tools/review.rs` (lines 540-606) — update `build_recommended_reads` to use deviations instead of convention violations\n- **Modify**: `docs/conventions-map.md` — rewrite to describe the deviation pipeline\n- **Test**: `tests/review-test.rs` — replace convention violation tests with deviation tests: strong pattern + one deviating symbol reports correctly, conforming-only reports nothing, output capped at 5\n\n## Steps\n\n### Step 1: Remove confidence < 1.0 exclusion in approximate_implications\n\nIn `FormalContext::approximate_implications`, the filter `confidence < 1.0` on line 137 excludes perfect patterns. Remove that clause so 100%-adherence implications are returned.\n\n```rust\n// context.rs line 137, change:\nif confidence >= min_confidence && confidence < 1.0 && support_ab >= min_support {\n// to:\nif confidence >= min_confidence && support_ab >= min_support {\n```\n\nAlso add a method to FormalContext that, given an implication's antecedent attribute index and consequent attribute index, returns the object names (symbol names) that satisfy both — these are the exemplars:\n\n```rust\npub fn exemplars_for(\n    &self,\n    antecedent_indices: &[usize],\n    consequent_indices: &[usize],\n    limit: usize,\n) -> Vec<&str> {\n    // intersect attr_objects for all antecedent AND consequent attrs\n    // iterate the resulting bitset, collect object_names, truncate to limit\n}\n```\n\n### Step 2: Add Deviation struct and detect_deviations to engine\n\nReplace `ConventionViolation` with a new `Deviation` struct that carries exemplar data and a strength score:\n\n```rust\n#[derive(Debug, Clone)]\npub struct Deviation {\n    pub symbol: String,\n    pub file: String,\n    pub pattern_antecedent: Arc<[String]>,\n    pub pattern_consequent: Arc<[String]>,\n    pub missing: Vec<String>,\n    pub support: usize,\n    pub confidence: f64,\n    pub total_matching: usize,    // how many siblings match the antecedent\n    pub conforming: usize,        // how many also have the consequent\n    pub exemplars: Vec<String>,   // up to 3 conforming symbol names\n    pub strength: f64,            // support * confidence, used for ranking\n    pub informational: bool,      // true when component is sketch-mode\n}\n```\n\nAdd `detect_deviations` method to `FcaEngine`:\n\n```rust\npub fn detect_deviations(\n    db: &Db,\n    workspace_root: &Path,\n    changed_sym_attrs: &[SymbolAttrs],\n    all_sym_attrs_by_component: &HashMap<String, Vec<SymbolAttrs>>,\n    orphan_sym_attrs: &[SymbolAttrs],\n    registry: &LanguageRegistry,\n    sketch_components: &HashSet<String>,\n) -> Vec<Deviation>\n```\n\nThis function:\n1. Groups changed symbols by component_id\n2. For each component, builds a FormalContext from ALL symbols in that component (not just changed), calls `approximate_implications` with appropriate thresholds\n3. Filters implications to identity→obligation direction using `Convention::is_checkable` (which calls `classify_attribute` + toolchain pair exclusion)\n4. For each changed symbol matching the antecedent but missing consequent attrs, creates a Deviation with exemplars from the FormalContext\n5. Computes strength = support × confidence for each deviation\n6. Ranks by strength × \"surprise\" (1.0 - confidence gives surprise; but since we only report deviations from strong patterns, rank by strength descending)\n7. Caps at top 5 total\n8. Marks `informational = true` for sketch-mode components\n\nFor orphan symbols (no component), run against global context of all symbols.\n\n### Step 3: Rewrite build_findings convention section\n\nIn `build_findings`, replace lines 370-446 (the convention check block) with:\n\n```rust\n// Deviation detection (on-the-fly FCA, no persisted conventions)\nlet mut all_component_sym_attrs: HashMap<String, Vec<SymbolAttrs>> = HashMap::new();\nlet mut orphan_sym_attrs: Vec<SymbolAttrs> = Vec::new();\n\n// Build full SymbolAttrs for ALL files (not just changed) grouped by component\nfor f in &all_files {\n    let syms = db.find_symbols_by_file(f.id)?;\n    let refs = db.find_refs_in_file(f.id)?;\n    // ... same callee_cache + enrichment as current code ...\n    for s in &syms {\n        if let Some(mut attrs) = conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry) {\n            // enrich with effects...\n            attrs.component_id = file_to_component.get(attrs.file.as_str()).map(|s| s.to_string());\n            match &attrs.component_id {\n                Some(cid) => all_component_sym_attrs.entry(cid.clone()).or_default().push(attrs),\n                None => orphan_sym_attrs.push(attrs),\n            }\n        }\n    }\n}\n\n// Determine sketch-mode components\nlet sketch_components: HashSet<String> = comp_with_paths.iter()\n    .filter(|(id, _, _)| db.component_lifecycle_state(id).ok().flatten().as_deref() == Some(\"sketch\"))\n    .map(|(id, _, _)| id.clone())\n    .collect();\n\nlet deviations = conventions::detect_deviations(\n    changed_sym_attrs,\n    &all_component_sym_attrs,\n    &orphan_sym_attrs,\n    registry,\n    &sketch_components,\n);\n```\n\nNote: the `changed_sym_attrs` vec is already built by the existing code (lines 373-423). Keep that extraction code for changed symbols. The new work is building attrs for ALL symbols (for the FCA context). This duplicates the pipeline.rs rebuild logic — factor the shared \"extract all attrs\" loop into a helper on `conventions` module to avoid duplication.\n\n### Step 4: Update ReviewFindings and compute output\n\nReplace the `convention_violations` field in `ReviewFindings` with `deviations: Vec<Deviation>`.\n\nIn `compute`:\n- Replace `convention_violations_out` serialization with `deviations` output:\n```rust\nlet deviations_out: Vec<_> = findings.deviations.iter().map(|d| {\n    json!({\n        \"symbol\": d.symbol,\n        \"file\": d.file,\n        \"pattern\": format!(\"{} → {}\", d.pattern_antecedent.join(\", \"), d.pattern_consequent.join(\", \")),\n        \"missing\": d.missing,\n        \"evidence\": format!(\"{}/{} {} have {}\", d.conforming, d.total_matching,\n            /* component-scoped description */, d.pattern_consequent.join(\", \")),\n        \"exemplars\": d.exemplars,\n        \"support\": d.support,\n        \"confidence\": d.confidence,\n        \"strength\": scoring::round3(d.strength),\n        \"informational\": d.informational,\n    })\n}).collect();\n```\n\n- Replace `\"convention_violations\"` key with `\"deviations\"` in JSON output\n- Update `risk_breakdown` key from `\"convention_violations\"` to `\"deviations\"`\n- Risk score normalization stays the same (count-based, ceiling 5)\n- Non-informational deviations contribute to risk score; informational ones don't\n\n### Step 5: Update build_recommended_reads\n\nReplace references to `findings.convention_violations` with `findings.deviations`. The violation_sites logic stays the same shape — iterate deviations instead, using `d.file` and `d.confidence`.\n\n### Step 6: Update empty-diff return shape\n\nIn `compute`, the early-return for empty `changed_paths` (lines 617-648) has `\"convention_violations\": []` — change to `\"deviations\": []` and update `risk_breakdown` key.\n\n### Step 7: Rewrite tests in review-test.rs\n\nReplace `convention_violations_appear_in_output` and `convention_violations_increase_risk_score`:\n\n**Test: deviation_detected_for_strong_pattern**\n- Create a component with ~5 symbols sharing `kind:function`, `vis:pub` → `has_doc` (identity→obligation)\n- Add one changed symbol that has `kind:function`, `vis:pub` but NOT `has_doc`\n- Build ReviewFindings via `build_findings` (or construct manually with the new Deviation struct)\n- Assert: exactly 1 deviation in output, correct counts (e.g. \"4/5\"), exemplars present and correct\n\n**Test: no_deviation_for_conforming_symbols**\n- Same component but the changed symbol also has `has_doc`\n- Assert: 0 deviations\n\n**Test: deviations_capped_at_5**\n- Create enough patterns + violating symbols to produce >5 deviations\n- Assert: output has exactly 5, ranked by strength\n\n**Test: deviations_increase_risk_score**\n- Similar structure to existing `convention_violations_increase_risk_score`\n- Assert: risk_with > risk_without, `risk_breakdown.deviations > 0`\n\n**Test: sketch_mode_deviations_are_informational**\n- Set component to sketch mode\n- Assert: deviation has `informational: true`\n- Assert: informational deviations don't contribute to risk score\n\n### Step 8: Update conventions-map.md\n\nRewrite the doc to reflect:\n- `build_findings` now computes deviations on-the-fly via FCA over component siblings\n- No persisted conventions read at review time\n- Direction filter (identity→obligation only, toolchain-enforced excluded)\n- Output contract: `deviations` replaces `convention_violations`/`convention_matches`\n- Conventions table survives as rebuild cache for orient (to be consumed by sutra/235)\n- New data flow diagram\n\n## Acceptance criteria coverage\n\n- [x] \"Include confidence == 1.0 patterns\" → Step 1\n- [x] \"Direction filter: only identity→obligation\" → Step 2 (is_checkable filter in detect_deviations)\n- [x] \"Ranking: pattern strength × deviation surprise; cap at top-5\" → Steps 2, 4\n- [x] \"Evidence format: counts + exemplars\" → Steps 1, 2, 4\n- [x] \"Persistence: decide whether conventions table survives\" → Steps 2-3 (survives as orient cache, review doesn't read it)\n- [x] \"Output contract: replaces convention_violations/convention_matches\" → Steps 4, 6\n- [x] \"Sketch-mode: deviation findings flatten to informational\" → Steps 2, 7\n- [x] \"Integration test in tests/review-test.rs\" → Step 7\n- [x] \"conventions-map.md rewritten\" → Step 8",
+  "execution_record": "4 commits: bc7704e (core implementation), fab51df (test updates), b6c2b0a (conventions-map rewrite), 48563b9 (help/health-map text). Persistence decision: conventions table survives as orient cache — review no longer reads it. The suppress/exempt config in rules.toml is now unused by review (no persisted convention IDs to reference); left as dead config for now rather than breaking the schema — sutra/235 (orient rebuild) will decide whether to revive or remove it.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "48563b9"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "deviation-report"
+  ],
+  "history": [
+    {
+      "ts": 1783476404186,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 234
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783603703369,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783604716181,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review: two findings fixed in 4091298.\\n\\n1. [high] Direction filter allowed obligation→obligation antecedents (e.g. has_doc→returns_result). Added antecedent Identity check.\\n2. [medium] Sketch-mode deviations could crowd out actionable ones in top-5 cap. Fixed: partition and cap actionable first.\\n\\nBoth have regression tests.",
+      "ts": 1783605287648
+    }
+  ],
+  "created_at": 1783476404186,
+  "updated_at": 1783604716181,
+  "completed_at": 1783604716181,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "deviation-report",
+  "edges": [
+    {
+      "id": "019f3f7a-c28e-7822-8a94-4e24768c0ab0",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/231",
+      "note": null,
+      "created_at": 1783476437646
+    },
+    {
+      "id": "019f3f7a-d53a-7213-87a2-8987b8c298c4",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/232",
+      "note": null,
+      "created_at": 1783476442426
+    },
+    {
+      "id": "019f3f7a-d742-7873-86f7-cac675a501bd",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/233",
+      "note": null,
+      "created_at": 1783476442946
+    },
+    {
+      "id": "019f3f7a-d8a1-7521-b0f9-bdba00db4f24",
+      "edge_type": "depends_on",
+      "source": "sutra/235",
+      "target": "sutra/234",
+      "note": null,
+      "created_at": 1783476443297
+    },
+    {
+      "id": "019f3f7a-d969-7c83-a29c-1bd1b459c27e",
+      "edge_type": "depends_on",
+      "source": "sutra/236",
+      "target": "sutra/234",
+      "note": null,
+      "created_at": 1783476443497
+    }
+  ]
+}

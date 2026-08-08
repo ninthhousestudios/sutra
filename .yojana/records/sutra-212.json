@@ -1,0 +1,116 @@
+{
+  "id": "019f08fb-3db3-7de0-b3ad-a9c7682b0898",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/212",
+  "sequence_number": 212,
+  "title": "Spike: CPM vs Modularity quality function for community detection",
+  "description": "Compare CPM (Constant Potts Model) against the current Modularity quality function on sutra's real codebase graph. Modularity has a resolution limit that scales with total graph weight — small communities get absorbed into larger ones as the graph grows. CPM evaluates clusters by absolute internal edge density vs a fixed threshold, so it should produce more stable, size-independent communities.\\n\\nThis is a comparison spike, not a blind swap. CPM's resolution parameter has completely different semantics — it's an absolute edge-density threshold, not relative. The current auto_tune candidates [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] are modularity-scale; CPM values for our graph topology would be something like [0.005, 0.01, 0.02, 0.05, 0.1]. The viability filter (k >= 2, max_size <= 50%) may need recalibration since CPM tends to produce more communities at the cost of more singletons.\\n\\nKey files:\\n- src/components/clustering.rs: build_leiden_graph, run_leiden, auto_tune\\n\\nApproach: write a test or script that runs both quality functions at their respective resolution ranges on the same WeightedAdj built from sutra's own index. Compare:\\n- Community count and size distribution\\n- Quality of mid-range clusters (not just count — do the 2-8 file clusters make architectural sense?)\\n- Singleton count (CPM producing 90% singletons would be worse than modularity's hub problem)\\n- Hub file behavior (do mod.rs, error.rs, etc. still dominate oversized clusters?)\\n\\nOutput: a decision on whether to switch to CPM, stick with Modularity, or make it configurable.\"",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Comparison run completed on sutra's own codebase graph with both Modularity and CPM"
+    },
+    {
+      "done": false,
+      "text": "CPM resolution range calibrated for our graph topology (not copied from modularity range)"
+    },
+    {
+      "done": false,
+      "text": "Size distribution compared: community count, max size, singleton count, median size"
+    },
+    {
+      "done": false,
+      "text": "Mid-range cluster quality assessed: do 2-8 file clusters group architecturally related files?"
+    },
+    {
+      "done": false,
+      "text": "Decision documented: switch to CPM, keep Modularity, or make configurable"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Keep Modularity as quality function",
+      "rationale": "CPM's absolute density threshold causes catastrophic singleton explosion (88% singletons at the first viable resolution) on star-topology graphs like sutra's file dependency graph. Most tool files connect to shared hubs (db/mod.rs, mcp.rs, error.rs) but not to each other, so they never meet CPM's internal density threshold. Modularity normalizes against expected degree distribution, handling hub-spoke patterns better. The mega-cluster problem (59% at γ=1.0) is real but needs fixing at graph construction level (boundary hints, cochange enrichment, hub weight damping), not quality function level.",
+      "rejected_alternative": "Switch to CPM — would solve the resolution limit but at the cost of shattering most files into singletons, producing unusable component maps."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Ran both Modularity and CPM on sutra's real codebase graph (64 connected nodes, 103 edges, density=0.051, avg_weight=6.57). Tested Modularity at γ=[0.5..3.0] and CPM at γ=[0.01..20.0].\\n\\nModularity auto-tune (γ=1.0): 4 communities, 0 singletons, max=38 (59%). The mega-cluster problem is real — one cluster absorbs all src/tools/ + mcp + error + db/migrations.\\n\\nCPM auto-tune (γ=0.2, first viable): 33 communities, 29 singletons (88%), max=28 (44%). No CPM resolution produces both reasonable community count AND low singleton percentage — it's always 'one large cluster + singletons' because the graph has star topology (tool files connect to shared hubs but not to each other). CPM evaluates absolute internal density, so spoke files that only touch hubs never cluster.\\n\\nAlso tested on a synthetic multi-module graph (28 nodes, 5 modules + 2 hubs) — same pattern at smaller scale.\\n\\nRefactored run_leiden into run_leiden + run_leiden_with(quality: QualityType) as a useful byproduct.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/211"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "run_leiden"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "auto_tune"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "build_leiden_graph"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782562110899,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 212
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782562319175,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782562714157,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782562110899,
+  "updated_at": 1782562714157,
+  "completed_at": 1782562714157,
+  "edges": [
+    {
+      "id": "019f08fb-98d2-7401-b1b9-8ef4d511d6c6",
+      "edge_type": "depends_on",
+      "source": "sutra/212",
+      "target": "sutra/211",
+      "note": null,
+      "created_at": 1782562134226
+    },
+    {
+      "id": "019f08fb-a045-7cd0-b89f-aadb4b39a5fc",
+      "edge_type": "relates_to",
+      "source": "sutra/213",
+      "target": "sutra/212",
+      "note": "CPM spike outcome may change the quality function before splitting is implemented",
+      "created_at": 1782562136133
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "id": "019f4d1b-8c88-70f2-a498-b2c78cb8c24b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/255",
+  "sequence_number": 255,
+  "title": "Resolver Phase B: receiver capture + Dart constructor type tracking",
+  "description": "Phase B of scope-aware resolution (Phase A = sutra/230, Phase 0 = sutra/254). Enables `final x = Foo(); x.bar()` resolution — currently structurally impossible because ExtractedRef {name, line, col, context_kind} (parser/mod.rs:126-131) has NO receiver field in any language; rust.rs even has tests (receiver_not_extracted L1027, plain_field_access_no_method_ref L1057) asserting the receiver is dropped.\n\nPlan:\n1. Add receiver: Option<String> to ExtractedRef. Touches all four extractors (rust.rs, dart.rs, python.rs, c.rs) — capture the receiver identifier text for method-call/field-access refs. Update the rust.rs tests that assert dropping (they become capture tests). One coordinated change, done once here.\n2. Dart constructor tracking in the Phase A scope arena (extended to dart.rs): assignment forms `final x = Foo(...)`, `var x = Foo(...)`, `X x = Foo(...)` record Scope.types[x] = \"Foo\" (sem's AssignmentStrategy::LeftRight/Declarators analogues — languages.rs:159-175 for the pattern catalog, architecture only).\n3. Method resolution: ref with receiver `x` + tracked type Foo → look up member in a class_members map: HashMap<class_qualified_name, Vec<(member_short_name, symbol_id)>> built from persisted parent_symbol_id chains — this is sutra's PreBuiltLookups analogue, built once in post_parse_sequence alongside the Phase A symbol_table, shared by reference. `this.`/`self.` special case: walk up to nearest enclosing class symbol.\n4. Resolution provenance: these edges stamp resolution_method=\"type_tracking\" (column added in Phase A).\n\nReference (architecture, not port): sem scope_resolve.rs Scope.types + lookup_type_in_scopes (L6650-6660), MethodCall handling (~L6082-6140), class_members in PreBuiltLookups (L399-407).\n\nTests: dart fixture `final c = Cache(); c.get(...)` resolves to Cache.get not a same-named global; reassignment updates tracked type; untracked receiver falls through to existing heuristics unchanged; rust receiver capture doesn't alter existing rust resolution results (receiver captured but unused until rust type tracking).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "rationale": "Reuses the existing parse-time hint channel; no schema change to ExtractedRef beyond receiver. Resolver already switches on hint prefixes (LOCAL_BINDING_SENTINEL). Keeps the data flow uniform.",
+      "rejected_alternatives": [
+        "Add a separate `tracked_class: Option<String>` field to ExtractedRef — more explicit but doubles the optional fields and requires more DB columns"
+      ],
+      "summary": "Use TYPE_TRACKING_PREFIX sentinel in resolved_local_target rather than a new ExtractedRef field"
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "The grammar mismatch was the main surprise: `collect_dart_type_bindings` initially only matched `initialized_identifier` (used for comma-separated additional variables in a list), but local declarations like `final c = Cache()` parse as `initialized_variable_definition` in tree-sitter-dart. Adding that second kind to the match fixed all 4 failing parse-dart tests. The no-clone-driven-dev constraint forced restructuring `build_class_members` to borrow `&str` from `all_symbols` with an explicit `ClassMembers<'a>` lifetime alias instead of cloning short_name strings — filed waiver 146 during the work. All 1251 tests pass; 446 lines added across 15 files.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "6df802c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783705078920,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 255
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783970657816,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783971739910,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Change is correct and well-tested. Two findings to file as follow-ups: (1) HIGH: replace_refs_and_clear_resolution drops receiver + resolved_local_target on re-resolution (pre-existing, also affects Phase A scope hints); (2) MEDIUM: build_class_members is rebuilt per-file in the resolution loop — should be lifted to post_parse_sequence. Two low items: scope-unaware lookup_receiver_type, named constructor class name extraction.",
+      "ts": 1783972107112
+    },
+    {
+      "author": "agent",
+      "text": "All four review findings fixed in 805c262:\\n\\n1. **re-resolution-loses-hints (HIGH)**: `replace_refs_and_clear_resolution` now uses a `ResolvedRefRow` struct that preserves `resolved_local_target` and `receiver` through the DELETE+INSERT cycle. Re-resolution after dependency changes now retains scope-chain and type-tracking hints.\\n\\n2. **class-members-rebuilt-per-file (MEDIUM)**: `build_class_members` is now public, called once in `post_parse_sequence`, and passed into `resolve_file_refs`/`resolve_refs`. Eliminates O(N×S) redundant work.\\n\\n3. **lookup-not-scope-aware (LOW)**: `DartTypeBinding` now carries `scope_end_line` (enclosing function boundary). `lookup_receiver_type` filters by `ref_line <= scope_end_line`, preventing bindings from leaking across sibling functions. New test: `type_tracking_scope_boundary_prevents_cross_function_leak`.\\n\\n4. **named-constructor-class-name (LOW)**: `dart_constructor_type` now handles `member_expression` function nodes (e.g. `Cache.fromJson()`), extracting the object identifier as the class name. New test: `type_tracking_named_constructor`.\\n\\n1253 tests pass (2 new).",
+      "ts": 1783972591034
+    }
+  ],
+  "created_at": 1783705078920,
+  "updated_at": 1783971739910,
+  "completed_at": 1783971739910,
+  "edges": [
+    {
+      "id": "019f4d1c-82d3-7161-9292-597c27d259d2",
+      "edge_type": "depends_on",
+      "source": "sutra/255",
+      "target": "sutra/230",
+      "note": "type tracking builds on Phase A scope arena + resolution_method column",
+      "created_at": 1783705141971
+    },
+    {
+      "id": "019f4d1c-88e7-73f3-ad69-fb26d37400fa",
+      "edge_type": "depends_on",
+      "source": "sutra/256",
+      "target": "sutra/255",
+      "note": "Python constructor tracking reuses Phase B machinery",
+      "created_at": 1783705143527
+    }
+  ]
+}

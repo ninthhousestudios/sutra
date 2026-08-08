@@ -1,0 +1,154 @@
+{
+  "id": "019e8c69-013f-7d02-9729-34c9b5648d0e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/73",
+  "sequence_number": 73,
+  "title": "5d-5: constraint waivers (DB)",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nDurable `constraint_waivers` table following the same pattern as `convention_waivers`. Stores accepted constraint violations with rationale. Waivers target a specific constraint + file/symbol scope. Survives reindex. Includes CRUD methods on `Db` and orphan detection for waivers whose constraint no longer exists.\n\n## Acceptance criteria\n\n- [ ] Durable `constraint_waivers` table with migration\n- [ ] CRUD methods on `Db`\n- [ ] Waivers survive reindex\n- [ ] Orphan detection\n- [ ] Tests for CRUD, durability, orphans\n\n## Blocked by\n\n- sutra/70 — 5d-2: constraint types + rules parsing",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "New constraint_waivers durable table: constraint_id TEXT, file_path TEXT, symbol_qualified_name TEXT (nullable), rationale TEXT NOT NULL, created_at, updated_at"
+    },
+    {
+      "done": false,
+      "text": "Migration registered with ephemeral_only: false, table in TABLE_REGISTRY as Durable"
+    },
+    {
+      "done": false,
+      "text": "CRUD methods on Db: create_constraint_waiver, get_constraint_waivers, get_constraint_waivers_for_file, update_constraint_waiver, delete_constraint_waiver"
+    },
+    {
+      "done": false,
+      "text": "Waivers reference constraints by hash or name"
+    },
+    {
+      "done": false,
+      "text": "Waiver survives reindex (durable table)"
+    },
+    {
+      "done": false,
+      "text": "Orphan detection: waivers for constraints no longer in rules.toml surfaced in reconciliation"
+    },
+    {
+      "done": false,
+      "text": "Tests cover: CRUD, reindex survival, scoping by file/symbol, orphan detection"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nFollow the convention_waivers pattern exactly: migration for a durable table, row type in the db module, CRUD methods as `impl Db`, TABLE_REGISTRY entry, and tests in `tests/db-test.rs`. The constraint_waivers table is scoped by `constraint_id` (hash) + `file_path` + optional `symbol_qualified_name`, with a uniqueness constraint on that triple. Orphan detection joins against the constraints loaded from `rules.toml` (passed as a slice, not via a DB table — constraints aren't persisted).\n\nKey difference from convention_waivers: constraint waivers reference constraints by `constraint_id` (the 8-char blake3 hash from `Constraint.id`). Since constraints also have an optional `name`, we store `constraint_name` as a nullable column for human readability and to support lookup by name. Orphan detection takes `&[Constraint]` as input and checks which waivers reference constraint IDs not present in the list.\n\n## Files\n\n- **Create**: `migrations/0023_constraint_waivers.sql` — table DDL\n- **Modify**: `src/db/migrations.rs` (~line 95) — register migration\n- **Modify**: `src/db/mod.rs` (TABLE_REGISTRY, ~line 55) — add entry as Durable\n- **Create**: `src/db/constraints.rs` — `ConstraintWaiverRow` type + CRUD methods on `Db`\n- **Modify**: `src/db/mod.rs` (~line 8) — add `mod constraints;` and re-export row type\n- **Modify**: `tests/db-test.rs` — integration tests\n\n## Steps\n\n### Step 1: Create migration\n\n```sql\n-- migrations/0023_constraint_waivers.sql\nCREATE TABLE IF NOT EXISTS constraint_waivers (\n    id                    INTEGER PRIMARY KEY AUTOINCREMENT,\n    constraint_id         TEXT NOT NULL,\n    constraint_name       TEXT,\n    file_path             TEXT NOT NULL,\n    symbol_qualified_name TEXT,\n    rationale             TEXT NOT NULL,\n    waived_by             TEXT NOT NULL,\n    created_at            TEXT NOT NULL DEFAULT (datetime('now')),\n    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),\n    UNIQUE(constraint_id, file_path, COALESCE(symbol_qualified_name, ''))\n);\n```\n\nThe UNIQUE constraint uses COALESCE to handle nullable `symbol_qualified_name` — two waivers for the same (constraint_id, file_path) where both have NULL symbol are treated as duplicates.\n\n### Step 2: Register migration and table\n\nIn `src/db/migrations.rs`, add to the MIGRATIONS array (after the last entry):\n```rust\n(\n    \"0023_constraint_waivers\",\n    include_str!(\"../../migrations/0023_constraint_waivers.sql\"),\n    false,\n),\n```\n\nIn `src/db/mod.rs` TABLE_REGISTRY, add:\n```rust\nTableMeta { name: \"constraint_waivers\", partition: TablePartition::Durable, is_virtual: false },\n```\n\n### Step 3: Implement Db methods\n\nNew file `src/db/constraints.rs` with row type and CRUD:\n\n```rust\nuse rusqlite::params;\nuse crate::error::Result;\nuse super::Db;\n\n#[derive(Debug, Clone)]\npub struct ConstraintWaiverRow {\n    pub id: i64,\n    pub constraint_id: String,\n    pub constraint_name: Option<String>,\n    pub file_path: String,\n    pub symbol_qualified_name: Option<String>,\n    pub rationale: String,\n    pub waived_by: String,\n    pub created_at: String,\n    pub updated_at: String,\n}\n\nimpl Db {\n    pub fn create_constraint_waiver(\n        &self,\n        constraint_id: &str,\n        constraint_name: Option<&str>,\n        file_path: &str,\n        symbol_qualified_name: Option<&str>,\n        rationale: &str,\n        waived_by: &str,\n    ) -> Result<i64> {\n        // INSERT ... ON CONFLICT DO UPDATE (upsert on unique triple)\n    }\n\n    pub fn get_constraint_waivers(\n        &self,\n        constraint_id: Option<&str>,\n    ) -> Result<Vec<ConstraintWaiverRow>> {\n        // All waivers, optionally filtered by constraint_id\n    }\n\n    pub fn get_constraint_waivers_for_file(\n        &self,\n        file_path: &str,\n    ) -> Result<Vec<ConstraintWaiverRow>> {\n        // Waivers scoped to a specific file\n    }\n\n    pub fn update_constraint_waiver(\n        &self,\n        waiver_id: i64,\n        rationale: &str,\n    ) -> Result<bool> {\n        // Update rationale + updated_at, return whether row existed\n    }\n\n    pub fn delete_constraint_waiver(&self, waiver_id: i64) -> Result<bool> {\n        // DELETE, return whether row existed\n    }\n\n    pub fn constraint_waivers_for_check(\n        &self,\n    ) -> Result<Vec<ConstraintWaiverRow>> {\n        // All waivers, used by enforcement to filter violations\n    }\n\n    pub fn reconcile_orphaned_constraint_waivers(\n        &self,\n        active_constraint_ids: &[&str],\n    ) -> Result<Vec<ConstraintWaiverRow>> {\n        // Return waivers whose constraint_id is not in active_constraint_ids\n        // Uses a temp table or IN clause for the check\n    }\n}\n```\n\nWire module in `src/db/mod.rs`: add `pub mod constraints;` and `pub use constraints::ConstraintWaiverRow;`.\n\n### Step 4: Write tests\n\nAdd to `tests/db-test.rs`, following the convention waiver test pattern:\n\n1. **constraint_waiver_crud** — create, list (filtered + unfiltered), update rationale, delete, verify gone\n2. **constraint_waiver_upsert_on_conflict** — create same (constraint_id, file_path, symbol) twice, verify upsert updates rationale\n3. **constraint_waiver_file_scoping** — create waivers for different files, verify `get_constraint_waivers_for_file` returns only matching\n4. **constraint_waiver_symbol_scoping** — create file-level waiver (symbol=None) and symbol-level waiver (symbol=Some), verify both returned, verify uniqueness works correctly with nulls\n5. **constraint_waiver_survives_reindex** — create waiver, run the ephemeral table clear (`clear_ephemeral_tables` or similar), verify waiver still exists\n6. **constraint_waiver_orphan_detection** — create waivers for constraint IDs \"abc\" and \"def\", call reconcile with only [\"abc\"] as active, verify \"def\" waiver returned as orphan\n7. **constraint_waiver_reference_by_name** — create waiver with constraint_name set, verify it's stored and returned\n\n## Acceptance criteria coverage\n\n- [x] \"New constraint_waivers durable table\" → Steps 1-2\n- [x] \"Migration registered with ephemeral_only: false, table in TABLE_REGISTRY as Durable\" → Step 2\n- [x] \"CRUD methods on Db: create, get, get_for_file, update, delete\" → Step 3\n- [x] \"Waivers reference constraints by hash or name\" → Steps 1, 3 (constraint_id + constraint_name columns)\n- [x] \"Waiver survives reindex (durable table)\" → Steps 2, 4 (TABLE_REGISTRY Durable + reindex survival test)\n- [x] \"Orphan detection: waivers for constraints no longer in rules.toml\" → Step 3 (reconcile_orphaned_constraint_waivers takes active IDs)\n- [x] \"Tests cover: CRUD, reindex survival, scoping by file/symbol, orphan detection\" → Step 4",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "1b53e40"
+    },
+    {
+      "type": "git:commit",
+      "value": "dc566a7"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1780472152383,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 73
+      }
+    },
+    {
+      "ts": 1780513281037,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780513560033,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780514194066,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention. 1 medium finding on waiver upsert.\\n\\n1. [medium] create_constraint_waiver returns last_insert_rowid() after ON CONFLICT DO UPDATE, which is not set to the updated row's id — it remains the last successful INSERT id on the connection. Callers trusting the return value could update/delete the wrong waiver. Fix: use RETURNING id, or SELECT id by unique key after upsert.\\n\\nNext: add upsert-conflict test asserting the returned id matches the existing row.\"",
+      "ts": 1780513822664
+    }
+  ],
+  "created_at": 1780472152383,
+  "updated_at": 1780514194066,
+  "completed_at": 1780514194066,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-3d20-7ea1-bec6-f797047f19c6",
+      "edge_type": "depends_on",
+      "source": "sutra/73",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472233248
+    },
+    {
+      "id": "019e8c6a-432e-7c92-be6b-08f8df9117dd",
+      "edge_type": "depends_on",
+      "source": "sutra/74",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472234798
+    },
+    {
+      "id": "019e8c6a-4a09-79b3-ace6-20c2131d5f61",
+      "edge_type": "depends_on",
+      "source": "sutra/75",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472236553
+    },
+    {
+      "id": "019e8c6a-59e5-7b63-883a-bda8becf1726",
+      "edge_type": "depends_on",
+      "source": "sutra/77",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472240613
+    },
+    {
+      "id": "019e8c6a-7987-7d82-9d14-e6f999d9fac5",
+      "edge_type": "depends_on",
+      "source": "sutra/79",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472248711
+    }
+  ]
+}

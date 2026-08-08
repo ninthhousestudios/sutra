@@ -1,0 +1,110 @@
+{
+  "id": "019eae91-6314-7af1-ae44-445019d887e6",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/125",
+  "sequence_number": 125,
+  "title": "Wave 1: index integrity — atomic replace, cross-process lock, heal sweep",
+  "description": "parse_file does lookup → delete_file_cascade (own tx) → upsert_file → per-symbol inserts with no symbols uniqueness constraint; only parse lock is the in-process ParseCoordinator (CLI parse path takes none). Live self-index already holds every src/tools/review.rs symbol twice; unchanged-hash skip means it never self-heals. Finding: parse-race-duplicate-symbols (HIGH). Locations: src/pipeline.rs:176-238, src/main.rs:175, src/db/mod.rs:435-470.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "per-file delete+upsert+symbol-inserts wrapped in a single transaction"
+    },
+    {
+      "done": false,
+      "text": "UNIQUE(file_id, qualified_name, start_line) backstop index with conflict handling"
+    },
+    {
+      "done": false,
+      "text": "OS-level advisory lock (flock on db dir) around parse_workspace covering CLI + stdio + daemon writers"
+    },
+    {
+      "done": false,
+      "text": "startup integrity sweep detects and clears duplicate symbol rows (existing corrupted indexes heal)"
+    },
+    {
+      "done": false,
+      "text": "sutra_outline on src/tools/review.rs returns each symbol exactly once against the live index"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "finding: parse-race-duplicate-symbols"
+    },
+    {
+      "type": "git:commit",
+      "value": "5f31713"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045224212,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 125
+      }
+    },
+    {
+      "ts": 1781048018663,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781048838462,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "(noting on wrong task - see sutra/128)",
+      "ts": 1781045823675
+    }
+  ],
+  "created_at": 1781045224212,
+  "updated_at": 1781048838462,
+  "completed_at": 1781048838462,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "index-integrity",
+  "edges": [
+    {
+      "id": "019eae92-771b-7852-993f-c0c9325942de",
+      "edge_type": "depends_on",
+      "source": "sutra/126",
+      "target": "sutra/125",
+      "note": "verifying the ref fix against a corrupted index proves nothing — heal duplicates first",
+      "created_at": 1781045294875
+    },
+    {
+      "id": "019eae92-7ab6-7433-adc7-94a45d41f452",
+      "edge_type": "relates_to",
+      "source": "sutra/127",
+      "target": "sutra/125",
+      "note": null,
+      "created_at": 1781045295798
+    }
+  ]
+}

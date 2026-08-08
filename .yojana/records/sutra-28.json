@@ -1,0 +1,74 @@
+{
+  "id": "019e4071-d78e-7063-817f-003ac8fcb7fc",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/28",
+  "sequence_number": 28,
+  "title": "Phase 4: spike graph clustering for component discovery (L1)",
+  "description": "Layer 1 (architecture/components) depends on graph clustering (Louvain/Leiden) which hasn't been validated yet. Spike it on real codebases.\\n\\nExperiments:\\n- Run Louvain/Leiden on sutra's existing call/dependency graph\\n- Evaluate: do the clusters map to recognizable subsystems?\\n- Test stability: how much do clusters change when a few files change?\\n- Compare cluster quality at method, class, and file granularity\\n- Test blending with HRR structural similarity (0.7 graph / 0.3 HRR)\\n- Measure: component count vs codebase size\\n\\nTest codebases: sutra itself, chitta, a larger project\\n\\nDone criteria:\\n- Clusters on at least 2 real codebases\\n- >60% of clusters map to recognizable subsystems (manual eval)\\n- Stability assessment across simulated edits\\n- Blend with HRR evaluated\\n- Verdict: viable / viable with caveats / not viable",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    "Louvain viable for L1 component discovery at file granularity",
+    "HRR blending via all-pairs edges not viable — adds too much noise (91K edges vs 2316 original on linux/kernel). Restrict to reweighting existing graph edges.",
+    "Function-level clustering too granular for L1 — use file-level",
+    "1/ambiguity weighting essential for name-based call graph construction"
+  ],
+  "implementation_plan": null,
+  "execution_record": "Ran Louvain community detection on call graphs extracted via tree-sitter across 3 codebases:\n\n| Codebase | Files | Clusters | Q | Purity | Stability | HRR Blend |\n|---|---|---|---|---|---|---|\n| sutra | 57 | 7 | 0.2975 | 74.7% | NMI 0.860 | -10.7pp |\n| redox-kernel | 183 | 34 | 0.1977 | 67.9% | NMI 0.791 | +2.4pp |\n| linux/kernel | 491 | 92 | 0.5509 | 88.0% | NMI 0.911 | -7.2pp |\n\nAll done criteria met:\n- Clusters on 3 real codebases (>= 2 required)\n- >60% purity on all 3 (74.7%, 67.9%, 88.0%)\n- Stability: all stable (NMI > 0.79 at 10% removal)\n- HRR blend: evaluated, hurts in 2/3 cases\n- Verdict: VIABLE for file-level L1 component discovery\n\nKey findings:\n1. File-level Louvain works well. Modularity increases with codebase size.\n2. Function-level too granular for L1 (7390 clusters for 18K functions on linux).\n3. HRR blending as implemented (adding all-pairs edges) hurts — adds too many noise edges. Should restrict to reweighting existing call edges only.\n4. 1/ambiguity weighting for name resolution is important for cross-file call graph quality.\n5. Single-level Louvain sufficient (no multi-level needed for tested sizes).\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-understand-design.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "695d6a2"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "spike",
+    "phase-4",
+    "graph-clustering"
+  ],
+  "history": [
+    {
+      "ts": 1779197663118,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 28
+      }
+    },
+    {
+      "ts": 1779523691152,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779524740017,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779197663118,
+  "updated_at": 1779524740017,
+  "completed_at": 1779524740017,
+  "edges": []
+}

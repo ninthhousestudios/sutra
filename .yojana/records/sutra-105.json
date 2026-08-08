@@ -1,0 +1,70 @@
+{
+  "id": "019e9925-cf6b-7be3-b817-73b2cdbf4e02",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/105",
+  "sequence_number": 105,
+  "title": "design review observations from FCA correctness audit (sutra/102)",
+  "description": "Three design observations surfaced during the FCA correctness review (sutra/102). Not bugs — structural limitations worth evaluating.\n\n## O1 — Pairwise-only implication mining\n\n`approximate_implications` discovers single-attribute → single-attribute rules only. Multi-attribute conventions like `{vis:pub, is_async} → returns_result` are structurally undiscoverable. The concept lattice infrastructure exists (`all_concepts`, `next_closure`) but isn't wired into convention mining. Expanding to multi-attribute antecedents would increase expressiveness but risks combinatorial blowup — needs a pruning strategy.\n\n## O2 — Confidence 1.0 lifecycle blind spot\n\nThe `confidence < 1.0` filter means the lifecycle system never sees conventions with 100% adherence. The review pipeline still catches first violations (convention materializes at <1.0 at rebuild time), but lifecycle promotion proposals for high-adherence patterns are delayed until the first exception. Small codebases are most affected — a single violation on a 4-symbol pattern drops confidence to 0.75, below the 0.9 threshold, making both convention and violation invisible.\n\n## O3 — No automated forbidden transition signal\n\n`detect_signals` handles descriptive→preferred, preferred→deprecated, deprecated→deleted. The deprecated→forbidden transition has no automated signal — requires manual intervention. This seems intentional (forbidden is a strong assertion) but should be documented explicitly in the lifecycle docs.",
+  "category": null,
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Closed by evaluation, not code: all three observations resolved by the sutra/176 redesign decision (O1 moot — mining-as-rules retired; O2 fixed — deviation report includes confidence-1.0 patterns; O3 moot — lifecycle machinery deleted, enforcement routes to constraints). See task comment for full verdicts.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/102",
+      "label": "source review"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "design",
+    "release-review"
+  ],
+  "history": [
+    {
+      "ts": 1780685852523,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 105
+      }
+    },
+    {
+      "ts": 1783476317541,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783476339961,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "claude",
+      "text": "Evaluated 2026-07-07 during the conventions redesign decision (sutra/176). Verdicts:\n\nO1 (pairwise-only mining): moot. Mining-as-rule-source is being retired; the replacement (diff-scoped deviation reporting) works over the same pairwise statistics. Multi-attribute antecedents over the current vocabulary would only produce more sophisticated noise — revisit only if the attribute vocabulary is enriched (effects, callee patterns) AND the deviation report proves its worth. The identity→obligation attribute typing adopted in the redesign is the pruning strategy this observation asked for.\n\nO2 (confidence<1.0 filter): confirmed harmful, fixed by the redesign. Confidence-1.0 patterns are the *strongest* signal for checking a diff against component norms; the filter in FormalContext::approximate_implications excluded exactly them. Removal is folded into the deviation-report implementation task on the redesign arc.\n\nO3 (no automated deprecated→forbidden signal): moot. The lifecycle/promotion machinery is being deleted entirely (lifetime record across 48 workspaces: 1 accepted proposal vs ~1,500 pending+dismissed, 0 waivers ever). Enforcement routes to hand-written constraint rules instead — forbidden-ness becomes an explicit human declaration in the constraints TOML, which is what O3 concluded it should be.",
+      "ts": 1783476291596
+    }
+  ],
+  "created_at": 1780685852523,
+  "updated_at": 1783476339961,
+  "completed_at": 1783476339961,
+  "edges": []
+}

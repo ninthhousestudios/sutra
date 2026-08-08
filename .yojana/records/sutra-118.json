@@ -1,0 +1,50 @@
+{
+  "id": "019e9aa0-0917-77d1-ab62-2e5eb2ba2b4b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/118",
+  "sequence_number": 118,
+  "title": "performance review",
+  "description": "it took 30 seconds to do 'sutra parse sutra' when 0 files had changed. it often takes quite a long time. /home/josh/nhs/soft/astrology/swe_dashboard/ took 5 minutes to do a full parse. if it must be this way i think it is worth it, but it would be better if we could get that down. sutra parses on session startup, but if it always takes that long an agent wont wait, and thus wont really use sutra. then it means i have been doing 'sutra parse repo' before starting a session, just to make sure it is fresh.",
+  "category": null,
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Performance review completed and implemented the no-change parse fast path. Findings: warmed 0-file parse of sutra reproduced at 165.6s before the fix, and swe_dashboard refreshes were ~81-87s when 16 Dart files kept reparsing. Root causes were (1) parse_workspace skipped unchanged files but still synchronously recomputed global derived indexes: adjacency/rollups, PageRank, git commit history, components, semantic anchors, aliases, health findings, HRR vectors, and duplicate families; (2) Dart symbols without specific language attrs stored NULL, so file_has_null_language_attrs treated affected Dart files as stale forever. Changes: added PostParseResult::NoChanges fast path for full and incremental parses when no files/deletions/errors occurred, recording a fresh snapshot by copying previous health/detail metrics; changed Dart build_symbol to store language_attrs Some(\"{}\") by default. Verification: cargo check; cargo test --test parse-dart-test; cargo test --test pipeline-test unchanged_parse_copies_previous_snapshot_metrics. Benchmarks after rebuild and one-time refresh: swe_dashboard clean no-change parse 0/130 files in 31ms CLI duration / 60ms wall; sutra clean no-change parse 0/116 files in 24ms CLI duration / 52ms wall. Remaining performance issue: real changed-file parses still pay the expensive global derived-index tail, e.g. sutra 1-file refresh took ~164.9s, so follow-up should incrementally schedule or defer HRR/duplicate/global health work and add per-phase timings.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/pipeline.rs",
+    "src/parser/dart.rs",
+    "tests/pipeline-test.rs",
+    "tests/parse-dart-test.rs"
+  ],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1780710639895,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 118
+      }
+    },
+    {
+      "ts": 1781329399041,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [],
+  "created_at": 1780710639895,
+  "updated_at": 1781329399041,
+  "completed_at": 1781329399041,
+  "edges": []
+}

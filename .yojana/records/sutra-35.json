@@ -1,0 +1,115 @@
+{
+  "id": "019e69c7-61e0-73c3-8aef-d298e7d7ea27",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/35",
+  "sequence_number": 35,
+  "title": "5a-5: FcaAttributeSource trait + extraction split",
+  "description": "## Parent\\n\\nsutra/30 (PRD: core model redesign)\\n\\n## What to build\\n\\nDefine the FcaAttributeSource extension trait. Split the current extract_symbol_attrs() into a generic helper (cross-language attributes) and language-specific implementations. RustAdapter implements FcaAttributeSource reading from language_attrs JSON instead of string-matching signatures. FCA engine queries adapters via as_fca_source().\\n\\n## Acceptance criteria\\n\\n- [ ] FcaAttributeSource trait defined: extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>\\n- [ ] Generic helper function for cross-language attributes: complexity bucketing, naming convention detection, directory context\\n- [ ] RustAdapter implements FcaAttributeSource, reads from language_attrs JSON (not signature strings)\\n- [ ] FCA engine queries adapter registry for FcaAttributeSource capability\\n- [ ] Regression test: same FCA attributes produced for existing Rust test cases\\n- [ ] Graceful degradation test: adapter without FcaAttributeSource produces fewer attributes, no errors\\n- [ ] Old extract_symbol_attrs() in fca/attributes.rs removed or deprecated\\n\\n## Blocked by\\n\\n- sutra/31 (LanguageAdapter trait + registry)\\n- sutra/34 (language_attrs column)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] FcaAttributeSource trait defined with extract_attributes method"
+    },
+    {
+      "done": false,
+      "text": "[x] Generic helper function for cross-language attributes (complexity, naming, directory)"
+    },
+    {
+      "done": false,
+      "text": "[x] RustAdapter implements FcaAttributeSource reading from language_attrs JSON"
+    },
+    {
+      "done": false,
+      "text": "[x] FCA engine queries adapter registry for FcaAttributeSource capability"
+    },
+    {
+      "done": false,
+      "text": "[x] Regression test: same FCA attributes for existing Rust test cases"
+    },
+    {
+      "done": false,
+      "text": "[x] Graceful degradation test: adapter without FcaAttributeSource, no errors"
+    },
+    {
+      "done": false,
+      "text": "[x] Old extract_symbol_attrs() removed or deprecated"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nSplit the monolithic `extract_symbol_attrs()` into a generic cross-language helper and language-specific extraction via the `FcaAttributeSource` trait. Language-specific implementations read from the `language_attrs` JSON column (populated at parse time by sutra/34) instead of string-matching signatures. A dispatch function looks up each file's adapter via the registry, checks for `FcaAttributeSource` capability, and falls back to cross-language-only extraction when absent (graceful degradation for Dart, etc.).\n\n## Files\n\n- **Modify**: `src/parser/rust.rs` (lines ~302-310) — add `returns_self` detection to `extract_language_attrs`\n- **Modify**: `src/fca/attributes.rs` — replace `extract_symbol_attrs()` with `extract_cross_language_attrs()` + `extract_attrs_for_symbol()` dispatch\n- **Modify**: `src/fca/mod.rs` — update re-exports\n- **Modify**: `src/parser/adapter.rs` (lines 64, 137) — flesh out `FcaAttributeSource` trait with `extract_attributes` method, implement for `RustAdapter`\n- **Modify**: `src/tools/review.rs` (lines 113, 192-196) — thread `LanguageRegistry` through, use dispatch function\n- **Test**: update `src/fca/attributes.rs` tests, add to `src/parser/adapter.rs` tests, update `tests/review-test.rs`\n\n## Steps\n\n### Step 1: Add `returns_self` to Rust parser's `extract_language_attrs`\n\nThe current `extract_language_attrs` in `src/parser/rust.rs` detects `returns_result` and `returns_option` from the return type AST node but not `returns_self`. Add a `Self` case alongside the existing match arms.\n\nIn `src/parser/rust.rs`, inside the `match name { ... }` block (around line 302):\n\n```rust\nSome(\"Self\") => {\n    attrs.insert(\"returns_self\".into(), true.into());\n}\n```\n\nAlso handle `-> &Self` — check if the return type node wraps a reference to Self:\n\n```rust\n// After the type_identifier / scoped_type_identifier match, add:\n\"reference_type\" => {\n    let inner = ret.child_by_field_name(\"type\")\n        .and_then(|t| t.utf8_text(src).ok());\n    if inner == Some(\"Self\") {\n        attrs.insert(\"returns_self\".into(), true.into());\n    }\n}\n```\n\nWait — this is in the `tn.kind()` match. Actually the return_type node is `ret`, and we check if `ret.kind() == \"generic_type\"` then unwrap. We also need to handle the case where ret IS `Self` directly or `&Self`. Let me look at the match more carefully. The existing code:\n\n```rust\nif let Some(ret) = node.child_by_field_name(\"return_type\") {\n    let type_node = if ret.kind() == \"generic_type\" {\n        ret.child_by_field_name(\"type\")\n    } else {\n        Some(ret)\n    };\n    if let Some(tn) = type_node {\n        let name = match tn.kind() {\n            \"type_identifier\" => tn.utf8_text(src).ok(),\n            \"scoped_type_identifier\" => { ... }\n            _ => None,\n        };\n        match name {\n            Some(\"Result\") => { ... }\n            Some(\"Option\") => { ... }\n            _ => {}\n        }\n    }\n}\n```\n\nFor `-> Self`, the return type node is a `type_identifier` with text `Self`. For `-> &Self`, the return type node is a `reference_type` containing a `type_identifier` `Self`. So:\n\n```rust\nmatch name {\n    Some(\"Result\") => { attrs.insert(\"returns_result\".into(), true.into()); }\n    Some(\"Option\") => { attrs.insert(\"returns_option\".into(), true.into()); }\n    Some(\"Self\") => { attrs.insert(\"returns_self\".into(), true.into()); }\n    _ => {}\n}\n```\n\nFor `&Self`, we need to handle `reference_type` in the kind match. Add:\n\n```rust\n\"reference_type\" => {\n    tn.named_children(&mut tn.walk())\n        .find(|c| c.kind() == \"type_identifier\")\n        .and_then(|c| c.utf8_text(src).ok())\n}\n```\n\nThis returns `Some(\"Self\")` which then matches the `Some(\"Self\")` arm above.\n\n### Step 2: Refactor `extract_symbol_attrs` into `extract_cross_language_attrs`\n\nIn `src/fca/attributes.rs`, rename the function and remove signature-based attribute extraction. The generic helper keeps:\n\n```rust\npub fn extract_cross_language_attrs(sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n    if sym.flags & 0x03 != 0 { return None; }\n    if !MEANINGFUL_KINDS.contains(&sym.kind.as_str()) { return None; }\n\n    let mut attributes = Vec::new();\n    attributes.push(format!(\"kind:{}\", sym.kind));\n\n    // visibility\n    match sym.visibility.as_deref() {\n        Some(\"pub\") => attributes.push(\"vis:pub\".into()),\n        Some(\"pub(crate)\") => attributes.push(\"vis:pub_crate\".into()),\n        _ => attributes.push(\"vis:private\".into()),\n    }\n\n    // docs and signature presence\n    if sym.docstring.is_some() { attributes.push(\"has_doc\".into()); }\n    if sym.signature.is_some() { attributes.push(\"has_sig\".into()); }\n\n    // complexity bucketing\n    if let Some(cog) = sym.cognitive {\n        let bucket = if cog == 0 { \"complexity:zero\" }\n            else if cog <= 5 { \"complexity:low\" }\n            else if cog <= 15 { \"complexity:med\" }\n            else { \"complexity:high\" };\n        attributes.push(bucket.into());\n    }\n\n    // naming convention\n    let naming = if sym.short_name.len() > 1\n        && sym.short_name.chars().all(|c| c.is_uppercase() || c == '_')\n    { \"naming:SCREAMING\" }\n    else if sym.short_name.chars().next().is_some_and(|c| c.is_uppercase())\n    { \"naming:CamelCase\" }\n    else { \"naming:snake_case\" };\n    attributes.push(naming.into());\n\n    // method marker\n    if sym.kind == \"method\" { attributes.push(\"is_method\".into()); }\n\n    // directory context\n    let parts: Vec<&str> = file_path.split('/').collect();\n    if parts.len() >= 2 {\n        let dir = if parts[0] == \"src\" && parts.len() >= 3 {\n            format!(\"in:{}/{}\", parts[0], parts[1])\n        } else {\n            format!(\"in:{}\", parts[0])\n        };\n        attributes.push(dir);\n    }\n\n    Some(SymbolAttrs { name: sym.qualified_name.clone(), file: file_path.to_string(), attributes })\n}\n```\n\n### Step 3: Flesh out `FcaAttributeSource` trait and `RustAdapter` implementation\n\nIn `src/parser/adapter.rs`:\n\nAdd imports:\n```rust\nuse crate::db::SymbolRow;\nuse crate::fca::{SymbolAttrs, extract_cross_language_attrs};\n```\n\nUpdate trait:\n```rust\npub trait FcaAttributeSource: Send + Sync {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs>;\n}\n```\n\nImplement for RustAdapter:\n```rust\nimpl FcaAttributeSource for RustAdapter {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n        let mut sa = extract_cross_language_attrs(sym, file_path)?;\n        if let Some(ref la_json) = sym.language_attrs {\n            if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {\n                for (key, val) in &map {\n                    if val.as_bool() == Some(true) {\n                        sa.attributes.push(key.clone());\n                    }\n                }\n            }\n        }\n        Some(sa)\n    }\n}\n```\n\n### Step 4: Add dispatch function\n\nIn `src/fca/attributes.rs`:\n\n```rust\nuse crate::parser::adapter::LanguageRegistry;\n\npub fn extract_attrs_for_symbol(\n    sym: &SymbolRow,\n    file_path: &str,\n    file_language: &str,\n    registry: &LanguageRegistry,\n) -> Option<SymbolAttrs> {\n    if let Some(adapter) = registry.adapter_for_language(file_language) {\n        if let Some(fca_source) = adapter.as_fca_source() {\n            return fca_source.extract_attributes(sym, file_path);\n        }\n    }\n    extract_cross_language_attrs(sym, file_path)\n}\n```\n\n### Step 5: Wire up `review.rs`\n\nAdd `registry` param to `build_findings`:\n```rust\npub fn build_findings(\n    db: &Db,\n    workspace_root: &Path,\n    changed_paths: &[String],\n    shared_dd: Option<&DdEngine>,\n    registry: &LanguageRegistry,\n) -> Result<ReviewFindings> {\n```\n\nReplace the FCA extraction loop:\n```rust\nfor f in &all_files {\n    let syms = db.find_symbols_by_file(f.id)?;\n    for s in &syms {\n        if let Some(attrs) = fca::extract_attrs_for_symbol(&s, &f.path, &f.language, registry) {\n            all_sym_attrs.push(attrs);\n        }\n    }\n}\n```\n\nIn `handle()`, create the registry and pass it:\n```rust\nlet registry = crate::parser::adapter::default_registry();\n// ...\nbuild_findings(db, workspace_root, &changed_paths, dd_engine, &registry)\n```\n\nUpdate `fca/mod.rs` exports:\n```rust\npub use attributes::{extract_cross_language_attrs, extract_attrs_for_symbol};\n```\n\nRemove the old `extract_symbol_attrs` export.\n\n### Step 6: Tests\n\n**a) Unit tests in `src/fca/attributes.rs`:**\nUpdate existing tests to use `extract_cross_language_attrs`. Verify they produce the same output MINUS the signature-based attributes (returns_result, returns_option, returns_self, takes_self_ref, takes_self_mut). These are now language-specific.\n\n**b) RustAdapter regression test in `src/parser/adapter.rs`:**\n```rust\n#[test]\nfn rust_fca_source_extracts_from_language_attrs() {\n    let rust = RustAdapter;\n    let fca = rust.as_fca_source().unwrap();\n    let sym = SymbolRow {\n        kind: \"function\".into(),\n        signature: Some(\"fn my_func() -> Result<()>\".into()),\n        language_attrs: Some(r#\"{\"returns_result\":true}\"#.into()),\n        // ... other fields\n    };\n    let attrs = fca.extract_attributes(&sym, \"src/tools/foo.rs\").unwrap();\n    assert!(attrs.attributes.contains(&\"returns_result\".to_string()));\n    assert!(attrs.attributes.contains(&\"kind:function\".to_string()));\n}\n```\n\n**c) Graceful degradation test:**\n```rust\n#[test]\nfn dart_adapter_no_fca_source_no_error() {\n    let dart = DartAdapter;\n    assert!(dart.as_fca_source().is_none());\n    // Dispatch falls back to cross-language:\n    let registry = default_registry();\n    let sym = SymbolRow { kind: \"function\".into(), ... };\n    let attrs = crate::fca::extract_attrs_for_symbol(&sym, \"lib/foo.dart\", \"dart\", &registry).unwrap();\n    assert!(attrs.attributes.contains(&\"kind:function\".to_string()));\n    assert!(!attrs.attributes.contains(&\"returns_result\".to_string())); // no lang-specific\n}\n```\n\n**d) Update `tests/review-test.rs`:**\nUpdate `build_findings` calls to pass `&default_registry()`.\n\n## Acceptance criteria coverage\n\n- [x] \"FcaAttributeSource trait defined with extract_attributes method\" → Step 3\n- [x] \"Generic helper function for cross-language attributes (complexity, naming, directory)\" → Step 2\n- [x] \"RustAdapter implements FcaAttributeSource reading from language_attrs JSON\" → Step 3\n- [x] \"FCA engine queries adapter registry for FcaAttributeSource capability\" → Steps 4, 5\n- [x] \"Regression test: same FCA attributes for existing Rust test cases\" → Step 6b\n- [x] \"Graceful degradation test: adapter without FcaAttributeSource, no errors\" → Step 6c\n- [x] \"Old extract_symbol_attrs() removed or deprecated\" → Steps 2, 5 (removed, replaced by new functions)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c787455"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1779891134944,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 35
+      }
+    },
+    {
+      "ts": 1779942758386,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779943237595,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\n**[high] Stale index loses Rust-specific FCA attrs after upgrade** (src/parser/adapter.rs:144-155)\nRustAdapter only adds Rust-specific FCA attributes when sym.language_attrs is present. Existing DB rows migrated from the previous model have NULL language_attrs, and the indexing path skips unchanged files by content hash, so those rows won't be reparsed/backfilled. Silent false negatives for attributes like returns_result, takes_self_ref, returns_self until each file changes or index is manually rebuilt.\n→ Add backfill/reindex trigger for rows with NULL language_attrs, or a parser schema version that invalidates the content-hash skip.\n\n**[medium] Malformed language_attrs JSON silently degrades FCA output** (src/parser/adapter.rs:145-147)\nJSON parse error is swallowed — corrupt or version-skewed language_attrs is indistinguishable from a symbol with no Rust-specific attributes. Hides data loss in convention mining.\n→ Surface parse failures as warnings, or make FcaAttributeSource::extract_attributes return Result.",
+      "ts": 1779943494339
+    }
+  ],
+  "created_at": 1779891134944,
+  "updated_at": 1779943237595,
+  "completed_at": 1779943237595,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e69c7-c772-72f3-a219-c73542449b57",
+      "edge_type": "depends_on",
+      "source": "sutra/35",
+      "target": "sutra/31",
+      "note": null,
+      "created_at": 1779891160946
+    },
+    {
+      "id": "019e69c7-cbeb-7f63-b414-f2318df04c14",
+      "edge_type": "depends_on",
+      "source": "sutra/35",
+      "target": "sutra/34",
+      "note": null,
+      "created_at": 1779891162091
+    }
+  ]
+}

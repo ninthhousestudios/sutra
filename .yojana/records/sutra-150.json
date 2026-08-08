@@ -1,0 +1,232 @@
+{
+  "id": "019ec7d8-2b1c-7f63-a7b8-2b7c73b0cd3e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/150",
+  "sequence_number": 150,
+  "title": "Code-anchored lessons: sutra_remember / contextual surfacing",
+  "description": "## Problem Statement\n\nSutra models the codebase as it is now (structure, conventions, edges) but not what we've learned about it over time. Today that gap is filled by vidhi-reflect mining bug history into a markdown ledger, which gets injected into every session via CLAUDE.md — a broadcast with a hard budget of ~10 entries. This is the inverted-bar problem: the write bar is so high (everything costs context on every turn) that most learned knowledge never gets recorded, and what does get recorded competes for scarce always-on slots.\n\n## Solution\n\nCode-anchored lessons: a shared sqlite store of negative knowledge (things learned about code that a future editor needs to know), surfaced contextually through sutra tools agents already call. Lessons are the complement to conventions — conventions say \"do this,\" lessons say \"don't do that, here's why.\"\n\nAgents write lessons freely during sessions. Quality is controlled through a reactive confidence lifecycle: lessons are born unverified, gain confidence through citation in yojana close-outs, and decay/archive if uncited. No human approval gate on write; the human curation is in the system design (structured close-outs, vidhi-reflect pruning), not in per-lesson approval.\n\nThe `<engineering_lessons>` CLAUDE.md block shrinks from ~10 always-injected entries to a pointer. No cardinality cap, no broadcast tax.\n\n## User Stories\n\n1. As an agent fixing a bug, I want to record what I learned so that future agents working in the same area see the warning without anyone remembering to tell them.\n2. As an agent reading a symbol with `sutra_read`, I want to see relevant lessons inline in the response so that I don't have to know to ask for them.\n3. As an agent assessing blast radius with `sutra_impact`, I want lessons about the affected symbols to appear as warnings so that I avoid known pitfalls.\n4. As an agent orienting on a component with `sutra_orient`, I want to see lessons alongside conventions so that I get both the prescription and the scar tissue.\n5. As an agent writing new code that imports rusqlite, I want sqlite-related lessons to surface so that I don't repeat mistakes from other projects.\n6. As an agent, I want to explicitly query \"what do we know about sqlite in this codebase\" via `sutra_lessons` so that I can proactively check before writing new code in an unfamiliar area.\n7. As an agent citing a lesson during a bug close-out, I want that citation to increase the lesson's confidence so that proven lessons surface more reliably.\n8. As an agent, I want unverified lessons to only surface when no verified lessons cover the same context so that I'm not overwhelmed by low-confidence noise.\n9. As an agent, I want lessons flagged as `[unverified]` when they are so that I can weigh them appropriately.\n10. As an agent, I want to flag a lesson as wrong or outdated so that its confidence drops and it eventually stops surfacing.\n11. As Josh, I want lessons to decay and auto-archive if they're never cited so that the store doesn't accumulate stale noise without a manual pruning obligation.\n12. As Josh, I want vidhi-reflect to prune decayed lessons, flag stale ones, and merge duplicates so that lesson quality improves without manual curation.\n13. As Josh, I want cross-project lessons (e.g., sqlite write discipline) to surface in any project that uses the relevant technology so that knowledge isn't siloed per project.\n14. As Josh, I want lessons categorized by flat tags (rust, dart, sqlite, concurrency, etc.) so that a Dart project never sees rust-only lessons.\n15. As an agent, I want to provide only text and location anchors (the symbol/file I was editing) when writing a lesson so that writing lessons is low ceremony.\n16. As sutra, I want to infer pattern anchors (import patterns, directory globs) and categories from my graph when a lesson is written so that lessons are well-anchored without burdening the writer.\n17. As Josh, I want existing ledger.md lessons (L1–L12) migrated to the shared store as verified lessons so that proven knowledge isn't lost in the transition.\n18. As an agent running vidhi-reflect, I want to write mined lessons to the shared store instead of appending markdown to ledger.md so that lessons are durable and queryable.\n19. As an agent, I want lessons to carry provenance (source task IDs, project origin, creation date) so that I can trace why a lesson exists.\n20. As sutra, I want verified lessons whose anchored code has changed to surface with a `stale` flag so that they're reviewed rather than blindly trusted.\n\n## Implementation Decisions\n\n### Storage\n\n- Shared sqlite DB at `~/.sutra/lessons.db`, separate from per-workspace `index.db` files. Co-located with sutra's existing DB directory.\n- WAL mode for concurrent reads from multiple sutra instances. Single-writer concern is bounded (lessons written infrequently).\n- Own migration system, independent of the per-workspace migration chain.\n- Tables: `lessons` (core fields), `anchors` (lesson_id, kind, value — both location and pattern), `categories` (lesson_id, tag), `citations` (lesson_id, task_id, field, timestamp).\n- FTS5 virtual table on `lessons.text` for explicit queries via `sutra_lessons`.\n\n### Data model\n\nA lesson has:\n- `id` (ULID), `text`, `created_by` (agent/human), `created_at`, `project_origin`\n- Location anchors (provided by writing agent): symbol name, file path\n- Pattern anchors (inferred by sutra): import pattern, directory glob\n- Categories: flat tags, multi-valued, partially inferred. Dimensions: technology (rust, dart, sqlite), architectural (mcp-server, daemon), concern (concurrency, sentinel-values)\n- Confidence lifecycle: `verified` (bool), `confidence` (numeric), `citations` list, `last_surfaced`, `last_cited`, `archived` (bool)\n- Provenance: `source_tasks` (task IDs), `project_origin`\n- Staleness: `verified_at` timestamp, `content_hash_at_verification` for detecting code drift\n\n### Modules\n\n**LessonsDb** — the deep module. New struct with its own sqlite connection to the shared DB. Encapsulates:\n- Schema and migrations\n- Write path: accept text + location anchors, enrich with pattern anchors/categories using caller's workspace DB data, persist\n- Read path: match lessons against a context (symbol, file, imports, component, language), apply surfacing rules\n- Confidence lifecycle: citation recording, staleness via content hash\n- Decay/archive: bulk operations for vidhi-reflect pruning passes\n- Interface: `store()`, `query_for_context()`, `query_fts()`, `cite()`, `flag_wrong()`, `archive_decayed()`\n\n**Anchor matching engine** — inside LessonsDb. Given a `MatchContext` (symbol name, file path, imports list, component ID, workspace language/tech stack), resolves which lessons apply. Matching mechanisms:\n- Exact symbol name match for location anchors\n- File glob matching (glob crate, already a dependency)\n- Import pattern matching against `ImportRow.imported_path` strings\n- Directory glob matching\n- Category filtering by workspace language/tech\n- Surfacing priority: verified lessons always shown; unverified only when no verified lessons cover the same context\n\n**Tool response injection** — shallow glue in `sutra_read`, `sutra_impact`, `sutra_orient`. Each builds a `MatchContext` from already-resolved data and calls `LessonsDb::query_for_context()`. Results appear as a `lessons` array in the response JSON.\n\n**Two new MCP tools:**\n- `sutra_remember` — write endpoint. Accepts text + location anchors + optional source_tasks. Enriches via workspace DB, writes to shared store.\n- `sutra_lessons` — explicit query. FTS5 text search + structured filters (category, symbol, verified status, project).\n\n**Citation tracking** — explicit `sutra_remember(cite: lesson_id)` call for mid-session citation. Plus sutra can scan yojana close-out fields for lesson ID references during vidhi-reflect passes.\n\n### SutraServer wiring\n\n- Add `lessons_db: Arc<LessonsDb>` to `SutraServer`\n- Opened once at server startup (not per-workspace)\n- Passed into `tool_context()` or directly to the three tool `handle()` functions as a new argument\n- `sutra_remember` and `sutra_lessons` route to `LessonsDb` methods\n\n### Anchor enrichment\n\nWhen `sutra_remember` is called, the writing sutra instance enriches the lesson before persisting:\n1. Location anchors are stored as-is (agent-provided symbol name, file path)\n2. Sutra looks up the file in its workspace index → gets imports via `Db::imports_for_file()`\n3. Infers import-pattern anchors from the file's imports\n4. Infers directory pattern from the file path\n5. Infers categories from file language, import patterns, component membership, and existing convention tags\n\n### Surfacing rules\n\n- Verified lessons: always shown when anchors match the context\n- Unverified lessons: shown only when no verified lessons cover the same context; flagged as `[unverified]`\n- Category filtering: sutra knows the workspace language/tech stack, filters out irrelevant categories\n- Stale verified lessons: shown with `[stale]` flag when anchored code's content hash has changed since verification\n- Volume: no hard cap — the combination of anchor specificity and category filtering naturally limits what surfaces\n\n### Confidence lifecycle\n\n1. Birth: confidence = 0, verified = false\n2. Citation in close-out: confidence rises, citation recorded with task ID and timestamp\n3. Anti-verification (agent flags as wrong): confidence drops\n4. Verification threshold: once cited N times (exact threshold TBD, likely 2-3), `verified` flips to true\n5. Decay: unverified + uncited within time window → auto-archived by vidhi-reflect\n6. Staleness: verified lessons with changed content hash → `stale` flag, still surface but flagged\n\n### vidhi-reflect evolution\n\nThe skill's process gains:\n- Tier (c) entries write to `sutra_remember` instead of `<engineering_lessons>` in manas-instructions.md\n- New pruning pass: archive unverified lessons past decay window\n- New staleness pass: flag verified lessons whose anchored code changed\n- New dedup/merge pass: consolidate overlapping lessons\n- Watermark stored in lessons.db (a `metadata` table) instead of ledger.md header\n- Existing tier artifacts (rules.toml, playbooks, project CLAUDE.md) continue unchanged\n\n### Migration path\n\n- One-time vidhi-reflect pass: parse ledger.md L1–L12, create lessons with inferred anchors, mark as verified (they've proven themselves through the ledger's high write bar), preserve provenance (task IDs from Evidence column)\n- `<engineering_lessons>` in manas-instructions.md replaced with a pointer instructing agents to use sutra_remember and cite lessons in close-outs\n- ledger.md archived to `.handoffs/` for historical reference\n\n## Testing Decisions\n\nTests should verify external behavior, not implementation details. Good tests for this module: given a set of stored lessons and a match context, assert the correct lessons surface with the correct flags. Don't test sqlite internals.\n\n**LessonsDb + anchor matching engine** — the deep module, tested in isolation:\n- Store/retrieve round-trips\n- Anchor matching: symbol match, file glob, import pattern, directory glob\n- Category filtering: language-scoped exclusion\n- Surfacing priority: verified-first, unverified-as-fallback, stale flagging\n- Confidence lifecycle: citation increases confidence, anti-verification decreases, verification threshold\n- Decay: archived after time window without citation\n- FTS5 queries: text search, structured filters\n- Enrichment: given a workspace DB with import/component data, verify inferred anchors and categories\n\n**Prior art:** `src/db/conventions.rs` tests (convention lifecycle, matching, state transitions) and constraint tests in `src/constraints/` (rule matching, violation detection, waiver filtering). Same style: set up DB state, call methods, assert results.\n\n**Not tested:** Tool response injection (thin glue), MCP tool routing (covered by existing integration patterns), vidhi-reflect changes (prose skill, not code).\n\n## Out of Scope\n\n- General fact store or episode memory — lessons only\n- Auto-extraction from tool failures or errors — agents write lessons deliberately\n- LLM-based re-anchoring — staleness uses content hashes, not LLM judgment\n- Promotion ladder or decay model from litectx — replaced by simpler citation-based confidence\n- Lesson editing UI or TUI — sqlite is directly queryable\n- Changes to yojana's close-out schema — citation tracking works with existing fields\n- Automated cross-project lesson propagation by sutra — vidhi-reflect handles this during its passes\n\n## Further Notes\n\n- The lesson concept is the negative complement to conventions: conventions = \"do this\" (positive, auto-discovered via FCA), lessons = \"don't do that, here's why\" (negative, agent-curated via experience). They share surfacing channels but have different capture mechanisms.\n- The ETH Zurich finding (hand-curated context +4%, LLM-generated -3%) is addressed by the reactive verification model: agent-written lessons start low-confidence and must prove themselves through citation. The quality gate is in the outcome, not the authorship.\n- Cross-project scope is natural because lessons attach to technologies and patterns, not projects. The shared DB at `~/.sutra/lessons.db` is read by all sutra instances, filtered by workspace relevance.\n- The naming `sutra_remember` was chosen over `sutra_lesson` (noun) to convey the action of recording experiential knowledge. `sutra_lessons` (plural) is the query endpoint.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/litectx/docs/01-product/litectx-memory-prd.md",
+      "label": "litectx PRD (memory design source)"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/manas/docs/lessons/ledger.md",
+      "label": "vidhi-reflect lessons ledger"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/manas/manas-cli/src/adapter/manas-instructions.md",
+      "label": "manas CLAUDE.md injection template"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/litectx/litectx.context.md",
+      "label": "litectx integration guide (memory API reference)"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/litectx/README.md",
+      "label": "litectx README (architecture overview)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "has-prd",
+    "memory",
+    "lessons",
+    "code-memory"
+  ],
+  "history": [
+    {
+      "ts": 1781469293340,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 150
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781484727555,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Workspace-scoped memory: sutra_remember / sutra_recall",
+        "to": "Code-anchored lessons: sutra_remember / contextual surfacing"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781577163076,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "needs-triage"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781619187189,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1781732642423,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [
+    {
+      "author": "claude",
+      "text": "Brainstorm session 2026-06-14: Reshaped from general fact/episode store to code-anchored lessons.\\n\\nResearch survey covered: AI coding tool memory features (Cursor, Copilot, Windsurf, Letta Code), MCP memory layers (AgentMemory, Memoir, Mnemo, MemNexus, Mem0, ai-memory, codebase-memory-mcp), IDE annotation tools (Swimm, CodeTour, CodeStream, Vestige, Codetations), academic literature (Sulír COMLAN 2016, Krüger FSE 2025, SATD corpus, ADR studies, tacit knowledge loss research), emerging products (Lore Protocol, Unblocked, git-why tools, Meta's context system), and convention/rule systems (AGENTS.md, Cursor Rules, Semgrep, Lattice, aicodingrules.org).\\n\\nKey decisions:\\n- Lessons (negative knowledge), not general facts — opinionated over general\\n- Two anchor types: location (symbol/file) + pattern (imports/directory/tags)\\n- Contextual surfacing through existing tools (sutra_read/impact/orient), not a separate recall-only tool\\n- Human-curated, not auto-captured — ETH Zurich finding validates this\\n- Defer episode kind, promotion ladder, decay model from litectx\\n- Drop exploration_budget/confidence coupling\\n- Staleness detection via verified_at + content hash (from Copilot JIT validation + Lore Protocol)\\n\\nThe framing that crystallized: lessons are the negative complement to conventions. Conventions say 'do this.' Lessons say 'don't do that, here's why.' Same infrastructure, opposite polarity.\"",
+      "ts": 1781484745972
+    }
+  ],
+  "created_at": 1781469293340,
+  "updated_at": 1781732642423,
+  "completed_at": 1781732642423,
+  "edges": [
+    {
+      "id": "019ece4a-7d4e-7ef1-9573-4563bdd9f929",
+      "edge_type": "motivated_by",
+      "source": "sutra/151",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577448782
+    },
+    {
+      "id": "019ece4a-bf1a-7ce0-a3a4-77e50de388cc",
+      "edge_type": "motivated_by",
+      "source": "sutra/152",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577465626
+    },
+    {
+      "id": "019ece4b-a5fc-7200-a594-97ca95becdab",
+      "edge_type": "motivated_by",
+      "source": "sutra/153",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577524732
+    },
+    {
+      "id": "019ece4b-a868-7e31-b975-45ca7a597104",
+      "edge_type": "motivated_by",
+      "source": "sutra/154",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577525352
+    },
+    {
+      "id": "019ece4b-ab08-7f40-8f26-7e23b90ff1b4",
+      "edge_type": "motivated_by",
+      "source": "sutra/155",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577526024
+    },
+    {
+      "id": "019ece4b-ad53-7730-9d7b-cc1f97671110",
+      "edge_type": "motivated_by",
+      "source": "sutra/156",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577526611
+    },
+    {
+      "id": "019ece4c-09aa-7321-8141-45a4abc3bb13",
+      "edge_type": "motivated_by",
+      "source": "sutra/157",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577550250
+    },
+    {
+      "id": "019ece4c-fb3d-7921-a974-6dff8c5a502b",
+      "edge_type": "motivated_by",
+      "source": "sutra/158",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577612093
+    },
+    {
+      "id": "019ece4c-fce8-7810-ac7f-dcdae21952d2",
+      "edge_type": "motivated_by",
+      "source": "sutra/159",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577612520
+    },
+    {
+      "id": "019ece4d-020a-70e0-8000-687040ebdea7",
+      "edge_type": "motivated_by",
+      "source": "sutra/160",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577613834
+    },
+    {
+      "id": "019ece4d-02d0-73e0-939a-bcb894b7b6dd",
+      "edge_type": "motivated_by",
+      "source": "sutra/161",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577614032
+    },
+    {
+      "id": "019ece4d-814e-7c90-91e4-4cedba5fbe1d",
+      "edge_type": "motivated_by",
+      "source": "sutra/162",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577646414
+    },
+    {
+      "id": "019ece4e-20d1-73c0-ab83-674ec3f9bc11",
+      "edge_type": "motivated_by",
+      "source": "sutra/163",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577687249
+    },
+    {
+      "id": "019ece4e-2337-72b2-80d1-064856a74541",
+      "edge_type": "motivated_by",
+      "source": "sutra/164",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577687863
+    },
+    {
+      "id": "019ece4e-6ff4-7942-b66c-98a7713750b4",
+      "edge_type": "motivated_by",
+      "source": "sutra/165",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577707508
+    }
+  ]
+}

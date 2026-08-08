@@ -1,0 +1,84 @@
+{
+  "id": "019eb768-538f-7e52-9f53-22be0396d682",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/149",
+  "sequence_number": 149,
+  "title": "Guard: re-check member manifests when root workspace renames change",
+  "description": "When the guard checks a proposed edit to the root Cargo.toml that changes [workspace.dependencies] renames, it currently only checks the root manifest itself against the new rename map. Member manifests that use `workspace = true` aliases are not re-checked — so adding `innocent = { package = \"arrow-core\" }` to the root passes the guard even if a member already has `innocent = { workspace = true }` and arrow-core is constrained.\\n\\nThe guard needs to detect when a root manifest edit changes the rename map, then scan and re-check all member manifests that reference the affected aliases.\\n\\nFound by Codex adversarial review of sutra/148, partially addressed in ddc0352 (root manifest uses proposed content for its own rename map).",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Editing root Cargo.toml to add/change a workspace dep rename is blocked by the guard when a member manifest already uses that alias with workspace=true and the real package is constrained"
+    },
+    {
+      "done": false,
+      "text": "No performance regression for root Cargo.toml edits that don't touch workspace renames"
+    },
+    {
+      "done": false,
+      "text": "Waiver handling works per-member (waivers on server/Cargo.toml apply to server findings)"
+    },
+    {
+      "done": false,
+      "text": "Test covers the bypass-and-catch scenario"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "When check_manifest_raw checks the root Cargo.toml:\\n1. Build proposed rename map from content (already done after ddc0352)\\n2. Build current rename map from on-disk root manifest\\n3. Diff the two maps — if no new/changed renames, stop (zero overhead for normal edits)\\n4. For each affected alias, scan member manifests via scan_workspace_manifests, find any with `alias = { workspace = true }`\\n5. Re-check those members with the proposed rename map via check_manifest + waiver partition\\n6. Merge findings into result\\n\\nExtract a helper `check_manifest_with_waivers` that takes (conn, constraints, manifest_rel_path, content, renames) and does check_manifest + waiver partition → CheckOutcome. Avoids recursion and keeps waiver handling correct per-manifest.\\n\\ncheck_manifest_raw becomes:\\n- Root path: build proposed renames from content, call helper for root, diff renames, call helper for each affected member\\n- Member path: read root from disk, call helper\\n\\nEdge cases: alias removed (Cargo build error, not our problem), alias changed (diff catches), multiple aliases (all handled in one scan), member also being edited in same session (guard fires per-file, ordering is correct for pre-write hooks).\\n\\nCost: member scan only runs when rename map changes (rare). <50 member crates = <1ms IO.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "cc674e8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "guard",
+    "external-crates"
+  ],
+  "history": [
+    {
+      "ts": 1781193528207,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 149
+      }
+    },
+    {
+      "ts": 1781193647688,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781193920791,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: **needs-attention**\n\nTwo findings:\n\n1. **[high] Root rename edits can be blocked by unrelated pre-existing member violations** (check.rs:759-772) — The member recheck appends ALL active findings from scanned members, not just findings introduced by the rename change. A root edit changing alias B can be denied because a member has an unrelated pre-existing forbidden dependency. Fix: diff old_renames vs proposed findings, only surface newly introduced ones.\n\n2. **[medium] Member recheck scans non-workspace Cargo.toml files** (external.rs:383-417) — scan_workspace_manifests walks the filesystem for all Cargo.toml files, not just declared workspace members. Vendored crates, examples, or nested independent workspaces get evaluated with the top-level rename map and can falsely block. Fix: drive recheck from proposed [workspace].members expansion.\n\nNext steps: Add regression tests for both cases; change recheck to diff old-vs-proposed findings and restrict scan to actual workspace members.",
+      "ts": 1781194294648
+    }
+  ],
+  "created_at": 1781193528207,
+  "updated_at": 1781193920791,
+  "completed_at": 1781193920791,
+  "edges": []
+}

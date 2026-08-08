@@ -1,0 +1,69 @@
+{
+  "id": "019ed2ca-0042-78f2-b19d-b7cc11cdcbf6",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/176",
+  "sequence_number": 176,
+  "title": "Design: convention promotion pipeline — reduce noise or replace",
+  "description": "## Impetus\n\nAt the sutra/171 checkpoint (2026-06-16), 206 convention promotion proposals had accumulated across 12 batches over 12 days. Analysis showed:\n\n- **167 (81%) were orphaned** — pointing to conventions from older FCA runs that no longer exist in the current snapshot. They can never resolve; they're clutter from FCA churn between parses.\n- Of the 39 that resolved to live conventions: **21 tautological** (component-membership restatements like \"symbols in src/db have kind:method\"), **1 compiler-enforced**, **17 statistical correlations** that look useful but aren't actionable as rules (e.g. \"documented things are public\" — enforcing this would ban documenting private items).\n- **Zero proposals were worth accepting.** All 206 were mass-dismissed.\n- The one genuinely useful convention (`kind:const → naming:SCREAMING`) was promoted manually months ago. No auto-proposal has ever been accepted.\n\nThe FCA engine is good at finding patterns but bad at distinguishing \"architectural invariant\" from \"statistical correlation.\" The auto-promotion pipeline's threshold (stable high support + confidence over 3 snapshots) selects for common patterns, not important ones. The result is a noise generator that trains users to ignore the system.\n\n### Operational pain: bulk dismiss\n\nDismissing 206 proposals required a direct SQL UPDATE against `~/.sutra/<workspace>/index.db`:\n\n```sql\nUPDATE convention_proposals\nSET status='dismissed', resolved_at=datetime('now')\nWHERE status='pending';\n```\n\nThe MCP tool only supports `dismiss(proposal_id)` — one at a time, 206 round-trips. The DB file lives at `~/.sutra/<workspace_id>/index.db` (WAL mode), NOT at `<project>/.sutra/<workspace>/index.db` (that's a stale copy from an older layout). Regardless of which option below is chosen, a `dismiss_all` action on `sutra_conventions` would remove operational friction.\n\n## Options\n\n### Option A: Kill auto-promotion (simplest)\n\nRemove the promotion pipeline entirely. Keep FCA as a descriptive lens — it's genuinely useful in `sutra_orient` for understanding \"what's normal in this module.\" But stop generating proposals. Conventions worth enforcing are rare enough to come from human curation (`sutra_conventions set_lifecycle`), not statistical mining.\n\n**Pros:** Eliminates all noise immediately. Zero ongoing maintenance. Descriptive value preserved.\n**Cons:** Loses the possibility of catching a genuinely useful pattern automatically. If a future codebase has stronger conventions, this option throws away the detection path.\n\n### Option B: Violations-first (invert the model)\n\nInstead of \"here's a common pattern, should we enforce it?\", surface **outliers**: symbols that break a strong pattern. \"3 functions in src/db are public without docs, while 39 have them\" is a finding, not a promotion proposal. The violation is the signal, not the rule.\n\nThis would change `sutra_orient` or `sutra_review` output to show \"N symbols deviate from the dominant pattern in this component\" — useful for code review without requiring explicit convention promotion.\n\n**Pros:** Surfaces actionable signal (actual drift) without requiring the promotion/dismiss lifecycle. Works better with review workflows.\n**Cons:** More complex to implement. Needs careful threshold tuning to avoid its own noise problem. Risk of reinventing a linter.\n\n### Option C: Raise the promotion bar (incremental)\n\nKeep auto-promotion but filter aggressively:\n- **Exclude component-scoped antecedents** (`in:src/db → ...`) — almost always tautological\n- **Exclude compiler-enforced pairs** (kind:function → naming:snake_case)\n- **Require a minimum violation count** before proposing — a convention with 0 violations isn't useful as a rule, it's a description of reality\n- **Auto-expire orphaned proposals** — proposals pointing to conventions that no longer exist should be pruned on the next snapshot, not accumulate forever\n\n**Pros:** Preserves the pipeline for the rare genuinely useful auto-detection. Reduces volume dramatically.\n**Cons:** Still has a noise floor. Still requires periodic triage. Tuning the filters is its own maintenance burden.\n\n## Recommendation\n\nOption A short-term (disable auto-promotion now, stop the noise), Option B long-term (violations-first is where the real value is). The orphan-expiry fix from Option C is worth doing regardless.\n\n## Immediate fix (any option)\n\nAdd `sutra_conventions(action=\"dismiss_all\")` to bulk-dismiss pending proposals in one MCP call.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Supersede Options A–C: shrink the convention system to attribute extraction + on-the-fly diff-scoped deviation reporting. Delete lifecycle/proposals/drift/templates/waivers and the persistence-as-rules model. Route enforcement to the hand-written constraints system.",
+      "rationale": "Lifetime data across all 48 indexed workspaces: exactly 1 proposal ever accepted vs ~1,500 pending+dismissed; 0 waivers ever created; 0 templates in use; 6 human-set lifecycle states total; sutra re-accumulated 256 pending proposals within 3 weeks of the 206 mass-dismissal; convention-rich corpora (linux-kernel: 1,098 conventions, qutebrowser: 564) yielded nothing actionable either. The architecture (mine→persist→lifecycle→enforce) was built for a dumb-linter consumer, but the consumer is an LLM reviewer: it can infer 'what's normal here' from two files, and what it actually lacks is aggregated evidence — counts, exemplars, and deviations scoped to the diff at review time. That primitive needs attribute extraction + component membership + a group-by, none of the lifecycle machinery. Rules worth hard-enforcing are rare, human-known, and already have a home in the constraints system.",
+      "rejected_alternatives": [
+        "Option C (raise the promotion bar with filters): still a noise floor, ongoing filter-tuning burden, and preserves 8 tables + ~5,000 lines of lifecycle machinery for a pipeline with a 1-in-1,500 lifetime hit rate. Option B as originally framed (violations-first on top of persisted conventions + lifecycle): keeps the persistence and promotion lifecycle the deviation report demonstrably doesn't need. Option A alone (kill promotion, change nothing else): stops the noise but leaves drift/templates/waivers as dead weight and leaves the review output as an unranked convention dump agents already ignore."
+      ]
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Design resolved 2026-07-07. Evidence gathering went beyond the original single-workspace analysis: queried all 48 workspace DBs under ~/.sutra/, which upgraded the verdict from \"noisy\" to \"refuted\" (1 accepted / ~1,500 lifetime proposals, 0 waivers ever, sutra refilled 256 pending within 3 weeks of the mass-dismissal). Outcome supersedes the task's own Options A–C: shrink + on-the-fly diff-scoped deviation report, enforcement via constraints. Implementation tracked on arc sutra/~12 (demolition → deviation-report → validation phases).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "needs-designing"
+  ],
+  "history": [
+    {
+      "ts": 1781652914242,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 176
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783476348681,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783476356863,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781652914242,
+  "updated_at": 1783476356863,
+  "completed_at": 1783476356863,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "design",
+  "edges": []
+}

@@ -1,0 +1,83 @@
+{
+  "id": "019e1cda-472c-7312-986d-1ae47b4176ef",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/15",
+  "sequence_number": 15,
+  "title": "sutra_help with recipes",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd `sutra_help` MCP tool returning agent-oriented recipes for common workflows. Topics: quickstart, workspaces, review, query, freshness, conventions, troubleshooting, recipes. Recipes should reference `sutra_review` and existing tools with concrete examples.\\n\\nKey recipes:\\n- \\\"review my current diff\\\"\\n- \\\"find callers and affected tests for this function\\\"\\n- \\\"explain why a result is stale\\\"\\n- \\\"check whether this change violates local conventions\\\"\\n- \\\"trace a path between two symbols\\\"\\n\\n## Acceptance criteria\\n\\n- [ ] `sutra_help` MCP tool registered and callable\\n- [ ] `sutra_help(topic)` returns focused content for the given topic\\n- [ ] `sutra_help()` with no args returns topic list with one-line summaries\\n- [ ] At least 5 recipes with concrete tool invocation examples\\n- [ ] Recipes reference sutra_review and existing tools accurately\\n\\n## Blocked by\\n\\n- sutra/v1/13 — sutra_review: structural core (so recipes can reference it)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d66da87"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "help"
+  ],
+  "history": [
+    {
+      "ts": 1778600527660,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 15
+      }
+    },
+    {
+      "ts": 1778688387123,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778688640872,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Implementation complete. sutra_help MCP tool added with 8 topics (quickstart, workspaces, review, query, freshness, conventions, troubleshooting, recipes). 5+ recipes with concrete tool invocation examples. All 6 help tests + 27 contract tests pass.",
+      "ts": 1778688627986
+    }
+  ],
+  "created_at": 1778600527660,
+  "updated_at": 1778688640872,
+  "completed_at": 1778688640872,
+  "edges": [
+    {
+      "id": "019e1cda-8375-7201-ae81-63cf87fe966b",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/15",
+      "target": "sutra/v1/13",
+      "note": null,
+      "created_at": 1778600543093
+    },
+    {
+      "id": "019e1cda-bd7f-7480-bacb-e9a1f0d886bc",
+      "edge_type": "refines",
+      "source": "sutra/v1/15",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600557951
+    }
+  ]
+}

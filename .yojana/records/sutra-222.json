@@ -1,0 +1,86 @@
+{
+  "id": "019f2ea3-dbae-7cf1-b704-691383be3157",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/222",
+  "sequence_number": 222,
+  "title": "Design: structural template constraints",
+  "description": "Sutra already generates convention templates via FCA — signature skeletons like `pub async fn $NAME(&self, $PARAMS) -> Result<$T>`. But these are purely descriptive/advisory. There's no way to say \"public methods in this component must match this template\" as a binding constraint.\n\nBedrock enforces component structure mechanically: a presenter can't contain certain code patterns, orchestrators must wire data a certain way. These are shape constraints, not dependency constraints.\n\nProposed: a `structural-template` constraint type that reuses the existing FCA template machinery but makes it prescriptive:\n\n```toml\n[[constraints]]\nkind = \"structural-template\"\nscope = \"component:repository\"\napplies_to = \"pub fn\"\ntemplate = \"pub async fn $NAME(&self, $PARAMS) -> Result<$T>\"\nseverity = \"advisory\"\nrationale = \"Repository methods should be async and return Result for consistency\"\n```\n\nThis bridges the convention→constraint gap without the broken auto-promotion path (sutra/176). Humans see what FCA found, then choose to codify it as a structural constraint. The convention system discovers; the constraint system enforces. No automatic promotion — just human curation with good tooling.\n\nDesign questions:\n- Template syntax: reuse existing FCA metavariable skeletons, or a richer pattern language?\n- Match semantics: must the entire signature match, or is partial matching (e.g. \"must return Result<$T>\") supported?\n- How strict? Exact structural match vs. \"contains these elements\"?\n- Interaction with convention lifecycle: should `orient` suggest \"this discovered convention could become a structural-template constraint\"?\n- Should violations show the template with the deviation highlighted?\n\nReference: bedrock's component trichotomy (orchestrator/presenter/hook) enforcement in `tools/eslint-plugin-bedrock/index.mjs` — see rules like `no-jsx-in-hooks`, component role detection via file path. Also see sutra/176 (convention promotion noise) and sutra/105 (FCA structural limitations) for the problems this sidesteps.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/tools/eslint-plugin-bedrock/index.mjs",
+      "label": "bedrock ESLint plugin (role enforcement rules)"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/176",
+      "label": "convention promotion noise problem"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/105",
+      "label": "FCA structural limitations"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/manas/sutra/docs/conventions-map.md",
+      "label": "sutra conventions design doc"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "bedrock-inspired",
+    "constraints",
+    "conventions"
+  ],
+  "history": [
+    {
+      "ts": 1783193918382,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 222
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783640834875,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783640842225,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Wontfix per 2026-07-09 re-evaluation (with sutra/221 design + conventions shrink): premise \"reuse existing FCA template machinery\" references signature-skeleton generation that the shrunk convention engine no longer has — it now speaks symbol-level boolean attributes, not templates. Value is pincered from both sides: FCA deviations already catch \"9/10 siblings return Result, you don't\" evidence-based; the authored-rule side is exactly the required_pattern complement deferred in sutra/221 (a tree-sitter query expresses \"return type is Result<_>\" without inventing a template language). If shape enforcement is needed later, the move is a small required_pattern kind on the 221 pattern engine, not a template DSL.",
+      "ts": 1783640815642
+    }
+  ],
+  "created_at": 1783193918382,
+  "updated_at": 1783640842225,
+  "completed_at": 1783640842225,
+  "edges": []
+}

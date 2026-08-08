@@ -1,0 +1,83 @@
+{
+  "id": "019efaec-9f28-7871-8e3b-9cd63cdfec90",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/185",
+  "sequence_number": 185,
+  "title": "C import resolver: per-TU include path scoping from compile_commands.json",
+  "description": "parse_compile_commands currently returns one global Vec of -I/-isystem dirs, sort+deduped. This discards per-translation-unit scope and compiler search order. In a real C workspace where different TUs use different -I roots, or two include dirs contain the same header name, a #include \\\"config.h\\\" can resolve to the wrong target purely because it sorts first.\n\nFix: preserve ordered include paths per compile_commands entry, select the entry matching the including source file (via the 'file' and 'directory' fields), and resolve relative include dirs against that entry's 'directory'. Only fall back to workspace-wide paths if no entry matches.\n\nFound by codex adversarial review of sutra/183.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "parse_compile_commands returns per-file include path lists, preserving order"
+    },
+    {
+      "done": false,
+      "text": "resolve_c_imports selects include dirs matching the source file being resolved"
+    },
+    {
+      "done": false,
+      "text": "Relative -I paths resolved against the entry's 'directory' field"
+    },
+    {
+      "done": false,
+      "text": "Test with two compile_commands entries whose -I dirs both contain the same header name, proving per-file resolution"
+    },
+    {
+      "done": false,
+      "text": "Fallback to global include paths when no entry matches the source file"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "68df395"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review-finding"
+  ],
+  "history": [
+    {
+      "ts": 1782326271784,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 185
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782329120893,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782329274176,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782326271784,
+  "updated_at": 1782329274176,
+  "completed_at": 1782329274176,
+  "edges": []
+}

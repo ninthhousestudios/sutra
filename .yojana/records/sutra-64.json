@@ -1,0 +1,108 @@
+{
+  "id": "019e85c5-d201-7130-9e3b-d86c6a7b1a0b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/64",
+  "sequence_number": 64,
+  "title": "5c-7: convention waiver tracking",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nWaiver tracking for convention violations. A waiver annotates a deviation as \"reviewed and intentional\" — it doesn't suppress the finding.\n\nKey pieces:\n- `convention_waivers` table (durable): convention_id TEXT, symbol_qualified_name TEXT, component_id TEXT nullable, rationale TEXT, waived_by TEXT, waived_at TIMESTAMP\n- References use qualified_name / convention_id (not integer PKs — survives reindex)\n- MCP tool: waive a violation (convention_id + symbol + rationale), list waivers, revoke a waiver\n- Review output: waived violations appear as \"waived: {rationale}\" instead of as violations, but remain visible\n- Reconciliation: orphaned waivers (convention_id no longer exists) surfaced alongside orphaned convention_state entries\n\n## Acceptance criteria\n\n- [ ] convention_waivers table created via durable migration\n- [ ] Waivers stored by convention_id + symbol qualified name (not PKs)\n- [ ] MCP tool: create waiver, list waivers, revoke waiver\n- [ ] Review/check output annotates waived violations with rationale\n- [ ] Waived findings remain visible in reports (not suppressed)\n- [ ] Orphaned waivers surfaced by reconciliation pass\n- [ ] Tests: waiver creation, waiver annotation in check output, orphan detection\n\n## Blocked by\n\n- sutra/58 (module rename)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Wave 1-2: migration 0018_convention_waivers.sql, TABLE_REGISTRY entry, ConventionWaiverRow + 5 Db methods (create/list/revoke/waivers_for_check/reconcile_orphaned), 3 new sutra_conventions actions (waive/list_waivers/revoke_waiver).\\n\\nWave 3: Review pipeline partitions violations by waiver status — unwaived stay in convention_violations, waived move to waived_violations with rationale. Waived violations don't affect risk_score. Supports bare name, file-qualified, global, and component-scoped waiver matching.\\n\\nWave 4-5: Orphan detection mirrors reconcile_orphaned_states pattern. Tests: CRUD, uniqueness upsert, component scoping, orphan detection, reindex durability.\"",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "5b9f7b8"
+    },
+    {
+      "type": "git:commit",
+      "value": "3f7b782"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "review-b"
+  ],
+  "history": [
+    {
+      "ts": 1780360794625,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 64
+      }
+    },
+    {
+      "ts": 1780414916647,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780414991710,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780415016826,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780415977825,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (sutra/61+62+64 combined):\n\nVerdict: needs-attention\n\nFinding relevant to 5c-7:\n- [medium] Waiver reconciliation misses symbol-orphaned waivers (src/db/conventions.rs:461-468). reconcile_orphaned_waivers only checks convention_id existence. Waiver whose symbol was renamed/deleted while convention remains active is not surfaced as orphaned — stale waiver stays in waivers_for_check and can silently apply to a later symbol with the same name.",
+      "ts": 1780415326382
+    }
+  ],
+  "created_at": 1780360794625,
+  "updated_at": 1780415977825,
+  "completed_at": 1780415977825,
+  "edges": [
+    {
+      "id": "019e85c6-6807-7dc3-9a7e-f3e568417b16",
+      "edge_type": "depends_on",
+      "source": "sutra/64",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360833031
+    },
+    {
+      "id": "019e85c6-77fe-78e2-93a0-fddc4d2001a1",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/64",
+      "note": null,
+      "created_at": 1780360837118
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "id": "019e9a93-2c30-7490-81a1-0417e54519e9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/113",
+  "sequence_number": 113,
+  "title": "Explain flag on scored/ranked tools",
+  "description": "Sutra returns opaque scores in many tools: health scores (1.0-10.0), pr_risk (0.0-1.0), convention confidence, FCA thresholds, map importance ranking, impact risk levels. Agents and humans can't tell why a file scored 4.2 or why pr_risk is 0.7.\n\nAdd an `explain` parameter to scored tools that expands the scoring rationale:\n- sutra_file_health → per-finding deduction breakdown, category cap effects, which biomarkers drove the score\n- sutra_pr_risk → per-signal contribution (blast_radius, complexity, churn, volume)\n- sutra_map → importance contributors (fan_in, symbol_count, blast_radius)\n- sutra_impact → BFS frontier visible (which symbols at depth 1, 2, 3)\n- sutra_review → risk_score decomposition\n\nMCP-first. Default behavior (no flag) unchanged.\n\nReplaces old task: sutra/3.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Each of the 5 tools (sutra_file_health, sutra_pr_risk, sutra_map, sutra_impact, sutra_review) accepts an `explain: bool` parameter (default false)"
+    },
+    {
+      "done": false,
+      "text": "When explain=false or absent, output is identical to today — no behavioral change"
+    },
+    {
+      "done": false,
+      "text": "When explain=true, each tool adds an `_explain` object to the response with scoring rationale specific to that tool"
+    },
+    {
+      "done": false,
+      "text": "file_health explain: formula text, per-finding raw_deduction + scale_factor, per-category cap + whether capping applied, biomarker weight table"
+    },
+    {
+      "done": false,
+      "text": "pr_risk explain: normalization ceilings per signal, per-signal contribution (weight*score), per-symbol formula breakdown"
+    },
+    {
+      "done": false,
+      "text": "map explain: per-file importance_breakdown showing each addend, formula text"
+    },
+    {
+      "done": false,
+      "text": "impact explain: BFS frontier by depth (symbols at depth 1, 2, 3), threshold constants"
+    },
+    {
+      "done": false,
+      "text": "review explain: weights with rationale (like pr_risk already has), per-signal ceiling + contribution"
+    },
+    {
+      "done": false,
+      "text": "All existing tests pass unchanged (explain defaults off)"
+    },
+    {
+      "done": false,
+      "text": "At least one integration test per tool exercises explain=true and asserts the _explain key is present and non-empty"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "# Plan: Explain flag on scored/ranked tools\n\n## Approach\n\nAdd an `explain: Option<bool>` parameter to each of the 5 scored tools' Args structs, thread it through to the compute/handle functions, and when true, inject an `_explain` object into the JSON response with scoring rationale. The `_explain` key follows the same convention as `_meta` (underscore-prefixed metadata). Each tool's explain content is tool-specific but follows a shared shape: formula text + per-item decomposition. Default behavior is strictly preserved (explain defaults to None/false).\n\n## Files\n\n- **Modify**: `src/tools/file_health.rs` (~lines 14-27 args, ~lines 175-210 output) — add explain param, emit raw deductions and category caps\n- **Modify**: `src/tools/pr_risk.rs` (~lines 13-20 args, ~lines 57-156 compute) — add explain param, emit ceilings and per-signal contributions\n- **Modify**: `src/tools/map.rs` (~lines 12-18 args, ~lines 32-90 handle_inner) — add explain param, emit importance breakdown per file\n- **Modify**: `src/tools/impact.rs` (~lines 9-13 args, ~lines 18-85 handle) — add explain param, emit BFS frontier by depth and thresholds\n- **Modify**: `src/tools/review.rs` (~lines args, ~lines 895-968 compute) — add explain param, emit weights doc and ceilings\n- **Modify**: `src/mcp.rs` (~lines 678-693, 795-810, 505-515, 330-338, 734-750) — thread explain from args to handler calls\n- **Modify**: `src/health/scoring.rs` — expose category caps as a serializable structure (or keep inline in file_health)\n- **Test**: `tests/health-test.rs` — add explain=true test cases for file_health\n- **Test**: `tests/db-test.rs` or new `tests/explain-test.rs` — add explain=true tests for pr_risk, map, impact, review\n\n## Steps\n\n### Step 1: Add explain parameter to Args structs\n\nAdd to each of the 5 Args structs:\n\n```rust\n/// When true, include `_explain` with scoring rationale\n#[serde(default)]\npub explain: Option<bool>,\n```\n\n### Step 2: Thread explain through file_health\n\nExtend `handle`/`handle_ctx`/`handle_inner` signatures to accept `explain: bool`. In `handle_inner`, when explain is true:\n\n```rust\n// After scoring each file:\nif explain {\n    let explain_findings: Vec<_> = result.deductions.iter().map(|d| json!({\n        \"finding_id\": d.finding_id,\n        \"raw_deduction\": scoring::round3(d.raw_deduction),\n        \"scaled_deduction\": scoring::round3(d.scaled_deduction),\n        \"category\": d.category.as_str(),\n        \"scale_factor\": if d.raw_deduction > 0.0 { scoring::round3(d.scaled_deduction / d.raw_deduction) } else { 1.0 },\n    })).collect();\n\n    let category_caps: Value = HealthCategory::all().iter().map(|c| {\n        let raw_total: f64 = result.deductions.iter()\n            .filter(|d| d.category == *c)\n            .map(|d| d.raw_deduction).sum();\n        (c.as_str().to_string(), json!({\n            \"cap\": c.cap(),\n            \"raw_total\": scoring::round3(raw_total),\n            \"capped\": raw_total > c.cap(),\n        }))\n    }).collect();\n\n    entry[\"_explain\"] = json!({\n        \"formula\": \"10.0 - sum(scaled_deductions), clamped to [1.0, 10.0]\",\n        \"findings\": explain_findings,\n        \"categories\": category_caps,\n    });\n}\n```\n\nUpdate MCP dispatch:\n```rust\ntools::file_health::handle_ctx(&ctx, ..., args.explain.unwrap_or(false))\n```\n\n### Step 3: Thread explain through pr_risk\n\nIn `compute`, when explain is true, add to the response:\n\n```rust\nif explain {\n    result[\"_explain\"] = json!({\n        \"formula\": \"sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]\",\n        \"signals\": {\n            \"blast_radius\": { \"ceiling\": change_signals::BLAST_NORM, \"contribution\": scoring::round3(W_BLAST * blast_score) },\n            \"complexity\":   { \"ceiling\": change_signals::COMPLEXITY_NORM, \"contribution\": scoring::round3(W_COMPLEXITY * complexity_score) },\n            \"churn\":        { \"ceiling\": change_signals::CHURN_NORM, \"contribution\": scoring::round3(W_CHURN * churn_score) },\n            \"volume\":       { \"ceiling\": 25.0, \"contribution\": scoring::round3(W_VOLUME * volume_score) },\n        },\n        \"riskiest_symbols_formula\": \"normalize(blast, 50) * 0.6 + normalize(cognitive, 30) * 0.4\",\n    });\n}\n```\n\nAdd `explain: bool` param to `compute` and `handle`.\n\n### Step 4: Thread explain through map\n\nIn `handle_inner`, when explain is true, add a breakdown to each file entry:\n\n```rust\nif explain {\n    let pr_boost = (f.pagerank.unwrap_or(0.0) * 1000.0) as i64;\n    let cog_boost = max_cog.min(20);\n    entry[\"_explain\"] = json!({\n        \"importance_breakdown\": {\n            \"symbol_count\": symbol_count,\n            \"fan_in_boost\": f.fan_in_files * 2,\n            \"blast_radius\": f.blast_radius,\n            \"pagerank_boost\": pr_boost,\n            \"complexity_boost\": cog_boost,\n        }\n    });\n}\n```\n\nAlso add a top-level formula field:\n```rust\nif explain {\n    result[\"_explain\"] = json!({\n        \"formula\": \"symbol_count + fan_in_files*2 + blast_radius + floor(pagerank*1000) + min(max_cognitive, 20)\"\n    });\n}\n```\n\n### Step 5: Thread explain through impact\n\nModify the BFS loop to track which symbols are discovered at each depth:\n\n```rust\nlet mut frontier_by_depth: Vec<Vec<(String, String)>> = vec![Vec::new(); BFS_MAX_DEPTH];\n\n// Inside BFS loop, when a new symbol is discovered at depth+1:\nif explain {\n    if let Some(name) = db.symbol_by_id(caller_sym.id)?.map(|s| s.qualified_name) {\n        let file = db.file_by_id(caller_sym.file_id)?.map(|f| f.path).unwrap_or_default();\n        frontier_by_depth[depth].push((name, file));\n    }\n}\n```\n\nThen in output:\n```rust\nif explain {\n    result[\"_explain\"] = json!({\n        \"bfs_frontier\": {\n            \"depth_1\": frontier_by_depth[0].iter().map(|(s, f)| json!({\"symbol\": s, \"file\": f})).collect::<Vec<_>>(),\n            \"depth_2\": frontier_by_depth[1].iter().map(|(s, f)| json!({\"symbol\": s, \"file\": f})).collect::<Vec<_>>(),\n            \"depth_3\": frontier_by_depth[2].iter().map(|(s, f)| json!({\"symbol\": s, \"file\": f})).collect::<Vec<_>>(),\n        },\n        \"thresholds\": {\n            \"high\": { \"direct_callers\": 15, \"files_touched\": 20 },\n            \"medium\": { \"direct_callers\": 5, \"files_touched\": 8 },\n        }\n    });\n}\n```\n\n### Step 6: Thread explain through review\n\nIn `compute`, when explain is true:\n\n```rust\nif explain {\n    result[\"_explain\"] = json!({\n        \"formula\": \"sum(weight_i * min(raw_i / ceiling_i, 1.0)), clamped to [0, 1]\",\n        \"weights\": {\n            \"blast_radius\": { \"weight\": W_BLAST, \"ceiling\": change_signals::BLAST_NORM, \"contribution\": scoring::round3(W_BLAST * blast_score), \"rationale\": \"blast radius of changed symbols\" },\n            \"complexity\": { \"weight\": W_COMPLEXITY, \"ceiling\": change_signals::COMPLEXITY_NORM, \"contribution\": scoring::round3(W_COMPLEXITY * complexity_score), \"rationale\": \"peak cognitive complexity in changed code\" },\n            \"hotspot_overlap\": { \"weight\": W_HOTSPOT, \"ceiling\": \"file_count (dynamic)\", \"contribution\": scoring::round3(W_HOTSPOT * hotspot_score), \"rationale\": \"proportion of changed files that are churn hotspots\" },\n            \"churn\": { \"weight\": W_CHURN, \"ceiling\": change_signals::CHURN_NORM, \"contribution\": scoring::round3(W_CHURN * churn_score), \"rationale\": \"total recent churn across changed files\" },\n            \"convention_violations\": { \"weight\": W_CONVENTIONS, \"ceiling\": 5.0, \"contribution\": scoring::round3(W_CONVENTIONS * convention_score), \"rationale\": \"number of convention violations detected\" },\n        },\n    });\n}\n```\n\nAdd `explain: bool` param to `compute` and `handle`, thread from `build_findings` through.\n\n### Step 7: Update MCP dispatch in mcp.rs\n\nFor each of the 5 tool methods, pass `args.explain.unwrap_or(false)` to the handler. Example pattern:\n\n```rust\n// sutra_file_health\nlet result = tools::file_health::handle_ctx(\n    &ctx,\n    args.path.as_deref(),\n    args.limit,\n    args.mode.as_deref(),\n    args.component.as_deref(),\n    args.explain.unwrap_or(false),  // new\n)\n```\n\n### Step 8: Tests\n\nAdd at least one test per tool that calls with explain=true and asserts:\n- `_explain` key exists\n- Contains expected sub-keys (formula, breakdown, etc.)\n- Values are non-empty and numerically reasonable\n\nVerify all existing tests still pass (explain defaults off, no output change).\n\n## Acceptance criteria coverage\n\n- [x] \"Each of the 5 tools accepts an `explain: bool` parameter\" → Steps 1, 7\n- [x] \"When explain=false or absent, output identical to today\" → Step 1 (serde default), Step 8 (existing tests)\n- [x] \"When explain=true, adds `_explain` object\" → Steps 2-6\n- [x] \"file_health explain: formula, raw_deduction, scale_factor, caps, biomarker weights\" → Step 2\n- [x] \"pr_risk explain: ceilings, contributions, per-symbol formula\" → Step 3\n- [x] \"map explain: per-file breakdown, formula\" → Step 4\n- [x] \"impact explain: BFS frontier by depth, thresholds\" → Step 5\n- [x] \"review explain: weights with rationale, ceilings, contributions\" → Step 6\n- [x] \"All existing tests pass unchanged\" → Step 8\n- [x] \"Integration test per tool exercises explain=true\" → Step 8",
+  "execution_record": "Implemented as planned — 8 steps collapsed to one commit. All 5 tools got `explain: Option<bool>` in their Args struct, threaded through handle/compute. The `_explain` object uses underscore prefix matching the existing `_meta` convention. Test file `tests/explain-test.rs` covers all 5 tools (positive + negative). Full suite (392+ tests) passes clean.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2d3e7a2"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "observability",
+    "mcp",
+    "scoring"
+  ],
+  "history": [
+    {
+      "ts": 1780709796912,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 113
+      }
+    },
+    {
+      "ts": 1781469684463,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781470703142,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781470709786,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (verdict: needs-attention):\n\n1. [medium] pr_risk omits _explain for empty diffs — compute() returns early when changed_paths.is_empty() before the explain block. explain=true on a no-op range silently drops _explain.\n2. [medium] review omits _explain for empty diffs — same early-return pattern in review::compute(). Clean branches/empty ranges bypass the explain block.\n3. [medium] review hotspot ceiling is string \"file_count (dynamic)\" not the actual numeric ceiling used — consumers can't recompute contribution from the explanation. Test masks this by allowing string|number.",
+      "ts": 1781470982087
+    }
+  ],
+  "created_at": 1780709796912,
+  "updated_at": 1781470709786,
+  "completed_at": 1781470709786,
+  "edges": []
+}

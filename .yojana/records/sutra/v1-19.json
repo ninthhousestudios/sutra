@@ -1,0 +1,77 @@
+{
+  "id": "019e21a6-d10f-7e20-8ca8-3d4b877a432f",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/19",
+  "sequence_number": 19,
+  "title": "Daemon: hot-reload workspaces + fix registration timeout",
+  "description": "Workspaces added via `sutra workspaces add` after the daemon is running are invisible to the scheduler and time out on `sutra_status`. Three related fixes, all touching `daemon.rs` + `mcp.rs` and the shared `Arc<RwLock<WorkspacesConfig>>`:\\n\\n**1. Reload workspaces.toml periodically (~15-25 lines)**\\n`check_stale_workspaces` (daemon.rs:265) only reads the in-memory snapshot. Re-read `workspaces.toml` at the top of each scheduler tick and update the Arc if it changed. This also drops workspaces removed from config (e.g. manas was removed but the daemon kept reparsing it).\\n\\n**2. Verify timed-out registrations get picked up (~0-5 lines)**\\nPOST-registered workspaces that time out in `try_daemon_register` may already work — `last_parse_time() == None` maps to `is_stale = true` in the scheduler. Verify this path works; if the sentinel isn't written in all timeout paths, add it.\\n\\n**3. Increase or remove the 10s status timeout (~3-5 lines)**\\n`try_daemon_register` in `mcp.rs:901-928` has a hardcoded `for _ in 0..10` loop (1s sleep × 10). vidya takes 14s to parse. Either increase to match `parse_timeout_sec` config (default 60s), or return a `parse_pending` status immediately and let the caller retry.\\n\\nRepro: `sutra workspaces add vidya ...` while daemon running → `sutra_status` times out → workspace is zombie (registered but unparsed, scheduler ignores it).\"",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Workspaces added to workspaces.toml after daemon start appear in the next scheduler tick without daemon restart"
+    },
+    {
+      "done": false,
+      "text": "Workspaces removed from workspaces.toml are dropped from the scheduler (not reparsed indefinitely)"
+    },
+    {
+      "done": false,
+      "text": "sutra_status for a new workspace with 14s parse time succeeds (either blocks long enough or returns pending status)"
+    },
+    {
+      "done": false,
+      "text": "POST-registered workspaces whose initial parse timed out are reparsed on the next scheduler tick"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a20e98b"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "daemon",
+    "workspaces"
+  ],
+  "history": [
+    {
+      "ts": 1778681041167,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 19
+      }
+    },
+    {
+      "ts": 1778681156007,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778681431274,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778681041167,
+  "updated_at": 1778681431274,
+  "completed_at": 1778681431274,
+  "edges": []
+}

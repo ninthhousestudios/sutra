@@ -1,0 +1,135 @@
+{
+  "id": "019efb43-a71d-7572-868e-556d769a5d98",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/187",
+  "sequence_number": 187,
+  "title": "Python parser module + adapter registration",
+  "description": "Create the Python parser module and register PythonAdapter. This is the foundation — all other sessions depend on it.\n\nCovers plan Steps 1-3 from sutra/116.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "tree-sitter-python added to Cargo.toml, cargo check passes"
+    },
+    {
+      "done": false,
+      "text": "src/parser/python.rs created with: collect_symbols (functions, classes/methods, decorated_definitions unwrapped, module-level assignments — ALL_CAPS→Const else Static), collect_references (Call/FieldAccess/TypeUse with method-call disambiguation), collect_imports (absolute + relative with dot-level counting), extract_flags (test_* prefix, TestCase subclass, pytest.fixture), extract_fn_language_attrs (is_async, has_decorator, decorator:X dotted names, has_type_hints, returns_none, is_generator), build_fn_signature, extract_docstring"
+    },
+    {
+      "done": false,
+      "text": "PythonAdapter struct in adapter.rs: language_id='python', extensions=['.py'], grammar=tree_sitter_python, module_boundary=Weak, as_fca_source=Some(self)"
+    },
+    {
+      "done": false,
+      "text": "PYTHON_EFFECT_PATTERNS const defined (fs/net/db/io/process categories)"
+    },
+    {
+      "done": false,
+      "text": "FcaAttributeSource impl on PythonAdapter (same pattern as CAdapter — cross_language_attrs + language_attrs JSON deser)"
+    },
+    {
+      "done": false,
+      "text": "Registered in default_registry()"
+    },
+    {
+      "done": false,
+      "text": "pub mod python in src/parser/mod.rs"
+    },
+    {
+      "done": false,
+      "text": "Parser integration tests: function extraction, class with methods (:: qualified names), decorated function attrs, async function, module-level assignments, import extraction, reference classification, flags, generator detection, type hint detection"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nMirror the C adapter (most recent, closest structure). Create src/parser/python.rs with the full extraction pipeline, then PythonAdapter in adapter.rs.\n\n## Files\n\n- **Modify**: `Cargo.toml` (~line 43) — add `tree-sitter-python = \"0.23\"`\n- **Create**: `src/parser/python.rs` — full parser module\n- **Modify**: `src/parser/mod.rs` — add `pub mod python;`\n- **Modify**: `src/parser/adapter.rs` — PythonAdapter struct, LanguageAdapter impl, PYTHON_EFFECT_PATTERNS, FcaAttributeSource impl, register in default_registry\n- **Create**: `tests/parse_python_test.rs` — parser integration tests\n\n## Steps\n\n### 1. Add dependency + module stub\n\nAdd `tree-sitter-python` to Cargo.toml. Create `src/parser/python.rs` with a minimal `pub fn parse(ctx: &ParseContext) -> Result<ParseResult>` that returns empty results. Add `pub mod python;` to `src/parser/mod.rs`. Verify `cargo check`.\n\n### 2. Symbol extraction\n\nImplement `collect_symbols(node, src, name_context, file_path)`:\n- `function_definition` → Function (top-level) or Method (inside class)\n- `class_definition` → SymbolKind::Class, recurse body with class name pushed to context\n- `decorated_definition` → unwrap inner node, extract decorator list, process inner as bare\n- `expression_statement` with `assignment` at module scope → Const (ALL_CAPS) or Static\n- Qualified names: `context.join(\"::\") + \"::\" + name`\n- Visibility: `_`-prefix → private, else pub\n\n### 3. Decorator, language_attrs, signatures, docstrings\n\n`extract_decorators(node, src)` → walk decorator children, build dotted names (strip call args)\n`extract_fn_language_attrs(node, src, decorators)` → JSON with is_async, has_decorator, decorator:X, has_type_hints, returns_none, is_generator\n`build_fn_signature(node, src)` → `def name(params) -> return_type`\n`extract_docstring(node, src)` → first string expression in body\n\n### 4. References\n\n`collect_references(node, src)` with `classify_ref_context`:\n- Parent is `call` → Call\n- Parent is `attribute` AND grandparent is `call` AND this is function position → Call\n- Parent is `attribute` → FieldAccess\n- In type annotation → TypeUse\n\n### 5. Import extraction\n\n`collect_imports(node, src)`:\n- `import_statement` → raw_path = dotted module name\n- `import_from_statement` → raw_path = module with dots prefix for relative level\n\n### 6. Flags\n\n`extract_flags(file_path, name, node, decorators)`:\n- `test_*.py` or `*_test.py` file → FLAG_TEST\n- `test_*` function name → FLAG_TEST\n- Class bases contain `TestCase` → FLAG_TEST\n- `pytest.fixture` in decorators → FLAG_CFG_TEST\n\n### 7. PythonAdapter + registration\n\nAdd to adapter.rs: PythonAdapter struct, LanguageAdapter impl (Weak boundary), PYTHON_EFFECT_PATTERNS, FcaAttributeSource impl (same deser pattern as CAdapter), register in default_registry.\n\n### 8. Tests\n\ntests/parse_python_test.rs covering all extraction paths.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "df8712e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "language",
+    "python",
+    "parser"
+  ],
+  "history": [
+    {
+      "ts": 1782331975453,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 187
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782391887018,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782392876634,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "All acceptance criteria met:\\n- tree-sitter-python added to Cargo.toml, cargo check passes ✓\\n- src/parser/python.rs created with all required functions ✓\\n- PythonAdapter in adapter.rs with language_id='python', extensions=['.py'], grammar=tree_sitter_python, module_boundary=Weak, as_fca_source=Some(self) ✓\\n- PYTHON_EFFECT_PATTERNS defined (fs/net/db/io/process) ✓\\n- FcaAttributeSource impl on PythonAdapter ✓\\n- Registered in default_registry() ✓\\n- pub mod python in src/parser/mod.rs ✓\\n- 20 integration tests all passing ✓\\n- Full suite 509 tests passing, zero regressions ✓\\n\\nCommit: df8712e\"",
+      "ts": 1782392871223
+    },
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: approve with notes.\n\nTwo findings, both verified against source:\n\n1. [HIGH] from-import extraction loses imported symbol (python.rs:675-683)\ncollect_import_from stores only module_name, dropping the imported names. `from pathlib import Path` stores \"pathlib\" (not \"pathlib.Path\"); `from . import utils` stores \".\" (not \".utils\"). Rust parser stores full qualified paths — this is information loss that the resolver (sutra/189) cannot recover. Needs fix before or during resolver work.\n\n2. [MEDIUM] TypeUse classification misses nested annotations (python.rs:594-624)\nclassify_ref_context only checks direct parent for \"type\" node kind. References inside generics (`list[User]`), qualified types (`pkg.Result`), and unions (`int | None`) get misclassified as Other/FieldAccess. References still extracted, just wrong kind. Bounded impact, can be deferred.",
+      "ts": 1782393742117
+    }
+  ],
+  "created_at": 1782331975453,
+  "updated_at": 1782392876634,
+  "completed_at": 1782392876634,
+  "arc_id": "019efb43-0c5e-7242-80eb-87939215d6ad",
+  "arc_phase": "Parser & Adapter",
+  "edges": [
+    {
+      "id": "019efb44-aba5-79d3-a442-64bb41126466",
+      "edge_type": "refines",
+      "source": "sutra/187",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332042149
+    },
+    {
+      "id": "019efb44-b917-7041-85d5-fd17c808326e",
+      "edge_type": "depends_on",
+      "source": "sutra/188",
+      "target": "sutra/187",
+      "note": null,
+      "created_at": 1782332045591
+    },
+    {
+      "id": "019efb44-bcd7-7b13-9966-56e71653b910",
+      "edge_type": "depends_on",
+      "source": "sutra/189",
+      "target": "sutra/187",
+      "note": null,
+      "created_at": 1782332046551
+    }
+  ]
+}

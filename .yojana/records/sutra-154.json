@@ -1,0 +1,116 @@
+{
+  "id": "019ece4b-2d53-7972-94da-2920ac2accfe",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/154",
+  "sequence_number": 154,
+  "title": "FTS5 + sutra_lessons query tool",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nAdd an FTS5 virtual table on `lessons.text` and a new `sutra_lessons` MCP tool for explicit lesson queries. This is the direct-lookup complement to contextual surfacing — for when an agent wants to proactively check \"what do we know about sqlite\" before writing new code.\n\nQuery interface: `sutra_lessons(query?, category?, symbol?, verified?)`. Supports FTS5 text search, structured filtering by category tag, symbol anchor, and verification status. Results include full lesson data (text, anchors, categories, confidence, provenance).\n\n## Acceptance criteria\n\n- [ ] FTS5 virtual table created on `lessons.text` (in lessons.db migration)\n- [ ] `sutra_lessons` MCP tool registered and callable\n- [ ] Text search via FTS5 returns relevant lessons ranked by relevance\n- [ ] Structured filters (category, symbol, verified) narrow results correctly\n- [ ] Combined text + structured filters work together\n- [ ] Empty/no-match queries return empty results, not errors\n- [ ] Tests: FTS5 ranking, filter combinations, empty results\n\n## Blocked by\n\n- sutra/152 — 5x-review-1",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "FTS5 virtual table created on lessons.text"
+    },
+    {
+      "done": false,
+      "text": "sutra_lessons MCP tool registered and callable"
+    },
+    {
+      "done": false,
+      "text": "Text search via FTS5 returns relevant lessons ranked by relevance"
+    },
+    {
+      "done": false,
+      "text": "Structured filters (category, symbol, verified) narrow results correctly"
+    },
+    {
+      "done": false,
+      "text": "Combined text + structured filters work together"
+    },
+    {
+      "done": false,
+      "text": "Empty/no-match queries return empty results, not errors"
+    },
+    {
+      "done": false,
+      "text": "Tests: FTS5 ranking, filter combinations, empty results"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd an FTS5 virtual table on `lessons.text` via a second migration, synced by triggers so `store()` needs no changes. Add a `LessonsDb::search` method that combines FTS5 text search with structured filters (category, symbol anchor, verified). Wire a new `sutra_lessons` MCP tool via the same pattern as `sutra_remember` (no workspace context needed — lessons are global).\n\nAlternative considered: standalone FTS5 table (duplicates text). Rejected — external-content FTS5 with `content='lessons'` avoids duplication and auto-syncs via triggers. SQLite's implicit rowid works since `lessons` isn't a WITHOUT ROWID table.\n\n## Files\n\n- **Create**: `src/lessons_fts5.sql` — migration SQL for FTS5 table + sync triggers\n- **Modify**: `src/lessons.rs` (lines ~17, ~230+) — add migration entry, add `LessonsSearchParams` struct and `LessonsDb::search` method\n- **Create**: `src/tools/lessons.rs` — `LessonsArgs` struct + `handle` function\n- **Modify**: `src/tools/mod.rs` (line ~28) — add `pub mod lessons;`\n- **Modify**: `src/mcp.rs` (after `sutra_remember`, ~line 539) — register `sutra_lessons` tool\n- **Test**: `tests/lessons-test.rs` — FTS5 ranking, filter combinations, empty results\n\n## Steps\n\n### Step 1: Create FTS5 migration SQL\n\nCreate `src/lessons_fts5.sql`:\n\n```sql\nCREATE VIRTUAL TABLE lessons_fts USING fts5(text, content='lessons', content_rowid='rowid');\n\nCREATE TRIGGER lessons_ai AFTER INSERT ON lessons BEGIN\n    INSERT INTO lessons_fts(rowid, text) VALUES (new.rowid, new.text);\nEND;\n\nCREATE TRIGGER lessons_ad AFTER DELETE ON lessons BEGIN\n    INSERT INTO lessons_fts(lessons_fts, rowid, text) VALUES('delete', old.rowid, old.text);\nEND;\n\nINSERT INTO lessons_fts(lessons_fts) VALUES('rebuild');\n```\n\n### Step 2: Register the migration in `src/lessons.rs`\n\nAdd to the `MIGRATIONS` const (line ~17):\n\n```rust\nconst MIGRATIONS: &[(&str, &str)] = &[\n    (\"0001_initial\", include_str!(\"lessons_schema.sql\")),\n    (\"0002_fts5\", include_str!(\"lessons_fts5.sql\")),\n];\n```\n\n### Step 3: Add search method to `LessonsDb`\n\nAdd `LessonsSearchParams` and `LessonsDb::search` after `query_for_context`:\n\n```rust\npub struct LessonsSearchParams<'a> {\n    pub query: Option<&'a str>,\n    pub category: Option<&'a str>,\n    pub symbol: Option<&'a str>,\n    pub verified: Option<bool>,\n    pub project: Option<&'a str>,\n    pub limit: usize,\n}\n\nimpl LessonsDb {\n    pub fn search(&self, params: &LessonsSearchParams<'_>) -> Result<Vec<SurfacedLesson>> {\n        // Build dynamic SQL: base SELECT on lessons\n        // - If query: JOIN lessons_fts ON rowid match, WHERE MATCH\n        // - If category: JOIN categories\n        // - If symbol: JOIN anchors WHERE kind='symbol'\n        // - If verified: WHERE verified = 1\n        // - Always: WHERE archived = 0, project scoping\n        // - ORDER BY: FTS5 rank (if query), else verified DESC, confidence DESC\n        // - LIMIT\n    }\n}\n```\n\nThe dynamic SQL construction handles four optional filter dimensions:\n\n```rust\nlet mut sql = String::from(\n    \"SELECT DISTINCT l.id, l.text, l.verified, l.confidence,\n            l.project_origin, l.created_at FROM lessons l\"\n);\nlet mut conditions = vec![\"l.archived = 0\"];\nlet mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();\n\nif params.query.is_some() {\n    sql.push_str(\" JOIN lessons_fts ON lessons_fts.rowid = l.rowid\");\n    conditions.push(\"lessons_fts MATCH ?N\");\n}\nif params.category.is_some() {\n    sql.push_str(\" JOIN categories c ON c.lesson_id = l.id\");\n    conditions.push(\"c.tag = ?N\");\n}\nif params.symbol.is_some() {\n    sql.push_str(\" JOIN anchors a ON a.lesson_id = l.id\");\n    conditions.push(\"a.kind = 'symbol' AND a.value = ?N\");\n}\n// ... verified, project filtering, ORDER BY, LIMIT\n```\n\n### Step 4: Create tool handler `src/tools/lessons.rs`\n\n```rust\nuse schemars::JsonSchema;\nuse serde::Deserialize;\nuse crate::error::Result;\nuse crate::lessons::{LessonsDb, LessonsSearchParams};\n\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct LessonsArgs {\n    /// Full-text search query (FTS5 syntax)\n    #[serde(default)]\n    pub query: Option<String>,\n    /// Filter by category tag\n    #[serde(default)]\n    pub category: Option<String>,\n    /// Filter by anchor symbol name\n    #[serde(default)]\n    pub symbol: Option<String>,\n    /// Filter to verified lessons only\n    #[serde(default)]\n    pub verified: Option<bool>,\n    /// Project scope\n    #[serde(default)]\n    pub project: Option<String>,\n}\n\npub fn handle(lessons_db: &LessonsDb, args: &LessonsArgs) -> Result<serde_json::Value> {\n    let params = LessonsSearchParams {\n        query: args.query.as_deref(),\n        category: args.category.as_deref(),\n        symbol: args.symbol.as_deref(),\n        verified: args.verified,\n        project: args.project.as_deref(),\n        limit: 50,\n    };\n    let lessons = lessons_db.search(&params)?;\n    Ok(serde_json::json!({\n        \"total\": lessons.len(),\n        \"lessons\": lessons,\n    }))\n}\n```\n\n### Step 5: Register module and MCP tool\n\nIn `src/tools/mod.rs`, add `pub mod lessons;` (alphabetical, after `impact`).\n\nIn `src/mcp.rs`, after `sutra_remember` (~line 539):\n\n```rust\n#[tool(description = \"Search stored lessons by text (FTS5) and/or structured filters \\\n    (category, symbol anchor, verified). Returns matching lessons ranked by relevance.\")]\npub async fn sutra_lessons(\n    &self,\n    Parameters(args): Parameters<tools::lessons::LessonsArgs>,\n) -> Result<String, ErrorData> {\n    let result = tools::lessons::handle(&self.lessons_db, &args).map_err(sutra_to_rmcp)?;\n    to_compact_json(result)\n}\n```\n\n### Step 6: Add tests\n\nNew tests in `tests/lessons-test.rs`:\n\n1. **`fts5_text_search`**: Store two lessons with distinct text. Query with a word from one → returns only that lesson.\n\n2. **`fts5_ranking_prefers_better_match`**: Store lessons with varying relevance. Query returns them in relevance order.\n\n3. **`search_filter_by_category`**: Store lessons with different categories. Filter by one category → only matching lessons.\n\n4. **`search_filter_by_symbol`**: Store lessons with different symbol anchors. Filter by symbol → correct subset.\n\n5. **`search_filter_by_verified`**: Store verified and unverified lessons. Filter verified=true → only verified ones.\n\n6. **`search_combined_filters`**: Text query + category + verified → intersection of all filters.\n\n7. **`search_empty_results`**: Query with no matches → empty results, no error.\n\n8. **`search_no_filters_returns_all`**: No query/filters → returns all non-archived lessons (up to limit).\n\n## Acceptance criteria coverage\n\n- [x] \"FTS5 virtual table created on lessons.text\" → Step 1 (migration) + Step 2 (registered)\n- [x] \"sutra_lessons MCP tool registered and callable\" → Steps 4-5\n- [x] \"Text search via FTS5 returns relevant lessons ranked by relevance\" → Step 3 (ORDER BY rank) + Step 6 tests 1-2\n- [x] \"Structured filters (category, symbol, verified) narrow results correctly\" → Step 3 (dynamic SQL) + Step 6 tests 3-5\n- [x] \"Combined text + structured filters work together\" → Step 3 + Step 6 test 6\n- [x] \"Empty/no-match queries return empty results, not errors\" → Step 3 + Step 6 test 7\n- [x] \"Tests: FTS5 ranking, filter combinations, empty results\" → Step 6 (all 8 tests)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "217dd3a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577493843,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 154
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781663132404,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781663393700,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577493843,
+  "updated_at": 1781663393700,
+  "completed_at": 1781663393700,
+  "edges": [
+    {
+      "id": "019ece4b-9b35-77c1-a3aa-f230f44bb20d",
+      "edge_type": "depends_on",
+      "source": "sutra/154",
+      "target": "sutra/152",
+      "note": null,
+      "created_at": 1781577521973
+    },
+    {
+      "id": "019ece4b-a868-7e31-b975-45ca7a597104",
+      "edge_type": "motivated_by",
+      "source": "sutra/154",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577525352
+    },
+    {
+      "id": "019ece4c-01e2-74d3-a08e-d14a5f94351c",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/154",
+      "note": null,
+      "created_at": 1781577548258
+    }
+  ]
+}

@@ -1,0 +1,151 @@
+{
+  "id": "019e85c5-2bc1-7cd2-a2e2-00088d3e9318",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/61",
+  "sequence_number": 61,
+  "title": "5c-4: per-component convention discovery",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nRun FCA at two levels: global (all symbols) and per-component (each Layer 1 component's symbols). Conventions are tagged with component scope and checked accordingly.\n\nKey pieces:\n- Add nullable `component_id` column to `conventions` table (NULL = global)\n- Engine runs global FCA as today, then runs per-component FCA for each component with enough symbols\n- Adaptive threshold: `min_support = max(2, ceil(component_symbol_count * 0.4))`. Global retains MIN_SUPPORT=3\n- Deduplication: drop component conventions subsumed by a global convention with equal or higher confidence\n- `check()` scoped: when checking a symbol, look up its component and check against both global and that component's conventions. Orphan symbols (no component) only checked against globals\n\n## Acceptance criteria\n\n- [ ] Conventions table has nullable component_id column (migration)\n- [ ] Global FCA produces conventions with component_id = NULL\n- [ ] Per-component FCA produces conventions scoped to each component\n- [ ] Adaptive threshold: small components (e.g., 5 symbols) use min_support=2; large components (e.g., 50 symbols) use min_support=20\n- [ ] Component conventions subsumed by global ones are deduplicated\n- [ ] check() applies both global and component-scoped conventions to a symbol\n- [ ] Symbols not in any component only checked against globals\n- [ ] Tests for adaptive threshold, deduplication, and scoped checking\n\n## Blocked by\n\n- sutra/58 (module rename)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Conventions table has nullable component_id column (migration) ✅"
+    },
+    {
+      "done": false,
+      "text": "Global FCA produces conventions with component_id = NULL ✅"
+    },
+    {
+      "done": false,
+      "text": "Per-component FCA produces conventions scoped to each component ✅"
+    },
+    {
+      "done": false,
+      "text": "Adaptive threshold: small components use min_support=2; large components use min_support=20 ✅"
+    },
+    {
+      "done": false,
+      "text": "Component conventions subsumed by global ones are deduplicated ✅"
+    },
+    {
+      "done": false,
+      "text": "check() applies both global and component-scoped conventions to a symbol ✅"
+    },
+    {
+      "done": false,
+      "text": "Symbols not in any component only checked against globals ✅"
+    },
+    {
+      "done": false,
+      "text": "Tests for adaptive threshold, deduplication, and scoped checking ✅"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nExtend the existing FCA engine to run at two levels: global (all symbols, MIN_SUPPORT=3) and per-component (each component's symbols, adaptive threshold). The engine stays mostly unchanged — the orchestration of multi-level FCA lives in `build_findings`. Convention and SymbolAttrs structs gain a `component_id` field; check() uses it to scope violation detection. Component conventions subsumed by a global convention (same implication, >= confidence) are dropped before storage.\n\nThis approach keeps the FcaEngine simple (it doesn't know about components) and puts the component-awareness in the orchestration layer and the check logic.\n\n## Files\n\n- **Create**: `migrations/0015_convention_component_id.sql` — add nullable component_id column to conventions table\n- **Modify**: `src/conventions/engine.rs` (lines 7-187) — add component_id to Convention/SymbolAttrs/ConventionViolation, add rebuild_with_params, modify check for scoped filtering, add dedup helper\n- **Modify**: `src/db/conventions.rs` (lines 8-193) — add component_id to ConventionRow/ConventionWithState, update all SQL queries (upsert, select, delete) to include component_id\n- **Modify**: `src/tools/review.rs` (lines 115-301) — orchestrate per-component FCA in build_findings, build file→component map, merge results\n- **Modify**: `src/conventions/mod.rs` — re-export any new public items if needed\n- **Test**: `src/conventions/engine.rs` (lines 261-791) — tests for adaptive threshold, deduplication, scoped check\n\n## Steps\n\n### Step 1: Migration — add component_id column\n\nCreate `migrations/0015_convention_component_id.sql`:\n\n```sql\nALTER TABLE conventions ADD COLUMN component_id TEXT REFERENCES components(id);\n```\n\nNULL = global convention, non-null = scoped to that component. No index needed yet — the table is small.\n\n### Step 2: Convention struct — add component_id\n\nIn `src/conventions/engine.rs`, add `component_id: Option<String>` to the `Convention` struct and update `compute_id` to include scope:\n\n```rust\n#[derive(Debug, Clone, PartialEq)]\npub struct Convention {\n    pub id: String,\n    pub antecedent: Vec<String>,\n    pub consequent: Vec<String>,\n    pub support: usize,\n    pub confidence: f64,\n    pub component_id: Option<String>,\n}\n\nimpl Convention {\n    pub fn compute_id(antecedent: &[String], consequent: &[String], component_id: Option<&str>) -> String {\n        let mut ante = antecedent.to_vec();\n        ante.sort();\n        let mut cons = consequent.to_vec();\n        cons.sort();\n        let input = match component_id {\n            Some(cid) => format!(\"{}:{} -> {}\", cid, ante.join(\",\"), cons.join(\",\")),\n            None => format!(\"{} -> {}\", ante.join(\",\"), cons.join(\",\")),\n        };\n        blake3::hash(input.as_bytes()).to_hex()[..16].to_string()\n    }\n}\n```\n\nGlobal convention IDs remain backward-compatible (None case hashes identically to the old format).\n\n### Step 3: SymbolAttrs — add component_id\n\nAdd `component_id: Option<String>` to `SymbolAttrs`:\n\n```rust\n#[derive(Clone)]\npub struct SymbolAttrs {\n    pub name: String,\n    pub file: String,\n    pub attributes: Vec<String>,\n    pub component_id: Option<String>,\n}\n```\n\nUpdate all construction sites (in `build_findings` and tests) to pass `component_id: None` initially. The field is metadata — `build_context` ignores it; only `check()` uses it.\n\n### Step 4: FcaEngine::rebuild_with_params\n\nExtract the core FCA computation into a method that accepts min_support/min_confidence. Have `rebuild` delegate:\n\n```rust\npub fn rebuild(&mut self, symbols: &[SymbolAttrs]) -> Vec<Convention> {\n    self.rebuild_with_params(symbols, MIN_SUPPORT, MIN_CONFIDENCE, None)\n}\n\npub fn rebuild_with_params(\n    &mut self,\n    symbols: &[SymbolAttrs],\n    min_support: usize,\n    min_confidence: f64,\n    component_id: Option<&str>,\n) -> Vec<Convention> {\n    let hash = Self::hash_matrix(symbols);\n    if self.last_matrix_hash == Some(hash) {\n        return self.conventions.clone();\n    }\n\n    let (ctx, _attr_names) = Self::build_context(symbols);\n    let impls = ctx.approximate_implications(min_support, min_confidence);\n\n    self.conventions = impls\n        .into_iter()\n        .map(|imp| {\n            let id = Convention::compute_id(&imp.antecedent, &imp.consequent, component_id);\n            Convention {\n                id,\n                antecedent: imp.antecedent,\n                consequent: imp.consequent,\n                support: imp.support,\n                confidence: imp.confidence,\n                component_id: component_id.map(|s| s.to_string()),\n            }\n        })\n        .collect();\n\n    self.context = Some(ctx);\n    self.symbol_attrs = symbols.to_vec();\n    self.last_matrix_hash = Some(hash);\n\n    self.conventions.clone()\n}\n```\n\n### Step 5: Deduplication helper\n\nAdd a free function in `src/conventions/engine.rs`:\n\n```rust\npub fn deduplicate_component_conventions(\n    component_convs: Vec<Convention>,\n    global_convs: &[Convention],\n) -> Vec<Convention> {\n    component_convs\n        .into_iter()\n        .filter(|cc| {\n            !global_convs.iter().any(|gc| {\n                gc.antecedent == cc.antecedent\n                    && gc.consequent == cc.consequent\n                    && gc.confidence >= cc.confidence\n            })\n        })\n        .collect()\n}\n```\n\n### Step 6: check() — scoped convention filtering\n\nModify `check()` to only apply conventions whose scope matches the symbol:\n\n```rust\npub fn check(\n    &self,\n    changed_symbols: &[SymbolAttrs],\n    config: &ConventionsConfig,\n) -> Vec<ConventionViolation> {\n    let suppressed: HashSet<&str> = config.suppress.iter().map(|s| s.as_str()).collect();\n    let mut violations = Vec::new();\n\n    for conv in &self.conventions {\n        if suppressed.contains(conv.id.as_str()) {\n            continue;\n        }\n        // ... existing exemption logic unchanged ...\n\n        for sym in changed_symbols {\n            // Scope check: global conventions apply to all;\n            // component conventions only apply to symbols in that component\n            if let Some(conv_comp) = &conv.component_id {\n                if sym.component_id.as_ref() != Some(conv_comp) {\n                    continue;\n                }\n            }\n\n            // ... existing antecedent/consequent/missing logic unchanged ...\n        }\n    }\n    violations\n}\n```\n\nNo signature change — backward compatible. Symbols with `component_id: None` (orphans) skip all component conventions, matching only globals.\n\n### Step 7: DB layer — component_id in conventions\n\nIn `src/db/conventions.rs`:\n\n**ConventionRow** — add `pub component_id: Option<String>` field.\n\n**ConventionWithState** — add `pub component_id: Option<String>` field.\n\n**upsert_convention** — add `component_id: Option<&str>` parameter:\n\n```rust\npub fn upsert_convention(\n    &self,\n    id: &str,\n    antecedent: &str,\n    consequent: &str,\n    support: i64,\n    confidence: f64,\n    component_id: Option<&str>,\n) -> Result<()> {\n    let conn = self.conn.lock();\n    conn.execute(\n        \"INSERT INTO conventions (id, antecedent, consequent, support, confidence, component_id)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n         ON CONFLICT(id) DO UPDATE SET\n             support = ?4,\n             confidence = ?5,\n             component_id = ?6,\n             last_seen = datetime('now')\",\n        params![id, antecedent, consequent, support, confidence, component_id],\n    )?;\n    Ok(())\n}\n```\n\n**all_conventions** — add `component_id` to SELECT and ConventionRow construction.\n\n**all_conventions_merged** — add `c.component_id` to SELECT and ConventionWithState construction.\n\n**delete_stale_conventions** — no change needed (operates by id, which is already scope-aware).\n\n### Step 8: Orchestration in build_findings\n\nIn `src/tools/review.rs`, modify `build_findings` (lines ~246-294):\n\n```rust\nif !all_sym_attrs.is_empty() {\n    // Build file -> component_id map\n    let comp_with_paths = db.active_components_with_paths()?;\n    let mut file_to_component: HashMap<String, String> = HashMap::new();\n    for (comp_id, _name, paths) in &comp_with_paths {\n        for path in paths {\n            file_to_component.insert(path.clone(), comp_id.clone());\n        }\n    }\n\n    // Tag each SymbolAttrs with its component\n    for sa in &mut all_sym_attrs {\n        sa.component_id = file_to_component.get(&sa.file).cloned();\n    }\n\n    // 1. Global FCA (all symbols, MIN_SUPPORT=3)\n    let mut global_engine = FcaEngine::new();\n    let global_conventions = global_engine.rebuild(&all_sym_attrs);\n\n    // 2. Per-component FCA\n    let mut all_conventions = global_conventions.clone();\n    for (comp_id, _name, paths) in &comp_with_paths {\n        let path_set: HashSet<&str> = paths.iter().map(|p| p.as_str()).collect();\n        let comp_symbols: Vec<_> = all_sym_attrs\n            .iter()\n            .filter(|s| path_set.contains(s.file.as_str()))\n            .cloned()\n            .collect();\n        if comp_symbols.len() < 2 {\n            continue;\n        }\n        let min_support = std::cmp::max(2, (comp_symbols.len() as f64 * 0.4).ceil() as usize);\n        let mut comp_engine = FcaEngine::new();\n        let comp_convs = comp_engine.rebuild_with_params(\n            &comp_symbols, min_support, MIN_CONFIDENCE, Some(comp_id),\n        );\n        let deduped = deduplicate_component_conventions(comp_convs, &global_conventions);\n        all_conventions.extend(deduped);\n    }\n\n    // 3. Persist to DB\n    for c in &all_conventions {\n        let _ = db.upsert_convention(\n            &c.id,\n            &c.antecedent.join(\", \"),\n            &c.consequent.join(\", \"),\n            c.support as i64,\n            c.confidence,\n            c.component_id.as_deref(),\n        );\n    }\n    let current_ids: Vec<&str> = all_conventions.iter().map(|c| c.id.as_str()).collect();\n    let _ = db.delete_stale_conventions(&current_ids);\n\n    // 4. Check (scoped)\n    // Build a temporary engine with all conventions for check\n    let mut check_engine = FcaEngine::new();\n    check_engine.set_conventions(all_conventions);  // new setter method\n\n    // ... existing forbidden/suppress logic unchanged ...\n\n    for v in check_engine.check(&changed_sym_attrs, &effective_conventions) {\n        convention_violations.push(ConventionViolation { ... });\n    }\n}\n```\n\nNote: need to add `FcaEngine::set_conventions(convs: Vec<Convention>)` — a simple setter to inject conventions for check without running FCA. Also need to export `MIN_CONFIDENCE` and `deduplicate_component_conventions` from the conventions module.\n\n### Step 9: Tests\n\nAdd tests in `src/conventions/engine.rs` test module:\n\n**Adaptive threshold test** — verify small component (5 symbols) uses min_support=2, large component (50 symbols) uses min_support=20:\n\n```rust\n#[test]\nfn adaptive_threshold_small_component() {\n    // 5 symbols, 4 sharing an attribute pattern → min_support=max(2, ceil(5*0.4))=2\n    let symbols = make_small_component_symbols(5);\n    let mut engine = FcaEngine::new();\n    let convs = engine.rebuild_with_params(&symbols, 2, MIN_CONFIDENCE, Some(\"comp-1\"));\n    assert!(!convs.is_empty());\n    assert!(convs.iter().all(|c| c.component_id.as_deref() == Some(\"comp-1\")));\n}\n\n#[test]\nfn adaptive_threshold_large_component() {\n    // 50 symbols, need min_support=20 → only strong patterns survive\n    let symbols = make_large_component_symbols(50);\n    let mut engine = FcaEngine::new();\n    let convs_high = engine.rebuild_with_params(&symbols, 20, MIN_CONFIDENCE, Some(\"comp-2\"));\n    let mut engine2 = FcaEngine::new();\n    let convs_low = engine2.rebuild_with_params(&symbols, 2, MIN_CONFIDENCE, Some(\"comp-2\"));\n    assert!(convs_high.len() <= convs_low.len());\n}\n```\n\n**Deduplication test** — component convention with same implication as global is dropped:\n\n```rust\n#[test]\nfn dedup_removes_subsumed_component_conventions() {\n    let global = vec![Convention {\n        id: Convention::compute_id(&[\"kind:function\".into()], &[\"has_sig\".into()], None),\n        antecedent: vec![\"kind:function\".into()],\n        consequent: vec![\"has_sig\".into()],\n        support: 10,\n        confidence: 0.95,\n        component_id: None,\n    }];\n    let comp = vec![Convention {\n        id: Convention::compute_id(&[\"kind:function\".into()], &[\"has_sig\".into()], Some(\"c1\")),\n        antecedent: vec![\"kind:function\".into()],\n        consequent: vec![\"has_sig\".into()],\n        support: 3,\n        confidence: 0.9,\n        component_id: Some(\"c1\".into()),\n    }];\n    let result = deduplicate_component_conventions(comp, &global);\n    assert!(result.is_empty());\n}\n```\n\n**Scoped check test** — symbol in component A is checked against global + A's conventions, not B's:\n\n```rust\n#[test]\nfn check_scoped_to_symbol_component() {\n    let mut engine = FcaEngine::new();\n    engine.set_conventions(vec![\n        // Global convention\n        Convention { component_id: None, ... },\n        // Component A convention\n        Convention { component_id: Some(\"a\".into()), ... },\n        // Component B convention\n        Convention { component_id: Some(\"b\".into()), ... },\n    ]);\n    let sym_in_a = SymbolAttrs { component_id: Some(\"a\".into()), ... };\n    let violations = engine.check(&[sym_in_a], &ConventionsConfig::default());\n    // Should see violations from global + A, never from B\n}\n\n#[test]\nfn orphan_symbols_only_checked_against_globals() {\n    // Symbol with component_id: None → only global conventions apply\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"Conventions table has nullable component_id column (migration)\" → Step 1\n- [x] \"Global FCA produces conventions with component_id = NULL\" → Steps 2, 4, 8\n- [x] \"Per-component FCA produces conventions scoped to each component\" → Steps 4, 8\n- [x] \"Adaptive threshold: small components use min_support=2; large components use min_support=20\" → Steps 4, 8, 9\n- [x] \"Component conventions subsumed by global ones are deduplicated\" → Steps 5, 8, 9\n- [x] \"check() applies both global and component-scoped conventions to a symbol\" → Steps 6, 9\n- [x] \"Symbols not in any component only checked against globals\" → Steps 6, 9\n- [x] \"Tests for adaptive threshold, deduplication, and scoped checking\" → Step 9",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "3f7b782"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "needs-plan",
+    "review-b"
+  ],
+  "history": [
+    {
+      "ts": 1780360752065,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 61
+      }
+    },
+    {
+      "ts": 1780412130643,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780412949718,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780415976905,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Implementation complete. Two commits: a9c89b9 (core implementation) and 9acb38f (tests). All 121+ tests pass, clippy clean. Key changes: migration 0015 (ephemeral), Convention/SymbolAttrs/ConventionRow gain component_id, FcaEngine gets rebuild_with_params + set_conventions, build_findings orchestrates global + per-component FCA with dedup, check() scopes by component. 11 new tests.",
+      "ts": 1780412957717
+    },
+    {
+      "author": "codex",
+      "text": "Codex review (sutra/61+62+64 combined):\n\nVerdict: needs-attention\n\nFinding relevant to 5c-4:\n- [high] Large components use moving 40% threshold instead of required cap (src/tools/review.rs:302-303). Formula max(2, ceil(size*0.4)) equals 20 only at 50 symbols, becomes 40 at 100, 80 at 200. Contract says min_support=20 for large components. Tests encode wrong formula.",
+      "ts": 1780415320209
+    }
+  ],
+  "created_at": 1780360752065,
+  "updated_at": 1780415976905,
+  "completed_at": 1780415976905,
+  "edges": [
+    {
+      "id": "019e85c6-61fe-7da1-a0bd-1ce8e3a4f37e",
+      "edge_type": "depends_on",
+      "source": "sutra/61",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360831486
+    },
+    {
+      "id": "019e85c6-6b02-7fa2-baa7-8903d39c6a8d",
+      "edge_type": "depends_on",
+      "source": "sutra/63",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360833794
+    },
+    {
+      "id": "019e85c6-6e67-77a1-930d-db6e024d4d9b",
+      "edge_type": "depends_on",
+      "source": "sutra/65",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360834663
+    },
+    {
+      "id": "019e85c6-7255-7d22-8f7b-a49f492a06a2",
+      "edge_type": "depends_on",
+      "source": "sutra/66",
+      "target": "sutra/61",
+      "note": null,
+      "created_at": 1780360835669
+    }
+  ]
+}

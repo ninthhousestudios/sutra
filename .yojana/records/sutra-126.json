@@ -1,0 +1,112 @@
+{
+  "id": "019eae91-7fc8-7bd1-a0ad-bdc7184da8c9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/126",
+  "sequence_number": 126,
+  "title": "Wave 2: Rust ref precision — extract method-call names",
+  "description": "walk_refs_recursive collects only identifier/type_identifier; field_identifier (method name in x.method()) is never extracted, and receiver-position identifiers are classified FieldAccess and skipped by the resolver. Result: sutra_impact/refs/calls/dead systematically wrong for idiomatic Rust (Db::upsert_file → 0 callers); manufactured a 100% false-positive dead-code list in this review. Finding: rust-refs-miss-method-calls (HIGH). Locations: src/parser/rust.rs:603-630, src/resolver.rs:46-57.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "field_identifier nodes inside call_expression extracted as Call-context refs"
+    },
+    {
+      "done": false,
+      "text": "receiver-position identifiers (e.g. SKIP_DIRS.contains(...)) produce usable refs"
+    },
+    {
+      "done": false,
+      "text": "full reparse of sutra workspace forced after fix"
+    },
+    {
+      "done": false,
+      "text": "sutra_impact(Db::upsert_file) reports real callers (acceptance test from review)"
+    },
+    {
+      "done": false,
+      "text": "sutra_dead false-positive rate collapses: previously-flagged live symbols (rules.rs methods, db/graph.rs, similarity machinery) no longer reported dead"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Parser changes in src/parser/rust.rs:\\n1. walk_refs_recursive: added second extraction arm for field_identifier nodes in method-call position (parent=field_expression, grandparent=call_expression), tagged as RefContextKind::Call\\n2. classify_ref_context: changed field_expression arm to only classify field_identifier as FieldAccess — receiver identifiers now fall through to Other and get resolved normally\\n3. Added is_method_call_name helper\\n4. 5 new unit tests: method_call_extracts_call_ref, receiver_not_field_access, chained_method_calls, plain_field_access_no_method_ref, self_method_call\\n\\nVerification after rebuild + full reparse (content hashes cleared):\\n- Db::upsert_file: 0 → 163 callers\\n- Db::insert_ref: 0 → 38 callers\\n- sutra_dead: 45 items, none from rules.rs/db/graph.rs/similarity (previously ~100% false-positive)\\n- All 291+ tests pass, clippy clean",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "finding: rust-refs-miss-method-calls"
+    },
+    {
+      "type": "git:commit",
+      "value": "b0ed279"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045231560,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 126
+      }
+    },
+    {
+      "ts": 1781095862027,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781095868476,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045231560,
+  "updated_at": 1781095868476,
+  "completed_at": 1781095868476,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "ref-precision",
+  "edges": [
+    {
+      "id": "019eae92-771b-7852-993f-c0c9325942de",
+      "edge_type": "depends_on",
+      "source": "sutra/126",
+      "target": "sutra/125",
+      "note": "verifying the ref fix against a corrupted index proves nothing — heal duplicates first",
+      "created_at": 1781045294875
+    },
+    {
+      "id": "019eae92-80b4-7003-9ba3-576fa810d411",
+      "edge_type": "depends_on",
+      "source": "sutra/129",
+      "target": "sutra/126",
+      "note": "guard fix should be verified against trustworthy refs",
+      "created_at": 1781045297332
+    },
+    {
+      "id": "019eae92-8d2a-7ac0-bdfd-06b95f4444f2",
+      "edge_type": "depends_on",
+      "source": "sutra/132",
+      "target": "sutra/126",
+      "note": null,
+      "created_at": 1781045300522
+    }
+  ]
+}

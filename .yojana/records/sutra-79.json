@@ -1,0 +1,72 @@
+{
+  "id": "019e8c69-fd3d-7041-87fd-98b7e87c2f1d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/79",
+  "sequence_number": 79,
+  "title": "5d-review-2: review core (resolver, waivers)",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to review\n\nCore checkpoint: 5d-4 (boundary resolver), 5d-5 (constraint waivers).\n\n### Focus areas\n\n- **Boundary resolver (5d-4)**: correctness of component_membership join, cache generation-counter logic, behavior when component membership is empty or stale, mixed boundary + forbidden_dep constraints handled correctly\n- **Constraint waivers (5d-5)**: durable table survives reindex, CRUD methods follow existing DB patterns, orphan detection works, waiver scoping (file vs symbol) is clear\n\n### Stable state after this checkpoint\n\nAll data paths exist. Boundary constraints resolve to file-level pairs and feed DD. Waivers are stored durably. Ready for integration layer.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780472216893,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 79
+      }
+    },
+    {
+      "ts": 1780565713147,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780472216893,
+  "updated_at": 1780565713147,
+  "completed_at": 1780565713147,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-765e-7bd3-949f-15906af6bc22",
+      "edge_type": "depends_on",
+      "source": "sutra/79",
+      "target": "sutra/72",
+      "note": null,
+      "created_at": 1780472247902
+    },
+    {
+      "id": "019e8c6a-7987-7d82-9d14-e6f999d9fac5",
+      "edge_type": "depends_on",
+      "source": "sutra/79",
+      "target": "sutra/73",
+      "note": null,
+      "created_at": 1780472248711
+    }
+  ]
+}

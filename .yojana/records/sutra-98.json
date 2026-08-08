@@ -1,0 +1,53 @@
+{
+  "id": "019e9780-5b84-74a2-8b93-2f56e0cea3a1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/98",
+  "sequence_number": 98,
+  "title": "Performance review: quadratic pattern families + general scaling",
+  "description": "General performance review of the similarity/health pipeline, including:\\n\\n- **Quadratic pattern family detection** (from codex review of sutra/92, finding 3): `find_pattern_families` compares every vector pair unconditionally during parse. O(n²) on 1024-dim vectors with no cap, index, batching, or timeout. Stalls indexing on larger workspaces. Location: src/pipeline.rs:610-615.\\n  → Move behind bounded background path, or pre-bucket by cheap AST fingerprints/LSH, or add function-count cap.\\n\\n- Broader scaling audit: HRR encoding cost per symbol, snapshot write volume, similarity search query performance at scale.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/92"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "performance"
+  ],
+  "history": [
+    {
+      "ts": 1780658232196,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 98
+      }
+    },
+    {
+      "ts": 1780660840213,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780658232196,
+  "updated_at": 1780660840213,
+  "completed_at": 1780660840213,
+  "edges": []
+}

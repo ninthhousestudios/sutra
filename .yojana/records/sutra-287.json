@@ -1,0 +1,70 @@
+{
+  "id": "019f8fad-354a-76a3-ab1a-6dc08f73520a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/287",
+  "sequence_number": 287,
+  "title": "sutra-guard deadlock: forbidden_dep blocks the very edit that removes the import",
+  "description": "sutra-guard on Edit/Write evaluates a file's CURRENT on-disk dependency edges (from the index), not the proposed new content. When a blocking `forbidden_dep` rule fires — e.g. swe_dashboard's `tabs-use-kernel-not-runner` (lib/tabs/** must not import lib/core/ephemeris/runner.dart) — EVERY edit to the offending file is blocked, including the edit that removes the forbidden import. Deadlock.\n\nRepro (swe-dashboard, 2026-07-23): editing lib/tabs/ayanamsa/ayanamsa_provider.dart to drop its `import '.../ephemeris/runner.dart';` was rejected by the guard on every attempt, even a full Write whose content no longer had the import.\n\nWorkarounds used: (a) SUTRA_GUARD_DISABLE=1, or (b) write the corrected content out-of-band (bash heredoc) then sutra_workspace(action=reparse). Both are escape hatches, not fixes.\n\nProposed fix direction: the guard should diff the PROPOSED content's import set against the rule and allow an edit that reduces/removes violations (net-improvement / \"you may edit toward compliance\"), only blocking edits that introduce or preserve a NEW violation. At minimum, an edit whose proposed content has strictly fewer forbidden edges than the current file should pass.\n\nImpact: any blocking forbidden_dep becomes a trap the moment it's flipped on with a live violation — you can't clean it up through the normal tools.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "`extract_proposed_imports` had no Dart import resolution — the `else` branch fell back to `SELECT ... FROM imports WHERE file_id = ?1`, returning the indexed (on-disk) edges instead of deriving them from the proposed content's ParseResult. This meant every edit to a file with a forbidden_dep violation was checked against the old imports, so the guard blocked the fix edit identically to a violation-preserving edit.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a1db624"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sutra-guard",
+    "forbidden-dep",
+    "dx"
+  ],
+  "history": [
+    {
+      "ts": 1784821921098,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 287
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785761148151,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785761795661,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex review (adversarial): needs-attention → addressed.\\n\\n1. [high] Incomplete package discovery fails open — DartPackageMap::build silently skips unreadable dirs. This is inherent to the shared function (indexer has the same gap), not a regression. Mitigated by deferring DartPackageMap construction until a package: import exists (dede826), which eliminates the failure surface for the common case (relative imports).\\n\\n2. [medium] Every Dart edit recursively scans the workspace — Fixed in dede826 by only building the package map when the proposed content contains a non-test package: import.\"",
+      "ts": 1785762200463
+    }
+  ],
+  "created_at": 1784821921098,
+  "updated_at": 1785761795661,
+  "completed_at": 1785761795661,
+  "edges": []
+}

@@ -1,0 +1,60 @@
+{
+  "id": "019f5be7-b7a4-7612-89f1-13ff2b8e87e5",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/261",
+  "sequence_number": 261,
+  "title": "Wire C and Python into symbol_diff's language_for_path",
+  "description": "symbol_diff.rs:language_for_path only maps \\\"rs\\\" and \\\"dart\\\" — C (.c/.h) and Python (.py) files return None and diff_file bails early with an empty Vec. This means diff_impact and commit_manifest never emit symbol-level changes (Added/Deleted/BodyChanged/CosmeticChanged) for C or Python files despite both parsers being fully wired.\\n\\nAdd the missing extension mappings: \\\"c\\\" | \\\"h\\\" → \\\"c\\\", \\\"py\\\" → \\\"python\\\". Verify with parser-backed diff tests for both languages.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "`language_for_path` only matched `\\\"rs\\\"` and `\\\"dart\\\"` extensions — C (.c/.h) and Python (.py) files returned None, causing `diff_file` to bail early with an empty Vec before parsing.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5101b41"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1783953340324,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 261
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785765367687,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785765503504,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783953340324,
+  "updated_at": 1785765503504,
+  "completed_at": 1785765503504,
+  "edges": []
+}

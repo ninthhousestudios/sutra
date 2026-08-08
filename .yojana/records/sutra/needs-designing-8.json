@@ -1,0 +1,102 @@
+{
+  "id": "019e0a5a-7655-7880-85d6-d0b74191f63d",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/8",
+  "sequence_number": 8,
+  "title": "HDC AST encoding experiment for structural code search",
+  "description": "Standalone experiment: encode tree-sitter ASTs into hyperdimensional (VSA) vectors using random base vectors per node-kind and binding/bundling for structure. Goal is to test whether HDC-based structural search (e.g. \"find all functions matching shape: pub fn → calls db → returns Result\") beats existing tree-sitter queries + embedding similarity.\n\nReference: Plate's HRR (1995), Kanerva's HDC. Real research area, real Rust-friendly bitwise SIMD primitives. Capacity falls off with tree depth — bounded encoding scheme matters.\n\nThis is a contained experiment, not infrastructure. Two outcomes both valuable:\n- HDC clearly beats tree-sitter queries on some class of structural search → generalize.\n- HDC adds nothing over tree-sitter queries + cheap embeddings → close, document why.\n\nDesign questions:\n- Binding scheme: XOR (bipolar), permutation (sequence-aware), or holographic reduced representation (real-valued)?\n- Vector dimension: 10000 bits is the canonical default; is that right for our AST sizes?\n- Tree encoding: role-filler bundling, recursive binding by depth, or a graph-structured variant?\n- Cleanup memory: how do we map noisy unbinding results back to known node-kinds?\n- Evaluation: what's the test set? Hand-labeled \"find all X-shaped functions\" queries against a known repo?\n- Cross-language stretch goal (Rust ↔ Dart shared base vectors) or single-language MVP first?\n\nBias toward MVP first. Defer cross-language until single-language structural search demonstrably works.",
+  "category": null,
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Binding scheme + vector dim decided and justified"
+    },
+    {
+      "done": false,
+      "text": "Encoding scheme for tree-sitter ASTs implemented (Rust)"
+    },
+    {
+      "done": false,
+      "text": "Cleanup memory implemented (codebook of node-kinds)"
+    },
+    {
+      "done": false,
+      "text": "Eval set of structural queries assembled with ground truth"
+    },
+    {
+      "done": false,
+      "text": "HDC results vs. tree-sitter-query-baseline measured on the eval set"
+    },
+    {
+      "done": false,
+      "text": "Decision: ship, generalize, or close as null result"
+    }
+  ],
+  "decisions": [
+    "Design decision: HRR only, recorded on sutra/needs-designing/9 after three-codebase practical evaluation."
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ee70c83"
+    },
+    {
+      "type": "git:commit",
+      "value": "c04b472"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "hdc",
+    "experiment"
+  ],
+  "history": [
+    {
+      "ts": 1778290161237,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 8
+      }
+    },
+    {
+      "ts": 1778346690039,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778360037385,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "claude",
+      "text": "## Spike 1 findings (ee70c83, branch spike/hdc-ast-encoding)\n\n### Decisions made\n- **Binding scheme**: XOR (binary MAP). Fast, simple, self-inverse. Works well for similarity search. Limitation: unbinding a bundled prototype produces noise, not clean residuals — HRR (real-valued) may be needed if compositional decomposition becomes important.\n- **Vector dim**: 10,000 bits (157 u64s). Canonical Kanerva default. Density stays healthy (~5000 ones) across all encoding depths. No evidence we need more or less.\n- **Tree encoding**: recursive bind-by-position with depth limit 5. Children get position-permuted then bundled. Depth 5-8 converge (~0.49 pairwise sim), so depth 5 captures most structural info.\n- **Codebook**: lazy HashMap — get_or_create per node kind. 89-114 structural entries (strip mode), 1K-37K with identifiers (embed mode).\n\n### Three orthogonal encoding modes discovered\n1. **Tree (strip)** — AST structure without identifiers. Best for \"find functions shaped like this.\"\n2. **Tree (embed)** — AST structure with identifier text. Best for \"find functions that do this with these names.\"\n3. **Bigram (sequence)** — linearized control flow transitions. Best for \"find functions where these operations happen in this order.\" **This is the novel finding.**\n\nOnly 3% NN agreement between tree and bigram on Linux kernel — genuinely orthogonal views.\n\n### Quantitative results\n\n**Precision@k (sutra, 355 fns):**\n- error-handling: P@1 = 89% vs 38% base rate (2.3x)\n- conditional: P@1 = 69% vs 39% base rate (1.8x)\n- loop: P@1 = 59% vs 24% base rate (2.5x)\n\n**Linux kernel (18,629 fns from kernel/):**\n- match/switch: P@1 = 27% vs 3% base rate (9x)\n- unsafe: P@1 = 87% vs 29% base rate (3x)\n- Security patterns found: 44 free-then-deref, 80 lock-without-unlock, 183 free→free bigrams\n- Lock-balanced vs lock-unbalanced classifier: 74% accuracy (zero training data)\n\n**Redox kernel vs Linux:** Redox has zero free-then-deref, zero double-free, zero alloc-without-check. Rust's ownership system eliminates those bug classes entirely.\n\n### What works / doesn't work\n\n**Works well:** similarity search (both tree and bigram), structural trait retrieval, security pattern detection via sequence encoding, cross-language encoding (C and Rust with same primitives)\n\n**Doesn't work well:** prototype leave-one-out retrieval (R@1 ≈ 0%), unbinding for compositional decomposition (residuals are noise). Both are known limitations of binary MAP vectors.\n\n### Still to explore\n- Analogical reasoning (king-man+woman=queen for code)\n- Multi-scale composition (statement → block → function → module)\n- HRR (real-valued) vectors for better unbinding\n- Integration as a sutra tool (sutra_similar)\n- Larger-scale Linux kernel runs (full tree, not just kernel/)",
+      "ts": 1778346717459
+    },
+    {
+      "author": "claude",
+      "text": "## Spike 2 findings (dbac85c, c04b472, branch spike/hdc-ast-encoding)\n\n### Three new spike modules\n\n**HRR (src/hrr.rs)** — Holographic Reduced Representation, real-valued vectors with FFT-based circular convolution/correlation. Dim=1024, radix-2 FFT, Box-Muller Gaussian init. 11 tests covering: orthogonality, bind/unbind fidelity (sim=0.71), bundle capacity (1/√n), cleanup from bundle (5/5 roles recovered from 5-pair bundle).\n\n**Analogical reasoning (src/analogy.rs)** — Vector arithmetic analogies for code. 6 tests: clean 2-role, 6-role (1 diff), noisy, cleanup pipeline, reusable transforms, NN after transform. All pass.\n\n**Multi-scale (src/multiscale.rs)** — Hierarchical encoding (stmt→block→fn→module). 7 tests: statement retrieval, fn decomposition, module membership, 2-hop retrieval, capacity curve, binding-prevents-leakage. All pass.\n\n### Real-codebase results (hrr-spike binary)\n\nTested on sutra (455 fns), redox-kernel (1548 fns), linux kernel (18629 fns).\n\n**Similarity search**: HRR matches binary MAP quality. P@1 error-handling 92% (sutra), unsafe 89% (redox).\n\n**Analogical reasoning on real code**: Learns trait transforms from example pairs, applies to new functions. error-handling 100% (sutra, redox), loop 75-100%, match 40-85%, conditional 0-100% (fails when base rate is high).\n\n**Unbinding**: Residual is consistently less similar to prototype (80-100%), but cross-similarity to non-group doesn't increase. Residual lives in a different subspace — metric needs rethinking.\n\n**Multi-scale**: Module attribution 48% (sutra), 31% (redox), 3.6% (linux — too many similar C functions). Same-dir clustering clear on redox (0.71 vs 0.44).\n\n**Security patterns**: free→deref (44), lock-no-unlock (80), lock classifier 71% — all transfer from binary MAP.\n\n### Key decisions needed\n- HRR vs binary MAP: HRR enables composition/analogy but is ~10x slower (FFT). Binary MAP is better for pure similarity search. **Hybrid possible**: binary MAP for indexing, HRR for decomposition queries.\n- Unbinding metric: \"more general\" cross-sim doesn't capture what's happening. Need a better eval for compositional decomposition.\n- Multi-scale scaling: needs investigation for large uniform codebases (Linux C kernel).",
+      "ts": 1778351658629
+    }
+  ],
+  "created_at": 1778290161237,
+  "updated_at": 1778360037385,
+  "completed_at": 1778360037385,
+  "edges": []
+}

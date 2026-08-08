@@ -1,0 +1,100 @@
+{
+  "id": "019f2ea3-975a-7ad1-95e6-d59f74866b94",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/221",
+  "sequence_number": 221,
+  "title": "Design: AST-pattern constraints",
+  "description": "Sutra's constraint vocabulary is entirely graph-level (forbidden deps, max fan-in, no cycles, confined crates). There is no way to say \"in component X, this AST pattern is forbidden\" or \"files matching this glob must not contain this structural pattern.\"\n\nBedrock enforces this via ast-grep and semgrep rules scoped to component roles — e.g. \"no `as unknown as`\", \"no fetch in useEffect\", \"no data transforms in presenters.\" These are tree-sitter pattern matches, not import/dependency rules.\n\nSutra already has tree-sitter parsers for every supported language. A natural extension would be a `pattern` constraint type in `.sutra/rules.toml`:\n\n```toml\n[[constraints]]\nkind = \"forbidden-pattern\"\nscope = \"component:presenters\"  # or file glob\nlanguage = \"rust\"\npattern = \".clone()\"  # or tree-sitter S-expression query\nseverity = \"blocking\"\nrationale = \"Avoid clone-driven development in hot paths\"\n```\n\nDesign questions:\n- Pattern syntax: tree-sitter S-expressions, ast-grep pattern syntax, or a simpler string-match-in-AST approach?\n- Scope model: component-scoped, file-glob-scoped, or both?\n- How do these compose with the existing differential-dataflow constraint engine, or are they a separate check pass?\n- Should there be a \"required-pattern\" (must-have) complement to \"forbidden-pattern\"?\n- How does this interact with the convention system — can FCA-discovered patterns feed into pattern constraint suggestions?\n\nReference: bedrock's ast-grep rules at `tools/ast-grep/*.yml` and semgrep rules at `tools/semgrep/*.yml` in https://github.com/JCluzet/bedrock. See especially `no-data-transform-in-presenter.yml`, `no-as-unknown-as.yml`, `no-fetch-in-use-effect.yml` for concrete examples of scoped AST-pattern enforcement.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Tree-sitter S-expression queries as the only v1 pattern syntax",
+      "rationale": "Zero new deps, zero tree-sitter version risk, full predicate power; rules authored by agents at 10-20 rule scale so authoring ergonomics don't warrant a dependency",
+      "rejected_alternative": "ast-grep-core embedding ($X.clone() syntax) — pins tree-sitter ^0.26.3 vs our 0.25, forces perpetual version chasing for a human-ergonomics benefit our authoring model doesn't need"
+    },
+    {
+      "decision": "forbidden_pattern defaults to advisory severity; blocking is per-rule opt-in",
+      "rationale": "Patterns are heuristic (can't see intent); matches max_fan_in precedent for heuristic rules; blocking becomes a deliberate justification gate not a reflex",
+      "rejected_alternative": "blocking default like forbidden_dep — treats a heuristic signal as ground truth and would fight idiomatic code everywhere"
+    },
+    {
+      "decision": "Symbol-level waiver granularity as the finest grain; guard enforces introduced-only via pre/post match-count diff",
+      "rationale": "Line-level waivers churn with every edit; symbol-level rides existing constraint_waivers.symbol_qualified_name; count-diff grandfathers legacy code for free",
+      "rejected_alternative": "Line/occurrence-level waivers — precise but unstable under edits, constant re-waiving"
+    },
+    {
+      "decision": "No required_pattern kind and no FCA→pattern suggestion pipeline in v1",
+      "rationale": "Absence-checks are ambiguous about which file owes the pattern; shrunk FCA deviation engine already covers sibling-based obligations evidence-based; forbidden patterns are the actual gap bedrock exposed",
+      "rejected_alternative": "Shipping required_pattern alongside — doubles surface area for a need with no concrete rule waiting"
+    }
+  ],
+  "implementation_plan": "## Approved design (2026-07-09)\n\n**Pattern syntax: raw tree-sitter query S-expressions** in a `query` field, compiled+validated at parse_rules time against the declared grammar (failures → existing constraint_parse_errors channel). No ast-grep dependency: ast-grep-core 0.44 pins tree-sitter ^0.26.3 vs our 0.25, and rules are authored by agents (S-expressions fine) at ~10-20 rules scale. ast-grep sugar can compile down to this form later without TOML contract change.\n\n**TOML shape:**\n```toml\n[[constraint]]\nkind = \"forbidden_pattern\"\nlanguage = \"rust\"                # required, selects grammar\nquery = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m \"clone\"))) @match'\nname = \"no-clone-driven-dev\"\nseverity = \"blocking\"            # kind default: advisory\nscope = \"src/\"                   # optional, existing glob-or-prefix semantics (scope_matches_path)\nprovenance = \"CLAUDE.md coding_discipline\"\n```\nIdentity = blake3(kind_tag, language, query, scope).\n\n**Clone problem (intent undetectable structurally) → justification gate, 3 layers:**\n1. Guard enforces *introduced-only*: apply proposed edit in memory, parse, count matches vs on-disk version; deny only if count increased. Grandfathers legacy idiomatic uses. (Known soft spot: remove-one-add-one nets zero — acceptable v1; tighten to match fingerprints (enclosing symbol + normalized text) if it bites.)\n2. Waivers = escape hatch with audit trail: existing constraint_waivers symbol_qualified_name granularity. Deny message teaches the path: idiomatic → waive with rationale; reflexive → restructure with references/lifetimes. Rationales auditable in list/review.\n3. Severity+scope precision: kind defaults advisory (max_fan_in precedent); blocking is per-rule opt-in; scope lets strict-in-hot-paths + advisory-workspace-wide coexist as two rules.\n\n**Scope:** path scope only in v1 (reuses sutra/238/239 scope_matches_path). Component scope deferred (Boundary membership machinery exists, add later if needed).\n\n**Engine composition:** separate pass outside DD (per-file local, no relational join), precedent external.rs. New src/constraints/patterns.rs dispatched from both check::evaluate arms. Guard raw path gets a proposed_content entry point (shape of check_pubspec_raw). Review scans changed files only; sutra_constraints violations scans scope-matched files on demand — cache by (file_hash, constraint_id) only if measured slow.\n\n**Finding shape:** ConstraintViolation/ConstraintFinding grow optional location fields (line, snippet) rather than overloading detail string.\n\n**Deferred:** required_pattern kind (absence-checking ambiguous re which file owes the pattern; shrunk FCA deviation engine still covers \"siblings do X, you don't\" evidence-based). FCA→pattern suggestion pipeline: skipped entirely given conventions shrink.\n\nSlices decomposed into arc sutra/~13.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/tools/ast-grep",
+      "label": "bedrock ast-grep rules"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/tools/semgrep",
+      "label": "bedrock semgrep rules"
+    },
+    {
+      "type": "doc:path",
+      "value": "~/soft/sutra-surveys/bedrock/.agents/rules/architecture.md",
+      "label": "bedrock architecture rules doc"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/105",
+      "label": "FCA structural limitations (related)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "bedrock-inspired",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1783193900890,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 221
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783640388078,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783640394859,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783193900890,
+  "updated_at": 1783640394859,
+  "completed_at": 1783640394859,
+  "edges": []
+}

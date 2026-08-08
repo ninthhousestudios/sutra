@@ -1,0 +1,60 @@
+{
+  "id": "019e9d53-e140-7630-8cc1-31c24cabc982",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/120",
+  "sequence_number": 120,
+  "title": "Drop pretty-printing from MCP JSON responses",
+  "description": "Switch all MCP tool responses from `serde_json::to_string_pretty` to `serde_json::to_string` (compact JSON). Also strip null fields via serde skip_serializing_if. Agents are machine consumers — indentation and null padding are pure waste. Estimated ~20-25% token savings on all responses for a one-line change.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "8f2fd0d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "clean-mcp-survey"
+  ],
+  "history": [
+    {
+      "ts": 1780755980608,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 120
+      }
+    },
+    {
+      "ts": 1780756714200,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780756717667,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780755980608,
+  "updated_at": 1780756717667,
+  "completed_at": 1780756717667,
+  "edges": []
+}

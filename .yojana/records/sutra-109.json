@@ -1,0 +1,70 @@
+{
+  "id": "019e9a72-e5da-7042-a8dc-799bc43cc483",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/109",
+  "sequence_number": 109,
+  "title": "fix: file_health component filter doesn't apply to components summary section",
+  "description": "From sutra/104 review. When a component filter is set, per-file results are correctly scoped, but `build_component_scores` is called with unfiltered data and iterates ALL components. A user filtering to component \\\"auth\\\" sees file results for \\\"auth\\\" but component scores for everything.\\n\\nFile: src/tools/file_health.rs:206-211",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/104",
+      "label": "source review"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-health-integration-review.md",
+      "label": "finding: file-health-component-filter-leaks"
+    },
+    {
+      "type": "git:commit",
+      "value": "1f9e318"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review-followup",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1780707681754,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 109
+      }
+    },
+    {
+      "ts": 1780708137462,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780708181423,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780707681754,
+  "updated_at": 1780708181423,
+  "completed_at": 1780708181423,
+  "edges": []
+}

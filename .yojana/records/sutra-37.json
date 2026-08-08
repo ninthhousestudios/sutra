@@ -1,0 +1,119 @@
+{
+  "id": "019e69c7-aa46-7713-a315-f2551b12a9db",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/37",
+  "sequence_number": 37,
+  "title": "5a-7: durable companion pattern (conventions split)",
+  "description": "## Parent\\n\\nsutra/30 (PRD: core model redesign)\\n\\n## What to build\\n\\nSplit the conventions table into detected (ephemeral, rebuilt each FCA run) and convention_overrides (durable, keyed by stable convention ID string). Implement reconciliation pass that detects orphaned overrides after reindex. This establishes the durable companion pattern for all future durable tables.\\n\\nconventions (ephemeral): id, antecedent, consequent, support, confidence, first_seen, last_seen.\\nconvention_overrides (durable): convention_id TEXT, lifecycle_state (descriptive/preferred/deprecated/forbidden), override_reason, created_at, updated_at.\\n\\n## Acceptance criteria\\n\\n- [ ] Migration splits conventions table: conventions (ephemeral) + convention_overrides (durable)\\n- [ ] convention_overrides references conventions by stable ID string, not integer PK\\n- [ ] Convention override survives reindex: create override, reindex, override still present\\n- [ ] Orphan detection: create override for convention X, reindex without X, reconciliation reports orphan\\n- [ ] Merged query: convention + its override returns combined view (detected data + lifecycle state)\\n- [ ] Existing suppressed field migrated to convention_overrides (lifecycle_state = forbidden for suppressed = 1)\\n\\n## Blocked by\\n\\n- sutra/36 (ephemeral/durable storage partition)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "✅ Migration splits conventions: conventions (ephemeral) + convention_overrides (durable)"
+    },
+    {
+      "done": false,
+      "text": "✅ convention_overrides references conventions by stable ID string"
+    },
+    {
+      "done": false,
+      "text": "✅ Convention override survives reindex"
+    },
+    {
+      "done": false,
+      "text": "✅ Orphan detection: override for missing convention flagged in reconciliation"
+    },
+    {
+      "done": false,
+      "text": "✅ Merged query returns combined view (detected + lifecycle state)"
+    },
+    {
+      "done": false,
+      "text": "✅ Existing suppressed field migrated to convention_overrides"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd a `convention_overrides` durable table alongside the existing ephemeral `conventions` table. The new table stores human-authored lifecycle state (descriptive/preferred/deprecated/forbidden) keyed by the convention's stable blake3 ID string. A data migration moves existing `suppressed=1` rows to `convention_overrides` as `lifecycle_state='forbidden'`, then the `suppressed` column is removed from `conventions`. The reindex method is updated to selectively preserve durable migration records. A reconciliation method detects orphaned overrides after reindex.\\n\\nThe `suppress_convention` method is replaced by `set_convention_lifecycle`. The `all_conventions` query is replaced by a merged query joining both tables. The FCA check flow in `review.rs` is updated to use lifecycle state from `convention_overrides` instead of the `suppressed` column.\\n\\n## Files\\n\\n- **Create**: `migrations/0007_convention_overrides.sql` — creates `convention_overrides` table, migrates suppressed data, drops `suppressed` column from conventions\\n- **Modify**: `src/db/mod.rs` — add `convention_overrides` to `TABLE_REGISTRY` as `Durable`; update `reindex()` to selectively clear migration records\\n- **Modify**: `src/db/conventions.rs` — add `ConventionOverrideRow`, replace `suppress_convention` with `set_convention_lifecycle`/`get_convention_override`, add merged query, add `reconcile_orphaned_overrides`, remove `suppressed` field from `ConventionRow`\\n- **Modify**: `src/db/migrations.rs` — add `0007_convention_overrides` entry and `migration_schema_present` arm\\n- **Modify**: `src/tools/review.rs` — use lifecycle state from overrides instead of `suppressed` column\\n- **Modify**: `src/fca/engine.rs` (tests only) — update test for suppressed conventions to use new API\\n- **Test**: `tests/db-test.rs` — reindex preserves durable overrides, orphan detection, merged query, migration of suppressed data\\n\\n## Steps\\n\\n### Step 1: Create migration `0007_convention_overrides.sql`\\n\\nThis migration creates the durable table, migrates existing suppressed data, then rebuilds `conventions` without the `suppressed` column. SQLite doesn't support `DROP COLUMN` in older versions, so we use the rename-recreate pattern.\\n\\n```sql\\nCREATE TABLE IF NOT EXISTS convention_overrides (\\n    convention_id    TEXT NOT NULL PRIMARY KEY,\\n    lifecycle_state  TEXT NOT NULL DEFAULT 'descriptive',\\n    override_reason  TEXT,\\n    created_at       TEXT NOT NULL DEFAULT (datetime('now')),\\n    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))\\n);\\n\\n-- Migrate suppressed conventions\\nINSERT OR IGNORE INTO convention_overrides (convention_id, lifecycle_state, override_reason)\\nSELECT id, 'forbidden', 'migrated from suppressed flag'\\nFROM conventions WHERE suppressed = 1;\\n\\n-- Rebuild conventions without suppressed column\\nALTER TABLE conventions RENAME TO conventions_old;\\n\\nCREATE TABLE conventions (\\n    id         TEXT    NOT NULL PRIMARY KEY,\\n    antecedent TEXT    NOT NULL,\\n    consequent TEXT    NOT NULL,\\n    support    INTEGER NOT NULL,\\n    confidence REAL    NOT NULL,\\n    first_seen TEXT    NOT NULL DEFAULT (datetime('now')),\\n    last_seen  TEXT    NOT NULL DEFAULT (datetime('now'))\\n);\\n\\nINSERT INTO conventions (id, antecedent, consequent, support, confidence, first_seen, last_seen)\\nSELECT id, antecedent, consequent, support, confidence, first_seen, last_seen\\nFROM conventions_old;\\n\\nDROP TABLE conventions_old;\\n```\\n\\n### Step 2: Register migration and update `TABLE_REGISTRY`\\n\\nIn `src/db/migrations.rs`, add the new entry to `MIGRATIONS` and a `migration_schema_present` arm.\\n\\nIn `src/db/mod.rs`, add `convention_overrides` to `TABLE_REGISTRY` as `Durable`.\\n\\n```rust\\n// In TABLE_REGISTRY:\\nTableMeta { name: \\\"convention_overrides\\\", partition: TablePartition::Durable, is_virtual: false },\\n```\\n\\n```rust\\n// In MIGRATIONS:\\n(\\\"0007_convention_overrides\\\", include_str!(\\\"../../migrations/0007_convention_overrides.sql\\\")),\\n```\\n\\n### Step 3: Update `Db::reindex()` to handle durable migrations\\n\\nThe current `reindex()` does `DELETE FROM schema_migrations` — this needs to become selective, only clearing migrations that created ephemeral tables. We need a way to know which migrations are ephemeral-only vs durable.\\n\\nApproach: tag each migration in the `MIGRATIONS` array with whether it touches only ephemeral tables. On reindex, only delete those migration records.\\n\\n```rust\\nconst MIGRATIONS: &[(&str, &str, bool)] = &[\\n    // (name, sql, ephemeral_only)\\n    (\\\"0001_initial\\\", include_str!(...), true),\\n    ...\\n    (\\\"0007_convention_overrides\\\", include_str!(...), false),  // creates durable table\\n];\\n```\\n\\nIn `reindex()`:\\n```rust\\nlet ephemeral_migrations: Vec<&str> = MIGRATIONS\\n    .iter()\\n    .filter(|(_, _, ephemeral_only)| *ephemeral_only)\\n    .map(|(name, _, _)| *name)\\n    .collect();\\nfor name in &ephemeral_migrations {\\n    conn.execute(\\\"DELETE FROM schema_migrations WHERE name = ?1\\\", params![name])?;\\n}\\n```\\n\\n### Step 4: Update `ConventionRow` and add `ConventionOverrideRow`\\n\\nIn `src/db/conventions.rs`:\\n\\n- Remove `suppressed` field from `ConventionRow`\\n- Add `ConventionOverrideRow` struct\\n- Add `ConventionWithOverride` merged view struct\\n- Replace `suppress_convention` with `set_convention_lifecycle` and `get_convention_override`\\n- Add `all_conventions_merged` returning the joined view\\n- Add `reconcile_orphaned_overrides` that returns convention_ids with overrides but no matching convention\\n\\n```rust\\n#[derive(Debug, Clone)]\\npub struct ConventionOverrideRow {\\n    pub convention_id: String,\\n    pub lifecycle_state: String,\\n    pub override_reason: Option<String>,\\n    pub created_at: String,\\n    pub updated_at: String,\\n}\\n\\n#[derive(Debug, Clone)]\\npub struct ConventionWithOverride {\\n    pub id: String,\\n    pub antecedent: String,\\n    pub consequent: String,\\n    pub support: i64,\\n    pub confidence: f64,\\n    pub first_seen: String,\\n    pub last_seen: String,\\n    pub lifecycle_state: Option<String>,\\n}\\n\\nimpl Db {\\n    pub fn set_convention_lifecycle(\\n        &self, convention_id: &str, lifecycle_state: &str, reason: Option<&str>,\\n    ) -> Result<()> { ... }\\n\\n    pub fn get_convention_override(&self, convention_id: &str) -> Result<Option<ConventionOverrideRow>> { ... }\\n\\n    pub fn all_conventions_merged(&self) -> Result<Vec<ConventionWithOverride>> {\\n        // LEFT JOIN convention_overrides ON conventions.id = convention_overrides.convention_id\\n    }\\n\\n    pub fn reconcile_orphaned_overrides(&self) -> Result<Vec<ConventionOverrideRow>> {\\n        // SELECT * FROM convention_overrides WHERE convention_id NOT IN (SELECT id FROM conventions)\\n    }\\n}\\n```\\n\\n### Step 5: Update review.rs to use lifecycle state\\n\\nIn `src/tools/review.rs`, the FCA check currently uses `rules.conventions.suppress` from `rules.toml`. After this change, the check should also consider overrides from the DB:\\n\\n- Load overrides with `lifecycle_state = 'forbidden'` from `convention_overrides`\\n- Merge with the file-based suppress list\\n- Pass the combined set to `fca_engine.check()`\\n\\n```rust\\n// After rebuilding conventions and before checking:\\nlet db_forbidden: Vec<String> = db.all_conventions_merged()?\\n    .iter()\\n    .filter(|c| c.lifecycle_state.as_deref() == Some(\\\"forbidden\\\"))\\n    .map(|c| c.id.clone())\\n    .collect();\\n\\nlet mut effective_config = rules.conventions.clone();\\nfor id in db_forbidden {\\n    if !effective_config.suppress.contains(&id) {\\n        effective_config.suppress.push(id);\\n    }\\n}\\nfor v in fca_engine.check(&changed_sym_attrs, &effective_config) { ... }\\n```\\n\\n### Step 6: Update tests\\n\\nIn `tests/db-test.rs`:\\n\\n1. **Remove** `convention_suppress` test (API removed)\\n2. **Add** `test_set_convention_lifecycle` — set lifecycle, verify override row\\n3. **Add** `test_reindex_preserves_durable_overrides` — seed convention + override, reindex, verify override survives but convention is gone, re-insert convention, verify merged query works\\n4. **Add** `test_reconcile_orphaned_overrides` — create override for non-existent convention, verify reconciliation returns it\\n5. **Add** `test_all_conventions_merged` — conventions with and without overrides, verify joined view\\n6. **Update** `test_reindex_drops_ephemeral_tables` — verify `convention_overrides` is NOT in the dropped list\\n7. **Update** `convention_upsert_and_retrieve` — remove `suppressed` field assertion\\n\\nIn `src/fca/engine.rs` test `check_suppressed_conventions_skipped` — this test uses `rules.toml` suppress, which is unchanged, so no modification needed.\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"Migration splits conventions: conventions (ephemeral) + convention_overrides (durable)\\\" → Steps 1, 2\\n- [x] \\\"convention_overrides references conventions by stable ID string\\\" → Step 1 (PK is `convention_id TEXT`, matching `conventions.id`)\\n- [x] \\\"Convention override survives reindex\\\" → Steps 3, 6 (`test_reindex_preserves_durable_overrides`)\\n- [x] \\\"Orphan detection: override for missing convention flagged in reconciliation\\\" → Steps 4, 6 (`test_reconcile_orphaned_overrides`)\\n- [x] \\\"Merged query returns combined view (detected + lifecycle state)\\\" → Steps 4, 6 (`test_all_conventions_merged`)\\n- [x] \\\"Existing suppressed field migrated to convention_overrides\\\" → Step 1 (migration SQL migrates `suppressed=1` rows to `lifecycle_state='forbidden'`)\"",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "274779c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1779891153478,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 37
+      }
+    },
+    {
+      "ts": 1779944545770,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779944842000,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1779944868643,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780203436229,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Migration, override CRUD, orphan detection, merged query all correct. One medium finding: migration 0007 is marked ephemeral_only=false, but it modifies the ephemeral `conventions` table (drops `suppressed` column). After reindex, 0005 recreates `conventions` with `suppressed` and 0007 doesn't replay → stale column. Fix: mark 0007 as ephemeral_only=true. The SQL is already idempotent w.r.t. convention_overrides (CREATE IF NOT EXISTS, INSERT OR IGNORE), so replaying is safe. Low finding: is_virtual field on TableMeta is dead code.",
+      "ts": 1779969884119
+    }
+  ],
+  "created_at": 1779891153478,
+  "updated_at": 1780203436229,
+  "completed_at": 1780203436229,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e69c7-cd19-7ad0-8c8c-73e2c32cf747",
+      "edge_type": "depends_on",
+      "source": "sutra/37",
+      "target": "sutra/36",
+      "note": null,
+      "created_at": 1779891162393
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "id": "019f9ae6-a9c8-7e50-917c-2935d4829c75",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/297",
+  "sequence_number": 297,
+  "title": "forbidden_dep violations stop being reported after the first query in a server session",
+  "description": "Observed against yojana while verifying yojana/44. A `forbidden_dep` constraint reported its violations once, then reported zero on every subsequent query in the same server session, with no source change and the offending import edges still present and resolved in the index.\n\n**Constraint** (yojana `.sutra/rules.toml`, id `fc34bfa9`):\n\n```toml\nkind = \"forbidden_dep\"\nfrom = \"src/context.rs\"\nto = \"src/tools/**\"\nname = \"domain-must-not-import-tools\"\nseverity = \"advisory\"\n```\n\n**Sequence:**\n\n1. `sutra_workspace(action=\"reparse\")`, then `sutra_constraints(action=\"violations\")` → 2 violations: `src/context.rs -> src/tools/acceptance.rs` and `src/context.rs -> src/tools/context_ref.rs`. Correct.\n2. Edited `.sutra/rules.toml` — changed only the `severity` of two unrelated `forbidden_pattern` constraints (`no-unwrap`, `no-todo-unimplemented`) from advisory to blocking, plus comments. `fc34bfa9` untouched, and its id is unchanged, so the edit did not re-key it.\n3. Reparse, query again → 0 `domain-must-not-import-tools` violations.\n4. Four further reparse/query cycles → 0 every time. `resolved_refs` stable at 1559, total violations stable at 38 (all `no-clone-driven-dev`).\n\n**The edges are still there.** Straight from `~/.sutra/yojana/index.db`:\n\n```\nsrc/context.rs|crate::tools::acceptance|285|is_test=0|line 7\nsrc/context.rs|crate::tools::context_ref::ContextRef|288|is_test=0|line 8\nsrc/context.rs|crate::tools::context_ref::RefType|288|is_test=0|line 8\n```\n\nResolved (non-null `resolved_file_id`), production scope (`is_test = 0`). The source imports are real and unchanged throughout.\n\n**Suspected mechanism** — worth confirming before fixing: findings look like they are emitted as DD *deltas* rather than recomputed as a full set, so a violation already emitted once in the session is not re-emitted on subsequent queries even though the underlying edge still satisfies the rule. The rules.toml write plausibly triggered a config reload that reset the query-side view without replaying existing findings. Compare the Resolved-delta handling in the test-scope work (sutra/290), where an analogous \"absent from the current graph\" assumption caused a first-cut bug.\n\n**Why this matters more than the advisory severity suggests:** the same path serves `blocking`. A layering rule set to blocking would silently go inert after its first report, which is the failure mode a blocking rule exists to prevent — and it fails silently, with no distinction between \"clean\" and \"not evaluated\". yojana/49 is about to promote this exact constraint to blocking.\n\nNot reproduced on `forbidden_pattern` (the `no-clone-driven-dev` count held at 38 across all cycles), so the defect looks specific to edge-derived kinds. Check `no_cycles`, `forbidden_external` and `confined_external` for the same shape.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "Reproduced in a test: an edge-derived violation is reported identically on the 1st and Nth query within one server session"
+    },
+    {
+      "done": true,
+      "text": "Root cause identified — confirm or rule out delta-vs-full-set emission after a rules.toml reload"
+    },
+    {
+      "done": true,
+      "text": "no_cycles, forbidden_external and confined_external checked for the same disappearing-finding behaviour"
+    },
+    {
+      "done": true,
+      "text": "Fix verified against yojana: domain-must-not-import-tools reports both context.rs -> tools/* edges on repeated reparse/query cycles"
+    },
+    {
+      "done": true,
+      "text": "Regression test covers the rules.toml-reload path specifically, since an unrelated constraint's edit is what preceded the disappearance"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Reconcile the DD graph at point of use (sync_edges on every evaluation) rather than firing invalidate() from the index-write path",
+      "rationale": "The invalidation hook already existed and had zero callers — that is precisely how the bug survived. A check the evaluation path performs on itself cannot be forgotten by a future writer of the index. The diff is empty in the common case and returns before touching the worker, so the cost is two HashSet builds.",
+      "rejected_alternative": "Call engine.invalidate() from the reparse/index path. Cheaper at read time, but it re-creates the original failure mode: every future code path that rewrites the index has to remember, and forgetting fails silently as zero violations."
+    },
+    {
+      "decision": "Make the worker's edge collection set-based instead of accepting import_edges' duplicates",
+      "rationale": "import_edges is not DISTINCT, so multiplicity in the dataflow exceeded edges_store's and a delta-based retraction would not fully retract. Set semantics make sync_edges' deltas exact; all downstream views (transitive closure via distinct(), semijoin sign checks) are unchanged by collapsing multiplicity.",
+      "rejected_alternative": "Multiset-aware sync (count occurrences per edge and emit repeats). Exact too, but it preserves a duplicate-carrying representation that no consumer wants and that already disagreed with the SCC store."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Confirmed the mechanism from yojana's own index before writing code: the report's ground truth showed tools/acceptance.rs at id 285, the same file was at 333 an hour later, and `files` is AUTOINCREMENT with 25 files spanning ids 241-341 — roughly four full remints since index creation.\n\nFix: replaced the never-fired invalidation signal with sync-at-use. `DdEngine::sync_edges` reconciles the cached graph against the index's current edge set and applies the difference as a DD delta (empty diff returns before touching the worker, which is the common case). `invalidate`/`is_invalidated`/`reload` removed — a hook nobody calls is how this survived. `update` and `sync_edges` now share one `apply_edge_delta` that commits the tracked edge list only after the worker acknowledges.\n\nSecond defect found on the way: the DD worker fed every element of `Db::import_edges` to the input session, but that query is not DISTINCT (one row per import statement), so a pair imported twice carried multiplicity 2 in the dataflow while `edges_store` held it once. A single retraction would have left the edge alive in DD alone — which would have turned this fix into a different false negative. Ingest/Update now only touch the input when the store actually changed.\n\nScope check on the other kinds: `no_cycles` had the same defect one step removed (stale SCC node ids miss `path_map`, cycle silently skipped) — covered by a test. `forbidden_external`/`confined_external` are not DD-backed (external.rs re-reads unresolved_imports each call) and were never affected, which matches the field observation that only edge-derived DD kinds went quiet; a forbidden_external constraint rides along in the remint test as a control.\n\nVerification: sabotaged check.rs back to ingest-once and watched the two new tests fail with exactly the reported signature (forbidden_dep gone on cycle 1, forbidden_external still reporting), then reverted. End-to-end against a copy of yojana's real index with a scratch harness: domain-must-not-import-tools reports both context.rs -> tools/* edges on all five remint/query cycles. Timing is flat at ~1.5s per evaluation in release across cold and delta paths, so the resync adds no measurable cost. Full suite 1530 passed, clippy clean, fmt clean.\n\nNot done: the running sutra MCP server still has the old binary, so the live session fix takes effect on the next service restart.",
+  "reproduction": "Against /home/josh/soft/manas/yojana at commit 14bbbde (constraint fc34bfa9 present, advisory):\n\n1. sutra_workspace(action=\"reparse\", path=\"/home/josh/soft/manas/yojana\")\n2. sutra_constraints(workspace=..., action=\"violations\") — expect 2 domain-must-not-import-tools entries\n3. Touch .sutra/rules.toml (any edit to an unrelated constraint)\n4. Repeat 1-2 — observed 0 domain-must-not-import-tools entries, persisting across at least 4 further cycles\n\nGround truth: sqlite3 ~/.sutra/yojana/index.db \"select f.path, i.imported_path, i.resolved_file_id, i.is_test from imports i join files f on f.id=i.file_id where f.path like '%src/context.rs';\" — the three crate::tools rows are resolved with is_test=0 throughout.",
+  "root_cause": "The shared per-session DdEngine ingested its import graph exactly once: evaluate_dd loaded edges only when the engine was cold or `is_invalidated()`, and `DdEngine::invalidate()` had zero callers anywhere in the tree, so the graph was never refreshed. That would have been merely stale except file ids are not stable — `Db::replace_file_data` deletes and re-inserts the `files` row on every reparse and `files.id` is AUTOINCREMENT, so a reparsed file gets a brand-new id. Forbidden pairs are resolved fresh against live ids each evaluation, so the violations semijoin intersected two disjoint id spaces and returned empty. Not a delta-vs-full-set emission bug; the maintained view was correct, its inputs were from a dead id space.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "yojana/44",
+      "label": "surfaced while verifying this"
+    },
+    {
+      "type": "yojana:task",
+      "value": "yojana/49",
+      "label": "about to promote the affected constraint to blocking"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/290",
+      "label": "prior Resolved-delta bug of a similar shape"
+    },
+    {
+      "type": "git:commit",
+      "value": "d9e3990"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "false-negatives",
+    "dd"
+  ],
+  "history": [
+    {
+      "ts": 1785010235848,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 297
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785077380981,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785078356271,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (commit d9e3990, base d9e3990~1) — verdict: needs-attention (1 finding).\n\n[medium] DD sync can pair a new edge graph with an old path map under concurrent parsing (src/constraints/check.rs:93 vs :242,274).\nevaluate_dd builds path_map from db.all_files() at line 93, then reads db.import_edges() at 242 and calls engine.sync_edges() at 274 — three separate Mutex<Connection> lock acquisitions, no single read transaction or data-generation guard. replace_file_data remints file ids and commits per file, and the constraint/orient endpoints (mcp.rs sutra_constraints:414, sutra_orient:374) do NOT take the parse_coord lock that reparse holds. So if a reparse commits between the all_files read and the import_edges read, sync_edges loads new ids while path_map/resolver still hold old ids — recreating the disjoint-id semijoin (silent-clean forbidden_dep) and no_cycles SCC ids missing from path_map. Trigger requires an overlapping reparse (explicit reparse action, or the first-parse background task at mcp.rs:956) concurrent with a constraints/orient call.\nRecommendation: evaluate constraints from one coherent snapshot — single read transaction for files/components/import+production edges, or read data_generation before/after and retry-or-mark-not-evaluated on change; alternatively make DD-backed endpoints await parse.\n\nReviewer's assessment: finding is structurally valid but narrow — it needs concurrent reparse, and the committed fix fully resolves the reported bug (sequential reparse/query file-id reminting), verified across five remint/query cycles. This is a residual hardening item, not a defect in the delivered fix. Recommend a follow-up task rather than reopening 297.",
+      "ts": 1785078850950
+    }
+  ],
+  "created_at": 1785010235848,
+  "updated_at": 1785078356271,
+  "completed_at": 1785078356271,
+  "edges": []
+}

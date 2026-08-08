@@ -1,0 +1,60 @@
+{
+  "id": "019f0a8f-9665-73f2-8a1c-9d545e783e8c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/214",
+  "sequence_number": 214,
+  "title": "fix clippy warnings",
+  "description": "take a look at all clippy warnings for sutra. organze and triage them.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Fix 63 mechanical clippy warnings across 22 files. Allow 8 design-judgment warnings (too_many_arguments, type_complexity, large_enum_variant). Wave 1: never_loop error + single-instance lints. Wave 2: collapsible_if (41 instances).",
+  "execution_record": "Fixed 64 mechanical clippy warnings and added #[allow] for 8 design-judgment warnings across 22 files. Bulk was collapsible_if (43 instances) using let-chains. The one deny-level error (never_loop in python.rs) was a for-loop-with-break pattern that should have been if-let-next. Three warnings survived the first pass: a collapsible_if inside the never_loop fix, a collapsible_if inside the map_entry fix, and the type_complexity allow placed on the parameter instead of the function.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2a4d808"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782588610149,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 214
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783698700828,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783699114624,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782588610149,
+  "updated_at": 1783699114624,
+  "completed_at": 1783699114624,
+  "edges": []
+}

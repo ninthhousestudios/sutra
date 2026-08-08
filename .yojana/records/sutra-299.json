@@ -1,0 +1,84 @@
+{
+  "id": "019f9f21-bff1-74e0-96d4-a55dfe337b05",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/299",
+  "sequence_number": 299,
+  "title": "DdEngine driven concurrently with file-id reminting hangs the reparse thread in an unbounded SQLite write loop",
+  "description": "Discovered while writing a concurrency regression test for sutra/298.\n\nWhen a shared `DdEngine` is driven (constraint evaluation: sync_edges + set_forbidden_pairs + query_violations + query_cycles) on one thread while another thread reparses the same index (delete_file_cascade + re-insert of the files backing the engine's edges, reminting their ids), the process hangs intermittently (~30% of runs).\n\ngdb + /proc diagnosis of a hung run:\n- The reparsing (background) thread is stuck inside a single reminting call, spinning in SQLite at ~88% CPU: caught variously in the SQL parser (yy_reduce) and in pwrite64/seekAndWrite, with the DB file growing without bound (offset already ~3MB for a 2-file schema). It never returns to check its stop flag.\n- The evaluating (foreground) thread has finished and is parked joining the background thread.\n- The DdEngine timely/differential worker thread is idle at its command recv.\n\nIsolation:\n- A minimal two-thread hammer on `Db` alone (concurrent delete/insert vs all_files/import_edges, NO DdEngine) passes 15/15 — the `Mutex<Connection>` serialization is sound and SQLite is bundled SERIALIZED.\n- The hang only reproduces when the `DdEngine` is also being driven concurrently. It reproduces with the pre-sutra/298 single-shot `evaluate` as well, so it is pre-existing and independent of the 298 generation-guard.\n\nThe signature (a second thread's SQLite execution looping/growing the file, only in the presence of the timely/differential worker) points to heap/global corruption originating in the DdEngine/timely path under this concurrency, rather than a plain lock deadlock. Root cause not yet pinned.\n\nWhy it matters: the constraint/orient MCP endpoints evaluate constraints WITHOUT holding the parse-coordinator lock (mcp.rs sutra_constraints/sutra_orient), and the first-parse background task (mcp.rs:956) parses without it too — so a real client firing reparse concurrently with constraints/orient can hit this. A hang is worse than the silent-clean of sutra/298.\n\nRepro: the test `edge_derived_violations_are_never_silently_clean_under_concurrent_reminting` currently in tests/constraints-test.rs (added for sutra/298) triggers it; run the test binary in a loop, ~1 in 3 hangs.",
+  "category": "bug",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Reproduced at ~30% (6/20, then 5/10 with a 90s budget confirming the binary 2s-or-infinite outcome). ptrace_scope=1 blocked attaching to siblings, so debugged by (a) running the test binary under gdb as a child and interrupting via a Python timer to dump `thread apply all bt`, and (b) sampling /proc/PID/task/*/stat (state, utime, wchan) plus the WAL fd size over time. That combination is what overturned the original 'unbounded SQLite write loop' hypothesis (utime climbing ~100 jiffies/s in userspace with flat stime and a frozen WAL = pure CPU spin) and localized the spin to the SQLite parser with corrupted state.\n\nNo code fix attempted: there is no ownable defensive fix — you cannot make DdEngine 'robust' against another thread corrupting the shared heap, and the corrupting write is in third-party unsafe internals. valgrind is not installed; ASan would need a build-std rebuild and an intermittent data race typically shifts or vanishes under instrumentation, and even a clean trace would point upstream (timely/differential), not here.\n\nDisposition = wontfix, mitigated by sutra/298: the DD-driving MCP endpoints (sutra_constraints, sutra_orient, sutra_review) and the first-parse path now hold the parse-coordinator lock across evaluation, so the engine is never driven concurrently with a reparse in the running server — the sequential path is already proven safe by the sutra/297 remint tests. Commit ed8e1d7 rewrites the quarantined test's rationale to document the race and marks it keep-ignored (do not un-ignore: running an intermittent heap-corruption race in CI only adds flakiness). If the DdEngine is ever driven from a context that is NOT serialized against reparse, reopen: the invariant 'never step the timely worker concurrently with a same-Db reparse' must hold, and the only true fix is upstream (or replacing the concurrent-unsafe engine path).",
+  "reproduction": null,
+  "root_cause": "Process heap corruption in the third-party concurrency interaction, NOT a SQLite write loop as first diagnosed. Live gdb + /proc debugging of a hung run: one thread is pinned at 100% CPU in userspace inside SQLite's LALR parser (yy_find_reduce_action / yy_reduce) spinning forever while preparing a trivial 173-byte query (`SELECT ... FROM files WHERE path = ?1` in Db::file_by_path); the WAL file is frozen at ~1010 pages (NOT growing — the original 'unbounded write loop' was a misread), and every other thread (timely worker, test main, scope join) is parked. A valid tiny query cannot loop the parser, so the parser's heap state (yypParser/pParse) is clobbered — the corrupting write is elsewhere. Outcome is binary (≈2s success or effectively infinite, ~30% of runs), the signature of a data race, and it only reproduces when the shared DdEngine's timely worker runs concurrently with a Db reparse on the same connection. This crate's constraint code contains zero `unsafe`, and rusqlite bundles SQLite in SERIALIZED threadsafe mode behind a Mutex<Connection>, so the out-of-bounds write originates in the third-party timely-0.29/differential-dataflow path (or its allocator interaction) under this concurrency, not in code we own.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/298",
+      "label": "surfaced while testing this"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/constraints/engine.rs"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/constraints/worker.rs"
+    },
+    {
+      "type": "git:commit",
+      "value": "ed8e1d7"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1785081217009,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 299
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785086616628,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785088129420,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Closing wontfix, mitigated by sutra/298. Rationale: the hang is a heap-corruption data race in the third-party timely/differential + bundled-sqlite interaction (SQLite's parser heap gets clobbered → infinite yy_reduce spin), reproducing only when the DdEngine's timely worker runs concurrently with a same-Db reparse. This crate has no `unsafe`, so there is no ownable fix short of root-causing upstream, and 298 already makes the concurrent-overlap unreachable in production by holding the parse lock across every DD-driving endpoint. Chasing an intermittent third-party race with ASan/TSan for a scenario the system now structurally prevents is negative ROI. Reopen only if the DdEngine is ever driven from a path not serialized against reparse.",
+      "ts": 1785088138176
+    },
+    {
+      "author": "user",
+      "text": "Refinement on root cause: checked the bundled SQLite's threading/alloc config (SQLite 3.46.0, PRAGMA compile_options) — THREADSAFE=1 (serialized) with MUTEX_PTHREADS, and SYSTEM_MALLOC. Two consequences: (1) SQLite is ruled out as the corruption source — serialized mode internally mutexes every API call, so it's the victim, not the cause; (2) SYSTEM_MALLOC means SQLite shares the one glibc heap with timely/differential, so an out-of-bounds/UAF write in that path can clobber a SQLite allocation, which is exactly how the corruption surfaces in the parser struct. This narrows suspicion to the timely/differential unsafe internals but is still elimination, not direct proof — filing upstream would need a minimal timely-only repro or an ASan trace, which stays out of scope given 298 mitigates.",
+      "ts": 1785088355237
+    }
+  ],
+  "created_at": 1785081217009,
+  "updated_at": 1785088129420,
+  "completed_at": 1785088129420,
+  "edges": []
+}

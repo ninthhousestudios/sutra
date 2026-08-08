@@ -1,0 +1,98 @@
+{
+  "id": "019e9a93-9e2e-77c0-b679-b5e1888feb7c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/117",
+  "sequence_number": 117,
+  "title": "Per-commit structural manifests in review",
+  "description": "sutra_review collapses a branch to a single diff. For long branches where per-commit intent matters, agents lose the \"why was this split into separate commits\" structure.\n\nAdd an optional mode or tool that, given a commit range, returns a per-commit manifest: files changed, symbols affected, change classification (added/modified/deleted/renamed), and optionally convention/constraint violations per commit.\n\nLower priority than single-diff improvements (sutra/112). Most agent workflows work on branch-level diffs. Useful for multi-commit branch review and understanding how a file evolved.\n\nReplaces old task: sutra/needs-designing/13.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "New MCP tool `sutra_commit_manifest` accepts workspace + commit range (base/head, defaulting to branch range)"
+    },
+    {
+      "done": false,
+      "text": "Returns an array of per-commit entries, each with: hash, subject, author, timestamp, changed files"
+    },
+    {
+      "done": false,
+      "text": "Each changed file entry includes symbol-level change classification using existing ChangeKind taxonomy (Added, Deleted, SignatureChanged, BodyChanged) with callee diffs"
+    },
+    {
+      "done": false,
+      "text": "Merge commits are skipped (only first-parent commits included)"
+    },
+    {
+      "done": false,
+      "text": "Requires analysis tier (same gating as diff_impact and review)"
+    },
+    {
+      "done": false,
+      "text": "Graceful degradation: files in unsupported languages get file-level entry with no symbol_changes"
+    },
+    {
+      "done": false,
+      "text": "Cap on commits processed (e.g. 50) with a truncated flag when exceeded"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\\n\\nAdd a new `sutra_commit_manifest` tool that enumerates commits in a range and, for each commit, diffs against its parent to produce file-level and symbol-level change manifests. Reuses the existing `symbol_diff::diff_file` infrastructure (which already classifies symbols as Added/Deleted/SignatureChanged/BodyChanged with callee diffs). A new git helper `git_list_commits` provides the commit enumeration that the existing `git_commit_files` doesn't support (it uses a time window, not a range).\\n\\nAlternative considered: adding a `per_commit` mode to `sutra_review`. Rejected because review's output shape (risk scores, constraint/convention violations, recommended reads) is fundamentally different from a structural manifest. The two tools serve different agent workflows.\\n\\n## Files\\n\\n- **Create**: `src/tools/commit_manifest.rs` — new tool module with `CommitManifestArgs` and `handle`\\n- **Modify**: `src/git.rs` (~5 lines after line 198) — add `git_list_commits(workspace_root, base, head)` function\\n- **Modify**: `src/tools/mod.rs` (line 1 area) — add `pub mod commit_manifest;`\\n- **Modify**: `src/mcp.rs` (imports ~line 70, handler ~line 645) — wire up `sutra_commit_manifest` tool\\n- **Test**: `tests/` — integration test for the new tool via the MCP interface\\n\\n## Steps\\n\\n### Step 1: Add `git_list_commits` to `src/git.rs`\\n\\nNew function that runs `git rev-list --first-parent --reverse --format='%H %at %ae %s' base..head` and parses the output into a `Vec<CommitEntry>`.\\n\\n```rust\\npub struct CommitEntry {\\n    pub hash: String,\\n    pub timestamp: i64,\\n    pub author: String,\\n    pub subject: String,\\n}\\n\\npub fn git_list_commits(\\n    workspace_root: &Path,\\n    base: &str,\\n    head: &str,\\n) -> Result<Vec<CommitEntry>> {\\n    let output = Command::new(\\\"git\\\")\\n        .arg(\\\"-C\\\").arg(workspace_root)\\n        .args([\\\"log\\\", \\\"--first-parent\\\", \\\"--reverse\\\",\\n               \\\"--format=%H %at %ae %s\\\"])\\n        .arg(format!(\\\"{base}..{head}\\\"))\\n        .output()\\n        .map_err(|e| SutraError::Internal(format!(\\\"git log failed: {e}\\\")))?;\\n    // parse each line: hash(40) space timestamp space email space subject\\n    // splitn(4, ' ') to keep subject intact\\n}\\n```\\n\\n`--first-parent` skips merge-commit second parents. `--reverse` gives chronological order.\\n\\n### Step 2: Create `src/tools/commit_manifest.rs`\\n\\nNew tool module. The `handle` function:\\n1. Resolves the commit range (branch mode: merge-base to HEAD; explicit base/head)\\n2. Calls `git_list_commits` to get commits, caps at `MAX_COMMITS` (50)\\n3. For each commit, calls `git_diff_files(root, \\\"{hash}~1\\\", hash)` to get changed files\\n4. For each changed file, calls `symbol_diff::diff_file(root, path, \\\"{hash}~1\\\", hash)` to get symbol changes\\n5. Assembles the result\\n\\n```rust\\nuse std::path::Path;\\n\\nuse schemars::JsonSchema;\\nuse serde::Deserialize;\\nuse serde_json::json;\\n\\nuse crate::db::Db;\\nuse crate::error::Result;\\nuse crate::git;\\nuse crate::tools::symbol_diff;\\n\\nconst MAX_COMMITS: usize = 50;\\n\\n#[derive(Debug, Deserialize, JsonSchema)]\\npub struct CommitManifestArgs {\\n    pub workspace: String,\\n    /// Base commit (default: merge-base with default branch)\\n    #[serde(default)]\\n    pub base: Option<String>,\\n    /// Head commit (default: HEAD)\\n    #[serde(default)]\\n    pub head: Option<String>,\\n}\\n\\npub fn handle(\\n    _db: &Db,\\n    workspace_root: &Path,\\n    base: Option<&str>,\\n    head: Option<&str>,\\n) -> Result<serde_json::Value> {\\n    let head = head.unwrap_or(\\\"HEAD\\\");\\n    let base = match base {\\n        Some(b) => b.to_string(),\\n        None => {\\n            let default_branch = git::detect_default_branch(workspace_root)?;\\n            git::git_merge_base(workspace_root, &default_branch)?\\n        }\\n    };\\n\\n    let commits = git::git_list_commits(workspace_root, &base, head)?;\\n    let truncated = commits.len() > MAX_COMMITS;\\n    let commits = &commits[..commits.len().min(MAX_COMMITS)];\\n\\n    let mut entries = Vec::with_capacity(commits.len());\\n    for commit in commits {\\n        let parent = format!(\\\"{}~1\\\", commit.hash);\\n        let changed = git::git_diff_files(workspace_root, &parent, &commit.hash)\\n            .unwrap_or_default();\\n\\n        let mut file_entries = Vec::with_capacity(changed.len());\\n        for path in &changed {\\n            let mut entry = json!({ \\\"path\\\": path });\\n            match symbol_diff::diff_file(workspace_root, path, &parent, &commit.hash) {\\n                Ok(sc) if !sc.is_empty() => {\\n                    entry[\\\"symbol_changes\\\"] = serde_json::to_value(&sc)\\n                        .unwrap_or_default();\\n                }\\n                Ok(_) => {}\\n                Err(e) => {\\n                    entry[\\\"symbol_diff_error\\\"] = json!(e.to_string());\\n                }\\n            }\\n            file_entries.push(entry);\\n        }\\n\\n        entries.push(json!({\\n            \\\"hash\\\": commit.hash,\\n            \\\"subject\\\": commit.subject,\\n            \\\"author\\\": commit.author,\\n            \\\"timestamp\\\": commit.timestamp,\\n            \\\"files\\\": file_entries,\\n        }));\\n    }\\n\\n    Ok(json!({\\n        \\\"base\\\": base,\\n        \\\"head\\\": head,\\n        \\\"commit_count\\\": entries.len(),\\n        \\\"truncated\\\": truncated,\\n        \\\"commits\\\": entries,\\n    }))\\n}\\n```\\n\\n`_db` is accepted but unused in v1 — it follows the pattern of `diff_impact::handle` where the DB is passed for potential future use (blast radius annotations). Not using it avoids unnecessary computation.\\n\\n### Step 3: Wire up in `src/tools/mod.rs` and `src/mcp.rs`\\n\\nIn `mod.rs`, add `pub mod commit_manifest;` after the `cochange` line.\\n\\nIn `mcp.rs`:\\n- Add import: `use crate::tools::commit_manifest::CommitManifestArgs;`\\n- Add tool handler after `sutra_diff_impact`, with description and analysis tier requirement:\\n\\n```rust\\n#[tool(description = \\\"Per-commit structural manifest for a commit range. \\\\\\n    Returns each commit with its changed files and symbol-level change \\\\\\n    classifications (added/deleted/signature_changed/body_changed). \\\\\\n    Use for multi-commit branch review where per-commit intent matters. \\\\\\n    Defaults to branch range (merge-base..HEAD). Requires analysis tier.\\\")]\\npub async fn sutra_commit_manifest(\\n    &self,\\n    Parameters(args): Parameters<CommitManifestArgs>,\\n) -> Result<String, ErrorData> {\\n    self.require_analysis()?;\\n    self.await_parse(&args.workspace).await;\\n    let ctx = self.tool_context(&args.workspace)?;\\n    let result = tools::commit_manifest::handle(\\n        ctx.db(),\\n        ctx.workspace_root(),\\n        args.base.as_deref(),\\n        args.head.as_deref(),\\n    )\\n    .map_err(sutra_to_rmcp)?;\\n    to_compact_json(ctx.wrap(result))\\n}\\n```\\n\\nAlso add `sutra_commit_manifest` to the analysis tier tool list in the `sutra_tools` description string.\\n\\n### Step 4: Update help recipes in `src/tools/help.rs`\\n\\nAdd a recipe for the new tool so `sutra_help` documents it. Follow the existing pattern.\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"New MCP tool sutra_commit_manifest accepts workspace + commit range\\\" → Steps 2, 3\\n- [x] \\\"Returns array of per-commit entries with hash, subject, author, timestamp, changed files\\\" → Step 2 (json shape)\\n- [x] \\\"Each changed file includes symbol-level change classification\\\" → Step 2 (reuses symbol_diff::diff_file)\\n- [x] \\\"Merge commits skipped\\\" → Step 1 (--first-parent flag)\\n- [x] \\\"Requires analysis tier\\\" → Step 3 (require_analysis call)\\n- [x] \\\"Graceful degradation for unsupported languages\\\" → Step 2 (symbol_diff::diff_file already returns empty vec for non-rust/dart)\\n- [x] \\\"Cap on commits with truncated flag\\\" → Step 2 (MAX_COMMITS = 50)\"",
+  "execution_record": "Implemented as planned in 4 steps. No divergence from plan. All 392 existing tests pass. New tool is ~80 lines (commit_manifest.rs) plus ~47 lines (git_list_commits in git.rs) plus MCP/help wiring. Reuses symbol_diff::diff_file for change classification as planned.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "932b230"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review",
+    "git",
+    "diff"
+  ],
+  "history": [
+    {
+      "ts": 1780709826094,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 117
+      }
+    },
+    {
+      "ts": 1781442568894,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781442738909,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex review: needs-attention → fixed. Two findings:\\n1. Merge commits included despite --first-parent (added --no-merges) — d818139\\n2. Silent error swallowing via unwrap_or_default() on git_diff_files (now surfaces diff_error field per commit) — d818139\"",
+      "ts": 1781443010898
+    }
+  ],
+  "created_at": 1780709826094,
+  "updated_at": 1781442738909,
+  "completed_at": 1781442738909,
+  "edges": []
+}

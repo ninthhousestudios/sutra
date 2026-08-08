@@ -1,0 +1,88 @@
+{
+  "id": "019ece4e-5a92-73b2-9740-ecee3b5133cf",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/165",
+  "sequence_number": 165,
+  "title": "5x-review-4: review ecosystem integration",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to review\n\nFinal checkpoint. vidhi-reflect writes and prunes the lessons store. Existing ledger.md content migrated. CLAUDE.md updated. The system is fully operational end-to-end.\n\n**Reviewer focus:**\n- vidhi-reflect skill correctness — does the new process produce good lessons with good anchors?\n- Migration quality — do L1–L12 have correct anchor assignments? Do they surface in the right contexts?\n- CLAUDE.md pointer wording — is the instruction clear enough for agents to know when/how to write lessons and cite them?\n- End-to-end flow — walk through a scenario: agent fixes a bug, writes a lesson, another agent reads the symbol and sees it, cites it in a close-out, vidhi-reflect prunes stale ones. Does the whole loop work?\n\n## Blocked by\n\n- sutra/163 — vidhi-reflect evolution\n- sutra/164 — Migration of ledger.md + CLAUDE.md update",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Reviewed all four focus areas. SKILL.md: correct, no changes needed. Migration: 5/12 correctly migrated with good primary anchors; 7 correctly skipped. CLAUDE.md pointer: fixed stale ledger.md path (removed entirely — agents don't need provenance breadcrumbs). End-to-end: confirmed lessons surface via sutra_read/impact/orient, citations work, verification lifecycle works. Found and filed sutra/177 for import_pattern anchor over-broadness (parking_lot::* on all 5 lessons). Added metadata table as proper migration (0005). Archived orphaned test lesson from sutra/162 review.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "e39eba3"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577702034,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 165
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781720532820,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781721196118,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577702034,
+  "updated_at": 1781721196118,
+  "completed_at": 1781721196118,
+  "edges": [
+    {
+      "id": "019ece4e-6b27-7d13-a0fe-820b27309eef",
+      "edge_type": "depends_on",
+      "source": "sutra/165",
+      "target": "sutra/163",
+      "note": null,
+      "created_at": 1781577706279
+    },
+    {
+      "id": "019ece4e-6ebc-7e21-aada-b54c3d0837d6",
+      "edge_type": "depends_on",
+      "source": "sutra/165",
+      "target": "sutra/164",
+      "note": null,
+      "created_at": 1781577707196
+    },
+    {
+      "id": "019ece4e-6ff4-7942-b66c-98a7713750b4",
+      "edge_type": "motivated_by",
+      "source": "sutra/165",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577707508
+    }
+  ]
+}

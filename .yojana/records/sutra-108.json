@@ -1,0 +1,70 @@
+{
+  "id": "019e9a72-d304-7ef3-b815-a733dd015fe4",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/108",
+  "sequence_number": 108,
+  "title": "fix: convention drift findings get nondeterministic file_id from HashMap iteration",
+  "description": "From sutra/104 review. `comp_to_file` HashMap is built from `file_to_component` (also a HashMap) iteration, which is nondeterministic. Multiple files map to the same component, and HashMap::collect() keeps the last inserted value. Different runs attach the same drift finding to different files.\\n\\nFix: sort the iterator by path before collecting, or pick a deterministic representative.\\n\\nFile: src/health/drift.rs:94-99",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/104",
+      "label": "source review"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-health-integration-review.md",
+      "label": "finding: drift-nondeterministic-file-id"
+    },
+    {
+      "type": "git:commit",
+      "value": "aa569ae"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review-followup",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1780707676932,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 108
+      }
+    },
+    {
+      "ts": 1780708069896,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780708111995,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780707676932,
+  "updated_at": 1780708111995,
+  "completed_at": 1780708111995,
+  "edges": []
+}

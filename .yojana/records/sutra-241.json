@@ -1,0 +1,109 @@
+{
+  "id": "019f4940-f0b8-7ec3-9bae-d482ab0d3246",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/241",
+  "sequence_number": 241,
+  "title": "Pattern match engine (src/constraints/patterns.rs) + finding location fields",
+  "description": "New module src/constraints/patterns.rs: given a compiled forbidden_pattern constraint and a set of files (scope-matched), parse each file with the language grammar, run the query, and produce matches with { file, line, byte_range, snippet, enclosing_symbol_qualified_name }. Enclosing-symbol resolution maps match byte offset → symbol range (reuse the existing extraction machinery — needed for symbol-level waiver matching downstream).\n\nAlso extend ConstraintViolation (review.rs) and ConstraintFinding (guard.rs) with optional location fields (line, snippet) rather than overloading the detail string. Keep from_path/to_path semantics for dep kinds untouched — refactor-contract discipline applies (lessons ledger L9: diff behavioral contract of every caller).\n\nSkip files whose language doesn't match the constraint's language. Only parse files matching scope. No DD involvement — this is a per-file local pass (precedent: external.rs).\n\nDesign: sutra/221 implementation_plan. Unit tests in patterns.rs with inline source fixtures (rust + dart).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Two commits: b5bca7a (main implementation) and d0d5993 (dead code cleanup). tree-sitter 0.25 uses StreamingIterator for QueryMatches, not std Iterator — required adding streaming-iterator as a direct dep. Enclosing symbol resolution reuses adapter parse + flatten_symbols rather than DB lookup, keeping the engine self-contained for the per-file local pass. 9 tests covering: rust/dart matches, scope filtering, language filtering, enclosing symbol resolution, identity propagation, no-match empty case, non-pattern constraint passthrough. Extended ConstraintFinding with 3 optional fields; updated 10 construction sites across check.rs, external.rs, guard.rs, and review-test.rs.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/221",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "d0d5993"
+    }
+  ],
+  "files": [
+    "src/constraints/patterns.rs",
+    "src/tools/review.rs",
+    "src/guard.rs"
+  ],
+  "tags": [
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1783640420536,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 241
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783684133147,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783684904375,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Codex adversarial review confirmed the engine is correct in isolation. Two integration findings are out-of-scope (sutra/242 wires evaluate, sutra/243 handles guard enforcement). Codex specifically flagged: (1) find_waiver in waivers.rs currently only matches file-level waivers (symbol_qualified_name=None), so the enclosing_symbol field added here can't participate in waiver matching until that code is updated — sutra/243 should account for this. (2) Double parse per file (tree-sitter for query, ParserPool for symbol extraction) — a potential optimization point if pattern checks are hot. Refactor-contract discipline verified: from_path/to_path semantics unchanged, new fields are purely additive Option<T> with None defaults, JSON output conditional on presence.\"",
+      "ts": 1783685226915
+    },
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Match engine correct. Double-parse per file (pattern + symbol extraction) is a known performance debt deferred by design. Finding location fields added with proper refactor-contract discipline.",
+      "ts": 1783693206050
+    }
+  ],
+  "created_at": 1783640420536,
+  "updated_at": 1783684904375,
+  "completed_at": 1783684904375,
+  "arc_id": "019f4940-0dd5-72a2-b954-24e8f9443602",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f4941-9a52-7d53-8af2-17a9a701274c",
+      "edge_type": "depends_on",
+      "source": "sutra/241",
+      "target": "sutra/240",
+      "note": null,
+      "created_at": 1783640463954
+    },
+    {
+      "id": "019f4941-9e8d-7413-a2ef-750f27c2fb4c",
+      "edge_type": "depends_on",
+      "source": "sutra/242",
+      "target": "sutra/241",
+      "note": null,
+      "created_at": 1783640465037
+    },
+    {
+      "id": "019f4941-a20e-7523-a2d1-815a0dee40a5",
+      "edge_type": "depends_on",
+      "source": "sutra/243",
+      "target": "sutra/241",
+      "note": null,
+      "created_at": 1783640465934
+    }
+  ]
+}

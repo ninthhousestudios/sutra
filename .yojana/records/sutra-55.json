@@ -1,0 +1,47 @@
+{
+  "id": "019e8396-d1b2-72d3-88bd-53735f9920df",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/55",
+  "sequence_number": 55,
+  "title": "vocabulary resolve: enrich output with code locations",
+  "description": "From codex review of sutra/50: resolve_to_json returns source/target_kind/target_ref but not file paths or line ranges. Component matches should include member files, symbol/anchor matches should include file:line. The AC says 'resolves to matching code locations' — currently it resolves to names/refs that require a second lookup.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "vocabulary"
+  ],
+  "history": [
+    {
+      "ts": 1780324159922,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 55
+      }
+    },
+    {
+      "ts": 1780324790725,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780324159922,
+  "updated_at": 1780324825000,
+  "completed_at": 1780324790725,
+  "edges": []
+}

@@ -1,0 +1,82 @@
+{
+  "id": "019eb5bf-31ba-7743-a9e3-a532f3d7052c",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/15",
+  "sequence_number": 15,
+  "title": "Multi-crate Cargo workspace import resolution — cross-crate edges never resolve",
+  "description": "normalize_to_crate_segments (src/rust_imports.rs:71) only recognizes crate::/self::/super:: and THE root Cargo.toml's [package] name. In a multi-crate workspace (e.g. adityas/backend: server + report + quiver-client), `use report::render` from server/ returns None → the import stays unresolved → no edge → forbidden_dep \"server/** -> report/**\" and boundary constraints between workspace crates NEVER fire. Silently inert, same failure class as max_fan_in (sutra/simple-additions/8). Also file_to_module_segments assumes paths start with \"src/\", which is false for crate-subdir layouts (\"server/src/main.rs\"), so super::/self:: resolution inside member crates is likely wrong too.\n\nFound during sutra/needs-designing/14 (2026-06-11). Interim mitigation (documented in README + vidhi-sutra SKILL.md): sibling-crate imports classify as EXTERNAL, so forbidden_external/confined_external express crate-to-crate seams, including via the Cargo.toml path-dependency signal.\n\nDesign questions: parse [workspace.members] and each member's [package] name → per-crate module roots; resolution maps <member_name>::path → <member_dir>/src/path; file_to_module_segments needs crate-root-relative semantics. Decide whether resolved cross-crate edges should then make external-kind classification of siblings disappear (it should — and seed rules written with the external-kind workaround would need migrating to forbidden_dep).",
+  "category": null,
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Parse [workspace.members] + member Cargo.toml names → WorkspaceLayout. normalize_to_crate_segments recognizes sibling crate prefixes and resolves to target crate's src dir. file_to_module_segments/resolve_segments parameterized by src_prefix. external_crate_of_import excludes workspace members. Hard error if forbidden_external/confined_external targets a workspace member.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "890ed10"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "resolution",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781165666746,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 15
+      }
+    },
+    {
+      "ts": 1781167611709,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781167615796,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1781167686082,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1781200575594,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\n1. [high] Workspace crate detection ignores [lib].name (src/rust_imports.rs:112-116)\n   read_workspace_member records only [package].name normalized with hyphens→underscores. When [lib].name differs from package name, cross-crate imports using the lib name won't resolve. Fix: parse [lib].name, fall back to normalized [package].name.\n\n2. [high] Guard converts new hard error into allow (src/guard.rs:433-466)\n   validate_no_external_targeting_members is called in evaluate_dd/evaluate_raw but the guard-facing wrappers may discard errors via unwrap_or_default(). Also EvalScope::Edges doesn't run validation before checking externals. Fix: propagate errors through guard path, run validation for all eval scopes.",
+      "ts": 1781189199399
+    }
+  ],
+  "created_at": 1781165666746,
+  "updated_at": 1781200575594,
+  "completed_at": 1781200575594,
+  "edges": []
+}

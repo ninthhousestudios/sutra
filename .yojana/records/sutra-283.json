@@ -1,0 +1,80 @@
+{
+  "id": "019f8a90-d76c-7f13-b292-96fd6759a5c8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/283",
+  "sequence_number": 283,
+  "title": "guard language_from_path hardcodes rust/dart — import_pattern lessons dead for Python/TS/JS/C",
+  "description": "Review finding on sutra/276 (high). `src/guard.rs:405 language_from_path` only recognizes `.rs` and `.dart`:\n\n    fn language_from_path(path: &str) -> Option<&'static str> {\n        if path.ends_with(\".rs\") { Some(\"rust\") }\n        else if path.ends_with(\".dart\") { Some(\"dart\") }\n        else { None }\n    }\n\n`parse_proposed` returns `None` for every other extension, so `imports` is empty and `import_pattern` anchors cannot match when writing a new Python/TypeScript/JavaScript/C file. That is sutra/276's headline acceptance criterion (\"writing a new file with a matching import_pattern anchor surfaces the lesson\") unmet for four of six supported languages.\n\nDirect irony: sutra/280 replaced the hardcoded rust/dart literal in lessons.rs with an adapter-derived set while this identical hardcoded pair sat untouched, leaving the guard unable to produce imports for most of the languages the derived set now recognizes.\n\nNote this also affects the pre-existing pattern-constraint and proposed-imports constraint paths, which share `parse_proposed` — widening it is a behavior change for those too, and should be checked deliberately rather than assumed safe.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "language_from_path derives from default_registry() extension mapping, not a literal"
+    },
+    {
+      "done": false,
+      "text": "Guard-level test: writing a new .py file with a matching import_pattern anchor surfaces the lesson"
+    },
+    {
+      "done": false,
+      "text": "Guard-level test: same for .ts"
+    },
+    {
+      "done": false,
+      "text": "Constraint/pattern paths sharing parse_proposed reviewed for behavior change from the widened language set"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "`language_from_path` was written when the guard only needed Rust and Dart, and nothing forced it to track adapter registration. Because `parse_proposed` returns Option and `None` is indistinguishable from \"parsed but no imports\", the failure was silent: for a .py or .ts file the guard produced an empty import list and every import_pattern anchor simply failed to match. The absence of a signal — not a wrong signal — is why it survived the sutra/276 review, and why sutra/280 fixed the identical hardcoded pair in lessons.rs without noticing this one twelve lines away.</root_cause>\n<parameter name=\"execution_record\">language_from_path now resolves the extension through default_registry().adapter_for_extension() and returns String (the registry is owned per call, so a &'static str return was not available). One call-site fix in extract_proposed_imports for the String/&str change.\n\nBehavior-change check performed rather than assumed (the task flagged it): parse_proposed has 8 callers, all in src/guard.rs, feeding proposed-content constraint analysis and is_signature_preserving. Widening the language set puts py/ts/js/c on those paths too. Judged a consistency fix — that is the contract .rs/.dart files already had, and every widened extension belongs to a fully indexed adapter — and documented in the doc comment so the next reader does not have to re-derive it.\n\n.pyi confirmed still excluded: pattern-eligible per sutra/275 but not indexed, and PythonAdapter claims only \"py\". Asserted explicitly in the test.\n\n4 tests: language_from_path across all six adapters plus three negatives; parse_proposed import extraction for Python and TypeScript; end-to-end import_pattern anchor match for greenfield .py and .ts through a real LessonsDb. The last two cover the chain that was actually dead.\n\nVerified: cargo test 1454 passed / 0 failed; no new clippy warnings.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f114fa5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "guard"
+  ],
+  "history": [
+    {
+      "ts": 1784736175980,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 283
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784736608750,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784736616690,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784736175980,
+  "updated_at": 1784736616690,
+  "completed_at": 1784736616690,
+  "edges": []
+}

@@ -1,0 +1,91 @@
+{
+  "id": "019e0e07-574f-75f1-908e-4263a7365ce1",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/9",
+  "sequence_number": 9,
+  "title": "HDC design decision: practical evaluation for binary MAP vs HRR vs hybrid",
+  "description": "Follow-on from sutra/needs-designing/8 (HDC AST encoding experiment). Spike 1 validated binary MAP for similarity search. Spike 2 validated HRR for compositional decomposition and analogical reasoning. Now need practical, use-case-driven evaluation to decide the architecture.\n\nKey design question: binary MAP only, HRR only, or hybrid (binary MAP for indexing + HRR for decomposition queries)?\n\nPractical tests needed — framed as \"can this answer real sutra queries?\":\n\n1. **Structural search**: \"find all functions shaped like: pub fn → validate args → query db → return Result.\" Binary MAP can do this via prototype similarity. Can HRR match it? Is the 10x FFT cost worth it for this use case?\n\n2. **Decomposition queries**: \"given this function, what's its error-handling strategy?\" Requires unbinding the error-handling role from an encoded function. Binary MAP can't do this (spike 1: R@1 ≈ 0%). Does HRR reliably decompose real functions?\n\n3. **Transform search**: \"find the async version of this sync function\" or \"find functions like X but with error handling added.\" Requires analogical arithmetic. Spike 2 showed 75-100% on trait transforms — but those were trait-group-level. Does it work for individual function queries?\n\n4. **Cross-file structural diff**: \"how does module A's error handling differ from module B's?\" Requires multi-scale + unbinding. Novel capability if it works.\n\n5. **Performance budget**: What's the encoding cost at sutra's scale (~800 symbols)? At a large monorepo scale? Is incremental re-encoding feasible?\n\nEach test should produce a clear signal: works well enough to ship, needs more work, or not viable. The output is a design decision on sutra/needs-designing/8.",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "At least 3 of the 5 practical tests implemented and run on sutra's own codebase"
+    },
+    {
+      "done": false,
+      "text": "Each test has a clear pass/fail/needs-work verdict"
+    },
+    {
+      "done": false,
+      "text": "Performance numbers for encoding at sutra scale"
+    },
+    {
+      "done": false,
+      "text": "Design recommendation: binary MAP, HRR, or hybrid — with rationale"
+    },
+    {
+      "done": false,
+      "text": "Decision recorded on sutra/needs-designing/8"
+    }
+  ],
+  "decisions": [
+    "HRR only — no binary MAP. HRR is faster (2.0-2.4x), matches or beats MAP on Rust code, and provides unique capabilities (cross-file diff, vector arithmetic). MAP's only wins are on C decomposition/transforms, which don't justify maintaining two representations.",
+    "Ship at 1024 f64 — no dimensionality reduction needed. Typical workspaces (500-2000 fns) use 12-47 MB. Can drop to f32 or mmap later if storage matters.",
+    "Decomposition (unbind→cleanup) is weak for both representations (16-31%). Not a MAP-vs-HRR problem — the prototype-unbinding pipeline needs a different approach, deferred to integration design.",
+    "Cross-file diff degrades with scale (68%→54%→50%) — real capability on smaller codebases, needs refinement for large uniform codebases."
+  ],
+  "implementation_plan": null,
+  "execution_record": "Ran hdc-eval binary on three codebases: sutra (478 fns, Rust), redox-kernel (1548 fns, Rust), linux kernel/ (18629 fns, C). Full linux tree run in progress. All 5 practical tests implemented. Key findings: (1) HRR is 2.0-2.4x faster than MAP — contradicts 10x-slower assumption. (2) Structural search equivalent or HRR better. (3) Transform search: HRR dominates on Rust (82% vs 33%), MAP wins on C (98% vs 80%). (4) Decomposition weak for both (16-31%). (5) Cross-file diff HRR-only at 50-68%. Decision: HRR only.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/needs-designing/8"
+    },
+    {
+      "type": "git:commit",
+      "value": "c04b472"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "hdc",
+    "experiment",
+    "design-decision"
+  ],
+  "history": [
+    {
+      "ts": 1778351822671,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 9
+      }
+    },
+    {
+      "ts": 1778360042545,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778360058486,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778351822671,
+  "updated_at": 1778360058486,
+  "completed_at": 1778360058486,
+  "edges": []
+}

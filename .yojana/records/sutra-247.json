@@ -1,0 +1,98 @@
+{
+  "id": "019f494e-826c-7661-b062-1b7a73712f3b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/247",
+  "sequence_number": 247,
+  "title": "Guard block on weakening rules.toml edits",
+  "description": "New branch in src/bin/guard.rs run() for `.sutra/rules.toml`, same shape as the Cargo.toml branch (~line 120, before the indexed-file bail): build_proposed_content → parse_rules the proposed TOML in memory → compute constraint IDs + severities → diff against active (unreleased) constraint_ratchets rows via read-only conn. Missing ratcheted ID or severity < floor → blocking deny. Additions and severity increases pass with zero friction (append-only direction). Malformed proposed TOML: deny is tempting but wrong — broken TOML fails parse_rules at load anyway; let it through (constraint_parse_errors channel owns that).\n\nDeny message teaches the ceremony: name + rendered_description + provenance of the ratcheted constraint, why it can't be weakened by edit, and \"a human must run `sutra ratchet release <id> --rationale ...` first. To strengthen a ratcheted constraint (e.g. widen scope): release the old ID, then add the replacement.\"\n\nSequencing note: touches the same guard files as sutra/243 (pattern arc) — coordinate merge order, no logical dependency.\n\nDesign: sutra/223 implementation_plan. Tests in src/guard.rs #[cfg(test)]: deletion denied, severity-lowering denied, addition passes, severity-increase passes, released constraint deletable, non-ratcheted constraint freely editable.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/223",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "6e08d9c"
+    }
+  ],
+  "files": [
+    "src/bin/guard.rs",
+    "src/guard.rs"
+  ],
+  "tags": [
+    "constraints",
+    "agent-trust"
+  ],
+  "history": [
+    {
+      "ts": 1783641309804,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 247
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783701807599,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783702195077,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783641309804,
+  "updated_at": 1783702195077,
+  "completed_at": 1783702195077,
+  "arc_id": "019f494d-e005-7d20-be0c-d682a67b5f8e",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019f494e-f343-7e71-b798-a9121306476c",
+      "edge_type": "depends_on",
+      "source": "sutra/247",
+      "target": "sutra/245",
+      "note": null,
+      "created_at": 1783641338691
+    },
+    {
+      "id": "019f494e-fe70-70e3-b554-91c83f5acff9",
+      "edge_type": "depends_on",
+      "source": "sutra/249",
+      "target": "sutra/247",
+      "note": null,
+      "created_at": 1783641341552
+    },
+    {
+      "id": "019f494f-1753-7002-987a-afdd7b3a01ad",
+      "edge_type": "relates_to",
+      "source": "sutra/247",
+      "target": "sutra/243",
+      "note": "both touch src/guard.rs + src/bin/guard.rs — coordinate merge order, no logical dependency",
+      "created_at": 1783641347923
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "id": "019ef6c2-bb57-79a0-ad93-9cc08ad2bb23",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/181",
+  "sequence_number": 181,
+  "title": "Clone cleanup: remaining Arc<str> tiers and borrow-checker fixes",
+  "description": "Remaining items from the clone audit (clone-to-owned file). Waves 1-2 landed in ebc0ce3 and 9eaec5d (SymbolRow/FileRow identity fields, Convention/Constraint identity fields → Arc&lt;str&gt;). Tier 3 landed in 7fc6ecd (Convention antecedent/consequent → Arc&lt;[String]&gt;). Tier 4 landed in 49ee318 (HashMap lookup maps → borrowed &amp;str).\n\nWhat's left:\n\n**Tier 5 — Borrow-checker fights (~8 sites)**\n- engine.rs: self.rebuild(&amp;self.symbol_attrs.clone()) — partial-borrow workaround\n- engine.rs: self.conventions.clone() returned from &amp;mut self — return &amp;[Convention]\n- rules.rs: self.constraint.clone().into_iter() — just .iter()\n- trace.rs: track Vec&lt;i64&gt; instead of Vec&lt;(i64, Arc&lt;str&gt;)&gt;, resolve names at output\n\n**Tier 6 — Test clones**\n~23 sites in similarity/ tests — low priority, test clarity > zero-copy.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Landed tiers 5 in three commits: (1) trace.rs — replaced Vec<(i64, Arc<str>)> DFS stacks with Vec<i64> + HashMap<i64, Arc<str>> side table for deferred name resolution, eliminating per-edge Arc clones and making stack snapshots cheap. (2) rules.rs — changed all_constraints(&self) to (&mut self) + mem::take, eliminating full Vec<RawConstraint> clone. (3) engine.rs — changed rebuild/rebuild_with_params/update_incremental to return () instead of Vec<Convention>, callers use conventions() accessor; collapsed two Vec clones into one in the pipeline path. Site 1 (symbol_attrs.clone() partial-borrow workaround) skipped — no net savings without an API split since rebuild_with_params does to_vec() internally anyway. Tier 6 (~23 test clones in similarity/) skipped — test clarity over zero-copy.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ebc0ce3"
+    },
+    {
+      "type": "git:commit",
+      "value": "9eaec5d"
+    },
+    {
+      "type": "git:commit",
+      "value": "7fc6ecd"
+    },
+    {
+      "type": "git:commit",
+      "value": "49ee318"
+    },
+    {
+      "type": "git:commit",
+      "value": "c20f93f"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "clone-audit",
+    "perf",
+    "idiomatic-rust"
+  ],
+  "history": [
+    {
+      "ts": 1782256417623,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 181
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782257063315,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782314381550,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782256417623,
+  "updated_at": 1782314381550,
+  "completed_at": 1782314381550,
+  "edges": []
+}

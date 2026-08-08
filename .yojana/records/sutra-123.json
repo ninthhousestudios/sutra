@@ -1,0 +1,98 @@
+{
+  "id": "019e9e4e-6a7d-7b80-bb2e-ac9e5723ff65",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/123",
+  "sequence_number": 123,
+  "title": "Dart effect patterns unreachable for external package calls",
+  "description": "Codex review finding from sutra/111. The DART_EFFECT_PATTERNS callee prefixes (dart:io::File, http::, dio::, sqflite::, etc.) require resolved call refs with target symbol IDs. But Dart external package calls like `http.get(...)` are classified as field access by ref context classification, and the resolver skips field-access refs. Effect enrichment is effectively a no-op for normal Dart code.\\n\\nThis is arguably a cross-language limitation — the effect pipeline assumes resolved call refs, which works for Rust (intra-crate calls resolve) but breaks for any language where external calls go unresolved.\\n\\nOptions:\\n1. Synthesize external callee names from Dart import aliases + member expressions before effect enrichment\\n2. Implement Dart-specific effect detection over imports + unresolved/member refs\\n3. Add an import-based heuristic: if a file imports `package:http`, mark it `effect:net` at file level\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Dart member-expression calls (e.g. `http.get(...)`, `dio.post(...)`) whose object identifier matches a known import-derived package name get effect attributes (`effect:net`, `effect:fs`, `effect:db`) at symbol-level granularity"
+    },
+    {
+      "done": false,
+      "text": "Only the function containing the call gets the effect attribute — not the entire file"
+    },
+    {
+      "done": false,
+      "text": "Existing resolved-callee effect enrichment path (Rust, intra-crate Dart) is unchanged"
+    },
+    {
+      "done": false,
+      "text": "DART_EFFECT_PATTERNS callee_prefixes remain the single source of truth for package→effect mapping"
+    },
+    {
+      "done": false,
+      "text": "No schema migration required — works with existing imports table"
+    },
+    {
+      "done": false,
+      "text": "Reuses external_crate_of_import() or equivalent for package name extraction"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nDart-specific effect enrichment that works alongside (not replacing) the existing resolved-callee path. The key insight: for package-aliased calls like `http.get(...)`, the identifier `http` is a FieldAccess ref whose text matches the import's package name. For direct-class calls like `File(path)` from `dart:io`, the identifier is an unresolved Call ref. We need both patterns.\n\nOne prerequisite: FieldAccess refs currently discard their identifier text (stored with `unresolved_name=NULL`). A one-line resolver change preserves it without schema migration — the column already exists.\n\n## Files\n\n- **Modify**: `src/resolver.rs` (line 54) — preserve identifier name for FieldAccess refs\n- **Modify**: `src/conventions/attributes.rs` (after line 161) — new `enrich_with_dart_import_effects` function + `parse_dart_callee_prefix` helper\n- **Modify**: `src/conventions/pipeline.rs` (lines ~40-91) — load imports for Dart files, call new enrichment function\n- **Test**: `tests/conventions_test.rs` or integration test — verify Dart effect detection for both aliased and direct patterns\n\n## Steps\n\n### Step 1: Preserve identifier text for FieldAccess refs in resolver\n\nChange the FieldAccess early return to populate `unresolved_name` instead of discarding it. No schema migration — the `unresolved_name` column already exists and accepts any TEXT.\n\n```rust\n// src/resolver.rs, line 51-56: change unresolved_name from None to Some\nif matches!(r.context_kind, RefContextKind::Import | RefContextKind::FieldAccess) {\n    return ResolvedRef {\n        original: r.clone(),\n        target_symbol_id: None,\n        unresolved_name: Some(r.name.clone()),  // was: None\n        skipped: true,\n    };\n}\n```\n\n**Contract check**: `unresolved_name IS NOT NULL` now includes FieldAccess/Import refs. Callers to audit:\n- `conventions/pipeline.rs` callee_cache: filters `context_kind == \\\"call\\\"` first → safe\n- `sutra_refs` display: shows ref names → improvement (previously these showed as nameless)\n- Any `WHERE unresolved_name IS NOT NULL` queries → check they also filter context_kind\n\n### Step 2: Add callee prefix parser\n\nA helper that splits DART_EFFECT_PATTERNS prefixes into (package_root, optional_class_name):\n\n```rust\n// src/conventions/attributes.rs\n\n/// Parse a Dart callee prefix into (package_root, optional_member_name).\n/// \"http::\" → (\"http\", None) — any member access on this alias\n/// \"dart:io::File\" → (\"dart:io\", Some(\"File\")) — specific class from package\nfn parse_dart_callee_prefix(prefix: &str) -> Option<(&str, Option<&str>)> {\n    let mut parts = prefix.splitn(2, \"::\");\n    let package = parts.next().filter(|s| !s.is_empty())?;\n    let member = parts.next().filter(|s| !s.is_empty());\n    Some((package, member))\n}\n```\n\n### Step 3: Add Dart-specific effect enrichment function\n\n```rust\n// src/conventions/attributes.rs\n\nuse std::collections::HashSet;\n\n/// Dart-specific: detect effects from import-derived package refs.\n/// Handles two patterns:\n/// A) Aliased calls (http.get) → FieldAccess ref name matches package name\n/// B) Direct class use (File.open) → unresolved ref name matches class from package\npub fn enrich_with_dart_import_effects(\n    sym_attrs: &mut SymbolAttrs,\n    sym: &SymbolRow,\n    file_refs: &[RefRow],\n    import_packages: &HashSet<&str>,\n    patterns: &[EffectPattern],\n) {\n    for pattern in patterns {\n        if sym_attrs.attributes.contains(&pattern.attr_name.to_string()) {\n            continue;\n        }\n\n        let matched = pattern.callee_prefixes.iter().any(|prefix| {\n            let Some((package, member)) = parse_dart_callee_prefix(prefix) else {\n                return false;\n            };\n            if !import_packages.contains(package) {\n                return false;\n            }\n            file_refs.iter().any(|r| {\n                if r.line < sym.start_line || r.line > sym.end_line {\n                    return false;\n                }\n                let Some(ref name) = r.unresolved_name else {\n                    return false;\n                };\n                match member {\n                    None => r.context_kind == \\\"field_access\\\" && name == package,\n                    Some(class) => name == class,\n                }\n            })\n        });\n\n        if matched {\n            sym_attrs.attributes.push(pattern.attr_name.to_string());\n        }\n    }\n}\n```\n\n### Step 4: Wire into the conventions pipeline\n\nIn `rebuild()`, for Dart files, load imports and call the new function:\n\n```rust\n// src/conventions/pipeline.rs, inside the per-file loop, after enrich_with_effects call\n\nif f.language == \\\"dart\\\" {\n    // Load once per file, outside the symbol loop\n    let imports = db.imports_for_file(f.id)?;\n    let import_packages: HashSet<&str> = imports\n        .iter()\n        .filter_map(|imp| {\n            crate::constraints::external::external_crate_of_import(\n                &imp.imported_path, \\\"dart\\\", &[],\n            )\n        })\n        .collect();\n    // ... needs adjustment since external_crate_of_import returns String not &str\n}\n```\n\nActually the package set needs to own its strings. Adjust:\n\n```rust\n// Before the symbol loop (but inside the file loop), for Dart files:\nlet dart_import_packages: Option<HashSet<String>> = if f.language == \\\"dart\\\" {\n    let imports = db.imports_for_file(f.id)?;\n    let pkgs: HashSet<String> = imports\n        .iter()\n        .filter_map(|imp| {\n            crate::constraints::external::external_crate_of_import(\n                &imp.imported_path, \\\"dart\\\", &[],\n            )\n        })\n        .collect();\n    if pkgs.is_empty() { None } else { Some(pkgs) }\n} else {\n    None\n};\n\n// Inside the symbol loop, after enrich_with_effects:\nif let Some(ref pkgs) = dart_import_packages {\n    let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();\n    super::enrich_with_dart_import_effects(\n        &mut attrs,\n        s,\n        &refs,\n        &pkg_refs,\n        fca_source.effect_patterns(),\n    );\n}\n```\n\n### Step 5: Integration test\n\nTest with a synthetic Dart file that:\n1. Imports `package:http/http.dart` and calls `http.get(url)` → verify `effect:net` on the containing function\n2. Imports `dart:io` and uses `File(path)` → verify `effect:fs`\n3. Has a function that does NOT call any effect-bearing package → verify NO effect tag\n4. Has an import but no calls within a specific function → verify that function is NOT tagged (symbol-level, not file-level)\n\n## Acceptance criteria coverage\n\n- [x] \\\"Dart member-expression calls get effect attributes at symbol-level granularity\\\" → Steps 3-4 (FieldAccess ref matching within symbol span)\n- [x] \\\"Only the function containing the call gets the effect attribute\\\" → Step 3 (line range check: `r.line >= sym.start_line && r.line <= sym.end_line`)\n- [x] \\\"Existing resolved-callee effect enrichment path is unchanged\\\" → Step 4 (new function called AFTER existing `enrich_with_effects`, early-continues if already tagged)\n- [x] \\\"DART_EFFECT_PATTERNS callee_prefixes remain single source of truth\\\" → Step 3 (parses prefixes dynamically via `parse_dart_callee_prefix`)\n- [x] \\\"No schema migration required\\\" → Step 1 (uses existing `unresolved_name` column)\n- [x] \\\"Reuses external_crate_of_import()\\\" → Step 4 (used to build import_packages set)",
+  "execution_record": "Implemented as planned, then Codex adversarial review surfaced two real issues: (1) tools/review.rs had a parallel attribute-building path that didn't include the new Dart enrichment — fixed by extracting shared helpers `enrich_all_effects()` and `dart_effect_packages()`, (2) Pattern B (class-name matching for dart:io::File etc.) was too broad — matched type annotations. Tightened to call/construction/field_access context kinds only. Both fixed in follow-up commit b10f6b5.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "0411434"
+    },
+    {
+      "type": "git:commit",
+      "value": "b10f6b5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "dart",
+    "fca",
+    "effects"
+  ],
+  "history": [
+    {
+      "ts": 1780772399741,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 123
+      }
+    },
+    {
+      "ts": 1781471675301,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781472419984,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review: 2 findings, both addressed in b10f6b5.\\n\\n1. [high] Review path (tools/review.rs) didn't call Dart import enrichment — convention checks during `sutra_review` would miss the new effects. Fixed by extracting `enrich_all_effects()` shared helper.\\n2. [medium] Pattern B matched type_use refs (e.g. `File file;` annotation) — false positives. Tightened to call/construction/field_access only.\\n\\nVerdict: approve after fixes (now landed).",
+      "ts": 1781472929968
+    }
+  ],
+  "created_at": 1780772399741,
+  "updated_at": 1781472933749,
+  "completed_at": 1781472419984,
+  "edges": []
+}

@@ -1,0 +1,148 @@
+{
+  "id": "019ece4c-51a6-7003-b0ed-33e4ecfa7f28",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/158",
+  "sequence_number": 158,
+  "title": "Confidence lifecycle + surfacing priority",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nThe quality ratchet: citation-based verification, anti-verification, and surfacing priority rules.\n\n**Citation as verification:** `sutra_remember(cite: lesson_id)` records a citation with task ID and timestamp. Each citation increases confidence. When confidence crosses a threshold (TBD, likely 2-3 citations), `verified` flips to true. Citations are durable and auditable in the `citations` table.\n\n**Anti-verification:** A new mode on `sutra_remember` (or a dedicated call) to flag a lesson as wrong/outdated. Drops confidence. Does not delete — the lesson may be corrected rather than removed.\n\n**Surfacing priority rules in `query_for_context()`:**\n- Verified lessons: always shown when anchors match\n- Unverified lessons: shown only when no verified lessons cover the same context\n- Unverified lessons flagged as `[unverified]` in the response\n- \"Same context\" means the same anchor matched — not globally, but per-anchor overlap\n\n## Acceptance criteria\n\n- [ ] `sutra_remember(cite: lesson_id)` records a citation and increases confidence\n- [ ] Confidence crossing threshold flips verified to true\n- [ ] Anti-verification mode drops confidence\n- [ ] Verified lessons always surface when anchors match\n- [ ] Unverified lessons only surface when no verified lessons match the same context\n- [ ] Unverified lessons carry `[unverified]` flag in response\n- [ ] Tests: citation increases confidence, threshold verification, anti-verification, surfacing priority with mixed verified/unverified lessons\n\n## Blocked by\n\n- sutra/157 — 5x-review-2",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] sutra_remember(cite: lesson_id) records a citation and increases confidence"
+    },
+    {
+      "done": false,
+      "text": "[x] Confidence crossing threshold flips verified to true"
+    },
+    {
+      "done": false,
+      "text": "[x] Anti-verification mode drops confidence"
+    },
+    {
+      "done": false,
+      "text": "[x] Verified lessons always surface when anchors match"
+    },
+    {
+      "done": false,
+      "text": "[x] Unverified lessons only surface when no verified lessons match the same context"
+    },
+    {
+      "done": false,
+      "text": "[x] Unverified lessons carry [unverified] flag in response"
+    },
+    {
+      "done": false,
+      "text": "[x] Tests: citation, threshold, anti-verification, surfacing priority"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "# Confidence lifecycle + surfacing priority\n\n## Approach\n\nAdd a `cite` mode to `sutra_remember` that records citation events against existing lessons and bumps confidence. When confidence crosses a threshold (default 2), flip `verified` to true. Add an `anti_verify` mode that decrements confidence (and can unflip `verified`). Then change `query_for_context` to implement verified-first surfacing: verified lessons always show; unverified lessons only show when no verified lesson matched the same anchor; unverified lessons carry an `[unverified]` tag prefix in their text.\n\nThe citation/confidence/threshold logic lives in `LessonsDb` as new methods, keeping the tool handler thin. The surfacing priority is a post-filter step in the existing `query_for_context` — it already sorts by `verified DESC, confidence DESC`, so the main change is suppressing unverified lessons when a verified lesson matched the same anchor, plus tagging the survivors.\n\n**Why not a separate citations tool?** The task spec routes citations through `sutra_remember(cite: ...)`, keeping one entry point for lesson lifecycle operations. Anti-verification is a field on the same call (`anti_verify: true` alongside `cite`).\n\n## Files\n\n- **Modify**: `src/tools/remember.rs` — add `cite` and `anti_verify` fields to `RememberArgs`, branch in `handle()` for cite mode\n- **Modify**: `src/lessons.rs` — add `LessonsDb::cite()` and `LessonsDb::anti_verify()` methods; modify `query_for_context()` for anchor-aware verified-first surfacing; add `[unverified]` tagging\n- **Test**: `tests/lessons-test.rs` — new tests for citation lifecycle, threshold, anti-verify, surfacing priority\n\n## Steps\n\n### Step 1: Add `cite` and `anti_verify` to RememberArgs\n\nAdd optional fields so the tool can be called in cite mode without providing text/anchors:\n\n```rust\n// src/tools/remember.rs\n#[derive(Debug, Deserialize, JsonSchema)]\npub struct RememberArgs {\n    // --- existing fields ---\n    pub text: Option<String>,  // was required String — now optional (required only for store mode)\n    pub location_anchors: Option<Vec<LocationAnchor>>,  // was required Vec — now optional\n    #[serde(default)]\n    pub source_tasks: Option<Vec<String>>,\n    #[serde(default)]\n    pub project_origin: Option<String>,\n    #[serde(default)]\n    pub categories: Option<Vec<String>>,\n    // --- new fields ---\n    /// Cite an existing lesson by ID. Records a citation and increases confidence.\n    #[serde(default)]\n    pub cite: Option<String>,\n    /// When true alongside `cite`, flags the lesson as wrong/outdated (decreases confidence).\n    #[serde(default)]\n    pub anti_verify: Option<bool>,\n}\n```\n\nUpdate `handle()` to branch: if `cite` is present, delegate to `LessonsDb::cite()` or `LessonsDb::anti_verify()`. Otherwise, require `text` + `location_anchors` and call `store()` as before. Validate that `text` is present when `cite` is absent (return `InvalidArgument` otherwise).\n\n```rust\npub fn handle(lessons_db: &LessonsDb, args: &RememberArgs) -> Result<serde_json::Value> {\n    if let Some(lesson_id) = &args.cite {\n        if args.anti_verify.unwrap_or(false) {\n            let result = lessons_db.anti_verify(lesson_id)?;\n            return Ok(json!({\n                \"anti_verified\": true,\n                \"lesson_id\": lesson_id,\n                \"new_confidence\": result.new_confidence,\n                \"verified\": result.verified,\n            }));\n        }\n        let task_id = args.source_tasks.as_ref().and_then(|t| t.first()).map(|s| s.as_str());\n        let result = lessons_db.cite(lesson_id, task_id)?;\n        return Ok(json!({\n            \"cited\": true,\n            \"lesson_id\": lesson_id,\n            \"new_confidence\": result.new_confidence,\n            \"verified\": result.verified,\n            \"crossed_threshold\": result.crossed_threshold,\n        }));\n    }\n\n    // existing store path, but validate text + location_anchors are present\n    let text = args.text.as_deref().ok_or_else(|| SutraError::InvalidArgument { ... })?;\n    let anchors_raw = args.location_anchors.as_deref().ok_or_else(|| SutraError::InvalidArgument { ... })?;\n    // ... rest of existing store logic unchanged ...\n}\n```\n\n### Step 2: Add `LessonsDb::cite()` method\n\n```rust\n// src/lessons.rs\n\nconst VERIFICATION_THRESHOLD: i64 = 2;\n\npub struct CiteResult {\n    pub new_confidence: i64,\n    pub verified: bool,\n    pub crossed_threshold: bool,\n}\n\nimpl LessonsDb {\n    pub fn cite(&self, lesson_id: &str, task_id: Option<&str>) -> Result<CiteResult> {\n        let conn = self.conn.lock();\n        let tx = conn.unchecked_transaction()?;\n\n        // Verify the lesson exists and isn't archived\n        let (old_confidence, old_verified): (i64, bool) = tx.query_row(\n            \"SELECT confidence, verified FROM lessons WHERE id = ?1 AND archived = 0\",\n            params![lesson_id],\n            |row| Ok((row.get(0)?, row.get(1)?)),\n        ).map_err(|_| SutraError::NotFound { ... })?;\n\n        // Insert citation record\n        tx.execute(\n            \"INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, ?2, 'cite')\",\n            params![lesson_id, task_id.unwrap_or(\"\")],\n        )?;\n\n        // Bump confidence\n        let new_confidence = old_confidence + 1;\n        let now_verified = new_confidence >= VERIFICATION_THRESHOLD;\n        let crossed = now_verified && !old_verified;\n\n        tx.execute(\n            \"UPDATE lessons SET confidence = ?1, verified = ?2, last_cited = datetime('now') WHERE id = ?3\",\n            params![new_confidence, now_verified, lesson_id],\n        )?;\n\n        tx.commit()?;\n        Ok(CiteResult { new_confidence, verified: now_verified, crossed_threshold: crossed })\n    }\n}\n```\n\n### Step 3: Add `LessonsDb::anti_verify()` method\n\n```rust\npub struct AntiVerifyResult {\n    pub new_confidence: i64,\n    pub verified: bool,\n}\n\nimpl LessonsDb {\n    pub fn anti_verify(&self, lesson_id: &str) -> Result<AntiVerifyResult> {\n        let conn = self.conn.lock();\n        let tx = conn.unchecked_transaction()?;\n\n        let (old_confidence,): (i64,) = tx.query_row(\n            \"SELECT confidence FROM lessons WHERE id = ?1 AND archived = 0\",\n            params![lesson_id],\n            |row| Ok((row.get(0)?,)),\n        ).map_err(|_| SutraError::NotFound { ... })?;\n\n        // Insert citation record with field='anti_verify'\n        tx.execute(\n            \"INSERT INTO citations (lesson_id, task_id, field) VALUES (?1, '', 'anti_verify')\",\n            params![lesson_id],\n        )?;\n\n        // Drop confidence (floor at 0)\n        let new_confidence = (old_confidence - 1).max(0);\n        let still_verified = new_confidence >= VERIFICATION_THRESHOLD;\n\n        tx.execute(\n            \"UPDATE lessons SET confidence = ?1, verified = ?2 WHERE id = ?3\",\n            params![new_confidence, still_verified, lesson_id],\n        )?;\n\n        tx.commit()?;\n        Ok(AntiVerifyResult { new_confidence, verified: still_verified })\n    }\n}\n```\n\n### Step 4: Modify `query_for_context()` for verified-first surfacing\n\nAfter the existing phase 1/2/3 collection but before the cap/truncation, add anchor-aware priority logic. The key insight: \\\"same context\\\" means same anchor matched. We need to track which anchors matched each lesson, then suppress unverified lessons when a verified lesson matched any of the same anchors.\n\nThe current code collects lessons in a flat `Vec<SurfacedLesson>`. We need to enrich the collection phase to track matched anchors per lesson, then use that for priority filtering.\n\n```rust\n// After all phases collect lessons but before truncation:\n\n// Separate verified and unverified\nlet (verified, unverified): (Vec<_>, Vec<_>) = lessons.into_iter().partition(|l| l.verified);\n\n// Collect the set of anchor values that verified lessons matched\n// (we need to track this during collection — see below)\nlet verified_anchor_values: HashSet<String> = verified.iter()\n    .flat_map(|l| l.matched_anchors.iter().cloned())\n    .collect();\n\n// Keep unverified only when no verified lesson covers the same anchor\nlet mut kept_unverified: Vec<SurfacedLesson> = unverified.into_iter()\n    .filter(|l| !l.matched_anchors.iter().any(|a| verified_anchor_values.contains(a)))\n    .collect();\n\n// Tag unverified survivors\nfor l in &mut kept_unverified {\n    l.text = format!(\"[unverified] {}\", l.text);\n}\n\nlet mut lessons = verified;\nlessons.append(&mut kept_unverified);\n```\n\nTo support this, add a `matched_anchors: Vec<String>` field to `SurfacedLesson` (skipped in serialization, or included — TBD based on whether callers want it). During phase 1 (symbol match), record the symbol anchor value. During phase 2 (file/import/directory), record the matched anchor value. This requires changing the collection code slightly to carry anchor info through.\n\n**Key detail**: `SurfacedLesson` gets a new `#[serde(skip)]` field `matched_anchors: Vec<String>` used only internally for priority filtering. It won't appear in JSON output.\n\nThe `map_surfaced_lesson` helper and the SQL queries need adjustment: phase 1 can set matched_anchors from the symbol_name context parameter; phase 2 already has the anchor_value in scope.\n\n### Step 5: Write tests\n\n```rust\n// tests/lessons-test.rs\n\n#[test]\nfn cite_increases_confidence() {\n    let (_dir, db) = setup_lessons_db();\n    let id = db.store(&StoreLessonParams { text: \"lesson\", anchors: &[], ... }).unwrap();\n    let result = db.cite(&id, Some(\"sutra/158\")).unwrap();\n    assert_eq!(result.new_confidence, 1);\n    assert!(!result.verified);\n    assert!(!result.crossed_threshold);\n}\n\n#[test]\nfn cite_crosses_verification_threshold() {\n    let (_dir, db) = setup_lessons_db();\n    let id = db.store(&StoreLessonParams { text: \"lesson\", anchors: &[], ... }).unwrap();\n    db.cite(&id, Some(\"task/1\")).unwrap();\n    let result = db.cite(&id, Some(\"task/2\")).unwrap();\n    assert_eq!(result.new_confidence, 2);\n    assert!(result.verified);\n    assert!(result.crossed_threshold);\n}\n\n#[test]\nfn anti_verify_drops_confidence() {\n    let (_dir, db) = setup_lessons_db();\n    let id = db.store(&StoreLessonParams { text: \"lesson\", anchors: &[], ... }).unwrap();\n    db.cite(&id, Some(\"task/1\")).unwrap();\n    db.cite(&id, Some(\"task/2\")).unwrap();\n    // Now verified with confidence 2\n    let result = db.anti_verify(&id).unwrap();\n    assert_eq!(result.new_confidence, 1);\n    assert!(!result.verified); // dropped below threshold\n}\n\n#[test]\nfn anti_verify_floors_at_zero() {\n    let (_dir, db) = setup_lessons_db();\n    let id = db.store(&StoreLessonParams { text: \"lesson\", anchors: &[], ... }).unwrap();\n    let result = db.anti_verify(&id).unwrap();\n    assert_eq!(result.new_confidence, 0);\n}\n\n#[test]\nfn surfacing_priority_verified_first() {\n    let (_dir, db) = setup_lessons_db();\n    // Store two lessons on same symbol anchor\n    let v_id = db.store(&StoreLessonParams {\n        text: \"verified lesson\", anchors: &[(AnchorKind::Symbol, \\\"foo\\\")], ...\n    }).unwrap();\n    let _u_id = db.store(&StoreLessonParams {\n        text: \"unverified lesson\", anchors: &[(AnchorKind::Symbol, \\\"foo\\\")], ...\n    }).unwrap();\n\n    // Make one verified\n    db.cite(&v_id, Some(\"t/1\")).unwrap();\n    db.cite(&v_id, Some(\"t/2\")).unwrap();\n\n    let ctx = symbol_ctx(\"foo\");\n    let cl = db.query_for_context(&ctx).unwrap();\n    // Only verified lesson shows — unverified suppressed on same anchor\n    assert_eq!(cl.lessons.len(), 1);\n    assert!(cl.lessons[0].text.contains(\"verified lesson\"));\n    assert!(!cl.lessons[0].text.contains(\"[unverified]\"));\n}\n\n#[test]\nfn unverified_surfaces_when_no_verified_on_same_anchor() {\n    let (_dir, db) = setup_lessons_db();\n    // Verified on anchor \"bar\", unverified on anchor \"foo\"\n    let v_id = db.store(&StoreLessonParams {\n        text: \"verified\", anchors: &[(AnchorKind::Symbol, \\\"bar\\\")], ...\n    }).unwrap();\n    db.cite(&v_id, Some(\"t/1\")).unwrap();\n    db.cite(&v_id, Some(\"t/2\")).unwrap();\n\n    db.store(&StoreLessonParams {\n        text: \"unverified\", anchors: &[(AnchorKind::Symbol, \\\"foo\\\")], ...\n    }).unwrap();\n\n    let ctx = MatchContext {\n        symbol_name: \"foo\",\n        file_path: Some(\"src/bar.rs\"),\n        imports: &[],\n        project: None,\n        workspace_languages: &[],\n    };\n    // Both could match (file might match bar). But for symbol \"foo\" specifically:\n    let cl = db.query_for_context(&ctx).unwrap();\n    // Unverified shows because no verified lesson shares anchor \"foo\"\n    let has_unverified = cl.lessons.iter().any(|l| l.text.contains(\"[unverified]\"));\n    assert!(has_unverified);\n}\n\n#[test]\nfn cite_records_citation_row() {\n    let (_dir, db) = setup_lessons_db();\n    let id = db.store(&StoreLessonParams { text: \"lesson\", ... }).unwrap();\n    db.cite(&id, Some(\"sutra/158\")).unwrap();\n    let conn = db.conn_for_test();\n    let count: i64 = conn.query_row(\n        \"SELECT COUNT(*) FROM citations WHERE lesson_id = ?1 AND field = 'cite'\",\n        rusqlite::params![id], |row| row.get(0),\n    ).unwrap();\n    assert_eq!(count, 1);\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \\\"sutra_remember(cite: lesson_id) records a citation and increases confidence\\\" → Steps 1, 2\n- [x] \\\"Confidence crossing threshold flips verified to true\\\" → Step 2 (threshold check in cite())\n- [x] \\\"Anti-verification mode drops confidence\\\" → Steps 1, 3\n- [x] \\\"Verified lessons always surface when anchors match\\\" → Step 4 (verified partition always kept)\n- [x] \\\"Unverified lessons only surface when no verified lessons match the same context\\\" → Step 4 (anchor-aware suppression)\n- [x] \\\"Unverified lessons carry [unverified] flag in response\\\" → Step 4 (text tagging)\n- [x] \\\"Tests: citation, threshold, anti-verification, surfacing priority\\\" → Step 5\"",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ae51c10"
+    },
+    {
+      "type": "git:commit",
+      "value": "da4369b"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "needs-plan",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577568678,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 158
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781701633002,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781702064673,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention. Three findings:\\n\\n1. [high] Duplicate cite calls inflate confidence — no idempotency on (lesson_id, task_id). Two identical calls → verified=true.\\n2. [high] Verified lessons can be truncated by CONTEXT_SURFACING_CAP if unverified lessons fill the cap first.\\n3. [medium] Priority filter compares ALL stored anchors, not just matched anchors — broader suppression than spec intends.",
+      "ts": 1781702250260
+    },
+    {
+      "author": "agent",
+      "text": "All three codex findings addressed in da4369b:\\n1. Idempotent cite via UNIQUE index + INSERT OR IGNORE + changes() check\\n2. Verified-first sort before CONTEXT_SURFACING_CAP truncation\\n3. Matched-anchor tracking during collection; priority filter compares only anchors that matched this context\\n\\n3 new regression tests: duplicate_cite_is_idempotent, multi_anchor_no_false_suppression, cap_prioritizes_verified_over_unverified. Full suite 40/40 green.\"",
+      "ts": 1781702455588
+    }
+  ],
+  "created_at": 1781577568678,
+  "updated_at": 1781702455795,
+  "completed_at": 1781702064673,
+  "edges": [
+    {
+      "id": "019ece4c-e7a5-7cf0-ae7a-e3e6e96a519a",
+      "edge_type": "depends_on",
+      "source": "sutra/158",
+      "target": "sutra/157",
+      "note": null,
+      "created_at": 1781577607077
+    },
+    {
+      "id": "019ece4c-f40b-7160-abf0-98d5afa2cb37",
+      "edge_type": "depends_on",
+      "source": "sutra/160",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577610251
+    },
+    {
+      "id": "019ece4c-f872-73d2-8c20-8bef227ee90b",
+      "edge_type": "depends_on",
+      "source": "sutra/161",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577611378
+    },
+    {
+      "id": "019ece4c-fb3d-7921-a974-6dff8c5a502b",
+      "edge_type": "motivated_by",
+      "source": "sutra/158",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577612093
+    },
+    {
+      "id": "019ece4d-7050-7190-b806-fb121833e032",
+      "edge_type": "depends_on",
+      "source": "sutra/162",
+      "target": "sutra/158",
+      "note": null,
+      "created_at": 1781577642064
+    }
+  ]
+}

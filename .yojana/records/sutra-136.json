@@ -1,0 +1,76 @@
+{
+  "id": "019eb263-142d-7d62-ae62-493adbde6c16",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/136",
+  "sequence_number": 136,
+  "title": "Consolidate health rollup into scoring::score_workspace",
+  "description": "Add score_workspace(db) -> WorkspaceHealth to health::scoring, replacing the triplicated rollup in pipeline.rs compute_snapshot_health, file_health.rs build_component_scores, and orient.rs inline component health block. WorkspaceHealth carries file scores (with category deductions) and component scores (with member_count/total_nloc/instability). Pipeline serializes into snapshot rows; file_health and orient render slices. Consolidate round2 and cat_totals accumulation.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Added score_workspace(db) -> WorkspaceHealth to health::scoring. WorkspaceHealth carries ScoredFile (file_id, score, deductions, category_totals) and ScoredComponent (component_id, name, score, member_count, total_nloc, instability). Pipeline serializes into snapshot rows, file_health renders component JSON slice, orient looks up scores and renders top findings from raw data. round2 unified into scoring module. ComponentInstability gained Clone derive. All 303+ tests pass, no new clippy warnings.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 4"
+    },
+    {
+      "type": "git:commit",
+      "value": "c21980c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "health"
+  ],
+  "history": [
+    {
+      "ts": 1781109298221,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 136
+      }
+    },
+    {
+      "ts": 1781127416075,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781128043437,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes. Two medium findings addressed in 2427929: (1) instability scan was unconditional — pipeline snapshots paid for import_edges scan with discarded results; fixed via include_instability bool param. (2) orient loaded memberships redundantly — now reuses comp_file_ids from WorkspaceHealth.",
+      "ts": 1781128537545
+    }
+  ],
+  "created_at": 1781109298221,
+  "updated_at": 1781128043437,
+  "completed_at": 1781128043437,
+  "edges": []
+}

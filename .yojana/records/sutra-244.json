@@ -1,0 +1,95 @@
+{
+  "id": "019f4941-84e6-7400-bfee-82daf95e6ed0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/244",
+  "sequence_number": 244,
+  "title": "Review: AST-pattern constraints arc (240-243)",
+  "description": "HITL review of the forbidden_pattern arc: contract check on ConstraintViolation/ConstraintFinding field additions (no semantic drift on dep-kind callers — refactor-contract discipline), introduced-only guard behavior against real edits, deny-message quality (does it actually teach the waive-vs-restructure decision?), advisory-default sanity, and a live no-clone-driven-dev rule dogfooded on sutra's own rules.toml. Update docs/constraints-map.md after landing.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Review found three items: (1) resolved/waived violation JSON in review.rs missing line/snippet/enclosing_symbol fields — fixed for symmetry with active violations. (2) No dogfood rule in rules.toml — added no-clone-driven-dev as advisory with scope=src/. (3) constraints-map.md not updated — updated module layout (finding.rs, patterns.rs), key types (ConstraintKind variants, severity defaults, ConstraintFinding location fields), TOML format (forbidden_pattern example), guard integration (introduced-only + fallback filtering), and test locations. No contract drift found on dep-kind callers — new fields are purely additive Option<T> with None defaults. Introduced-only guard semantics solid after a835d08 multiset fix. Deny message deliberately language-generic (b65d24e), relies on provenance for per-rule rationale.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/221",
+      "label": "design"
+    },
+    {
+      "type": "git:commit",
+      "value": "9912c06"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1783640458470,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 244
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783695469135,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783695986132,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783640458470,
+  "updated_at": 1783695986132,
+  "completed_at": 1783695986132,
+  "arc_id": "019f4940-0dd5-72a2-b954-24e8f9443602",
+  "arc_phase": "review",
+  "edges": [
+    {
+      "id": "019f4941-a58b-76c1-a49f-621fbf4a8540",
+      "edge_type": "depends_on",
+      "source": "sutra/244",
+      "target": "sutra/242",
+      "note": null,
+      "created_at": 1783640466827
+    },
+    {
+      "id": "019f4941-a8c3-7cc3-a527-e127ca1be456",
+      "edge_type": "depends_on",
+      "source": "sutra/244",
+      "target": "sutra/243",
+      "note": null,
+      "created_at": 1783640467651
+    },
+    {
+      "id": "019f4947-65a7-7cf3-b853-7149e9f35035",
+      "edge_type": "depends_on",
+      "source": "sutra/225",
+      "target": "sutra/244",
+      "note": "residual guard items need latency measurements from the pattern-constraint arc",
+      "created_at": 1783640843687
+    }
+  ]
+}

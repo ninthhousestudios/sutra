@@ -1,0 +1,137 @@
+{
+  "id": "019e92b0-5eed-7843-a1bf-3bbd08222ae5",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/85",
+  "sequence_number": 85,
+  "title": "5e-2: health scoring with category capping",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nScore derivation from health findings using repowise's category-capping pattern. Base score 10.0, deductions per finding (severity_weight × biomarker_weight), capped per category (organizational -3.5, structural -2.5, coupling -2.0, freshness -1.5, coverage -2.0). Proportional scaling within capped categories preserves per-finding attribution. Per-file scores derived from findings. Component-level scores as NLOC-weighted averages. Rewrite the existing file_health MCP tool to use the new finding-based model.\\n\\n## Acceptance criteria\\n\\n- [ ] health/scoring module: category capping with proportional scaling when a category exceeds its cap\\n- [ ] Per-file health score (1.0-10.0) derived from all findings targeting that file\\n- [ ] Per-component health score as NLOC-weighted average of member file scores\\n- [ ] Repowise calibrated weights as defaults for shared biomarkers\\n- [ ] file_health MCP tool rewritten to return findings + derived score (not the old hardcoded sub-scores)\\n- [ ] Tests: proportional scaling correctness, category cap enforcement, component aggregation, edge cases (no findings = 10.0, all categories maxed = 1.0)\\n\\n## Blocked by\\n\\n- sutra/84 (5e-1: health finding model)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "health/scoring module: category capping with proportional scaling when a category exceeds its cap"
+    },
+    {
+      "done": true,
+      "text": "Per-file health score (1.0-10.0) derived from all findings targeting that file"
+    },
+    {
+      "done": true,
+      "text": "Per-component health score as NLOC-weighted average of member file scores"
+    },
+    {
+      "done": true,
+      "text": "Repowise calibrated weights as defaults for shared biomarkers"
+    },
+    {
+      "done": true,
+      "text": "file_health MCP tool rewritten to return findings + derived score (not the old hardcoded sub-scores)"
+    },
+    {
+      "done": true,
+      "text": "Tests: proportional scaling correctness, category cap enforcement, component aggregation, edge cases (no findings = 10.0, all categories maxed = 1.0)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nCreate a new `health/scoring.rs` module implementing category-capped scoring from `HealthFindingRow`s, using repowise-calibrated biomarker weights. Each biomarker maps to one of five health categories; each category has a deduction cap. When findings in a category exceed the cap, all deductions in that category are proportionally scaled so per-finding attribution is preserved. Then rewrite the `file_health` MCP tool to query findings from DB, score them, and return findings + derived scores instead of the old hardcoded sub-scores.\n\nThe old `compute_file_scores`/`FileScores` stay in file_health.rs since `pipeline.rs::compute_snapshot_aggregates` still imports them — sutra/91 (health snapshots) replaces that callsite.\n\n## Files\n\n- **Create**: `src/health/scoring.rs` — HealthCategory enum, category/weight tables, `score_file()`, `score_component()`\n- **Modify**: `src/health/findings.rs` (lines 36-66) — add `BiomarkerKind::from_str()`, `HealthSeverity::from_str()`\n- **Modify**: `src/health/mod.rs` — add `pub mod scoring;` and re-export\n- **Modify**: `src/db/components.rs` (~line 315) — add `component_members_with_line_count()` method\n- **Modify**: `src/tools/file_health.rs` (lines 65-155) — rewrite `handle`/`handle_with_freshness` to finding-based scoring\n- **Modify**: `tests/health-test.rs` — add scoring tests\n\n## Steps\n\n### Step 1: Add from_str roundtrips to BiomarkerKind and HealthSeverity\n\nIn `src/health/findings.rs`, add `from_str` methods to both enums so DB row strings can be converted back to typed enums for scoring:\n\n```rust\n// in impl BiomarkerKind (existing block, after as_str and default_severity)\npub fn from_str(s: &str) -> Option<Self> {\n    match s {\n        \\\"nested_complexity\\\" => Some(Self::NestedComplexity),\n        \\\"co_change_scatter\\\" => Some(Self::CoChangeScatter),\n        \\\"change_entropy\\\" => Some(Self::ChangeEntropy),\n        \\\"ownership_risk\\\" => Some(Self::OwnershipRisk),\n        \\\"function_hotspot\\\" => Some(Self::FunctionHotspot),\n        \\\"hidden_coupling\\\" => Some(Self::HiddenCoupling),\n        \\\"blast_radius_churn\\\" => Some(Self::BlastRadiusChurn),\n        \\\"dead_code_ratio\\\" => Some(Self::DeadCodeRatio),\n        \\\"code_age_volatility\\\" => Some(Self::CodeAgeVolatility),\n        \\\"coverage_gradient\\\" => Some(Self::CoverageGradient),\n        \\\"convention_drift\\\" => Some(Self::ConventionDrift),\n        \\\"component_instability\\\" => Some(Self::ComponentInstability),\n        \\\"hrr_shape_change\\\" => Some(Self::HrrShapeChange),\n        _ => None,\n    }\n}\n\n// in impl HealthSeverity (existing block, after as_str)\npub fn from_str(s: &str) -> Option<Self> {\n    match s {\n        \\\"advisory\\\" => Some(Self::Advisory),\n        \\\"informational\\\" => Some(Self::Informational),\n        _ => None,\n    }\n}\n```\n\n### Step 2: Create health/scoring.rs — category capping + scoring engine\n\nNew file `src/health/scoring.rs`. Core types and functions:\n\n```rust\nuse std::collections::HashMap;\nuse crate::db::health::HealthFindingRow;\nuse crate::health::findings::{BiomarkerKind, HealthSeverity};\n\nconst BASE_SCORE: f64 = 10.0;\nconst MIN_SCORE: f64 = 1.0;\nconst MAX_SCORE: f64 = 10.0;\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub enum HealthCategory {\n    Organizational,  // co_change_scatter, change_entropy, ownership_risk\n    Structural,      // nested_complexity, function_hotspot, blast_radius_churn\n    Coupling,        // hidden_coupling, component_instability\n    Freshness,       // code_age_volatility, hrr_shape_change\n    Coverage,        // dead_code_ratio, coverage_gradient, convention_drift\n}\n\nimpl HealthCategory {\n    pub fn cap(&self) -> f64 {\n        match self {\n            Self::Organizational => 3.5,\n            Self::Structural => 2.5,\n            Self::Coupling => 2.0,\n            Self::Freshness => 1.5,\n            Self::Coverage => 2.0,\n        }\n    }\n    pub fn as_str(&self) -> &'static str { /* ... */ }\n}\n\n// impl blocks on BiomarkerKind for scoring policy\nimpl BiomarkerKind {\n    pub fn category(&self) -> HealthCategory { /* 13-variant match */ }\n    pub fn default_weight(&self) -> f64 {\n        // Repowise calibrated weights for shared biomarkers:\n        //   co_change_scatter: 1.80, change_entropy: 1.51,\n        //   ownership_risk: 1.38, nested_complexity: 1.34,\n        //   function_hotspot: 1.16, code_age_volatility: 1.10\n        // Moderate defaults for non-repowise:\n        //   hidden_coupling: 1.00, blast_radius_churn: 1.00,\n        //   dead_code_ratio: 0.80, coverage_gradient: 0.80\n        // Sutra-specific (uncalibrated):\n        //   convention_drift: 0.50, component_instability: 0.50,\n        //   hrr_shape_change: 0.50\n    }\n}\n\nimpl HealthSeverity {\n    pub fn weight(&self) -> f64 {\n        match self {\n            Self::Advisory => 1.0,\n            Self::Informational => 0.5,\n        }\n    }\n}\n\npub struct FindingDeduction {\n    pub finding_id: i64,\n    pub raw_deduction: f64,\n    pub scaled_deduction: f64,\n    pub category: HealthCategory,\n}\n\npub struct FileHealthScore {\n    pub score: f64,\n    pub deductions: Vec<FindingDeduction>,\n}\n\npub fn score_file(findings: &[HealthFindingRow]) -> FileHealthScore {\n    // 1. For each finding, compute raw deduction = severity.weight() * biomarker.default_weight()\n    // 2. Group deductions by category\n    // 3. For each category: if sum > cap, scale = cap / sum; else scale = 1.0\n    //    Apply scale to each finding's deduction\n    // 4. Sum all scaled deductions, score = (BASE - total).clamp(MIN, MAX)\n    // Unknown biomarker_kind strings (from_str returns None) are silently skipped\n}\n\npub fn score_component(file_scores: &[(f64, i64)]) -> f64 {\n    // NLOC-weighted average: sum(score * line_count) / sum(line_count)\n    // Empty input or zero total NLOC → MAX_SCORE (10.0)\n    // Result clamped to [MIN_SCORE, MAX_SCORE]\n}\n```\n\n### Step 3: Update health/mod.rs\n\n```rust\npub mod findings;\npub mod scoring;\n\npub use findings::*;\npub use scoring::{score_file, score_component, FileHealthScore, FindingDeduction, HealthCategory};\n```\n\n### Step 4: Add component_members_with_line_count DB method\n\nIn `src/db/components.rs`, after `component_file_ids` (~line 314):\n\n```rust\npub fn component_members_with_line_count(&self) -> Result<Vec<(String, i64, i64)>> {\n    let conn = self.conn.lock();\n    let mut stmt = conn.prepare(\n        \\\"SELECT cm.component_id, cm.file_id, f.line_count\n         FROM component_membership cm\n         JOIN files f ON f.id = cm.file_id\n         JOIN components c ON c.id = cm.component_id\n         WHERE c.dissolved_at IS NULL\\\"\n    )?;\n    let rows = stmt.query_map([], |row| {\n        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))\n    })?.collect::<rusqlite::Result<Vec<_>>>()?;\n    Ok(rows)\n}\n```\n\n### Step 5: Rewrite file_health MCP tool\n\nRewrite `handle_with_freshness` in `src/tools/file_health.rs`. The old `FileScores` and `compute_file_scores` stay (pipeline.rs still uses them). New flow:\n\n```rust\npub fn handle_with_freshness(\n    db: &Db, path: Option<&str>, limit: Option<i64>,\n    mode: Option<&str>, workspace_root: Option<&Path>,\n) -> Result<serde_json::Value> {\n    let limit = limit.unwrap_or(20) as usize;\n    let mode = mode.unwrap_or(\\\"actionable\\\");\n\n    // 1. Get all findings with waiver status; exclude waived findings\n    let all_findings_waivered = db.get_health_findings_with_waiver_status()?;\n    let active_findings: Vec<HealthFindingRow> = all_findings_waivered\n        .into_iter()\n        .filter(|(_, waived)| !waived)\n        .map(|(f, _)| f)\n        .collect();\n\n    // 2. Build file_id → path lookup from all_files()\n    let files = db.all_files()?;\n    let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();\n\n    // 3. Group findings by file_id\n    let mut by_file: HashMap<i64, Vec<&HealthFindingRow>> = HashMap::new();\n    for f in &active_findings {\n        by_file.entry(f.file_id).or_default().push(f);\n    }\n\n    // 4. If path filter, restrict to matching file\n    // 5. For each file with findings, compute score via score_file()\n    //    Files with no findings get score 10.0\n    // 6. If mode == \\\"actionable\\\", only include files with score < 10.0\n    // 7. Sort by score ascending, truncate to limit\n    // 8. Build JSON output: per-file { path, health_score, category_deductions, findings[] }\n\n    // 9. If no path filter, also compute component scores:\n    //    - Get component membership via component_members_with_line_count()\n    //    - For each component, collect member file scores and line_counts\n    //    - Compute NLOC-weighted average via score_component()\n    //    - Include \\\"components\\\" array in output\n\n    // 10. Freshness annotation (same pattern as current code)\n}\n```\n\nOutput shape:\n```json\n{\n  \\\"files\\\": [{\n    \\\"path\\\": \\\"src/foo.rs\\\",\n    \\\"health_score\\\": 7.2,\n    \\\"category_deductions\\\": {\n      \\\"structural\\\": -1.34,\n      \\\"coupling\\\": -0.50\n    },\n    \\\"findings\\\": [{\n      \\\"biomarker\\\": \\\"nested_complexity\\\",\n      \\\"severity\\\": \\\"advisory\\\",\n      \\\"metric_value\\\": 6.0,\n      \\\"threshold\\\": 4.0,\n      \\\"deduction\\\": -1.34,\n      \\\"detail\\\": \\\"foo::bar has nesting depth 6 (threshold 4)\\\"\n    }]\n  }],\n  \\\"components\\\": [{\n    \\\"id\\\": \\\"comp-abc\\\",\n    \\\"name\\\": \\\"core\\\",\n    \\\"health_score\\\": 8.1,\n    \\\"member_count\\\": 5,\n    \\\"total_nloc\\\": 1200\n  }],\n  \\\"total_files\\\": 1,\n  \\\"total_components\\\": 1,\n  \\\"mode\\\": \\\"actionable\\\"\n}\n```\n\n### Step 6: Add scoring tests to tests/health-test.rs\n\n```rust\n// --- Scoring ---\n\nuse sutra::health::scoring::{score_file, score_component, HealthCategory};\nuse sutra::db::health::HealthFindingRow;\n\nfn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {\n    HealthFindingRow {\n        id, file_id, symbol_id: None,\n        biomarker_kind: biomarker.to_string(),\n        severity: severity.to_string(),\n        confidence: 1.0, provenance: \\\"computed\\\".to_string(),\n        metric_value: 5.0, threshold: 4.0, detail: String::new(),\n    }\n}\n\n#[test]\nfn scoring_no_findings_yields_perfect_score() {\n    let result = score_file(&[]);\n    assert_eq!(result.score, 10.0);\n    assert!(result.deductions.is_empty());\n}\n\n#[test]\nfn scoring_single_advisory_finding() {\n    let findings = [make_finding(1, 1, \\\"nested_complexity\\\", \\\"advisory\\\")];\n    let result = score_file(&findings);\n    // severity 1.0 × weight 1.34 = 1.34 deduction\n    assert!((result.score - 8.66).abs() < 0.01);\n    assert_eq!(result.deductions.len(), 1);\n    assert!((result.deductions[0].scaled_deduction - 1.34).abs() < 0.01);\n}\n\n#[test]\nfn scoring_informational_deducts_less() {\n    let findings = [make_finding(1, 1, \\\"dead_code_ratio\\\", \\\"informational\\\")];\n    let result = score_file(&findings);\n    // severity 0.5 × weight 0.80 = 0.40 deduction\n    assert!((result.score - 9.60).abs() < 0.01);\n}\n\n#[test]\nfn scoring_category_cap_with_proportional_scaling() {\n    // Three advisory nested_complexity findings: 3 × 1.34 = 4.02,\n    // exceeds structural cap of 2.5. Scale factor = 2.5/4.02 ≈ 0.622.\n    // Each scaled deduction ≈ 1.34 × 0.622 ≈ 0.833\n    let findings = [\n        make_finding(1, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n        make_finding(2, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n        make_finding(3, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n    ];\n    let result = score_file(&findings);\n    assert!((result.score - 7.5).abs() < 0.01); // 10.0 - 2.5 = 7.5\n    // All three deductions should be equal (same raw) and sum to 2.5\n    let total: f64 = result.deductions.iter().map(|d| d.scaled_deduction).sum();\n    assert!((total - 2.5).abs() < 0.01);\n}\n\n#[test]\nfn scoring_all_categories_maxed_yields_minimum() {\n    // Load each category past its cap; sum of caps = 11.5 > 9.0\n    // Score = max(1.0, 10.0 - 11.5) = 1.0\n    let findings = [\n        // organizational cap 3.5: co_change_scatter × 3 = 5.40 → capped 3.5\n        make_finding(1, 1, \\\"co_change_scatter\\\", \\\"advisory\\\"),\n        make_finding(2, 1, \\\"co_change_scatter\\\", \\\"advisory\\\"),\n        make_finding(3, 1, \\\"co_change_scatter\\\", \\\"advisory\\\"),\n        // structural cap 2.5: nested_complexity × 3 = 4.02 → capped 2.5\n        make_finding(4, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n        make_finding(5, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n        make_finding(6, 1, \\\"nested_complexity\\\", \\\"advisory\\\"),\n        // coupling cap 2.0: hidden_coupling × 3 = 3.00 → capped 2.0\n        make_finding(7, 1, \\\"hidden_coupling\\\", \\\"advisory\\\"),\n        make_finding(8, 1, \\\"hidden_coupling\\\", \\\"advisory\\\"),\n        make_finding(9, 1, \\\"hidden_coupling\\\", \\\"advisory\\\"),\n        // freshness cap 1.5: code_age_volatility × 3 = 3.30 → capped 1.5\n        make_finding(10, 1, \\\"code_age_volatility\\\", \\\"advisory\\\"),\n        make_finding(11, 1, \\\"code_age_volatility\\\", \\\"advisory\\\"),\n        make_finding(12, 1, \\\"code_age_volatility\\\", \\\"advisory\\\"),\n        // coverage cap 2.0: dead_code_ratio × 6 = 2.40 → capped 2.0\n        make_finding(13, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n        make_finding(14, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n        make_finding(15, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n        make_finding(16, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n        make_finding(17, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n        make_finding(18, 1, \\\"dead_code_ratio\\\", \\\"informational\\\"),\n    ];\n    let result = score_file(&findings);\n    assert!((result.score - 1.0).abs() < 0.01);\n}\n\n#[test]\nfn scoring_component_nloc_weighted() {\n    // file A: score 8.0, 300 lines; file B: score 6.0, 100 lines\n    // weighted avg = (8.0*300 + 6.0*100) / 400 = 3000/400 = 7.5\n    let scores = [(8.0, 300_i64), (6.0, 100)];\n    let result = score_component(&scores);\n    assert!((result - 7.5).abs() < 0.01);\n}\n\n#[test]\nfn scoring_component_empty_is_perfect() {\n    let result = score_component(&[]);\n    assert_eq!(result, 10.0);\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \\\"health/scoring module: category capping with proportional scaling\\\" → Steps 2, 3\n- [x] \\\"Per-file health score (1.0-10.0) derived from all findings\\\" → Steps 2, 5\n- [x] \\\"Per-component health score as NLOC-weighted average\\\" → Steps 2, 4, 5\n- [x] \\\"Repowise calibrated weights as defaults for shared biomarkers\\\" → Step 2\n- [x] \\\"file_health MCP tool rewritten to return findings + derived score\\\" → Step 5\n- [x] \\\"Tests: proportional scaling, category cap, component aggregation, edge cases\\\" → Step 6",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577492717,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 85
+      }
+    },
+    {
+      "ts": 1780586417068,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780586421667,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780589372345,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577492717,
+  "updated_at": 1780589372345,
+  "completed_at": 1780589372345,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-c08b-7f30-b235-3e0302ae23d8",
+      "edge_type": "depends_on",
+      "source": "sutra/85",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577648779
+    },
+    {
+      "id": "019e92b2-cdb0-70f0-b7d2-71f98fb7a2aa",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577652144
+    },
+    {
+      "id": "019e92b2-e823-73d0-9434-bd97c49571ef",
+      "edge_type": "depends_on",
+      "source": "sutra/91",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577658915
+    },
+    {
+      "id": "019e92b3-34a8-7130-b9b9-e179888bab25",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577678504
+    },
+    {
+      "id": "019e92b3-48ac-7681-8467-bae5225aed38",
+      "edge_type": "depends_on",
+      "source": "sutra/96",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577683628
+    }
+  ]
+}

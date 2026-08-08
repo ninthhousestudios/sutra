@@ -1,0 +1,92 @@
+{
+  "id": "019eb264-b83e-7670-b0af-6c1854f24a2f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/138",
+  "sequence_number": 138,
+  "title": "Split components.rs into clustering/identity/anchors modules",
+  "description": "Split src/components.rs (1296 lines, cognitive 56) into a components/ module directory: clustering.rs (adjacency, Louvain, auto-tune), identity.rs (reconcile, detect_events, staleness), anchors.rs (scoring, name alignment, concept density), mod.rs (config + discover_components orchestration). Pure file moves, no logic change, public interface unchanged. Isolates anchor heuristics (slated for human-confirmation churn) from clustering core.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 6"
+    },
+    {
+      "type": "git:commit",
+      "value": "32a88fb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "components"
+  ],
+  "history": [
+    {
+      "ts": 1781109405758,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 138
+      }
+    },
+    {
+      "ts": 1781130614958,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781130617386,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1781132802919,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1781132810709,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes. One finding (high): LouvainResult was pub before the split but is no longer reachable as components::LouvainResult after — it lives in private mod clustering with no re-export. Verified: zero external callers exist, so this is not a regression in practice. The type's pub was over-broad before; the split correctly narrowed it to pub(super) scope. No action needed.",
+      "ts": 1781130804186
+    }
+  ],
+  "created_at": 1781109405758,
+  "updated_at": 1781132810709,
+  "completed_at": 1781132810709,
+  "edges": []
+}

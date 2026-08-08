@@ -1,0 +1,84 @@
+{
+  "id": "019e06ed-8f43-7172-8e8a-33320ab33864",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/5",
+  "sequence_number": 5,
+  "title": "Design: sutra_refactor_targets — ranked recommendations",
+  "description": "Design ranked refactoring recommendations combining complexity, coupling, churn, dead code, dupes, and boundary violations into prioritized suggestions filterable by effort.\n\n**Depends on `sutra_dupes` and `sutra_boundaries` design + implementation existing first** — this layers on top of them.\n\n**Open questions:**\n- Effort taxonomy: \"low/medium/high\" needs concrete rules. Deleting dead code = low. Splitting a complex function = medium. Extracting a shared abstraction = high.\n- Recommendation types: split file, extract method, delete, deduplicate, decouple — each is its own classifier.\n- Ranking formula across heterogeneous signals.\n\n**Output:** design doc in docs/plans/ specifying recommendation types, effort rules, and ranking formula.\n\nReference: docs/feature-ideas.md → \"sutra_refactor_targets\" (fallow #7).",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Design doc committed to docs/plans/"
+    },
+    {
+      "done": false,
+      "text": "Recommendation type catalog defined"
+    },
+    {
+      "done": false,
+      "text": "Effort taxonomy with concrete classification rules"
+    },
+    {
+      "done": false,
+      "text": "Ranking formula specified"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "docs/feature-ideas.md"
+  ],
+  "tags": [
+    "design",
+    "refactoring",
+    "depends-on-others"
+  ],
+  "history": [
+    {
+      "ts": 1778232692547,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 5
+      }
+    },
+    {
+      "ts": 1780709741004,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232692547,
+  "updated_at": 1780709741004,
+  "completed_at": null,
+  "edges": [
+    {
+      "id": "019e06ed-cefc-7db3-a955-e17a912172ea",
+      "edge_type": "depends_on",
+      "source": "sutra/needs-designing/5",
+      "target": "sutra/needs-designing/2",
+      "note": "refactor_targets layers on dupes output",
+      "created_at": 1778232708860
+    },
+    {
+      "id": "019e06ed-d2f9-7e60-b6bb-fba74c4ed905",
+      "edge_type": "depends_on",
+      "source": "sutra/needs-designing/5",
+      "target": "sutra/needs-designing/3",
+      "note": "refactor_targets layers on boundaries output",
+      "created_at": 1778232709881
+    }
+  ]
+}

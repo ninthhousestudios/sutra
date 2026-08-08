@@ -1,0 +1,99 @@
+{
+  "id": "019eae92-5b22-7781-bf83-64d16dfbf317",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/132",
+  "sequence_number": 132,
+  "title": "Architectural deepening: 7 candidates from 2026-06-09 review (grilling first)",
+  "description": "Seven deepening candidates, ordered, from the architecture pass: (1) constraint evaluation core — 4 implementations, divergent waiver semantics → pure constraints::check::evaluate; (2) FCA convention rebuild out of review.rs build_findings (cognitive 131) into conventions::pipeline::rebuild called from post_parse_sequence; (3) waiver unification — code seam now, durable-table merge later per ADR-0002; (4) health rollup score_workspace(db) — triplicated; (5) change-risk signal gathering — triplicated; (6) components.rs split into clustering/identity/anchors; (7) tool-handler/freshness seam. Implementation order 1→2→3→4→5→6/7. Requires grilling with Josh before implementation — candidates 1+2 dismantle build_findings and should be grilled as a unit; candidate 1's waiver-rule choice overlaps Wave 4's decision.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "grilling session held; candidates accepted/rejected/modified with decisions recorded"
+    },
+    {
+      "done": false,
+      "text": "accepted candidates decomposed into implementation tasks with edges"
+    },
+    {
+      "done": false,
+      "text": "candidate 1 waiver-match rule consistent with Wave 4 decision"
+    }
+  ],
+  "decisions": [
+    "All 7 candidates accepted",
+    "Candidate 1: waiver-match rule is from_path only (guard.rs from||to is the bug)",
+    "Candidate 3: code seam only (step 1); schema merge deferred indefinitely unless pain felt",
+    "Candidate 4: placement in health::scoring, not a new health::rollup",
+    "Implementation order: 1→2→3→4→5→6/7, with 4 and 6/7 independent of the 1→2→3 chain",
+    "Candidate 7 lowest priority, acceptable to never do"
+  ],
+  "implementation_plan": null,
+  "execution_record": "Grilling completed. 7 candidates walked through individually. All accepted, decomposed into sutra/133-139 with dependency edges recorded via context_refs.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "architecture pass (all candidates)"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045287714,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 132
+      }
+    },
+    {
+      "ts": 1781108938413,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781109476763,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045287714,
+  "updated_at": 1781109476763,
+  "completed_at": 1781109476763,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "deepening",
+  "edges": [
+    {
+      "id": "019eae92-89db-7ea1-be50-b0b36c6ef8b3",
+      "edge_type": "depends_on",
+      "source": "sutra/132",
+      "target": "sutra/129",
+      "note": "candidate 1 waiver-rule choice must follow Wave 4 decision",
+      "created_at": 1781045299675
+    },
+    {
+      "id": "019eae92-8d2a-7ac0-bdfd-06b95f4444f2",
+      "edge_type": "depends_on",
+      "source": "sutra/132",
+      "target": "sutra/126",
+      "note": null,
+      "created_at": 1781045300522
+    }
+  ]
+}

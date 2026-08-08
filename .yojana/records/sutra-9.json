@@ -1,0 +1,94 @@
+{
+  "id": "019e027b-5e10-7c21-aa3d-f7843ea98d12",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/9",
+  "sequence_number": 9,
+  "title": "manas-cli sutra health integration",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\nAdd sutra to the `manas health` command. Three changes in manas-cli:\n\n1. Add `sutra_url` field to `ManasConfig` struct\n2. Add `MANAS_SUTRA_URL` env var (default `http://127.0.0.1:3201`)\n3. Add `(\"sutra\", &config.sutra_url)` to the health check loop in `cmd/health.rs`\n\n## Acceptance criteria\n\n- [ ] `ManasConfig` has `sutra_url` field\n- [ ] `MANAS_SUTRA_URL` env var with `http://127.0.0.1:3201` default\n- [ ] `manas health` output includes sutra line\n- [ ] Shows \"ok\" when sutra daemon is running, \"unreachable\" when not\n\n## Blocked by\n\n- sutra/5 — REST endpoints + service install",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "ManasConfig has sutra_url field"
+    },
+    {
+      "done": true,
+      "text": "MANAS_SUTRA_URL env var with http://127.0.0.1:3201 default"
+    },
+    {
+      "done": true,
+      "text": "manas health output includes sutra line"
+    },
+    {
+      "done": true,
+      "text": "Shows ok when daemon running, unreachable when not"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5d182b2"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "watcher",
+    "manas-cli"
+  ],
+  "history": [
+    {
+      "ts": 1778158099984,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 9
+      }
+    },
+    {
+      "ts": 1778184733459,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778184847177,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158099984,
+  "updated_at": 1778184847177,
+  "completed_at": 1778184847177,
+  "edges": [
+    {
+      "id": "019e027b-8ac8-7de0-b1f5-5e519bb569cc",
+      "edge_type": "depends_on",
+      "source": "sutra/9",
+      "target": "sutra/5",
+      "note": null,
+      "created_at": 1778158111432
+    },
+    {
+      "id": "019e027b-9c11-76d3-84ab-b76f523daff7",
+      "edge_type": "refines",
+      "source": "sutra/9",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158115857
+    }
+  ]
+}

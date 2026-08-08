@@ -1,0 +1,80 @@
+{
+  "id": "019e85c4-bd42-7cd0-88c7-91c5482996f7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/59",
+  "sequence_number": 59,
+  "title": "5c-2: optimized FCA rebuild with hash caching",
+  "description": "## Parent\n\nsutra/57 — 5c PRD: convention system design\n\n## What to build\n\nAdd blake3 hashing of the attribute matrix to skip FCA rebuild when the input hasn't changed. The engine stores the hash of the last rebuild's attribute matrix and compares before recomputing.\n\n- Hash the full attribute matrix (symbol attrs sorted deterministically) with blake3 before FCA computation\n- Store the hash on the FcaEngine (in-memory) and optionally persist to DB\n- On rebuild, compare current hash to stored hash — skip lattice computation if unchanged\n- Return the existing conventions when skipped\n\n## Acceptance criteria\n\n- [ ] FCA rebuild is skipped when attribute matrix is unchanged (verified by test)\n- [ ] FCA rebuild runs normally when attribute matrix changes\n- [ ] Rebuild produces identical results whether skipped or recomputed\n- [ ] All existing FCA tests pass\n- [ ] New test: rebuild with same input twice → second call skips computation\n\n## Blocked by\n\n- sutra/58 (module rename)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/57"
+    },
+    {
+      "type": "git:commit",
+      "value": "225e654"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "conventions",
+    "review-a"
+  ],
+  "history": [
+    {
+      "ts": 1780360723778,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 59
+      }
+    },
+    {
+      "ts": 1780400892037,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780400894802,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "opus-review",
+      "text": "Code review: APPROVE. Hash caching is correct — blake3 of deterministically-sorted matrix, early return on match, cache updated after rebuild. update_incremental flows through rebuild so cache stays coherent. Tests cover both skip and recompute paths.",
+      "ts": 1780401420346
+    }
+  ],
+  "created_at": 1780360723778,
+  "updated_at": 1780400894802,
+  "completed_at": 1780400894802,
+  "edges": [
+    {
+      "id": "019e85c6-5c66-74e2-9dc1-ad6291b98556",
+      "edge_type": "depends_on",
+      "source": "sutra/59",
+      "target": "sutra/58",
+      "note": null,
+      "created_at": 1780360830054
+    }
+  ]
+}

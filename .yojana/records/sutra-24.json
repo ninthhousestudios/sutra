@@ -1,0 +1,56 @@
+{
+  "id": "019e1c20-a673-7f40-9002-8f9633fc1aad",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/24",
+  "sequence_number": 24,
+  "title": "Investigate slow/red MCP indicator during sutra_status calls",
+  "description": "Josh reports sutra_status sometimes appears to hang — Claude Code's MCP indicator blinks red or stays red. Not a true hang, just slower than expected.\\n\\nsutra/22 fixed the most likely cause: parse_workspace was async-without-awaits, blocking the tokio event loop during the sutra_status local fallback parse (when daemon unreachable) and during daemon HTTP handlers. All parse paths now use spawn_blocking.\\n\\nIf the symptom persists after sutra/22 lands, investigate:\\n\\n1. **try_daemon_register HTTP timeout** — the TCP connect to the daemon could be slow if the daemon isn't running (depends on OS TCP timeout, not sutra). Consider adding a short connect_timeout (e.g. 500ms) so the local fallback kicks in faster.\\n\\n2. **Daemon HTTP handler responsiveness** — even with spawn_blocking, if the daemon's axum thread pool is small and all threads are in spawn_blocking tasks, new HTTP requests queue. Check axum/hyper thread pool sizing.\\n\\n3. **MCP keepalive timing** — Claude Code may have aggressive keepalive expectations. If sutra_status takes >N seconds even via the daemon path, the client may flag it. Measure actual latency of the daemon HTTP round-trip.\\n\\nNext step: reproduce the red indicator after sutra/22 is deployed, then measure where the time goes (daemon connect, daemon handler, local fallback).\"",
+  "category": "bug",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "mcp",
+    "performance",
+    "ux"
+  ],
+  "history": [
+    {
+      "ts": 1778588362355,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 24
+      }
+    },
+    {
+      "ts": 1780709764346,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780709768339,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778588362355,
+  "updated_at": 1780709768339,
+  "completed_at": null,
+  "edges": []
+}

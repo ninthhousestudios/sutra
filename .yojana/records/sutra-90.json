@@ -1,0 +1,102 @@
+{
+  "id": "019e92b1-5fc9-74d0-ad49-9138ce8d2123",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/90",
+  "sequence_number": 90,
+  "title": "5e-6: near-duplicate detection + trending",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nNear-duplicate detection via clustering of HRR strip vectors at snapshot time. Groups of 3+ structurally near-identical functions form \\\"pattern families\\\" — tracked over time for trending.\\n\\n- Clustering: agglomerative clustering of strip vectors with cosine similarity threshold >= 0.85, minimum group size 3.\\n- DB: pattern_families table storing family members and similarity scores.\\n- Snapshot integration: pattern family computation at snapshot time, family counts stored in snapshots for trending.\\n- MCP tool: sutra_duplicates(threshold=0.85, min_group=3). Returns pattern families with members, similarity scores, and suggested refactoring targets.\\n\\n## Acceptance criteria\\n\\n- [ ] Agglomerative clustering over strip vectors at configurable similarity threshold\\n- [ ] pattern_families table with family members and scores\\n- [ ] Computation triggered at snapshot time\\n- [ ] Pattern family counts included in snapshot data for trending\\n- [ ] sutra_duplicates MCP tool with threshold and min_group parameters\\n- [ ] Returns families with member functions, average similarity, file locations\\n\\n## Blocked by\\n\\n- sutra/88 (5e-4: HRR encoder)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Wave 1: clustering algo + DB tables + unit tests. Wave 2: pipeline + snapshot integration. Wave 3: MCP tool.",
+  "execution_record": "3 commits: 06de2b6 (wave 1: clustering + DB), 33f9895 (wave 2: pipeline + snapshot), 87aab80 (wave 3: MCP tool). 587 tests pass, 6 new unit tests for clustering logic.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577558473,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 90
+      }
+    },
+    {
+      "ts": 1780616184866,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780617353856,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780617388152,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780661650397,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review: approve with notes. Change is correct and complete against all 6 acceptance criteria. One should-fix: replace_pattern_families needs a transaction wrapper (crash-atomicity). Three low-priority notes: O(n²) clustering scaling, single-linkage vs complete-linkage semantics, tool recomputes instead of reading stored families for default params.",
+      "ts": 1780659321815
+    }
+  ],
+  "created_at": 1780577558473,
+  "updated_at": 1780661650397,
+  "completed_at": 1780661650397,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-e495-7db3-859f-f9d15a48639d",
+      "edge_type": "depends_on",
+      "source": "sutra/90",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577658005
+    },
+    {
+      "id": "019e92b3-0130-7570-9cd9-3be920b3eaaa",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/90",
+      "note": null,
+      "created_at": 1780577665328
+    }
+  ]
+}

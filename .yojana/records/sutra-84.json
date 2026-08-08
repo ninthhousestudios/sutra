@@ -1,0 +1,145 @@
+{
+  "id": "019e92b0-1db7-7fb3-b0b2-b51777939250",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/84",
+  "sequence_number": 84,
+  "title": "5e-1: health finding model + first biomarker",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nThe foundational health finding model that all biomarkers produce into. Define the HealthFinding struct (biomarker kind, target file/symbol/component, severity advisory/informational, confidence, provenance, metric value, threshold, human-readable detail). Create DB migration for health_findings table. Integrate health findings with the existing waiver mechanism from the constraint system. Implement one biomarker end-to-end (nested_complexity) to prove the full pipeline: parse → compute finding → store → query → waive.\\n\\n## Acceptance criteria\\n\\n- [ ] HealthFinding struct with BiomarkerKind enum, target granularity (file/symbol/component), severity (advisory/informational only — never blocking), confidence, provenance\\n- [ ] DB migration: health_findings table in the ephemeral partition\\n- [ ] Health findings reuse the constraint waiver mechanism — a waived health finding is excluded from score derivation but still visible in reports\\n- [ ] nested_complexity biomarker implemented: emits advisory findings for functions exceeding a nesting depth threshold\\n- [ ] Pipeline integration: health findings computed during parse and stored in DB\\n- [ ] Health findings queryable (internal API, not MCP tool yet)\\n- [ ] Tests: finding model creation, nested_complexity threshold logic, waiver exclusion\\n\\n## Blocked by\\n\\nNone — can start immediately\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "HealthFinding struct with BiomarkerKind enum, target granularity (file/symbol/component), severity (advisory/informational only — never blocking), confidence, provenance"
+    },
+    {
+      "done": true,
+      "text": "DB migration: health_findings table in the ephemeral partition"
+    },
+    {
+      "done": true,
+      "text": "Health findings reuse the constraint waiver mechanism — a waived health finding is excluded from score derivation but still visible in reports"
+    },
+    {
+      "done": true,
+      "text": "nested_complexity biomarker implemented: emits advisory findings for functions exceeding a nesting depth threshold"
+    },
+    {
+      "done": true,
+      "text": "Pipeline integration: health findings computed during parse and stored in DB"
+    },
+    {
+      "done": true,
+      "text": "Health findings queryable (internal API, not MCP tool yet)"
+    },
+    {
+      "done": true,
+      "text": "Tests: finding model creation, nested_complexity threshold logic, waiver exclusion"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nIntroduce a `health` module that defines the finding model all biomarkers produce into, implement `nested_complexity` as the first biomarker to prove the full pipeline, and wire health findings into parse + DB + waiver infrastructure. The nested_complexity biomarker reuses the existing cognitive complexity tree-walk classification (`classify_cognitive`) to compute max nesting depth per function, stored alongside cyclomatic/cognitive in the symbols table. Health waivers mirror the constraint waiver pattern (separate durable table, same matching shape) rather than sharing tables, keeping the two domains independently evolvable.\n\n## Files\n\n- **Create**: `src/health/mod.rs` — module root, re-exports\n- **Create**: `src/health/findings.rs` — HealthFinding, HealthSeverity, BiomarkerKind enums/structs, `compute_nested_complexity()` biomarker\n- **Create**: `src/db/health.rs` — DB operations for health_findings and health_waivers tables\n- **Create**: `migrations/0027_health_findings.sql` — health_findings table (ephemeral) + ALTER TABLE symbols ADD max_nesting\n- **Create**: `migrations/0028_health_waivers.sql` — health_waivers table (durable)\n- **Create**: `tests/health-test.rs` — finding model, threshold logic, waiver exclusion, pipeline integration\n- **Modify**: `src/lib.rs` (line 20) — add `pub mod health;`\n- **Modify**: `src/parser/complexity.rs` (after `cognitive()`) — add `pub fn max_nesting_depth()`\n- **Modify**: `src/parser/mod.rs` (lines 33-34) — add `max_nesting: Option<u32>` to ExtractedSymbol\n- **Modify**: `src/parser/rust.rs` — call `max_nesting_depth()` alongside cognitive/cyclomatic\n- **Modify**: `src/parser/dart.rs` — call `max_nesting_depth()` alongside cognitive/cyclomatic\n- **Modify**: `src/db/mod.rs` — add `max_nesting` to InsertSymbolParams + `insert_symbol`, add TABLE_REGISTRY entries, add `pub mod health;`\n- **Modify**: `src/db/migrations.rs` — add 0027 and 0028 entries to MIGRATIONS\n- **Modify**: `src/pipeline.rs` (end of `post_parse_sequence`, ~line 600) — call health finding computation\n\n## Steps\n\n### Step 1: Add `max_nesting_depth` to complexity.rs\n\nReuse the existing `classify_cognitive` classification to identify nesting-incrementing constructs. Walk the tree tracking max depth only — no scoring. Handles else-if chains the same way cognitive does (flat, no extra nesting).\n\n```rust\n// src/parser/complexity.rs\n\npub fn max_nesting_depth(node: Node, src: &[u8], lang: &str) -> u32 {\n    let mut max_depth = 0;\n    walk_nesting(node, src, lang, 0, &mut max_depth);\n    max_depth\n}\n\nfn walk_nesting(node: Node, src: &[u8], lang: &str, current_depth: u32, max_depth: &mut u32) {\n    let kind = node.kind();\n    let (_, increments_nesting) = classify_cognitive(kind, lang);\n    let new_depth = if increments_nesting { current_depth + 1 } else { current_depth };\n    if new_depth > *max_depth {\n        *max_depth = new_depth;\n    }\n\n    let mut cursor = node.walk();\n    for child in node.children(&mut cursor) {\n        // else-if chains: same logic as walk_cognitive — don't add nesting for chained if\n        if lang == \"rust\" && child.kind() == \"else_clause\" {\n            let mut inner_cursor = child.walk();\n            for grandchild in child.children(&mut inner_cursor) {\n                if grandchild.kind() == \"if_expression\" {\n                    walk_nesting(grandchild, src, lang, current_depth, max_depth);\n                } else {\n                    walk_nesting(grandchild, src, lang, new_depth, max_depth);\n                }\n            }\n            continue;\n        }\n        walk_nesting(child, src, lang, new_depth, max_depth);\n    }\n}\n```\n\n### Step 2: Wire max_nesting through parse flow\n\nAdd to ExtractedSymbol, InsertSymbolParams, insert_symbol, and language adapters.\n\n```rust\n// src/parser/mod.rs — ExtractedSymbol\npub max_nesting: Option<u32>,\n\n// src/db/mod.rs — InsertSymbolParams\npub max_nesting: Option<i64>,\n\n// src/db/mod.rs — insert_symbol: add max_nesting to INSERT and params\n\n// src/parser/rust.rs — where cyclomatic/cognitive are computed:\nlet max_nesting = complexity::max_nesting_depth(body_node, src, \"rust\");\n// set sym.max_nesting = Some(max_nesting)\n\n// src/parser/dart.rs — same pattern with lang=\"dart\"\n```\n\nMigration for the new column:\n\n```sql\n-- migrations/0027_health_findings.sql\nALTER TABLE symbols ADD COLUMN max_nesting INTEGER;\n\nCREATE TABLE IF NOT EXISTS health_findings (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,\n    symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,\n    biomarker_kind TEXT NOT NULL,\n    severity TEXT NOT NULL,\n    confidence REAL NOT NULL,\n    provenance TEXT NOT NULL DEFAULT 'computed',\n    metric_value REAL NOT NULL,\n    threshold REAL NOT NULL,\n    detail TEXT NOT NULL\n);\nCREATE INDEX IF NOT EXISTS idx_health_findings_file ON health_findings(file_id);\nCREATE INDEX IF NOT EXISTS idx_health_findings_kind ON health_findings(biomarker_kind);\n```\n\n### Step 3: Create health_waivers table (durable)\n\n```sql\n-- migrations/0028_health_waivers.sql\nCREATE TABLE IF NOT EXISTS health_waivers (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    biomarker_kind TEXT NOT NULL,\n    file_path TEXT NOT NULL,\n    symbol_qualified_name TEXT,\n    rationale TEXT NOT NULL,\n    waived_by TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n);\nCREATE UNIQUE INDEX IF NOT EXISTS idx_health_waivers_unique\n    ON health_waivers (biomarker_kind, file_path, COALESCE(symbol_qualified_name, ''));\n```\n\n### Step 4: Update TABLE_REGISTRY and MIGRATIONS\n\n```rust\n// src/db/mod.rs — TABLE_REGISTRY: add two entries\nTableMeta { name: \"health_findings\", partition: TablePartition::Ephemeral, is_virtual: false },\nTableMeta { name: \"health_waivers\", partition: TablePartition::Durable, is_virtual: false },\n\n// src/db/migrations.rs — MIGRATIONS: add two entries\n(\"0027_health_findings\", include_str!(\"../../migrations/0027_health_findings.sql\"), true),\n(\"0028_health_waivers\", include_str!(\"../../migrations/0028_health_waivers.sql\"), false),\n```\n\n### Step 5: Create health module — model and nested_complexity biomarker\n\n```rust\n// src/health/mod.rs\npub mod findings;\npub use findings::*;\n\n// src/health/findings.rs\nuse crate::db::Db;\nuse crate::error::Result;\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum HealthSeverity {\n    Advisory,\n    Informational,\n}\n\nimpl HealthSeverity {\n    pub fn as_str(&self) -> &'static str {\n        match self {\n            Self::Advisory => \"advisory\",\n            Self::Informational => \"informational\",\n        }\n    }\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum BiomarkerKind {\n    // Tier 2 — implemented\n    NestedComplexity,\n    // Tier 1 (stubs for future)\n    CoChangeScatter,\n    ChangeEntropy,\n    OwnershipRisk,\n    FunctionHotspot,\n    // Tier 2 (stubs)\n    HiddenCoupling,\n    BlastRadiusChurn,\n    // Tier 3 (stubs)\n    DeadCodeRatio,\n    CodeAgeVolatility,\n    CoverageGradient,\n    // Sutra-specific (stubs)\n    ConventionDrift,\n    ComponentInstability,\n    HrrShapeChange,\n}\n\nimpl BiomarkerKind {\n    pub fn as_str(&self) -> &'static str {\n        match self {\n            Self::NestedComplexity => \"nested_complexity\",\n            Self::CoChangeScatter => \"co_change_scatter\",\n            // ... all variants\n        }\n    }\n\n    pub fn default_severity(&self) -> HealthSeverity {\n        match self {\n            Self::DeadCodeRatio | Self::CodeAgeVolatility | Self::CoverageGradient\n            | Self::ConventionDrift | Self::ComponentInstability | Self::HrrShapeChange => {\n                HealthSeverity::Informational\n            }\n            _ => HealthSeverity::Advisory,\n        }\n    }\n}\n\n#[derive(Debug, Clone)]\npub struct HealthFinding {\n    pub file_id: i64,\n    pub symbol_id: Option<i64>,\n    pub biomarker_kind: BiomarkerKind,\n    pub severity: HealthSeverity,\n    pub confidence: f64,\n    pub provenance: String,\n    pub metric_value: f64,\n    pub threshold: f64,\n    pub detail: String,\n}\n\nconst NESTING_THRESHOLD: u32 = 4;\n\npub fn compute_nested_complexity(db: &Db) -> Result<Vec<HealthFinding>> {\n    let rows = db.symbols_exceeding_nesting(NESTING_THRESHOLD as i64)?;\n    let findings: Vec<HealthFinding> = rows.into_iter().map(|row| {\n        HealthFinding {\n            file_id: row.file_id,\n            symbol_id: Some(row.symbol_id),\n            biomarker_kind: BiomarkerKind::NestedComplexity,\n            severity: HealthSeverity::Advisory,\n            confidence: 1.0,\n            provenance: \"computed\".to_string(),\n            metric_value: row.max_nesting as f64,\n            threshold: NESTING_THRESHOLD as f64,\n            detail: format!(\n                \"{} has nesting depth {} (threshold {})\",\n                row.qualified_name, row.max_nesting, NESTING_THRESHOLD\n            ),\n        }\n    }).collect();\n    Ok(findings)\n}\n\npub fn compute_all_health_findings(db: &Db) -> Result<Vec<HealthFinding>> {\n    let mut findings = compute_nested_complexity(db)?;\n    // Future biomarkers append here\n    Ok(findings)\n}\n```\n\n### Step 6: Create db/health.rs — DB operations\n\n```rust\n// src/db/health.rs\nuse rusqlite::params;\nuse super::Db;\nuse crate::error::Result;\n\n#[derive(Debug, Clone)]\npub struct HealthFindingRow {\n    pub id: i64,\n    pub file_id: i64,\n    pub symbol_id: Option<i64>,\n    pub biomarker_kind: String,\n    pub severity: String,\n    pub confidence: f64,\n    pub provenance: String,\n    pub metric_value: f64,\n    pub threshold: f64,\n    pub detail: String,\n}\n\n#[derive(Debug, Clone)]\npub struct HealthWaiverRow {\n    pub id: i64,\n    pub biomarker_kind: String,\n    pub file_path: String,\n    pub symbol_qualified_name: Option<String>,\n    pub rationale: String,\n    pub waived_by: String,\n    pub created_at: String,\n    pub updated_at: String,\n}\n\n#[derive(Debug)]\npub struct NestingExceedRow {\n    pub file_id: i64,\n    pub symbol_id: i64,\n    pub qualified_name: String,\n    pub max_nesting: i64,\n}\n\nimpl Db {\n    pub fn symbols_exceeding_nesting(&self, threshold: i64) -> Result<Vec<NestingExceedRow>> {\n        let conn = self.conn.lock();\n        let mut stmt = conn.prepare(\n            \"SELECT file_id, id, qualified_name, max_nesting FROM symbols\n             WHERE max_nesting IS NOT NULL AND max_nesting > ?1\"\n        )?;\n        let rows = stmt.query_map(params![threshold], |row| {\n            Ok(NestingExceedRow {\n                file_id: row.get(0)?,\n                symbol_id: row.get(1)?,\n                qualified_name: row.get(2)?,\n                max_nesting: row.get(3)?,\n            })\n        })?.collect::<rusqlite::Result<Vec<_>>>()?;\n        Ok(rows)\n    }\n\n    pub fn replace_health_findings(&self, findings: &[crate::health::HealthFinding]) -> Result<()> {\n        let conn = self.conn.lock();\n        conn.execute(\"DELETE FROM health_findings\", [])?;\n        let mut stmt = conn.prepare(\n            \"INSERT INTO health_findings\n             (file_id, symbol_id, biomarker_kind, severity, confidence, provenance,\n              metric_value, threshold, detail)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)\"\n        )?;\n        for f in findings {\n            stmt.execute(params![\n                f.file_id, f.symbol_id, f.biomarker_kind.as_str(),\n                f.severity.as_str(), f.confidence, f.provenance,\n                f.metric_value, f.threshold, f.detail,\n            ])?;\n        }\n        Ok(())\n    }\n\n    pub fn get_health_findings(\n        &self,\n        file_id: Option<i64>,\n        biomarker_kind: Option<&str>,\n    ) -> Result<Vec<HealthFindingRow>> { /* query with optional filters */ }\n\n    pub fn get_health_waivers(&self) -> Result<Vec<HealthWaiverRow>> { /* ... */ }\n\n    pub fn create_health_waiver(\n        &self,\n        biomarker_kind: &str,\n        file_path: &str,\n        symbol_qualified_name: Option<&str>,\n        rationale: &str,\n        waived_by: &str,\n    ) -> Result<i64> {\n        // Same upsert pattern as create_constraint_waiver\n    }\n\n    pub fn delete_health_waiver(&self, waiver_id: i64) -> Result<()> { /* ... */ }\n\n    pub fn get_health_findings_with_waiver_status(\n        &self,\n    ) -> Result<Vec<(HealthFindingRow, bool)>> {\n        // Join findings with waivers via file path lookup, return (finding, is_waived)\n        // Waived findings are included but flagged — excluded from scoring by callers\n    }\n}\n```\n\n### Step 7: Wire into pipeline\n\nAt the end of `post_parse_sequence`, after component discovery and alias sync:\n\n```rust\n// src/pipeline.rs — end of post_parse_sequence, before Ok((...))\nlet findings = crate::health::compute_all_health_findings(db)?;\nif !findings.is_empty() {\n    info!(count = findings.len(), \"computed health findings\");\n}\ndb.replace_health_findings(&findings)?;\n```\n\n### Step 8: Write tests\n\n```rust\n// tests/health-test.rs\n\n// Test 1: HealthFinding model creation\n#[test]\nfn health_finding_model() {\n    // Construct a HealthFinding, verify all fields, round-trip through DB\n}\n\n// Test 2: nested_complexity threshold logic\n#[test]\nfn nested_complexity_threshold() {\n    // Parse a Rust file with:\n    //   fn shallow() { if x { } }                    → nesting 1, no finding\n    //   fn deep() { if a { for b { if c { if d { } } } } } → nesting 4+, finding emitted\n    // Run compute_nested_complexity, assert correct findings\n}\n\n// Test 3: max_nesting_depth computation\n#[test]\nfn max_nesting_depth_basic() {\n    // Parse snippets, verify max_nesting_depth returns expected values\n    // Flat function → 0\n    // Single if → 1\n    // if > for > if → 3\n    // else-if chain → 1 (not cumulative)\n}\n\n// Test 4: waiver exclusion\n#[test]\nfn waiver_excludes_from_active() {\n    // Insert findings, create waiver for one, query with waiver status\n    // Assert waived finding has is_waived=true, others false\n}\n\n// Test 5: pipeline integration\n#[test]\nfn pipeline_produces_health_findings() {\n    // Parse a workspace containing deeply-nested functions\n    // Verify health_findings table is populated after parse\n}\n```\n\n## Acceptance criteria coverage\n\n- [x] \"HealthFinding struct with BiomarkerKind enum, target granularity (file/symbol/component), severity (advisory/informational only), confidence, provenance\" → Step 5\n- [x] \"DB migration: health_findings table in the ephemeral partition\" → Steps 2, 4\n- [x] \"Health findings reuse the constraint waiver mechanism — a waived health finding is excluded from score derivation but still visible in reports\" → Steps 3, 4, 6\n- [x] \"nested_complexity biomarker implemented: emits advisory findings for functions exceeding a nesting depth threshold\" → Steps 1, 2, 5\n- [x] \"Pipeline integration: health findings computed during parse and stored in DB\" → Step 7\n- [x] \"Health findings queryable (internal API, not MCP tool yet)\" → Step 6\n- [x] \"Tests: finding model creation, nested_complexity threshold logic, waiver exclusion\" → Step 8",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "63f6c5e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577476023,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 84
+      }
+    },
+    {
+      "ts": 1780584756204,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780585292672,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780585335571,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780589369484,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577476023,
+  "updated_at": 1780589369484,
+  "completed_at": 1780589369484,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-c08b-7f30-b235-3e0302ae23d8",
+      "edge_type": "depends_on",
+      "source": "sutra/85",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577648779
+    },
+    {
+      "id": "019e92b2-c552-7940-8334-79c3249db985",
+      "edge_type": "depends_on",
+      "source": "sutra/86",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577650002
+    },
+    {
+      "id": "019e92b2-cc89-7851-9d46-11dff7fe904f",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577651849
+    },
+    {
+      "id": "019e92b3-0887-7bb0-90db-d28cc9d1668d",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577667207
+    }
+  ]
+}

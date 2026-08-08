@@ -1,0 +1,75 @@
+{
+  "id": "019e06ed-263d-7700-9ce9-13468a1a2ae7",
+  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
+  "project_slug": "sutra/needs-designing",
+  "human_id": "sutra/needs-designing/2",
+  "sequence_number": 2,
+  "title": "Design: sutra_dupes — clone detection",
+  "description": "Design clone detection for sutra. Largest scope of the design tasks; every choice changes implementation effort and result quality dramatically.\n\n**Open questions:**\n- Algorithm: hash-only exact-match first cut, or suffix array for partial/fuzzy?\n- Normalization strictness levels — whitespace? identifiers? literals? (Fallow has 4 levels: strict / mild AST / weak / semantic.)\n- Minimum clone size — token count or line count?\n- Clone families (transitive grouping) vs. pairwise reports.\n- Cross-file only or include same-file repetition?\n\n**Recommendation already in docs/feature-ideas.md:** start with function-body-token-hash exact matches. Catches the most common case (copy-pasted functions) at fraction of the effort. Suffix array later if needed.\n\n**Output:** design doc in docs/plans/ choosing algorithm, normalization, clone-family policy.\n\nReference: docs/feature-ideas.md → \"sutra_dupes\" (fallow #6).",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Design doc committed to docs/plans/"
+    },
+    {
+      "done": false,
+      "text": "Algorithm choice (hash-only vs suffix-array) decided with rationale"
+    },
+    {
+      "done": false,
+      "text": "Normalization levels specified"
+    },
+    {
+      "done": false,
+      "text": "Output schema (clone groups, pairwise, similarity score) defined"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "docs/feature-ideas.md"
+  ],
+  "tags": [
+    "design",
+    "duplication"
+  ],
+  "history": [
+    {
+      "ts": 1778232665661,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 2
+      }
+    },
+    {
+      "ts": 1780709742955,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232665661,
+  "updated_at": 1780709742955,
+  "completed_at": null,
+  "edges": [
+    {
+      "id": "019e06ed-cefc-7db3-a955-e17a912172ea",
+      "edge_type": "depends_on",
+      "source": "sutra/needs-designing/5",
+      "target": "sutra/needs-designing/2",
+      "note": "refactor_targets layers on dupes output",
+      "created_at": 1778232708860
+    }
+  ]
+}

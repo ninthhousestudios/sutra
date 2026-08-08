@@ -1,0 +1,133 @@
+{
+  "id": "019e8c69-8741-79f2-8b63-2a7440803e1d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/76",
+  "sequence_number": 76,
+  "title": "5d-8: guard severity filtering",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nWire constraint severity into the guard binary's exit-code logic. Blocking violations cause non-zero exit (preventing commit). Advisory and informational violations are reported but don't block. Waived violations never block. Thin change — guard already runs the review pipeline; this adds severity filtering on constraint findings.\n\n## Acceptance criteria\n\n- [ ] Blocking violations → non-zero exit\n- [ ] Advisory/informational → reported, zero exit\n- [ ] Waived violations → never block\n- [ ] Output distinguishes severity levels\n- [ ] Convention violation behavior unchanged\n\n## Blocked by\n\n- sutra/74 — 5d-6: review integration",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Guard blocks commit (non-zero exit) when blocking constraint violations exist"
+    },
+    {
+      "done": false,
+      "text": "Advisory and informational violations reported in guard output but do not block"
+    },
+    {
+      "done": false,
+      "text": "Waived violations do not block regardless of original severity"
+    },
+    {
+      "done": false,
+      "text": "Guard output distinguishes blocking vs advisory vs informational findings"
+    },
+    {
+      "done": false,
+      "text": "Existing convention violation behavior in guard unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "7856a78"
+    },
+    {
+      "type": "git:commit",
+      "value": "1d585ed"
+    }
+  ],
+  "files": [
+    "src/guard.rs",
+    "src/bin/guard.rs"
+  ],
+  "tags": [
+    "phase-5",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1780472186689,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 76
+      }
+    },
+    {
+      "ts": 1780566541257,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780566544642,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780566573921,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780568960073,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, scope: 50a59cd..74bd52e):\n\nVerdict: needs-attention\n\nFinding hitting this task:\n1. [high] Shared DD engines reused without freshness check — guard can make exit-code decisions based on obsolete import data.\n2. Potential waiver over-application inherited from review integration (sutra/74) — if waivers match too broadly, blocking violations could be suppressed in guard.",
+      "ts": 1780568212132
+    }
+  ],
+  "created_at": 1780472186689,
+  "updated_at": 1780568960073,
+  "completed_at": 1780568960073,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-4c63-7f50-ba82-a3f00bcdfd14",
+      "edge_type": "depends_on",
+      "source": "sutra/76",
+      "target": "sutra/74",
+      "note": null,
+      "created_at": 1780472237155
+    },
+    {
+      "id": "019e8c6a-826d-7212-b592-70de95daf3e8",
+      "edge_type": "depends_on",
+      "source": "sutra/80",
+      "target": "sutra/76",
+      "note": null,
+      "created_at": 1780472250989
+    }
+  ]
+}

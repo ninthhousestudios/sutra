@@ -1,0 +1,119 @@
+{
+  "id": "019e027b-17a8-7851-b24d-7c2c395fe1db",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/7",
+  "sequence_number": 7,
+  "title": "smriti watcher loop",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\n`Daemon::spawn_smriti_watcher()` — a tokio task that polls smriti's events table every 2s, groups events by workspace, debounces per-workspace (3s quiet window), and fires `parse_changed_files` on debounce flush.\n\nEvent-to-workspace mapping: filter by source file extension (.rs, .dart from workspace language config), match path prefix to workspace root. Events for files in no workspace are ignored.\n\nGraceful degradation: if smriti DB is unavailable, the existing `spawn_scheduler` stale checker acts as safety net. Stale checker skips workspaces the smriti watcher has refreshed within the stale threshold. If smriti DB reappears, watcher reconnects on next poll cycle.\n\nOn cursor invalidation: log warning, reset cursor to 0, trigger full `parse_workspace` for all registered workspaces.\n\nConfig: `SUTRA_WATCH_POLL_SEC` (default 2), `SUTRA_WATCH_DEBOUNCE_SEC` (default 3).\n\n## Acceptance criteria\n\n- [ ] `spawn_smriti_watcher` polls smriti events every SUTRA_WATCH_POLL_SEC\n- [ ] Events filtered by source extension and matched to workspaces by path prefix\n- [ ] Per-workspace debounce buffer with configurable quiet window\n- [ ] Debounce flush triggers `parse_changed_files` via spawn_blocking\n- [ ] Cursor invalidation triggers full reparse of all workspaces\n- [ ] Graceful degradation: daemon starts and runs without smriti DB\n- [ ] Stale checker skips workspaces recently refreshed by smriti watcher\n- [ ] Integration test: modify a file, observe incremental reparse in logs\n\n## Blocked by\n\n- sutra/4 — incremental parse pipeline\n- sutra/6 — smriti event reader + cursor persistence",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "spawn_smriti_watcher polls smriti events every SUTRA_WATCH_POLL_SEC"
+    },
+    {
+      "done": true,
+      "text": "Events filtered by source extension and matched to workspaces by path prefix"
+    },
+    {
+      "done": true,
+      "text": "Per-workspace debounce buffer with configurable quiet window"
+    },
+    {
+      "done": true,
+      "text": "Debounce flush triggers parse_changed_files via spawn_blocking"
+    },
+    {
+      "done": true,
+      "text": "Cursor invalidation triggers full reparse of all workspaces"
+    },
+    {
+      "done": true,
+      "text": "Graceful degradation: daemon starts and runs without smriti DB"
+    },
+    {
+      "done": true,
+      "text": "Stale checker skips workspaces recently refreshed by smriti watcher"
+    },
+    {
+      "done": true,
+      "text": "Integration test: modify file, observe incremental reparse"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/daemon.rs",
+    "src/config.rs",
+    "src/pipeline.rs",
+    "tests/watcher-test.rs"
+  ],
+  "tags": [
+    "watcher",
+    "daemon",
+    "smriti"
+  ],
+  "history": [
+    {
+      "ts": 1778158081960,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 7
+      }
+    },
+    {
+      "ts": 1778182488232,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778182981820,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158081960,
+  "updated_at": 1778182981820,
+  "completed_at": 1778182981820,
+  "edges": [
+    {
+      "id": "019e027b-8122-7bb3-b21d-1c012391928d",
+      "edge_type": "depends_on",
+      "source": "sutra/7",
+      "target": "sutra/4",
+      "note": null,
+      "created_at": 1778158108962
+    },
+    {
+      "id": "019e027b-83ad-77a1-b175-1959b5039d4d",
+      "edge_type": "depends_on",
+      "source": "sutra/7",
+      "target": "sutra/6",
+      "note": null,
+      "created_at": 1778158109613
+    },
+    {
+      "id": "019e027b-9809-7d21-b67e-f7a93df27bf7",
+      "edge_type": "refines",
+      "source": "sutra/7",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158114825
+    }
+  ]
+}

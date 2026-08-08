@@ -1,0 +1,97 @@
+{
+  "id": "019f9aa5-2ded-7a12-bf2e-1b57e2808635",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/295",
+  "sequence_number": 295,
+  "title": "Wire Python/C/JS-TS test-file detection into constraint test-scope exclusion",
+  "description": "sutra/292 added `LanguageAdapter::is_test_path`, implemented for Rust (`tests/`, `benches/`) and Dart (`test/`, `integration_test/`, `*_test.dart`). Python, C and JS/TS still return the default `false`, so a forbidden_pattern rule reports every match inside their test files — the same false-positive flood sutra/290 fixed for Rust `#[cfg(test)]`.\n\n`python::is_test_file` and `c::is_test_file` already encode the conventions (`test_*`, `*_test.py`/`.c`, `tests/`) but feed *symbol flags* only. JS/TS has `foo.test.ts` handling in the typescript adapter tests but no shared helper.\n\nWork: promote those helpers (or extract a shared one) and override `is_test_path` per adapter. Mirror sutra/292's shape — `adapter::path_has_dir_segment` for directory components, and the existing `scope_targets_tests` escape hatch applies for free.\n\nNote this changes `imports.is_test` for those languages too (set in `ParserPool::parse_with`), so it needs a migration clearing `content_hash` for the affected languages, same as 0054/0055.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Kept `is_test_path` (constraint scope) as a separate function from each language's existing `is_test_file` (symbol FLAG_TEST), rather than widening `is_test_file` and reusing it.",
+      "rationale": "Directory membership and file naming are claims of different strength. `tests/foo.py` means \"not production code\"; `test_foo.py` means \"this file is a test\". Only the latter should relabel every symbol inside. Widening the shared helper would have silently changed symbol flags across four languages as a side effect of a constraint fix — exactly the coupling flagged when Dart's helper was extracted in sutra/292.",
+      "rejected_alternatives": "Widen `is_test_file` in place and point `is_test_path` straight at it — one function instead of two, but it moves FLAG_TEST for every symbol under any `test/` directory, changing conventions/health/context output for a change scoped to constraint evaluation."
+    },
+    {
+      "decision": "Rust does not use the shared `path_in_test_dir` (`test/` or `tests/`); it keeps `tests/` + `benches/`.",
+      "rationale": "Cargo defines `tests/` and `benches/` as build targets exactly. A bare `test/` directory has no meaning in Cargo, so treating it as test scope would suppress findings on code that really does ship.",
+      "rejected_alternatives": "Use `path_in_test_dir` everywhere for uniformity — simpler to describe, but trades a real correctness claim for symmetry."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Landed. Two things a future editor should know:\n\n- The first cut reused Python's existing `is_test_file` directly (file-naming conventions + `tests/` only). Measuring on ruff exposed it as nearly inert: 763 -> 760 findings, because ruff keeps fixtures under `resources/test/` (singular). That drove the `path_in_test_dir` helper covering both `test/` and `tests/`; the final number is 763 -> 396. Measuring against a real corpus is what caught this — the unit tests all passed against the weak version.\n- Remaining 396 are genuine scripts plus fixture directories that avoid a test-named path (`resources/corpus/`, `resources/inline/`, `resources/large/`). Deliberately not chased: guessing project-specific fixture layouts is how a suppression starts hiding real findings. `scope` is the documented answer. Recorded as a known gap in docs/constraints-map.md.\n\nVerification: full suite 1503 passed (1501 + 2 new), clippy warning count identical to baseline (677). Both new tests are table-driven across all four languages — constraint-level exclusion via `check_forbidden_patterns`, and import flagging via `ParserPool::parse_with`.\n\nNOT DEPLOYED: committed only. The running sutra service is on an older binary, so migration 0056's reparse (and 0055's from sutra/292) fires only after a reinstall/restart.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/292",
+      "label": "introduced is_test_path, Rust + Dart only"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/constraints-map.md",
+      "label": "Test scope section"
+    },
+    {
+      "type": "git:commit",
+      "value": "77b48f8"
+    }
+  ],
+  "files": [
+    "src/parser/python.rs",
+    "src/parser/c.rs",
+    "src/parser/javascript.rs",
+    "src/parser/typescript.rs",
+    "src/parser/adapter.rs"
+  ],
+  "tags": [
+    "governance",
+    "forbidden_pattern",
+    "false-positives"
+  ],
+  "history": [
+    {
+      "ts": 1785005944301,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 295
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785006279511,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1785006503016,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of c483406..77b48f8: no findings against this task. The per-language `is_test_path` overrides (python.rs, c.rs, javascript.rs), the deliberate separation from `is_test_file` / FLAG_TEST, Rust's deviation from `path_in_test_dir`, and migration 0056 all drew no findings. Overall verdict needs-attention; findings are on sutra/292 (scope_targets_tests escape hatch missing from dep/cycle enforcement) and sutra/294 (external first-match shadowing include_tests).",
+      "ts": 1785007403273
+    }
+  ],
+  "created_at": 1785005944301,
+  "updated_at": 1785006503016,
+  "completed_at": 1785006503016,
+  "edges": []
+}

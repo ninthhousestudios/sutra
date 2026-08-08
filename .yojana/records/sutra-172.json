@@ -1,0 +1,103 @@
+{
+  "id": "019ed23b-e19f-74c1-b7e3-df2e96614031",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/172",
+  "sequence_number": 172,
+  "title": "Structural ranking + component metadata for sutra_explore",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to build\n\nUpgrade sutra_explore's ranking from match-density-only to the full weighted formula, and add component metadata to response items.\n\n1. Scoring: match_density × 0.5 + structural_importance (fan_in + blast_radius, normalized) × 0.3 + definition_priority × 0.2. Definitions (fn, struct, trait, impl) score 1.0, references score 0.0.\n2. Component annotation: look up each item's component from the component index, add `component` field to response items.\n3. Unit tests for the pattern expander (verify literal, snake_case split, and edge cases).\n\n## Acceptance criteria\n\n- [ ] Ranking uses the full 3-signal weighted formula\n- [ ] High fan-in definitions rank above low fan-in references for the same query\n- [ ] Items carry a `component` field from the component index\n- [ ] Pattern expander unit tests cover literal, snake_case split, and empty/single-word queries\n\n## Blocked by\n\n- sutra/171 (review checkpoint 1)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Ranking uses the full 3-signal weighted formula"
+    },
+    {
+      "done": false,
+      "text": "High fan-in definitions rank above low fan-in references for the same query"
+    },
+    {
+      "done": false,
+      "text": "Items carry a component field from the component index"
+    },
+    {
+      "done": false,
+      "text": "Pattern expander unit tests cover literal, snake_case split, and empty/single-word queries"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "2bf7be8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy"
+  ],
+  "history": [
+    {
+      "ts": 1781643600287,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 172
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781653417829,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1781653433117,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781643600287,
+  "updated_at": 1781653433117,
+  "completed_at": 1781653433117,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019ed23c-b4e1-7893-a1c7-e04fb8228d8d",
+      "edge_type": "depends_on",
+      "source": "sutra/172",
+      "target": "sutra/171",
+      "note": null,
+      "created_at": 1781643654369
+    },
+    {
+      "id": "019ed23c-b999-7970-b253-1f1b19e0a36d",
+      "edge_type": "depends_on",
+      "source": "sutra/173",
+      "target": "sutra/172",
+      "note": null,
+      "created_at": 1781643655577
+    }
+  ]
+}

@@ -1,0 +1,129 @@
+{
+  "id": "019e92b2-5547-74a1-be36-75aea4fde90d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/95",
+  "sequence_number": 95,
+  "title": "5e-10: convention drift detection",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nConvention drift detection via two independent paths, both producing convention_drift health findings:\\n\\n1. FCA-based: convention conformance fraction per component (what fraction of symbols conform to detected conventions). Tracked as time series across snapshots. Emit finding when conformance drops significantly between snapshots.\\n\\n2. HRR-based: intra-component strip vector clustering coherence (average pairwise cosine similarity among functions in the same component). Tracked as time series. Emit finding when coherence drops — meaning new functions are structurally diverging from the component's established patterns.\\n\\nThe two paths catch different things: FCA catches attribute-level drift (missing trait impls, wrong return types), HRR catches structural-level drift (different control flow shapes, different nesting patterns).\\n\\n## Acceptance criteria\\n\\n- [ ] FCA-based drift: per-component convention conformance fraction computed at snapshot time\\n- [ ] HRR-based drift: per-component strip vector clustering coherence computed at snapshot time\\n- [ ] Both metrics stored in snapshots for time-series trending\\n- [ ] convention_drift HealthFinding emitted when either metric drops significantly (configurable threshold)\\n- [ ] Informational severity by default (uncalibrated sutra-specific biomarker)\\n- [ ] Both signals reported independently — the finding indicates which detection path triggered\\n\\n## Blocked by\\n\\n- sutra/88 (5e-4: HRR encoder)\\n- sutra/91 (5e-7: health snapshots)\\n- sutra/92 (5e-review-2: checkpoint 2 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "FCA-based drift: per-component convention conformance fraction computed at snapshot time"
+    },
+    {
+      "done": false,
+      "text": "HRR-based drift: per-component strip vector clustering coherence computed at snapshot time"
+    },
+    {
+      "done": false,
+      "text": "Both metrics stored in snapshots for time-series trending"
+    },
+    {
+      "done": false,
+      "text": "convention_drift HealthFinding emitted when either metric drops significantly (configurable threshold)"
+    },
+    {
+      "done": false,
+      "text": "Informational severity by default (uncalibrated sutra-specific biomarker)"
+    },
+    {
+      "done": false,
+      "text": "Both signals reported independently — the finding indicates which detection path triggered"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "# Convention Drift Detection — Implementation Plan\n\n## Approach\n\nExtend the review pipeline (`build_findings`) to compute two per-component drift metrics alongside the existing entropy-based drift detection:\n1. **FCA conformance**: iterate all conventions × component symbols, compute `conforming/matched` fraction\n2. **HRR coherence**: load strip vectors per component, compute average pairwise cosine similarity\n\nStore both in the `convention_snapshots` table (new columns). Compare against recent snapshots using the existing sliding-window pattern. Emit `HealthFinding`s with `BiomarkerKind::ConventionDrift` when either metric drops significantly.\n\nWhy review-time, not parse-time: FCA conformance requires full symbol attributes and discovered conventions — both only available during review (`build_findings`). HRR coherence could technically run at parse time, but co-locating keeps both drift paths together and avoids pipeline ordering concerns (strip vectors are computed after `compute_all_health_findings` in the parse pipeline).\n\n## Files\n\n- **Create**: `src/health/drift.rs` — FCA conformance + HRR coherence computation, drop detection, finding emission\n- **Create**: `migrations/0034_drift_metrics.sql` — ALTER TABLE convention_snapshots ADD COLUMN fca_conformance, hrr_coherence\n- **Modify**: `src/db/migrations.rs` — register migration 0034\n- **Modify**: `src/db/conventions.rs` — update ConventionSnapshotRow + insert/query methods for new columns\n- **Modify**: `src/db/similarity.rs` — new method: `strip_vectors_by_component`\n- **Modify**: `src/health/mod.rs` — `pub mod drift`\n- **Modify**: `src/conventions/drift.rs` — accept and pass through conformance/coherence to `insert_convention_snapshot`\n- **Modify**: `src/tools/review.rs` — compute drift metrics in `build_findings`, add to `ReviewFindings`, render in `compute` output\n- **Test**: `tests/health-test.rs` — drift metric computation + detection tests\n- **Modify**: `docs/health-map.md` — document new biomarker paths\n\n## Steps\n\n### Step 1: Migration — extend convention_snapshots\n\n```sql\n-- migrations/0034_drift_metrics.sql\nALTER TABLE convention_snapshots ADD COLUMN fca_conformance REAL;\nALTER TABLE convention_snapshots ADD COLUMN hrr_coherence REAL;\n```\n\nRegister in `src/db/migrations.rs` MIGRATIONS array: `(\"0034_drift_metrics\", include_str!(...), true)` — ephemeral_only matches the existing table partition.\n\n### Step 2: Update DB layer for convention snapshots\n\n**`src/db/conventions.rs`** — extend ConventionSnapshotRow:\n```rust\npub struct ConventionSnapshotRow {\n    pub id: i64,\n    pub component_id: String,\n    pub snapshot_ts: String,\n    pub entropy: f64,\n    pub symbol_count: i64,\n    pub attribute_distribution: String,\n    pub attribute_distribution_hash: String,\n    pub fca_conformance: Option<f64>,   // NEW\n    pub hrr_coherence: Option<f64>,     // NEW\n}\n```\n\nExtend `insert_convention_snapshot` signature:\n```rust\npub fn insert_convention_snapshot(\n    &self,\n    component_id: &str,\n    entropy: f64,\n    symbol_count: i64,\n    attribute_distribution: &str,\n    attribute_distribution_hash: &str,\n    fca_conformance: Option<f64>,    // NEW\n    hrr_coherence: Option<f64>,      // NEW\n) -> Result<i64>\n```\nSQL INSERT adds the two new columns. Existing `recent_convention_snapshots` SELECT adds them too.\n\n### Step 3: Add strip_vectors_by_component DB method\n\n**`src/db/similarity.rs`** — new method:\n```rust\npub fn strip_vectors_by_component(&self) -> Result<Vec<(String, i64, Vec<u8>)>> {\n    // Returns (component_id, symbol_id, vector_bytes)\n    // JOIN hrr_vectors → symbols → component_membership → components\n    // WHERE mode = 'strip' AND dissolved_at IS NULL\n    // ORDER BY component_id\n}\n```\n\nJoins across four tables to produce strip vectors grouped by component. Caller deserializes `HrrVec::from_bytes`.\n\n### Step 4: Create src/health/drift.rs\n\nConstants:\n```rust\npub const FCA_DRIFT_THRESHOLD: f64 = 0.10;\npub const HRR_DRIFT_THRESHOLD: f64 = 0.10;\nconst MIN_COHERENCE_SYMBOLS: usize = 3;\n```\n\n**`compute_fca_conformance`**:\n```rust\npub fn compute_fca_conformance(\n    conventions: &[Convention],\n    components: &[(String, String, Vec<SymbolAttrs>)],\n) -> HashMap<String, f64>\n```\nPer component: iterate all conventions (global + scoped to this component), count symbols matching antecedent, count those also satisfying consequent. Return `conforming / matched`. Skip if 0 matched.\n\nGlobal conventions (component_id = None) are checked against every component's symbols. Component-scoped conventions only against their own component. This matches how `FcaEngine::check` scopes conventions.\n\n**`compute_hrr_coherence`**:\n```rust\npub fn compute_hrr_coherence(db: &Db) -> Result<HashMap<String, f64>>\n```\nLoad `strip_vectors_by_component()`, group by component_id, deserialize HrrVecs, compute average pairwise cosine similarity. Skip components with < `MIN_COHERENCE_SYMBOLS` vectors.\n\nFor N vectors: N*(N-1)/2 pairs. At 1024-dim, ~5000 dot products for a 100-function component — fast enough without sampling.\n\n**`detect_convention_drift`**:\n```rust\npub fn detect_convention_drift(\n    db: &Db,\n    conformance: &HashMap<String, f64>,\n    coherence: &HashMap<String, f64>,\n    components: &[(String, String, Vec<SymbolAttrs>)],\n    file_to_component: &HashMap<String, String>,\n    id_map: &HashMap<&str, i64>,\n) -> Result<Vec<HealthFinding>>\n```\nPer component with a conformance or coherence value:\n1. Load `recent_convention_snapshots(comp_id, DRIFT_WINDOW)`\n2. Need ≥ 2 prior snapshots with non-NULL values for the metric\n3. FCA: if `oldest.fca_conformance - current > FCA_DRIFT_THRESHOLD` AND monotonically non-increasing → emit\n4. HRR: if `oldest.hrr_coherence - current > HRR_DRIFT_THRESHOLD` AND monotonically non-increasing → emit\n5. Finding construction:\n   - `file_id`: first file in the component (via `file_to_component` inverse + `id_map`)\n   - `symbol_id`: None\n   - `biomarker_kind`: ConventionDrift\n   - `severity`: Informational\n   - `provenance`: `\"review:fca_conformance\"` or `\"review:hrr_coherence\"`\n   - `metric_value`: the delta (drop amount)\n   - `threshold`: the threshold constant used\n   - `detail`: `\"{comp_name}: {metric_label} dropped from {old:.2} to {new:.2}\"`\n\nAdd `pub mod drift;` to `src/health/mod.rs`.\n\n### Step 5: Update record_and_detect_drift signature\n\n**`src/conventions/drift.rs`** — add conformance/coherence parameters:\n```rust\npub fn record_and_detect_drift(\n    db: &Db,\n    components: &[(String, String, Vec<SymbolAttrs>)],\n    fca_conformance: &HashMap<String, f64>,   // NEW\n    hrr_coherence: &HashMap<String, f64>,     // NEW\n) -> Result<Vec<DriftAlert>>\n```\n\nIn the loop, pass values to `insert_convention_snapshot`:\n```rust\ndb.insert_convention_snapshot(\n    comp_id, entropy, symbols.len() as i64,\n    &dist_json, &dist_hash,\n    fca_conformance.get(comp_id).copied(),\n    hrr_coherence.get(comp_id).copied(),\n)?;\n```\n\n### Step 6: Wire into build_findings\n\n**`src/tools/review.rs`** — after line ~603 (comp_symbol_groups built), before `record_and_detect_drift`:\n\n```rust\nlet fca_conformance = health::drift::compute_fca_conformance(&all_convs, &comp_symbol_groups);\nlet hrr_coherence = health::drift::compute_hrr_coherence(db).unwrap_or_default();\n\ndrift_alerts = conventions::drift::record_and_detect_drift(\n    db, &comp_symbol_groups, &fca_conformance, &hrr_coherence,\n).unwrap_or_default();\n\nlet convention_drift_findings = health::drift::detect_convention_drift(\n    db, &fca_conformance, &hrr_coherence,\n    &comp_symbol_groups, &file_to_component, &id_map,\n).unwrap_or_default();\n```\n\nAdd field to ReviewFindings:\n```rust\npub struct ReviewFindings {\n    // ... existing fields ...\n    pub convention_drift_findings: Vec<crate::health::HealthFinding>,\n}\n```\n\n### Step 7: Render in review output\n\nIn `compute()`, render convention_drift_findings as `\"convention_drift\"` key:\n```rust\nlet convention_drift_out: Vec<_> = findings.convention_drift_findings.iter()\n    .map(|f| json!({\n        \"biomarker\": f.biomarker_kind.as_str(),\n        \"severity\": f.severity.as_str(),\n        \"file_id\": f.file_id,\n        \"metric_value\": scoring::round3(f.metric_value),\n        \"threshold\": scoring::round3(f.threshold),\n        \"provenance\": f.provenance,\n        \"detail\": f.detail,\n    }))\n    .collect();\n```\n\nAdd to result JSON object. Add empty array to early-return case.\n\n### Step 8: Tests\n\nIn `tests/health-test.rs`:\n\n1. **fca_conformance_basic**: 3 symbols, 1 convention, 1 violation → conformance = 0.67\n2. **fca_conformance_no_matches**: symbols don't match any convention antecedent → no entry in map\n3. **hrr_coherence_identical**: same HrrVec for all symbols → coherence ≈ 1.0\n4. **hrr_coherence_diverse**: random/distinct strip vectors → low coherence\n5. **hrr_coherence_too_few**: < 3 symbols in component → skipped\n6. **drift_detection_fca_drop**: seed 2 prior snapshots with conformance 0.95, current 0.80 → finding with provenance \"review:fca_conformance\"\n7. **drift_detection_hrr_drop**: same pattern for coherence\n8. **drift_detection_below_threshold**: drop of 0.05 → no finding\n9. **drift_detection_no_history**: first review run, 0 prior snapshots → no finding\n10. **both_paths_independent**: FCA drops but HRR stable → only FCA finding\n\n### Step 9: Update docs/health-map.md\n\nAdd convention_drift biomarker documentation under a new section. Document the two detection paths (FCA conformance, HRR coherence), thresholds, computation timing (review-time), and storage in convention_snapshots.\n\n## Acceptance criteria coverage\n\n- [x] \"FCA-based drift: per-component conformance fraction computed at snapshot time\" → Steps 4, 5, 6\n- [x] \"HRR-based drift: per-component strip vector clustering coherence computed at snapshot time\" → Steps 3, 4, 5, 6\n- [x] \"Both metrics stored in snapshots for time-series trending\" → Steps 1, 2, 5\n- [x] \"convention_drift HealthFinding emitted when either metric drops significantly\" → Steps 4, 6, 7\n- [x] \"Informational severity by default\" → Step 4 (BiomarkerKind::ConventionDrift already defaults to Informational)\n- [x] \"Both signals reported independently\" → Step 4 (provenance distinguishes: \"review:fca_conformance\" vs \"review:hrr_coherence\")",
+  "execution_record": "## Commits\n\n1. `abce5ea` feat: convention drift detection — FCA conformance + HRR coherence (sutra/95)\n   - Migration 0034: extend convention_snapshots with fca_conformance, hrr_coherence columns\n   - DB layer: ConventionSnapshotRow + insert/query updated, strip_vectors_by_component added\n   - Core: src/health/drift.rs — compute_fca_conformance, compute_hrr_coherence, detect_convention_drift\n   - Wiring: record_and_detect_drift accepts/stores metrics, build_findings computes and detects\n   - Review output: convention_drift JSON section in review output\n\n2. `a9af65f` test: convention drift detection — 10 integration tests (sutra/95)\n   - FCA conformance: basic fraction, no-matches skip, component scoping (unit in drift.rs)\n   - HRR coherence: identical vectors, too-few skip\n   - Drift detection: FCA drop, HRR drop, below-threshold, no-history, independent paths\n   - Snapshot storage: metric round-trip, null metrics\n\n3. `d597117` docs: update health-map for convention drift detection (sutra/95)\n\n## Design decisions\n- Both metrics computed at review time (not parse time) because FCA conformance requires discovered conventions and full symbol attributes only available in build_findings\n- Metrics stored in existing convention_snapshots table (new nullable columns) rather than new table\n- Drop detection uses same DRIFT_WINDOW=3 sliding window as existing entropy drift\n- Findings assigned to first file in component via file_to_component mapping\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780577621319,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 95
+      }
+    },
+    {
+      "ts": 1780667740393,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780668599233,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780684049341,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577621319,
+  "updated_at": 1780684049341,
+  "completed_at": 1780684049341,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b3-39c6-7092-93f0-a4e8cdbd6dcc",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577679814
+    },
+    {
+      "id": "019e92b3-3af3-7830-b4e3-05013fef04f6",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577680115
+    },
+    {
+      "id": "019e92b3-46fd-77f2-953b-c51bbd2f9d56",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577683197
+    },
+    {
+      "id": "019e92b3-5559-7441-8bc6-e293c7bd34b9",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/95",
+      "note": null,
+      "created_at": 1780577686873
+    }
+  ]
+}

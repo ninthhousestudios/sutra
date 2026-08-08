@@ -1,0 +1,130 @@
+{
+  "id": "019e69c7-3e43-74c2-93dd-bdb90045078c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/34",
+  "sequence_number": 34,
+  "title": "5a-4: language_attrs column + adapter population",
+  "description": "## Parent\\n\\nsutra/30 (PRD: core model redesign)\\n\\n## What to build\\n\\nAdd a language_attrs JSON column to the symbols table. Language adapters populate it with structured, language-specific attributes during parsing. This replaces downstream string-matching against signature for machine-readable data.\\n\\nRust example: {\\\"is_async\\\": true, \\\"is_unsafe\\\": false, \\\"returns_result\\\": true, \\\"takes_self_ref\\\": true}\\nDart example: {\\\"is_abstract\\\": true, \\\"is_factory\\\": false}\\n\\n## Acceptance criteria\\n\\n- [ ] Migration adds language_attrs TEXT column to symbols table\\n- [ ] InsertSymbolParams and SymbolRow include language_attrs field\\n- [ ] RustAdapter populates language_attrs with is_async, is_unsafe, returns_result, returns_option, takes_self_ref, takes_self_mut, has_lifetime_params (where detectable from AST)\\n- [ ] DartAdapter populates language_attrs with is_abstract, is_factory, and other Dart-specific attributes\\n- [ ] DB round-trip test: insert symbol with language_attrs JSON, read back, parse correctly\\n- [ ] Existing flags field unchanged (still used for is_test, is_generated)\\n- [ ] signature field unchanged (still human-display text)\\n\\n## Blocked by\\n\\n- sutra/31 (LanguageAdapter trait + registry)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] Migration adds language_attrs TEXT column to symbols table"
+    },
+    {
+      "done": false,
+      "text": "[x] InsertSymbolParams and SymbolRow include language_attrs field"
+    },
+    {
+      "done": false,
+      "text": "[x] RustAdapter populates language_attrs with Rust-specific attributes from AST"
+    },
+    {
+      "done": false,
+      "text": "[x] DartAdapter populates language_attrs with Dart-specific attributes"
+    },
+    {
+      "done": false,
+      "text": "[x] DB round-trip test: insert with language_attrs JSON, read back, parse correctly"
+    },
+    {
+      "done": false,
+      "text": "[x] Existing flags field unchanged"
+    },
+    {
+      "done": false,
+      "text": "[x] signature field unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd `language_attrs: Option<String>` (JSON-serialized) across the full stack: migration → DB structs → pipeline plumbing → parser extraction → tests.\n\n## Files\n\n- **Create**: `migrations/0006_language_attrs.sql` — `ALTER TABLE symbols ADD COLUMN language_attrs TEXT`\n- **Modify**: `src/db/mod.rs` — add field to `SymbolRow`, `InsertSymbolParams`, `map_symbol_row`, `insert_symbol`, and all 5 SELECT queries using `map_symbol_row` (`symbol_by_id`, `symbol_by_qualified_name`, `find_symbols_by_name_tiered` ×3, `find_symbols_by_file`)\n- **Modify**: `src/parser/mod.rs` — add `language_attrs: Option<String>` to `ExtractedSymbol`\n- **Modify**: `src/parser/rust.rs` — add `extract_language_attrs()` helper, call from `extract_symbol` + `extract_impl_symbol`. Extracts: is_async, is_unsafe, returns_result, returns_option, takes_self_ref, takes_self_mut, has_lifetime_params\n- **Modify**: `src/parser/dart.rs` — add `extract_language_attrs()` helper, call from `build_symbol`. Extracts: is_abstract, is_sealed, is_base, is_interface, is_factory, is_static, is_async\n- **Modify**: `src/pipeline.rs` — thread language_attrs through `insert_symbols_dfs` and `resolve_file_refs`\n- **Modify**: `tests/resolver_test.rs` — add `language_attrs: None` to `make_symbol`\n- **Modify**: `tests/parse_rust_test.rs` — test Rust attrs extraction\n- **Modify**: `tests/parse-dart-test.rs` — test Dart attrs extraction\n- **Add test**: `tests/pipeline-test.rs` — DB round-trip test for language_attrs JSON\n\n## Steps\n\n### Step 1: Migration + DB structs + pipeline plumbing (no behavior change)\n- Create migration 0006\n- Add field to SymbolRow, InsertSymbolParams, map_symbol_row, insert_symbol\n- Update all 5 SELECT call sites\n- Add field to ExtractedSymbol\n- Thread through insert_symbols_dfs and resolve_file_refs\n- Update test helpers (make_symbol, etc.) with `language_attrs: None`\n- All existing tests must pass\n\n### Step 2: Rust adapter extraction\n- Add `extract_language_attrs(node, src, kind) -> Option<String>` in rust.rs\n- For fn/method: is_async, is_unsafe, returns_result, returns_option, takes_self_ref, takes_self_mut, has_lifetime_params\n- For impl/trait: is_unsafe\n- For struct/enum: has_lifetime_params\n- Call from extract_symbol and extract_impl_symbol\n- Sparse JSON (only include truthy keys)\n- Update/add Rust parser tests\n\n### Step 3: Dart adapter extraction\n- Add `extract_language_attrs(node, src, kind) -> Option<String>` in dart.rs\n- For class: is_abstract, is_sealed, is_base, is_interface\n- For method: is_factory, is_static, is_async\n- For mixin: is_base\n- Call from build_symbol (already receives outer node)\n- Update/add Dart parser tests\n\n### Step 4: Pipeline round-trip test\n- Test: parse Rust file with async/unsafe fns → query back → verify language_attrs JSON",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "06f6c78"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model"
+  ],
+  "history": [
+    {
+      "ts": 1779891125827,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 34
+      }
+    },
+    {
+      "ts": 1779899099946,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779900183230,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1779900305647,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1779907526802,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, base=9949356):\\nVerdict: needs-attention\\n\\n1. [high] FCA still derives machine attributes from signature text instead of language_attrs (src/fca/attributes.rs:42-58). The downstream FCA extractor still adds returns_result, returns_option, takes_self_ref, takes_self_mut by substring-matching sym.signature — the new language_attrs data is not actually replacing signature-based logic for this consumer.\\n\\n2. [medium] Rust return attributes use substring matching (src/parser/rust.rs:284-291). returns_result/returns_option populated via ret_text.contains(\\\"Result\\\"/\\\"Option\\\") — false positives on types like QueryResult, OptionalConfig.\\n\\n3. [medium] Dart async generators not marked is_async (src/parser/dart.rs:276-279). Only checks for `async` keyword, misses `async*` (stream-producing generators).",
+      "ts": 1779906958963
+    }
+  ],
+  "created_at": 1779891125827,
+  "updated_at": 1779907526802,
+  "completed_at": 1779907526802,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e69c7-c4aa-7c50-a370-091452cfd247",
+      "edge_type": "depends_on",
+      "source": "sutra/34",
+      "target": "sutra/31",
+      "note": null,
+      "created_at": 1779891160234
+    },
+    {
+      "id": "019e69c7-cbeb-7f63-b414-f2318df04c14",
+      "edge_type": "depends_on",
+      "source": "sutra/35",
+      "target": "sutra/34",
+      "note": null,
+      "created_at": 1779891162091
+    }
+  ]
+}

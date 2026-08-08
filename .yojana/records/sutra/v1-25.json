@@ -1,0 +1,85 @@
+{
+  "id": "019e222a-3e2f-7f31-99e8-e08bb3c145cc",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/25",
+  "sequence_number": 25,
+  "title": "Add per-entry freshness to sutra_review responses",
+  "description": "sutra_review responses lack per-file/per-symbol freshness indicators. Other tools (sutra_map, sutra_find) include per-result _freshness via freshness::check_file(). PRD story 22 requires per-result freshness envelope.\\n\\nIn gather_change_stats(), call freshness::check_file() for each changed path and include in per-file and per-symbol JSON entries.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Each changed_file entry in review output includes _freshness field"
+    },
+    {
+      "done": false,
+      "text": "Each affected_file entry includes _freshness field"
+    },
+    {
+      "done": false,
+      "text": "Freshness reflects actual file state (fresh/edited_uncommitted/stale_index)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d31c1fd"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-b"
+  ],
+  "history": [
+    {
+      "ts": 1778689654319,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 25
+      }
+    },
+    {
+      "ts": 1778697801395,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778698020903,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial): needs-attention\\n\\n[medium] recommended_reads and affected_symbols carry file paths but omit _freshness. A stale/deleted affected file can be marked stale_index in affected_files while the same path is still recommended for review or surfaced through affected_symbols, with no warning on those entries.\\n\\nRecommendation: include _freshness on recommended_reads and affected_symbols entries. Add regression tests for stale/edited paths in those arrays.",
+      "ts": 1778699182713
+    },
+    {
+      "author": "agent",
+      "text": "Addressed codex review finding in c0efd69: extended _freshness to recommended_reads and affected_symbols. All file-backed entries now consistently include freshness.\"",
+      "ts": 1778699382629
+    }
+  ],
+  "created_at": 1778689654319,
+  "updated_at": 1778698020903,
+  "completed_at": 1778698020903,
+  "edges": []
+}

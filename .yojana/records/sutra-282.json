@@ -1,0 +1,76 @@
+{
+  "id": "019f8a90-b8c0-78f1-aee8-25be6f2430df",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/282",
+  "sequence_number": 282,
+  "title": "Bound the guard lessons path — no unbounded sqlite work on every write",
+  "description": "Review finding on sutra/276 (high). The advisory lessons lookup added to the PreToolUse guard hook does unbounded sqlite work on every non-denied write.\n\nSpecifics:\n- `LessonsDb::open` runs `create_dir_all` + migrations + archive work per invocation. A missing `~/.sutra/lessons.db` is CREATED and migrated rather than skipped.\n- `query_for_context` loads every non-archived file/import_pattern/directory anchor for the project and filters in Rust. Fires even on zero-match writes because `file_path` is always `Some`.\n- `LessonsDb::open` sets `PRAGMA busy_timeout = 5000` while the installed PreToolUse hook timeout is 3000ms. A locked or slow lessons.db consumes the entire hook budget and makes edits appear broken — for a purely advisory feature.\n- `query_for_context` ends with `UPDATE lessons SET last_surfaced` — a WRITE taking the sqlite write lock, now on the blocking edit path.\n\nsutra/276 acceptance criterion \"no measurable guard latency regression on writes with zero matching anchors\" is not met; it was asserted, not demonstrated.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Guard skips lessons entirely (no db open, no dir creation) when ~/.sutra/lessons.db does not already exist"
+    },
+    {
+      "done": false,
+      "text": "Guard path opens lessons.db read-only: no migrations, no archive work, no last_surfaced write"
+    },
+    {
+      "done": false,
+      "text": "Guard-specific busy timeout well under the 3000ms hook budget"
+    },
+    {
+      "done": false,
+      "text": "Anchor candidate selection uses indexed SQL with a hard LIMIT rather than loading all anchors and filtering in Rust"
+    },
+    {
+      "done": false,
+      "text": "Test demonstrating the zero-match write path performs no lessons db work"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "1. Add a read-only/no-create open path on LessonsDb (or an `open_existing` returning None when the file is absent) with a short busy_timeout.\n2. Add a `query_for_context` variant (or flag) that skips the `last_surfaced` UPDATE — surfacing bookkeeping does not belong on a blocking hook.\n3. Push anchor filtering into SQL where possible (directory/file prefix predicates) with a LIMIT; keep glob matching in Rust only for the reduced candidate set.\n4. Early-return in `lessons_for_proposed` before any db work when the store is absent.\n5. Tests: absent-db no-op, no-write assertion, and the guard-specific timeout value.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "sutra/276 reused `LessonsDb::open` — the owning-caller constructor — from a blocking PreToolUse hook. That constructor is correct for a long-lived MCP server process where create_dir_all, migrations, decay-archiving and a 5000ms busy_timeout amortize to nothing, and wrong for a per-write hook with a 3000ms budget. The mismatch was invisible because both callers want the same query; the difference is entirely in the acceptable cost of getting a handle, which the type system does not express.</root_cause>\n<parameter name=\"execution_record\">Added `LessonsDb::open_existing(dir, busy_timeout_ms, candidate_limit) -> Result<Option<Self>>`: returns None when lessons.db is absent (no dir creation), skips migrations and archive_decayed, sets PRAGMA query_only = ON, and uses a 250ms busy_timeout. journal_mode deliberately not set — a write on a fresh db, pointless on an existing one.\n\nTwo supporting changes on LessonsDb: a `read_only` flag that suppresses the `last_surfaced` UPDATE (a write taking the sqlite write lock, previously on the edit path), and a `candidate_limit` field bounding the Phase 2 anchor sweep.\n\nContract-drift avoidance was the main design constraint (CLAUDE.md flags three prior consolidation refactors that silently changed observable contracts). Rather than adding a bare LIMIT to the shared query, candidate_limit defaults to i64::MAX for handles from `open`, so sutra_read/sutra_impact/sutra_orient keep byte-identical behaviour; only the guard's handle is tightened to 256. The Phase 2 query gained ORDER BY verified DESC, confidence DESC so truncation drops the least useful candidates rather than arbitrary ones.\n\nAccepted trade, recorded in-code: guard-only surfacing no longer refreshes decay timers. Correct — an advisory nudge is not evidence a lesson was read.\n\nquery_only is deliberately redundant with the read_only flag: it makes a future write added to a shared query path fail loudly on this handle instead of silently taking the write lock inside a hook.\n\n4 tests: absent-store returns None and creates nothing; read-only handle surfaces but writes no last_surfaced; query_only rejects a direct UPDATE; scan is bounded when matching lessons far exceed the cap.\n\nVerified: cargo test 1450 passed / 0 failed at commit time; no new clippy warnings. The feature demonstrated itself mid-task — the guard surfaced the sutra/280 lesson on the very edits making this change.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "1b2ac56"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "now",
+    "lessons",
+    "guard"
+  ],
+  "history": [
+    {
+      "ts": 1784736168128,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 282
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784736631903,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784736168128,
+  "updated_at": 1784736631903,
+  "completed_at": 1784736631903,
+  "edges": []
+}

@@ -1,0 +1,74 @@
+{
+  "id": "019e2185-7e7c-7460-b993-c0c66abc2d65",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/18",
+  "sequence_number": 18,
+  "title": "sutra_review: fix codex review findings",
+  "description": "Fix 4 findings from codex adversarial review of sutra/v1/13 + sutra/v1/14:\\n\\n1. **[high] Silent error swallowing** — `build_findings` errors discarded via `unwrap_or_default()` at review.rs:83. Malformed rules.toml produces clean-looking review with empty violations. Add degraded-status reporting.\\n2. **[medium] FCA confidence not propagated** — Convention.confidence not in ConventionViolation or serialized output. Consumers can't distinguish deterministic DD constraints from probabilistic FCA conventions.\\n3. **[medium] Nondeterministic recommended_reads** — violation sites collected via HashSet, no sort before truncation. Can drop higher-risk sites.\\n4. **[medium] Tests bypass integration path** — hand-built ReviewFindings only test compute(), not build_findings/handle.\\n\\nAlso: compute() cognitive complexity 31 (threshold 25) — decompose if natural during fixes.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "build_findings errors surface in ReviewResult (degraded field or explicit error) — not silently swallowed"
+    },
+    {
+      "done": false,
+      "text": "ConventionViolation includes support and confidence from FCA Convention"
+    },
+    {
+      "done": false,
+      "text": "recommended_reads violation sites sorted deterministically before truncation"
+    },
+    {
+      "done": false,
+      "text": "At least one integration test exercises handle() or build_findings with real rules + indexed data"
+    },
+    {
+      "done": false,
+      "text": "compute() cognitive complexity ≤ 25"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a7e08f8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review",
+    "codex-review"
+  ],
+  "history": [
+    {
+      "ts": 1778678857340,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 18
+      }
+    },
+    {
+      "ts": 1778679331296,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778678857340,
+  "updated_at": 1778679331296,
+  "completed_at": 1778679331296,
+  "edges": []
+}

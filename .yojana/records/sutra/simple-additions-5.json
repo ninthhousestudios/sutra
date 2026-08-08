@@ -1,0 +1,82 @@
+{
+  "id": "019e06ec-af6e-7952-aeb3-290aa6d7f779",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/5",
+  "sequence_number": 5,
+  "title": "sutra_signal_chains / sutra_trace — entry-point traversal",
+  "description": "Forward and backward traversal of the call graph from entry points to arbitrary symbols. Subsumes the original fallow \"trace\" idea and adds explicit entry-point modeling.\n\n**Entry-point detection (rule-based):**\n- Rust: `fn main`, `#[test]`, `#[tokio::main]`, `#[wasm_bindgen]`, public items in `lib.rs`, `#[bench]`\n- Dart: `void main()`, route handlers, test bodies\n\n**Tool shape:** `sutra_trace(symbol, direction=forward|backward)` → chains. For dead-code explanation: prove no path from any entry-point reaches X.\n\nCall graph already exists; entry-point detection is a small per-language rule list; traversal is BFS with cycle detection.\n\n**Output rendering needs a bit of design** — single canonical shape: top-N shortest paths to/from entry points, configurable N, cycles marked. Iterate from there. See \"Trace output format\" in docs/feature-ideas.md.\n\nSee docs/feature-ideas.md → \"sutra_signal_chains / trace\".",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "Entry-point detection rules implemented for Rust and Dart"
+    },
+    {
+      "done": true,
+      "text": "sutra_trace(symbol, direction=forward) returns chains from entry points to symbol"
+    },
+    {
+      "done": true,
+      "text": "sutra_trace(symbol, direction=backward) returns chains from symbol to leaves"
+    },
+    {
+      "done": true,
+      "text": "Cycles detected and marked, not silently truncated"
+    },
+    {
+      "done": true,
+      "text": "Top-N path limit configurable; default chosen and documented"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/tools/trace.rs",
+    "src/tools/mod.rs",
+    "src/tools/tools_meta.rs",
+    "src/mcp.rs",
+    "tests/trace-test.rs"
+  ],
+  "tags": [
+    "new-tool",
+    "call-graph"
+  ],
+  "history": [
+    {
+      "ts": 1778232635246,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 5
+      }
+    },
+    {
+      "ts": 1778236630993,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778236637511,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232635246,
+  "updated_at": 1778236637511,
+  "completed_at": 1778236637511,
+  "edges": []
+}

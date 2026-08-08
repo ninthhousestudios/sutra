@@ -1,0 +1,121 @@
+{
+  "id": "019e69c6-e1dc-79f0-b02b-a592b2322bcb",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/32",
+  "sequence_number": 32,
+  "title": "5a-2: ParseContext + core-owned tree-sitter infrastructure",
+  "description": "## Parent\\n\\nsutra/30 (PRD: core model redesign)\\n\\n## What to build\\n\\nMove tree-sitter parser creation and lifecycle into core-owned infrastructure. Introduce ParseContext struct that provides the parsed tree to adapters. Implement parser pooling (one parser per language, reused) and timeout enforcement.\\n\\nAdapters gain a grammar() method and receive ParseContext instead of raw source strings. Core calls grammar(), creates/pools the parser, parses the source, passes ParseContext to adapter.parse().\\n\\n## Acceptance criteria\\n\\n- [ ] ParseContext struct defined: source bytes, tree-sitter Tree reference, file_path\\n- [ ] Core parser pool: one tree-sitter Parser per language, reused across files\\n- [ ] Timeout enforcement: configurable parse timeout with sensible default\\n- [ ] LanguageAdapter trait updated: grammar() method added, parse() receives ParseContext\\n- [ ] RustAdapter and DartAdapter updated to use ParseContext (no longer create own parsers)\\n- [ ] Parser pooling test: same grammar reuses parser across multiple calls\\n- [ ] Timeout test: pathological input respects timeout\\n- [ ] Behavioral parity: same parse output as before\\n\\n## Blocked by\\n\\n- sutra/31 (LanguageAdapter trait + registry)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] ParseContext struct defined: source bytes, tree-sitter Tree reference, file_path"
+    },
+    {
+      "done": false,
+      "text": "[x] Core parser pool: one tree-sitter Parser per language, reused across files"
+    },
+    {
+      "done": false,
+      "text": "[x] Timeout enforcement: configurable parse timeout with sensible default"
+    },
+    {
+      "done": false,
+      "text": "[x] LanguageAdapter trait updated: grammar() method added, parse() receives ParseContext"
+    },
+    {
+      "done": false,
+      "text": "[x] RustAdapter and DartAdapter updated to use ParseContext"
+    },
+    {
+      "done": false,
+      "text": "[x] Parser pooling test: same grammar reuses parser across multiple calls"
+    },
+    {
+      "done": false,
+      "text": "[x] Timeout test: pathological input respects timeout"
+    },
+    {
+      "done": false,
+      "text": "[x] Behavioral parity: same parse output as before"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nFactor tree-sitter parser lifecycle out of individual adapters into core-owned infrastructure. Introduce a `ParseContext` struct that provides the already-parsed tree to adapters, a `ParserPool` that reuses one `Parser` per language across files, and a configurable timeout via `Parser::set_timeout_micros`. Adapters gain a `grammar()` method returning their `tree_sitter::Language` and their `parse()` method receives `&ParseContext` instead of raw `(source, file_path)`. The pool is created per parse run (full or incremental) and threaded through `parse_single_file`.\n\nThis keeps the pool lifetime simple (no cross-thread sharing needed since parsing is sequential per workspace) and the adapter contract clean (adapters do extraction, core owns the parser).\n\n## Files\n\n- **Modify**: `src/parser/adapter.rs` — add `ParseContext` struct, `ParserPool` struct, `grammar()` to trait, update adapter impls\n- **Modify**: `src/parser/rust.rs` (lines 8-20) — remove Parser::new/set_language/parse, receive `ParseContext`\n- **Modify**: `src/parser/dart.rs` (lines 8-17) — same as rust.rs\n- **Modify**: `src/parser/mod.rs` (lines 161-175) — update `parse_file()` to create a pool\n- **Modify**: `src/pipeline.rs` (lines 90-155, 319-393, 395-480) — create pool in `parse_workspace`/`parse_changed_files`, pass to `parse_single_file`\n- **Modify**: `src/config.rs` (lines 7-15, 18-48) — add `parse_timeout_ms` field with env var + default\n- **Test**: `src/parser/adapter.rs` tests module — pooling test, timeout test, updated TestAdapter\n\n## Steps\n\n### Step 1: Add ParseContext and ParserPool to adapter.rs\n\nDefine the core-owned parsing infrastructure alongside the existing trait:\n\n```rust\nuse std::time::Duration;\nuse tree_sitter::{Language, Parser, Tree};\nuse crate::error::SutraError;\n\npub struct ParseContext<'a> {\n    pub source: &'a [u8],\n    pub tree: &'a Tree,\n    pub file_path: &'a str,\n}\n\npub struct ParserPool {\n    parsers: HashMap<String, Parser>,\n    timeout_micros: u64,\n}\n\nimpl ParserPool {\n    pub fn new(timeout: Duration) -> Self {\n        Self {\n            parsers: HashMap::new(),\n            timeout_micros: timeout.as_micros() as u64,\n        }\n    }\n\n    pub fn parse_with(\n        &mut self,\n        adapter: &dyn LanguageAdapter,\n        source: &str,\n        file_path: &str,\n    ) -> Result<ParseResult> {\n        let lang_id = adapter.language_id().to_string();\n        let parser = self.parsers.entry(lang_id).or_insert_with(|| {\n            let mut p = Parser::new();\n            p.set_language(&adapter.grammar())\n                .expect(\"adapter returned invalid grammar\");\n            p.set_timeout_micros(self.timeout_micros);\n            p\n        });\n\n        let tree = parser\n            .parse(source, None)\n            .ok_or_else(|| SutraError::Parse(\"tree-sitter parse timed out or returned no tree\".into()))?;\n\n        let ctx = ParseContext {\n            source: source.as_bytes(),\n            tree: &tree,\n            file_path,\n        };\n        adapter.parse(&ctx)\n    }\n}\n```\n\n### Step 2: Update LanguageAdapter trait — add grammar(), change parse() signature\n\n```rust\npub trait LanguageAdapter: Send + Sync {\n    fn language_id(&self) -> &str;\n    fn extensions(&self) -> &[&str];\n    fn grammar(&self) -> Language;\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult>;\n    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {\n        None\n    }\n}\n```\n\n### Step 3: Update RustAdapter and DartAdapter\n\nAdapters now return their grammar and delegate extraction to the module-level functions with new signatures:\n\n```rust\nimpl LanguageAdapter for RustAdapter {\n    fn language_id(&self) -> &str { \"rust\" }\n    fn extensions(&self) -> &[&str] { &[\"rs\"] }\n    fn grammar(&self) -> Language {\n        tree_sitter_rust::LANGUAGE.into()\n    }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {\n        super::rust::parse(ctx)\n    }\n    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> {\n        Some(self)\n    }\n}\n\nimpl LanguageAdapter for DartAdapter {\n    fn language_id(&self) -> &str { \"dart\" }\n    fn extensions(&self) -> &[&str] { &[\"dart\"] }\n    fn grammar(&self) -> Language {\n        tree_sitter_dart::LANGUAGE.into()\n    }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {\n        super::dart::parse(ctx)\n    }\n}\n```\n\n### Step 4: Refactor rust.rs::parse — remove parser creation, receive ParseContext\n\nChange signature and remove the first 12 lines (Parser::new through root_node). The extraction logic stays identical:\n\n```rust\nuse super::adapter::ParseContext;\n\npub fn parse(ctx: &ParseContext) -> Result<ParseResult> {\n    let root = ctx.tree.root_node();\n    let parsed_ok = !root.has_error();\n    let src = ctx.source;\n\n    let mut symbols = Vec::new();\n    collect_symbols(&mut symbols, root, src, &[]);\n\n    let mut references = Vec::new();\n    collect_references(&mut references, root, src);\n\n    let mut imports = Vec::new();\n    collect_imports(&mut imports, root, src);\n\n    Ok(ParseResult {\n        file_path: ctx.file_path.to_string(),\n        language: \"rust\".to_string(),\n        symbols,\n        references,\n        imports,\n        parsed_ok,\n        line_count: std::str::from_utf8(src)\n            .map(|s| s.lines().count())\n            .unwrap_or(0),\n    })\n}\n```\n\nRemove the `use tree_sitter::Parser;` import (keep `Node`, `TreeCursor` which are still used by extraction).\n\n### Step 5: Refactor dart.rs::parse — same pattern as rust.rs\n\nIdentical refactor: remove Parser creation, receive `ParseContext`, use `ctx.tree.root_node()` and `ctx.source`.\n\n### Step 6: Add parse_timeout_ms to Config\n\n```rust\npub struct Config {\n    pub db_dir: PathBuf,\n    pub workspaces_path: PathBuf,\n    pub listen_addr: String,\n    pub parse_parallelism: usize,\n    pub stale_threshold_sec: u64,\n    pub log_level: String,\n    pub dd_idle_timeout_sec: u64,\n    pub parse_timeout_ms: u64,\n}\n```\n\nIn `Config::from_env()`: `parse_timeout_ms: parse_env_or(\"SUTRA_PARSE_TIMEOUT_MS\", 5000)`.\nIn `Config::test_default()`: `parse_timeout_ms: 5000`.\n\n### Step 7: Wire ParserPool into pipeline.rs\n\nIn `parse_single_file`, replace `adapter.parse(&contents, &rel_path)` with `pool.parse_with(adapter, &contents, &rel_path)`:\n\n```rust\nfn parse_single_file(\n    db: &Db,\n    file_path: &Path,\n    workspace_root: &Path,\n    registry: &LanguageRegistry,\n    pool: &mut ParserPool,\n) -> Result<Option<FileParseResult>> {\n    // ... unchanged up to line 143 ...\n    let parse_result = match pool.parse_with(adapter, &contents, &rel_path) {\n        // ... same error handling ...\n    };\n    // ... rest unchanged ...\n}\n```\n\nIn `parse_workspace` and `parse_changed_files`, create the pool at the top and pass it through. Replace `_config` with `config` to read the timeout:\n\n```rust\npub fn parse_workspace(\n    workspace: &WorkspaceEntry,\n    db: &Db,\n    config: &Config,\n    cancel: &AtomicBool,\n    registry: &LanguageRegistry,\n) -> Result<ParseSnapshot> {\n    let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));\n    // ... in the loop:\n    if let Some(result) = parse_single_file(db, file_path, &workspace.root, registry, &mut pool)? {\n    // ...\n}\n```\n\nSame pattern for `parse_changed_files`.\n\n### Step 8: Update parse_file() convenience function in mod.rs\n\nCreate a one-shot pool for the convenience function:\n\n```rust\npub fn parse_file(source: &str, language: &str, file_path: &str) -> Result<ParseResult> {\n    let registry = adapter::default_registry();\n    match registry.adapter_for_language(language) {\n        Some(a) => {\n            let mut pool = adapter::ParserPool::new(std::time::Duration::from_secs(5));\n            pool.parse_with(a, source, file_path)\n        }\n        None => Ok(ParseResult {\n            file_path: file_path.to_string(),\n            language: language.to_string(),\n            symbols: vec![],\n            references: vec![],\n            imports: vec![],\n            parsed_ok: false,\n            line_count: source.lines().count(),\n        }),\n    }\n}\n```\n\n### Step 9: Update TestAdapter and add new tests in adapter.rs\n\nUpdate existing TestAdapter:\n```rust\nstruct TestAdapter;\n\nimpl LanguageAdapter for TestAdapter {\n    fn language_id(&self) -> &str { \"test\" }\n    fn extensions(&self) -> &[&str] { &[\"tst\", \"test\"] }\n    fn grammar(&self) -> Language {\n        // Use Rust grammar as a stand-in for testing\n        tree_sitter_rust::LANGUAGE.into()\n    }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> {\n        Ok(ParseResult {\n            file_path: ctx.file_path.to_string(),\n            language: \"test\".to_string(),\n            symbols: vec![],\n            references: vec![],\n            imports: vec![],\n            parsed_ok: !ctx.tree.root_node().has_error(),\n            line_count: 0,\n        })\n    }\n}\n```\n\nAdd parser pooling test:\n```rust\n#[test]\nfn parser_pool_reuses_parser() {\n    let mut pool = ParserPool::new(Duration::from_secs(5));\n    let adapter = RustAdapter;\n\n    let r1 = pool.parse_with(&adapter, \"fn a() {}\", \"a.rs\").unwrap();\n    assert!(r1.parsed_ok);\n\n    let r2 = pool.parse_with(&adapter, \"fn b() {}\", \"b.rs\").unwrap();\n    assert!(r2.parsed_ok);\n\n    // Pool should contain exactly one parser (for \"rust\")\n    assert_eq!(pool.parsers.len(), 1);\n}\n```\n\nAdd timeout test:\n```rust\n#[test]\nfn timeout_rejects_pathological_input() {\n    let mut pool = ParserPool::new(Duration::from_micros(1));  // 1μs — will always timeout\n    let adapter = RustAdapter;\n\n    let result = pool.parse_with(&adapter, \"fn valid() {}\", \"test.rs\");\n    assert!(result.is_err());\n}\n```\n\n## Sibling task note\n\nsutra/33 (tree-structured ParseResult) also modifies `rust.rs` and `dart.rs` extraction logic, and `ParseResult` in `mod.rs`. The changes are complementary — this task changes the function signatures and input (ParseContext), while sutra/33 changes the output (tree-structured symbols). Whichever lands second should adapt to the other's changes. No blocking conflict, but the second implementation should be aware.\n\n## Acceptance criteria coverage\n\n- [x] \"ParseContext struct defined: source bytes, tree-sitter Tree reference, file_path\" → Step 1\n- [x] \"Core parser pool: one tree-sitter Parser per language, reused across files\" → Steps 1, 7\n- [x] \"Timeout enforcement: configurable parse timeout with sensible default\" → Steps 1, 6, 7\n- [x] \"LanguageAdapter trait updated: grammar() method added, parse() receives ParseContext\" → Step 2\n- [x] \"RustAdapter and DartAdapter updated to use ParseContext\" → Steps 3, 4, 5\n- [x] \"Parser pooling test: same grammar reuses parser across multiple calls\" → Step 9\n- [x] \"Timeout test: pathological input respects timeout\" → Step 9\n- [x] \"Behavioral parity: same parse output as before\" → Steps 4, 5, 8 (extraction logic unchanged, verified by existing test suite)",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "e7e8a0c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1779891102172,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 32
+      }
+    },
+    {
+      "ts": 1779896565057,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779897010517,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "All 9 implementation steps complete. 329 tests pass (69 unit + 260 integration). Clean build with no warnings. All acceptance criteria satisfied.",
+      "ts": 1779896977697
+    },
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention.\\n\\n1. [high] Timeout can erase existing index for a changed file. parse_single_file deletes the old DB row before parsing; if timeout hits, file_id=0 is returned and no replacement is written. This is a pre-existing pattern but timeout makes it more reachable.\\n\\n2. [medium] set_language failure now panics via expect() instead of returning SutraError::Parse. Recoverable error turned into process crash.",
+      "ts": 1779897233426
+    },
+    {
+      "author": "agent",
+      "text": "Both codex review findings fixed in 2129c36:\\n1. [high] parse_single_file now parses before deleting old DB row — on timeout, existing index stays intact.\\n2. [medium] ParserPool::parse_with returns SutraError::Parse on set_language failure instead of panicking.\\n\\nAll 329 tests pass. Clean build.\"",
+      "ts": 1779897318769
+    }
+  ],
+  "created_at": 1779891102172,
+  "updated_at": 1779897010517,
+  "completed_at": 1779897010517,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e69c7-be40-78e3-bcb1-50641800bdf0",
+      "edge_type": "depends_on",
+      "source": "sutra/32",
+      "target": "sutra/31",
+      "note": null,
+      "created_at": 1779891158592
+    }
+  ]
+}

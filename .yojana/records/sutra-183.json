@@ -1,0 +1,152 @@
+{
+  "id": "019efa4b-1802-7a23-88b9-04084cd59de7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/183",
+  "sequence_number": 183,
+  "title": "C adapter wiring + import resolver",
+  "description": "Session 2 of the C adapter arc. Wire CAdapter into adapter.rs with FCA support, create the import resolver with compile_commands.json support, add DB query method, hook into pipeline.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "CAdapter struct in adapter.rs implements LanguageAdapter: language_id 'c', extensions ['c','h'], grammar tree_sitter_c::LANGUAGE, parse delegates to super::c::parse, as_fca_source returns Some(self), module_boundary_hints returns Weak"
+    },
+    {
+      "done": true,
+      "text": "FcaAttributeSource impl reads boolean keys from language_attrs JSON (same pattern as RustAdapter)"
+    },
+    {
+      "done": true,
+      "text": "C_EFFECT_PATTERNS: heap (malloc/calloc/realloc/free), fs (fopen/fclose/fread/fwrite/fprintf), net (socket/connect/send/recv), io (printf/puts/fputs)"
+    },
+    {
+      "done": true,
+      "text": "CAdapter registered in default_registry()"
+    },
+    {
+      "done": true,
+      "text": "src/c_imports.rs created with resolve_c_imports(db, workspace_root) -> Result<usize>"
+    },
+    {
+      "done": true,
+      "text": "Quoted includes resolved: relative to including file, then project root, then compile_commands.json -I/-isystem paths"
+    },
+    {
+      "done": true,
+      "text": "Angle-bracket includes (<...>) left as unresolved external edges"
+    },
+    {
+      "done": true,
+      "text": "parse_compile_commands extracts -I and -isystem paths from compile_commands.json command/arguments fields"
+    },
+    {
+      "done": true,
+      "text": "unresolved_c_imports() added to Db: SELECT from imports JOIN files WHERE language='c' AND resolved_file_id IS NULL"
+    },
+    {
+      "done": true,
+      "text": "resolve_c_imports wired into post_parse_sequence after Rust resolver"
+    },
+    {
+      "done": true,
+      "text": "pub mod c_imports added to src/lib.rs"
+    },
+    {
+      "done": true,
+      "text": "cargo test passes (all existing tests)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nWire the C adapter into sutra's infrastructure. CAdapter struct + FCA follows the exact RustAdapter/DartAdapter pattern. Import resolver is a new module following rust_imports.rs/dart_packages.rs pattern, with the addition of compile_commands.json parsing for `-I` paths.\n\n## Files\n\n- **Modify**: `src/parser/adapter.rs` — CAdapter struct, LanguageAdapter impl, FcaAttributeSource impl, C_EFFECT_PATTERNS, register in default_registry()\n- **Create**: `src/c_imports.rs` — resolve_c_imports, resolve_c_include, parse_compile_commands\n- **Modify**: `src/db/mod.rs` — add unresolved_c_imports() method\n- **Modify**: `src/pipeline.rs` — wire resolve_c_imports into post_parse_sequence (after line 568)\n- **Modify**: `src/lib.rs` — add `pub mod c_imports;`\n\n## Steps\n\n### Step 1: CAdapter in adapter.rs\n\n```rust\npub struct CAdapter;\n\nimpl LanguageAdapter for CAdapter {\n    fn language_id(&self) -> &str { \"c\" }\n    fn extensions(&self) -> &[&str] { &[\"c\", \"h\"] }\n    fn grammar(&self) -> Language { tree_sitter_c::LANGUAGE.into() }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> { super::c::parse(ctx) }\n    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> { Some(self) }\n    fn module_boundary_hints(&self) -> ModuleBoundaryStrength { ModuleBoundaryStrength::Weak }\n}\n\nconst C_EFFECT_PATTERNS: &[EffectPattern] = &[\n    EffectPattern { attr_name: \"effect:heap\", callee_prefixes: &[\"malloc\", \"calloc\", \"realloc\", \"free\"] },\n    EffectPattern { attr_name: \"effect:fs\", callee_prefixes: &[\"fopen\", \"fclose\", \"fread\", \"fwrite\", \"fprintf\"] },\n    EffectPattern { attr_name: \"effect:net\", callee_prefixes: &[\"socket\", \"connect\", \"send\", \"recv\"] },\n    EffectPattern { attr_name: \"effect:io\", callee_prefixes: &[\"printf\", \"puts\", \"fputs\"] },\n];\n\nimpl FcaAttributeSource for CAdapter {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n        let mut sa = extract_cross_language_attrs(sym, file_path)?;\n        if let Some(ref la_json) = sym.language_attrs {\n            if let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(la_json) {\n                for (key, val) in &map {\n                    if val.as_bool() == Some(true) { sa.attributes.push(key.clone()); }\n                }\n            }\n        }\n        Some(sa)\n    }\n    fn effect_patterns(&self) -> &[EffectPattern] { C_EFFECT_PATTERNS }\n}\n```\n\nAdd `r.register(Box::new(CAdapter));` to default_registry().\n\n### Step 2: DB method\n\nIn `src/db/mod.rs`, add `unresolved_c_imports` matching the Rust/Dart pattern:\n```rust\npub fn unresolved_c_imports(&self) -> Result<Vec<(i64, i64, String)>> {\n    // WHERE i.resolved_file_id IS NULL AND f.language = 'c'\n}\n```\n\n### Step 3: Import resolver (`src/c_imports.rs`)\n\n```rust\npub fn resolve_c_imports(db: &Db, workspace_root: &Path) -> Result<usize>\nfn resolve_c_include(path: &str, file_id: i64, id_to_path: &HashMap<i64, &str>,\n    path_to_id: &HashMap<&str, i64>, root: &Path, extra_dirs: &[PathBuf]) -> Option<i64>\nfn parse_compile_commands(workspace_root: &Path) -> Vec<PathBuf>\n```\n\nResolution order: relative to includer → project root → -I paths.\nSystem includes (`<...>`) skipped (stay unresolved).\ncompile_commands.json: parse JSON array, extract -I/-isystem from \"command\" string or \"arguments\" array, deduplicate, resolve relative to workspace root.\n\n### Step 4: Pipeline + module wiring\n\n- `src/lib.rs`: `pub mod c_imports;`\n- `src/pipeline.rs` post_parse_sequence: add C resolver call after Rust resolver block.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "1922744"
+    }
+  ],
+  "files": [
+    "src/parser/adapter.rs",
+    "src/c_imports.rs",
+    "src/db/mod.rs",
+    "src/pipeline.rs",
+    "src/lib.rs"
+  ],
+  "tags": [
+    "language",
+    "c",
+    "adapter"
+  ],
+  "history": [
+    {
+      "ts": 1782315685890,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 183
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782325584534,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782325864118,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: approve with notes.\n\nTwo findings:\n1. [high] compile_commands include paths applied globally, not per-TU — sort+dedup discards scope and order. Can resolve to wrong header when two TUs have different -I roots with same-named headers. Filed as sutra/185.\n2. [medium] C effect patterns use bare names (free, malloc, send) but starts_with matching overmatches (free_list, send_message). Fixed in 785afc3 — matching now requires :: boundary or exact match.\n\nNo correctness bugs in the adapter wiring, FCA impl, or pipeline integration. Pattern follows Rust/Dart adapters exactly.",
+      "ts": 1782326280074
+    }
+  ],
+  "created_at": 1782315685890,
+  "updated_at": 1782325864118,
+  "completed_at": 1782325864118,
+  "arc_id": "019efa49-d9e0-7c50-84fa-7da989b05b78",
+  "arc_phase": "wiring",
+  "edges": [
+    {
+      "id": "019efa4b-af33-7092-96f3-da45928eb284",
+      "edge_type": "refines",
+      "source": "sutra/183",
+      "target": "sutra/115",
+      "note": null,
+      "created_at": 1782315724595
+    },
+    {
+      "id": "019efa4b-b5a8-7b80-8256-15a2d79a14c5",
+      "edge_type": "depends_on",
+      "source": "sutra/183",
+      "target": "sutra/182",
+      "note": null,
+      "created_at": 1782315726248
+    },
+    {
+      "id": "019efa4b-b758-7232-b0cd-8fb51e4f480f",
+      "edge_type": "depends_on",
+      "source": "sutra/184",
+      "target": "sutra/183",
+      "note": null,
+      "created_at": 1782315726680
+    }
+  ]
+}

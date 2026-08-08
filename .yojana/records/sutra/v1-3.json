@@ -1,0 +1,93 @@
+{
+  "id": "019e1438-5167-7942-ae96-6fb01e16e9c1",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/3",
+  "sequence_number": 3,
+  "title": "Spike: formal concept analysis for convention detection",
+  "description": "Can FCA automatically detect meaningful codebase conventions and produce a concept hierarchy that agents can check their work against? Build a formal context from Sutra's parse + git output, extract concept lattices from real codebases, evaluate whether extracted implications are true conventions or coincidences.\n\nLower priority than HRR and differential dataflow — can start 1 week later.",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": ">50% precision on extracted conventions (support >= 5)"
+    },
+    {
+      "done": false,
+      "text": "Deliberate violations detected with >80% recall"
+    },
+    {
+      "done": false,
+      "text": "False positive rate on unchanged code < 20%"
+    },
+    {
+      "done": false,
+      "text": "Concept lattice extracted from at least 2 real codebases"
+    },
+    {
+      "done": false,
+      "text": "Incremental update path identified"
+    },
+    {
+      "done": false,
+      "text": "Written verdict: viable / viable with caveats / not viable"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Hand-rolled FCA spike: NextClosure + implication mining on sutra (72 files, 651 symbols) and chitta (32 files, 300 symbols). Symbol-level context produces 63/50 exact implications, 24 shared across codebases. Bootstrap precision 54% (meets >50% criterion). Approximate implications at conf>=0.9 catch real violations (test file with no tests, enum methods in lib root). Incremental update feasible (14K ops/update). Verdict: viable with caveats — symbol-level is useful, file-level needs import resolution. See docs/v1-spikes/fca.md.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/v1-spikes/fca.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "c7a2ccf"
+    }
+  ],
+  "files": [
+    "src/bin/fca-spike.rs",
+    "docs/v1-spikes/fca.md"
+  ],
+  "tags": [
+    "spike",
+    "fca",
+    "p2"
+  ],
+  "history": [
+    {
+      "ts": 1778455695719,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 3
+      }
+    },
+    {
+      "ts": 1778508438402,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778508848517,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778455695719,
+  "updated_at": 1778508848517,
+  "completed_at": 1778508848517,
+  "edges": []
+}

@@ -1,0 +1,92 @@
+{
+  "id": "019f811e-da5b-7901-939e-1b4261ee4bde",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/271",
+  "sequence_number": 271,
+  "title": "JS/TS effect patterns: align with actual ref representation",
+  "description": "Effect patterns for JS/TS (added in sutra/268) use source-like prefixes (`fetch(`, `document.`, `console.log`, `axios.`, `.then(`, `process.exit`) but the JS parser records call refs differently — bare callee names with the receiver stored separately. For example `console.log()` is recorded as name=`log` with receiver=`console`, `fetch()` as just `fetch`, and `process.env` isn't a call ref at all.\\n\\nAs a result, most JS/TS effect patterns will silently never match during effect enrichment, making the FCA effect detection inert for JS/TS.\\n\\nOptions:\\n1. Make effect enrichment receiver-aware (join receiver + name before prefix matching)\\n2. Emit qualified unresolved call chains from the JS/TS parsers\\n3. Adjust patterns to match the actual extracted ref shape (bare names)\\n\\nOption 1 is probably cleanest — it keeps patterns readable and fixes the mismatch at the matching layer rather than the extraction layer.\\n\\nNeeds tests: `fetch()`, `axios.get()`, `console.log()`, `document.querySelector()`, `process.env`, and promise/await cases.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "JS effect patterns match actual call refs emitted by the JS parser"
+    },
+    {
+      "done": false,
+      "text": "At minimum: fetch(), console.log(), document.querySelector() produce correct effect attributes"
+    },
+    {
+      "done": false,
+      "text": "Tests cover effect enrichment for JS/TS code"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Option 1 from the ticket (receiver-aware matching) implemented. The unresolved-ref matching now joins receiver.name into a qualified candidate before prefix matching. Also added p.ends_with('.') to the boundary check so namespace prefixes like \\\"document.\\\" correctly match \\\"document.querySelector\\\". Fixed JS_EFFECT_PATTERNS: \\\"fetch(\\\" → \\\"fetch\\\", removed \\\"await\\\" and \\\".then(\\\" → \\\"then\\\". Five new tests cover: multi-pattern qualified matching, false-positive rejection (myObj.log ≠ console.log), process.exit, bare fetch, and then via receiver.",
+  "reproduction": null,
+  "root_cause": "JS parser records member calls with bare callee name + separate receiver field (e.g. name=\\\"log\\\", receiver=\\\"console\\\"), but the unresolved-ref matching path in enrich_with_effects only checked unresolved_name against patterns. Patterns like \\\"console.log\\\" never matched because unresolved_name was just \\\"log\\\". Additionally, JS_EFFECT_PATTERNS contained source-syntax artifacts (trailing parens in \\\"fetch(\\\", leading dot in \\\".then(\\\") that could never match extracted ref shapes.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d52ef3f"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784577710683,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 271
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784577805012,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784578056460,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784577710683,
+  "updated_at": 1784578056460,
+  "completed_at": 1784578056460,
+  "edges": [
+    {
+      "id": "019f811f-242a-7a12-9bd5-d13da55ef3f8",
+      "edge_type": "depends_on",
+      "source": "sutra/269",
+      "target": "sutra/271",
+      "note": null,
+      "created_at": 1784577729578
+    },
+    {
+      "id": "019f811f-296e-7373-8b3c-be1a66aa9467",
+      "edge_type": "motivated_by",
+      "source": "sutra/271",
+      "target": "sutra/268",
+      "note": null,
+      "created_at": 1784577730926
+    }
+  ]
+}

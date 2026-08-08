@@ -1,0 +1,161 @@
+{
+  "id": "019e8c68-61a8-70c2-a22d-871b7494c88e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/70",
+  "sequence_number": 70,
+  "title": "5d-2: constraint types + rules parsing",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nNew `Constraint` struct and `[[constraint]]` TOML parsing in `rules.rs`. Each constraint carries kind, per-instance severity (blocking/advisory/informational with per-kind defaults), optional human name, optional provenance (ADR path or rationale text), optional scope (path prefix or component), and kind-specific fields. Identity via blake3 hash of (kind, normalized_params). Backward compatible — old `[constraints]` section with `forbidden_deps` array still parses.\n\n## Acceptance criteria\n\n- [ ] `Constraint` struct with all fields\n- [ ] `[[constraint]]` TOML parsing\n- [ ] Old `[constraints]` backward compat\n- [ ] Blake3 identity hashing\n- [ ] Per-kind severity defaults\n- [ ] Full test coverage for parsing + identity\n\n## Blocked by\n\n- sutra/69 — 5d-1: rename dd/ → constraints/",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "✅ New Constraint struct with kind (forbidden_dep, boundary, max_fan_in, no_cycles), severity, name, provenance, scope, kind-specific fields"
+    },
+    {
+      "done": false,
+      "text": "✅ [[constraint]] TOML array format parses correctly in .sutra/rules.toml"
+    },
+    {
+      "done": false,
+      "text": "✅ Old [constraints] format with forbidden_deps still parses, produces Constraint structs with kind=forbidden_dep, severity=blocking"
+    },
+    {
+      "done": false,
+      "text": "✅ Both old and new format in same file works without conflict"
+    },
+    {
+      "done": false,
+      "text": "✅ Constraint identity: blake3 hash of (kind, normalized_params), stable and deterministic"
+    },
+    {
+      "done": false,
+      "text": "✅ Name field does not affect identity hash"
+    },
+    {
+      "done": false,
+      "text": "✅ Missing optional fields get correct defaults (severity defaults per kind)"
+    },
+    {
+      "done": false,
+      "text": "✅ Unknown constraint kind produces clear error"
+    },
+    {
+      "done": false,
+      "text": "✅ Duplicate constraints (same hash) are deduplicated"
+    },
+    {
+      "done": false,
+      "text": "✅ Tests cover: new format, old format, mixed format, identity hashing, defaults, errors"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nAdd a `Constraint` type system and `[[constraint]]` TOML parsing to `src/rules.rs`, with backward compatibility for the existing `[constraints]` section. The new types use a raw deserialization struct → validated `Constraint` conversion pattern, which gives clear per-kind validation errors and clean identity hashing. blake3 (already a dep) provides deterministic constraint identity.\n\nNo DD engine changes — this task is types + parsing + identity only. Downstream tasks (72, 73, 75) consume `Constraint` and its `id` field.\n\n## Files\n\n- **Modify**: `src/rules.rs` — add `Constraint`, `ConstraintKind`, `Severity`, `RawConstraint` types, identity hashing, backward-compat conversion, `Rules::all_constraints()` method\n- **Test**: `src/rules.rs` (inline `#[cfg(test)]` module) — extend existing test module with new-format, old-format, mixed, identity, defaults, error, dedup tests\n\n## Steps\n\n### Step 1: Add new types\n\nIn `src/rules.rs`, add:\n\n```rust\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub enum Severity {\n    Blocking,\n    Advisory,\n    Informational,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum ConstraintKind {\n    ForbiddenDep { from: String, to: String },\n    Boundary { from_component: String, to_component: String },\n    MaxFanIn { target: String, threshold: u32 },\n    NoCycles,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Constraint {\n    pub id: String,           // blake3 hash (hex, truncated to 8 chars like conventions)\n    pub kind: ConstraintKind,\n    pub severity: Severity,\n    pub name: Option<String>,\n    pub provenance: Option<String>,\n    pub scope: Option<String>,\n}\n```\n\n### Step 2: Add TOML deserialization struct\n\nA flat `RawConstraint` that serde can deserialize from `[[constraint]]` entries, with all kind-specific fields optional:\n\n```rust\n#[derive(Debug, Deserialize)]\nstruct RawConstraint {\n    kind: String,\n    severity: Option<Severity>,\n    name: Option<String>,\n    provenance: Option<String>,\n    scope: Option<String>,\n    // forbidden_dep\n    from: Option<String>,\n    to: Option<String>,\n    // boundary\n    from_component: Option<String>,\n    to_component: Option<String>,\n    // max_fan_in\n    target: Option<String>,\n    threshold: Option<u32>,\n}\n```\n\n### Step 3: Identity hashing\n\n```rust\nimpl Constraint {\n    fn compute_id(kind: &ConstraintKind) -> String {\n        let mut hasher = blake3::Hasher::new();\n        match kind {\n            ConstraintKind::ForbiddenDep { from, to } => {\n                hasher.update(b\"forbidden_dep\");\n                hasher.update(from.as_bytes());\n                hasher.update(to.as_bytes());\n            }\n            ConstraintKind::Boundary { from_component, to_component } => {\n                hasher.update(b\"boundary\");\n                hasher.update(from_component.as_bytes());\n                hasher.update(to_component.as_bytes());\n            }\n            ConstraintKind::MaxFanIn { target, threshold } => {\n                hasher.update(b\"max_fan_in\");\n                hasher.update(target.as_bytes());\n                hasher.update(&threshold.to_le_bytes());\n            }\n            ConstraintKind::NoCycles => {\n                hasher.update(b\"no_cycles\");\n            }\n        }\n        hasher.finalize().to_hex()[..8].to_string()\n    }\n}\n```\n\nName is excluded from hash per the PRD. Scope IS included for NoCycles (since it's the only differentiator); for other kinds the kind-specific params already differentiate. Need to decide: include scope in hash for all kinds? The PRD says \"blake3 hash of (kind, normalized_params)\" — scope is a param when it's the only meaningful field (NoCycles). I'll include scope in the hash input for all kinds to keep it simple and deterministic.\n\n### Step 4: RawConstraint → Constraint validation\n\n```rust\nimpl RawConstraint {\n    fn into_constraint(self) -> Result<Constraint> {\n        let kind = match self.kind.as_str() {\n            \"forbidden_dep\" => {\n                let from = self.from.ok_or_else(|| /* error: missing 'from' */)?;\n                let to = self.to.ok_or_else(|| /* error: missing 'to' */)?;\n                ConstraintKind::ForbiddenDep { from, to }\n            }\n            \"boundary\" => {\n                let from_component = self.from_component.ok_or_else(|| ...)?;\n                let to_component = self.to_component.ok_or_else(|| ...)?;\n                ConstraintKind::Boundary { from_component, to_component }\n            }\n            \"max_fan_in\" => {\n                let target = self.target.ok_or_else(|| ...)?;\n                let threshold = self.threshold.ok_or_else(|| ...)?;\n                ConstraintKind::MaxFanIn { target, threshold }\n            }\n            \"no_cycles\" => ConstraintKind::NoCycles,\n            other => return Err(/* unknown constraint kind: {other} */),\n        };\n        let severity = self.severity.unwrap_or_else(|| kind.default_severity());\n        let id = Constraint::compute_id(&kind, self.scope.as_deref());\n        Ok(Constraint { id, kind, severity, name: self.name, provenance: self.provenance, scope: self.scope })\n    }\n}\n```\n\nDefault severities: forbidden_dep → blocking, boundary → blocking, no_cycles → blocking, max_fan_in → advisory.\n\n### Step 5: Update Rules struct for backward compat + new format\n\n```rust\n#[derive(Debug, Clone, Default, Deserialize)]\npub struct Rules {\n    #[serde(default)]\n    pub constraints: Constraints,       // old [constraints] section\n    #[serde(default)]\n    constraint: Vec<RawConstraint>,     // new [[constraint]] array (private — consumed by all_constraints)\n    #[serde(default)]\n    pub conventions: ConventionsConfig,\n}\n```\n\nAdd `Rules::all_constraints() -> Result<Vec<Constraint>>`:\n1. Convert old `constraints.forbidden_deps` → `Constraint` with kind=forbidden_dep, severity=blocking\n2. Convert new `constraint` entries via `RawConstraint::into_constraint()`\n3. Dedup by `id` (HashMap keyed by hash, first-seen wins)\n4. Return merged vec\n\nSince `RawConstraint` doesn't derive Clone (has no need to), and `Rules` currently derives Clone, make `constraint` field `Vec<RawConstraint>` where `RawConstraint` derives Clone too, OR change `all_constraints` to take `&self` and clone the fields it needs internally. Simplest: derive Clone on RawConstraint.\n\n### Step 6: Update parse_rules to return validated constraints\n\n`parse_rules` stays as `toml::from_str` — the validation happens lazily via `all_constraints()`. This keeps backward compat simple: parsing never fails on the old format.\n\n### Step 7: Tests\n\nExtend the existing `#[cfg(test)] mod tests` in `src/rules.rs`:\n\n1. **New format parsing**: `[[constraint]]` with all four kinds, verify fields\n2. **Old format still works**: existing `[constraints]` with `forbidden_deps`, verify produces Constraint structs via `all_constraints()`\n3. **Mixed format**: both sections in one file, all constraints appear\n4. **Identity hashing**: same params → same hash; different params → different hash; name change → same hash\n5. **Severity defaults**: each kind gets correct default when severity omitted\n6. **Unknown kind error**: `kind = \"banana\"` → clear error message\n7. **Missing required fields**: `kind = \"forbidden_dep\"` without `from` → error\n8. **Deduplication**: same constraint twice → only one in output\n\n## Acceptance criteria coverage\n\n- [x] \"New Constraint struct with kind, severity, name, provenance, scope, kind-specific fields\" → Steps 1-2\n- [x] \"[[constraint]] TOML array format parses correctly\" → Steps 2, 5\n- [x] \"Old [constraints] format still parses, produces Constraint structs with kind=forbidden_dep, severity=blocking\" → Steps 5-6\n- [x] \"Both old and new format in same file works\" → Step 5\n- [x] \"Constraint identity: blake3 hash of (kind, normalized_params)\" → Step 3\n- [x] \"Name field does not affect identity hash\" → Step 3\n- [x] \"Missing optional fields get correct defaults\" → Step 4\n- [x] \"Unknown constraint kind produces clear error\" → Step 4\n- [x] \"Duplicate constraints deduplicated\" → Step 5\n- [x] \"Tests cover all scenarios\" → Step 7",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "5e88999"
+    },
+    {
+      "type": "git:commit",
+      "value": "5e88999"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780472111528,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 70
+      }
+    },
+    {
+      "ts": 1780501373148,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780501545186,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780503319914,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780472111528,
+  "updated_at": 1780503319914,
+  "completed_at": 1780503319914,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-30ca-7ca1-bdfc-cde7cc3799a1",
+      "edge_type": "depends_on",
+      "source": "sutra/70",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472230090
+    },
+    {
+      "id": "019e8c6a-35a1-7fa2-985e-6f8e10ae3887",
+      "edge_type": "depends_on",
+      "source": "sutra/72",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472231329
+    },
+    {
+      "id": "019e8c6a-3d20-7ea1-bec6-f797047f19c6",
+      "edge_type": "depends_on",
+      "source": "sutra/73",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472233248
+    },
+    {
+      "id": "019e8c6a-465f-7a11-ba10-7088dc099b95",
+      "edge_type": "depends_on",
+      "source": "sutra/75",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472235615
+    },
+    {
+      "id": "019e8c6a-705f-7223-8a7c-60d1f7d7b60a",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/70",
+      "note": null,
+      "created_at": 1780472246367
+    }
+  ]
+}

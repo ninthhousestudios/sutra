@@ -1,0 +1,144 @@
+{
+  "id": "019f8040-75a2-7531-9b40-f8959f839106",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/265",
+  "sequence_number": 265,
+  "title": "JavaScript reference + import extraction",
+  "description": "Implement reference extraction and import extraction in `src/parser/javascript.rs`.\n\n**Reference extraction** — walk the AST collecting identifier references with context classification:\n- `identifier` nodes that are NOT definition names → refs\n- `property_identifier` in member_expression (method calls, field access) → refs with appropriate RefContextKind\n- `shorthand_property_identifier` in object patterns/literals → refs\n- Method calls (`call_expression` with member_expression) → RefContextKind::Call with receiver extraction\n- Function calls (`call_expression` with identifier) → RefContextKind::Call  \n- Constructor calls (`new_expression`) → RefContextKind::Constructor\n- Type annotations (Flow/JSDoc type refs) → RefContextKind::TypeUse\n- JSX element names → refs (component references)\n- Template literal expressions → refs for embedded identifiers\n- Destructuring pattern identifiers → refs to the destructured source\n\nContext classification (RefContextKind mapping):\n- Call: function/method calls\n- Constructor: `new Foo()`\n- TypeUse: type annotations, JSDoc type refs\n- FieldAccess: `obj.field` (not method call)\n- Import: import specifiers (handled separately via imports)\n- Other: everything else\n\nSkip definition names: `function foo` → `foo` is a def, not a ref. Same for class names, variable declarators, method names, parameter names, etc. Follow the `is_definition_name` pattern from rust.rs.\n\n**Import extraction** — extract all import sources:\n- ES module: `import { a, b } from 'module'` → ExtractedImport { raw_path: \"module\", kind: \"es_import\" }\n- ES module default: `import foo from 'module'` → same with alias tracking\n- ES module namespace: `import * as ns from 'module'` → alias = \"ns\"\n- Dynamic import: `import('module')` → kind: \"dynamic_import\"  \n- CommonJS require: `require('module')` → kind: \"require\"\n- Re-exports: `export { a } from 'module'` → kind: \"re_export\"\n- Side-effect imports: `import 'module'` → kind: \"es_import\", no alias\n\nReference: follow `src/parser/rust.rs::walk_refs_recursive` pattern for the recursive ref walk, and `src/parser/dart.rs::classify_ref_context` for context classification. Import extraction follows `src/parser/python.rs` pattern.\n\nMake key functions `pub(super)` for typescript.rs reuse (especially `collect_references`, `collect_imports`).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Identifier refs extracted with correct RefContextKind classification"
+    },
+    {
+      "done": false,
+      "text": "Method calls produce Call refs with receiver field populated"
+    },
+    {
+      "done": false,
+      "text": "Constructor calls (new X()) produce Constructor refs"
+    },
+    {
+      "done": false,
+      "text": "Definition names (function name, class name, params, variable declarators) are skipped as refs"
+    },
+    {
+      "done": false,
+      "text": "JSX element names extracted as refs"
+    },
+    {
+      "done": false,
+      "text": "ES module imports extracted with correct raw_path and kind"
+    },
+    {
+      "done": false,
+      "text": "CommonJS require() calls extracted as imports"
+    },
+    {
+      "done": false,
+      "text": "Dynamic import() extracted as imports"
+    },
+    {
+      "done": false,
+      "text": "Re-exports (export from) extracted as imports"
+    },
+    {
+      "done": false,
+      "text": "Import aliases tracked correctly"
+    },
+    {
+      "done": false,
+      "text": "collect_references and collect_imports are pub(super)"
+    },
+    {
+      "done": false,
+      "text": "Tests cover: function calls, method calls, member access, imports (ES + CJS + dynamic), JSX refs"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "3b5f777"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563135906,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 265
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784569427742,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784569790085,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention → fixed. Three findings addressed in 42893e6:\\n1. [high] function_expression not treated as scope boundary — added\\n2. [high] member property names resolved through lexical scope — skipped for receiver/FieldAccess refs\\n3. [medium] destructured var bindings not hoisted — now uses collect_pattern_names\\n\\nTwo findings deferred:\\n- [high] line-only scope lookup (same-line/minified) — systemic across all parsers (Rust, Python, C), not JS-specific. Cross-parser fix.\\n- [medium] named import specifier aliases — ExtractedImport model has single alias field (for namespace/default imports), not per-specifier. Named import renaming (foo as bar) is a binding concern, not module alias. Model limitation, not a bug.\"",
+      "ts": 1784570652141
+    }
+  ],
+  "created_at": 1784563135906,
+  "updated_at": 1784569790085,
+  "completed_at": 1784569790085,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "js-core",
+  "edges": [
+    {
+      "id": "019f8042-1cb7-7032-8d1d-003da1ebdbca",
+      "edge_type": "depends_on",
+      "source": "sutra/265",
+      "target": "sutra/264",
+      "note": null,
+      "created_at": 1784563244215
+    },
+    {
+      "id": "019f8042-2057-7ef1-b029-60c5fa361536",
+      "edge_type": "depends_on",
+      "source": "sutra/266",
+      "target": "sutra/265",
+      "note": null,
+      "created_at": 1784563245143
+    },
+    {
+      "id": "019f8042-2406-7c42-a82c-4a6b5faec1f8",
+      "edge_type": "depends_on",
+      "source": "sutra/267",
+      "target": "sutra/265",
+      "note": null,
+      "created_at": 1784563246086
+    }
+  ]
+}

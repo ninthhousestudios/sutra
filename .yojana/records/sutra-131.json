@@ -1,0 +1,78 @@
+{
+  "id": "019eae92-1bf2-7040-884e-3bd5a9b42bee",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/131",
+  "sequence_number": 131,
+  "title": "Wave 6: slop — dead_symbol_ratio_by_file, SKIP_DIRS dedup",
+  "description": "Db::dead_symbol_ratio_by_file (src/db/mod.rs:772-797) has zero callers — wire into a biomarker or delete. SKIP_DIRS defined identically in src/pipeline.rs:70 and src/dart_packages.rs:13 — hoist to shared const so the walkers can't drift. Findings: dead-symbol-ratio-unused, skip-dirs-duplicated-const (LOW).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "dead_symbol_ratio_by_file either wired into a health biomarker or deleted"
+    },
+    {
+      "done": false,
+      "text": "single SKIP_DIRS const shared by pipeline and dart_packages walkers"
+    }
+  ],
+  "decisions": [
+    "dead_symbol_ratio_by_file deleted rather than wired — ref-based heuristic too noisy for automated scoring (incomplete cross-crate resolution); DeadCodeRatio BiomarkerKind stub retained for future signal source",
+    "SKIP_DIRS: pipeline's list made pub(crate) and reused by dart_packages — dart's dot-prefixed entries were already caught by starts_with('.')"
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-review.md",
+      "label": "slop list"
+    },
+    {
+      "type": "git:commit",
+      "value": "7f42602"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-06-09-release-gate"
+  ],
+  "history": [
+    {
+      "ts": 1781045271538,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 131
+      }
+    },
+    {
+      "ts": 1781108848951,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781108852648,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1781045271538,
+  "updated_at": 1781108852648,
+  "completed_at": 1781108852648,
+  "arc_id": "019eae91-105b-7ed1-9b69-ef7e10cddc3d",
+  "arc_phase": "slop",
+  "edges": []
+}

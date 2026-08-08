@@ -1,0 +1,100 @@
+{
+  "id": "019e7f84-a911-7af3-a9e6-65c64bb07dd7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/48",
+  "sequence_number": 48,
+  "title": "5b-4: semantic anchors per component",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nIdentify 3-7 semantic anchors (load-bearing symbols) per component. Rank symbols within a component by: in-degree (callers within component), betweenness centrality, git stability (inverse churn from git log), naming alignment with component name. Store top N in `semantic_anchors` table (ephemeral, recomputed alongside membership). Include anchors in `sutra_components` output as \\\"start here\\\" pointers.\n\n## Acceptance criteria\n\n- [ ] Symbols within a component ranked by combined score (in-degree, centrality, stability, naming)\n- [ ] Top 3-7 anchors selected per component (adaptive based on component size)\n- [ ] Anchors stored in semantic_anchors table, recomputed on clustering recompute\n- [ ] sutra_components output includes anchors per component\n- [ ] Git stability factor uses churn data from git log (low churn = high stability)\n\n## Blocked by\n\n- sutra/45 (5b-1: basic component discovery)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] Symbols within a component ranked by combined score (in-degree, centrality, stability, naming)"
+    },
+    {
+      "done": false,
+      "text": "[x] Top 3-7 anchors selected per component (adaptive based on component size)"
+    },
+    {
+      "done": false,
+      "text": "[x] Anchors stored in semantic_anchors table, recomputed on clustering recompute"
+    },
+    {
+      "done": false,
+      "text": "[x] sutra_components output includes anchors per component"
+    },
+    {
+      "done": false,
+      "text": "[x] Git stability factor uses churn data from git log (low churn = high stability)"
+    }
+  ],
+  "decisions": [
+    "Use pagerank as centrality proxy instead of betweenness centrality — already computed, O(1) lookup vs O(V*E)",
+    "Store qualified_name in symbol_name column for durability across reindexes",
+    "Rank-based normalization with average-rank ties to prevent tied signals from introducing noise",
+    "Weights: in_degree=0.35, pagerank=0.30, stability=0.20, naming=0.15",
+    "Anchor count: clamp(eligible/8, 3, 7)"
+  ],
+  "implementation_plan": "## Approach\n\nRank symbols within each component by four signals (in-degree within component, pagerank as centrality proxy, git stability via inverse churn, naming alignment with component name), then store the top-N as semantic anchors. Reuse the existing `semantic_anchors` table (migration 0008), adding a `score` column via new migration 0011. Computation runs immediately after `discover_components` in the pipeline — only when clustering actually runs (component_count > 0). The MCP tool `sutra_components` includes anchors in its response.\n\n**Design decision — centrality signal**: Use the already-computed `symbols.pagerank` as the centrality measure rather than computing betweenness centrality. Pagerank captures global importance and is already stored per-symbol. Computing betweenness on a per-component symbol graph is O(V*E) and not worth the cost for v1.\n\n**Design decision — symbol_name column**: Store `qualified_name` (e.g. `Db::component_count`) since it survives reindexing. The `symbol_name` column is TEXT, matching durable identity against ephemeral symbol rows by qualified name.\n\n## Files\n\n- **Create**: `migrations/0011_anchor_score.sql` — add score column to semantic_anchors\n- **Modify**: `src/db/mod.rs` (~line 137) — add `AnchorRow` struct\n- **Modify**: `src/db/components.rs` — add anchor CRUD methods (batch_replace_anchors, anchors_for_component, all_anchors_grouped)\n- **Modify**: `src/components.rs` — add `compute_semantic_anchors` function (scoring + selection logic)\n- **Modify**: `src/pipeline.rs` (~line 547) — call anchor computation after component discovery\n- **Modify**: `src/tools/components.rs` — include anchors in MCP JSON output\n- **Test**: `tests/components_test.rs` — anchor computation tests\n\n## Steps\n\n### Step 1: Migration — add score column\n\n```sql\n-- migrations/0011_anchor_score.sql\nALTER TABLE semantic_anchors ADD COLUMN score REAL;\n```\n\nSmall schema change; existing table from 0008 already has `id, component_id, symbol_name, rationale, created_at`.\n\n### Step 2: AnchorRow struct\n\nIn `src/db/mod.rs`, after `ComponentRow`:\n\n```rust\n#[derive(Debug, Clone)]\npub struct AnchorRow {\n    pub id: String,\n    pub component_id: String,\n    pub symbol_name: String,\n    pub score: Option<f64>,\n    pub rationale: Option<String>,\n}\n```\n\n### Step 3: DB methods for anchors\n\nIn `src/db/components.rs`, add three methods:\n\n```rust\n/// Clear existing anchors for given components and insert new ones atomically.\npub fn batch_replace_anchors(\n    &self,\n    component_ids: &[&str],\n    anchors: &[(String, String, String, f64, String)],  // (id, component_id, symbol_name, score, rationale)\n) -> Result<()>\n\n/// Get anchors for a single component, ordered by score descending.\npub fn anchors_for_component(&self, component_id: &str) -> Result<Vec<AnchorRow>>\n\n/// Bulk-fetch all anchors grouped by component_id. Single query, returned as HashMap.\npub fn all_anchors_grouped(&self) -> Result<HashMap<String, Vec<AnchorRow>>>\n```\n\n`batch_replace_anchors` does: `DELETE FROM semantic_anchors WHERE component_id IN (...)` then batch-insert, all in one transaction.\n\n### Step 4: Anchor computation logic\n\nIn `src/components.rs`, add the core scoring function:\n\n```rust\npub fn compute_semantic_anchors(db: &Db, workspace_root: &Path) -> Result<usize> {\n    let components = db.all_components()?;\n    if components.is_empty() {\n        return Ok(0);\n    }\n\n    // Build lookup tables (one pass each)\n    let sym_file_map: HashMap<i64, i64> = db.all_symbol_file_map()?...;\n    let all_refs = db.all_resolved_refs()?;\n    let churn_map = git::git_churn(workspace_root, 90).unwrap_or_default();\n\n    // Build component → file_ids mapping from membership\n    // Build file_id → component_id reverse map\n    // Build per-symbol in-degree-within-component counts\n\n    for component in &components {\n        let file_ids = component_file_ids[&component.id];\n        let component_file_set: HashSet<i64> = file_ids.iter().copied().collect();\n\n        // Gather all symbols in this component's files\n        let mut symbols: Vec<SymbolRow> = Vec::new();\n        for &fid in &file_ids {\n            symbols.extend(db.find_symbols_by_file(fid)?);\n        }\n\n        // Filter to anchor-eligible kinds (function, struct, enum, trait, method, type_alias, const)\n        // Exclude: module, import, field, variable, parameter\n        let eligible: Vec<&SymbolRow> = symbols.iter()\n            .filter(|s| ANCHOR_KINDS.contains(&s.kind.as_str()))\n            .filter(|s| s.parent_symbol_id.is_none() || s.kind == \"method\")\n            .collect();\n\n        // Score each eligible symbol\n        for sym in &eligible {\n            let in_degree = intra_component_refs[sym.id];  // pre-computed\n            let pagerank = sym.pagerank.unwrap_or(0.0);\n            let file_path = file_id_to_path[sym.file_id];\n            let file_churn = churn_map.get(file_path).copied().unwrap_or(0);\n            let stability = 1.0 / (1.0 + file_churn as f64);\n            let naming = name_alignment(&sym.short_name, &component.name);\n\n            // Normalize and combine\n            // (normalization: divide each by max in this component, or use rank-based)\n        }\n\n        // Select top-N (adaptive: 3 for <15 symbols, 5 for 15-50, 7 for 50+)\n        // Build anchor rows\n    }\n\n    db.batch_replace_anchors(&component_ids, &anchor_rows)?;\n    Ok(total_anchors)\n}\n```\n\n**Normalization**: Rank-based normalization within each component. For each signal, rank symbols 0..N-1, then normalize to [0, 1] by dividing by (N-1). This avoids issues with outlier values in raw scores.\n\n**Weights**: in_degree=0.35, pagerank=0.30, stability=0.20, naming=0.15\n\n**Anchor count formula**: `clamp(eligible_count / 8, 3, 7)` — gives 3 for ≤24 eligible symbols, 5 for 25-40, 7 for 56+.\n\n**Naming alignment**: Tokenize both names (split on `_`, camelCase boundaries). Compute Jaccard coefficient of token sets. `\"parse\"` and `\"Parser\"` → tokens `{\"parse\"}` and `{\"parser\"}` → overlap after lowercasing = 1.0.\n\n### Step 5: Pipeline integration\n\nIn `src/pipeline.rs` after the component discovery call (~line 547):\n\n```rust\nlet component_count = components::discover_components(db, &files, workspace_root)?;\nif component_count > 0 {\n    info!(component_count, \"discovered components\");\n    let anchor_count = components::compute_semantic_anchors(db, workspace_root)?;\n    if anchor_count > 0 {\n        info!(anchor_count, \"computed semantic anchors\");\n    }\n}\n```\n\n### Step 6: MCP tool output\n\nIn `src/tools/components.rs`, modify `handle` to include anchors:\n\n```rust\npub fn handle(db: &Db) -> Result<serde_json::Value> {\n    let components = db.all_components()?;\n    let all_anchors = db.all_anchors_grouped()?;\n    let mut items = Vec::new();\n    for c in &components {\n        let files = db.component_file_paths(&c.id)?;\n        let anchors = all_anchors.get(&c.id).map(|a| {\n            a.iter().map(|row| json!({\n                \"symbol\": row.symbol_name,\n                \"score\": row.score,\n                \"rationale\": row.rationale,\n            })).collect::<Vec<_>>()\n        }).unwrap_or_default();\n        items.push(json!({\n            \"id\": c.id,\n            \"name\": c.name,\n            \"files\": files,\n            \"file_count\": files.len(),\n            \"anchors\": anchors,\n        }));\n    }\n    // ... rest unchanged\n}\n```\n\n### Step 7: Tests\n\nTest cases in `tests/components_test.rs`:\n\n1. **test_semantic_anchors_computed_on_discovery**: Set up two-cluster graph with known symbols and refs. Run `discover_components` + `compute_semantic_anchors`. Assert anchors exist for each component, 3-7 per component.\n\n2. **test_anchor_count_adaptive**: Component with 10 symbols → 3 anchors. Component with 40 → 5. Component with 100 → 7.\n\n3. **test_anchors_prefer_high_in_degree**: Symbol with many intra-component callers ranks higher than isolated symbol.\n\n4. **test_anchors_in_components_tool_output**: Call `tools::components::handle`, assert each component JSON includes non-empty `anchors` array with `symbol`, `score`, `rationale` fields.\n\n5. **test_anchors_recomputed_on_recluster**: After first anchor computation, trigger a recluster (add files to change staleness), verify anchors reflect new membership.\n\n## Acceptance criteria coverage\n\n- [x] \\\"Symbols within a component ranked by combined score (in-degree, centrality, stability, naming)\\\" → Steps 4 (scoring logic with all four signals)\n- [x] \\\"Top 3-7 anchors selected per component (adaptive based on component size)\\\" → Step 4 (adaptive count formula)\n- [x] \\\"Anchors stored in semantic_anchors table, recomputed on clustering recompute\\\" → Steps 1-3 (DB), Step 5 (pipeline trigger after discover_components)\n- [x] \\\"sutra_components output includes anchors per component\\\" → Step 6 (MCP tool)\n- [x] \\\"Git stability factor uses churn data from git log (low churn = high stability)\\\" → Step 4 (git_churn call, stability = 1/(1+churn))",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780255861009,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 48
+      }
+    },
+    {
+      "ts": 1780320101801,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780320518081,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "All 7 implementation steps complete. Production code + 6 tests passing. Full test suite green (384 tests, 0 failures). Commits: 8db0439 (production code), 21ff2f8 (tests + tie fix).",
+      "ts": 1780320508539
+    }
+  ],
+  "created_at": 1780255861009,
+  "updated_at": 1780320518081,
+  "completed_at": 1780320518081,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-2adb-7252-9144-e88d70eceec0",
+      "edge_type": "depends_on",
+      "source": "sutra/48",
+      "target": "sutra/45",
+      "note": null,
+      "created_at": 1780255894235
+    }
+  ]
+}

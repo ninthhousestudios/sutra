@@ -1,0 +1,78 @@
+{
+  "id": "019eb260-2ede-7d82-b965-e2493a26072c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/133",
+  "sequence_number": 133,
+  "title": "Unify constraint evaluation into constraints::check::evaluate",
+  "description": "Extract a pure constraints::check::evaluate(facts, constraints, waivers, scope) -> CheckOutcome that replaces the four independent implementations in review.rs, constraints.rs tool, orient.rs, and guard.rs. Guard keeps its fast raw-SQL fact-gathering as a second adapter at the facts seam but feeds the same core. DD engine management (ingest-or-reload, ephemeral fallback, forbidden-pair loading, cycle query) lives behind the interface. Delta-labeling (remove changed-file edges, re-query, diff) becomes an option of scope=ChangedFiles. One canonical ConstraintFinding type, one waiver partition.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    "waiver-match rule: from_path only (the violating import site), not from||to — stricter, consistent with review/constraints tool behavior; guard.rs from||to match is the bug"
+  ],
+  "implementation_plan": null,
+  "execution_record": "Unified constraint evaluation across 4 call sites into `constraints::check::evaluate`. 9 commits: types (check.rs), DD+Workspace path, ChangedFiles delta labeling, RawConn path, migrate constraints tool, migrate orient, migrate guard, migrate review+bin/guard, clippy cleanup. Net ~-500 lines. All 299+integration tests pass.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/132",
+      "label": "parent grilling task"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-09-release-gate-architecture.md",
+      "label": "candidate 1"
+    },
+    {
+      "type": "git:commit",
+      "value": "9487417"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "deepening",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781109108447,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 133
+      }
+    },
+    {
+      "ts": 1781110046266,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781111876112,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention. Two findings:\n\n1. [high] Removed forbidden imports cannot be reported as resolved (check.rs:147-168). ChangedFiles baseline never reconstructs deleted edges from old_edges, so resolved violations are silently missed. Fix: compute baseline as (current_edges - added_edges) + removed_old_edges.\n\n2. [medium] Review total now excludes waived constraint violations (review.rs:391-394). constraint_violations_total is set after waiver partition, so it only counts active. Should be active + waived to match pre-refactor contract.",
+      "ts": 1781116752603
+    }
+  ],
+  "created_at": 1781109108447,
+  "updated_at": 1781111876112,
+  "completed_at": 1781111876112,
+  "edges": []
+}

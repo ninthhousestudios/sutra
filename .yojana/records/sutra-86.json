@@ -1,0 +1,140 @@
+{
+  "id": "019e92b0-9f04-7b11-a61d-31f429493bf8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/86",
+  "sequence_number": 86,
+  "title": "5e-3: git-organizational biomarkers",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nThe three strongest defect predictors from the repowise calibration, all consuming the commit_files + commits tables from sutra/67:\\n\\n- co_change_scatter (weight 1.80): count of distinct co-change partners per file over a configurable window. Fires when scatter >= 8 AND >= 3 commits in 90d.\\n- change_entropy (weight 1.51): Hassan's History Complexity Metric (ICSE 2009). Per-commit entropy contribution = log2(|F|), distributed 1/|F| per file, decay-weighted with tau=180d half-life. Drop commits wider than 30 files.\\n- ownership_risk (weight 1.38): Bird et al. FSE 2011. Fires when top owner share < 40% OR 3+ minor contributors (each < 5% of commits).\\n\\nPlus: hidden_coupling (co-change >= 50% of shared commits with no static import edge), multi-agent ownership aliases via .sutra/owners.toml.\\n\\n## Acceptance criteria\\n\\n- [ ] health/git_metrics module with co_change_scatter, change_entropy, ownership_risk implementations\\n- [ ] All three consume commit_files + commits tables (no separate git log pass)\\n- [ ] hidden_coupling: files with >= 50% co-change correlation AND no static import edge, severity escalating at 65% and 80%\\n- [ ] .sutra/owners.toml parsing for multi-agent ownership aliases (agent authors → human dispatcher)\\n- [ ] Without owners.toml, agents treated as distinct contributors (conservative default)\\n- [ ] All biomarkers produce HealthFinding structs integrated into the parse pipeline\\n- [ ] Tests: each algorithm independently — partner counting, decay-weighted entropy computation, ownership threshold logic, alias resolution\\n\\n## Blocked by\\n\\n- sutra/84 (5e-1: health finding model)\\n- sutra/67 (commit_files + commits tables — must include committed_at and author columns)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "health/git_metrics module with co_change_scatter, change_entropy, ownership_risk implementations"
+    },
+    {
+      "done": true,
+      "text": "All three consume commit_files + commits tables (no separate git log pass)"
+    },
+    {
+      "done": true,
+      "text": "hidden_coupling: files with >= 50% co-change correlation AND no static import edge, severity escalating at 65% and 80%"
+    },
+    {
+      "done": true,
+      "text": ".sutra/owners.toml parsing for multi-agent ownership aliases (agent authors → human dispatcher)"
+    },
+    {
+      "done": true,
+      "text": "Without owners.toml, agents treated as distinct contributors (conservative default)"
+    },
+    {
+      "done": true,
+      "text": "All biomarkers produce HealthFinding structs integrated into the parse pipeline"
+    },
+    {
+      "done": true,
+      "text": "Tests: each algorithm independently — partner counting, decay-weighted entropy computation, ownership threshold logic, alias resolution"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nCreate `src/health/git_metrics.rs` with four biomarker compute functions that consume the existing `commits` + `commit_files` DB tables (populated by `git_commit_files` in the pipeline). Add three supporting DB query methods to `src/db/graph.rs` for the raw aggregations (scatter, entropy data, ownership). Reuse two existing DB methods (`cochange_pairs_above_threshold`, `static_file_edges`) for hidden_coupling. Add `.sutra/owners.toml` parsing for ownership alias resolution. Wire into `compute_all_health_findings` (signature gains `workspace_root` param) and update the pipeline call site.\n\nAll BiomarkerKind variants, weights, categories, and severities are already stubbed in `findings.rs` and `scoring.rs` — no changes needed there beyond wiring the new compute functions into the aggregator.\n\n## Files\n\n- **Create**: `src/health/git_metrics.rs` — all four biomarker implementations + owners.toml config\n- **Modify**: `src/db/graph.rs` (~lines 73-150 area) — three new DB query methods\n- **Modify**: `src/health/mod.rs` — add `mod git_metrics;` and re-exports\n- **Modify**: `src/health/findings.rs` (lines 132-134) — update `compute_all_health_findings` signature and body\n- **Modify**: `src/pipeline.rs` (line ~604) — pass `workspace_root` to `compute_all_health_findings`\n- **Test**: `tests/health-test.rs` — new test section + commit data seed helpers\n\n## Steps\n\n### Step 1: DB query methods in `src/db/graph.rs`\n\nAdd three methods to the existing `Db` impl block that already contains `replace_commit_files` and `cochange_pairs_above_threshold`:\n\n```rust\n/// Per-file co-change partner count and commit count.\npub fn file_cochange_partners(&self) -> Result<Vec<(i64, i64, i64)>> {\n    let sql = \"\n        SELECT cf1.file_id,\n               COUNT(DISTINCT cf2.file_id) AS partner_count,\n               fc.commit_count\n        FROM commit_files cf1\n        JOIN commit_files cf2\n          ON cf1.commit_hash = cf2.commit_hash AND cf1.file_id != cf2.file_id\n        JOIN (SELECT file_id, COUNT(*) AS commit_count\n              FROM commit_files GROUP BY file_id) fc\n          ON fc.file_id = cf1.file_id\n        GROUP BY cf1.file_id\n    \";\n    let conn = self.conn();\n    let mut stmt = conn.prepare(sql)?;\n    let rows = stmt.query_map([], |row| {\n        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))\n    })?;\n    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)\n}\n\n/// Per (file, commit): committed_at and number of files in that commit.\n/// Excludes commits wider than `max_width` files.\npub fn file_commit_sizes(&self, max_width: i64) -> Result<Vec<(i64, i64, i64)>> {\n    let sql = \"\n        WITH commit_size AS (\n            SELECT commit_hash, COUNT(*) AS file_count\n            FROM commit_files GROUP BY commit_hash\n            HAVING file_count <= ?1\n        )\n        SELECT cf.file_id, c.committed_at, cs.file_count\n        FROM commit_files cf\n        JOIN commits c ON cf.commit_hash = c.hash\n        JOIN commit_size cs ON cs.commit_hash = cf.commit_hash\n    \";\n    let conn = self.conn();\n    let mut stmt = conn.prepare(sql)?;\n    let rows = stmt.query_map([max_width], |row| {\n        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))\n    })?;\n    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)\n}\n\n/// Per (file, author): number of commits.\npub fn file_author_commits(&self) -> Result<Vec<(i64, String, i64)>> {\n    let sql = \"\n        SELECT cf.file_id, c.author, COUNT(*) AS commit_count\n        FROM commit_files cf\n        JOIN commits c ON cf.commit_hash = c.hash\n        GROUP BY cf.file_id, c.author\n    \";\n    let conn = self.conn();\n    let mut stmt = conn.prepare(sql)?;\n    let rows = stmt.query_map([], |row| {\n        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))\n    })?;\n    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)\n}\n```\n\n### Step 2: Create `src/health/git_metrics.rs`\n\n```rust\nuse std::collections::HashMap;\nuse std::path::Path;\nuse anyhow::Result;\nuse serde::Deserialize;\nuse crate::db::Db;\nuse super::{BiomarkerKind, HealthFinding, HealthSeverity};\n\n// --- Thresholds ---\nconst SCATTER_PARTNER_THRESHOLD: i64 = 8;\nconst SCATTER_COMMIT_THRESHOLD: i64 = 3;\nconst ENTROPY_THRESHOLD: f64 = 2.0;\nconst ENTROPY_HALF_LIFE_DAYS: f64 = 180.0;\nconst MAX_COMMIT_WIDTH: i64 = 30;\nconst OWNERSHIP_TOP_THRESHOLD: f64 = 0.40;\nconst OWNERSHIP_MINOR_THRESHOLD: f64 = 0.05;\nconst OWNERSHIP_MINOR_COUNT: usize = 3;\nconst HIDDEN_COUPLING_MIN: f64 = 0.50;\nconst HIDDEN_COUPLING_HIGH: f64 = 0.65;\n\n// --- Owners config ---\n#[derive(Debug, Default, Deserialize)]\npub struct OwnersConfig {\n    #[serde(default)]\n    pub aliases: HashMap<String, String>,\n}\n\npub fn load_owners_config(workspace_root: &Path) -> OwnersConfig {\n    let path = workspace_root.join(\".sutra/owners.toml\");\n    match std::fs::read_to_string(&path) {\n        Ok(content) => toml::from_str(&content).unwrap_or_default(),\n        Err(_) => OwnersConfig::default(),\n    }\n}\n\nfn file_path_map(db: &Db) -> Result<HashMap<i64, String>> {\n    Ok(db.all_files()?.into_iter().map(|f| (f.id, f.path)).collect())\n}\n\n// --- co_change_scatter ---\npub fn compute_co_change_scatter(db: &Db) -> Result<Vec<HealthFinding>> {\n    let partners = db.file_cochange_partners()?;\n    let paths = file_path_map(db)?;\n    let findings = partners\n        .into_iter()\n        .filter(|&(_, partner_count, commit_count)| {\n            partner_count >= SCATTER_PARTNER_THRESHOLD\n                && commit_count >= SCATTER_COMMIT_THRESHOLD\n        })\n        .map(|(file_id, partner_count, commit_count)| {\n            let path = paths.get(&file_id).map(|s| s.as_str()).unwrap_or(\"?\");\n            HealthFinding {\n                file_id,\n                symbol_id: None,\n                biomarker_kind: BiomarkerKind::CoChangeScatter,\n                severity: BiomarkerKind::CoChangeScatter.default_severity(),\n                confidence: 1.0,\n                provenance: \"computed\".into(),\n                metric_value: partner_count as f64,\n                threshold: SCATTER_PARTNER_THRESHOLD as f64,\n                detail: format!(\n                    \"{path} has {partner_count} co-change partners across {commit_count} commits\"\n                ),\n            }\n        })\n        .collect();\n    Ok(findings)\n}\n\n// --- change_entropy ---\npub fn compute_change_entropy(db: &Db) -> Result<Vec<HealthFinding>> {\n    let data = db.file_commit_sizes(MAX_COMMIT_WIDTH)?;\n    if data.is_empty() {\n        return Ok(vec![]);\n    }\n    let ref_time = db.newest_commit_at()?;\n    // Group by file_id, accumulate decay-weighted entropy\n    let mut entropy_map: HashMap<i64, f64> = HashMap::new();\n    for (file_id, committed_at, files_in_commit) in &data {\n        let f = *files_in_commit as f64;\n        if f <= 1.0 {\n            continue; // log2(1) = 0, no entropy contribution\n        }\n        let age_days = (ref_time - committed_at) as f64 / 86400.0;\n        let decay = 2.0_f64.powf(-age_days / ENTROPY_HALF_LIFE_DAYS);\n        let contribution = decay * (1.0 / f) * f.log2();\n        *entropy_map.entry(*file_id).or_default() += contribution;\n    }\n    let paths = file_path_map(db)?;\n    let findings = entropy_map\n        .into_iter()\n        .filter(|&(_, entropy)| entropy >= ENTROPY_THRESHOLD)\n        .map(|(file_id, entropy)| {\n            let path = paths.get(&file_id).map(|s| s.as_str()).unwrap_or(\"?\");\n            HealthFinding {\n                file_id,\n                symbol_id: None,\n                biomarker_kind: BiomarkerKind::ChangeEntropy,\n                severity: BiomarkerKind::ChangeEntropy.default_severity(),\n                confidence: 1.0,\n                provenance: \"computed\".into(),\n                metric_value: entropy,\n                threshold: ENTROPY_THRESHOLD,\n                detail: format!(\n                    \"{path} has change entropy {entropy:.2} (threshold {ENTROPY_THRESHOLD})\"\n                ),\n            }\n        })\n        .collect();\n    Ok(findings)\n}\n\n// --- ownership_risk ---\npub fn compute_ownership_risk(\n    db: &Db,\n    workspace_root: &Path,\n) -> Result<Vec<HealthFinding>> {\n    let raw = db.file_author_commits()?;\n    let owners_config = load_owners_config(workspace_root);\n    // Apply alias mapping, then re-aggregate\n    let mut by_file: HashMap<i64, HashMap<String, i64>> = HashMap::new();\n    for (file_id, author, count) in raw {\n        let canonical = owners_config\n            .aliases\n            .get(&author)\n            .cloned()\n            .unwrap_or(author);\n        *by_file.entry(file_id).or_default()\n            .entry(canonical).or_default() += count;\n    }\n    let paths = file_path_map(db)?;\n    let mut findings = Vec::new();\n    for (file_id, author_counts) in &by_file {\n        let total: i64 = author_counts.values().sum();\n        if total == 0 { continue; }\n        let max_share = author_counts.values()\n            .map(|&c| c as f64 / total as f64)\n            .fold(0.0_f64, f64::max);\n        let minor_count = author_counts.values()\n            .filter(|&&c| (c as f64 / total as f64) < OWNERSHIP_MINOR_THRESHOLD)\n            .count();\n        let top_trigger = max_share < OWNERSHIP_TOP_THRESHOLD;\n        let minor_trigger = minor_count >= OWNERSHIP_MINOR_COUNT;\n        if !top_trigger && !minor_trigger { continue; }\n        let path = paths.get(file_id).map(|s| s.as_str()).unwrap_or(\"?\");\n        let detail = if top_trigger && minor_trigger {\n            format!(\"{path}: top owner {:.0}% (< 40%) and {minor_count} minor contributors\",\n                    max_share * 100.0)\n        } else if top_trigger {\n            format!(\"{path}: top owner {:.0}% (< 40%)\", max_share * 100.0)\n        } else {\n            format!(\"{path}: {minor_count} minor contributors (>= 3 with < 5% each)\")\n        };\n        let metric = if top_trigger { max_share } else { minor_count as f64 };\n        let threshold = if top_trigger {\n            OWNERSHIP_TOP_THRESHOLD\n        } else {\n            OWNERSHIP_MINOR_COUNT as f64\n        };\n        findings.push(HealthFinding {\n            file_id: *file_id,\n            symbol_id: None,\n            biomarker_kind: BiomarkerKind::OwnershipRisk,\n            severity: BiomarkerKind::OwnershipRisk.default_severity(),\n            confidence: 1.0,\n            provenance: \"computed\".into(),\n            metric_value: metric,\n            threshold,\n            detail,\n        });\n    }\n    Ok(findings)\n}\n\n// --- hidden_coupling ---\npub fn compute_hidden_coupling(db: &Db) -> Result<Vec<HealthFinding>> {\n    let cochange = db.cochange_pairs_above_threshold(HIDDEN_COUPLING_MIN)?;\n    let static_edges: std::collections::HashSet<(i64, i64)> =\n        db.static_file_edges()?.into_iter().collect();\n    let paths = file_path_map(db)?;\n    let mut findings = Vec::new();\n    for (fa, fb, jaccard, _shared) in cochange {\n        let key = (fa.min(fb), fa.max(fb));\n        if static_edges.contains(&key) { continue; }\n        let severity = if jaccard >= HIDDEN_COUPLING_HIGH {\n            HealthSeverity::Advisory\n        } else {\n            HealthSeverity::Informational\n        };\n        let path_a = paths.get(&fa).map(|s| s.as_str()).unwrap_or(\"?\");\n        let path_b = paths.get(&fb).map(|s| s.as_str()).unwrap_or(\"?\");\n        let pct = (jaccard * 100.0) as u32;\n        // Emit one finding per file in the pair\n        for (file_id, other_path) in [(fa, path_b), (fb, path_a)] {\n            findings.push(HealthFinding {\n                file_id,\n                symbol_id: None,\n                biomarker_kind: BiomarkerKind::HiddenCoupling,\n                severity,\n                confidence: 1.0,\n                provenance: \"computed\".into(),\n                metric_value: jaccard,\n                threshold: HIDDEN_COUPLING_MIN,\n                detail: format!(\n                    \"hidden coupling with {other_path} at {pct}% co-change (no static edge)\"\n                ),\n            });\n        }\n    }\n    Ok(findings)\n}\n```\n\n### Step 3: Wire into health module\n\n`src/health/mod.rs` — add:\n```rust\nmod git_metrics;\npub use git_metrics::{\n    compute_co_change_scatter, compute_change_entropy,\n    compute_ownership_risk, compute_hidden_coupling,\n    OwnersConfig, load_owners_config,\n};\n```\n\n### Step 4: Update `compute_all_health_findings`\n\n`src/health/findings.rs` (lines 132–134) — change signature to accept `workspace_root` and call the new functions:\n\n```rust\npub fn compute_all_health_findings(db: &Db, workspace_root: &Path) -> Result<Vec<HealthFinding>> {\n    let mut findings = compute_nested_complexity(db)?;\n    findings.extend(git_metrics::compute_co_change_scatter(db)?);\n    findings.extend(git_metrics::compute_change_entropy(db)?);\n    findings.extend(git_metrics::compute_ownership_risk(db, workspace_root)?);\n    findings.extend(git_metrics::compute_hidden_coupling(db)?);\n    Ok(findings)\n}\n```\n\nAdd `use std::path::Path;` to imports if not present. Add `use super::git_metrics;` or use `crate::health::git_metrics`.\n\n### Step 5: Update pipeline call site\n\n`src/pipeline.rs` line ~604 — pass the `workspace_root` parameter that's already in scope:\n\n```rust\n// Before:\nlet findings = crate::health::compute_all_health_findings(db)?;\n// After:\nlet findings = crate::health::compute_all_health_findings(db, workspace_root)?;\n```\n\n### Step 6: Tests in `tests/health-test.rs`\n\nAdd a new section `// --- git-organizational biomarkers ---` with commit data seed helper and tests for each algorithm:\n\n```rust\nuse sutra::db::CommitRow;\n// (add to existing imports)\n\nfn seed_commits(db: &Db, commits: &[CommitRow], pairs: &[(String, i64)]) {\n    db.replace_commit_files(commits, pairs).unwrap();\n}\n```\n\n**Test: co_change_scatter fires at threshold**\n- Seed 3+ commits, 8+ distinct co-change partners for one file\n- Seed a file below threshold for comparison\n- Assert finding fires for the high-scatter file, not for the low one\n- Assert metric_value = partner count, biomarker_kind = \"co_change_scatter\"\n\n**Test: co_change_scatter requires minimum commit count**\n- Seed a file with many partners but only 2 commits (below threshold of 3)\n- Assert no finding fires\n\n**Test: change_entropy computation**\n- Seed commits with known file counts and timestamps\n- Hand-compute expected entropy: for a commit with F=4 files, contribution = (1/4) × log2(4) × decay\n- Assert metric_value matches expected entropy (within 0.01)\n- Assert commits with >30 files are excluded\n\n**Test: change_entropy below threshold no finding**\n- Seed minimal commit data producing entropy < ENTROPY_THRESHOLD\n- Assert no finding\n\n**Test: ownership_risk top owner below 40%**\n- Seed a file with 3 authors: 35%, 35%, 30% of commits\n- Assert finding fires with detail mentioning \"top owner\"\n\n**Test: ownership_risk minor contributors**\n- Seed a file with 1 major (80%) + 4 minor (<5% each) authors\n- Assert finding fires with detail mentioning \"minor contributors\"\n\n**Test: ownership_risk with aliases**\n- Create temp .sutra/owners.toml mapping bot@ci → alice@dev\n- Seed commits from both bot@ci and alice@dev\n- Assert they merge into one author for ownership computation\n\n**Test: ownership_risk no alias file**\n- Seed file with distinct bot + human authors\n- Assert each counted separately (conservative default)\n\n**Test: hidden_coupling fires without static edge**\n- Seed two files with high co-change (>= 50% Jaccard) but no refs between them\n- Assert two findings (one per file), biomarker_kind = \"hidden_coupling\"\n\n**Test: hidden_coupling suppressed by static edge**\n- Seed two files with high co-change AND a ref from one to the other\n- Assert no hidden_coupling finding\n\n**Test: hidden_coupling severity escalation**\n- Seed pair at 55% → assert Informational\n- Seed pair at 70% → assert Advisory\n\n## Acceptance criteria coverage\n\n- [x] \"health/git_metrics module with co_change_scatter, change_entropy, ownership_risk\" → Steps 2, 3\n- [x] \"All three consume commit_files + commits tables (no separate git log pass)\" → Step 1 DB queries read from those tables; Step 2 compute functions never shell out to git\n- [x] \"hidden_coupling: >= 50% co-change AND no static import edge, severity escalating at 65% and 80%\" → Step 2 compute_hidden_coupling with HIDDEN_COUPLING_HIGH threshold\n- [x] \".sutra/owners.toml parsing for multi-agent ownership aliases\" → Step 2 OwnersConfig + load_owners_config\n- [x] \"Without owners.toml, agents treated as distinct contributors\" → Step 2 load_owners_config returns Default (empty aliases)\n- [x] \"All biomarkers produce HealthFinding structs integrated into parse pipeline\" → Steps 4, 5\n- [x] \"Tests: partner counting, decay-weighted entropy, ownership threshold logic, alias resolution\" → Step 6\n\n## Open questions\n\n- **Entropy threshold**: 2.0 is a placeholder. No calibration data in the survey. Will need empirical tuning against real repos — easy to adjust (single const).\n- **Hidden coupling 80% tier**: The survey mentions severity escalation at both 65% and 80%, but the health system only has Advisory and Informational. Currently 65%+ → Advisory, 50-65% → Informational. The 80% tier could be reflected in the detail string or confidence, but has no scoring effect beyond Advisory. Revisit if a third severity level is added.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/survey-repowise-health.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "cb2cdbb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780577509124,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 86
+      }
+    },
+    {
+      "ts": 1780587034845,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780587507686,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    },
+    {
+      "ts": 1780587951806,
+      "kind": "status_changed",
+      "payload": {
+        "from": "done",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780589375225,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577509124,
+  "updated_at": 1780589375225,
+  "completed_at": 1780589375225,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-c552-7940-8334-79c3249db985",
+      "edge_type": "depends_on",
+      "source": "sutra/86",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577650002
+    },
+    {
+      "id": "019e92b2-c7c4-7f73-94c1-7e5cebb24c25",
+      "edge_type": "depends_on",
+      "source": "sutra/86",
+      "target": "sutra/67",
+      "note": null,
+      "created_at": 1780577650628
+    },
+    {
+      "id": "019e92b2-d029-7e11-9282-76b2ee752381",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/86",
+      "note": null,
+      "created_at": 1780577652777
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "id": "019f9a07-cec4-7821-bd61-382f0c521d28",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/294",
+  "sequence_number": 294,
+  "title": "Test-scope exclusion misses production self-loops and external-crate constraints",
+  "description": "Two medium-severity gaps in c483406 (sutra/290, test-scope exclusion), found by Codex adversarial review and confirmed against source.\n\n1. Production self-loop cycles dropped. worker.rs:117-119 derives cycle-participating nodes from transitive-closure self-loops, so a genuine production self-edge could previously be reported as a one-node cycle. The new narrowing in check.rs filters `scc.len() > 1` unconditionally, discarding singleton SCCs even when production_edges contains (id, id) — a blocking no_cycles false negative.\n\n2. External-crate constraints still evaluate cfg(test) imports. db::unresolved_imports_with_files (src/db/mod.rs) selects no is_test column, and the SingleFile external query in check.rs:602-606 likewise; external::check_import_items has no include_tests signal. forbidden_external / confined_external therefore still fire blocking on a crate used only inside #[cfg(test)]. The c483406 commit message claims test code is excluded from every constraint kind, which is not yet true for import-derived external rules. This is what blocks yojana/44 (re-adding a rusqlite confined_external rule).",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Singleton SCCs are reported when production_edges contains a self-loop for that node"
+    },
+    {
+      "done": false,
+      "text": "Test covers a production (file_id, file_id) edge reported, and a test-only self-loop suppressed"
+    },
+    {
+      "done": false,
+      "text": "unresolved_imports_with_files returns is_test; external constraint evaluation filters test imports unless include_tests = true"
+    },
+    {
+      "done": false,
+      "text": "Same filtering applied to the SingleFile external query in check.rs"
+    },
+    {
+      "done": false,
+      "text": "Test covers an external crate used only under #[cfg(test)] producing no finding by default, and a finding with include_tests = true"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Went as planned, with two deliberate extensions. The guard's external path now carries is_test rather than dropping it unconditionally the way guard edge derivation does — the parser has already computed the flag there, so per-constraint fidelity is free and the sutra/290 rationale (cost of re-deriving edges) does not apply. And the unresolved-import row became a named `db::UnresolvedImport` struct, because adding is_test pushed the tuple to five positional fields and tripped clippy::type_complexity. Both regression tests were verified to fail with their respective fix reverted, not just to pass with it. Full suite 1492 passed; clippy clean on all touched files. Doc half landed in vidhi c98a0d9.",
+  "reproduction": null,
+  "root_cause": "Both gaps are the same omission in different places: c483406 applied test-scope filtering only where it had a test in front of it. The no_cycles narrowing filtered `scc.len() > 1` because every cycle it was thinking about was multi-node, forgetting that cycle nodes are derived from transitive-closure self-loops and a self-import legitimately arrives as a one-node SCC. The external kinds were never wired at all — `unresolved_imports_with_files` selected no is_test column and `check_import_items` had no include_tests signal — so the \"every constraint kind\" claim in the commit message was aspirational rather than true.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c483406",
+      "label": "commit under review"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/290",
+      "label": "originating task"
+    },
+    {
+      "type": "yojana:task",
+      "value": "yojana/44",
+      "label": "blocked by the external-crate gap"
+    },
+    {
+      "type": "git:commit",
+      "value": "8641de9"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1784995630788,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 294
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784996089004,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784996750406,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of c483406..77b48f8. Verdict: needs-attention. Findings that land on this task:\n\n[medium] External include_tests can be shadowed by an earlier default rule (src/constraints/external.rs:228-235)\n`check_import_items` takes the FIRST match from `match_external` (external.rs:96, `constraints.iter().find(...)`), then applies the new `*is_test && !c.include_tests` filter. If a broad default rule precedes a narrower `include_tests = true` rule, the test import matches the broad rule, is skipped, and the opt-in rule never evaluates — a rule-order-dependent false negative in a blocking path. First-match semantics predate this task, but the new test filter inherits the property. The `seen` dedupe on `(from_path, crate)` compounds it.\nRecommendation: iterate all matching external constraints and filter per constraint; dedupe by `(constraint_id, from_path, crate)`.\n\n[high, primarily sutra/292] Test-scoped dep and cycle rules dropped by production-edge filtering (check.rs:336, 435) — the `scope_targets_tests` escape hatch exists only in patterns.rs, so a `no_cycles` rule scoped to `tests/**` goes inert without `include_tests`. Full detail on sutra/292.\n\nClean on this task's own ACs: the singleton-SCC fix (check.rs:437-444, `scc.len() > 1 || production_edges.contains(&(id, id))`) and the is_test plumbing through `unresolved_imports_with_files` / the SingleFile external query drew no findings.",
+      "ts": 1785007395648
+    }
+  ],
+  "created_at": 1784995630788,
+  "updated_at": 1784996750406,
+  "completed_at": 1784996750406,
+  "edges": []
+}

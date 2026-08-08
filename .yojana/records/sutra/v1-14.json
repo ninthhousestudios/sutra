@@ -1,0 +1,145 @@
+{
+  "id": "019e1cda-2c48-71e0-b965-82cab842650d",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/14",
+  "sequence_number": 14,
+  "title": "sutra_review: integrate DD + FCA findings",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nWire DD constraint violations and FCA convention violations into sutra_review output. Add `constraint_violations` (cycles, forbidden deps) and `convention_violations` (FCA pattern violations) as separate sections in ReviewResult. Refine risk score to include `convention_violations` signal. Update `recommended_reads` ranking: convention violation sites rank above plain affected symbols.\\n\\n## Acceptance criteria\\n\\n- [ ] ReviewResult includes `constraint_violations` section (from DD)\\n- [ ] ReviewResult includes `convention_violations` section (from FCA)\\n- [ ] Constraint and convention violations are visually/structurally distinct (different confidence semantics)\\n- [ ] Risk score incorporates convention_violations signal in breakdown\\n- [ ] `recommended_reads` ranks convention violation sites above plain affected symbols\\n- [ ] Tests: fixture with known violations from both DD and FCA, verify they appear in review output in correct sections\\n\\n## Blocked by\\n\\n- sutra/v1/9 — DD: blast-radius rollups\\n- sutra/v1/10 — DD: forbidden deps\\n- sutra/v1/12 — FCA: convention checking + suppressions\\n- sutra/v1/13 — sutra_review: structural core",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "ReviewResult includes `constraint_violations` section (from DD)"
+    },
+    {
+      "done": true,
+      "text": "ReviewResult includes `convention_violations` section (from FCA)"
+    },
+    {
+      "done": true,
+      "text": "Constraint and convention violations are visually/structurally distinct (different confidence semantics)"
+    },
+    {
+      "done": true,
+      "text": "Risk score incorporates convention_violations signal in breakdown"
+    },
+    {
+      "done": true,
+      "text": "`recommended_reads` ranks convention violation sites above plain affected symbols"
+    },
+    {
+      "done": true,
+      "text": "Tests: fixture with known violations from both DD and FCA, verify they appear in review output in correct sections"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b938d6c"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1778600520776,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 14
+      }
+    },
+    {
+      "ts": 1778677233363,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778678492886,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codebase explored. Design: add ReviewFindings struct with DD violations + FCA violations, passed into compute(). Build engines in handle(), keep compute() testable with pre-built findings. Rebalance risk weights to include convention_violations signal.",
+      "ts": 1778678074476
+    },
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers #13 + #14 together):\\n\\nVerdict: needs-attention — no-ship as-is\\n\\nFindings:\\n\\n1. [high] build_findings errors silently swallowed (review.rs:83) — unwrap_or_default() discards rule-loading, DD, and FCA errors. Malformed rules.toml produces clean-looking review with empty violations. Dangerous for a review gate.\\n   → Propagate errors or add explicit findings_error/degraded-status field.\\n\\n2. [medium] FCA convention confidence dropped (review.rs:48-55) — Convention.confidence not propagated into ConventionViolation or serialized. Consumers can't distinguish deterministic DD constraints from probabilistic FCA conventions or rank/suppress by confidence.\\n   → Propagate support+confidence into fca::ConventionViolation → review::ConventionViolation.\\n\\n3. [medium] recommended_reads ranking nondeterministic (review.rs:361-390) — violation sites collected via HashSet, no sort before truncation. Can drop higher-risk sites.\\n   → Sort violation sites by priority/blast/confidence/path before truncating.\\n\\n4. [medium] Tests bypass real integration path (tests/review-test.rs:247-306) — hand-built ReviewFindings only test compute() serialization, not build_findings/handle/rules-loading/suppression.\\n   → Add fixture tests with rules.toml + indexed files that invoke handle().\\n\\nAlso flagged: compute() cognitive complexity 31 (threshold 25).\"",
+      "ts": 1778678801934
+    }
+  ],
+  "created_at": 1778600520776,
+  "updated_at": 1778678492886,
+  "completed_at": 1778678492886,
+  "edges": [
+    {
+      "id": "019e1cda-7668-7a80-94db-416213faa49c",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/9",
+      "note": null,
+      "created_at": 1778600539752
+    },
+    {
+      "id": "019e1cda-7a3f-7d83-a2e9-6d12623e2b1d",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/10",
+      "note": null,
+      "created_at": 1778600540735
+    },
+    {
+      "id": "019e1cda-7d9f-7940-91a8-e61517d777d1",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/12",
+      "note": null,
+      "created_at": 1778600541599
+    },
+    {
+      "id": "019e1cda-82a8-7981-a30f-b7237ad9061f",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/13",
+      "note": null,
+      "created_at": 1778600542888
+    },
+    {
+      "id": "019e1cda-b9db-7e82-bf60-dfcd3b264829",
+      "edge_type": "refines",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600557019
+    },
+    {
+      "id": "019e211a-4e3a-7272-bf41-b86c4c3e9f4a",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/14",
+      "target": "sutra/v1/17",
+      "note": "Integration needs unambiguous symbol identity",
+      "created_at": 1778671832634
+    }
+  ]
+}

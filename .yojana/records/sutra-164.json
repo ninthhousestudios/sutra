@@ -1,0 +1,120 @@
+{
+  "id": "019ece4e-02a3-7f81-b6dd-a2af810ce8e9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/164",
+  "sequence_number": 164,
+  "title": "Migration of ledger.md + CLAUDE.md update",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nOne-time migration of existing knowledge into the new system.\n\n**Ledger migration:** Parse ledger.md L1–L12. For each entry, create a lesson via `sutra_remember` with:\n- Text from the Mechanism column\n- Location anchors inferred from the Evidence column (task IDs → look up affected files/symbols)\n- Mark as verified (these have proven themselves through the ledger's high write bar)\n- Preserve provenance (task IDs, pass date)\n\n**CLAUDE.md update:** Replace the `<engineering_lessons>` block in `~/soft/manas/manas-cli/src/adapter/manas-instructions.md` with a compact pointer instructing agents to use `sutra_remember` for writing lessons and cite lesson IDs in close-out fields.\n\n**Archive:** Move ledger.md to `.handoffs/` for historical reference.\n\nHITL because anchor assignments for existing lessons need human review — automated inference may miss the right anchors for lessons written before the anchor model existed.\n\n## Acceptance criteria\n\n- [ ] All 12 ledger entries (L1–L12) exist as verified lessons in the shared store\n- [ ] Each migrated lesson has reasonable location and pattern anchors\n- [ ] Provenance preserved (source task IDs, original pass date)\n- [ ] `<engineering_lessons>` in manas-instructions.md replaced with pointer text\n- [ ] ledger.md archived to `.handoffs/`\n- [ ] Migrated lessons surface correctly via sutra_read/impact/orient\n\n## Blocked by\n\n- sutra/159 — Anchor enrichment on write\n- sutra/162 — 5x-review-3",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "All 12 ledger entries exist as verified lessons in the shared store"
+    },
+    {
+      "done": false,
+      "text": "Each migrated lesson has reasonable location and pattern anchors"
+    },
+    {
+      "done": false,
+      "text": "Provenance preserved (source task IDs, original pass date)"
+    },
+    {
+      "done": false,
+      "text": "<engineering_lessons> in manas-instructions.md replaced with pointer text"
+    },
+    {
+      "done": false,
+      "text": "ledger.md archived to .handoffs/"
+    },
+    {
+      "done": false,
+      "text": "Migrated lessons surface correctly via sutra_read/impact/orient"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\\n\\nMigrate the 5 code-anchored ledger entries (L1-L4, L9) into the lessons store via `sutra_remember`, cite each with 2+ evidence tasks to cross the verification threshold, then replace the `<engineering_lessons>` block with a pointer and archive the ledger.\\n\\nL5-L8 and L10-L12 stay ledger-only: L5-L7 are process/skill deltas (tier g), L8 is family-scoped to astrology repos, L10-L12 are recorded/ledger-only status. The AC says \\\"all 12 ledger entries\\\" but the description says \\\"parse L1-L12, for each entry, create a lesson\\\" — only entries with code anchors belong in the store. Present the 7 skipped entries to user for confirmation before proceeding.\\n\\n## Files\\n\\n- **Modify**: `~/soft/manas/manas-cli/src/adapter/manas-instructions.md` (lines 85-91) — replace `<engineering_lessons>` block\\n- **Move**: `~/soft/manas/docs/lessons/ledger.md` → `~/soft/manas/.handoffs/<datetime>.md`\\n- **No code changes** — all via MCP tools and file edits\\n\\n## Steps\\n\\n### Step 1: Present migration plan to user\\n\\nShow the routing: which entries go to the store (L1-L4, L9) vs. which stay ledger-only (L5-L8, L10-L12) and why. Get confirmation before writing.\\n\\n### Step 2: Store L1 (SQLite write discipline)\\n\\n```\\nsutra_remember(\\n  text=\\\"Every multi-statement SQLite mutation must run in a transaction; one durable writer per DB file (a per-process mutex serializes nothing for other processes); long-lived reader connections go stale on FTS5 after writer automerge — treat 'database disk image is malformed' on MATCH as 'reopen and retry', not corruption. Full playbook: ~/soft/manas/docs/lessons/sqlite-write-discipline.md\\\",\\n  location_anchors=[\\n    {kind: \\\"symbol\\\", value: \\\"Db::replace_file_data\\\"},\\n    {kind: \\\"symbol\\\", value: \\\"Db::open_for_workspace\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/db/mod.rs\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/db.rs\\\"}\\n  ],\\n  source_tasks=[\\\"smriti/31\\\", \\\"sutra/90\\\", \\\"sutra/103\\\", \\\"sutra/125\\\", \\\"sutra/140\\\", \\\"sutra/141\\\", \\\"sutra/21\\\", \\\"yojana/23\\\"],\\n  categories=[\\\"sqlite\\\", \\\"concurrency\\\"],\\n  workspace=\\\"/home/josh/soft/manas/sutra\\\"\\n)\\n```\\n\\nThen cite with 2 evidence tasks to verify:\\n```\\nsutra_remember cite=\\\"<lesson_id>\\\" source_tasks=[\\\"sutra/21\\\"] workspace=\\\"...\\\"\\nsutra_remember cite=\\\"<lesson_id>\\\" source_tasks=[\\\"sutra/140\\\"] workspace=\\\"...\\\"\\n```\\n\\n### Step 3: Store L2 (Durable correctness-gating state)\\n\\n```\\nsutra_remember(\\n  text=\\\"Any in-memory state gating correctness (index completeness, loaded engines, daemon liveness) needs a durable counterpart with a generation/identity check: restarts lose it, surviving Arc clones outlive it, PID-alive ≠ socket-connectable.\\\",\\n  location_anchors=[\\n    {kind: \\\"symbol\\\", value: \\\"SutraServer\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/mcp.rs\\\"}\\n  ],\\n  source_tasks=[\\\"sutra/21\\\", \\\"sutra/140\\\", \\\"panda/2\\\", \\\"vidya/39\\\"],\\n  categories=[\\\"concurrency\\\", \\\"state-management\\\"],\\n  workspace=\\\"/home/josh/soft/manas/sutra\\\"\\n)\\n```\\n\\nCite with 2 tasks to verify.\\n\\n### Step 4: Store L3 (Silent-empty failure mode)\\n\\n```\\nsutra_remember(\\n  text=\\\"When an extraction or refresh path yields None/empty, distinguish 'nothing there' from 'failed to look': no unwrap_or_default on fallible refreshes, no treating an unexpected node shape as absence. Silent empties corrupted downstream analysis in three codebases.\\\",\\n  location_anchors=[\\n    {kind: \\\"symbol\\\", value: \\\"Db::replace_file_data\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/parser/adapter.rs\\\"}\\n  ],\\n  source_tasks=[\\\"sutra/38\\\", \\\"sutra/119\\\", \\\"sutra/126\\\", \\\"sutra/67\\\", \\\"sutra/103\\\", \\\"vidya/39\\\", \\\"fletch-astro/13\\\"],\\n  categories=[\\\"error-handling\\\", \\\"sentinel-values\\\"],\\n  workspace=\\\"/home/josh/soft/manas/sutra\\\"\\n)\\n```\\n\\nCite with 2 tasks to verify.\\n\\n### Step 5: Store L4 (MCP server gotchas)\\n\\n```\\nsutra_remember(\\n  text=\\\"Building or debugging an MCP server: keep_alive default kills idle sessions, 401 without body/content-type gets misdiagnosed, serde_json::Value params produce any-type schemas clients stringify, notification status codes differ from request codes, SSE streams block SIGTERM. Full playbook: ~/soft/manas/docs/lessons/mcp-server-discipline.md\\\",\\n  location_anchors=[\\n    {kind: \\\"symbol\\\", value: \\\"SutraServer\\\"},\\n    {kind: \\\"symbol\\\", value: \\\"sutra_to_rmcp\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/mcp.rs\\\"}\\n  ],\\n  source_tasks=[\\\"manas/22\\\", \\\"chitta/9\\\", \\\"chitta/46\\\", \\\"manas-harness/7\\\", \\\"panini/7\\\"],\\n  categories=[\\\"mcp-server\\\", \\\"rmcp\\\"],\\n  workspace=\\\"/home/josh/soft/manas/sutra\\\"\\n)\\n```\\n\\nCite with 2 tasks to verify.\\n\\n### Step 6: Store L9 (Refactor contract drift)\\n\\n```\\nsutra_remember(\\n  text=\\\"Consolidation refactors can silently change observable contracts: diff the behavioral contract of every caller — output field semantics, sentinel values, timing of snapshots — not just types and tests.\\\",\\n  location_anchors=[\\n    {kind: \\\"symbol\\\", value: \\\"DdEngine::query_violations\\\"},\\n    {kind: \\\"file\\\", value: \\\"src/constraints/external.rs\\\"}\\n  ],\\n  source_tasks=[\\\"sutra/133\\\", \\\"sutra/137\\\", \\\"sutra/139\\\"],\\n  project_origin=\\\"sutra\\\",\\n  categories=[\\\"refactoring\\\", \\\"contracts\\\"],\\n  workspace=\\\"/home/josh/soft/manas/sutra\\\"\\n)\\n```\\n\\nCite with 2 tasks to verify.\\n\\n### Step 7: Replace `<engineering_lessons>` in manas-instructions.md\\n\\nReplace lines 85-91 with a pointer:\\n\\n```markdown\\n<engineering_lessons>\\nCode-anchored lessons are stored in sutra's lessons store (~/.sutra/lessons.db) and surfaced contextually by sutra_read, sutra_impact, and sutra_orient. When you learn something a future editor needs to know, call sutra_remember with the lesson text and location anchors. When closing a task that validates a lesson, cite it: sutra_remember(cite=\\\"<lesson_id>\\\", source_tasks=[\\\"<task_id>\\\"]). Provenance and routing history: ~/soft/manas/docs/lessons/ledger.md.\\n</engineering_lessons>\\n```\\n\\n### Step 8: Archive ledger.md\\n\\n```\\nmkdir -p ~/soft/manas/.handoffs\\nmv ~/soft/manas/docs/lessons/ledger.md ~/soft/manas/.handoffs/2026-06-17-ledger.md\\n```\\n\\n### Step 9: Verify surfacing\\n\\nCall `sutra_read` on a symbol anchored by a migrated lesson (e.g., `Db::replace_file_data`) and verify the lesson appears in the response.\\n\\n### Step 10: Commit\\n\\nTwo repos touched:\\n- manas-cli: manas-instructions.md pointer replacement\\n- manas (root): ledger.md archive move\\n\\nCommit message: `Migration of ledger L1-L4,L9 to lessons store, <engineering_lessons> pointer (sutra/164)`\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"All 12 ledger entries exist as verified lessons\\\" → Steps 2-6 store L1-L4/L9 (code-anchored); L5-L8/L10-L12 stay ledger-only with user confirmation (Step 1)\\n- [x] \\\"Each migrated lesson has reasonable location and pattern anchors\\\" → Steps 2-6 specify anchors; sutra enriches with import patterns\\n- [x] \\\"Provenance preserved\\\" → source_tasks carry evidence task IDs\\n- [x] \\\"<engineering_lessons> replaced with pointer text\\\" → Step 7\\n- [x] \\\"ledger.md archived to .handoffs/\\\" → Step 8\\n- [x] \\\"Migrated lessons surface correctly\\\" → Step 9\"",
+  "execution_record": "Migrated 5 of 12 ledger entries (L1-L4, L9) to lessons store as verified lessons. 7 entries skipped with user approval: L5-L7 (tier g, process/skill deltas), L8 (family-scoped to astrology repos), L10-L12 (ledger-only status). Each migrated lesson cited 2x with distinct evidence task IDs to cross verification threshold. Anchor enrichment auto-added import patterns, directory anchors, and language categories. Surfacing verified: Db::replace_file_data correctly surfaces both L1 (sqlite) and L3 (silent-empty). Commits: manas-cli 0f3c2fa (manas-instructions.md pointer), manas 4a93a16 (ledger archive).\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "0f3c2fa"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577679523,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 164
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781720184312,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781720324139,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577679523,
+  "updated_at": 1781720324139,
+  "completed_at": 1781720324139,
+  "edges": [
+    {
+      "id": "019ece4e-1abe-7e21-bdbf-06a4aa6aa743",
+      "edge_type": "depends_on",
+      "source": "sutra/164",
+      "target": "sutra/159",
+      "note": null,
+      "created_at": 1781577685694
+    },
+    {
+      "id": "019ece4e-1f89-7233-9909-1337dc9d3df5",
+      "edge_type": "depends_on",
+      "source": "sutra/164",
+      "target": "sutra/162",
+      "note": null,
+      "created_at": 1781577686921
+    },
+    {
+      "id": "019ece4e-2337-72b2-80d1-064856a74541",
+      "edge_type": "motivated_by",
+      "source": "sutra/164",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577687863
+    },
+    {
+      "id": "019ece4e-6ebc-7e21-aada-b54c3d0837d6",
+      "edge_type": "depends_on",
+      "source": "sutra/165",
+      "target": "sutra/164",
+      "note": null,
+      "created_at": 1781577707196
+    }
+  ]
+}

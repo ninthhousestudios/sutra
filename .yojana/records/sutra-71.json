@@ -1,0 +1,157 @@
+{
+  "id": "019e8c68-9ecc-79d0-981b-1f7f7d3a15f1",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/71",
+  "sequence_number": 71,
+  "title": "5d-3: DD forbidden pairs maintained view",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nExtend the DD worker's timely dataflow with a second input collection for forbidden `(file_id, file_id)` pairs. Add a maintained view that computes `edges ∩ forbidden_pairs → violations`, replacing the current ad-hoc `query_forbidden_deps` intersection at query time. The `Command` enum gains `SetForbiddenPairs`. Violations are maintained live — they update automatically on both edge changes and forbidden pair changes.\n\nThis is the technically novel change. The DD spike demonstrated forbidden deps as a maintained view, but the current engine has a single-input architecture. Reference: `docs/v1-spikes/differential-dataflow.md` on `spike/hdc-ast-encoding`.\n\n## Acceptance criteria\n\n- [ ] Second input collection for forbidden pairs\n- [ ] `SetForbiddenPairs` command on worker\n- [ ] Maintained violation view (edge ∩ forbidden)\n- [ ] Incremental on both edge and forbidden-pair changes\n- [ ] Old ad-hoc method removed/deprecated\n- [ ] Existing cycle + blast radius views unaffected\n- [ ] Tests for maintained view behavior\n\n## Blocked by\n\n- sutra/69 — 5d-1: rename dd/ → constraints/",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "✅ DD worker accepts a second input collection for forbidden pairs via new SetForbiddenPairs command"
+    },
+    {
+      "done": false,
+      "text": "✅ Maintained view computes edges ∩ forbidden_pairs → violations automatically"
+    },
+    {
+      "done": false,
+      "text": "✅ Violations update incrementally when edges change (add/remove import)"
+    },
+    {
+      "done": false,
+      "text": "✅ Violations update when forbidden pairs change (add/remove constraint)"
+    },
+    {
+      "done": false,
+      "text": "✅ Old query_forbidden_deps ad-hoc method removed or deprecated"
+    },
+    {
+      "done": false,
+      "text": "✅ Cycle detection and blast radius views unchanged"
+    },
+    {
+      "done": false,
+      "text": "✅ Incremental update latency stays under 100ms for single-edge changes"
+    },
+    {
+      "done": false,
+      "text": "✅ Tests cover: set forbidden pairs + ingest matching edge → violation appears, remove edge → violation disappears, change forbidden pairs → violations update"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\\n\\nAdd a second `InputSession` for forbidden `(i64, i64)` pairs to the DD worker's dataflow, with a maintained intersection view (`edges ∩ forbidden_pairs → violations`). The engine gains `set_forbidden_pairs()` and `query_violations()` methods; the old `query_forbidden_deps()` ad-hoc method is deprecated. This follows the exact pattern of the existing edges input — same timestamp/probe advancement, same `Rc<RefCell<HashSet>>` result stores.\\n\\nThe DD engine only sees pre-resolved `(i64, i64)` pairs. Glob expansion (current `query_forbidden_deps` behavior) and constraint-to-pair resolution (sutra/72) are caller responsibilities.\\n\\n## Files\\n\\n- **Modify**: `src/constraints/worker.rs` — second input collection, `SetForbiddenPairs`/`QueryViolations` commands, violations maintained view\\n- **Modify**: `src/constraints/engine.rs` — `forbidden_pairs` in `DdState`, new public methods, `ensure_warm` sends pairs, deprecate `query_forbidden_deps`\\n- **Modify**: `src/constraints/mod.rs` — re-export new `ForbiddenPair` type alias if needed\\n- **Modify**: `src/tools/review.rs` — suppress deprecation warning on existing `query_forbidden_deps` call (migration is sutra/74)\\n- **Test**: `tests/constraints-test.rs` — new tests for maintained view\\n\\n## Steps\\n\\n### Step 1: Extend Command/Response enums (worker.rs)\\n\\nAdd two new variants:\\n\\n```rust\\npub(super) enum Command {\\n    // ... existing ...\\n    SetForbiddenPairs(Vec<(i64, i64)>),\\n    QueryViolations,\\n}\\n\\npub(super) enum Response {\\n    // ... existing ...\\n    Violations(Vec<(i64, i64)>),\\n}\\n```\\n\\n### Step 2: Add second input collection and violations view (worker.rs)\\n\\nInside `run_worker`, the `worker.dataflow` closure currently returns a single `InputSession`. Change it to return a tuple `(InputSession, InputSession)` — one for edges, one for forbidden pairs.\\n\\nAdd stores before the dataflow:\\n```rust\\nlet forbidden_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));\\nlet violations_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));\\nlet violations_inspect = violations_store.clone();\\n```\\n\\nInside the dataflow, after creating edges input:\\n```rust\\nlet (forbidden_input, forbidden) = scope.new_collection::<(i64, i64), isize>();\\n```\\n\\nAdd the violations maintained view — intersection of edges with forbidden pairs:\\n```rust\\nuse differential_dataflow::operators::Join;\\n\\nedges\\n    .map(|e| (e, ()))\\n    .semijoin(&forbidden)\\n    .map(|(pair, ())| pair)\\n    .inspect(move |((src, dst), _time, diff)| {\\n        let mut store = violations_inspect.borrow_mut();\\n        if *diff > 0 {\\n            store.insert((*src, *dst));\\n        } else if *diff < 0 {\\n            store.remove(&(*src, *dst));\\n        }\\n    })\\n    .probe_with(&mut probe);\\n```\\n\\nReturn `(input, forbidden_input)` from the dataflow closure.\\n\\nNote: both inputs share the same `probe` and `timestamp`. When either input changes, both must advance to the same timestamp and flush before stepping. This means the `SetForbiddenPairs` handler advances the shared timestamp just like `Ingest`/`Update` do.\\n\\n### Step 3: Handle SetForbiddenPairs command (worker.rs)\\n\\nIn the command dispatch loop:\\n\\n```rust\\nOk(Command::SetForbiddenPairs(new_pairs)) => {\\n    let new_set: HashSet<(i64, i64)> = new_pairs.into_iter().collect();\\n    {\\n        let mut store = forbidden_store.borrow_mut();\\n        // Remove pairs no longer present\\n        for &pair in store.iter() {\\n            if !new_set.contains(&pair) {\\n                forbidden_input.remove(pair);\\n            }\\n        }\\n        // Add new pairs\\n        for &pair in &new_set {\\n            if !store.contains(&pair) {\\n                forbidden_input.insert(pair);\\n            }\\n        }\\n        *store = new_set;\\n    }\\n    timestamp += 1;\\n    input.advance_to(timestamp);\\n    input.flush();\\n    forbidden_input.advance_to(timestamp);\\n    forbidden_input.flush();\\n    worker.step_while(|| probe.less_than(input.time()));\\n    let _ = resp_tx.send(Response::Ok);\\n}\\n```\\n\\nKey subtlety: BOTH inputs must advance to the same timestamp even though only one changed. DD requires all inputs in a dataflow to advance together for the probe to make progress.\\n\\nAlso update `Ingest` and `Update` handlers to advance `forbidden_input` alongside `input`:\\n```rust\\nforbidden_input.advance_to(timestamp);\\nforbidden_input.flush();\\n```\\n\\n### Step 4: Handle QueryViolations command (worker.rs)\\n\\n```rust\\nOk(Command::QueryViolations) => {\\n    let store = violations_store.borrow();\\n    let mut violations: Vec<(i64, i64)> = store.iter().copied().collect();\\n    violations.sort();\\n    let _ = resp_tx.send(Response::Violations(violations));\\n}\\n```\\n\\n### Step 5: Add forbidden_pairs to DdState (engine.rs)\\n\\nExtend `Loaded` and `Warm` variants:\\n\\n```rust\\nenum DdState {\\n    Cold,\\n    Loaded {\\n        edges: Vec<(i64, i64)>,\\n        forbidden_pairs: Vec<(i64, i64)>,\\n    },\\n    Warm {\\n        handle: WorkerHandle,\\n        edges: Vec<(i64, i64)>,\\n        forbidden_pairs: Vec<(i64, i64)>,\\n        last_query: Instant,\\n    },\\n}\\n```\\n\\nUpdate `ingest()` to initialize `forbidden_pairs: Vec::new()` in the `Loaded` state.\\n\\n### Step 6: Add set_forbidden_pairs to DdEngine (engine.rs)\\n\\n```rust\\npub fn set_forbidden_pairs(&self, pairs: Vec<(i64, i64)>) -> Result<()> {\\n    let mut state = self.state.lock().unwrap();\\n    match &mut *state {\\n        DdState::Cold => Err(SutraError::Internal(\\\"cannot set forbidden pairs before ingest\\\".into())),\\n        DdState::Loaded { forbidden_pairs, .. } => {\\n            *forbidden_pairs = pairs;\\n            Ok(())\\n        }\\n        DdState::Warm { handle, forbidden_pairs, last_query, .. } => {\\n            handle.send(Command::SetForbiddenPairs(pairs.clone()))?;\\n            match handle.recv()? {\\n                Response::Ok => {\\n                    *forbidden_pairs = pairs;\\n                    *last_query = Instant::now();\\n                    Ok(())\\n                }\\n                other => Err(SutraError::Internal(format!(\\\"unexpected response: {other:?}\\\"))),\\n            }\\n        }\\n    }\\n}\\n```\\n\\n### Step 7: Add query_violations to DdEngine (engine.rs)\\n\\n```rust\\npub fn query_violations(&self) -> Result<Vec<(i64, i64)>> {\\n    self.ensure_warm()?;\\n    let mut state = self.state.lock().unwrap();\\n    let (handle, last_query) = match &mut *state {\\n        DdState::Warm { handle, last_query, .. } => (handle, last_query),\\n        _ => return Err(SutraError::Internal(\\\"expected warm state\\\".into())),\\n    };\\n    handle.send(Command::QueryViolations)?;\\n    match handle.recv()? {\\n        Response::Violations(v) => {\\n            *last_query = Instant::now();\\n            Ok(v)\\n        }\\n        other => Err(SutraError::Internal(format!(\\\"unexpected response: {other:?}\\\"))),\\n    }\\n}\\n```\\n\\n### Step 8: Update ensure_warm (engine.rs)\\n\\nAfter sending `Command::Ingest(edges)` and getting `Response::Ok`, also send `SetForbiddenPairs` if the stored pairs are non-empty:\\n\\n```rust\\nif !forbidden_pairs.is_empty() {\\n    handle.send(Command::SetForbiddenPairs(forbidden_pairs.clone()))?;\\n    match handle.recv()? {\\n        Response::Ok => {}\\n        other => {\\n            *state = DdState::Loaded { edges, forbidden_pairs };\\n            return Err(SutraError::Internal(format!(\\\"...\\\")));\\n        }\\n    }\\n}\\n```\\n\\nUpdate the transition `Loaded → Warm` to carry `forbidden_pairs` into `Warm`.\\n\\n### Step 9: Update evict_if_idle (engine.rs)\\n\\nWhen evicting `Warm → Loaded`, preserve `forbidden_pairs`:\\n```rust\\nDdState::Warm { edges, forbidden_pairs, last_query, .. } if last_query.elapsed() >= self.idle_timeout => {\\n    *state = DdState::Loaded { edges: std::mem::take(edges), forbidden_pairs: std::mem::take(forbidden_pairs) };\\n    true\\n}\\n```\\n\\n### Step 10: Deprecate query_forbidden_deps (engine.rs)\\n\\nAdd `#[deprecated(note = \\\"use set_forbidden_pairs + query_violations instead\\\")]` to `query_forbidden_deps`. Add `#[allow(deprecated)]` at the call site in `src/tools/review.rs` (line ~180) so it compiles cleanly until sutra/74 migrates.\\n\\n### Step 11: Tests (tests/constraints-test.rs)\\n\\nAdd these test cases following existing patterns (construct engine, ingest facts, assert results):\\n\\n1. **set_forbidden_pairs_and_matching_edge_produces_violation**: Ingest edges including `(1,2)`, set forbidden pairs `[(1,2)]`, query_violations returns `[(1,2)]`.\\n\\n2. **no_violation_when_edge_not_forbidden**: Ingest `(1,2)`, set forbidden `[(3,4)]`, query_violations returns empty.\\n\\n3. **remove_edge_clears_violation**: Ingest `(1,2)`, set forbidden `[(1,2)]`, verify violation, then update (remove `(1,2)`), verify violation gone.\\n\\n4. **change_forbidden_pairs_updates_violations**: Ingest `(1,2)` and `(3,4)`, set forbidden `[(1,2)]`, verify violation. Then set forbidden `[(3,4)]`, verify `(1,2)` gone, `(3,4)` appears.\\n\\n5. **forbidden_pairs_survive_eviction_and_rewarm**: Set pairs, evict, rewarm, verify violations still correct.\\n\\n6. **set_forbidden_pairs_before_warm**: Ingest, set pairs while Loaded, then query (triggers warm), verify violations.\\n\\n7. **cycles_and_blast_radius_unchanged**: Existing cycle/blast-radius tests still pass (no regression).\\n\\n8. **incremental_update_latency**: Optional — assert that single-edge update with violations completes in <100ms (matches AC).\\n\\n## Acceptance criteria coverage\\n\\n- [x] \\\"DD worker accepts a second input collection for forbidden pairs via new SetForbiddenPairs command\\\" → Steps 1-3\\n- [x] \\\"Maintained view computes edges ∩ forbidden_pairs → violations automatically\\\" → Step 2\\n- [x] \\\"Violations update incrementally when edges change\\\" → Steps 2-3 (shared probe/timestamp)\\n- [x] \\\"Violations update when forbidden pairs change\\\" → Step 3\\n- [x] \\\"Old query_forbidden_deps ad-hoc method removed or deprecated\\\" → Step 10\\n- [x] \\\"Cycle detection and blast radius views unchanged\\\" → Steps 2-3 (existing dataflow untouched)\\n- [x] \\\"Incremental update latency stays under 100ms\\\" → inherent in DD's design; optional test in Step 11\\n- [x] \\\"Tests cover all scenarios\\\" → Step 11\"",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/v1-spikes/differential-dataflow.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "d03e17e"
+    },
+    {
+      "type": "git:commit",
+      "value": "d03e17e"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints",
+    "needs-plan"
+  ],
+  "history": [
+    {
+      "ts": 1780472127180,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 71
+      }
+    },
+    {
+      "ts": 1780502002388,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780502333842,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780503320823,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780472127180,
+  "updated_at": 1780503320823,
+  "completed_at": 1780503320823,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-339f-7e70-80a9-5cb5db0b5e80",
+      "edge_type": "depends_on",
+      "source": "sutra/71",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472230815
+    },
+    {
+      "id": "019e8c6a-392c-77c1-bfbb-4db7cec5e807",
+      "edge_type": "depends_on",
+      "source": "sutra/72",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472232236
+    },
+    {
+      "id": "019e8c6a-3ec8-7c01-a823-de115c69fd08",
+      "edge_type": "depends_on",
+      "source": "sutra/74",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472233672
+    },
+    {
+      "id": "019e8c6a-599e-7d61-bb58-97d03eb3901a",
+      "edge_type": "depends_on",
+      "source": "sutra/77",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472240542
+    },
+    {
+      "id": "019e8c6a-7406-7380-ab09-12e8aa6dbf01",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/71",
+      "note": null,
+      "created_at": 1780472247302
+    }
+  ]
+}

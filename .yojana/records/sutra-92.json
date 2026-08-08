@@ -1,0 +1,135 @@
+{
+  "id": "019e92b1-bb62-7eb3-844a-8bac5c2fa03f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/92",
+  "sequence_number": 92,
+  "title": "5e-review-2: review HRR + similarity + snapshots",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to review\\n\\nReview HRR integration and similarity capabilities after slices 5e-4, 5e-5, 5e-6, 5e-7 land. The two tracks (health + HRR) are independently complete at this point.\\n\\nReviewer focus:\\n- Are HRR vectors producing meaningful similarity results? Test sutra_similar on real functions — do the results make structural sense?\\n- Do near-duplicate clusters (pattern families) identify real code repetition? Are there false positives (coincidentally similar but unrelated functions)?\\n- Is the 0.85 similarity threshold reasonable? Too aggressive (too many families) or too conservative (misses real duplicates)?\\n- Are health snapshots capturing the right data? Can you drill into per-file history and get useful trends?\\n- Does the trend tool produce actionable deltas?\\n\\n## Blocked by\\n\\n- sutra/88 (5e-4)\\n- sutra/89 (5e-5)\\n- sutra/90 (5e-6)\\n- sutra/91 (5e-7)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:commit",
+      "value": "25bca13"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780577581922,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 92
+      }
+    },
+    {
+      "ts": 1780661653461,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (diff 8dffee0..e6172b5, 29 files, +2672/-124):\n\nVerdict: **needs-attention** — do not ship yet.\n\n## Findings\n\n1. **[high] HRR encoding ignores operator tokens** (src/similarity/encoder.rs:35-44)\n   `encode_recursive` drops every non-named child. Operators/punctuation are anonymous in Rust/Dart ASTs, so `x + y`, `x - y`, `x == y` can encode identically. Makes 0.85 threshold unable to separate materially different functions → false positives in sutra_similar and sutra_duplicates.\n   → Include operator/field-role tokens in structural encoding; add regression tests.\n\n2. **[high] Duplicate families can contain below-threshold members** (src/similarity/duplicates.rs:57-83)\n   Single-link clustering unions any pair passing threshold, then returns entire connected component. A-B and B-C can pull A-C into same family even when A-C < 0.85. Reported avg_similarity only counts passing edges, hiding weak internal pairs.\n   → Use complete-link or bounded-diameter clustering; compute/report min over all member pairs.\n\n3. **[high] Pattern family detection is quadratic in every parse** (src/pipeline.rs:610-615)\n   `find_pattern_families` compares every vector pair unconditionally during parse. On workspaces with thousands of functions → tens of millions of 1024-dim vector scans. No cap, index, batching, or timeout. Can stall indexing on normal monorepos.\n   → Move behind bounded background path, or pre-bucket by cheap AST fingerprints/LSH.\n\n4. **[medium] Trend can observe incomplete health snapshots** (src/pipeline.rs:632-646)\n   Snapshot aggregate row inserted before per-file/component detail rows, no transaction boundary. Concurrent trend query or mid-write failure → bogus deltas from incomplete snapshot.\n   → Write snapshot + details in one transaction, or add completion marker.\n\n## Structural review signals\n- Risk score: 0.854\n- No DD constraint violations\n- Convention violations: test struct naming (PascalCase where snake_case expected), async non-pub method in mcp.rs\"",
+      "ts": 1780658088504
+    },
+    {
+      "author": "agent",
+      "text": "Fixed findings 1, 2, 4 from codex review in 25bca13:\\n- Encoder now includes operator tokens (is_operator filter for +, -, *, etc.)\\n- Clustering uses complete-link pruning (removes below-threshold transitive members)\\n- Snapshot writes are atomic (single SQL transaction)\\n\\nFinding 3 (quadratic pattern families) deferred to sutra/98 (performance review).\"",
+      "ts": 1780659049641
+    }
+  ],
+  "created_at": 1780577581922,
+  "updated_at": 1780661653461,
+  "completed_at": 1780661653461,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-ecef-77c3-90c0-d92f3f762adf",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577660143
+    },
+    {
+      "id": "019e92b2-fe89-7ab1-91c6-2a1f980d1b39",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/89",
+      "note": null,
+      "created_at": 1780577664649
+    },
+    {
+      "id": "019e92b3-0130-7570-9cd9-3be920b3eaaa",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/90",
+      "note": null,
+      "created_at": 1780577665328
+    },
+    {
+      "id": "019e92b3-046b-78f3-9a85-48326af65146",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/91",
+      "note": null,
+      "created_at": 1780577666155
+    },
+    {
+      "id": "019e92b3-0db9-7ec0-bc22-2b109e3fe422",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577668537
+    },
+    {
+      "id": "019e92b3-3778-7591-b2b8-2a976fd0e472",
+      "edge_type": "depends_on",
+      "source": "sutra/94",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577679224
+    },
+    {
+      "id": "019e92b3-46fd-77f2-953b-c51bbd2f9d56",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577683197
+    },
+    {
+      "id": "019e92b3-4cf7-74c2-9d60-4657ea8bc65c",
+      "edge_type": "depends_on",
+      "source": "sutra/96",
+      "target": "sutra/92",
+      "note": null,
+      "created_at": 1780577684727
+    }
+  ]
+}

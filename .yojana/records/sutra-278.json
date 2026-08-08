@@ -1,0 +1,83 @@
+{
+  "id": "019f8a79-795d-7c93-896a-3e1a6daf9504",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/278",
+  "sequence_number": 278,
+  "title": "Rank surfaced lessons by anchor specificity",
+  "description": "query_for_context sorts only by `verified DESC, confidence DESC` (src/lessons.rs:434). A lesson anchored to a single symbol is far more relevant to the current context than one anchored to a whole directory, but they compete equally for the cap slots.\n\nThis is where most of the token-efficiency win lives, independent of which tool does the surfacing — a tighter cap is only safe if the top slots are reliably the most relevant lessons.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Symbol-anchored lesson outranks directory-anchored lesson at equal verified/confidence"
+    },
+    {
+      "done": false,
+      "text": "Specificity derived from the anchors that actually matched, not all anchors on the lesson"
+    },
+    {
+      "done": false,
+      "text": "Cap can be lowered without losing the most relevant lesson in test fixtures"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Split file anchors across two specificity tiers instead of one, giving literal file paths rank 3 (above import_pattern) and glob file anchors rank 1 (below it).",
+      "rationale": "The plan's flat order (symbol > import_pattern > file > directory) treats 'src/lessons.rs' and 'src/**/*.rs' identically, but the first binds to exactly one file and the second can match a whole tree — broader than an import pattern. Checking for glob metachars is a one-line discriminator.",
+      "rejected_alternatives": "Flat four-tier order as specified in the plan: simpler, but systematically under-ranks the most precise anchor kind the store supports."
+    }
+  ],
+  "implementation_plan": "query_for_context already tracks matched_anchors (which anchor keys caused each lesson to surface). Derive a specificity score from the narrowest matching anchor kind: symbol > import_pattern > file > directory. Sort by (verified, specificity, confidence). Feeds directly into being able to lower CONTEXT_SURFACING_CAP.",
+  "execution_record": "Specificity rides on SurfacedLesson as a #[serde(skip)] u8 rather than staying local to query_for_context, because orient (sutra/277) merges per-file result sets and re-sorts them — without the field on the struct that merge would silently drop the ranking. Both new tests were verified to fail against the pre-change code (stashed src, ran suite) before being accepted as regression tests.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "279e3b8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "tokens",
+    "ranking"
+  ],
+  "history": [
+    {
+      "ts": 1784734644573,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 278
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784742136395,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784742143730,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784734644573,
+  "updated_at": 1784742143730,
+  "completed_at": 1784742143730,
+  "edges": []
+}

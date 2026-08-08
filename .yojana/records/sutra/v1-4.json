@@ -1,0 +1,89 @@
+{
+  "id": "019e1438-5d01-7270-9d00-3aaf3700edc2",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/4",
+  "sequence_number": 4,
+  "title": "Spike: Salsa incremental computation (boundary-finding)",
+  "description": "Lighter-weight evaluation. Does Salsa fill a distinct role (fine-grained per-file query memoization) or is it redundant with differential dataflow? Model Sutra's query hierarchy as Salsa queries, prototype parse-to-outline pipeline, test cross-file queries, compare with differential dataflow results.\n\nThis is a boundary-finding exercise: adopt / complement (with boundary defined) / skip.",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Salsa query graph modeled for Sutra's core tools"
+    },
+    {
+      "done": false,
+      "text": "Parse-to-outline pipeline with incremental updates working"
+    },
+    {
+      "done": false,
+      "text": "Cross-file query attempted and assessed"
+    },
+    {
+      "done": false,
+      "text": "Comparison matrix against differential dataflow written"
+    },
+    {
+      "done": false,
+      "text": "Recommendation: adopt / complement / skip"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Salsa 0.26 spike on sutra (74 files). Single-file memoization: 9600x warm speedup, but cross-file aggregation (symbol index, ref resolution) recomputes fully when any file changes — same bottleneck as current approach. DD handles this better (tuple-level incrementality). Salsa adds 19 crate deps for marginal gain over SQLite+content-hash. Verdict: skip. See docs/v1-spikes/salsa.md.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/v1-spikes/salsa.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "1882ed3"
+    }
+  ],
+  "files": [
+    "src/bin/salsa-spike.rs",
+    "docs/v1-spikes/salsa.md"
+  ],
+  "tags": [
+    "spike",
+    "salsa",
+    "p2"
+  ],
+  "history": [
+    {
+      "ts": 1778455698689,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 4
+      }
+    },
+    {
+      "ts": 1778509251899,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778509758661,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778455698689,
+  "updated_at": 1778509758661,
+  "completed_at": 1778509758661,
+  "edges": []
+}

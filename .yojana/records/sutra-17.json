@@ -1,0 +1,137 @@
+{
+  "id": "019e087a-b36c-7ad3-bcf6-e3b919f0cb2a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/17",
+  "sequence_number": 17,
+  "title": "winnow.rs predicate composition",
+  "description": "Factor winnow.rs filter axes into a two-phase predicate chain with builder functions. From Wave D candidates (2026-05-08 checkpoint review). db.rs domain methods evaluated and dropped — no cluster has 2+ callers composing the same query sequence.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "File-level predicates (glob, churn) extracted into builder functions returning Box<dyn Fn(&FileRow) -> bool>"
+    },
+    {
+      "done": false,
+      "text": "Symbol-level predicates (kind, complexity, name_regex, calls_to) extracted into builder functions returning Box<dyn Fn(&SymbolEntry) -> bool>"
+    },
+    {
+      "done": false,
+      "text": "calls_to builder pre-computes caller HashSet via DB queries, captures into closure"
+    },
+    {
+      "done": false,
+      "text": "handle() reduced to: build filters → iterate files (apply file filters) → iterate symbols (apply symbol filters) → rank → truncate"
+    },
+    {
+      "done": false,
+      "text": "SymbolEntry built before filtering (uniform predicate model)"
+    },
+    {
+      "done": false,
+      "text": "Ranking logic stays separate and unchanged"
+    },
+    {
+      "done": false,
+      "text": "All existing winnow behavior preserved (no functional changes)"
+    },
+    {
+      "done": false,
+      "text": "Compiles, tests pass, clippy clean"
+    }
+  ],
+  "decisions": [
+    {
+      "date": "2026-05-09",
+      "decision": "db.rs domain methods dropped — caller analysis showed no cluster with 2+ composition sites"
+    },
+    {
+      "date": "2026-05-09",
+      "decision": "Two-phase predicates with builder functions (Option B) — each axis self-contained, handle() becomes uniform loop"
+    },
+    {
+      "date": "2026-05-09",
+      "decision": "Build SymbolEntry before filtering — uniform predicate model, negligible allocation cost at sutra cardinalities"
+    }
+  ],
+  "implementation_plan": "## winnow.rs predicate composition\n\nTwo-phase predicates with builder functions. Each axis is a standalone function that takes config (and `&Db` if needed) and returns a boxed closure.\n\n### File-level predicates: `Box<dyn Fn(&FileRow) -> bool>`\n\n- `glob_filter(pattern: &str) -> ...` — wraps `glob::Pattern::new`, matches on `file.path`\n- `churn_filter(churn_map: &HashMap<String, u32>, min: u32) -> ...` — captures min, checks `churn_map.get(&file.path)`\n\nNote: `churn_map` itself is computed once before filter construction (from `git_churn`). The builder captures a reference or owned copy.\n\n### Symbol-level predicates: `Box<dyn Fn(&SymbolEntry) -> bool>`\n\n- `kind_filter(kind: &str) -> ...` — exact match on `sym.kind`\n- `complexity_filter(min: i64) -> ...` — checks `sym.cognitive.unwrap_or(0) >= min`\n- `name_regex_filter(pattern: &str) -> ...` — compiled `Regex`, matches `qualified_name` or `short_name`\n- `calls_to_filter(db: &Db, target_name: &str) -> Result<...>` — resolves target symbols, walks refs with `context_kind == \"call\"`, finds enclosing symbols, captures `HashSet<i64>` of caller IDs, checks membership\n\n### Revised handle() flow\n\n```\n1. Build file_filters: Vec<Box<dyn Fn(&FileRow) -> bool>>\n   - if filter.file_glob is Some, push glob_filter\n   - if filter.min_churn is Some or rank_by == \"churn\", compute churn_map, push churn_filter if min set\n2. Build sym_filters: Vec<Box<dyn Fn(&SymbolEntry) -> bool>>\n   - if filter.kind is Some, push kind_filter\n   - if filter.min_complexity is Some, push complexity_filter\n   - if filter.name_regex is Some, push name_regex_filter\n   - if filter.calls_to is Some, push calls_to_filter(db, name)?\n3. Iterate files, skip if any file_filter returns false\n4. For passing files, iterate symbols, build SymbolEntry, skip if any sym_filter returns false\n5. Rank (unchanged — sort_by on complexity/churn/importance)\n6. Truncate to limit\n```\n\n### SymbolEntry adjustment\n\nCurrently some filtering (kind, complexity) happens before `SymbolEntry` is constructed, using raw `SymbolRow` fields. Two options:\n- Build `SymbolEntry` first, then filter — simpler, uniform, tiny allocation cost\n- Keep the split: filter on `SymbolRow` fields inline, only build `SymbolEntry` for survivors — avoids allocations but breaks the uniform predicate model\n\nGo with: build `SymbolEntry` first, then filter. The allocation cost is negligible for the cardinalities sutra deals with.\n\n## db.rs domain methods\n\nConservative approach: only wrap when 2+ callers compose the same query sequence. Evaluate these clusters during implementation:\n\n1. **Graph-building cluster:** `all_symbol_file_map` + `all_resolved_refs` + `import_edges` — consumed together by `graph.rs`. Check if any other caller uses the same combo.\n2. **File-health rollup cluster:** `symbol_counts_by_file` + `complexity_by_file` + `dead_symbol_ratio_by_file` — consumed together by `file_health.rs`. Check for other callers.\n3. **Deletion cascade + staleness:** `delete_file_cascade` + downstream dirty-file identification. Check if pipeline.rs or daemon.rs compose this.\n\nFor each: grep callers, confirm 2+ sites compose the same sequence, then wrap. If only one caller, leave as-is.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "18fab1b"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-checkpoint"
+  ],
+  "history": [
+    {
+      "ts": 1778258719596,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 17
+      }
+    },
+    {
+      "ts": 1778258737014,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-human"
+      }
+    },
+    {
+      "ts": 1778333485123,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778333485123,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Wave D: db.rs domain methods + winnow predicate composition",
+        "to": "winnow.rs predicate composition"
+      }
+    },
+    {
+      "ts": 1778333975679,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Adversarial review verdict: approve. No ship-blocking defects. Filter order preserved, churn computation stays conditional, calls_to pre-computation equivalent to old inline path, ranking unchanged. No material findings.",
+      "ts": 1778336468822
+    }
+  ],
+  "created_at": 1778258719596,
+  "updated_at": 1778333975679,
+  "completed_at": 1778333975679,
+  "edges": [
+    {
+      "id": "019e087b-258f-7f71-aa88-d0f2e74b5486",
+      "edge_type": "depends_on",
+      "source": "sutra/17",
+      "target": "sutra/16",
+      "note": "Wave D deepening builds on Wave C structural extraction",
+      "created_at": 1778258748815
+    }
+  ]
+}

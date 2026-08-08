@@ -1,0 +1,60 @@
+{
+  "id": "019e9d53-eb2f-7713-bffb-a3aab96b00e2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/121",
+  "sequence_number": 121,
+  "title": "Tiered output for sutra_grep and sutra_find",
+  "description": "Search tools return too much metadata per result. Make sutra_grep/sutra_find return lightweight result sets by default: (qualified_name, kind, file:line_start) — drop docstring, signature, and other fields from the list response. sutra_read already serves as the detail/expand tool. This is the highest-leverage token-economy change — estimated 50-70% reduction in search response size by not returning detail the agent hasn't asked for yet. Inspired by Clean MCP's tiered formatting where rank determines information density.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "3fedbdf"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "clean-mcp-survey"
+  ],
+  "history": [
+    {
+      "ts": 1780755983151,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 121
+      }
+    },
+    {
+      "ts": 1780757084724,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780757087142,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780755983151,
+  "updated_at": 1780757087142,
+  "completed_at": 1780757087142,
+  "edges": []
+}

@@ -1,0 +1,88 @@
+{
+  "id": "019f9a07-acc3-7a13-965f-6d34e0584aa4",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/293",
+  "sequence_number": 293,
+  "title": "cfg detection false negatives and missing is_test backfill mute blocking rules",
+  "description": "Two high-severity holes in c483406 (sutra/290, test-scope exclusion), found by Codex adversarial review and confirmed against source. Both fail in the direction of silently muting a blocking rule.\n\n1. `#[cfg_attr(test, ...)]` misclassified as test-only. `attribute_marks_test` (src/parser/rust.rs) strips the `cfg` prefix and looks for a bare `test` token, so `cfg_attr(test, derive(PartialEq))` on a production item matches. The item's whole line range is then skipped by patterns.rs and its imports flagged is_test=1, so production code bypasses blocking forbidden_pattern / forbidden_dep / no_cycles. Same class: the `not(` bail is a literal substring check, so `#[cfg(not (test))]` (whitespace before the paren) also falls through to bare-token matching and classifies as test.\n\n2. Existing indexes never backfill is_test. migrations/0053_import_is_test.sql adds the column with DEFAULT 0, but is_test is only written at parse time, and pipeline.rs:208-214 skips reparse when content_hash is unchanged. An upgraded workspace keeps every pre-migration cfg(test) import marked production indefinitely, with nothing in constraint evaluation detecting it. sutra/290 AC4 holds on a fresh index and can read false on any pre-existing one.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "cfg predicate is matched structurally, not by substring: cfg_attr(test, ...) is treated as production"
+    },
+    {
+      "done": false,
+      "text": "cfg(not(test)) and cfg(not (test)) both stay production regardless of whitespace"
+    },
+    {
+      "done": false,
+      "text": "Regression tests cover cfg_attr(test, ...), spaced not-predicates, and cfg(all(test, ...)) / cfg(any(test, ...)) still classifying as test"
+    },
+    {
+      "done": false,
+      "text": "Upgrading a pre-0053 index repopulates is_test on Rust files without requiring a manual reindex"
+    },
+    {
+      "done": false,
+      "text": "Test covers the upgrade path from a pre-0053 DB containing cfg(test) imports"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Fixed as planned. `cfg_predicate_is_test` evaluates predicates against a single soundness question — does this hold only in a test build — which also corrected `any(test, ..)`: the prior code treated it as test scope, but a sibling operand can hold in release, so it is production. That is a deliberate behaviour change beyond the reported bug, and the acceptance criterion as originally filed (asserting any(test,..) stays test scope) was wrong; docs in both repos updated to match. Backfill went in as migration 0054 rather than editing 0053, because applied migrations are content-hash pinned and 0053 was already applied locally. Verified: cargo test 1484 passed, cargo clippy --lib clean on the touched file (re-checked with indexing_slicing re-enabled, since an unrelated working-tree edit had commented that lint out). Doc half landed in vidhi 84537e3.",
+  "reproduction": null,
+  "root_cause": "Both defects came from reading Rust attributes as text rather than structure, and from assuming a schema migration is enough to change parse-derived data. `attribute_marks_test` matched a \"cfg\" prefix plus a bare `test` token anywhere after it, which `cfg_attr(test, ..)` and `cfg(not (test))` (whitespace defeating the literal `not(` guard) both satisfy. Separately, `imports.is_test` is only written during parsing, and the pipeline short-circuits on an unchanged content_hash, so migration 0053 adding the column with DEFAULT 0 left pre-existing indexes permanently wrong with nothing to detect it.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c483406",
+      "label": "commit under review"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/290",
+      "label": "originating task"
+    },
+    {
+      "type": "git:commit",
+      "value": "f385bb1"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1784995622083,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 293
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784995990802,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of c483406..77b48f8: no findings against this task. The structural cfg predicate parser (src/parser/rust.rs) and the 0054 content_hash-clearing backfill migration survived an attack pass targeting cfg_attr nesting, spaced not-predicates, all/any combinators, migration idempotency, and the pipeline.rs reparse-skip path. Overall verdict needs-attention; findings are on sutra/292 (escape hatch missing from dep/cycle paths) and sutra/294 (external first-match shadowing include_tests).",
+      "ts": 1785007400787
+    }
+  ],
+  "created_at": 1784995622083,
+  "updated_at": 1784995990802,
+  "completed_at": 1784995990802,
+  "edges": []
+}

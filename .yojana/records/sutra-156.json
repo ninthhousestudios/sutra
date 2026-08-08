@@ -1,0 +1,108 @@
+{
+  "id": "019ece4b-8610-7272-ae77-11e8159a0bae",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/156",
+  "sequence_number": 156,
+  "title": "sutra_impact + sutra_orient lesson injection",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to build\n\nExtend contextual lesson surfacing to `sutra_impact` and `sutra_orient`, completing all three surfacing channels.\n\n**sutra_impact**: The tool already resolves the target symbol, its file, and affected files. Build a `MatchContext` from the target symbol + file + imports, query matching lessons, include as a `lessons` array in the response (positioned as warnings about the blast radius area).\n\n**sutra_orient**: Inside the `for comp in &components` loop, build a `MatchContext` from the component's files and component ID, query matching lessons, add a `lessons` array to each component section alongside conventions.\n\nBoth use the same `LessonsDb::query_for_context()` from sutra/151 — this slice is pure glue.\n\n## Acceptance criteria\n\n- [ ] `sutra_impact` response includes matching lessons for the target symbol\n- [ ] `sutra_orient` response includes matching lessons per component section\n- [ ] Lessons appear alongside conventions in orient output (not in a separate top-level section)\n- [ ] No regression in impact/orient responses when no lessons match\n- [ ] Tests: lessons surface in impact, lessons surface in orient per-component\n\n## Blocked by\n\n- sutra/152 — 5x-review-1",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_impact response includes matching lessons for the target symbol"
+    },
+    {
+      "done": false,
+      "text": "sutra_orient response includes matching lessons per component section"
+    },
+    {
+      "done": false,
+      "text": "Lessons appear alongside conventions in orient output"
+    },
+    {
+      "done": false,
+      "text": "No regression in impact/orient when no lessons match"
+    },
+    {
+      "done": false,
+      "text": "Tests: lessons in impact, lessons in orient per-component"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nInject lessons into the `sutra_impact` and `sutra_orient` response payloads, following the pattern established in `tools/read.rs`. Both tool handlers gain an `Option<&LessonsDb>` parameter; the MCP layer passes `&self.lessons_db`. Impact queries lessons for its target symbol. Orient queries lessons per-component by iterating over component files, deduplicating across files, and attaching a `lessons` array alongside the existing conventions/constraints/health sections.\n\n## Files\n\n- **Modify**: `src/tools/impact.rs` (lines 21, 86-117) — add `lessons_db` param, query lessons for target symbol, include in response\n- **Modify**: `src/tools/orient.rs` (lines 309-314, ~660) — add `lessons_db` param, query lessons per-component, include in section\n- **Modify**: `src/mcp.rs` (lines 393, 563) — pass `&self.lessons_db` to both handlers\n- **Test**: `tests/lessons-test.rs` or inline in orient.rs — add integration tests\n\n## Steps\n\n### Step 1: Add lessons to `sutra_impact`\n\nAdd `lessons_db: Option<&LessonsDb>` parameter to `impact::handle`. After building the result JSON (~line 91), query lessons for the target symbol and include them if non-empty.\n\n```rust\n// src/tools/impact.rs — updated signature\npub fn handle(\n    db: &Db,\n    symbol: &str,\n    explain: bool,\n    lessons_db: Option<&LessonsDb>,\n) -> Result<serde_json::Value> {\n    // ... existing code unchanged ...\n\n    // After building `result` (after line 101), before the explain block:\n    if let Some(ldb) = lessons_db {\n        let ws_langs = db.distinct_languages().unwrap_or_default();\n        let ctx = crate::lessons::MatchContext {\n            symbol_name: &sym.qualified_name,\n            file_path: Some(&sym_file_path),\n            imports: &[],\n            project: None,\n            workspace_languages: &ws_langs,\n        };\n        let lessons = ldb.query_for_context(&ctx)?;\n        if !lessons.is_empty() {\n            result[\"lessons\"] = serde_json::to_value(&lessons).unwrap_or_default();\n        }\n    }\n```\n\nNote: `imports` is `&[]` here since impact doesn't resolve imports (unlike read). The symbol + file match is sufficient for surfacing relevant lessons.\n\n### Step 2: Add lessons to `sutra_orient`\n\nAdd `lessons_db: Option<&LessonsDb>` parameter to `orient::handle`. Inside the per-component loop, after the health section (~line 662), query lessons for each file in the component, deduplicate, and attach.\n\n```rust\n// src/tools/orient.rs — updated signature\npub fn handle(\n    db: &Db,\n    scope: &str,\n    workspace_root: &Path,\n    dd_engine: Option<&DdEngine>,\n    lessons_db: Option<&LessonsDb>,\n) -> Result<serde_json::Value> {\n\n    // ... existing code ...\n    // Compute workspace languages once before the loop:\n    let ws_langs = lessons_db\n        .map(|_| db.distinct_languages().unwrap_or_default())\n        .unwrap_or_default();\n\n    // Inside the per-component loop, after health section, before orientation_sections.push(section):\n    if let Some(ldb) = lessons_db {\n        let mut seen_ids = HashSet::new();\n        let mut comp_lessons = Vec::new();\n        for file_path in &comp.files {\n            let ctx = crate::lessons::MatchContext {\n                symbol_name: \"\",\n                file_path: Some(file_path),\n                imports: &[],\n                project: None,\n                workspace_languages: &ws_langs,\n            };\n            for lesson in ldb.query_for_context(&ctx)? {\n                if seen_ids.insert(lesson.id.clone()) {\n                    comp_lessons.push(lesson);\n                }\n            }\n        }\n        if !comp_lessons.is_empty() {\n            section[\"lessons\"] = serde_json::to_value(&comp_lessons).unwrap_or_default();\n        }\n    }\n```\n\n### Step 3: Update MCP wiring\n\nPass `&self.lessons_db` in both MCP method calls.\n\n```rust\n// src/mcp.rs — sutra_orient (~line 393)\nlet result = tools::orient::handle(\n    ctx.db(), &args.scope, ctx.workspace_root(), Some(&dd), Some(&self.lessons_db),\n).map_err(sutra_to_rmcp)?;\n\n// src/mcp.rs — sutra_impact (~line 563)\nlet result = tools::impact::handle(\n    ctx.db(), &args.symbol, args.explain.unwrap_or(false), Some(&self.lessons_db),\n).map_err(sutra_to_rmcp)?;\n```\n\n### Step 4: Update existing orient tests\n\nAll existing calls to `handle(&db, scope, dir.path(), None)` become `handle(&db, scope, dir.path(), None, None)` — the new `lessons_db` parameter defaults to None, preserving behavior.\n\n### Step 5: Add tests\n\n**Test 1: lessons in impact response**\n\nIn `tests/lessons-test.rs` (or a new `tests/impact-lessons-test.rs`), store a lesson anchored to a symbol, then call `impact::handle` with that symbol and verify `result[\"lessons\"]` is present.\n\nNote: `impact::handle` needs a `Db` with a resolved symbol, which requires a parsed file. The simplest approach is a focused test that calls `LessonsDb` + `impact::handle` with a pre-populated Db. If that's too heavy, test the lesson injection path in isolation.\n\n```rust\n#[test]\nfn impact_includes_matching_lessons() {\n    // Setup: Db with a file+symbol, LessonsDb with a lesson anchored to that symbol\n    // Call impact::handle with lessons_db\n    // Assert result[\"lessons\"] exists and has 1 entry\n}\n\n#[test]\nfn impact_no_lessons_field_when_none_match() {\n    // Call impact::handle with lessons_db but no matching lessons\n    // Assert result.get(\"lessons\").is_none()\n}\n```\n\n**Test 2: lessons in orient per-component**\n\nIn `src/tools/orient.rs` tests module:\n\n```rust\n#[test]\nfn orient_includes_lessons_per_component() {\n    // Setup: Db with component, LessonsDb with a file-anchored lesson matching a component file\n    // Call orient::handle with lessons_db\n    // Assert orientation[0][\"lessons\"] exists\n}\n\n#[test]\nfn orient_no_lessons_key_when_none_match() {\n    // Call orient::handle with lessons_db but no matching lessons\n    // Assert orientation[0].get(\"lessons\").is_none()\n}\n```\n\nFor the orient tests, since they already use `handle` with a `Db` and temp dir, the pattern is to create a `LessonsDb` in the same temp dir and store a file-anchored lesson matching a component file path.\n\n## Acceptance criteria coverage\n\n- [x] \"sutra_impact response includes matching lessons for the target symbol\" → Steps 1, 3\n- [x] \"sutra_orient response includes matching lessons per component section\" → Steps 2, 3\n- [x] \"Lessons appear alongside conventions in orient output\" → Step 2 (section[\"lessons\"] next to section[\"preferred\"], etc.)\n- [x] \"No regression in impact/orient when no lessons match\" → Step 4 (None path), Step 5 (no-match tests)\n- [x] \"Tests: lessons in impact, lessons in orient per-component\" → Step 5",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "95624f5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577516560,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 156
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781664267627,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781664853974,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781577516560,
+  "updated_at": 1781664853974,
+  "completed_at": 1781664853974,
+  "edges": [
+    {
+      "id": "019ece4b-a263-7200-b92c-0807a524287a",
+      "edge_type": "depends_on",
+      "source": "sutra/156",
+      "target": "sutra/152",
+      "note": null,
+      "created_at": 1781577523811
+    },
+    {
+      "id": "019ece4b-ad53-7730-9d7b-cc1f97671110",
+      "edge_type": "motivated_by",
+      "source": "sutra/156",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577526611
+    },
+    {
+      "id": "019ece4c-07b2-7ee2-a377-d8ac3d45a54e",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/156",
+      "note": null,
+      "created_at": 1781577549746
+    }
+  ]
+}

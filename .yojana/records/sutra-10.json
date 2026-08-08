@@ -1,0 +1,82 @@
+{
+  "id": "019e0323-6fd4-7b73-b13c-1e11006e40ee",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/10",
+  "sequence_number": 10,
+  "title": "Verify tier-2 freshness enforcement on sutra_read",
+  "description": "Check that sutra_read withholds content (not just flags is_stale) when the index is stale. Per freshness-envelopes.md, read is tier 2: refuse + withhold so the LLM can't anchor on outdated code.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Tier-2 stale refusal logic moved from MCP adapter into tools::read::handle()"
+    },
+    {
+      "done": false,
+      "text": "read::handle takes an is_stale parameter and withholds content when true"
+    },
+    {
+      "done": false,
+      "text": "MCP layer computes staleness and passes it down (no longer does post-hoc content removal)"
+    },
+    {
+      "done": false,
+      "text": "Contract test: when is_stale=true, response has 'refused' field and no 'content' field"
+    },
+    {
+      "done": false,
+      "text": "Contract test: when is_stale=false, response has 'content' field and no 'refused' field"
+    },
+    {
+      "done": false,
+      "text": "Compiles, tests pass, clippy clean"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "59affb2"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1778169114580,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 10
+      }
+    },
+    {
+      "ts": 1778334213583,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778334357470,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778169114580,
+  "updated_at": 1778334357470,
+  "completed_at": 1778334357470,
+  "edges": []
+}

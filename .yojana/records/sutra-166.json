@@ -1,0 +1,80 @@
+{
+  "id": "019ece5f-7a4d-7ec2-8ace-1bfeabec92d2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/166",
+  "sequence_number": 166,
+  "title": "Pack relevant imports into sutra_read symbol responses",
+  "description": "When sutra_read returns a symbol (function, method, etc.), include the file's import statements that are relevant to that symbol. Currently the agent has to separately read the file header or call sutra_deps to understand what a function depends on — this is a round-trip that's needed ~80% of the time.\\n\\nInspiration: archex's CodeChunk.imports_context field, which packs relevant imports alongside each code chunk.\\n\\nsutra already parses imports at index time, so the data is available — this is about including it in the read response.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_read of a function includes relevant import statements in the response"
+    },
+    {
+      "done": false,
+      "text": "Only imports referenced by the symbol body are included (not the entire file header)"
+    },
+    {
+      "done": false,
+      "text": "imports field is included by default, suppressible via parameter"
+    },
+    {
+      "done": false,
+      "text": "No meaningful latency regression on sutra_read"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "1. In the sutra_read handler, when returning a symbol, look up the file's parsed imports from the index.\\n2. Filter to imports that are referenced within the symbol's body (name matching against the import's imported identifiers).\\n3. Include an `imports` field in the response JSON — array of import statement strings, or a single string block.\\n4. Keep it opt-out (included by default) since it's typically small and almost always useful. Add `imports=false` param to suppress if needed.",
+  "execution_record": "Implemented as planned. One discovery during testing: glob imports (`use super::*;`) from test modules were leaking into responses because they're unconditionally included. Fixed by scoping glob and Dart imports to only those preceding the symbol (positional filter). Derive-attribute types (e.g. `Deserialize`, `JsonSchema`) are not captured because sutra's tree-sitter parser records struct start_line at the `pub struct` line, not the `#[derive]` — this is a pre-existing parser limitation, not introduced here.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "54bacc5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "token-economy",
+    "archex-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1781578824269,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 166
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781621535297,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781622130459,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781578824269,
+  "updated_at": 1781622130459,
+  "completed_at": 1781622130459,
+  "edges": []
+}

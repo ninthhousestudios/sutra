@@ -1,0 +1,66 @@
+{
+  "id": "019f22a7-dd02-7892-bdf9-7ee4938a4b05",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/219",
+  "sequence_number": 219,
+  "title": "sutra_constraints bug",
+  "description": "One thing for you as sutra's maintainer: after reparse, sutra_deps cycles=true correctly returns zero, but sutra_constraints action=violations still lists the no-module-cycles constraint (id 22f0f35d) as a degenerate empty-path row — from_path:\"\", to_path:\"\", detail:\"import cycle: \". It looks like the violations endpoint leaves a stale constraint shell once the backing edge disappears, instead of dropping it. It'd give a false \"blocking\" in a release-review even though nothing's wrong. Ground truth (sutra_deps) is fine; the constraints projection is the buggy side. Noted in the task record too. from swisseph-rs/91",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Added a guard in evaluate_dd's cycle detection loop: skip when cycle_paths.len() < cycle.file_ids.len() (any unresolved file_id means stale engine data). Initially tried cycle_paths.is_empty() but the test revealed that partial ID overlap (autoincrement collisions between stale engine IDs and fresh DB IDs) could produce bogus cycles with wrong paths — the len comparison catches both cases.",
+  "reproduction": null,
+  "root_cause": "Race window between parse_workspace DB commit and engine.invalidate() in the add_root background task. replace_file_data deletes and re-inserts file records with new autoincrement IDs, so the DD engine's stale cycle file_ids don't exist in the freshly-read path_map. The cycle detection loop unconditionally pushed a ConstraintFinding even when cycle_paths was empty (all filter_map lookups failed), and match_no_cycles_constraint matched vacuously on the empty slice (.all() over empty → true).",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ac25e6e"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782992854274,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 219
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782997460452,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782997470594,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes.\n\nFix correctly guards against the observed bug (unresolvable file_ids → degenerate empty-path findings). Test covers that scenario.\n\nOne finding (pre-existing, not introduced by this fix): stale engine cycles where all file_ids still resolve but the backing import edges no longer form a cycle would still produce false findings. This requires engine staleness where files keep their IDs but imports change — the normal upsert_file path. Worth tracking as a separate hardening task (force DD engine reload or validate reported SCCs against current edges before emitting findings).",
+      "ts": 1782997936684
+    }
+  ],
+  "created_at": 1782992854274,
+  "updated_at": 1782997470594,
+  "completed_at": 1782997470594,
+  "edges": []
+}

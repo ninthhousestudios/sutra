@@ -1,0 +1,110 @@
+{
+  "id": "019e016f-afb5-7b81-921c-ecad4ea8329e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/1",
+  "sequence_number": 1,
+  "title": "prd for sutra watcher daemon",
+  "description": "design and prd for sutra http daemon that watches smriti and updates in real time based on that",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1778140557237,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 1
+      }
+    },
+    {
+      "ts": 1778155168378,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "wire into smriti events",
+        "to": "prd for sutra watcher daemon"
+      }
+    },
+    {
+      "ts": 1778155481766,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-human"
+      }
+    },
+    {
+      "ts": 1778185927242,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778140557237,
+  "updated_at": 1778185927242,
+  "completed_at": 1778185927242,
+  "edges": [
+    {
+      "id": "019e027b-8dfb-7de3-8602-8975a31c5a07",
+      "edge_type": "refines",
+      "source": "sutra/4",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158112251
+    },
+    {
+      "id": "019e027b-9257-7243-b4e5-d2060dfe6090",
+      "edge_type": "refines",
+      "source": "sutra/5",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158113367
+    },
+    {
+      "id": "019e027b-93a6-7253-8796-25200f250a14",
+      "edge_type": "refines",
+      "source": "sutra/6",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158113702
+    },
+    {
+      "id": "019e027b-9809-7d21-b67e-f7a93df27bf7",
+      "edge_type": "refines",
+      "source": "sutra/7",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158114825
+    },
+    {
+      "id": "019e027b-9ba1-74e0-a281-14375f11067b",
+      "edge_type": "refines",
+      "source": "sutra/8",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158115745
+    },
+    {
+      "id": "019e027b-9c11-76d3-84ab-b76f523daff7",
+      "edge_type": "refines",
+      "source": "sutra/9",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158115857
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "id": "019f8a91-016e-7cc1-b8ae-a19652ecd508",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/284",
+  "sequence_number": 284,
+  "title": "Language-tag filter still fails open for alias tags (ts/py/cpp/golang)",
+  "description": "Review finding on sutra/280 (medium). The fix correctly derives LANGUAGE_CATEGORIES from default_registry().language_ids() = {rust, dart, c, python, javascript, typescript} and closes the case-asymmetry bug. But the fail-open default is unchanged.\n\n`is_language_category` matches only exact adapter language_ids. A lesson tagged `ts`, `js`, `py`, `golang`, `cpp`, or any language sutra has no adapter for still yields `lang_tags.is_empty() == true` and passes unconditionally into every workspace — the exact mechanism sutra/280 was filed to kill, just narrower. `remember::enrich` seeds from `file.language` so sutra's own writes align, but caller-supplied tags do not have to.\n\nNeeds a design call before implementation, hence HITL. Two options:\n(a) Alias table mapping common shorthands to adapter ids. Cheap, but an open-ended list that will keep missing entries — the same failure mode one level up.\n(b) Flip the default: treat a tag that looks like a language claim but is unrecognized as a language claim (fail closed) rather than as language-neutral. Structurally correct, but needs a way to distinguish \"language tag\" from \"any other category tag\" without a recognition set — which is the hard part.\n\nRecommend (b) with an explicit tag namespace (e.g. `lang:python`) so recognition is syntactic rather than dictionary-based, but that is a lessons schema/vocabulary change worth Josh's call.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Design decision recorded on which strategy is taken and why"
+    },
+    {
+      "done": false,
+      "text": "A lesson tagged with an unrecognized language shorthand does not leak into unrelated workspaces"
+    },
+    {
+      "done": false,
+      "text": "Test covering an alias/unsupported-language tag"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Move language claims into an explicit `lang:` tag namespace, applied by normalize_category() at write time, rather than extending the read-time recognition dictionary.",
+      "rationale": "Makes the filter's question syntactic ('does the tag carry the prefix') instead of dictionary-based, so a language sutra has no adapter for still fails closed — it matches no workspace and stays out of all of them. The recognition dictionary survives only as a write-time convenience, where a miss mislabels one tag instead of leaking silently into every workspace. Also fixes the write/read asymmetry: recognition now happens once, at the point where the data is created.",
+      "rejected_alternatives": "(a) An alias table mapping shorthands to adapter ids — cheaper and no migration, but it is the same open-ended dictionary one level up: the first unlisted language leaks exactly as before. (b) Naive fail-closed (treat any unrecognised tag as a language claim) — unworkable, because `categories` also carries topic tags seeded by remember::enrich (sqlite, grpc, observability), which would then be excluded from every workspace."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Landed as 2b04706. Blast radius was wider than the task described: two other readers of the categories table needed prefix-awareness — `sutra_lessons(category=...)`, which does an exact `c.tag = ?` (now normalises its argument through the same function as the writer, so `category=\"py\"` finds `lang:python`), and sutra/279's search category tier, whose `tags_matching_query` splits on `-_.` and would no longer have matched a query for \"rust\" against `lang:rust` (now strips the prefix before token matching). Both were done in the same commit as the migration, since a partial rollout would have left the tier silently broken.\n\nMigration 0007 uses UPDATE OR REPLACE rather than OR IGNORE: a lesson carrying both \"Rust\" and \"rust\" collides on UNIQUE(lesson_id, tag), and OR IGNORE would have left the loser behind unprefixed — precisely the row the migration exists to remove. The name list is frozen at the adapter set as of the migration on purpose; later adapters are handled on write.\n\nSurprise during verification: a first pass over a `cp` of the live ~/.sutra/lessons.db reported 255 -> 239 rows, which looked like the migration deleting data. It was not — `cp` on a WAL-mode sqlite db drops whatever is still in the -wal file, and the 16 \"lost\" rows were the four newest lessons. Re-run via `sqlite3 \".backup\"`: 255 -> 255, all 68 language rows rewritten, lossless. Stored as a lesson (019f8b15).\n\nVerified: cargo test 1466 passed / 0 failed, clippy clean on --all-targets. Four enrichment-test assertions updated to the `lang:` form. Three new tests cover the alias case (`py` does not leak into rust), the unsupported-language case (`golang` and `lang:nim` leak nowhere), and prefix-transparency for both `category=` and the search tier.\n\nNote for deployment: the migration applies when a binary built from this commit opens the db. The running MCP server is on the old binary and needs a reinstall/restart before the live lessons.db is rewritten.",
+  "reproduction": null,
+  "root_cause": "The Phase 3 workspace filter was subtractive and dictionary-driven: it excluded a lesson only when it recognised one of its category tags as a language name. Recognition and non-recognition therefore had opposite failure directions — an unrecognised tag (`py`, `golang`, any language without an adapter) produced an empty `lang_tags`, which the filter read as \"this lesson makes no language claim\" and passed into every workspace. Because `categories` is a single free-form bag carrying both language claims and topic tags (`sqlite`, `concurrency`), the filter had no way to tell \"unrecognised language\" from \"topic tag\", so no dictionary could ever make it fail closed.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2b04706"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1784736186734,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 284
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784744916668,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784744931129,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, reviewer=codex): request changes -> fixed in e96db99.\n\nCodex verdict \"needs-attention\" on 2b04706, two findings, both real:\n\n[high] Migration version-skew. 0007's rewrite list is frozen at the names known when it shipped and its content hash makes it unamendable, but normalize_category's dictionary is larger and will grow. A pre-existing bare `java`/`kotlin` row would stay unprefixed forever -- wrong in both directions at once: invisible to the Phase 3 filter (leaks into every workspace) and unreachable through `category=java`, which normalises its argument to `lang:java`. Fixed structurally rather than with another frozen list: `LessonsDb::normalize_stored_categories` runs the live normaliser over the categories table on open, so stored tags track the dictionary as it is rather than as it was at migration time. Idempotent -- topic tags normalise to themselves.\n\n[medium] Bare `sql` converted from topic to unsupported-language claim. Found independently during the same pass, and worse than codex's version: this is not only a user typing \"sql\". `remember::enrich` emits `sql` as a technology tag from the `sqlx` import (IMPORT_TECH_MAP), so sutra's own auto-enrichment would have written `lang:sql` on every lesson anchored to sqlx-importing code, burying it in zero workspaces. sql/html/css/shell dropped from KNOWN_LANGUAGES; the rule is now \"could a workspace *be* this language\", with `lang:sql` still available for anyone who means the language. A unit test asserts no IMPORT_TECH_MAP value normalises to a language claim, so the two tables cannot collide again.\n\nAlso dropped the `node`->javascript alias (node is a runtime; mapping it to javascript would wrongly exclude node lessons from typescript workspaces) and `cs`->c# (ambiguous).\n\nVerified: cargo test 1469 passed / 0 failed, clippy clean. Live db checked -- the one bare `sql` row is correctly left as a topic tag, and no rows exist in the un-migrated language set.\n\nCodex did not flag: round-tripping/idempotency of normalize_category, the workspace-side canonicalisation path, Phase 3/Phase 4 ordering, the category-tier IN-clause binding, or test honesty. Those were in the focus text and came back clean.",
+      "ts": 1784745517680
+    }
+  ],
+  "created_at": 1784736186734,
+  "updated_at": 1784744931129,
+  "completed_at": 1784744931129,
+  "edges": []
+}

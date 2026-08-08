@@ -1,0 +1,66 @@
+{
+  "id": "019eb5c8-8dbc-7451-a534-3dd772e3c46f",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/148",
+  "sequence_number": 148,
+  "title": "External-crate constraint signal gaps: leading-:: imports, target-specific deps, workspace-dep renames, pubspec manifests",
+  "description": "Known bypass routes left open by bafae79 (external-crate constraints), all in constraints/external.rs:\n\n1. **Leading `::` imports** — `use ::axum::Router;` yields an empty first segment in external_crate_of_import, returns None, escapes the import signal entirely. Fix: strip a leading \"::\" before splitting.\n\n2. **`[target.'cfg(...)'.dependencies]`** — cargo_manifest_deps only reads dependencies / dev-dependencies / build-dependencies top-level tables. Platform-specific dep tables escape the manifest signal (import signal still catches uses, but a linked-never-imported dep is invisible).\n\n3. **Workspace-level renames** — root `[workspace.dependencies] innocent = { package = \"arrow-core\" }` + member `innocent = { workspace = true }`: the member manifest only exposes \"innocent\", and code imports `use innocent::…`, so BOTH signals miss the real package. This fully bypasses the rename handling that manifest_check_rename_catches_real_package was written for. Fix: when scanning manifests, build a rename map from the root [workspace.dependencies] and resolve workspace=true entries through it.\n\n4. **pubspec.yaml not checked** — Dart has the import signal only; README documents this as \"not yet\". Add pubspec.yaml dependency parsing for manifest-signal parity.\n\nFound by vidhi-review of sutra/needs-designing/14. Item 3 matters most: it defeats the legally load-bearing AGPL-boundary use case the feature was designed for.",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2153533"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review-followup",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781166280124,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 148
+      }
+    },
+    {
+      "ts": 1781191973397,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781192882548,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (diff 34dfdfc..2153533): **needs-attention**\n\n3 findings:\n\n1. **[high] Root Cargo.toml guard uses stale workspace rename map** (check.rs:686-698) — When checking a proposed root Cargo.toml edit, the rename map is read from disk (old content), not the proposed content. A root manifest edit that introduces `[workspace.dependencies] innocent = { package = \"arrow-core\" }` passes the guard because member manifests aren't re-checked with the proposed rename map.\n\n2. **[high] Renamed crate imports still match only the alias** (external.rs:31-40) — Import signal strips to first path segment and matches literally. For `use innocent::...` with `innocent = { package = \"arrow-core\" }`, the import produces \"innocent\" but the constraint targets \"arrow-core\". Source-scoped rules (`from = \"server/src/**\"`) are bypassed because import and manifest signals use different name spaces.\n\n3. **[medium] Project scan reads every file before filtering** (external.rs:411-418) — `walk_project_files` calls `read_to_string` on all non-directory entries before checking if the filename is Cargo.toml/pubspec.yaml. Should check filename first to avoid reading irrelevant files.",
+      "ts": 1781193193701
+    }
+  ],
+  "created_at": 1781166280124,
+  "updated_at": 1781192882548,
+  "completed_at": 1781192882548,
+  "edges": []
+}

@@ -1,0 +1,135 @@
+{
+  "id": "019ece4b-f06b-75d2-88a2-7d7665077d15",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/157",
+  "sequence_number": 157,
+  "title": "5x-review-2: review matching + surfacing channels",
+  "description": "## Parent\n\nsutra/150 — Code-anchored lessons: sutra_remember / contextual surfacing\n\n## What to review\n\nAll anchor matching mechanisms and surfacing channels are active. Lessons match by symbol, file glob, import pattern, and directory glob. All three tools (sutra_read, sutra_impact, sutra_orient) surface matching lessons. FTS5 explicit queries work via sutra_lessons. Category filtering prevents cross-language noise.\n\n**Reviewer focus:**\n- Matching correctness — are the glob/import/directory patterns matching the right things and not matching the wrong things?\n- Surfacing format consistency — do lessons look the same across read/impact/orient responses?\n- Category inference and filtering logic — is the workspace language/tech profile used correctly?\n- FTS5 query ergonomics — are the results useful for agents?\n- Volume — with all matching active, are there scenarios where too many lessons surface?\n\n**vidhi-sutra-tend moment:** Matching engine structure has settled. Good time to lock down anchor kind vocabulary, matching conventions, and the MatchContext interface before the lifecycle/enrichment slices build on them.\n\n## Blocked by\n\n- sutra/153 — File glob + import pattern + directory anchor matching\n- sutra/154 — FTS5 + sutra_lessons query tool\n- sutra/155 — Categories + cross-project filtering\n- sutra/156 — sutra_impact + sutra_orient lesson injection",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a9f2021"
+    },
+    {
+      "type": "git:commit",
+      "value": "eae2693"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review",
+    "lessons"
+  ],
+  "history": [
+    {
+      "ts": 1781577543787,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 157
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781666174353,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781666423889,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: 5 findings (3 high, 2 medium). All fixed in a9f2021.\\n\\n1. [HIGH] Language-tag bypass in category filtering — mixed lang+tech categories leaked cross-language\\n2. [HIGH] Project scoping None in impact/orient — cross-project lesson leakage\\n3. [HIGH] No surfacing cap — unbounded results from broad anchors\\n4. [MED] File glob * crosses dir separators — false positives on nested paths\\n5. [MED] FTS5 raw syntax exposure — punctuation/operators in agent queries\"",
+      "ts": 1781666173599
+    },
+    {
+      "author": "agent",
+      "text": "Review + tend complete.\\n\\nCodex adversarial review: 5 findings, all fixed (a9f2021). Language bypass, project scoping, surfacing cap, glob separator, FTS quoting.\\n\\nTend pass (eae2693): 3 lessons-engine isolation constraints added (no-tools, no-conventions, no-constraints). 29 orphaned convention proposals dismissed. Zero drift, zero dead constraints, 35 total constraints binding.\\n\\nNext natural tend: after sutra/158 (confidence lifecycle) or sutra/159 (anchor enrichment) lands.\"",
+      "ts": 1781666423579
+    }
+  ],
+  "created_at": 1781577543787,
+  "updated_at": 1781666423889,
+  "completed_at": 1781666423889,
+  "edges": [
+    {
+      "id": "019ece4b-fed6-76e2-9786-f7b467137ead",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/153",
+      "note": null,
+      "created_at": 1781577547478
+    },
+    {
+      "id": "019ece4c-01e2-74d3-a08e-d14a5f94351c",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/154",
+      "note": null,
+      "created_at": 1781577548258
+    },
+    {
+      "id": "019ece4c-04d3-7ce1-9f5c-d00d2216c05d",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/155",
+      "note": null,
+      "created_at": 1781577549011
+    },
+    {
+      "id": "019ece4c-07b2-7ee2-a377-d8ac3d45a54e",
+      "edge_type": "depends_on",
+      "source": "sutra/157",
+      "target": "sutra/156",
+      "note": null,
+      "created_at": 1781577549746
+    },
+    {
+      "id": "019ece4c-09aa-7321-8141-45a4abc3bb13",
+      "edge_type": "motivated_by",
+      "source": "sutra/157",
+      "target": "sutra/150",
+      "note": null,
+      "created_at": 1781577550250
+    },
+    {
+      "id": "019ece4c-e7a5-7cf0-ae7a-e3e6e96a519a",
+      "edge_type": "depends_on",
+      "source": "sutra/158",
+      "target": "sutra/157",
+      "note": null,
+      "created_at": 1781577607077
+    },
+    {
+      "id": "019ece4c-eaa5-7cd0-8c60-ad4903238495",
+      "edge_type": "depends_on",
+      "source": "sutra/159",
+      "target": "sutra/157",
+      "note": null,
+      "created_at": 1781577607845
+    }
+  ]
+}

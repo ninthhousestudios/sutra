@@ -1,0 +1,81 @@
+{
+  "id": "019f3f79-b090-7e72-9712-883fafc20234",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/231",
+  "sequence_number": 231,
+  "title": "Demolition: remove convention promotion/lifecycle/proposal machinery",
+  "description": "Per the sutra/176 decision (arc sutra/~12): delete the promotion/lifecycle half of the convention system.\n\nRemove:\n- `src/conventions/lifecycle.rs` (detect_signals, generate_proposals) and its call sites in the review pipeline (`build_findings`)\n- Tables + Db methods: `convention_proposals`, `convention_state`, `convention_history` (convention_state and convention_proposals are Durable — need explicit DROP migrations; history is Ephemeral)\n- MCP actions on `sutra_conventions`: promote, demote, proposals, and any lifecycle-state surfacing in list output\n- `record_convention_history` and proposal generation in `src/tools/review.rs` build_findings\n\nNotes:\n- There are ~6 human-set convention_state rows across workspaces (arrow, backend, explore, sutra). Before dropping, check each: if any encodes a rule worth keeping, translate it to a hand-written constraint rule (rules TOML) — that is the designated enforcement path now. The known one (kind:const → naming:SCREAMING) duplicates a rustc lint; likely none survive.\n- The pending-proposal queues across all workspace DBs (~1,200 rows) disappear with the table drop — no separate dismiss_all needed.\n- Update `docs/conventions-map.md` (lifecycle section, data-flow diagram, table list) as part of this task.\n- Mind the refactor contract discipline in CLAUDE.md: review output field semantics must not silently shift — removing proposals/lifecycle from output is intentional; document it in the map.\n\nAcceptance: cargo test passes; reindex of a workspace writes no proposal/state/history rows; sutra_conventions tool surface reduced accordingly; conventions-map.md updated.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Straightforward demolition. Checked 6 convention_state rows across 4 workspace DBs (arrow, backend, explore, sutra) — all naming conventions already enforced by language linters, none needed translation to constraint rules. Simplified delete_stale_conventions to remove convention_state subquery (no more protection for stateful conventions since state is gone). Changed orient output from lifecycle-categorized sections (preferred/deprecated/forbidden/descriptive) to a single observed_patterns section. Removed convention_matches from review output (was only populated for deprecated/forbidden conventions). Pre-existing test_field_access_skipped failure in resolver_test.rs is unrelated.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "2f10ff2"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "demolition"
+  ],
+  "history": [
+    {
+      "ts": 1783476367504,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 231
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783517601228,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783518625078,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers sutra/231 + sutra/232 together, diff 6ce098e..af9c6f0):\n\nVerdict: needs-attention (3 findings)\n\n1. [high] Reindex resurrects dropped tables — ephemeral CREATE migrations (0016, 0020, 0022, 0034, 0036) rerun after reindex wipes their schema_migrations entries, but durable DROP migrations (0044, 0045) are skipped. Tables get recreated.\n2. [high] cargo test gate not met — test_field_access_skipped in resolver_test.rs fails deterministically, but is pre-existing (not caused by this diff).\n3. [medium] Stale MCP help text — src/tools/help.rs:319-320 still advertises \"signature templates, anti-pattern warnings, drift alerts, waivers, and pending proposals\" for orient, which were removed.\n\nFinding 1 is the only ship-blocking issue from the demolition itself.",
+      "ts": 1783521103219
+    }
+  ],
+  "created_at": 1783476367504,
+  "updated_at": 1783518625078,
+  "completed_at": 1783518625078,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "demolition",
+  "edges": [
+    {
+      "id": "019f3f7a-c28e-7822-8a94-4e24768c0ab0",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/231",
+      "note": null,
+      "created_at": 1783476437646
+    }
+  ]
+}

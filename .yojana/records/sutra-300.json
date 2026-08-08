@@ -1,0 +1,72 @@
+{
+  "id": "019f9f95-dcdf-7120-aa2d-dc565f13cd91",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/300",
+  "sequence_number": 300,
+  "title": "Parse lock overloaded by 298: parsing_in_progress reports evaluators; serialization fix has no CI regression",
+  "description": "Two residuals of sutra/298 (commit 846f39f), surfaced by Codex review.\n\n1. parsing_in_progress false-positives on evaluation. Before 298 the parse_coord per-workspace mutex was held only by reparse/first-parse, so `is_locked()` (pipeline.rs:47, try_lock().is_err()) accurately meant \"a parse is running\". 298 made sutra_constraints/sutra_orient/sutra_review HOLD that same mutex across DD evaluation (hold_parse_lock). Now `parsing_in_progress`, derived from is_locked() at mcp.rs:254 (wrap_response) and health.rs:43, reports true during any constraint/orient/review evaluation even though nothing is parsing. Observable-contract drift: the mutex went from \"parse in flight\" to \"parse-or-eval in flight\" but the flag kept the old name/meaning.\n\n2. The 298 serialization fix has zero CI coverage. The only concurrent test (edge_derived_violations_are_never_silently_clean_under_concurrent_reminting) is #[ignore]'d pending sutra/299's engine hang, so the shipped fix (endpoint serialization) and the canonical-id lock-key resolution in hold_parse_lock (which fixed the illusory-exclusion bug where await_parse/review keyed on raw args.workspace vs reparse's canonical ws.id) both run untested.</description>\n<parameter name=\"implementation_plan\">Fix 1 (contract): decouple the serialization primitive from the parse-status signal. Keep the parse_coord mutex as the exclusion mechanism, but drive parsing_in_progress from a dedicated marker set ONLY on genuine parse paths (per-workspace AtomicBool/counter flipped in reparse + first-parse), not in hold_parse_lock. Update both read sites (mcp.rs wrap_response ~254, tools/health.rs ~43).\n\nFix 2 (test): add a non-hanging regression that does NOT drive the DdEngine (so it can't trip sutra/299):\n- assert hold_parse_lock resolves path, basename, and canonical id to the SAME Arc<Mutex> as the reparse key (pins the canonical-id resolution).\n- assert a constraints/orient handler blocks while the parse lock is held (try_lock probe or timing).\n\nVerify: cargo build; constraints-test + review-test; confirm parsing_in_progress no longer set during evaluation.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": "sutra/298 overloaded the parse-coordinator mutex: it made DD-backed evaluation (constraints/orient/review) hold the same per-workspace lock that only reparse held before. parsing_in_progress was derived from ParseCoordinator::is_locked (try_lock().is_err()), so the flag's meaning silently widened from 'a parse is running' to 'a parse OR an evaluation is running', and freshness/health reported evaluators as parsers. Separately, the 298 serialization fix shipped with no CI regression because the only concurrent test is #[ignore]'d on the sutra/299 heap-corruption race.</root_cause>\n<parameter name=\"execution_record\">Fix 1 (contract): added a per-workspace parsing AtomicBool to ParseCoordinator, distinct from the serialization mutex. mark_parsing(ws) sets it and returns a ParseMark RAII guard that clears on drop; is_parsing(ws) reads it. Held the mark alongside the existing lock guard at the three genuine parse sites (mcp.rs first-parse ~989 and reparse ~1036; main.rs maybe_reparse_cwd ~433, moved into the spawned task with the guard). Switched both parsing_in_progress readers (mcp.rs wrap_response, tools/health.rs) to is_parsing and removed is_locked entirely. hold_parse_lock (evaluation path) deliberately does NOT mark, so evaluators no longer look like parsers.\n\nFix 2 (test): added #[cfg(test)] mod parse_coordinator_tests in pipeline.rs — 4 unit tests giving the 298 serialization work its first CI coverage: mark toggles is_parsing + clears on drop; an evaluation-style lock hold with no mark is NOT reported as parsing (the exact regression); lock_for still serializes same-ws and distinct ws don't contend; flag is per-ws keyed.\n\nDesign notes: threading a marker through pipeline::parse_workspace was rejected (60+ callers, mostly tests) in favour of RAII-at-lock-site. Guard flagged a .clone() as no-clone-driven-dev; used Arc::clone (idiomatic shared-ownership) to satisfy it rather than waiving.\n\nVerification: cargo build clean; new lib tests 4/4; constraints-test + review-test 86 passed / 1 ignored (the sutra/299 doc-repro, correctly still ignored); no clippy warnings in changed areas.\n\nCoverage boundary (NOT a hidden pending item — a deliberate scope call): SutraServer::hold_parse_lock's canonical-id resolution (the 298 sub-fix where path/basename must resolve to the same mutex as reparse's canonical ws.id) is private and unreachable from an integration test without standing up a full MCP server harness. The resolution logic is simple and shipped working; not worth a server harness now. Flagged to Josh; can be a follow-up if that wiring is judged load-bearing enough to pin.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/298",
+      "label": "parent fix whose residual this is"
+    },
+    {
+      "type": "git:commit",
+      "value": "846f39f"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/pipeline.rs"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/mcp.rs"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/tools/health.rs"
+    },
+    {
+      "type": "git:commit",
+      "value": "de925f9"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1785088826591,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 300
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785089172894,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1785088826591,
+  "updated_at": 1785089172894,
+  "completed_at": 1785089172894,
+  "edges": []
+}

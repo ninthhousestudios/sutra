@@ -1,0 +1,78 @@
+{
+  "id": "019eb425-7ba2-7dd0-96f6-7c5e1588a403",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/144",
+  "sequence_number": 144,
+  "title": "Prune old snapshots (keep last N)",
+  "description": "snapshots, health_snapshot_files, and health_snapshot_components grow unboundedly — no DELETE anywhere in the codebase. Observed: sutra's own DB has 503 snapshots and 6,396 health_snapshot_files rows; redox-kernel accumulated 205 empty snapshots. Each parse appends 1 snapshot + ~1 row per file + 1 per component (insert_snapshot_atomic, src/db/mod.rs:1447).\n\nFix: after inserting a snapshot, delete snapshots (and their file/component score rows) beyond the most recent N (suggest 50, possibly configurable). Check sutra_trend's window requirements before picking N.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "snapshot count stays bounded at N after repeated parses"
+    },
+    {
+      "done": false,
+      "text": "score rows deleted with their parent snapshot"
+    },
+    {
+      "done": false,
+      "text": "sutra_trend still works over its expected window"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "1. Add `Db::prune_snapshots(&self, keep: usize) -> Result<usize>` — deletes children then parents beyond the newest `keep` snapshots.\\n2. Call prune(30) after successful COMMIT in `insert_snapshot_atomic`.\\n3. Add test in `tests/db-test.rs` verifying retention count and child cleanup.\\nN = 30, no config knob.",
+  "execution_record": "Implemented as planned. N=30. prune_snapshots deletes children (health_snapshot_files, health_snapshot_components) then parent snapshots beyond the newest 30, called after each insert_snapshot_atomic COMMIT. Made prune_snapshots pub so the test can exercise it with a small N (keep=3) independently of the hardcoded constant. No config knob added.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b7f7d1b"
+    }
+  ],
+  "files": [
+    "src/db/mod.rs",
+    "src/pipeline.rs"
+  ],
+  "tags": [
+    "perf-review",
+    "db"
+  ],
+  "history": [
+    {
+      "ts": 1781138815906,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 144
+      }
+    },
+    {
+      "ts": 1781362059400,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781362261925,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1781138815906,
+  "updated_at": 1781362261925,
+  "completed_at": 1781362261925,
+  "edges": []
+}

@@ -1,0 +1,89 @@
+{
+  "id": "019eb425-2db1-7db2-a28c-aaf1f6558309",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/141",
+  "sequence_number": 141,
+  "title": "Batch ref/codebook/import DB writes + set PRAGMA synchronous=NORMAL",
+  "description": "Full parse of swe_dashboard = 113-128s, of which 111s is ref-resolution DB writes: resolve_file_refs (src/pipeline.rs) calls db.insert_ref (src/db/mod.rs:1236) once per ref as an autocommit transaction, and Db::open (src/db/mod.rs:424) never sets PRAGMA synchronous, so SQLite's default FULL fsyncs the WAL per commit (~1.9-2.7ms/row on btrfs/NVMe). Measured: resolver CPU 52ms vs 110,960ms writes for 40,335 refs. Same per-row pattern in save_hrr_codebook_entries (src/db/similarity.rs:102 — 5.4s for 2,628 rows) and update_import_resolved_file_id loops in dart_packages/rust_imports (~1s).\n\nFix: (1) collect resolved refs and write delete+insert in one transaction per file (mirror replace_file_data's existing pattern), (2) wrap codebook save in one transaction, (3) batch import-resolution updates, (4) add PRAGMA synchronous=NORMAL next to journal_mode=WAL (index is rebuildable; NORMAL is the standard WAL pairing).\n\nMicrobench (home fs): FULL+autocommit 1,900us/row; NORMAL+autocommit 33us; one tx 2.3us. Expected: cold parse 113s → ~15s.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Cold parse of swe_dashboard (delete ~/.sutra/swe_dashboard/index.db first) completes in well under 30s"
+    },
+    {
+      "done": false,
+      "text": "ref resolution phase no longer dominated by DB writes"
+    },
+    {
+      "done": false,
+      "text": "PRAGMA synchronous=NORMAL set on every connection open"
+    },
+    {
+      "done": false,
+      "text": "no per-row autocommit loops remain in resolve_file_refs, save_hrr_codebook_entries, or import resolution"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "All four acceptance criteria met. PRAGMA synchronous=NORMAL added to Db::open_unchecked and guard's read-only connection. save_hrr_codebook_entries wrapped in transaction. update_import_resolved_file_id replaced with batch_update_import_resolved_file_ids (single tx). Dart and Rust import resolution callers refactored to collect-then-batch. Cold parse of swe_dashboard: 120s → 9s. Codex adversarial review surfaced one gap (guard.rs bypassing open_unchecked) — fixed in follow-up commit.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ecd6cfa"
+    }
+  ],
+  "files": [
+    "src/pipeline.rs",
+    "src/db/mod.rs",
+    "src/db/similarity.rs",
+    "src/dart_packages.rs",
+    "src/rust_imports.rs"
+  ],
+  "tags": [
+    "perf-review",
+    "parse-pipeline"
+  ],
+  "history": [
+    {
+      "ts": 1781138795953,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 141
+      }
+    },
+    {
+      "ts": 1781269004787,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1781269015350,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes. One finding (low): bin/guard.rs opens index DB via Connection::open_with_flags bypassing Db::open_unchecked, missing the new PRAGMA. Read-only path so no write impact, but contract gap. Fixed in ecd6cfa.",
+      "ts": 1781268940036
+    }
+  ],
+  "created_at": 1781138795953,
+  "updated_at": 1781269015350,
+  "completed_at": 1781269015350,
+  "edges": []
+}

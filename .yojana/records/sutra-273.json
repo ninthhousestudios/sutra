@@ -1,0 +1,143 @@
+{
+  "id": "019f8137-4f71-70c1-b13b-eb4bf9559a97",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/273",
+  "sequence_number": 273,
+  "title": "JS/TS cross-file import resolution",
+  "description": "Add a JS/TS import resolver to the pipeline, matching the pattern of the existing Dart/Rust/C/Python resolvers.\n\n**Current state**: The JS/TS parsers extract imports correctly (raw_path stored verbatim — `./utils`, `react`, `@angular/core`, `../lib/foo`), but the pipeline has no resolver for them. `import_edges()` returns nothing for JS/TS files. sutra/269 tests verify imports are extracted but explicitly skip edge resolution assertions.\n\n**What needs to happen**:\n\n1. **DB query**: Add `Db::unresolved_js_ts_imports()` returning `Vec<(i64 import_id, i64 file_id, String imported_path, String kind)>`. Must filter by `f.language IN ('javascript', 'typescript')` since both languages share the same import system. Kinds to handle: `es_import`, `require`, `dynamic_import`, `re_export`.\n\n2. **Resolver module**: Create `src/js_imports.rs` with `pub fn resolve_js_imports(db: &Db, workspace_root: &Path) -> Result<usize>`. Follow the Python resolver pattern: fetch unresolved rows, build `path_to_id` map from `db.all_files()`, resolve each import, call `db.batch_update_import_resolved_file_ids`.\n\n3. **Resolution strategies** (in priority order for relative imports):\n   - Relative imports (`./foo`, `../bar`): resolve relative to the importing file's directory. Try extensions in order: exact match, then `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, then `/index.ts`, `/index.tsx`, `/index.js`, `/index.jsx`. This mirrors Node's module resolution algorithm.\n   - Bare specifiers (`react`, `lodash`): leave unresolved (node_modules is out-of-tree). These correctly stay `resolved_file_id = NULL`.\n   - Scoped packages (`@angular/core`): same as bare specifiers — leave unresolved.\n   - Path aliases from tsconfig.json `paths`/`baseUrl`: out of scope for initial implementation. Can be a follow-up.\n\n4. **Pipeline integration**: Add the call in `src/pipeline.rs` after the Python resolver block (~line 694):\n   ```rust\n   let js_resolved = crate::js_imports::resolve_js_imports(db, workspace_root)?;\n   if js_resolved > 0 {\n       info!(count = js_resolved, \"resolved JS/TS import edges\");\n   }\n   ```\n   Also add `mod js_imports;` in `src/lib.rs`.\n\n5. **Edge cases**:\n   - Re-exports (`export { foo } from './bar'`) should create edges same as imports.\n   - Side-effect imports (`import './polyfill'`) should resolve if the file exists.\n   - Dynamic imports (`import('./lazy')`) should resolve same as static imports.\n   - Self-referencing imports (importing a file from itself) should be skipped, matching Python resolver behavior.\n   - Files with explicit extensions in the import path (`import './foo.js'`) should resolve directly without extension guessing.\n\n6. **Tests**: Update the cross-file import resolution tests in `tests/parse_js_test.rs` and `tests/parse_ts_test.rs` (sutra/269) to assert on actual resolved edges. Add new tests for: extension guessing priority, index file resolution, bare specifier non-resolution, re-export edges, side-effect import edges, mixed JS/TS cross-imports (`.js` file importing from `.ts` file in a mixed workspace).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Db::unresolved_js_ts_imports query exists filtering by language IN ('javascript','typescript')"
+    },
+    {
+      "done": false,
+      "text": "src/js_imports.rs resolve_js_imports follows resolver pattern (fetch → resolve → batch update)"
+    },
+    {
+      "done": false,
+      "text": "Relative imports (./foo, ../bar) resolved with extension guessing (.ts .tsx .js .jsx .mjs .cjs)"
+    },
+    {
+      "done": false,
+      "text": "Index file resolution (./dir → ./dir/index.ts etc.)"
+    },
+    {
+      "done": false,
+      "text": "Bare specifiers and scoped packages left unresolved (resolved_file_id = NULL)"
+    },
+    {
+      "done": false,
+      "text": "Imports with explicit extensions resolve directly without guessing"
+    },
+    {
+      "done": false,
+      "text": "Re-exports create import edges"
+    },
+    {
+      "done": false,
+      "text": "Side-effect imports resolve if file exists"
+    },
+    {
+      "done": false,
+      "text": "Self-referencing imports skipped"
+    },
+    {
+      "done": false,
+      "text": "Pipeline calls resolve_js_imports after Python resolver"
+    },
+    {
+      "done": false,
+      "text": "parse_js_test.rs and parse_ts_test.rs cross-file tests updated to assert resolved edges"
+    },
+    {
+      "done": false,
+      "text": "New tests for extension guessing priority, index resolution, bare specifier non-resolution, mixed JS/TS cross-imports"
+    },
+    {
+      "done": false,
+      "text": "No regression in existing 1408 tests"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/269",
+      "label": "JS/TS integration tests (imports verified but edges not resolved)"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "resolve_python_imports",
+      "label": "Python resolver as reference pattern"
+    },
+    {
+      "type": "doc:path",
+      "value": "src/python_imports.rs",
+      "label": "Python resolver implementation"
+    },
+    {
+      "type": "git:commit",
+      "value": "f000a97"
+    }
+  ],
+  "files": [
+    "src/js_imports.rs",
+    "src/pipeline.rs",
+    "src/lib.rs",
+    "src/db/mod.rs",
+    "tests/parse_js_test.rs",
+    "tests/parse_ts_test.rs"
+  ],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784579313521,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 273
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784579398660,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784579658151,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention (2 findings, both fixed in 0ec4bb7).\\n\\n1. [high] resolve_path_segments silently discarded `..` past root — could create false dependency edges. Fixed: returns None when traversal escapes root.\\n2. [medium] Missing .mts/.cts in EXTENSIONS and .mjs/.cjs in INDEX_FILES — indexed files wouldn't resolve. Fixed: added all adapter-indexed extensions.\"",
+      "ts": 1784580067082
+    }
+  ],
+  "created_at": 1784579313521,
+  "updated_at": 1784579658151,
+  "completed_at": 1784579658151,
+  "edges": []
+}

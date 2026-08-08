@@ -1,0 +1,64 @@
+{
+  "id": "019fe22e-30b7-72b0-8905-e27d4c4e9477",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/309",
+  "sequence_number": 309,
+  "title": "Document accepted.toml freshness gate in constraints-map.md",
+  "description": "sutra/308 wired .sutra/accepted.toml as the source of truth (DB demoted to a reproject-on-read cache) with a freshness gate at every read/write surface, but docs/constraints-map.md still describes the old DB-authoritative waiver/ack model. Update it to cover: accepted::refresh_cache (migrate THEN ensure_cache_fresh) as the read-surface gate (evaluate_dd, orient, list); the guard stale path (evaluate_raw -> resolve_waivers_for_guard when is_cache_fresh_conn is false); write actions writing the file + reproject (waive/baseline/ack) and key-based removal (unwaive/unack); and CheckOutcome.accepted_warnings surfacing. Key files: src/constraints/accepted.rs, src/constraints/check.rs (evaluate_dd/evaluate_raw), src/tools/constraints.rs.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "3e06daa"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "constraints",
+    "docs",
+    "accepted-file"
+  ],
+  "history": [
+    {
+      "ts": 1786206105783,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 309
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786206185894,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786206382650,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786206105783,
+  "updated_at": 1786206382650,
+  "completed_at": 1786206382650,
+  "edges": []
+}

@@ -1,0 +1,83 @@
+{
+  "id": "019f4d1b-4874-7862-8c7c-3a88f63a03e9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/254",
+  "sequence_number": 254,
+  "title": "Resolver Phase 0: wire parent_symbol_id through to resolution",
+  "description": "Near-free win pulled out of the scope-aware resolution design; independent of the Phase A architecture work and can ship immediately.\n\nFact: parent_symbol_id is persisted on every symbol row (db/mod.rs:246, populated at insert, mod.rs:786) and fetched by find_symbols_by_file — but silently discarded before resolution: pipeline.rs:304 hardcodes children: vec![] when reconstructing ExtractedSymbol from SQL, and all_symbols_summary (db/mod.rs:1219-1228) selects only (id, qualified_name, short_name, kind), dropping both parent_symbol_id and file_path.\n\nChange:\n1. Widen all_symbols_summary / the resolver's symbol structures to carry parent_symbol_id (and file_path while there — the global fallback currently can't even prefer same-file candidates).\n2. pick_nearest_local (resolver.rs:152-173): prefer definitions whose parent chain contains the reference's enclosing symbol (enclosing-scope-chain preference) before falling back to the current line-proximity heuristic. This fixes a class of shadowing/nesting misresolutions with zero parser changes.\n3. Extend tests/resolver_test.rs with nested-scope fixtures: method in impl vs same-named free function; inner fn shadowing outer name; same-file preference in global fallback.\n\nNo schema changes, no parser changes — purely resolution-pass plumbing. Contract note: resolution results will change for currently-misresolved refs (that's the point); rerun the full resolver test suite and spot-check graph edge diffs on sutra's own index before/after.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Used line-range containment for scope preference instead of parent_symbol_id chain walking",
+      "rationale": "Line ranges are available on every ExtractedSymbol without DB id lookups; parent_symbol_id requires mapping DB ids back to symbols which adds complexity for no benefit at the file-local level. parent_symbol_id is still wired through for future cross-file scope resolution.",
+      "rejected_alternative": "Walk parent_symbol_id chains via HashMap<i64, &ExtractedSymbol> — adds allocation and lookup overhead for equivalent results within a single file."
+    },
+    {
+      "decision": "Named the new struct SymbolEntry instead of SymbolSummary",
+      "rationale": "db::similarity::SymbolSummary already exists with different fields; collision caused compilation errors.",
+      "rejected_alternative": "Rename the similarity type — higher blast radius, touches unrelated code."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Three commits: 6576c69 (plumbing + resolver logic), fadd18d (tests), a5c49bb (codex review fixes). SymbolEntry struct replaces the (i64,String,String,String) tuple — originally named SymbolSummary but renamed to avoid collision with db::similarity::SymbolSummary. Scope preference uses line-range containment (tightest_common_scope_size) rather than walking parent_symbol_id chains. Codex adversarial review caught two bugs: (1) local→global lookup didn't filter by file_id so duplicate qualified_names across files could bind wrong, (2) scope exclusion used line-range equality which could drop real enclosing scopes. Both fixed with regression tests.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "fadd18d"
+    },
+    {
+      "type": "git:commit",
+      "value": "a5c49bb"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783705061492,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 254
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783946500884,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783947124629,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention → fixed in a5c49bb.\\n\\n1. [high] Local resolution ignored file_id when mapping local symbol to DB row — could bind to wrong file for duplicate qn. Fixed: added file_id filter.\\n2. [medium] Scope exclusion used line-range equality which could drop real enclosing scopes sharing the same range. Fixed: use qualified_name identity.\\n\\nBoth findings have regression tests.\"",
+      "ts": 1783947599832
+    }
+  ],
+  "created_at": 1783705061492,
+  "updated_at": 1783947611808,
+  "completed_at": 1783947124629,
+  "edges": []
+}

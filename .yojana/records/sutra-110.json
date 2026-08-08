@@ -1,0 +1,70 @@
+{
+  "id": "019e9a72-f90d-77a1-9305-45f69ef9336e",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/110",
+  "sequence_number": 110,
+  "title": "fix: degraded review emits misleading zero-findings risk score",
+  "description": "From sutra/104 review. When `build_findings` fails, `ReviewFindings::default()` (empty) is used and `compute()` produces a risk score as if there are zero violations. The `findings_degraded` flag is set but doesn't affect the risk_score field itself.\\n\\nFix: when findings_degraded is true, either omit risk_score or set it to null.\\n\\nFile: src/tools/review.rs:151-155,173",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/104",
+      "label": "source review"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-health-integration-review.md",
+      "label": "finding: degraded-review-misleading-risk-score"
+    },
+    {
+      "type": "git:commit",
+      "value": "d6427ea"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review-followup",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1780707686669,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 110
+      }
+    },
+    {
+      "ts": 1780708258844,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780708330717,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780707686669,
+  "updated_at": 1780708330717,
+  "completed_at": 1780708330717,
+  "edges": []
+}

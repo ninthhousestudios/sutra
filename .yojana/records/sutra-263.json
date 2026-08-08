@@ -1,0 +1,126 @@
+{
+  "id": "019f803f-ddda-7f02-af34-e86eac70d895",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/263",
+  "sequence_number": 263,
+  "title": "Grammar deps + adapter scaffold + registry wiring",
+  "description": "Bootstrap JS/TS language support infrastructure. Add tree-sitter grammar crates, create stub parser modules, wire adapter structs into the registry.\n\nKey decisions already made:\n- Two tree-sitter crates: `tree-sitter-javascript` and `tree-sitter-typescript` (TS crate provides both TypeScript and TSX grammars)\n- Two adapters: `JsAdapter` (extensions: .js, .jsx, .mjs, .cjs) and `TsAdapter` (extensions: .ts, .tsx, .mts, .cts)  \n- Two parser modules: `src/parser/javascript.rs` and `src/parser/typescript.rs`\n- JS adapter uses `tree_sitter_javascript::LANGUAGE` grammar\n- TS adapter uses `tree_sitter_typescript::LANGUAGE_TYPESCRIPT` for .ts/.mts/.cts and `tree_sitter_typescript::LANGUAGE_TSX` for .tsx (design note: may need separate TsxAdapter if grammar dispatch can't be extension-conditional — resolve during implementation)\n- Both adapters return `ModuleBoundaryStrength::Moderate` (file = module in ES modules, similar to Dart)\n\nFiles to touch:\n- `Cargo.toml` — add tree-sitter-javascript and tree-sitter-typescript deps\n- `src/parser/mod.rs` — add `pub mod javascript; pub mod typescript;`\n- `src/parser/javascript.rs` — create with stub `parse()` returning empty ParseResult\n- `src/parser/typescript.rs` — create with stub `parse()` calling through to JS parse\n- `src/parser/adapter.rs` — add JsAdapter + TsAdapter structs implementing LanguageAdapter, register in default_registry()\n\nReference: follow the pattern established by PythonAdapter/CAdapter — unit struct, LanguageAdapter impl, no FcaAttributeSource yet (added in integration phase).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "cargo build succeeds with new grammar crates linked"
+    },
+    {
+      "done": false,
+      "text": "JsAdapter resolves for extensions .js, .jsx, .mjs, .cjs"
+    },
+    {
+      "done": false,
+      "text": "TsAdapter resolves for extensions .ts, .tsx, .mts, .cts"
+    },
+    {
+      "done": false,
+      "text": "Both adapters return correct language_id (\"javascript\", \"typescript\")"
+    },
+    {
+      "done": false,
+      "text": "parse() on both adapters returns an empty-but-valid ParseResult (no panic, parsed_ok reflects tree-sitter result)"
+    },
+    {
+      "done": false,
+      "text": "default_registry() includes both new adapters"
+    },
+    {
+      "done": false,
+      "text": "Existing tests pass (no regression)"
+    },
+    {
+      "done": false,
+      "text": "module_boundary_hints() returns Moderate for both adapters"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "TsAdapter uses LANGUAGE_TSX grammar for all extensions",
+      "rationale": "TSX grammar is a strict superset of TS — regular TS parses correctly. Avoids needing per-extension grammar dispatch which the LanguageAdapter trait doesn't support (grammar() has no file context). If distinct grammars become necessary, the trait can be extended later.",
+      "rejected_alternative": "Two separate language_ids (typescript/typescriptreact) with separate pool entries — adds complexity for no benefit at the scaffold stage"
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "d1da749"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784563097050,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 263
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784567594220,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784567900188,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Codex adversarial review: no findings specific to the scaffold/adapter task. TS stub producing empty symbols noted but accepted — adapter registration is fine since the arc won't be used until TS extraction lands.",
+      "ts": 1784569313749
+    }
+  ],
+  "created_at": 1784563097050,
+  "updated_at": 1784567900188,
+  "completed_at": 1784567900188,
+  "arc_id": "019f803f-785e-70f3-bd4e-00084d422509",
+  "arc_phase": "scaffold",
+  "edges": [
+    {
+      "id": "019f8042-1b77-7b31-bff5-eb645e2a3c0f",
+      "edge_type": "depends_on",
+      "source": "sutra/264",
+      "target": "sutra/263",
+      "note": null,
+      "created_at": 1784563243895
+    },
+    {
+      "id": "019f8042-2fba-7e22-b8d5-711ff279de10",
+      "edge_type": "depends_on",
+      "source": "sutra/268",
+      "target": "sutra/263",
+      "note": null,
+      "created_at": 1784563249082
+    }
+  ]
+}

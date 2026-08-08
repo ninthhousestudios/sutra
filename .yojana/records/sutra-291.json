@@ -1,0 +1,120 @@
+{
+  "id": "019f99d6-9bec-7e10-9204-8644b61c5ffe",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/291",
+  "sequence_number": 291,
+  "title": "confined_external is unusable for single-crate packages: manifest is never in allowed_in",
+  "description": "`confined_external` checks two signals: use-statements and the Cargo.toml `[dependencies]` manifest. For a single-crate package the manifest signal makes the constraint unsatisfiable — `Cargo.toml` is by definition not one of the source files listed in `allowed_in`, so the constraint emits a permanent blocking violation that no code change can clear.\n\nReproduced on yojana. This constraint:\n\n```toml\n[[constraint]]\nkind = \"confined_external\"\ncrates = [\"rusqlite\"]\nallowed_in = [\"src/db.rs\", \"src/error.rs\"]\nseverity = \"blocking\"\n```\n\nyields:\n\n```\nexternal crate outside confinement: Cargo.toml -> rusqlite via manifest\ndependency (allowed only in [src/db.rs, src/error.rs])\nfrom_path: Cargo.toml\n```\n\nThe use-statement signal is correct and useful — only db.rs and error.rs import rusqlite, which is exactly the single-point-of-contact invariant worth enforcing. The manifest signal is what breaks it.\n\nThe manifest check is presumably there to catch a dependency declared but not yet imported. That intent is sound for a *workspace* (crate A declaring a dep that only crate B should use), but wrong for the package that declares the dep for its own use.\n\nProposed fix: exempt the manifest entry when `allowed_in` contains at least one path belonging to the package that declares the dependency. Alternative if that is too subtle: an explicit `check_manifest = false` opt-out, though a footgun that every single-crate user must discover and disable is a worse default.\n\nThe constraint is currently commented out in yojana/.sutra/rules.toml with a pointer here; re-add once fixed.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "A confined_external constraint on a single-crate package whose allowed_in paths are inside that package does not report the manifest as a violation"
+    },
+    {
+      "done": true,
+      "text": "The manifest signal still fires in a multi-crate workspace when a non-owning member declares the confined dependency"
+    },
+    {
+      "done": true,
+      "text": "Re-adding the rusqlite confined_external to yojana/.sutra/rules.toml produces zero violations"
+    },
+    {
+      "done": true,
+      "text": "Regression test covers both the single-crate and workspace cases"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Decide confinement ownership by aligning the allowed_in glob's components against package directories, not by prefix arithmetic on the glob's literal head",
+      "rationale": "The literal head of crates/*/src/db.rs is crates/, which is not a package directory, so a prefix rule exempted the workspace root (silently disabling a blocking rule) while still blocking the member that actually holds the path — inverting the fix. Component alignment resolves the wildcard segment against real packages. Ambiguity resolves toward not owning, because a wrong exemption is silent while a wrong report is visible and waivable.",
+      "rejected_alternative": "Keep literal-prefix ownership and treat only unambiguous parent prefixes as owning — simpler, but it leaves allowed_in = [\"**/client.rs\"] unsatisfiable for the very single-package case the task is about."
+    },
+    {
+      "decision": "Guard and index both derive the package layout from a disk scan (package_dirs_including)",
+      "rationale": "The guard's members-derived view omitted nested non-member packages, so it exempted a root dependency the index then reported — the guard stops predicting blocking audit findings. One discovery path removes the divergence class.",
+      "rejected_alternative": "Align the index to declared [workspace].members instead; rejected because a package present on disk but undeclared still owns its own sources, and the index is the authority."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Fix is `manifest_owns_confinement` in src/constraints/external.rs: skip the manifest signal when the manifest's package owns an `allowed_in` path, ownership going to the deepest entry in `package_dirs_of` so a workspace root does not swallow a member's confinement paths. `check_manifest`/`check_pubspec` gained a `package_dirs` parameter; the index side derives it from the scanned manifests, the guard side from the root manifest's declared members (proposed content wins for the manifest under edit).\n\nApplied through `match_external_where` applicability rather than filtering findings afterwards — sutra/296 established that post-filtering lets the exempt rule win first-match and shadow a narrower rule. Test `exempt_confinement_does_not_shadow_a_forbidden_external_rule` pins that.\n\nAlso collapsed two copies of glob literal-prefix extraction into `constraints::glob_literal_prefix`.\n\nRejected the `check_manifest = false` opt-out named in the description: a footgun every single-crate user must discover is a worse default than inferring ownership.\n\nVerification: 1519 lib+integration tests pass, clippy clean on touched files; a scratch integration test ran the real yojana rules through `check_workspace_externals` and returned zero findings with the constraint re-added (yojana 4608602). The running sutra MCP server still holds the pre-fix binary — it picks the fix up on next restart.",
+  "reproduction": null,
+  "root_cause": "The manifest signal treated a `[dependencies]` entry as a violation site on the same footing as a source file, but a manifest path can never satisfy `allowed_in` — that field lists source paths. For a package whose confinement targets its own sources, the declaration that makes the confined import possible was itself reported, so the constraint had no satisfiable state.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "cc9c4e5",
+      "label": "yojana adoption; constraint commented out with rationale"
+    },
+    {
+      "type": "git:commit",
+      "value": "a005b11"
+    },
+    {
+      "type": "git:commit",
+      "value": "02e2708"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "governance",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1784992406508,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 291
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785008759559,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785008769697,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of a005b11 — verdict: needs-attention (both findings now fixed in 02e2708).\n\n[high] Wildcarded allowed_in can exempt the wrong manifest (src/constraints/external.rs:175-183)\nmanifest_owns_confinement reduced each allowed_in pattern to the text before the first glob metacharacter, then assigned ownership by checking whether the manifest dir contains that literal prefix. For allowed_in = [\"crates/*/src/db.rs\"] and package dirs [\"\", \"crates/api\"], target became \"crates/\": the root manifest was treated as owning it (an empty dir contains everything, and no deeper package contains that parent prefix), while crates/api/Cargo.toml was NOT treated as owning it (crates/api does not contain \"crates/\"). Impact: a root package silently avoids a blocking manifest violation for a dep only member crates may use, and the actual member manifest still gets the unsatisfiable violation this commit is meant to remove.\nRecommendation: do not infer ownership from the pre-glob literal prefix; evaluate the allowed_in glob against package dirs so wildcarded member segments resolve to the matching member package(s), or treat ambiguous parent-prefix patterns as non-owning. Add regression tests for crates/*/src/... and */src/... patterns.\n\n[medium] Cargo guard and index derive different ownership layouts (src/constraints/check.rs:1049-1060)\nThe guard built package_dirs from Cargo.toml plus [workspace].members manifests; the index built its dirs from a filesystem scan of every Cargo.toml. With a nested non-member vendor/client/Cargo.toml and allowed_in = [\"vendor/client/src/**\"], the guard omits vendor/client, treats the root as owning the confinement path, and exempts the root dependency — while the index includes vendor/client, assigns ownership there, and reports the root manifest. Undermines the guard as a predictor of blocking audit findings.\nRecommendation: use one shared Cargo package discovery function for both guard and index. Add a guard-vs-index regression with a nested non-member package under an allowed_in path.\n\nNext steps (both done in 02e2708): fix ownership inference for wildcarded package segments; unify package-dir derivation, with regressions exercising the public guard/index entry points rather than check_manifest with hand-built dirs.",
+      "ts": 1785009630501
+    },
+    {
+      "author": "agent",
+      "text": "Review: request changes → resolved. Codex found the ownership inference inverted for wildcard package segments (high) and a guard/index layout divergence (medium); both fixed in 02e2708 with regressions, and yojana's real rules still produce zero findings. Reviewed range a005b11^..02e2708.",
+      "ts": 1785009634720
+    }
+  ],
+  "created_at": 1784992406508,
+  "updated_at": 1785009643557,
+  "completed_at": 1785008769697,
+  "edges": [
+    {
+      "id": "019f99da-1a36-78a0-b268-6e2e0f0023a2",
+      "edge_type": "depends_on",
+      "source": "yojana/44",
+      "target": "sutra/291",
+      "note": "rusqlite confined_external stays commented out until the manifest signal stops producing an unfixable blocking violation",
+      "created_at": 1784992635446
+    }
+  ]
+}

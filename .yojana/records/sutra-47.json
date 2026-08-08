@@ -1,0 +1,96 @@
+{
+  "id": "019e7f84-8b51-7083-ae0e-46bcdadd4d5c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/47",
+  "sequence_number": 47,
+  "title": "5b-3: staleness detection + lazy recompute trigger",
+  "description": "## Parent\n\nsutra/44 (5b PRD: component discovery + vocabulary)\n\n## What to build\n\nMake component clustering demand-driven. Store edge count at last clustering run in a metadata row. On any component query, check staleness: stale if (a) files added/removed since last run, or (b) >10% of inter-file edges changed. If stale, trigger reconciliation automatically before returning results. Staleness threshold configurable in `.sutra/components.toml`.\n\n## Acceptance criteria\n\n- [ ] Edge count at last clustering stored in metadata\n- [ ] Staleness detected when files added/removed since last clustering\n- [ ] Staleness detected when >10% of inter-file edges changed\n- [ ] First component query after staleness triggers recompute + reconciliation\n- [ ] Staleness threshold overridable in `.sutra/components.toml`\n- [ ] Non-stale queries return cached results without recomputing\n\n## Blocked by\n\n- sutra/46 (5b-2: component reconciliation)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Edge count at last clustering stored in metadata"
+    },
+    {
+      "done": false,
+      "text": "Staleness detected when files added/removed since last clustering"
+    },
+    {
+      "done": false,
+      "text": "Staleness detected when >10% of inter-file edges changed"
+    },
+    {
+      "done": false,
+      "text": "First component query after staleness triggers recompute + reconciliation"
+    },
+    {
+      "done": false,
+      "text": "Staleness threshold overridable in .sutra/components.toml"
+    },
+    {
+      "done": false,
+      "text": "Non-stale queries return cached results without recomputing"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Pipeline-side staleness detection in discover_components. New durable component_clustering_meta table stores (edge_count, file_count) at last clustering. Staleness = file count changed OR edge delta >threshold (default 10%, configurable). Stale triggers reconciliation; non-stale skips. MCP tool response enriched with clustering metadata.",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "83a1b64"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780255853393,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 47
+      }
+    },
+    {
+      "ts": 1780318853880,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780318857585,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780255853393,
+  "updated_at": 1780318857585,
+  "completed_at": 1780318857585,
+  "arc_id": "019e7f84-09d9-75f2-af45-897b06025a48",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e7f85-2884-7742-a8b8-2415e68700bc",
+      "edge_type": "depends_on",
+      "source": "sutra/47",
+      "target": "sutra/46",
+      "note": null,
+      "created_at": 1780255893636
+    }
+  ]
+}

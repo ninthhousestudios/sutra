@@ -1,0 +1,61 @@
+{
+  "id": "019f4847-abf0-72a1-9512-b0c8da5fbc13",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/239",
+  "sequence_number": 239,
+  "title": "scope_matches_path: literal bracket directories misrouted to glob matching",
+  "description": "Codex review of sutra/238 (commit 5bfc110) found that scope_matches_path checks for glob metacharacters BEFORE attempting a literal match, so a scope naming a real directory that contains [ (e.g. src/app/[slug]/, standard in Next.js routing) is parsed as a character-class glob and matches nothing — reintroducing the silent-inert-constraint failure sutra/238 fixed, for bracket-literal paths. Fix: try the literal path-boundary match first, unconditionally; fall back to glob matching only when the literal match fails and the scope contains metacharacters (union semantics). Add tests for literal bracket directory scopes.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Fix per codex recommendation: literal path-boundary match tried unconditionally first, glob fallback only when metacharacters present (union semantics — a scope can match both ways). Two new tests: literal bracket directory scopes (src/app/[slug]/) match literally; glob fallback still applies when literal fails. Full suite 1131 passed. Committed 9c0fddc on main (local, unpushed). Daemon redeploy needed again to pick this up — 5bfc110 was already reinstalled but 9c0fddc is not.",
+  "reproduction": null,
+  "root_cause": "scope_matches_path (introduced in 5bfc110) used glob-metacharacter presence as the dispatch condition — checked BEFORE any literal match attempt — so a scope naming a real directory containing [ was always parsed as a character-class glob and could never match its own literal path. The union case (a string that is both a plausible literal path and a glob) wasn't considered when the hybrid was designed as an either/or dispatch.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/238",
+      "label": "original fix under review"
+    },
+    {
+      "type": "git:commit",
+      "value": "5bfc110",
+      "label": "commit that introduced the helper"
+    },
+    {
+      "type": "git:commit",
+      "value": "9c0fddc"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1783624084464,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 239
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783624178357,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1783624084464,
+  "updated_at": 1783624178357,
+  "completed_at": 1783624178357,
+  "edges": []
+}

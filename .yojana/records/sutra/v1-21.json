@@ -1,0 +1,74 @@
+{
+  "id": "019e2229-d8eb-7861-872b-c84a27eb2467",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/21",
+  "sequence_number": 21,
+  "title": "Clean up stale spike entries and add deleted-file pruning",
+  "description": "Removed spike binaries (hdc-*, hrr-*, fca-spike, salsa-spike, dd-spike) persist as ghost entries in the index, inflating dead code counts (~70 of 103 dead symbols) and distorting health reports.\\n\\nReparse to clear them. Add a prune step to parse_workspace that checks indexed file existence before the walk-and-parse loop.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "parse_workspace prunes files that no longer exist on disk"
+    },
+    {
+      "done": false,
+      "text": "After reparse, sutra_dead no longer reports spike binary symbols"
+    },
+    {
+      "done": false,
+      "text": "sutra_map no longer lists removed files"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "c480f64"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review:2026-05-13-v1",
+    "wave-a"
+  ],
+  "history": [
+    {
+      "ts": 1778689628395,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 21
+      }
+    },
+    {
+      "ts": 1778690468352,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778690576473,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689628395,
+  "updated_at": 1778690576473,
+  "completed_at": 1778690576473,
+  "edges": []
+}

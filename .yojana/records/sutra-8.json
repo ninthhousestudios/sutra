@@ -1,0 +1,106 @@
+{
+  "id": "019e027b-465d-75d0-9c52-6c6611f191bc",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/8",
+  "sequence_number": 8,
+  "title": "sutra_status MCP tool",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\nNew `sutra_status` MCP tool that replaces `sutra_add_root` as the session-start call. Takes `path` and optional `languages` (same inputs as `sutra_add_root`).\n\nBehavior:\n1. Check if daemon is alive via HTTP to `SUTRA_LISTEN_ADDR`\n2. Daemon alive: `POST /workspaces` to register, block up to 10s if daemon is doing initial parse, return workspace status\n3. Daemon not alive: fall back to local mode — register workspace locally, parse if needed (same as current `sutra_add_root`), return status\n\nResponse: `{ workspace, root, mode (daemon|local), status (ready|parsing|empty), last_parse, files, symbols, smriti_connected, is_stale }`\n\n`sutra_add_root` remains as explicit \"force reparse\" tool. Agent CLAUDE.md instruction changes from `sutra_add_root` to `sutra_status`.\n\n## Acceptance criteria\n\n- [ ] `sutra_status` tool registered in MCP server\n- [ ] Daemon alive path: registers workspace via POST /workspaces, returns daemon mode status\n- [ ] Daemon not alive path: falls back to local parse, returns local mode status\n- [ ] Blocks up to 10s for initial parse when daemon is parsing a new workspace\n- [ ] Response includes mode, status, last_parse, files, symbols, smriti_connected, is_stale\n- [ ] `sutra_add_root` still works as force-reparse\n- [ ] Agent CLAUDE.md updated: sutra_status replaces sutra_add_root as session-start call\n\n## Blocked by\n\n- sutra/5 — REST endpoints + service install",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "sutra_status tool registered in MCP server"
+    },
+    {
+      "done": true,
+      "text": "Daemon alive: registers workspace via POST /workspaces, returns daemon mode status"
+    },
+    {
+      "done": true,
+      "text": "Daemon not alive: falls back to local parse, returns local mode status"
+    },
+    {
+      "done": true,
+      "text": "Blocks up to 10s for initial parse when daemon is parsing new workspace"
+    },
+    {
+      "done": true,
+      "text": "Response includes mode, status, last_parse, files, symbols, smriti_connected, is_stale"
+    },
+    {
+      "done": true,
+      "text": "sutra_add_root still works as force-reparse"
+    },
+    {
+      "done": true,
+      "text": "Agent CLAUDE.md updated: sutra_status replaces sutra_add_root"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "1bd4b45"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "watcher",
+    "mcp"
+  ],
+  "history": [
+    {
+      "ts": 1778158093917,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 8
+      }
+    },
+    {
+      "ts": 1778184852995,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778185222668,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158093917,
+  "updated_at": 1778185222668,
+  "completed_at": 1778185222668,
+  "edges": [
+    {
+      "id": "019e027b-873b-7a80-bb9b-aa65140a80a3",
+      "edge_type": "depends_on",
+      "source": "sutra/8",
+      "target": "sutra/5",
+      "note": null,
+      "created_at": 1778158110523
+    },
+    {
+      "id": "019e027b-9ba1-74e0-a281-14375f11067b",
+      "edge_type": "refines",
+      "source": "sutra/8",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158115745
+    }
+  ]
+}

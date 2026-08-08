@@ -1,0 +1,126 @@
+{
+  "id": "019f2fa9-5e5e-7952-9018-585ae322c1d6",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/226",
+  "sequence_number": 226,
+  "title": "Structural hashing (AST-based, whitespace/comment-invariant)",
+  "description": "Replace blake3-over-raw-text hashing in symbol_diff.rs with AST-token-stream hashing that ignores whitespace and comments. Currently sutra's `signature_hash` and `body_hash` are blake3 over raw extracted text — reformatting registers as SignatureChanged/BodyChanged even with zero semantic change.\n\nsem's approach (MIT, can port directly with attribution): zero-alloc AST token stream through xxHash64, skipping comment nodes, normalizing whitespace via `trim_bytes`, hashing both node *kind* (structure) and leaf *text* (content). Also has a variant that excludes the entity's own name span so a bare rename yields the same structural hash — prerequisite for rename detection (task 2).\n\nThis is the highest-priority item because it directly improves diff quality AND is the foundation for rename/move detection.\n\nReference implementation:\n- `sutra-surveys/sem/crates/sem-core/src/utils/hash.rs` — `structural_hash()`, `hash_structural_tokens()`, `structural_hash_excluding_range()`\n- `sutra-surveys/sem/crates/sem-core/src/model/entity.rs` — `SemanticEntity.structural_hash` field\n\nSutra integration points:\n- `sutra/src/tools/symbol_diff.rs` — where `signature_hash` / body hash comparisons drive Added/Deleted/SignatureChanged/BodyChanged classification\n- `sutra/src/parser/{rust,dart,c,python}.rs` — where `ExtractedSymbol` is produced; `signature_hash` is currently blake3 of the signature string\n\nLicense: sem is MIT. Direct port into AGPL sutra is fine — add attribution in NOTICE file.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "xxh3-64 (new xxhash-rust dep) over existing blake3",
+      "rationale": "Faithful port of sem's streaming zero-alloc traversal; 64-bit collision risk irrelevant at repo scale",
+      "rejected": "blake3 (already a dep) — streaming works but re-deriving the traversal against a different hasher invites port-divergence bugs for no benefit"
+    },
+    {
+      "decision": "Single name-span-excluded structural hash serves both cosmetic-change detection and rename matching",
+      "rationale": "For cosmetic detection the matched pair has identical names, so name exclusion is harmless; sem's phase-2 rename matching requires the exclusion",
+      "rejected": "Dual variants (name-included + name-excluded) — redundant storage and compute"
+    },
+    {
+      "decision": "Persist structural_hash as nullable symbols-table column now",
+      "rationale": "Trivial migration (nullable, upsert-backfilled on reindex); unlocks incremental-reindex skip and sutra_similar/duplicates reuse later",
+      "rejected": "Diff-path-only computation — avoids migration but forecloses reuse; migration cost is near zero"
+    },
+    {
+      "decision": "CosmeticChanged as explicit new ChangeKind, weighted ~0 in consumers",
+      "rationale": "Sutra consumers surface change lists; silently collapsing to unchanged loses information and violates refactor contract discipline (L9)",
+      "rejected": "sem's behavior (drop the match entirely, report nothing)"
+    }
+  ],
+  "implementation_plan": "Design settled 2026-07-10 (exploration + grilling in session). Corrections to original description: sutra's signature_hash is blake3 over a CONSTRUCTED signature string (build_fn_signature), computed at parse time while the tree-sitter node is alive — no plumbing problem. The raw-text hash is body_hash, computed post-hoc in symbol_diff.rs. The diff path (diff_file, symbol_diff.rs:164-212) re-parses both git blobs fresh and never reads the persisted index, so the diff use case itself needs no migration.\n\nPlan:\n1. Add xxhash-rust (xxh3) dep. Port sem's hash_structural_tokens + excluding-range variant from /home/josh/soft/sutra-surveys/sem/crates/sem-core/src/utils/hash.rs into new src/parser/structural_hash.rs — language-agnostic fn(node: &Node, source: &[u8], exclude: Option<Range<usize>>) -> u64, formatted \"{:016x}\". Iterative pre-order DFS with reused TreeCursor + reversed-children worklist; skip comment kinds {comment, line_comment, block_comment, doc_comment, tag_comment}; leaf nodes → ASCII-trimmed byte slice + b\" \"; internal nodes → kind bytes + b\":\". Excluding variant skips leaves overlapping the excluded byte range, still descends internals. MIT attribution in NOTICE file.\n2. Compute ONE hash per symbol: name-span-excluded structural hash (exclude = the symbol's own name node byte range). Compute inside extract_symbol() in each of src/parser/{rust,dart,c,python}.rs where signature_hash is already computed (node alive). New field structural_hash: Option<String> on ExtractedSymbol (parser/mod.rs:22-40).\n3. Persist: new migration adding nullable structural_hash column to symbols table; wire through InsertSymbolParams/SymbolRow (db/mod.rs:233-262) and the upsert (db/mod.rs:790-891, structural_hash = excluded.structural_hash). Old rows NULL until reindex — no backfill needed.\n4. symbol_diff.rs classify_symbols: for matched pairs where signature_hash equal and body_hash (raw text) differs, compare structural hashes; equal → new ChangeKind::CosmeticChanged (formatting/comment-only). Otherwise BodyChanged as today.\n5. diff_impact.rs: serialize CosmeticChanged; audit so cosmetic changes carry ~zero weight in any counting/risk aggregation (contract change: BodyChanged counts will drop — this is the point, but per lessons ledger L9 discipline, diff the behavioral contract of every consumer).\n\nTests: reformat-only fixture → CosmeticChanged; comment-only edit → CosmeticChanged; real body change → BodyChanged; two symbols differing only in name → equal structural hashes (foundation for sutra/227); per-language coverage rust+dart minimum.",
+  "execution_record": "Implemented as planned with minor divergences: (1) Migration 0047 marked ephemeral_only=true because the symbols table itself is ephemeral — on reindex, the table is dropped and recreated from 0001_initial, so the ALTER TABLE must re-run. (2) For C parser, added find_name_node_in_declarator helper (mirrors existing find_name_in_declarator but returns Node instead of String) to get the name byte range for deeply-nested declarator chains. (3) Dart's build_symbol takes structural_hash as a parameter (same pattern as signature/signature_hash) since the name node comes from different source nodes (sig_node vs span_node) depending on the extraction path.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "09d1aae"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "sem-inspired"
+  ],
+  "history": [
+    {
+      "ts": 1783211056734,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 226
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704172852,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783704921577,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Design: Structural hashing (AST-based, whitespace/comment-invariant)",
+        "to": "Structural hashing (AST-based, whitespace/comment-invariant)"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783705163726,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "ready-for-agent"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1783951223772,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783952914164,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: approve with notes (3 medium findings).\\n\\n1. NULL structural_hash after non-reindex upgrade — by design per plan (diff path re-parses fresh, doesn't read DB). DB consumers need reparse.\\n2. C/Python not in language_for_path — pre-existing limitation, not a regression from this task.\\n3. C field hashes excluded name incorrectly (passed None) — FIXED in 8819bbc. find_field_identifier refactored to return Node for byte-range exclusion.",
+      "ts": 1783953304728
+    }
+  ],
+  "created_at": 1783211056734,
+  "updated_at": 1783952914164,
+  "completed_at": 1783952914164,
+  "edges": [
+    {
+      "id": "019f2faa-7c5e-74a1-bcf8-41e3517ef252",
+      "edge_type": "depends_on",
+      "source": "sutra/227",
+      "target": "sutra/226",
+      "note": "Rename detection requires structural hashing to match entities by AST structure excluding name span",
+      "created_at": 1783211129950
+    }
+  ]
+}

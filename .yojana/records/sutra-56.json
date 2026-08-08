@@ -1,0 +1,47 @@
+{
+  "id": "019e8396-dee6-7042-b300-fbc829a37fa7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/56",
+  "sequence_number": 56,
+  "title": "concept density: normalize stems by stripping common affixes",
+  "description": "From codex review of sutra/49: extract_stems tokenizes symbol names but doesn't strip common prefixes/suffixes. Repetitive APIs like handle_create/handle_update/handle_delete all count the shared 'handle' token, inflating diversity. AC says 'strip common prefixes/suffixes' — a frequency-based filter or TF-IDF-style weighting would improve the signal.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "component-discovery"
+  ],
+  "history": [
+    {
+      "ts": 1780324163302,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 56
+      }
+    },
+    {
+      "ts": 1780324794109,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780324163302,
+  "updated_at": 1780324794109,
+  "completed_at": 1780324794109,
+  "edges": []
+}

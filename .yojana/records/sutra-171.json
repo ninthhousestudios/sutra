@@ -1,0 +1,114 @@
+{
+  "id": "019ed23b-ac68-78e1-9053-3050610168f0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/171",
+  "sequence_number": 171,
+  "title": "5x-review-1: review sutra_explore skeleton + initial sutra-tend",
+  "description": "## Parent\n\nsutra/169 — PRD: sutra_explore\n\n## What to review\n\nThe sutra_explore tool exists end-to-end after slice sutra/170. Review:\n\n- MCP interface shape: are the args and response contract right?\n- Response structure: does the item/strategy/summary shape match the PRD spec?\n- Basic grep→rank→assemble pipeline: does it work for a few real queries?\n- Code placement: does `src/tools/explore.rs` follow the orient.rs/review.rs patterns?\n\n**vidhi-sutra-tend moment:** The new `src/tools/explore.rs` module exists for the first time. Run sutra-tend to set initial constraints (forbidden deps, module boundaries) while the module is still small.\n\n## Acceptance criteria\n\n- [ ] MCP interface matches PRD spec\n- [ ] Response shape verified against PRD\n- [ ] Manual smoke test with 2-3 real queries\n- [ ] Initial sutra constraints set for src/tools/explore.rs\n\n## Blocked by\n\n- sutra/170",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "[x] MCP interface matches PRD spec"
+    },
+    {
+      "done": false,
+      "text": "[x] Response shape verified against PRD"
+    },
+    {
+      "done": false,
+      "text": "[ ] Manual smoke test with 2-3 real queries"
+    },
+    {
+      "done": false,
+      "text": "[x] Initial sutra constraints set for src/tools/explore.rs"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/169",
+      "label": "PRD"
+    },
+    {
+      "type": "git:commit",
+      "value": "a6c7591"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1781643586664,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 171
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781652329292,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781652333791,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review of sutra/170 (c7961e5). Verdict: needs-attention. 4 findings:\\n\\n1. [high] PRD summary contract incomplete — missing direct_matches, fan_out_items, components_touched fields\\n2. [high] Snake_case queries not expanded into split variants — \\\"parse_imports\\\" produces only literal, not \\\"parse\\\" + \\\"imports\\\"\\n3. [medium] Negative budget bypasses truncation — -1 cast to usize becomes huge\\n4. [medium] Nondeterministic ranking for equal scores — HashMap iteration order leaks through ties\"",
+      "ts": 1781651943605
+    },
+    {
+      "author": "agent",
+      "text": "Review complete. Codex adversarial review surfaced 4 findings (2 high, 2 medium), all fixed in 5a249fe. Sutra-tend pass: 2 constraints added (explore-no-similarity, explore-no-conventions), all bind, 0 new violations. Remaining AC: manual smoke test with real queries (deferred to user).\"",
+      "ts": 1781652322834
+    }
+  ],
+  "created_at": 1781643586664,
+  "updated_at": 1781652333791,
+  "completed_at": 1781652333791,
+  "arc_id": "019ed23b-06de-71c1-bd96-08078be5c0d1",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019ed23c-b3ae-7c11-835e-c42662c6afdd",
+      "edge_type": "depends_on",
+      "source": "sutra/171",
+      "target": "sutra/170",
+      "note": null,
+      "created_at": 1781643654062
+    },
+    {
+      "id": "019ed23c-b4e1-7893-a1c7-e04fb8228d8d",
+      "edge_type": "depends_on",
+      "source": "sutra/172",
+      "target": "sutra/171",
+      "note": null,
+      "created_at": 1781643654369
+    }
+  ]
+}

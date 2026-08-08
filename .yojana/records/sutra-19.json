@@ -1,0 +1,125 @@
+{
+  "id": "019e0929-0fbf-7fc2-83d6-ff0485fa6f95",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/19",
+  "sequence_number": 19,
+  "title": "Construction-site detection for struct fields",
+  "description": "Enhance sutra to detect and enumerate struct construction sites (not just references) so that adding a field to a widely-used struct can be preceded by a blast-radius survey. Currently sutra_refs/sutra_impact show references, but don't distinguish construction sites (Foo { field: val, .. }) from field accesses or type mentions. A dedicated query or flag on sutra_refs that filters to construction sites would let agents do a pre-flight check before cascading struct changes.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "New RefContextKind::Construction variant added to parser/mod.rs enum, with as_str/from_str support"
+    },
+    {
+      "done": false,
+      "text": "Rust parser: classify_ref_context recognizes struct_expression parent and returns Construction for the type name"
+    },
+    {
+      "done": false,
+      "text": "Dart parser: classify_ref_context recognizes constructor invocations (new Foo() / Foo()) — scope to Dart class instantiation, not struct literals since Dart has no structs"
+    },
+    {
+      "done": false,
+      "text": "sutra_refs gains optional context_kind filter parameter — when set, only refs with matching context_kind are returned"
+    },
+    {
+      "done": false,
+      "text": "Contract tests: Rust struct literal produces a ref with context_kind=construction"
+    },
+    {
+      "done": false,
+      "text": "Contract tests: sutra_refs context_kind filter returns only matching refs"
+    },
+    {
+      "done": false,
+      "text": "Compiles, tests pass, clippy clean"
+    }
+  ],
+  "decisions": [
+    {
+      "date": "2026-05-09",
+      "decision": "Dart class instantiation stays as Call for v1 — Dart has no struct literals, and class construction via Foo() is syntactically a call_expression already"
+    },
+    {
+      "date": "2026-05-09",
+      "decision": "Tuple struct construction Foo(1,2) stays as Call — it is syntactically a function call and distinguishing it would require type information sutra doesn't have"
+    },
+    {
+      "date": "2026-05-09",
+      "decision": "Verified: Dart tree-sitter grammar has no object_creation_expression node — constructor calls already route through call_expression, confirming the Call classification is correct"
+    }
+  ],
+  "implementation_plan": "## Construction-site detection\n\n### Wave 1: Add the variant\n\n1. `src/parser/mod.rs`: Add `Construction` to `RefContextKind` enum, `as_str` returns `\"construction\"`, `from_str` accepts it.\n\n### Wave 2: Rust parser (primary target)\n\n2. `src/parser/rust.rs` — `classify_ref_context()`: Add a case for `struct_expression`.\n\nIn tree-sitter-rust, `Foo { bar: 1 }` parses as:\n```\nstruct_expression\n  name: type_identifier  ← \"Foo\" — this is the ref node\n  body: field_initializer_list\n    field_initializer\n      field_identifier: \"bar\"\n      value: integer_literal: 1\n```\n\nThe ref walker visits the `type_identifier` \"Foo\". At that point, `node.parent()` is `struct_expression`. So the change is:\n\n```rust\nfn classify_ref_context(node: Node) -> RefContextKind {\n    if let Some(parent) = node.parent() {\n        match parent.kind() {\n            \"call_expression\" => return RefContextKind::Call,\n            \"struct_expression\" => return RefContextKind::Construction,  // ← NEW\n            ...\n```\n\nThis is the name node of the struct literal, not the field initializers. Field identifiers inside the body are separate nodes (and currently classified as Other or FieldAccess).\n\n**Edge cases to verify:**\n- `Foo { ..default }` (base/spread expression) — the \"Foo\" name is still a child of `struct_expression`, should work\n- `module::Foo { bar: 1 }` — the path is a `scoped_type_identifier` → the `type_identifier` \"Foo\" is nested deeper. Need to walk up past `scoped_type_identifier` to find `struct_expression`. Check if the current code handles this or if we need an ancestor walk.\n- Tuple struct construction `Foo(1, 2)` — this is a `call_expression`, already classified as `Call`. Leave it — it's syntactically a function call.\n\n### Wave 3: Dart parser\n\n3. `src/parser/dart.rs` — `classify_ref_context()`: Dart doesn't have struct literals, but class instantiation (`Foo()`, `Foo.named()`, `new Foo()`) is the equivalent. In tree-sitter-dart these are typically under a node whose parent is already `call_expression` — check if these are actually already captured as `Call`. If so, no Dart change needed for v1. If there's a distinct `object_creation_expression` or similar, add the mapping.\n\n**Decision needed:** Is `Call` sufficient for Dart class construction, or do we want `Construction` there too? Recommend: leave Dart as `Call` for v1, revisit if agents actually need the distinction for Dart.\n\n### Wave 4: sutra_refs filter\n\n4. `src/tools/refs.rs` — Add `context_kind: Option<String>` to `RefsArgs`. When set, filter `all_refs` to only those matching the given context_kind before grouping. This lets agents do `sutra_refs(symbol=\"MyStruct\", context_kind=\"construction\")` to find all construction sites.\n\n5. `src/mcp.rs` — Update `sutra_refs` tool description to mention the new filter.\n\n### Wave 5: Tests\n\n6. `tests/mcp_contract_test.rs` or a new `tests/construction-test.rs`:\n   - Parse a Rust file containing `Foo { bar: 1 }`, verify the ref to `Foo` has context_kind `\"construction\"`\n   - Parse a Rust file containing `Foo(1)` (tuple struct), verify it's still `\"call\"` not `\"construction\"`\n   - Test sutra_refs with context_kind filter\n\n### Not in scope\n- Detecting `Default::default()` or builder patterns as construction — these are function calls\n- Detecting `..` spread in struct expressions — the struct name is still `Construction`, the spread source is a separate ref\n- Enum variant construction `Foo::Bar { .. }` — worth noting but follows the same `struct_expression` pattern",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "41aaea3"
+    },
+    {
+      "type": "git:commit",
+      "value": "f994c66"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "friction-reduction",
+    "code-intelligence"
+  ],
+  "history": [
+    {
+      "ts": 1778270146495,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 19
+      }
+    },
+    {
+      "ts": 1778334685769,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778335084320,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778335590909,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Adversarial review verdict: needs-attention\\n\\n1. [high] Construction refs bypass resolver kind filter — resolver.rs only enables kind filtering for TypeUse and Call, so Construction refs resolve without type-symbol constraint. Could misattribute refs in same-short-name collisions.\\n\\n2. [medium] Scoped path classification is overbroad — the ancestor walk labels qualifier segments (e.g. 'inner' in inner::Foo) as Construction. Also misses generic_type_with_turbofish (Foo::<T> { .. }).",
+      "ts": 1778336038713
+    },
+    {
+      "author": "agent",
+      "text": "Fixed both codex review findings:\\n1. Resolver: Construction now included in kind_compatible and use_kind_filter — prevents misresolution on same-short-name collisions.\\n2. Parser: replaced overbroad ancestor walk with is_struct_expression_name — only tags leaf type_identifier, handles scoped paths without tagging qualifier, adds turbofish coverage.\\n\\nAdded 3 new tests: qualifier exclusion, turbofish construction, resolver struct-vs-function preference. All 230 tests pass.",
+      "ts": 1778336305001
+    }
+  ],
+  "created_at": 1778270146495,
+  "updated_at": 1778336299842,
+  "completed_at": 1778335590909,
+  "edges": []
+}

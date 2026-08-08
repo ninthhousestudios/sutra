@@ -1,0 +1,148 @@
+{
+  "id": "019e92b1-1829-7492-8ebb-c1c8c2adbbd9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/88",
+  "sequence_number": 88,
+  "title": "5e-4: HRR encoder + codebook + pipeline",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to build\\n\\nPort the HRR encoder from the spike (branch spike/hdc-ast-encoding, specifically hrr.rs) into a production similarity/ module. Compute strip + embed mode vectors for every function-level symbol at parse time.\\n\\n- similarity/encoder.rs: recursive tree-structured encoding. For each function symbol's tree-sitter subtree: look up base vector for node kind from codebook, recursively encode children with position permutation (circular shift), bundle via elementwise average, bind with kind vector via circular convolution. Strip mode ignores identifier text; embed mode binds identifier names.\\n- similarity/codebook.rs: persistent random base vectors per AST node kind. Stored in durable partition (append-only, never modified). New entries created on first encounter.\\n- DB migration: hrr_vectors(symbol_id INTEGER, mode TEXT, vector BLOB) in ephemeral partition. hrr_codebook(key TEXT PK, vector BLOB) in durable partition.\\n- Pipeline integration: after tree-sitter symbol extraction, encode each function-level symbol into strip + embed vectors and store.\\n- Dimensions: 1024 f64s per vector (~8KB per vector, ~32MB for 2000-symbol workspace with two modes).\\n\\n## Acceptance criteria\\n\\n- [ ] similarity/encoder.rs ported from spike hrr.rs with strip + embed modes\\n- [ ] similarity/codebook.rs with durable SQLite storage, append-only semantics\\n- [ ] DB migration for hrr_vectors (ephemeral) and hrr_codebook (durable)\\n- [ ] Pipeline integration: HRR vectors computed at parse time for function-level symbols\\n- [ ] Vectors survive reparse (codebook stable → same input produces same vector)\\n- [ ] Tests: determinism (same tree → same vector), discrimination (different trees → different vectors), position sensitivity (reordered children → different vectors), strip ignores identifiers, embed distinguishes identifiers\\n\\n## Blocked by\\n\\n- sutra/87 (5e-review-1: checkpoint 1 quality gate)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "similarity/encoder.rs ported from spike hrr.rs with strip + embed modes"
+    },
+    {
+      "done": true,
+      "text": "similarity/codebook.rs with durable SQLite storage, append-only semantics"
+    },
+    {
+      "done": true,
+      "text": "DB migration for hrr_vectors (ephemeral) and hrr_codebook (durable)"
+    },
+    {
+      "done": true,
+      "text": "Pipeline integration: HRR vectors computed at parse time for function-level symbols"
+    },
+    {
+      "done": true,
+      "text": "Vectors survive reparse (codebook stable → same input produces same vector)"
+    },
+    {
+      "done": true,
+      "text": "Tests: determinism, discrimination, position sensitivity, strip ignores identifiers, embed distinguishes identifiers"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "## Approach\n\nPost-parse step in `post_parse_sequence`, matching the health/components pattern. Re-parses source files with tree-sitter to access ASTs (tree is dropped by `parse_single_file` before post_parse runs — re-parse cost is ~ms/file, negligible vs FFT encoding cost). The HRR core (FFT, vector ops, codebook, RNG) is ported verbatim from the spike's `hrr.rs`; the encoder is adapted from `hrr-spike.rs::encode_hrr`. Codebook entries are durable (survive reindex), vectors are ephemeral (recomputed from source + codebook on full reindex).\n\nAlternative considered: encoding inline during `parse_single_file` while the tree is still alive. Rejected because it requires threading the codebook and ParserPool through parse signatures, and breaks the architectural pattern where all derived data (health, components, pagerank) is computed in `post_parse_sequence`.\n\n## Files\n\n- **Create**: `src/similarity/mod.rs` — module root, re-exports, `compute_hrr_vectors` entry point\n- **Create**: `src/similarity/hrr.rs` — core HRR types: `HrrVec`, `Rng`, FFT, `bundle()` (ported from spike `hrr.rs`)\n- **Create**: `src/similarity/codebook.rs` — `Codebook` with durable SQLite backing, append-only semantics\n- **Create**: `src/similarity/encoder.rs` — recursive tree-sitter encoder with strip + embed modes\n- **Create**: `migrations/0029_hrr_codebook.sql` — durable codebook table\n- **Create**: `migrations/0030_hrr_vectors.sql` — ephemeral vectors table\n- **Modify**: `src/lib.rs` (line ~21) — add `pub mod similarity;`\n- **Modify**: `src/db/mod.rs` (lines ~42-67) — add `hrr_codebook` (Durable) and `hrr_vectors` (Ephemeral) to `TABLE_REGISTRY`\n- **Modify**: `src/db/migrations.rs` (lines ~143-149) — add two migration entries\n- **Modify**: `src/pipeline.rs` (lines ~604-608) — add `compute_hrr_vectors` call after health findings\n- **Create**: `src/db/similarity.rs` — DB methods: `replace_hrr_vectors`, `load_codebook`, `save_codebook_entries`\n- **Test**: `tests/similarity_test.rs` — determinism, discrimination, position sensitivity, strip/embed distinction, codebook persistence\n\n## Steps\n\n### Step 1: Migration files\n\nCreate the two migration SQL files. Codebook is durable (append-only, survives reindex). Vectors are ephemeral (recomputed on reindex).\n\n```sql\n-- migrations/0029_hrr_codebook.sql\nCREATE TABLE IF NOT EXISTS hrr_codebook (\n    key     TEXT PRIMARY KEY,\n    vector  BLOB NOT NULL\n);\n\n-- migrations/0030_hrr_vectors.sql\nCREATE TABLE IF NOT EXISTS hrr_vectors (\n    symbol_id  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,\n    mode       TEXT NOT NULL,  -- 'strip' or 'embed'\n    vector     BLOB NOT NULL,\n    PRIMARY KEY (symbol_id, mode)\n);\n```\n\n### Step 2: Wire migrations and TABLE_REGISTRY\n\nIn `src/db/migrations.rs`, add two entries to `MIGRATIONS`:\n```rust\n(\n    \"0029_hrr_codebook\",\n    include_str!(\"../../migrations/0029_hrr_codebook.sql\"),\n    false,  // durable\n),\n(\n    \"0030_hrr_vectors\",\n    include_str!(\"../../migrations/0030_hrr_vectors.sql\"),\n    true,   // ephemeral — recomputed on reindex\n),\n```\n\nIn `src/db/mod.rs`, add to `TABLE_REGISTRY` (after `health_waivers`):\n```rust\nTableMeta { name: \"hrr_codebook\", partition: TablePartition::Durable, is_virtual: false },\nTableMeta { name: \"hrr_vectors\", partition: TablePartition::Ephemeral, is_virtual: false },\n```\n\n### Step 3: Port HRR core (`src/similarity/hrr.rs`)\n\nDirect port of spike's `hrr.rs`. All types and functions copied verbatim: `Complex`, `fft`, `to_freq`, `from_freq`, `HrrVec` (with `bind`, `unbind`, `permute`, `cosine_similarity`, `normalize`, `add`, `sub`, `scale`, `bundle`), `Rng` (xoshiro + Box-Muller gaussian). Remove `cleanup()` and `Codebook` (codebook moves to its own module with DB backing). Keep `DEFAULT_DIM = 1024`.\n\n```rust\n// src/similarity/hrr.rs\npub const DEFAULT_DIM: usize = 1024;\n\n#[derive(Clone)]\npub struct HrrVec {\n    pub data: Vec<f64>,\n}\n\nimpl HrrVec {\n    pub fn random(rng: &mut Rng) -> Self { /* ... scale = 1/sqrt(DIM), gaussian init ... */ }\n    pub fn zero() -> Self { /* ... */ }\n    pub fn bind(&self, other: &Self) -> Self { /* FFT multiply */ }\n    pub fn permute(&self, n: usize) -> Self { /* circular shift */ }\n    pub fn cosine_similarity(&self, other: &Self) -> f64 { /* ... */ }\n    pub fn normalize(&self) -> Self { /* ... */ }\n    pub fn add(&self, other: &Self) -> Self { /* ... */ }\n    // Serialization for DB storage\n    pub fn to_bytes(&self) -> Vec<u8> { /* 1024 * 8 = 8192 bytes, little-endian f64s */ }\n    pub fn from_bytes(bytes: &[u8]) -> Self { /* inverse */ }\n}\n\npub struct Rng { state: [u64; 2] }\nimpl Rng {\n    pub fn new(seed: u64) -> Self { /* xoshiro init */ }\n    pub fn next_gaussian(&mut self) -> f64 { /* Box-Muller */ }\n}\n\npub fn bundle(vecs: &[HrrVec]) -> HrrVec { /* elementwise add + normalize */ }\n```\n\n### Step 4: Codebook with durable storage (`src/similarity/codebook.rs`)\n\nIn-memory HashMap backed by durable SQLite table. Loads existing entries on init, generates new random vectors for unknown keys, tracks new entries for batch-save.\n\n```rust\n// src/similarity/codebook.rs\nuse super::hrr::{HrrVec, Rng, DEFAULT_DIM};\nuse std::collections::HashMap;\n\npub struct Codebook {\n    entries: HashMap<String, HrrVec>,\n    new_keys: Vec<String>,  // keys added this session, pending save\n    rng: Rng,\n}\n\nimpl Codebook {\n    /// Load existing entries from DB, init RNG for new entries\n    pub fn load(conn: &rusqlite::Connection) -> Result<Self> {\n        let mut stmt = conn.prepare(\"SELECT key, vector FROM hrr_codebook\")?;\n        let mut entries = HashMap::new();\n        let mut rows = stmt.query([])?;\n        while let Some(row) = rows.next()? {\n            let key: String = row.get(0)?;\n            let blob: Vec<u8> = row.get(1)?;\n            entries.insert(key, HrrVec::from_bytes(&blob));\n        }\n        // Seed derived from entry count for reproducibility after restarts\n        // (new entries always get fresh vectors, determinism comes from persistence)\n        let seed = 0x5554_5241 ^ (entries.len() as u64);\n        Ok(Self { entries, new_keys: Vec::new(), rng: Rng::new(seed) })\n    }\n\n    pub fn get_or_create(&mut self, key: &str) -> HrrVec {\n        if let Some(v) = self.entries.get(key) {\n            return v.clone();\n        }\n        let v = HrrVec::random(&mut self.rng);\n        self.entries.insert(key.to_string(), v.clone());\n        self.new_keys.push(key.to_string());\n        v\n    }\n\n    /// Persist only new entries (append-only)\n    pub fn save_new(self, conn: &rusqlite::Connection) -> Result<usize> {\n        let mut stmt = conn.prepare(\n            \"INSERT OR IGNORE INTO hrr_codebook (key, vector) VALUES (?1, ?2)\"\n        )?;\n        for key in &self.new_keys {\n            let vec = &self.entries[key];\n            stmt.execute(rusqlite::params![key, vec.to_bytes()])?;\n        }\n        Ok(self.new_keys.len())\n    }\n}\n```\n\n### Step 5: Recursive encoder (`src/similarity/encoder.rs`)\n\nPort of `hrr-spike.rs::encode_hrr`. Two modes: strip (ignores identifier text) and embed (binds identifier names). Operates on tree-sitter subtrees.\n\n```rust\n// src/similarity/encoder.rs\nuse super::codebook::Codebook;\nuse super::hrr::{self, HrrVec};\n\nconst MAX_DEPTH: usize = 20;\n\npub fn encode_subtree(\n    node: &tree_sitter::Node,\n    source: &[u8],\n    codebook: &mut Codebook,\n    embed_idents: bool,\n) -> HrrVec {\n    encode_recursive(node, source, codebook, MAX_DEPTH, embed_idents)\n}\n\nfn encode_recursive(\n    node: &tree_sitter::Node,\n    source: &[u8],\n    codebook: &mut Codebook,\n    depth: usize,\n    embed_idents: bool,\n) -> HrrVec {\n    let kind_vec = codebook.get_or_create(node.kind());\n\n    if depth == 0 || node.child_count() == 0 {\n        if embed_idents\n            && (node.kind() == \"identifier\" || node.kind() == \"type_identifier\")\n        {\n            if let Ok(text) = node.utf8_text(source) {\n                let name_vec = codebook.get_or_create(&format!(\"id:{text}\"));\n                return kind_vec.bind(&name_vec);\n            }\n        }\n        return kind_vec;\n    }\n\n    let mut child_vecs = Vec::with_capacity(node.child_count());\n    let mut pos = 0usize;\n    for i in 0..node.child_count() {\n        let child = node.child(i).unwrap();\n        if !child.is_named() { continue; }\n        let child_enc = encode_recursive(&child, source, codebook, depth - 1, embed_idents);\n        child_vecs.push(child_enc.permute(pos + 1));\n        pos += 1;\n    }\n\n    if child_vecs.is_empty() {\n        return kind_vec;\n    }\n\n    let bundled = hrr::bundle(&child_vecs);\n    kind_vec.bind(&bundled)\n}\n```\n\n### Step 6: DB methods (`src/db/similarity.rs`)\n\nAdd a new `db/similarity.rs` submodule (like `db/health.rs`). Methods for replacing vectors and loading/saving codebook.\n\n```rust\n// src/db/similarity.rs\nuse crate::error::Result;\nuse super::Db;\n\n/// Row for a function symbol needing HRR encoding\npub struct HrrSymbolRow {\n    pub symbol_id: i64,\n    pub file_path: String,\n    pub language: String,\n    pub start_line: i64,\n    pub start_col: i64,\n    pub end_line: i64,\n    pub end_col: i64,\n}\n\nimpl Db {\n    /// All function/method symbols with their file paths, for HRR encoding.\n    pub fn function_symbols_for_hrr(&self) -> Result<Vec<HrrSymbolRow>> {\n        let conn = self.conn.lock();\n        let mut stmt = conn.prepare(\n            \"SELECT s.id, f.path, f.language,\n                    s.start_line, s.start_col, s.end_line, s.end_col\n             FROM symbols s JOIN files f ON s.file_id = f.id\n             WHERE s.kind IN ('function', 'method')\"\n        )?;\n        // ... map rows ...\n    }\n\n    pub fn replace_hrr_vectors(&self, vectors: &[(i64, &str, &[u8])]) -> Result<()> {\n        let conn = self.conn.lock();\n        conn.execute(\"DELETE FROM hrr_vectors\", [])?;\n        let mut stmt = conn.prepare(\n            \"INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)\"\n        )?;\n        for (sym_id, mode, blob) in vectors {\n            stmt.execute(rusqlite::params![sym_id, mode, blob])?;\n        }\n        Ok(())\n    }\n}\n```\n\n### Step 7: Entry point + pipeline integration (`src/similarity/mod.rs`, `src/pipeline.rs`)\n\nThe entry point loads the codebook, queries function symbols, groups by file, re-parses each with tree-sitter, encodes, stores. Pipeline calls it after health findings.\n\n```rust\n// src/similarity/mod.rs\npub mod codebook;\npub mod encoder;\npub mod hrr;\n\nuse crate::db::Db;\nuse crate::error::Result;\nuse crate::parser::adapter::LanguageRegistry;\nuse std::path::Path;\n\npub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<usize> {\n    let symbols = db.function_symbols_for_hrr()?;\n    if symbols.is_empty() { return Ok(0); }\n\n    let conn = db.conn.lock();\n    let mut codebook = codebook::Codebook::load(&conn)?;\n    drop(conn);\n\n    let registry = LanguageRegistry::new_with_defaults();\n    // Group symbols by file path\n    let mut by_file: HashMap<String, Vec<&HrrSymbolRow>> = HashMap::new();\n    for sym in &symbols { by_file.entry(sym.file_path.clone()).or_default().push(sym); }\n\n    let mut vectors: Vec<(i64, String, Vec<u8>)> = Vec::new();\n\n    for (path, file_symbols) in &by_file {\n        let full_path = workspace_root.join(path);\n        let source = std::fs::read_to_string(&full_path)?; // already indexed, must exist\n        let adapter = match registry.adapter_for_language(&file_symbols[0].language) {\n            Some(a) => a,\n            None => continue,\n        };\n        let mut parser = tree_sitter::Parser::new();\n        parser.set_language(&adapter.grammar())?;\n        let tree = parser.parse(&source, None)\n            .ok_or_else(|| SutraError::Parse(\"re-parse failed\".into()))?;\n\n        for sym in file_symbols {\n            let start = tree_sitter::Point::new(sym.start_line as usize, sym.start_col as usize);\n            let end = tree_sitter::Point::new(sym.end_line as usize, sym.end_col as usize);\n            let node = tree.root_node().descendant_for_point_range(start, end);\n            if let Some(node) = node {\n                // strip mode\n                let strip_vec = encoder::encode_subtree(&node, source.as_bytes(), &mut codebook, false);\n                vectors.push((sym.symbol_id, \"strip\".into(), strip_vec.to_bytes()));\n                // embed mode\n                let embed_vec = encoder::encode_subtree(&node, source.as_bytes(), &mut codebook, true);\n                vectors.push((sym.symbol_id, \"embed\".into(), embed_vec.to_bytes()));\n            }\n        }\n    }\n\n    let vec_refs: Vec<(i64, &str, &[u8])> = vectors.iter()\n        .map(|(id, mode, blob)| (*id, mode.as_str(), blob.as_slice()))\n        .collect();\n    db.replace_hrr_vectors(&vec_refs)?;\n\n    let conn = db.conn.lock();\n    codebook.save_new(&conn)?;\n\n    Ok(vectors.len() / 2) // symbol count (2 vectors per symbol)\n}\n```\n\nIn `src/pipeline.rs::post_parse_sequence`, after the health findings block (~line 608):\n```rust\nlet hrr_count = crate::similarity::compute_hrr_vectors(db, workspace_root)?;\nif hrr_count > 0 {\n    info!(count = hrr_count, \"computed HRR vectors\");\n}\n```\n\n### Step 8: Module registration\n\nIn `src/lib.rs`, add after the last `pub mod` line:\n```rust\npub mod similarity;\n```\n\nIn `src/db/mod.rs`, add after `mod health;`:\n```rust\npub(crate) mod similarity;\n```\n\n### Step 9: Tests (`tests/similarity_test.rs`)\n\nIntegration tests against a real workspace with known Rust source files:\n\n```rust\n// Determinism: same tree → same vector\n// Parse the same file twice, encode, assert vectors are bitwise identical.\n\n// Discrimination: different functions → different vectors\n// Encode two structurally distinct functions, assert cosine similarity < 0.5\n\n// Position sensitivity: reordered children → different vectors\n// Encode `fn foo(a: i32, b: String)` vs `fn foo(b: String, a: i32)`, assert strip vectors differ\n\n// Strip ignores identifiers: rename variables, assert strip vectors are identical\n// fn add(x: i32, y: i32) -> i32 { x + y }\n// fn add(a: i32, b: i32) -> i32 { a + b }\n// Strip vectors should be identical\n\n// Embed distinguishes identifiers: same as above, assert embed vectors differ\n\n// Codebook persistence: encode, save, create new codebook from DB, encode again, assert same vectors\n```\n\nUnit tests for HRR core in `src/similarity/hrr.rs`:\n```rust\n// Port the 13 spike tests: orthogonality, bind/unbind roundtrip, bundle capacity, permute invertibility, etc.\n```\n\n## Acceptance criteria coverage\n\n- [x] \"similarity/encoder.rs ported from spike hrr.rs with strip + embed modes\" → Steps 3, 5\n- [x] \"similarity/codebook.rs with durable SQLite storage, append-only semantics\" → Step 4\n- [x] \"DB migration for hrr_vectors (ephemeral) and hrr_codebook (durable)\" → Steps 1, 2\n- [x] \"Pipeline integration: HRR vectors computed at parse time for function-level symbols\" → Step 7\n- [x] \"Vectors survive reparse (codebook stable → same input produces same vector)\" → Step 4 (durable codebook), Step 9 (codebook persistence test)\n- [x] \"Tests: determinism, discrimination, position sensitivity, strip ignores identifiers, embed distinguishes identifiers\" → Step 9",
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    },
+    {
+      "type": "git:range",
+      "value": "spike/hdc-ast-encoding"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity"
+  ],
+  "history": [
+    {
+      "ts": 1780577540137,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 88
+      }
+    },
+    {
+      "ts": 1780614649748,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780615541751,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780659125495,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577540137,
+  "updated_at": 1780659125495,
+  "completed_at": 1780659125495,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-de1f-7cb2-a360-40bc07f86d0f",
+      "edge_type": "depends_on",
+      "source": "sutra/88",
+      "target": "sutra/87",
+      "note": null,
+      "created_at": 1780577656351
+    },
+    {
+      "id": "019e92b2-e0f0-7371-a196-4cc15a6972e5",
+      "edge_type": "depends_on",
+      "source": "sutra/89",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577657072
+    },
+    {
+      "id": "019e92b2-e495-7db3-859f-f9d15a48639d",
+      "edge_type": "depends_on",
+      "source": "sutra/90",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577658005
+    },
+    {
+      "id": "019e92b2-ecef-77c3-90c0-d92f3f762adf",
+      "edge_type": "depends_on",
+      "source": "sutra/92",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577660143
+    },
+    {
+      "id": "019e92b3-0af1-7fa3-b398-0aee973a192f",
+      "edge_type": "depends_on",
+      "source": "sutra/93",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577667825
+    },
+    {
+      "id": "019e92b3-39c6-7092-93f0-a4e8cdbd6dcc",
+      "edge_type": "depends_on",
+      "source": "sutra/95",
+      "target": "sutra/88",
+      "note": null,
+      "created_at": 1780577679814
+    }
+  ]
+}

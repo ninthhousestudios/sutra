@@ -1,0 +1,64 @@
+{
+  "id": "019f8a79-bc3d-7ae0-ae68-f99890920f2b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/281",
+  "sequence_number": 281,
+  "title": "Intent-shaped lessons directive in manas-instructions.md",
+  "description": "Depends on sutra/276 landing first — this is the FALLBACK for the write-boundary hook, not the primary mechanism.\n\nRationale for sequencing: orient already surfaces lessons today and agents don't call it. A directive telling them to call it harder treats a structural problem as a compliance problem. Once the guard covers the write path without needing compliance, a directive is worth adding for plan-time lookup.\n\nFrame it as intent-shaped, not orient-shaped: \"before writing a new module, sutra_lessons(query=<what you're building>)\". Requires sutra/279 (categories as positive retrieval tier) to actually work well.\n\nFile: /home/josh/soft/manas/manas-cli/src/adapter/manas-instructions.md, &lt;sutra_mcp&gt; block, lessons section (lines 17-22).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "5ff984d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "manas-cli",
+    "docs"
+  ],
+  "history": [
+    {
+      "ts": 1784734661693,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 281
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784745848319,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784745852609,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784734661693,
+  "updated_at": 1784745852609,
+  "completed_at": 1784745852609,
+  "edges": []
+}

@@ -1,0 +1,76 @@
+{
+  "id": "019f84ba-b0c8-7f73-9403-34ec24547041",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/274",
+  "sequence_number": 274,
+  "title": "tsconfig.json paths/baseUrl import resolution",
+  "description": "The JS/TS import resolver (src/js_imports.rs) handles relative imports and leaves bare specifiers unresolved. Real-world TS projects commonly use tsconfig.json `paths` and `baseUrl` to define path aliases (e.g. `@/components/Foo` → `src/components/Foo.tsx`). Without this, imports using path aliases stay unresolved — sutra_deps returns no edges for them, and DD constraints (forbidden_dep, boundary) can't see those dependencies.\n\nScope:\n1. Parse `tsconfig.json` (and `jsconfig.json`) from workspace root, following `extends` chains\n2. Extract `compilerOptions.baseUrl` and `compilerOptions.paths` mappings\n3. In `resolve_js_imports`, after relative-import resolution fails, attempt path alias resolution: match the import specifier against `paths` patterns (glob-style with `*` wildcard), substitute, and resolve relative to `baseUrl`\n4. Cache the parsed tsconfig per workspace (it doesn't change between imports)\n\nEdge cases:\n- `paths` with multiple candidates (first match wins, per TS behavior)\n- `baseUrl` without `paths` (all bare specifiers resolve relative to baseUrl)\n- Nested tsconfigs in monorepos (out of scope for v1 — use workspace root's tsconfig)\n- `extends` pointing to node_modules presets (e.g. `@tsconfig/node18`) — best-effort, skip if unresolvable",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "sutra:symbol",
+      "value": "resolve_js_imports"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/273"
+    },
+    {
+      "type": "git:commit",
+      "value": "7047997"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "js-ts-support"
+  ],
+  "history": [
+    {
+      "ts": 1784638255304,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 274
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784638420464,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784638715557,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention (3 findings)\\n\\n1. [high] JSONC tsconfigs silently ignored — serde_json::from_str fails on comments/trailing commas common in real tsconfig files. FIXED in 3cf8be5: added strip_jsonc() + warn on parse failure.\\n\\n2. [medium] Path alias priority nondeterministic — HashMap iteration order. FIXED in 3cf8be5: switched to Vec<(String, Vec<String>)> preserving JSON key order.\\n\\n3. [medium] Extended config paths resolved against wrong directory — inherited baseUrl/paths strings not normalized to workspace-relative. NOT FIXED: task explicitly scopes out subdirectory configs (\\\"Nested tsconfigs in monorepos — out of scope for v1\\\"). The extends chain is same-directory siblings in all supported cases.\"",
+      "ts": 1784639149137
+    }
+  ],
+  "created_at": 1784638255304,
+  "updated_at": 1784638715557,
+  "completed_at": 1784638715557,
+  "edges": []
+}

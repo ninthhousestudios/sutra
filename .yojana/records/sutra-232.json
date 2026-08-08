@@ -1,0 +1,81 @@
+{
+  "id": "019f3f79-d22d-79d0-9ae8-3813fefcc0d8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/232",
+  "sequence_number": 232,
+  "title": "Demolition: remove drift, template, and waiver subsystems",
+  "description": "Per the sutra/176 decision (arc sutra/~12): delete the drift, template, and waiver subsystems. Lifetime usage: 0 waivers ever created across 48 workspaces, 0 templates in current DBs, no drift alert ever acted on.\n\nRemove:\n- `src/conventions/drift.rs` (entropy snapshots, DriftAlert) and `record_and_detect_drift` call in build_findings; `drift_alerts` field in ReviewFindings and compute() output\n- `src/conventions/templates.rs` (decompose_signature, select_exemplars, generate_template) and `generate_templates_for_conventions` call in build_findings. Exemplar *selection* logic may be worth salvaging for the deviation report (exemplar pointers beat metavariable skeletons for an LLM consumer) — if so, move the ranking helper, delete the template generation.\n- Tables + Db methods: `convention_snapshots`, `convention_templates` (both Ephemeral), `convention_waivers` (Durable — explicit DROP migration)\n- Waiver partition in review (`waived_violations` in ReviewFindings), waiver CRUD actions on `sutra_conventions`\n- Orient surfacing of templates, waivers, drift, and pending proposals in `src/tools/orient.rs`\n\nCheck before removing: whether drift feeds a health biomarker (docs/health-map.md) — if so, remove the biomarker reference too, don't leave a dangling tier.\n\nUpdate `docs/conventions-map.md` (drift + templates sections, data-flow diagram, table list) and `docs/health-map.md` if touched.\n\nAcceptance: cargo test passes; review output contains no drift_alerts/waived_violations fields; orient contains no template/waiver/proposal sections; maps updated.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Scope expanded beyond the task description: health::drift module (compute_fca_conformance, compute_hrr_coherence, detect_convention_drift) also depended on convention_snapshots table, so it was removed along with the ConventionDrift biomarker variant from health/findings.rs and health/scoring.rs. Total: -2881 lines across 21 files, 3 modules deleted entirely (conventions/drift.rs, conventions/templates.rs, health/drift.rs), 4 tables dropped via migration 0045.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "af9c6f0"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "demolition"
+  ],
+  "history": [
+    {
+      "ts": 1783476376109,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 232
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783518893956,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1783520475422,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (covers sutra/231 + sutra/232 together, diff 6ce098e..af9c6f0):\n\nVerdict: needs-attention (3 findings)\n\n1. [high] Reindex resurrects dropped tables — ephemeral CREATE migrations (0016, 0020, 0022, 0034, 0036) rerun after reindex wipes their schema_migrations entries, but durable DROP migrations (0044, 0045) are skipped. Tables get recreated.\n2. [high] cargo test gate not met — test_field_access_skipped in resolver_test.rs fails deterministically, but is pre-existing (not caused by this diff).\n3. [medium] Stale MCP help text — src/tools/help.rs:319-320 still advertises \"signature templates, anti-pattern warnings, drift alerts, waivers, and pending proposals\" for orient, which were removed.\n\nFinding 1 is the only ship-blocking issue from the demolition itself.",
+      "ts": 1783521105402
+    }
+  ],
+  "created_at": 1783476376109,
+  "updated_at": 1783520475422,
+  "completed_at": 1783520475422,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "demolition",
+  "edges": [
+    {
+      "id": "019f3f7a-d53a-7213-87a2-8987b8c298c4",
+      "edge_type": "depends_on",
+      "source": "sutra/234",
+      "target": "sutra/232",
+      "note": null,
+      "created_at": 1783476442426
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "id": "019e1cd9-0dd7-7692-b4ae-15b9e486daa1",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/7",
+  "sequence_number": 7,
+  "title": "Diagnostics module + retrofit existing tools",
+  "description": "## Parent\\n\\nsutra/v1/5 — PRD: sutra v1 review intelligence engine\\n\\n## What to build\\n\\nAdd `src/diagnostics.rs` with a `Diagnostic` enum that distinguishes: `NoSuchSymbol`, `Ambiguous`, `Stale`, `AnalysisTierDisabled`, `PartialResolution`, `SymbolExistsWithNoResults`. Each variant carries context (candidate qualified names, indexed kinds, matching files, staleness age). Include `suggest_next_query()` on each diagnostic. Retrofit into at least 3 existing symbol-oriented tools (`find`, `refs`, `calls`) as proof of the pattern.\\n\\n## Acceptance criteria\\n\\n- [ ] `Diagnostic` enum with all 6 variants, each carrying appropriate context fields\\n- [ ] `suggest_next_query()` returns a meaningful suggestion for each variant\\n- [ ] `sutra_find` returns structured diagnostic instead of empty result on no match\\n- [ ] `sutra_refs` returns `NoSuchSymbol` or `Ambiguous` diagnostic when appropriate\\n- [ ] `sutra_calls` returns `NoSuchSymbol` or `Ambiguous` diagnostic when appropriate\\n- [ ] Freshness envelope (`fresh` | `edited_uncommitted` | `stale_index`) included in diagnostics\\n\\n## Blocked by\\n\\nNone — can start immediately.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "16d54a8"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "diagnostics"
+  ],
+  "history": [
+    {
+      "ts": 1778600447447,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 7
+      }
+    },
+    {
+      "ts": 1778608976473,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778609620286,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — request changes:\\n\\n[medium] Structured diagnostics do not carry the required freshness envelope (src/diagnostics.rs:12-43). None of the Diagnostic variants includes the required fresh|edited_uncommitted|stale_index freshness envelope. sutra_find adds diagnostics after empty results without freshness; sutra_refs and sutra_calls build diagnostics without any workspace freshness context. A no-match from a stale index is indistinguishable from true absence.\\n\\nRecommendation: Add a freshness field to all diagnostic responses using existing FreshnessLevel values, populate via MCP workspace context in find/refs/calls, and test stale/edited diagnostic cases.",
+      "ts": 1778612165750
+    }
+  ],
+  "created_at": 1778600447447,
+  "updated_at": 1778609620286,
+  "completed_at": 1778609620286,
+  "edges": [
+    {
+      "id": "019e1cda-7640-73c3-8ef1-3a8963608b20",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/13",
+      "target": "sutra/v1/7",
+      "note": null,
+      "created_at": 1778600539712
+    },
+    {
+      "id": "019e1cda-a454-7e12-9053-f1f36c27f0fd",
+      "edge_type": "refines",
+      "source": "sutra/v1/7",
+      "target": "sutra/v1/5",
+      "note": null,
+      "created_at": 1778600551508
+    }
+  ]
+}

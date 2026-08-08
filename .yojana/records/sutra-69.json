@@ -1,0 +1,124 @@
+{
+  "id": "019e8c68-259e-7303-839c-d3b04985de11",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/69",
+  "sequence_number": 69,
+  "title": "5d-1: rename dd/ → constraints/",
+  "description": "## Parent\n\nsutra/68 — 5d PRD: constraint system + DD integration\n\n## What to build\n\nMechanical rename of `src/dd/` to `src/constraints/`. Update all import paths, module declarations, and test file names. No behavior change — purely structural, setting the vocabulary for the rest of 5d.\n\n## Acceptance criteria\n\n- [ ] `src/dd/` renamed to `src/constraints/` with same internal structure\n- [ ] All `use crate::dd::` imports updated to `use crate::constraints::`\n- [ ] `mod dd` in `lib.rs` becomes `mod constraints`\n- [ ] All existing tests pass with no behavior change\n- [ ] `tests/dd-test.rs` renamed to `tests/constraints-test.rs`\n\n## Blocked by\n\nNone — can start immediately.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "src/dd/ renamed to src/constraints/ with same internal structure (engine.rs, worker.rs, mod.rs)"
+    },
+    {
+      "done": false,
+      "text": "All `use crate::dd::` imports updated to `use crate::constraints::`"
+    },
+    {
+      "done": false,
+      "text": "mod dd in lib.rs becomes mod constraints"
+    },
+    {
+      "done": false,
+      "text": "All existing tests pass with no behavior change"
+    },
+    {
+      "done": false,
+      "text": "tests/dd-test.rs renamed to tests/constraints-test.rs"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/68"
+    },
+    {
+      "type": "git:commit",
+      "value": "ec7b0ba"
+    },
+    {
+      "type": "git:commit",
+      "value": "ec7b0ba"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1780472096158,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 69
+      }
+    },
+    {
+      "ts": 1780501108741,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780501111777,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      }
+    },
+    {
+      "ts": 1780503319577,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780472096158,
+  "updated_at": 1780503319577,
+  "completed_at": 1780503319577,
+  "arc_id": "019e6e7c-b901-72a3-ba2a-2e9fcc0e4d87",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e8c6a-30ca-7ca1-bdfc-cde7cc3799a1",
+      "edge_type": "depends_on",
+      "source": "sutra/70",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472230090
+    },
+    {
+      "id": "019e8c6a-339f-7e70-80a9-5cb5db0b5e80",
+      "edge_type": "depends_on",
+      "source": "sutra/71",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472230815
+    },
+    {
+      "id": "019e8c6a-6cd4-79a1-a656-00df69d2d920",
+      "edge_type": "depends_on",
+      "source": "sutra/78",
+      "target": "sutra/69",
+      "note": null,
+      "created_at": 1780472245460
+    }
+  ]
+}

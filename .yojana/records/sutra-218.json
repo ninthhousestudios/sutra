@@ -1,0 +1,66 @@
+{
+  "id": "019f152c-a1e8-7030-aea9-a84e4778986a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/218",
+  "sequence_number": 218,
+  "title": "Modification guard should key on diff content, not file blast radius",
+  "description": "## Problem\nThe sutra modification guard (the hook that denies an `Edit` and demands a prior `sutra_impact` ack) fires per **file** based on the file's blast radius — i.e. whether the file *contains* a hot symbol (`EphemerisConfig`, `rotate_x_sincos`, `SwissEphFile`, etc.). It does NOT look at what the diff actually changes.\n\nThis is correct for semantic edits but pure friction for mechanical sweeps. During swisseph-rs/48 (a repo-wide `cargo clippy` cleanup) the guard fired on 5 separate files (context.rs, math.rs, calc.rs, sweph_file/mod.rs, obliquity_bias.rs), each requiring a `sutra_impact` round-trip, even though every edit was an inert lint fix (let-chain collapse, `for i in 0..n` → `enumerate`, `map_or` → `is_some_and`) that touched no symbol signature and altered no call-graph edge.\n\n## Proposed fix\nMake the guard decision a function of the **diff**, not just the file:\n- Exempt (or downgrade to a logged notice) edits whose `old_string`/`new_string` don't change any symbol's signature, visibility, or call-graph edges — i.e. body-local changes to a load-bearing file are as safe as the same change in a cold file.\n- Alternatively / additionally: an explicit \"sweep mode\" toggle the agent sets when doing a known mechanical batch (lint/format), which downgrades the guard to logging for the session.\n\nEither removes the false-positive prompts while keeping the guard firing on changes that actually warrant blast-radius review (signature changes, edge changes, deletions).\n\n## Interim mitigations (already in place, not a substitute)\n- manas-instructions.md `<sutra_mcp>` now tells agents to use `cargo clippy --fix`/`cargo fmt` for mechanical sweeps (writes to disk, bypasses the Edit hook) and to batch `sutra_impact` acks up front for residual hand-edits.\n- `SUTRA_GUARD_DISABLE=1` exists but is blunt (disables protection wholesale).\n\n## Context\nSurfaced during swisseph-rs/48 close-out. The autofix workflow sidesteps the symptom but the guard's file-vs-diff granularity is the root design gap.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Codex review surfaced two real issues: (1) additive-edit check ran before signature-preserving check, allowing multi-line signature changes to bypass the guard, (2) HashMap keyed by qualified_name only, so duplicate names (struct + impl) could mask deletions. Both fixed in a follow-up commit. Finding 3 (import-change bypass when proposed-edge analysis unavailable) deferred — bounded by constraint system already catching forbidden imports.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "fb81576"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782766674408,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 218
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782774163542,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782775093140,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: needs-attention → addressed.\\n\\n1. [high] Additive edits bypassed signature check — fixed: signature check now runs first, additive is fallback for non-parseable files.\\n2. [high] HashMap lost duplicate qualified_names — fixed: multiset keyed by (name, kind, sig_hash, vis).\\n3. [medium] Import-change bypass when proposed-edge analysis unavailable — deferred: constraint system already catches forbidden imports; remaining gap (non-forbidden import changes in hot files) is bounded. Can revisit if it surfaces in practice.\"",
+      "ts": 1782775086294
+    }
+  ],
+  "created_at": 1782766674408,
+  "updated_at": 1782775093140,
+  "completed_at": 1782775093140,
+  "edges": []
+}

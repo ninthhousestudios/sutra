@@ -1,0 +1,84 @@
+{
+  "id": "019e92aa-af30-7862-913b-66c49283ac0b",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/83",
+  "sequence_number": 83,
+  "title": "5e PRD: health metrics + similarity system",
+  "description": "## Problem Statement\n\nSutra can detect structural facts, discover components, enforce conventions, and check constraints — but it cannot tell you whether your codebase is getting healthier or sicker over time, nor can it find structurally similar code or detect subtle behavioral changes in review. The current per-file health scoring is a flat 0-100 number from three hardcoded sub-scores (complexity, dead code, coupling) with no git-organizational signals, no function-level granularity, no component-level aggregation, no trend drill-down, and no structural similarity capabilities.\n\nEmpirical evidence (repowise corpus, AUC ~0.70) shows that git-organizational metrics — co-change scatter, change entropy, ownership risk — are stronger defect predictors than structural complexity metrics. Sutra's L4 doesn't use any of them. Meanwhile, the HRR spike validated structural similarity vectors (4.4x lift, sub-ms per function) that enable near-duplicate detection and semantic diff — capabilities no current tool provides.\n\n## Solution\n\nBuild a unified health + similarity system (L4 + L6) that produces architectural findings — not just scores — integrated with sutra's existing trust model (severity, provenance, waivers). Health findings flow into review reports alongside constraint violations and convention deviations, giving the architect a single coherent view of codebase quality.\n\nHRR vectors computed at parse time enable three new capabilities: structural similarity search, near-duplicate detection with trending, and semantic diff in review reports (detecting subtle structural changes that look small in text diffs).\n\n## User Stories\n\n1. As an architect reviewing a PR, I want to see which files degraded in health and why (specific biomarker findings), so that I can focus review attention on the riskiest changes.\n2. As an architect reviewing a PR, I want to know when a small text diff causes a large structural shape change, so that I can catch subtle behavioral modifications that line-by-line reading might miss.\n3. As an architect, I want to see health trends per component over time, so that I can detect gradual quality erosion before it becomes critical.\n4. As an architect, I want to see per-file health history across snapshots, so that I can drill into which specific files drove a component's health decline.\n5. As an architect, I want health findings that use the same severity/provenance/waiver model as constraints and conventions, so that I have one coherent system to learn and configure.\n6. As an architect, I want to waive a health finding (e.g., \"this file's co-change scatter is expected because it's a central coordinator\"), so that known-acceptable conditions don't pollute reports.\n7. As an architect, I want to know which files have dispersed ownership (many minor contributors, no clear owner), so that I can identify code that lacks accountability — especially relevant when multiple agents contribute.\n8. As an architect, I want to detect files with high co-change scatter (shotgun surgery), so that I can prioritize decoupling work.\n9. As an architect, I want to see hidden coupling (files that co-change frequently but have no static import edge), so that I can make implicit dependencies explicit.\n10. As an architect, I want to see function-level hotspots (high modification count AND high complexity), so that I can target refactoring at the specific functions that cause the most churn.\n11. As an architect, I want to detect convention drift per component (both FCA-based conformance decline and HRR-based structural clustering spread), so that I can catch multi-agent divergence early.\n12. As an architect, I want to see component instability (Martin's Ce/(Ca+Ce)), so that I can identify components that are fragile to change.\n13. As an architect, I want to search for functions structurally similar to a given function, so that I can find related patterns, understand conventions, and identify refactoring targets.\n14. As an architect, I want to see pattern families (clusters of structurally near-duplicate functions) tracked over time, so that I can monitor code repetition and prioritize extraction.\n15. As an architect, I want health scores derived from findings via category capping, so that no single category (e.g., organizational metrics) can dominate the score and individual findings remain attributable.\n16. As an architect using multiple AI agents, I want agent commits attributed to their human dispatcher for ownership metrics, so that ownership_risk reflects real decision-making authority rather than agent identity.\n17. As an agent about to modify a file, I want the orient briefing to include health findings for that file, so that I know the file's quality context before making changes.\n18. As an architect, I want change entropy (Hassan's HCM) tracked per file, so that I can identify files entangled in sprawling cross-cutting commits.\n19. As an architect, I want dormant code that's suddenly being modified flagged in review, so that I pay extra attention to changes in long-stable code.\n20. As an architect, I want coverage treated as a continuous gradient (not a binary threshold) when coverage data is available, so that the health signal reflects degree of coverage rather than pass/fail.\n\n## Implementation Decisions\n\n### Git data expands L0\nGit-organizational facts (commits, co-change, author attribution) are ground truth alongside structural facts. The commit_files table from sutra/67 is the shared substrate. L4 requires sutra/67 to widen migration 0024 to add a normalized commits(hash TEXT PK, committed_at INTEGER, author TEXT) table for time-decay and author-attribution queries.\n\n### Finding-based health model\nEach biomarker emits HealthFinding structs with: biomarker kind, target (file/symbol/component), severity (advisory or informational — health never blocks), confidence, provenance (always \"computed\"), metric value, threshold, human-readable detail. This is the same shape as constraint violations and convention deviations, enabling unified review reports and shared waiver infrastructure.\n\n### Three-tier biomarker set\nTier 1 (advisory, strong predictors — repowise weight >= 1.3): co_change_scatter, change_entropy, ownership_risk, function_hotspot. Tier 2 (advisory, moderate predictors): nested_complexity, hidden_coupling, blast_radius times churn. Tier 3 (informational): dead_code_ratio, code_age_volatility, coverage_gradient. Sutra-specific (informational, uncalibrated): convention_drift, component_instability, hrr_shape_change. Classic structural smells (LCOM4, brain_method, bumpy_road) are excluded — calibrated as weak defect predictors.\n\n### Health scoring via category capping\nPer-file scores derived from findings using repowise's category-capping pattern. Base score 10.0, deductions per finding (severity_weight times biomarker_weight), capped per category: organizational -3.5, structural -2.5, coupling -2.0, freshness -1.5, coverage -2.0. Proportional scaling within each category preserves per-finding attribution. Component scores are NLOC-weighted averages of member file scores. Final scores clamped to [1.0, 10.0].\n\n### Health never blocks\nHealth findings are advisory or informational only. Blocking enforcement is the constraint system's job. If a user wants a health threshold to block merges, they write a constraint rule.\n\n### Repowise weights as defaults\nAdopt the calibrated weights from the repowise corpus (13-repo, 5-language, T0-protocol, NLOC-controlled). Sutra-specific biomarkers start at informational severity, uncalibrated. Future calibration on a sutra-specific corpus is out of scope for this PRD.\n\n### HRR strip + embed at parse time\n1024-f64 vectors computed for every function-level symbol during the parse pipeline. Two modes: strip (structural shape — identifiers ignored) and embed (structural shape + semantic names). Bigram mode deferred to on-demand analysis. Codebook (persistent random base vectors per AST node kind) stored in the durable partition — entries are append-only, never modified.\n\n### HRR storage\nNew ephemeral table hrr_vectors(symbol_id, mode, vector BLOB). At 8KB per vector, two modes, and a 2000-symbol workspace: ~32MB. Linear scan for similarity search is sub-millisecond at this scale (validated in spike).\n\n### Three L6 capabilities\n1. Structural similarity search: cosine similarity over strip vectors, top-K results. MCP tool: sutra_similar.\n2. Near-duplicate detection: snapshot-time clustering of strip vectors (threshold >= 0.85, min group size 3). Pattern families tracked over time. MCP tool: sutra_duplicates.\n3. Semantic diff in review reports: four-quadrant model (text-delta times HRR-delta). Small text diff + large HRR delta = subtle structural change, flagged as hrr_shape_change finding.\n\n### Convention drift via dual detection\nFCA-based: convention conformance fraction per component, tracked as time series. HRR-based: intra-component strip vector clustering coherence (average pairwise similarity), tracked as time series. Both paths feed L4 health findings independently — they catch different kinds of drift.\n\n### Per-file scores in snapshots\nEach snapshot stores per-file health scores (not just aggregates) to enable historical drill-down. New table health_snapshot_files(snapshot_id, file_id, score, category_scores). Component-level scores computed from file scores and also stored per snapshot.\n\n### Multi-agent ownership aliases\nConfigurable owner mapping (e.g., in .sutra/owners.toml) collapses agent git authors to their human dispatcher for ownership_risk computation. Without configuration, agents are treated as distinct contributors (conservative default).\n\n### Incrementality by phase\nParse-time (file save): structural metrics, HRR vectors, git-organizational metrics from commit_files. DD-maintained (parse delta): blast radius, cycles, transitive coupling (existing). Snapshot-time (explicit): aggregate scores, pattern families, convention drift. Review-time (sutra review): function_hotspot via blame rollup, hrr_shape_change, code_age_volatility.\n\n### Modules\nNew health/ module: findings (core model + biomarker implementations), scoring (category capping, component aggregation), git_metrics (co_change_scatter, change_entropy, ownership_risk, code_age_volatility from commit_files/commits), snapshot (capture + trending + per-file history).\n\nNew similarity/ module: encoder (recursive tree-structured HRR encoding, ported from spike), codebook (persistent base vectors), index (storage + search + pattern family clustering), diff (four-quadrant semantic diff for review).\n\nModified: db/ (new tables + migrations), pipeline.rs (integrate HRR + health), git.rs (rewrite to consume commit_files), tools/ (new MCP tools, review integration, trend enrichment), file_health (rewrite to finding-based model).\n\n### Dependency on sutra/67\nRequires the commits(hash, committed_at, author) table in migration 0024. Comment posted on sutra/67 with the schema request.\n\n## Testing Decisions\n\nTests should verify external behavior through public interfaces, not internal implementation details.\n\n### Unit-tested modules (dedicated test files in tests/)\n- health/scoring: category capping correctness (proportional scaling when over cap, no scaling when under, final clamp), component aggregation from file scores. Prior art: pagerank_test.rs (numeric computation tests).\n- health/git_metrics: each git-organizational biomarker algorithm tested independently — co_change_scatter partner counting, change_entropy decay-weighted computation, ownership_risk threshold logic. Prior art: cochange-test.rs (git metric tests).\n- similarity/encoder: encoding invariants — same tree produces same vector (determinism given codebook), different trees produce different vectors (discrimination), position sensitivity (reordered children produce different vectors), strip mode ignores identifier text, embed mode distinguishes identifier text. Prior art: parse_rust_test.rs (tree-sitter based tests).\n- similarity/diff: four-quadrant classification correctness — given pairs of vectors and text diff sizes, verify the right quadrant is selected and findings are emitted for the \"subtle structural change\" case.\n\n### Integration tests\n- Pipeline integration: parse a workspace with git history, verify health findings are produced, scores are computed, HRR vectors are stored. Prior art: pipeline-test.rs, workspace_lifecycle_test.rs.\n- Review integration: verify health delta appears in sutra_review output alongside constraints and conventions. Prior art: review-test.rs.\n- MCP contract: verify sutra_similar, sutra_duplicates, sutra_health tools return well-formed responses. Prior art: mcp_contract_test.rs.\n\n## Out of Scope\n\n- L7 verification orchestration (separate capability, comes after health)\n- Calibration research or defect corpus construction (later enrichment)\n- Coverage data ingestion pipeline (coverage_gradient biomarker exists in the design but importing coverage reports is a separate integration)\n- Health-to-constraint promotion UX (conceptually clear but the workflow for \"make this health threshold a blocking constraint\" is deferred)\n- Inter-repository health comparison (single workspace only)\n- LLM-enriched health explanations (sutra is zero-LLM for core function)\n- HRR bigram mode (deferred to on-demand analysis tool, not computed at parse time)\n- Cross-file analogy via HRR vector arithmetic (validated in spike but no clear product use case yet)\n\n## Further Notes\n\nThe repowise survey (docs/survey-repowise-health.md) is the empirical foundation for biomarker selection and weighting. Key methodological insight: the T0 protocol (no future leakage) and NLOC control column prevent over-weighting metrics that correlate with file size. developer_congestion appeared strong under naive evaluation but collapsed under T0 — this validates the conservative approach of starting sutra-specific biomarkers at informational severity until they can be properly calibrated.\n\nThe HRR spike results (branch spike/hdc-ast-encoding) validated the core encoding approach. Key findings: HRR is 2-2.4x faster than binary MAP (not slower as expected), vector arithmetic enables capabilities MAP cannot (semantic diff, analogy). The decision to drop MAP and use HRR-only simplifies the implementation significantly.\n\nFunction-level blame rollup (projecting git blame onto L0 symbol line ranges) is the most expensive on-demand operation. It requires per-file git blame which is I/O-bound. Consider caching blame results per file with invalidation on commit.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/43"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/survey-repowise-health.md"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-architecture.md"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "prd"
+  ],
+  "history": [
+    {
+      "ts": 1780577120048,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 83
+      }
+    },
+    {
+      "ts": 1780580541034,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780684047523,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780577120048,
+  "updated_at": 1780684047523,
+  "completed_at": 1780684047523,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "prd",
+  "edges": [
+    {
+      "id": "019e92b3-6639-7750-8271-1804910e059e",
+      "edge_type": "depends_on",
+      "source": "sutra/83",
+      "target": "sutra/43",
+      "note": null,
+      "created_at": 1780577691193
+    }
+  ]
+}

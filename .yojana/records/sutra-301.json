@@ -1,0 +1,77 @@
+{
+  "id": "019fb41c-894c-7e63-9e0b-7e529d5b8412",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/301",
+  "sequence_number": 301,
+  "title": "Guard's rules.toml edit-path drops all_constraints parse errors",
+  "description": "Surfaced by the Codex review of sutra/289.\n\nThe guard's `.sutra/rules.toml` edit-time branch (src/bin/guard.rs:189-204) runs only `check_proposed_rules_ratchet`. That function (src/guard.rs:841) parses the proposed rules and calls `all_constraints`, but discards the parse errors: `let (constraints, _errors) = parsed.all_constraints();`. The branch then early-returns.\n\nConsequence: when a user edits `.sutra/rules.toml`, no `ConstraintParseError` is surfaced at edit time — not the removed-`[conventions]`-block warning added in sutra/289, nor any other parse error (unknown constraint kind, invalid glob, etc.). These only appear later through the MCP tools (constraints list / orient / review), which do include `constraint_parse_errors`.\n\nThis is a pre-existing limitation (the branch was always ratchet-only), not a regression from sutra/289 — but it undercuts the intent of that task's criterion 2 (\"existing workspaces are told rather than ignored\") at the one moment the workspace is most likely editing its rules.toml.\n\nScope: surface `all_constraints` parse errors in the guard's rules.toml edit path. Parse errors are advisory, so warn (stderr eprintln, like the advisory pattern/pubspec findings already do) rather than deny. Options: add a small `guard::proposed_rules_parse_errors(proposed) -> Vec<String>` helper and print in the branch, OR change `check_proposed_rules_ratchet` to return the errors alongside violations (heavier — audit callers, this repo's refactor-contract discipline applies).\n\nAcceptance:\n- Editing `.sutra/rules.toml` to add a `[conventions]` block emits a warning at guard edit time naming the block as removed.\n- Other rules.toml parse errors (unknown kind, invalid glob) are also surfaced at edit time.\n- A guard test drives a proposed `[conventions]` block through the entry point and fails if the warning is dropped.\n- Parse errors warn, not deny (advisory severity).",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Took the lighter of the two suggested options: added guard::proposed_rules_parse_errors(proposed) -> Vec<String> (re-parses + runs all_constraints, maps errors to rendered strings) rather than changing check_proposed_rules_ratchet's return type (which would have required auditing all callers under refactor-contract discipline). Bin branch prints each via eprintln (stderr) before the ratchet check — confirmed by anchored lesson 019f8a82 that a PreToolUse hook may emit only one JSON object on stdout, so advisory output must use stderr. 4 unit tests: conventions block, unknown kind, valid rules (no warn), malformed TOML (silent bail). Went as planned.",
+  "reproduction": null,
+  "root_cause": "The guard's .sutra/rules.toml edit-time branch (src/bin/guard.rs) ran only check_proposed_rules_ratchet, which parses proposed rules via all_constraints but discards the returned parse errors (let (constraints, _errors) = ...) and early-returns. So no ConstraintParseError was ever surfaced at edit time — parse errors only reached the user later through the MCP tools' constraint_parse_errors. Pre-existing limitation, not a sutra/289 regression.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/289",
+      "label": "review that surfaced this"
+    },
+    {
+      "type": "git:commit",
+      "value": "b7f6a4a",
+      "label": "289's implementation"
+    },
+    {
+      "type": "git:commit",
+      "value": "f61cd5a"
+    }
+  ],
+  "files": [
+    "src/bin/guard.rs",
+    "src/guard.rs"
+  ],
+  "tags": [
+    "guard",
+    "constraints",
+    "rules"
+  ],
+  "history": [
+    {
+      "ts": 1785433196876,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 301
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785436536223,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1785436676764,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1785433196876,
+  "updated_at": 1785436676764,
+  "completed_at": 1785436676764,
+  "edges": []
+}

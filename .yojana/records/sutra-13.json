@@ -1,0 +1,94 @@
+{
+  "id": "019e084d-7217-7e21-97a3-10c6c5a32cff",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/13",
+  "sequence_number": 13,
+  "title": "sutra_dead: detect Rust test exemptions and FFI entrypoints",
+  "description": "sutra_dead against a real Rust crate (chitta) reports 200 dead symbols, of which approximately 85 percent are test functions inside cfg-test mod blocks plus integration tests in tests/. The tool's own response advertises this as a known limitation. Every consumer of sutra_dead has to reinvent the same filter.\n\nSurfaced during chitta release-review spike, 2026-05-08. The dead-code report was so noisy I had to manually filter it before handing it to a code-review subagent.\n\nSymptoms:\n- Functions inside cfg-test mod blocks reported dead. Their callers are sibling test functions discovered by Cargo at test-binary link time, not by sutra's call graph.\n- tests/contract.rs and tests/integration.rs reported as \"unreachable files\". They are integration tests reachable via Cargo test target sections in Cargo.toml, not via mod imports.\n- FFI entrypoints (no_mangle, wasm_bindgen, pyo3 macros) similarly cannot be detected as live by symbol-graph reachability alone.\n\nFix sketch:\n- Walk attributes on each function/module symbol; treat the test, tokio-test, async-test, bench attributes as reachability roots.\n- Treat any item inside a cfg-test module as test-exempt.\n- Parse Cargo.toml test and bench target sections; the named files are reachability roots for integration tests.\n- Walk attributes for FFI exemptions: no_mangle, unsafe-no_mangle, wasm_bindgen, pyo3 attribute macros.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Test attributes (test, tokio test, async test, bench) treated as reachability roots; their attributed functions and transitive callees are live"
+    },
+    {
+      "done": false,
+      "text": "Items inside cfg-test modules treated as test-exempt"
+    },
+    {
+      "done": false,
+      "text": "Files declared in Cargo.toml test and bench target sections treated as reachable"
+    },
+    {
+      "done": false,
+      "text": "FFI exemption attributes (no_mangle, wasm_bindgen, pyo3 etc) mark their symbols as live entrypoints"
+    },
+    {
+      "done": false,
+      "text": "Re-run sutra_dead on chitta workspace: under 20 entries (down from 200)"
+    },
+    {
+      "done": false,
+      "text": "Tool description still discloses any remaining exemption gaps it cannot detect"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "9995ca6"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review:2026-05-08-chitta-spike",
+    "code-intel",
+    "false-positives"
+  ],
+  "history": [
+    {
+      "ts": 1778255753751,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 13
+      }
+    },
+    {
+      "ts": 1778257073185,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      }
+    },
+    {
+      "ts": 1778257250295,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778257254413,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778255753751,
+  "updated_at": 1778257254413,
+  "completed_at": 1778257254413,
+  "edges": []
+}

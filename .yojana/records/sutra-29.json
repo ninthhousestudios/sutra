@@ -1,0 +1,76 @@
+{
+  "id": "019e6605-26bc-7852-b6b3-4bafc57da0a0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/29",
+  "sequence_number": 29,
+  "title": "5a brainstorm: core model design",
+  "description": "Brainstorm the core model redesign using vidhi-brainstorm. Key areas:\\n- Ephemeral/durable storage partition schema design\\n- Layered adapter trait interface (core parse trait + extension traits)\\n- Symbol/edge schema evolution for multi-language support\\n- Module rename strategy (fca/ → conventions/, dd/ → constraints/)\\n- How existing code evolves into the new structure\\n\\nInput: docs/sutra-architecture.md, docs/sutra-vision.md, current codebase\\nOutput: shared understanding ready for PRD",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    "Single DB with table-level ephemeral/durable partition. Durable tables reference ephemeral data by name (qualified_name, file_path), never by integer PK. Orphaned references handled by reconciliation report, not prevention — most durable records reference patterns/paths, not individual symbols, and expiration-on-rename is correct behavior for the rare symbol-level references.",
+    "Layered adapter trait interface: core LanguageAdapter trait (language_id, extensions, parse) + optional extension traits via as_fca_source() pattern. Each language is a struct implementing LanguageAdapter. FcaAttributeSource is the first extension trait; future traits added as capability PRDs need them.",
+    "Core owns tree-sitter infrastructure (parser pooling, timeouts, memory). Adapter specifies grammar via grammar() method, receives ParseContext with parsed tree and source bytes. Adapter focuses on extraction logic only.",
+    "ParseResult uses tree structure for symbols (children field) instead of flat list with parent_qualified_name. Makes containment relationships explicit in parse output.",
+    "SymbolKind stays as flat enum — add variants as languages are added. language_attrs JSON column on symbols for language-specific structured data. flags field stays for cross-language booleans (is_test, is_generated). signature stays as human-display text; language_attrs is the machine-readable form.",
+    "FCA attribute extraction splits: generic parts (complexity bucketing, naming, directory context) become shared helper. Language-specific parts move into FcaAttributeSource implementations per adapter. Reads from language_attrs, not signature string.",
+    "Module renames (fca/ → conventions/, dd/ → constraints/) deferred to each subsystem's capability PRD, not done during core model work.",
+    "Evolution path: (1) adapter trait extraction, (2) FCA trait extraction, (3) language_attrs column, (4) storage partition annotation, (5) durable companion pattern for conventions. Each step is a standalone PR."
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "core-model",
+    "design"
+  ],
+  "history": [
+    {
+      "ts": 1779828074172,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 29
+      }
+    },
+    {
+      "ts": 1779889721460,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779890651833,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779828074172,
+  "updated_at": 1779890651833,
+  "completed_at": 1779890651833,
+  "arc_id": "019e6605-0ab1-72d0-a8ac-ed143d243d8b",
+  "arc_phase": "brainstorm",
+  "edges": [
+    {
+      "id": "019e69c0-8a3f-7cb1-9ad3-365b457d0bf5",
+      "edge_type": "depends_on",
+      "source": "sutra/30",
+      "target": "sutra/29",
+      "note": null,
+      "created_at": 1779890686527
+    }
+  ]
+}

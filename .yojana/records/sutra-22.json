@@ -1,0 +1,99 @@
+{
+  "id": "019e0d21-ed45-7b63-abeb-a0b62986a34a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/22",
+  "sequence_number": 22,
+  "title": "Parse coordination gaps: timeout, lock coverage, path canonicalization",
+  "description": "Follow-up from codex adversarial review of sutra/21. Three gaps in the scheduler-wedge fix:\\n\\n1. **Parse timeout is not real.** parse_workspace is blocking sync work (filesystem + tree-sitter + SQLite) with no await points. tokio::time::timeout wraps it but can't preempt it — a genuinely hung parse holds the per-workspace guard indefinitely and never records the failed snapshot sentinel.\\n\\n2. **MCP parse entry points bypass the daemon lock.** sutra_parse and sutra_add_root call pipeline::parse_workspace directly, not through the daemon's per-workspace Mutex. User-triggered parses can race the scheduler/watcher on the same DB.\\n\\n3. **Overlap check is lexical only.** roots_overlap compares raw PathBufs via starts_with. Symlinks, relative paths, or non-canonical spellings bypass the ancestor/descendant check, reopening the watcher fan-out race.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Parse timeout actually aborts hung parses — use spawn_blocking or a cooperative cancellation boundary so tokio can enforce the deadline"
+    },
+    {
+      "done": false,
+      "text": "Failed-snapshot sentinel is recorded from outside the blocked work when deadline fires, not from inside the parse"
+    },
+    {
+      "done": false,
+      "text": "All parse entry points (sutra_parse, sutra_add_root, scheduler, watcher) route through a shared parse coordinator/lock"
+    },
+    {
+      "done": false,
+      "text": "Workspace roots are canonicalized before storage and overlap comparison — symlinks, relative paths, and non-canonical spellings are normalized"
+    },
+    {
+      "done": false,
+      "text": "Tests: symlink and relative-path workspace registration rejected by overlap check"
+    },
+    {
+      "done": false,
+      "text": "Tests: concurrent parse from MCP and scheduler on same workspace does not produce DB lock errors"
+    },
+    {
+      "done": false,
+      "text": "Compiles, tests pass, clippy clean"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": "Three-wave fix:\n\n**Wave 1-3 (signature + coordination):** Converted `parse_workspace` and `parse_changed_files` from async to sync `fn` with `cancel: &AtomicBool` param (cooperative cancellation). Added `ParseCoordinator` newtype in `pipeline.rs`. Daemon uses `spawn_blocking` + real timeout + cancel flag. MCP tools (`sutra_parse`, `sutra_add_root`, `sutra_status`) now acquire shared coordinator lock before parsing.\n\n**Wave 4 (canonicalization):** `roots_overlap` canonicalizes paths before comparison. `register_workspace` (MCP) and `add_workspace` (REST) canonicalize paths at entry.\n\n**Wave 5 (tests):** Added `test_reject_symlink_overlap`, `test_reject_dotdot_overlap`, `test_parse_cancellation`.",
+  "execution_record": "All three gaps fixed. 224 tests pass, no new clippy warnings. 13 files changed across src/ and tests/. New tests: test_reject_symlink_overlap, test_reject_dotdot_overlap, test_parse_cancellation.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/pipeline.rs",
+    "src/daemon.rs",
+    "src/mcp.rs",
+    "src/tools/parse.rs",
+    "src/main.rs",
+    "src/workspace.rs",
+    "src/rest.rs",
+    "tests/workspace_test.rs",
+    "tests/pipeline-test.rs",
+    "tests/workspace_lifecycle_test.rs",
+    "tests/pagerank_test.rs",
+    "tests/watcher-test.rs",
+    "tests/impact_test.rs"
+  ],
+  "tags": [
+    "scheduler",
+    "concurrency",
+    "codex-review-followup"
+  ],
+  "history": [
+    {
+      "ts": 1778336787781,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 22
+      }
+    },
+    {
+      "ts": 1778587914870,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778588350487,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778336787781,
+  "updated_at": 1778588350487,
+  "completed_at": 1778588350487,
+  "edges": []
+}

@@ -1,0 +1,84 @@
+{
+  "id": "019e06ec-7050-7d62-a5f2-74ebbd0226b7",
+  "project_id": "019e06eb-3e4f-7160-ad30-e662ef576e61",
+  "project_slug": "sutra/simple-additions",
+  "human_id": "sutra/simple-additions/3",
+  "sequence_number": 3,
+  "title": "sutra_trend — snapshot diff + aggregate metrics",
+  "description": "Extend the existing snapshot table to record aggregate metrics per parse run (total complexity, dead-symbol count, hotspot count, workspace health score). Add `sutra_trend(from, to)` that returns deltas.\n\nExisting snapshot table already records files_parsed, symbols_extracted, refs_extracted, parse_errors, duration_ms — this just adds the aggregate roll-ups and a diff endpoint.\n\nUseful for CI gates (\"fail if health dropped\") and pre/post-refactor checks.\n\nSee docs/feature-ideas.md → \"sutra_trend\".\n\n**Independent of other simple-additions tasks** — schema migration + new tool.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Snapshot schema records aggregate metrics each parse run"
+    },
+    {
+      "done": false,
+      "text": "sutra_trend(from, to) returns per-metric deltas"
+    },
+    {
+      "done": false,
+      "text": "Default 'from' resolves to most recent prior snapshot"
+    },
+    {
+      "done": false,
+      "text": "Migration handles pre-existing snapshots gracefully"
+    }
+  ],
+  "decisions": [
+    "Hotspot count uses blast_radius >= 5 AND avg_cognitive >= 5.0 as DB proxy instead of git-churn-based calculation — avoids shelling out to git during parse",
+    "Health score is average per-file health across all files using the same formula as sutra_file_health",
+    "Total complexity sums avg_cognitive per file (not raw sum of all symbol cognitive values) to stay consistent with file_health weighting"
+  ],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "04ad19b"
+    }
+  ],
+  "files": [
+    "docs/feature-ideas.md"
+  ],
+  "tags": [
+    "new-tool",
+    "snapshots",
+    "schema-migration"
+  ],
+  "history": [
+    {
+      "ts": 1778232619088,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/simple-additions",
+        "sequence_number": 3
+      }
+    },
+    {
+      "ts": 1778234284643,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778235260604,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778232619088,
+  "updated_at": 1778235260604,
+  "completed_at": 1778235260604,
+  "edges": []
+}

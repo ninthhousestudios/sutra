@@ -1,0 +1,68 @@
+{
+  "id": "019eb5c8-364b-7a50-a849-e159a42f0d41",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/146",
+  "sequence_number": 146,
+  "title": "Break constraints import-cycle SCC: extract ConstraintFinding/FindingDelta to a leaf module",
+  "description": "sutra's own builtin:cycles blocking violation covers the SCC {waivers.rs, tools/review.rs, constraints/check.rs} (pre-existing), and bafae79 added constraints/external.rs into it via mutual import: check.rs uses external, external.rs uses check::{ConstraintFinding, FindingDelta}.\n\nConstraintFinding and FindingDelta are pure data types consumed by waivers, review, check, and external. Moving them to a leaf module (e.g. constraints/mod.rs or a new constraints/finding.rs) with re-exports breaks both the new check↔external 2-cycle and the pre-existing waivers→check edge of the SCC (waivers.rs:3 imports check only for ConstraintFinding). waivers.rs:5 also imports review::ConventionViolation — check whether that type should move too to fully dissolve the SCC.\n\nFound by vidhi-review of sutra/needs-designing/14.",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Went as planned. One minor surprise: check.rs needed `pub use` re-exports of the moved types so that downstream consumers using `check::ConstraintFinding` paths (tools/constraints.rs) continued to compile. Also review.rs's import needed `pub use` for the test crate.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "cfb8ff5"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "review-followup",
+    "constraints"
+  ],
+  "history": [
+    {
+      "ts": 1781166257739,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 146
+      }
+    },
+    {
+      "ts": 1781364806764,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1781365013829,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review: **approve**. No ship-blocking issues found. The old waivers↔review and check↔external edges are removed, compatibility re-exports preserve checked public paths, and FcaEngine::check() already returns conventions::ConventionViolation. No material findings. (Codex could not run cargo check in its sandbox — already verified locally: all 374 unit tests + 30 integration suites pass.)",
+      "ts": 1781365299148
+    }
+  ],
+  "created_at": 1781166257739,
+  "updated_at": 1781365013829,
+  "completed_at": 1781365013829,
+  "edges": []
+}

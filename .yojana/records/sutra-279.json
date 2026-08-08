@@ -1,0 +1,83 @@
+{
+  "id": "019f8a79-8f30-7e82-a45d-9deb60b220cb",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/279",
+  "sequence_number": 279,
+  "title": "Categories as a positive retrieval tier for intent-shaped lookup",
+  "description": "Categories (serialization, ffi, sqlite, golden-testing, concurrency, c-porting, ...) describe WHAT YOU ARE ABOUT TO DO rather than where the code lives — they are the only greenfield-usable index in the store. Today they are used solely as a NEGATIVE filter: Phase 3 of query_for_context (src/lessons.rs:357) excludes language-mismatched lessons and nothing else.\n\nMake categories a positive retrieval key so intent-shaped lookup works at plan time: sutra_lessons(query=\"sqlite migration\") should hit the category index, not only FTS over lesson text.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sutra_lessons(query=...) matches category tags in addition to FTS on text"
+    },
+    {
+      "done": false,
+      "text": "Category matches are ranked distinguishably from text matches"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Run the category tier as a second SQL pass appended after the FTS pass, rather than folding both into one query with a computed rank.",
+      "rationale": "FTS5 relevance ordering is only available via ORDER BY rank on a joined lessons_fts table; expressing the text match as an `l.rowid IN (SELECT ... MATCH ?)` subquery to allow a combined scoring expression would have silently discarded intra-text relevance ranking. Two passes keep FTS rank intact and make 'text hits first' structural rather than a scoring coincidence.",
+      "rejected_alternatives": "Single query with `(fts_hit OR cat_hit)` and an ORDER BY that puts fts_hit first: fewer round trips, but loses FTS rank within the text tier, which is the more valuable signal."
+    },
+    {
+      "decision": "Resolve query tokens against the store's distinct tag list in Rust, then bind the resolved tags into an IN clause, instead of matching tags with SQL LIKE patterns.",
+      "rationale": "Per-segment matching ('golden testing' -> 'golden-testing') needs splitting on -/_/. which is awkward and unindexable in SQL. The distinct tag vocabulary is small, and a pure function over it (tags_matching_query) is directly testable.",
+      "rejected_alternatives": "SQL LIKE 'token-%' OR LIKE '%-token' per token: keeps it in one query but forces a full scan anyway and is far harder to reason about as the matching rule evolves."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Restructuring search into two tiers required extracting the shared filter builder (project/symbol/verified/archived/explicit-category) so the tiers cannot drift — the risk flagged in CLAUDE.md's refactor contract discipline. Bind indices are now allocated per tier, with each tier reserving its own placeholders before the shared block. Also added migration 0006 for an index on categories(tag), since that column moved from an internal filter to a read path. Note the guard's open_existing path does not run migrations, so it sees the index only after an owning process has opened the store; harmless, it only affects speed.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "45eaaee"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "lessons",
+    "retrieval"
+  ],
+  "history": [
+    {
+      "ts": 1784734650160,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 279
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784742723836,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1784742736659,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1784734650160,
+  "updated_at": 1784742736659,
+  "completed_at": 1784742736659,
+  "edges": []
+}

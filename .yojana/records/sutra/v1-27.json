@@ -1,0 +1,93 @@
+{
+  "id": "019e222a-6d50-7942-921c-984f154d5a41",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/27",
+  "sequence_number": 27,
+  "title": "Split Db into migrations layer and query facades",
+  "description": "db.rs is 1,323 lines with 45+ public methods spanning four responsibilities: migrations, CRUD, graph queries, and convention persistence.\\n\\nExtract migration runner to db/migrations.rs. Group graph-oriented queries (import_edges, all_resolved_refs, all_symbol_file_map, batch_update_*_pagerank, update_rollups) behind a facade or into graph.rs. Move convention methods closer to FCA module.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Migration logic in separate module"
+    },
+    {
+      "done": false,
+      "text": "Db public method count reduced"
+    },
+    {
+      "done": false,
+      "text": "Graph-oriented queries owned by graph module or behind facade"
+    },
+    {
+      "done": false,
+      "text": "All existing tests pass"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "322046a"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-c"
+  ],
+  "history": [
+    {
+      "ts": 1778689666384,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 27
+      }
+    },
+    {
+      "ts": 1778705086884,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778705350870,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Split complete. db.rs (1334 lines, 45+ pub methods) → db/mod.rs (975 lines, 35 pub methods) + db/migrations.rs (205 lines) + db/graph.rs (72 lines) + db/conventions.rs (93 lines). All tests pass. No API changes — callers untouched.",
+      "ts": 1778705316789
+    }
+  ],
+  "created_at": 1778689666384,
+  "updated_at": 1778705350870,
+  "completed_at": 1778705350870,
+  "edges": [
+    {
+      "id": "019e222a-d023-72a2-a80b-594ea8a4829e",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/27",
+      "target": "sutra/v1/23",
+      "note": "Db split should happen after FCA persistence is wired up",
+      "created_at": 1778689691683
+    }
+  ]
+}

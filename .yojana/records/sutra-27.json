@@ -1,0 +1,64 @@
+{
+  "id": "019e4071-ca06-78e2-bf0b-4ff3c175fcb8",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/27",
+  "sequence_number": 27,
+  "title": "Phase 3: software architecture brainstorm",
+  "description": "Brainstorm on how sutra is structured as software (distinct from what it does). Key questions:\\n- One binary or multiple?\\n- Storage model (SQLite stays? additional stores?)\\n- Language adapter interface design\\n- API surface that all layers expose through (MCP tools, CLI, HTTP)\\n- Relationship to existing sutra code — rewrite, evolve, or hybrid?\\n\\nThis cuts across every capability and must be decided before subsystem PRDs.\\n\\nInput: docs/sutra-vision.md\\nOutput: architecture decisions captured in a doc",
+  "category": null,
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "docs/sutra-vision.md"
+    },
+    {
+      "type": "git:commit",
+      "value": "226af2d"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "design",
+    "phase-3"
+  ],
+  "history": [
+    {
+      "ts": 1779197659654,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 27
+      }
+    },
+    {
+      "ts": 1779826866031,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1779827627706,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779197659654,
+  "updated_at": 1779827627706,
+  "completed_at": 1779827627706,
+  "edges": []
+}

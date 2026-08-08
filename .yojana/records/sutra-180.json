@@ -1,0 +1,46 @@
+{
+  "id": "019ee77a-e47c-7e10-a90e-f98e596983d9",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/180",
+  "sequence_number": 180,
+  "title": "check out workspace arg on sutra_read",
+  "description": "sutra_read already does this. saw it succeed in a session",
+  "category": null,
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1782000051324,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 180
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782257128351,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "done"
+      },
+      "actor": "josh"
+    }
+  ],
+  "messages": [],
+  "created_at": 1782000051324,
+  "updated_at": 1782257128351,
+  "completed_at": 1782257128351,
+  "edges": []
+}

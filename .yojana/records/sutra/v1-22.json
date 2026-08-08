@@ -1,0 +1,74 @@
+{
+  "id": "019e2229-f34f-71e3-9ad0-64f3b73bff64",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/22",
+  "sequence_number": 22,
+  "title": "Pre-release cleanup: cargo fmt, version string, help text accuracy",
+  "description": "Three cleanup items from the v1 release review:\\n\\n1. Run cargo fmt (drift in ~45 files)\\n2. Fix version mismatch: Cargo.toml says 0.2.1, MCP server info says v0.1.0\\n3. Fix sutra_help conventions topic: describes FCA as detecting 'naming patterns' and building a 'concept lattice for naming'. FCA actually extracts attribute implications (e.g. 'pub functions tend to have docs'). Help text should describe what FCA actually detects.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "cargo fmt --check passes"
+    },
+    {
+      "done": false,
+      "text": "Version string consistent between Cargo.toml and MCP server info"
+    },
+    {
+      "done": false,
+      "text": "sutra_help conventions topic accurately describes FCA behavior"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "08e9ada"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1",
+    "review:2026-05-13-v1",
+    "wave-a"
+  ],
+  "history": [
+    {
+      "ts": 1778689635151,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 22
+      }
+    },
+    {
+      "ts": 1778690318130,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778690403736,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778689635151,
+  "updated_at": 1778690403736,
+  "completed_at": 1778690403736,
+  "edges": []
+}

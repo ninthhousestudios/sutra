@@ -1,0 +1,71 @@
+{
+  "id": "019e01e0-3bed-7232-b018-029ddc65a030",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/3",
+  "sequence_number": 3,
+  "title": "--explain / explain flag on analysis tools",
+  "description": "Sutra returns scored/ranked outputs (importance in `sutra_map`, blast radius in `sutra_impact`, co-change strength in `sutra_cochange`, FTS fuzzy match in `sutra_find`) but the scores arrive opaque. Add an `explain` flag that expands the scoring rationale.\n\nAgents need this most — they're the primary consumers and have to reason about whether a result is trustworthy without a human to eyeball it. So MCP-first. CLI second, because humans still want to inspect why sutra ranked file X above Y when triaging.\n\nConcrete shapes per tool:\n- `sutra_map` → why this file scored high (fan_in, importance contributors, parse status)\n- `sutra_impact` → BFS frontier visible (which symbols at depth 1, 2, 3), risk-level reasoning\n- `sutra_find` → why FTS chose this match over others (exact vs stemmed vs fuzzy)\n- `sutra_cochange` → commit count, time window, Jaccard or whichever metric\n\nqi reference: `qi query --explain` for the surface inspiration. The substance is sutra-specific.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": null,
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "MCP: explain flag on sutra_map, sutra_impact, sutra_find, sutra_cochange"
+    },
+    {
+      "done": false,
+      "text": "Each explain payload is structured (not just a debug string)"
+    },
+    {
+      "done": false,
+      "text": "CLI: --explain flag mirrors the MCP surface for human inspection"
+    },
+    {
+      "done": false,
+      "text": "Default behavior (no flag) unchanged"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/qi/cmd/query.go"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "observability",
+    "mcp",
+    "cli",
+    "from-qi"
+  ],
+  "history": [
+    {
+      "ts": 1778147933165,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 3
+      }
+    },
+    {
+      "ts": 1780709743963,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778147933165,
+  "updated_at": 1780709743963,
+  "completed_at": null,
+  "edges": []
+}

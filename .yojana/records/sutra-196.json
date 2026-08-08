@@ -1,0 +1,89 @@
+{
+  "id": "019effef-1673-7c53-9191-3f45e92b1db7",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/196",
+  "sequence_number": 196,
+  "title": "Pattern family detection scales poorly on large workspaces",
+  "description": "compute_pattern_families in the pipeline is the dominant bottleneck on non-trivial workspaces. On linux-kernel (629 C files, 13,458 HRR vectors), it took ~90 minutes — while all other pipeline steps combined took ~3.5 minutes. Even on sutra itself (270 vectors), it takes ~20 seconds, which is suspiciously slow for what should be a fast operation.\n\nThe step uses SimHashIndex (LSH with K=6 bits, L=12 tables) for candidate generation, then union-find clustering, then complete-link pruning. The LSH is supposed to make this sub-quadratic, but observed behavior is near-quadratic.\n\nObserved timings:\n- sutra: 270 vectors → 46 families in ~22s (pattern families step only)\n- linux-kernel: 13,458 vectors → 151 families in ~90 min (pattern families step only)\n- Scaling factor: 50x vectors → ~245x time (worse than O(n²) or dominated by a constant factor)",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Root cause is likely fat LSH buckets on patterned code, not an algorithmic design flaw",
+      "rationale": "LSH with K=6 bits only has 64 possible bucket keys per table. With 13k vectors, average bucket size is ~210 even with perfect distribution. Patterned kernel code makes it worse. The O(k²) pair generation inside candidate_pairs() on these fat buckets pushes total work back toward quadratic.",
+      "rejected_alternative": "The complete-link pruning phase is the bottleneck — unlikely since it only runs on groups that pass the threshold, and only 151 families survived"
+    }
+  ],
+  "implementation_plan": "Investigation steps:\n1. Check HRR vector dimension — if vectors are very wide, dot_product in SimCache is expensive per-pair and normalization of 13k vectors is also slow. Check src/similarity/hrr.rs for the dimension.\n2. Log candidate_pairs count — add a tracing::info! after candidate_pairs() returns to see how many pairs LSH actually generates. If it's millions, the LSH isn't discriminating well.\n3. Profile bucket size distribution — log the max and mean bucket sizes across tables. Kernel C code is highly patterned, so many functions hash to the same bucket, causing the inner O(k²) pair generation per bucket to dominate.\n\nLikely fixes (apply in order, each may be sufficient):\n1. Cap bucket size in candidate_pairs() — skip buckets larger than MAX_BUCKET_SIZE (e.g. 200). Fat buckets are low-signal (hash isn't discriminating) and generate O(k²) pairs each. A bucket with 1000 entries generates 500K pairs from that one bucket alone.\n2. Increase LSH_K from 6 to 8-10 — more hash bits = smaller buckets = better discrimination. With a 0.85 cosine threshold, true matches will still collide in at least one of 12 tables even with tighter hashes.\n3. Check if the 20s on sutra (270 vectors) is explained by vector dimension — if HRR vectors are e.g. 4096-dim, each dot_product is expensive. Consider whether the dimension can be reduced or the dot product vectorized.\n4. The complete-link pruning phase (phase 2) is O(k²) per group per iteration — check if any groups are very large before pruning and whether that contributes.",
+  "execution_record": "Diagnostic benchmarks confirmed both bottlenecks. Random vectors showed quadratic candidate_pairs scaling (346k pairs at n=2000) and O(n²) total time. Drifting-chain vectors (simulating patterned code) showed O(n^3.8) scaling: n=300→375ms, n=500→2.8s, n=750→12.5s — complete-link pruning dominated. Four fixes applied: group cap (200), batch pruning (worst half per iteration), tighter LSH (K=10,L=24), bucket cap (200). All 543 library tests pass. Pre-existing enrichment-test compilation error (stale insert_import arity) is unrelated.",
+  "reproduction": null,
+  "root_cause": "Two compounding bottlenecks: (1) Complete-link pruning is O(G³) per union-find group — it removes one member per O(G²) iteration, up to G iterations. With patterned code creating groups of 1000+ via transitive closure, this dominates runtime (measured ~n^3.8 due to cache pressure). A single group of 2000 takes ~9 minutes, 3000 takes ~60 minutes. (2) LSH with K=6 bits has only 64 possible bucket keys per table. With 13k vectors, average bucket=210, generating near-quadratic candidate pairs. The false positives inflate union-find groups, feeding bigger groups into the cubic pruner. The two interact multiplicatively — weak LSH creates oversized groups that hit the cubic pruning wall.",
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/191",
+      "label": "Related Linux scaling task"
+    },
+    {
+      "type": "git:commit",
+      "value": "67aaad3"
+    }
+  ],
+  "files": [
+    "src/similarity/duplicates.rs",
+    "src/pipeline.rs"
+  ],
+  "tags": [
+    "performance",
+    "similarity",
+    "pattern-families"
+  ],
+  "history": [
+    {
+      "ts": 1782410319475,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 196
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782411356944,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782411363346,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review: needs-attention. Three findings:\\n\\n1. [high] Batch pruning can destroy valid families near min_group — a 4-member group with 1 outlier marks all 4 as failing, removes 2, drops below min_group. Fix: never remove more than members.len() - min_group per iteration.\\n\\n2. [high] MAX_GROUP_SIZE=200 silently discards real large families — an all-identical family of 201 is dropped. Fix: validate or subsample oversized groups rather than skipping.\\n\\n3. [medium] MAX_BUCKET_SIZE=200 in candidate_pairs() skips entire fat buckets, creating unbounded recall loss for true families whose vectors collide in few tables. Fix: sample within fat buckets rather than skipping entirely.",
+      "ts": 1782411891226
+    },
+    {
+      "author": "agent",
+      "text": "Follow-up commit 6b09f45 addresses all three codex findings:\\n1. Batch pruning safety — invalidate at min_group boundary, cap removal count\\n2. Oversized groups — raised cap to 1000, densest-core extraction above that\\n3. Fat buckets — star pattern O(B) instead of truncation, full coverage\\n\\nTwo regression tests added. 545/545 lib tests pass.\"",
+      "ts": 1782412147531
+    }
+  ],
+  "created_at": 1782410319475,
+  "updated_at": 1782411363346,
+  "completed_at": 1782411363346,
+  "edges": []
+}

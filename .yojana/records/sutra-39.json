@@ -1,0 +1,69 @@
+{
+  "id": "019e6ce7-425e-76b2-8a92-ce5a54781253",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/39",
+  "sequence_number": 39,
+  "title": "Fix stale-index FCA gap + silent JSON parse failures",
+  "description": "From Codex adversarial review of sutra/35.\\n\\n1. **Stale index loses Rust-specific FCA attrs** — RustAdapter::extract_attributes only reads from language_attrs JSON. Existing DB rows migrated before the language_attrs column have NULL values, and the content-hash skip means they won't be re-parsed until the file changes. Silent false negatives for returns_result, takes_self_ref, returns_self in convention mining.\\n\\n2. **Malformed language_attrs JSON silently degrades** — serde_json parse error in RustAdapter::extract_attributes is swallowed. Corrupt or version-skewed JSON is indistinguishable from 'no language-specific attributes'.\"",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Pipeline invalidates content-hash for files whose symbols have NULL language_attrs, forcing reparse"
+    },
+    {
+      "done": false,
+      "text": "RustAdapter::extract_attributes logs a warning on malformed language_attrs JSON"
+    },
+    {
+      "done": false,
+      "text": "Test: simulated stale row (NULL language_attrs) triggers reparse on next index run"
+    },
+    {
+      "done": false,
+      "text": "Test: malformed JSON in language_attrs produces a warning, not silent degradation"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "ba0b685"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "core-model",
+    "fca"
+  ],
+  "history": [
+    {
+      "ts": 1779943555678,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 39
+      }
+    },
+    {
+      "ts": 1779943997425,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1779943555678,
+  "updated_at": 1779943997425,
+  "completed_at": 1779943997425,
+  "edges": []
+}

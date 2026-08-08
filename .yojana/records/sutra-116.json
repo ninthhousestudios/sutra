@@ -1,0 +1,206 @@
+{
+  "id": "019e9a93-8628-7dd2-bdfd-6393d14ad2f6",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/116",
+  "sequence_number": 116,
+  "title": "Python language adapter",
+  "description": "Add Python language support via tree-sitter-python. See docs/adding-languages.md for the full sketch.\n\nKey work:\n- Parser: functions, classes/methods, decorators, module-level assignments\n- Import resolution: import/from-import statements, relative imports via __init__.py package detection\n- Complexity: add \"python\" branches to classify_cognitive (including comprehensions)\n- FCA attributes: is_async, has_decorator, decorator:X, is_classmethod/staticmethod/property, has_type_hints, returns_none, is_generator, has_dataclass — decorators are especially rich FCA signal\n- Effect patterns: fs (open), net (requests), db (cursor.execute), io (print/logging), process (subprocess)\n- Flags: pytest (test_*), unittest (TestCase), framework entrypoints\n- Module boundary strength: Weak\n\nEstimated effort: ~6 days. Higher ecosystem value than C but noisier call graph due to dynamic dispatch.\n\nRisks: name-based reference resolution produces false positives, dynamic imports invisible, metaclass/descriptor edges invisible.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Parser extracts functions, classes/methods, decorators, and module-level assignments as symbols with correct SymbolKind (Class for classes, Function/Method for defs)"
+    },
+    {
+      "done": false,
+      "text": "References classified with correct RefContextKind (Call, FieldAccess, TypeUse) including method-call disambiguation (foo.bar() → Call not FieldAccess)"
+    },
+    {
+      "done": false,
+      "text": "Import statements (absolute and relative) extracted as ExtractedImport with raw_path and level"
+    },
+    {
+      "done": false,
+      "text": "Import resolver resolves absolute imports via __init__.py package tree, relative imports via level-based directory walk, with .sutra/rules.toml override for src-layout projects"
+    },
+    {
+      "done": false,
+      "text": "Complexity scoring handles if/for/while/try/except, boolean_operator (and/or), conditional_expression, and comprehensions (flow break, no nesting)"
+    },
+    {
+      "done": false,
+      "text": "FCA attributes include is_async, decorator:X (dotted names without args), has_type_hints, is_generator, returns_none"
+    },
+    {
+      "done": false,
+      "text": "Effect patterns fire for unresolved external calls (open, requests.get, subprocess.run, etc.) via name-only fallback in enrich_with_effects"
+    },
+    {
+      "done": false,
+      "text": "Flags detect pytest (test_* functions, @pytest.fixture) and unittest (TestCase subclass) test code"
+    },
+    {
+      "done": false,
+      "text": "Module boundary strength is Weak"
+    },
+    {
+      "done": false,
+      "text": "All existing tests pass; new integration tests cover Python-specific parser, resolver, complexity, and FCA behavior"
+    }
+  ],
+  "decisions": [
+    {
+      "chosen": "SymbolKind::Class",
+      "rationale": "Class variant exists and is used by Dart. Python classes are semantically closer to Dart classes than C structs.",
+      "rejected": "SymbolKind::Struct — technically works but semantically misleading for kind:struct in FCA queries",
+      "title": "SymbolKind for Python classes"
+    },
+    {
+      "chosen": "ALL_CAPS → Const, else Static; _-prefixed → vis:private",
+      "rationale": "ALL_CAPS convention is near-universal in Python. typing.Final too rare to detect reliably without import context.",
+      "rejected": "All as Static (loses const/mutable distinction); Final detection (requires import context analysis)",
+      "title": "Module-level assignment categorization"
+    },
+    {
+      "chosen": "Dotted name, no arguments — decorator:pytest.fixture, decorator:app.route",
+      "rationale": "Bare name alone loses context (@app.route → decorator:app is useless). Arguments too specific for FCA lattice patterns.",
+      "rejected": "Bare name only — loses valuable dotted context like pytest.fixture vs pytest.mark.parametrize",
+      "title": "Decorator extraction granularity"
+    },
+    {
+      "chosen": "__init__.py scan + .sutra/rules.toml [python] package_roots override for src-layout projects",
+      "rationale": "Matches Python's own package discovery. Handles traditional layouts zero-config (confirmed on varuna360-core flat layout). Config hint handles src/ layout without fragile pyproject.toml parsing.",
+      "rejected": "pyproject.toml auto-parsing — fragile, many build backend formats; __init__.py only — fails for src-layout",
+      "title": "Import resolver package root discovery"
+    },
+    {
+      "chosen": "Flow break, no nesting increment — (true, false) in classify_cognitive",
+      "rationale": "Comprehensions add mental load but are syntactically flat. Nested comprehensions score correctly via multiple flow breaks without artificial inflation.",
+      "rejected": "Flow break + nesting (inflates nested comprehensions); Skip (underweights cognitive load)",
+      "title": "Comprehension cognitive complexity"
+    },
+    {
+      "chosen": "Not counted in either cyclomatic or cognitive complexity",
+      "rationale": "with is a scope guard, not a branch or decision point. Neither SonarSource nor McCabe count it.",
+      "rejected": "Count as (true, true) in cognitive — would inflate scores relative to equivalent non-with code",
+      "title": "with statement complexity"
+    },
+    {
+      "chosen": "Extend is_logical_operator to recognize Python's boolean_operator node kind",
+      "rationale": "Keeps complexity logic centralized in the shared helper. Python's and/or use boolean_operator nodes with operator field containing 'and'/'or', not binary_expression with &&/||.",
+      "rejected": "Match directly in walk_cyclomatic Python arm — duplicates boundary detection logic",
+      "title": "boolean_operator handling in complexity"
+    },
+    {
+      "chosen": "Name-only fallback on unresolved call refs in enrich_with_effects (cross-cutting)",
+      "rationale": "Python's effectful calls are almost entirely to external packages (open, requests, subprocess). Resolved-only matching would produce zero effect attributes. The fallback also retroactively improves C effect coverage for stdlib calls like fopen/printf.",
+      "rejected": "Resolved-only (effects non-functional for Python); Separate Python-only pass (two enrichment code paths)",
+      "title": "Effect patterns for unresolved external calls"
+    },
+    {
+      "chosen": "Weak",
+      "rationale": "Python has no module-level enforcement. __all__ is advisory. Convention-based visibility (_prefix) same as C.",
+      "rejected": "Moderate — would imply Dart-level enforcement that Python doesn't have",
+      "title": "Module boundary strength"
+    }
+  ],
+  "implementation_plan": "## Approach\n\nMirror the C adapter pattern (most recently added, closest in structure) with Python-specific adaptations for decorators, package-based imports, and a name-only effect fallback for unresolved external calls. The parser is the largest piece (~60% of effort); the import resolver is the most complex algorithmically. One cross-cutting change to `enrich_with_effects` enables effect patterns for all unresolved external calls across languages.\n\n## Files\n\n- **Create**: `src/parser/python.rs` — parser module: symbol extraction, refs, imports, flags, language_attrs, signatures, docstrings\n- **Create**: `src/python_imports.rs` — import resolver: absolute imports via __init__.py tree, relative imports via level-based walk\n- **Create**: `tests/parse_python_test.rs` — parser integration tests\n- **Create**: `tests/python_resolver_test.rs` — import resolver tests\n- **Modify**: `Cargo.toml` — add `tree-sitter-python` dependency\n- **Modify**: `src/parser/adapter.rs` — PythonAdapter struct, LanguageAdapter impl, FcaAttributeSource impl, PYTHON_EFFECT_PATTERNS, registration in default_registry\n- **Modify**: `src/parser/complexity.rs` — add \"python\" arms to walk_cyclomatic and classify_cognitive; extend is_logical_operator for boolean_operator\n- **Modify**: `src/conventions/attributes.rs` — add unresolved-ref fallback path in enrich_with_effects\n- **Modify**: `src/pipeline.rs` (~line 573) — wire resolve_python_imports into post_parse_sequence\n- **Modify**: `src/lib.rs` — add `pub mod python_imports;`\n\n## Steps\n\n### Step 1: Add tree-sitter-python dependency\n\n`Cargo.toml` — add after `tree-sitter-dart`:\n```toml\ntree-sitter-python = \"0.23\"\n```\n\nVerify `cargo check` passes.\n\n### Step 2: Create parser module (`src/parser/python.rs`)\n\nThe largest step. Structure mirrors `src/parser/c.rs`. Key functions:\n\n```rust\npub fn parse(ctx: &ParseContext) -> Result<ParseResult> {\n    let symbols = collect_symbols(ctx.tree.root_node(), ctx.src, &[], ctx.file_path);\n    let references = collect_references(ctx.tree.root_node(), ctx.src);\n    let imports = collect_imports(ctx.tree.root_node(), ctx.src);\n    Ok(ParseResult { symbols, references, imports })\n}\n```\n\n**Symbol extraction** — `collect_symbols(node, src, name_context: &[String], file_path) -> Vec<ExtractedSymbol>`:\n- Recursive walk with `name_context` stack for qualified names (push class name on `class_definition` entry)\n- Match arms:\n  - `\"function_definition\"` → Function if name_context empty, Method if inside a class\n  - `\"class_definition\"` → SymbolKind::Class, recurse into body with class name pushed to context\n  - `\"decorated_definition\"` → unwrap inner node (first child matching function_definition or class_definition), extract decorator list into language_attrs, then process inner node as if bare\n  - `\"expression_statement\"` containing `\"assignment\"` at module scope → Const if ALL_CAPS name, Static otherwise\n- Qualified names via `build_qualified_name`:\n```rust\nfn build_qualified_name(context: &[String], name: &str) -> String {\n    if context.is_empty() { name.to_string() }\n    else { format!(\"{}::{}\", context.join(\"::\"), name) }\n}\n```\n\n**Decorator extraction** — `extract_decorators(node: Node, src: &[u8]) -> Vec<String>`:\n- Walk children of `decorated_definition` with kind `\"decorator\"`\n- For each decorator, extract the expression (skip the `@`), walk attribute chain to build dotted name\n- Strip call arguments: `@pytest.mark.parametrize(\"x\", [1])` → `\"pytest.mark.parametrize\"`\n\n**Language attrs** — `extract_fn_language_attrs(node, src, decorators: &[String]) -> Option<String>`:\n```rust\nlet mut attrs = serde_json::Map::new();\n// is_async: check if node kind is \"function_definition\" with async keyword child,\n//           or parent decorated_definition wraps async\nif is_async_function(node) { attrs.insert(\"is_async\".into(), true.into()); }\n// decorators\nif !decorators.is_empty() { attrs.insert(\"has_decorator\".into(), true.into()); }\nfor d in decorators {\n    attrs.insert(format!(\"decorator:{d}\"), true.into());\n}\n// type hints\nif has_type_annotations(node) { attrs.insert(\"has_type_hints\".into(), true.into()); }\n// return type\nif returns_none(node, src) { attrs.insert(\"returns_none\".into(), true.into()); }\n// generator\nif body_contains_yield(node) { attrs.insert(\"is_generator\".into(), true.into()); }\n```\n\n**Visibility** — `extract_visibility(name: &str) -> Option<&'static str>`:\n- `name.starts_with('_')` → `None` (private, maps to vis:private in FCA)\n- else → `Some(\"pub\")`\n\n**References** — `collect_references(node, src) -> Vec<ExtractedRef>`:\n- Walk all `identifier` and `attribute` nodes\n- `classify_ref_context`: parent is `call` → Call; parent is `attribute` AND grandparent is `call` AND this is the function position → Call; parent is `attribute` → FieldAccess; in type annotation position → TypeUse; else Unknown\n\n**Imports** — `collect_imports(node, src) -> Vec<ExtractedImport>`:\n- `\"import_statement\"` → extract dotted name as raw_path\n- `\"import_from_statement\"` → extract module name, count leading dots for relative level\n```rust\nExtractedImport {\n    raw_path: module_path,  // e.g. \"os.path\" or \".utils\"\n    line: node.start_position().row + 1,\n}\n```\n\n**Flags** — `extract_flags(file_path, name, node) -> u32`:\n```rust\nlet mut flags = 0u32;\nif is_test_file(file_path) || name.starts_with(\"test_\") { flags |= FLAG_TEST; }\n// check class bases for TestCase\nif is_unittest_testcase(node, src) { flags |= FLAG_TEST; }\n// pytest fixtures\nif decorators.iter().any(|d| d == \"pytest.fixture\") { flags |= FLAG_CFG_TEST; }\n```\n\n**Signatures** — `build_fn_signature(node, src) -> Option<String>`:\n- Extract `def name(params) -> return_type` line, strip body\n\n**Docstrings** — `extract_docstring(node, src) -> Option<String>`:\n- First child of function/class body that is `expression_statement` containing `string` → docstring\n\n### Step 3: PythonAdapter + registration (`src/parser/adapter.rs`)\n\n```rust\npub struct PythonAdapter;\n\nimpl LanguageAdapter for PythonAdapter {\n    fn language_id(&self) -> &str { \"python\" }\n    fn extensions(&self) -> &[&str] { &[\"py\"] }\n    fn grammar(&self) -> Language { tree_sitter_python::LANGUAGE.into() }\n    fn parse(&self, ctx: &ParseContext) -> Result<ParseResult> { super::python::parse(ctx) }\n    fn as_fca_source(&self) -> Option<&dyn FcaAttributeSource> { Some(self) }\n    fn module_boundary_hints(&self) -> ModuleBoundaryStrength { ModuleBoundaryStrength::Weak }\n}\n\nconst PYTHON_EFFECT_PATTERNS: &[EffectPattern] = &[\n    EffectPattern { attr_name: \"effect:fs\",      callee_prefixes: &[\"open\", \"pathlib\", \"os.path\", \"shutil\"] },\n    EffectPattern { attr_name: \"effect:net\",     callee_prefixes: &[\"requests\", \"urllib\", \"aiohttp\", \"httpx\"] },\n    EffectPattern { attr_name: \"effect:db\",      callee_prefixes: &[\"cursor\", \"session\", \"sqlite3\", \"sqlalchemy\"] },\n    EffectPattern { attr_name: \"effect:io\",      callee_prefixes: &[\"print\", \"logging\"] },\n    EffectPattern { attr_name: \"effect:process\", callee_prefixes: &[\"subprocess\", \"os.system\", \"os.exec\"] },\n];\n\nimpl FcaAttributeSource for PythonAdapter {\n    fn extract_attributes(&self, sym: &SymbolRow, file_path: &str) -> Option<SymbolAttrs> {\n        // Same pattern as CAdapter: extract_cross_language_attrs + deserialize language_attrs JSON\n    }\n    fn effect_patterns(&self) -> &[EffectPattern] { PYTHON_EFFECT_PATTERNS }\n}\n```\n\nRegister in `default_registry()` after CAdapter:\n```rust\nr.register(Box::new(PythonAdapter));\n```\n\nAdd `pub mod python;` to `src/parser/mod.rs`.\n\n### Step 4: Extend complexity scoring (`src/parser/complexity.rs`)\n\n**Extend `is_logical_operator`** — add before the existing `if let Some(op)` check:\n```rust\nfn is_logical_operator(node: Node, src: &[u8]) -> bool {\n    if node.kind() == \"boolean_operator\" {\n        return true;\n    }\n    // existing && / || check\n    if let Some(op) = node.child_by_field_name(\"operator\") ...\n}\n```\n\n**Add \"python\" arm to `walk_cyclomatic`** (before `_ => {}` at ~line 73):\n```rust\n\"python\" => match kind {\n    \"if_statement\" | \"for_statement\" | \"while_statement\"\n    | \"conditional_expression\" => { *count += 1; }\n    \"except_clause\" => { *count += 1; }  // each except is a branch\n    \"boolean_operator\" if is_logical_operator(node, src) => { *count += 1; }\n    \"list_comprehension\" | \"dictionary_comprehension\"\n    | \"set_comprehension\" | \"generator_expression\" => { *count += 1; }\n    _ => {}\n},\n```\n\nNote: `try_statement` is NOT counted in cyclomatic (not a branch). `with_statement` is NOT counted (scope guard). Each `except_clause` IS a branch.\n\n**Add \"python\" arm to `classify_cognitive`** (before `_ => (false, false)` at ~line 174):\n```rust\n\"python\" => match kind {\n    \"if_statement\" | \"conditional_expression\" => (true, true),\n    \"for_statement\" | \"while_statement\" => (true, true),\n    \"try_statement\" => (true, true),\n    \"except_clause\" => (true, false),\n    \"lambda\" => (false, true),\n    \"list_comprehension\" | \"dictionary_comprehension\"\n    | \"set_comprehension\" | \"generator_expression\" => (true, false),\n    _ => (false, false),\n},\n```\n\n### Step 5: Extend effect matcher for unresolved refs (`src/conventions/attributes.rs`)\n\nCross-cutting change: add a name-only fallback path in `enrich_with_effects` after the resolved-callee loop.\n\nThe function currently receives `call_refs: &[&RefRow]`. For refs where `target_symbol_id` is None, match the ref's name against effect pattern prefixes as bare-name matching.\n\n```rust\n// After the existing resolved-callee pattern loop (line ~146):\n\n// Fallback: match unresolved call refs by name for external/stdlib effects\nfor r in call_refs {\n    if r.target_symbol_id.is_some() {\n        continue; // already handled by resolved path\n    }\n    let ref_name = &r.name;\n    for pattern in patterns {\n        if pattern.callee_prefixes.iter().any(|p| {\n            ref_name == p\n                || (ref_name.starts_with(p)\n                    && (p.ends_with(\".\")\n                        || ref_name.as_bytes().get(p.len()) == Some(&b'.')))\n        }) && !sym_attrs.attributes.contains(&pattern.attr_name.to_string()) {\n            sym_attrs.attributes.push(pattern.attr_name.to_string());\n        }\n    }\n}\n```\n\nThis uses `.` as the boundary for unresolved refs (since they retain source-language separators), while the resolved path continues to use `::`. The dedup check (`!contains`) prevents double-tagging when both paths match.\n\nCheck that `RefRow` exposes a usable name field — likely `name` or `text`. Adjust field name accordingly.\n\n### Step 6: Create import resolver (`src/python_imports.rs`)\n\nStructure mirrors `src/c_imports.rs` but with Python-specific resolution logic.\n\n```rust\npub fn resolve_python_imports(db: &Db, workspace_root: &Path) -> Result<usize> {\n    let unresolved = db.unresolved_python_imports()?;\n    if unresolved.is_empty() { return Ok(0); }\n\n    let all_files = db.all_files()?;\n    let path_to_id: HashMap<&str, i64> = ...;\n    let id_to_path: HashMap<i64, &str> = ...;\n\n    // Build package tree from __init__.py locations\n    let package_roots = discover_package_roots(&all_files, workspace_root);\n\n    let mut updates = Vec::new();\n    for (import_id, file_id, raw_path) in &unresolved {\n        let importing_path = id_to_path.get(file_id).copied();\n        let resolved = if raw_path.starts_with('.') {\n            resolve_relative_import(raw_path, importing_path, &path_to_id, workspace_root)\n        } else {\n            resolve_absolute_import(raw_path, &package_roots, &path_to_id, workspace_root)\n        };\n        if let Some(target_id) = resolved && target_id != *file_id {\n            updates.push((*import_id, target_id));\n        }\n    }\n\n    let count = updates.len();\n    db.batch_update_import_resolved_file_ids(&updates)?;\n    Ok(count)\n}\n```\n\n**Package root discovery** — `discover_package_roots(files, workspace_root) -> Vec<PathBuf>`:\n- Scan indexed files for `__init__.py`, collect their parent directories\n- Walk up from each to find the topmost package directory (highest ancestor that also has `__init__.py`)\n- The parent of each topmost package dir is a package root\n- Also check `.sutra/rules.toml` for `[python] package_roots = [\"src\"]` override\n\n**Absolute import resolution** — `resolve_absolute_import(module_path, roots, path_map, ws_root)`:\n- Split `module_path` on `.` → segments\n- For each package root, try:\n  1. `{root}/{segments joined by /}.py`\n  2. `{root}/{segments joined by /}/__init__.py`\n- Return first match in `path_map`\n\n**Relative import resolution** — `resolve_relative_import(raw_path, importing_path, path_map, ws_root)`:\n- Count leading dots → level\n- Strip dots → remaining module path\n- From importing file's directory, walk up `level` directories\n- Resolve remaining path as `{dir}/{remaining}.py` or `{dir}/{remaining}/__init__.py`\n\n**DB method needed**: `Db::unresolved_python_imports()` — add query filtering on language = \"python\" (or reuse `unresolved_imports_with_files` if it accepts a language filter).\n\n### Step 7: Wire into pipeline + lib.rs\n\n**`src/lib.rs`** — add `pub mod python_imports;` (alphabetically after `pipeline`).\n\n**`src/pipeline.rs`** — after the C resolver block (~line 573):\n```rust\nlet python_resolved = crate::python_imports::resolve_python_imports(db, workspace_root)?;\nif python_resolved > 0 {\n    info!(count = python_resolved, \"resolved Python import edges\");\n}\n```\n\n**`src/parser/mod.rs`** — add `pub mod python;`\n\n### Step 8: Tests\n\n**`tests/parse_python_test.rs`** — integration tests:\n- Basic function extraction (name, signature, docstring)\n- Class with methods (qualified names use ::)\n- Decorated function (decorator:staticmethod, decorator:property in language_attrs)\n- Async function (is_async attribute)\n- Module-level assignment (ALL_CAPS → Const, lowercase → Static)\n- Import extraction (absolute and relative, with correct raw_path)\n- Reference classification (call, attribute access, type annotation)\n- Flags (test_ prefix, TestCase subclass)\n- Generator detection (yield in body)\n- Type hint detection (parameter and return annotations)\n\n**`tests/python_resolver_test.rs`** — resolver tests:\n- Absolute import resolution (foo.bar → foo/bar.py)\n- Package resolution (foo → foo/__init__.py when foo.py absent)\n- Relative import (from . import sibling)\n- Multi-level relative import (from ..utils import helper)\n- Unresolved external package (import requests → no resolution, stays NULL)\n\n**Complexity tests** — add to existing complexity test file:\n- Python if/for/while cyclomatic counting\n- except_clause counted, try_statement not counted in cyclomatic\n- and/or boolean_operator counted\n- Comprehension flow break in cognitive, no nesting\n\n## Acceptance criteria coverage\n\n- [x] \"Parser extracts functions, classes/methods, decorators, module-level assignments\" → Steps 2, 3\n- [x] \"References classified with correct RefContextKind\" → Step 2 (collect_references)\n- [x] \"Import statements extracted as ExtractedImport\" → Step 2 (collect_imports)\n- [x] \"Import resolver resolves absolute/relative imports\" → Steps 6, 7\n- [x] \"Complexity scoring handles Python constructs\" → Step 4\n- [x] \"FCA attributes include is_async, decorator:X, etc.\" → Steps 2, 3\n- [x] \"Effect patterns fire for unresolved external calls\" → Step 5\n- [x] \"Flags detect pytest and unittest\" → Step 2\n- [x] \"Module boundary strength is Weak\" → Step 3\n- [x] \"All existing tests pass; new integration tests\" → Step 8",
+  "execution_record": "Completed across 4 phases (arc): parser+adapter (sutra/187, done), complexity+effects (sutra/188, done), import resolver (sutra/189, done), integration tests (sutra/190, done). 15 integration tests, 233 resolved imports on libaditya (74 files), 843 on varuna (213 files). Full pipeline works end-to-end: parse → resolve imports → graph → complexity → FCA → effects.\"",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "93c2b92"
+    }
+  ],
+  "files": [
+    "src/parser/adapter.rs",
+    "docs/adding-languages.md"
+  ],
+  "tags": [
+    "language",
+    "python",
+    "adapter"
+  ],
+  "history": [
+    {
+      "ts": 1780709819944,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 116
+      }
+    },
+    {
+      "ts": 1782331834573,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "ready-for-agent"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1782332180754,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "josh"
+    },
+    {
+      "ts": 1782403057977,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1780709819944,
+  "updated_at": 1782403057977,
+  "completed_at": 1782403057977,
+  "arc_id": "019efb43-0c5e-7242-80eb-87939215d6ad",
+  "arc_phase": "Parser & Adapter",
+  "edges": [
+    {
+      "id": "019efb44-aba5-79d3-a442-64bb41126466",
+      "edge_type": "refines",
+      "source": "sutra/187",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332042149
+    },
+    {
+      "id": "019efb44-afa3-7ee3-84cb-6788bfef9f46",
+      "edge_type": "refines",
+      "source": "sutra/188",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332043171
+    },
+    {
+      "id": "019efb44-b32d-79d3-88d2-44d7cb91bc55",
+      "edge_type": "refines",
+      "source": "sutra/189",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332044077
+    },
+    {
+      "id": "019efb44-b593-79d2-bf59-ca29a84c8993",
+      "edge_type": "refines",
+      "source": "sutra/190",
+      "target": "sutra/116",
+      "note": null,
+      "created_at": 1782332044691
+    }
+  ]
+}

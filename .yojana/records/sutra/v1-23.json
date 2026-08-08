@@ -1,0 +1,101 @@
+{
+  "id": "019e222a-0f50-7de1-a83e-a354450ad14b",
+  "project_id": "019e1437-7b08-7ec1-bba8-9c426566744a",
+  "project_slug": "sutra/v1",
+  "human_id": "sutra/v1/23",
+  "sequence_number": 23,
+  "title": "Wire FCA convention persistence into production path",
+  "description": "FCA conventions are computed fresh in-memory on each sutra_review call and discarded. The DB infrastructure exists (conventions table, upsert_convention, all_conventions, delete_stale_conventions) but is never wired up.\\n\\nWire rebuild results into db.upsert_convention(). Call db.delete_stale_conventions() with current ID set. Optionally move FCA rebuild into post_parse_sequence for incremental updates.\\n\\nThis unblocks PRD story 13 (temporal convention tracking: first_seen, last_seen).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "Conventions persisted to SQLite after FCA rebuild"
+    },
+    {
+      "done": false,
+      "text": "Stale conventions pruned via delete_stale_conventions"
+    },
+    {
+      "done": false,
+      "text": "conventions table has populated first_seen/last_seen columns"
+    },
+    {
+      "done": false,
+      "text": "Review results identical before and after (persistence is additive)"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "be69fca"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "v1.1",
+    "review:2026-05-13-v1",
+    "wave-b"
+  ],
+  "history": [
+    {
+      "ts": 1778689642320,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/v1",
+        "sequence_number": 23
+      }
+    },
+    {
+      "ts": 1778690632704,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778691104238,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review (c480f64..390462c):\n\nVerdict: needs-attention\n\n[medium] FCA persistence and pruning failures silently swallowed (src/tools/review.rs:198-208). Every convention upsert and stale-prune call discards its Result. If SQLite rejects a write, review still returns as if persistence succeeded — no degraded flag or log. Pruning still runs after failed upserts, risking partial convention state or deletion of older rows without recording new set.\n\nRecommendation: Run convention upserts and stale pruning as one transaction, only prune after all upserts succeed. At minimum, log and surface persistence failure in the review response.",
+      "ts": 1778692346053
+    }
+  ],
+  "created_at": 1778689642320,
+  "updated_at": 1778691104238,
+  "completed_at": 1778691104238,
+  "edges": [
+    {
+      "id": "019e222a-c82b-7771-bf39-bc72cf7ea7a4",
+      "edge_type": "relates_to",
+      "source": "sutra/v1/23",
+      "target": "sutra/v1/20",
+      "note": "Wave B relates to Wave A",
+      "created_at": 1778689689643
+    },
+    {
+      "id": "019e222a-d023-72a2-a80b-594ea8a4829e",
+      "edge_type": "depends_on",
+      "source": "sutra/v1/27",
+      "target": "sutra/v1/23",
+      "note": "Db split should happen after FCA persistence is wired up",
+      "created_at": 1778689691683
+    }
+  ]
+}

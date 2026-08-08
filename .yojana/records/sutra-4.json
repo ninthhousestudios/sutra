@@ -1,0 +1,104 @@
+{
+  "id": "019e027a-a0c3-7280-b08e-c56c96a8dd79",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/4",
+  "sequence_number": 4,
+  "title": "incremental parse pipeline",
+  "description": "## Parent\n\nsutra/1 — prd for sutra watcher daemon\n\n## What to build\n\nNew `parse_changed_files` function in `pipeline.rs` that takes explicit `changed` + `deleted` path lists instead of walking the directory tree. Handles the full incremental pipeline: delete file/symbols/refs for removed files, parse changed files via `parse_single_file`, cascade re-resolution to files referencing deleted symbols, resolve refs for dirty set, recompute rollups with dirty set, full PageRank recomputation.\n\nFile renames are treated as delete + create — no special-case logic.\n\n## Acceptance criteria\n\n- [ ] `parse_changed_files(workspace, db, config, changed, deleted)` function exists in `pipeline.rs`\n- [ ] Deleted files have their file rows, symbols, and refs removed from DB\n- [ ] Files referencing deleted symbols are added to the dirty set and re-resolved\n- [ ] Changed files are parsed and refs resolved\n- [ ] Rollups (fan-in, blast radius) recomputed for dirty set only\n- [ ] PageRank recomputed (full)\n- [ ] Unit tests: single file change, file deletion with cascade, multiple files changed\n\n## Blocked by\n\nNone — can start immediately.\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "parse_changed_files function exists in pipeline.rs"
+    },
+    {
+      "done": true,
+      "text": "Deleted files have their file rows, symbols, and refs removed from DB"
+    },
+    {
+      "done": true,
+      "text": "Files referencing deleted symbols are added to dirty set and re-resolved"
+    },
+    {
+      "done": true,
+      "text": "Changed files are parsed and refs resolved"
+    },
+    {
+      "done": true,
+      "text": "Rollups recomputed for dirty set only"
+    },
+    {
+      "done": true,
+      "text": "PageRank recomputed (full)"
+    },
+    {
+      "done": true,
+      "text": "Unit tests: single file change, file deletion with cascade, multiple files changed"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/pipeline.rs",
+    "tests/pipeline-test.rs"
+  ],
+  "tags": [
+    "watcher",
+    "pipeline"
+  ],
+  "history": [
+    {
+      "ts": 1778158051523,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 4
+      }
+    },
+    {
+      "ts": 1778182043567,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1778182181363,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1778158051523,
+  "updated_at": 1778182181363,
+  "completed_at": 1778182181363,
+  "edges": [
+    {
+      "id": "019e027b-8122-7bb3-b21d-1c012391928d",
+      "edge_type": "depends_on",
+      "source": "sutra/7",
+      "target": "sutra/4",
+      "note": null,
+      "created_at": 1778158108962
+    },
+    {
+      "id": "019e027b-8dfb-7de3-8602-8975a31c5a07",
+      "edge_type": "refines",
+      "source": "sutra/4",
+      "target": "sutra/1",
+      "note": null,
+      "created_at": 1778158112251
+    }
+  ]
+}

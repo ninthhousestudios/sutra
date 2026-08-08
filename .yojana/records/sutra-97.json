@@ -1,0 +1,102 @@
+{
+  "id": "019e92b2-b477-7523-8d21-8fe3170f5f76",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/97",
+  "sequence_number": 97,
+  "title": "5e-review-3: review integration (review, drift, orient, MCP tools)",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to review\\n\\nFinal review after slices 5e-8 through 5e-11 land. The full L4 + L6 system is operational.\\n\\nReviewer focus:\\n- Does sutra_review produce a coherent report? Read it end-to-end: constraints → conventions → health → shape changes → deltas. Is the flow useful?\\n- Is semantic diff (hrr_shape_change) producing actionable findings? Test on real diffs — do the \\\"subtle structural change\\\" flags make sense?\\n- Does convention drift detection fire appropriately? Check both FCA-based and HRR-based paths on real components.\\n- Is the orient briefing useful with health context? Does it help an agent understand the quality landscape before making changes?\\n- Does sutra_health give useful per-file and per-component views?\\n- function_hotspot and code_age_volatility: are the on-demand biomarkers reasonable on real code?\\n\\n## Blocked by\\n\\n- sutra/93 (5e-8)\\n- sutra/94 (5e-9)\\n- sutra/95 (5e-10)\\n- sutra/96 (5e-11)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780577645687,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 97
+      }
+    },
+    {
+      "ts": 1780684053282,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780684056125,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex adversarial review — verdict: needs-attention\n\nThree medium findings, all verified by Claude:\n\n1. **Semantic diff reads working tree instead of reviewed head** (src/similarity/diff.rs:175-176) — `detect_shape_changes` reads the \"new\" side from the filesystem, not from the reviewed commit. For staged or commit-range diffs, `hrr_shape_changes` can report on unrelated content.\n\n2. **Convention drift fires on insufficient history** (src/tools/review.rs:612-628 → src/health/drift.rs:108) — `record_and_detect_drift` inserts the current snapshot before `detect_convention_drift` queries it. With DRIFT_WINDOW=3, one of two \"historical\" slots is the just-inserted current value, so drift fires after 1 real prior data point instead of 2.\n\n3. **Blame parser reuses stale timestamp for repeated commits** (src/git.rs:20-39) — Porcelain blame omits metadata on repeated commit headers. The parser doesn't cache author-time by commit hash, so repeated commits inherit the intervening commit's timestamp. Corrupts code_age_volatility calculations.\n\nNo constraint violations. Convention violations are visibility-related (pub(crate) vs private consts, pub vs non-pub fns) — project convention noise, not real issues.",
+      "ts": 1780683612723
+    }
+  ],
+  "created_at": 1780577645687,
+  "updated_at": 1780684056125,
+  "completed_at": 1780684056125,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b3-5087-7dc0-88d6-9bee09e66a88",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/93",
+      "note": null,
+      "created_at": 1780577685639
+    },
+    {
+      "id": "019e92b3-53ac-7473-a6c4-8c31a27903e6",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/94",
+      "note": null,
+      "created_at": 1780577686444
+    },
+    {
+      "id": "019e92b3-5559-7441-8bc6-e293c7bd34b9",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/95",
+      "note": null,
+      "created_at": 1780577686873
+    },
+    {
+      "id": "019e92b3-6358-7432-b0bc-8c6cdcd5466b",
+      "edge_type": "depends_on",
+      "source": "sutra/97",
+      "target": "sutra/96",
+      "note": null,
+      "created_at": 1780577690456
+    }
+  ]
+}

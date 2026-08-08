@@ -1,0 +1,102 @@
+{
+  "id": "019e92b0-d147-73c3-8689-df030b1a1862",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/87",
+  "sequence_number": 87,
+  "title": "5e-review-1: review health foundation (findings, scoring, git metrics)",
+  "description": "## Parent\\n\\nsutra/83 (5e PRD: health metrics + similarity system)\\n\\n## What to review\\n\\nReview the health foundation after slices 5e-1, 5e-2, 5e-3 land. The system should produce finding-based health with scoring and git-organizational biomarkers. No HRR or similarity yet.\\n\\nReviewer focus:\\n- Is the HealthFinding model correct and complete? Does it integrate cleanly with the existing trust model (severity, provenance, waivers)?\\n- Does category capping produce sensible scores? Check proportional scaling with real data.\\n- Are the git-organizational metric algorithms correct? Compare co_change_scatter, change_entropy, ownership_risk outputs against manual calculation on a known workspace.\\n- Does the waiver mechanism work for health findings the same way it works for constraints?\\n- Is the file_health MCP tool output useful?\\n\\n## Blocked by\\n\\n- sutra/84 (5e-1)\\n- sutra/85 (5e-2)\\n- sutra/86 (5e-3)\"",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/83"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "phase-5",
+    "health-similarity",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1780577521991,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 87
+      }
+    },
+    {
+      "ts": 1780589378665,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "author": "codex",
+      "text": "Codex review (adversarial, base=80a2986~1): **needs-attention**\n\nTwo findings:\n\n1. **[high] Symbol-scoped health waivers are never applied** (src/db/health.rs:233-238)\n   - `create_health_waiver` stores `symbol_qualified_name`, and `nested_complexity` findings are symbol-level, but waiver matching only returns true when the waiver's `symbol_qualified_name` is NULL. A waiver created for a specific symbol (e.g. `Foo::bar`) will match file-level but not symbol-level — the finding remains scored despite the waiver.\n   - Recommendation: resolve each finding's `symbol_id` to its `qualified_name` and match waivers where biomarker+file match AND either waiver is file-level OR waiver `symbol_qualified_name` equals finding symbol. Add tests.\n\n2. **[medium] co_change_scatter minimum-commit guard counts non-co-change commits** (src/db/graph.rs:163-172)\n   - `file_cochange_partners` computes `partner_count` from co-change commits but `commit_count` from ALL commits for the file. A file touched alone in 2 commits + once in 1 broad commit would pass the guard (`commit_count >= 3`) even though scatter only occurred in 1 co-change commit.\n   - Recommendation: compute the guard as `COUNT(DISTINCT cf1.commit_hash)` over the co-change join, or return both total and co-change commit counts. Add a fixture with solo commits + one broad co-change commit.\n\nNext steps: fix waiver matching before exposing in user-facing scoring; rework `co_change_scatter` SQL and add false-positive fixture.",
+      "ts": 1780588632013
+    }
+  ],
+  "created_at": 1780577521991,
+  "updated_at": 1780589378665,
+  "completed_at": 1780589378665,
+  "arc_id": "019e6e7c-c900-7f42-a0f1-6eb270f69f85",
+  "arc_phase": "implement",
+  "edges": [
+    {
+      "id": "019e92b2-cc89-7851-9d46-11dff7fe904f",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/84",
+      "note": null,
+      "created_at": 1780577651849
+    },
+    {
+      "id": "019e92b2-cdb0-70f0-b7d2-71f98fb7a2aa",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/85",
+      "note": null,
+      "created_at": 1780577652144
+    },
+    {
+      "id": "019e92b2-d029-7e11-9282-76b2ee752381",
+      "edge_type": "depends_on",
+      "source": "sutra/87",
+      "target": "sutra/86",
+      "note": null,
+      "created_at": 1780577652777
+    },
+    {
+      "id": "019e92b2-de1f-7cb2-a360-40bc07f86d0f",
+      "edge_type": "depends_on",
+      "source": "sutra/88",
+      "target": "sutra/87",
+      "note": null,
+      "created_at": 1780577656351
+    },
+    {
+      "id": "019e92b2-ea8d-78c1-97f1-e077600b594e",
+      "edge_type": "depends_on",
+      "source": "sutra/91",
+      "target": "sutra/87",
+      "note": null,
+      "created_at": 1780577659533
+    }
+  ]
+}

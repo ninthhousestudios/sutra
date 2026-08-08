@@ -1,0 +1,70 @@
+{
+  "id": "019e9a72-bd0b-77f3-94ef-d7b52a4feb4a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/107",
+  "sequence_number": 107,
+  "title": "fix: orient resolve_scope uses alias text instead of canonical component name",
+  "description": "From sutra/104 review. When a component is resolved via alias, `alias.term` is used for the name instead of the canonical component name. The component name is available from the `components` list — the find on line 53-57 matches by id but discards the name with `_`.\\n\\nFile: src/tools/orient.rs:58-60",
+  "category": null,
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/104",
+      "label": "source review"
+    },
+    {
+      "type": "doc:path",
+      "value": "docs/reviews/2026-06-05-health-integration-review.md",
+      "label": "finding: orient-alias-uses-alias-term"
+    },
+    {
+      "type": "git:commit",
+      "value": "57abc30"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "release-review-followup",
+    "correctness"
+  ],
+  "history": [
+    {
+      "ts": 1780707671307,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 107
+      }
+    },
+    {
+      "ts": 1780708004557,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      }
+    },
+    {
+      "ts": 1780708051459,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      }
+    }
+  ],
+  "messages": [],
+  "created_at": 1780707671307,
+  "updated_at": 1780708051459,
+  "completed_at": 1780708051459,
+  "edges": []
+}
