@@ -55,11 +55,12 @@ impl ParseCoordinator {
     }
 
     pub fn lock_for(&self, ws_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.locks
-            .lock()
-            .entry(ws_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+        Arc::clone(
+            self.locks
+                .lock()
+                .entry(ws_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     /// Marks a genuine parse as in progress for this workspace and returns a

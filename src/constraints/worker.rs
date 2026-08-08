@@ -80,16 +80,16 @@ pub(super) fn spawn_worker() -> WorkerHandle {
 fn run_worker(cmd_rx: Receiver<Command>, resp_tx: Sender<Response>) {
     timely::execute_directly(move |worker| {
         let cycle_nodes = Rc::new(RefCell::new(HashSet::<i64>::new()));
-        let cycle_nodes_inspect = cycle_nodes.clone();
+        let cycle_nodes_inspect = Rc::clone(&cycle_nodes);
 
         let edges_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));
         let forbidden_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));
 
         let blast_counts = Rc::new(RefCell::new(HashMap::<i64, isize>::new()));
-        let blast_counts_inspect = blast_counts.clone();
+        let blast_counts_inspect = Rc::clone(&blast_counts);
 
         let violations_store = Rc::new(RefCell::new(HashSet::<(i64, i64)>::new()));
-        let violations_inspect = violations_store.clone();
+        let violations_inspect = Rc::clone(&violations_store);
 
         let probe = ProbeHandle::new();
         let mut timestamp: usize = 0;

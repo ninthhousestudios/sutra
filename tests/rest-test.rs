@@ -117,7 +117,7 @@ async fn post_workspaces_registers_new_workspace() {
     let ws: WsConfig = Arc::new(RwLock::new(WorkspacesConfig { workspace: vec![] }));
     let db_cache: DbCache = Arc::new(Mutex::new(HashMap::new()));
 
-    let app = sutra::rest::router(config.clone(), ws.clone(), db_cache.clone());
+    let app = sutra::rest::router(Arc::clone(&config), Arc::clone(&ws), Arc::clone(&db_cache));
 
     let body = serde_json::json!({
         "path": "/tmp/my-project",

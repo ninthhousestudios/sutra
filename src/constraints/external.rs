@@ -363,7 +363,7 @@ fn make_external_finding(
         _ => format!("{}: {from_path} -> {crate_name}", c.kind.kind_tag()),
     };
     ConstraintFinding {
-        constraint_id: c.id.clone(),
+        constraint_id: Arc::clone(&c.id),
         constraint_name: c.name.clone(),
         constraint_kind: c.kind.kind_tag().to_string(),
         severity: c.severity,

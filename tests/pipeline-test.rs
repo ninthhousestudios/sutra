@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use sutra::config::Config;
@@ -513,7 +514,7 @@ fn test_reparse_no_duplicate_symbols() {
     let syms = db.find_symbols_by_file(file.id).unwrap();
     let mut seen = std::collections::HashSet::new();
     for s in &syms {
-        let key = (s.qualified_name.clone(), s.start_line);
+        let key = (Arc::clone(&s.qualified_name), s.start_line);
         assert!(
             seen.insert(key.clone()),
             "duplicate symbol: {} at line {}",
@@ -589,9 +590,7 @@ _UsedClass make() {
         .find_dead_symbols(false, None)
         .unwrap()
         .into_iter()
-        .map(|(qn, _path, _kind, _line, _vis)| {
-            qn.rsplit("::").next().unwrap_or(&qn).to_string()
-        })
+        .map(|(qn, _path, _kind, _line, _vis)| qn.rsplit("::").next().unwrap_or(&qn).to_string())
         .collect();
 
     // Genuinely-unused private symbols must be reported dead, one per form:

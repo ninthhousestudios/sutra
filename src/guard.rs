@@ -1604,7 +1604,7 @@ name = "no-tools-daemon"
         let outcome =
             check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert_eq!(outcome.active.len(), 1);
-        let constraint_id = outcome.active[0].constraint_id.clone();
+        let constraint_id = std::sync::Arc::clone(&outcome.active[0].constraint_id);
 
         // Waiver on the TARGET file (daemon.rs), not the source
         conn.execute(

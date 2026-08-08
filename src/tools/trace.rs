@@ -86,7 +86,7 @@ fn trace_forward(
 
     let mut stack: Vec<i64> = vec![target.id];
     let mut names: HashMap<i64, Arc<str>> = HashMap::new();
-    names.insert(target.id, target.qualified_name.clone());
+    names.insert(target.id, Arc::clone(&target.qualified_name));
 
     dfs_callers(
         db,
@@ -174,7 +174,7 @@ fn dfs_callers(
                 continue;
             }
             found_any = true;
-            names.insert(caller_sym.id, caller_sym.qualified_name.clone());
+            names.insert(caller_sym.id, Arc::clone(&caller_sym.qualified_name));
             stack.push(caller_sym.id);
             dfs_callers(
                 db,
@@ -212,7 +212,7 @@ fn trace_backward(
 
     let mut stack = vec![target.id];
     let mut names: HashMap<i64, Arc<str>> = HashMap::new();
-    names.insert(target.id, target.qualified_name.clone());
+    names.insert(target.id, Arc::clone(&target.qualified_name));
 
     dfs_callees(
         db,
@@ -303,7 +303,7 @@ fn dfs_callees(
                 cycles.push((stack.clone(), callee_sym.id));
                 continue;
             }
-            names.insert(callee_sym.id, callee_sym.qualified_name.clone());
+            names.insert(callee_sym.id, Arc::clone(&callee_sym.qualified_name));
             stack.push(callee_sym.id);
             dfs_callees(
                 db,

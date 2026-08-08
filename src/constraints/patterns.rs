@@ -24,7 +24,7 @@ pub type MatchKey = (Arc<str>, Option<String>, Option<String>);
 /// [`subtract_multiset`]), so borrowing is not an option.
 pub fn match_key(f: &ConstraintFinding) -> MatchKey {
     (
-        f.constraint_id.clone(),
+        Arc::clone(&f.constraint_id),
         f.enclosing_symbol.clone(),
         f.snippet.clone(),
     )
@@ -197,7 +197,7 @@ pub fn check_forbidden_patterns(
                 let enclosing = find_enclosing_symbol(&symbols, line);
 
                 findings.push(ConstraintFinding {
-                    constraint_id: constraint.id.clone(),
+                    constraint_id: Arc::clone(&constraint.id),
                     constraint_name: constraint.name.clone(),
                     constraint_kind: "forbidden_pattern".to_string(),
                     severity: constraint.severity,

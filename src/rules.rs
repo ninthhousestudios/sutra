@@ -506,7 +506,7 @@ impl Rules {
                 }
                 continue;
             }
-            seen.insert(id.clone(), out.len());
+            seen.insert(Arc::clone(&id), out.len());
             out.push(Constraint {
                 id,
                 kind,
@@ -531,7 +531,7 @@ impl Rules {
                         }
                         continue;
                     }
-                    seen.insert(c.id.clone(), out.len());
+                    seen.insert(Arc::clone(&c.id), out.len());
                     out.push(c);
                 }
                 Err(e) => {
@@ -553,7 +553,7 @@ impl Rules {
         let mut name_counts: HashMap<Arc<str>, usize> = HashMap::new();
         for c in &out {
             if let Some(name) = &c.name {
-                *name_counts.entry(name.clone()).or_insert(0) += 1;
+                *name_counts.entry(Arc::clone(name)).or_insert(0) += 1;
             }
         }
         let mut dup_names: Vec<Arc<str>> = name_counts
@@ -1596,8 +1596,8 @@ kind = "forbidden_pattern"
 language = "rust"
 query = "(unsafe_block) @cap"
 "#;
-        let id1 = parse_rules(toml).unwrap().all_constraints().0[0].id.clone();
-        let id2 = parse_rules(toml).unwrap().all_constraints().0[0].id.clone();
+        let id1 = Arc::clone(&parse_rules(toml).unwrap().all_constraints().0[0].id);
+        let id2 = Arc::clone(&parse_rules(toml).unwrap().all_constraints().0[0].id);
         assert_eq!(id1, id2);
     }
 
@@ -1615,12 +1615,8 @@ kind = "forbidden_pattern"
 language = "rust"
 query = "(function_item) @cap"
 "#;
-        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
-            .id
-            .clone();
-        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
-            .id
-            .clone();
+        let id1 = Arc::clone(&parse_rules(toml1).unwrap().all_constraints().0[0].id);
+        let id2 = Arc::clone(&parse_rules(toml2).unwrap().all_constraints().0[0].id);
         assert_ne!(id1, id2);
     }
 
@@ -1638,12 +1634,8 @@ kind = "forbidden_pattern"
 language = "python"
 query = "(function_definition) @cap"
 "#;
-        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
-            .id
-            .clone();
-        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
-            .id
-            .clone();
+        let id1 = Arc::clone(&parse_rules(toml1).unwrap().all_constraints().0[0].id);
+        let id2 = Arc::clone(&parse_rules(toml2).unwrap().all_constraints().0[0].id);
         assert_ne!(id1, id2);
     }
 
@@ -1676,12 +1668,8 @@ language = "rust"
 query = "(unsafe_block) @cap"
 scope = "src/core"
 "#;
-        let id1 = parse_rules(toml1).unwrap().all_constraints().0[0]
-            .id
-            .clone();
-        let id2 = parse_rules(toml2).unwrap().all_constraints().0[0]
-            .id
-            .clone();
+        let id1 = Arc::clone(&parse_rules(toml1).unwrap().all_constraints().0[0].id);
+        let id2 = Arc::clone(&parse_rules(toml2).unwrap().all_constraints().0[0].id);
         assert_ne!(id1, id2);
     }
 

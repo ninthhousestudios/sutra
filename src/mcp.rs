@@ -142,14 +142,11 @@ impl SutraServer {
 
     fn get_dd_engine(&self, ws_id: &str) -> Arc<DdEngine> {
         let mut engines = self.dd_engines.lock();
-        engines
-            .entry(ws_id.to_string())
-            .or_insert_with(|| {
-                Arc::new(DdEngine::new(Duration::from_secs(
-                    self.config.constraints_idle_timeout_sec,
-                )))
-            })
-            .clone()
+        Arc::clone(engines.entry(ws_id.to_string()).or_insert_with(|| {
+            Arc::new(DdEngine::new(Duration::from_secs(
+                self.config.constraints_idle_timeout_sec,
+            )))
+        }))
     }
 
     fn resolve_workspace(

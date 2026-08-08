@@ -238,7 +238,7 @@ fn evaluate_dd(
             let dead = coverage.dead_fields();
             if !dead.is_empty() {
                 findings.push(ConstraintFinding {
-                    constraint_id: c.id.clone(),
+                    constraint_id: Arc::clone(&c.id),
                     constraint_name: c.name.clone(),
                     constraint_kind: "dead_constraint".into(),
                     severity: Severity::Informational,
@@ -585,7 +585,7 @@ fn evaluate_dd(
         for paths in reported {
             findings.push(ConstraintFinding {
                 constraint_id: matched
-                    .map(|c| c.id.clone())
+                    .map(|c| Arc::clone(&c.id))
                     .unwrap_or_else(|| "builtin:cycles".into()),
                 constraint_name: matched.and_then(|c| c.name.clone()),
                 constraint_kind: "no_cycles".into(),
@@ -624,7 +624,7 @@ fn evaluate_dd(
                 continue;
             }
             findings.push(ConstraintFinding {
-                constraint_id: c.id.clone(),
+                constraint_id: Arc::clone(&c.id),
                 constraint_name: c.name.clone(),
                 constraint_kind: "max_fan_in".into(),
                 severity: c.severity,
@@ -961,7 +961,7 @@ fn evaluate_raw(
                     && pat.matches_with(path, glob_opts)
                 {
                     findings.push(ConstraintFinding {
-                        constraint_id: c.id.clone(),
+                        constraint_id: Arc::clone(&c.id),
                         constraint_name: c.name.clone(),
                         constraint_kind: "max_fan_in".into(),
                         severity: c.severity,
@@ -1341,7 +1341,7 @@ fn make_finding(
     delta: FindingDelta,
 ) -> ConstraintFinding {
     ConstraintFinding {
-        constraint_id: c.id.clone(),
+        constraint_id: Arc::clone(&c.id),
         constraint_name: c.name.clone(),
         constraint_kind: c.kind.kind_tag().to_string(),
         severity: c.severity,

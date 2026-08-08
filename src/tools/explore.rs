@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::db::Db;
 use crate::error::Result;
@@ -369,7 +370,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
             .file_by_id(sym.file_id)
             .ok()
             .flatten()
-            .map(|f| f.path.clone())
+            .map(|f| Arc::clone(&f.path))
             .unwrap_or_default();
         let file_ids = vec![sym.file_id];
         let component_map = db
@@ -522,7 +523,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
         .map(|(sym, _score)| {
             let file_path = file_map
                 .get(&sym.file_id)
-                .map(|f| f.path.clone())
+                .map(|f| Arc::clone(&f.path))
                 .unwrap_or_default();
             let component = component_map.get(&sym.file_id);
             let lines = sym.end_line - sym.start_line + 1;

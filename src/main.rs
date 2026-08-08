@@ -375,9 +375,9 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
         sutra::lessons::LessonsDb::open(&config.db_dir).expect("failed to open lessons.db"),
     );
     let server = SutraServer::new(
-        config.clone(),
-        ws_config.clone(),
-        db_cache.clone(),
+        Arc::clone(&config),
+        Arc::clone(&ws_config),
+        Arc::clone(&db_cache),
         parse_coord.clone(),
         lessons_db,
     );
@@ -427,7 +427,7 @@ fn maybe_reparse_cwd(
     }
 
     let lock = parse_coord.lock_for(&entry.id);
-    let Ok(guard) = lock.clone().try_lock_owned() else {
+    let Ok(guard) = Arc::clone(&lock).try_lock_owned() else {
         return;
     };
     let mark = parse_coord.mark_parsing(&entry.id);
@@ -499,28 +499,32 @@ async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::E
     let shttp_config =
         StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone());
 
-    let cfg_clone = config.clone();
-    let ws_clone = ws_config.clone();
-    let db_clone = db_cache.clone();
+    let cfg_clone = Arc::clone(&config);
+    let ws_clone = Arc::clone(&ws_config);
+    let db_clone = Arc::clone(&db_cache);
     let coord_clone = parse_coord.clone();
-    let dd_clone = dd_engines.clone();
-    let lessons_clone = lessons_db.clone();
+    let dd_clone = Arc::clone(&dd_engines);
+    let lessons_clone = Arc::clone(&lessons_db);
     let mcp_service = StreamableHttpService::new(
         move || {
             Ok(SutraServer::new(
-                cfg_clone.clone(),
-                ws_clone.clone(),
-                db_clone.clone(),
+                Arc::clone(&cfg_clone),
+                Arc::clone(&ws_clone),
+                Arc::clone(&db_clone),
                 coord_clone.clone(),
-                lessons_clone.clone(),
+                Arc::clone(&lessons_clone),
             )
-            .with_dd_engines(dd_clone.clone()))
+            .with_dd_engines(Arc::clone(&dd_clone)))
         },
         session_manager,
         shttp_config,
     );
 
-    let rest = sutra::rest::router(config.clone(), ws_config.clone(), db_cache.clone());
+    let rest = sutra::rest::router(
+        Arc::clone(&config),
+        Arc::clone(&ws_config),
+        Arc::clone(&db_cache),
+    );
 
     #[allow(deprecated)]
     let app = rest.route("/mcp", any_service(mcp_service));

@@ -49,7 +49,7 @@ pub(super) fn reconcile_components(
         .iter()
         .map(|fids| {
             fids.iter()
-                .filter_map(|id| file_map.get(id).map(|f| f.path.clone()))
+                .filter_map(|id| file_map.get(id).map(|f| Arc::clone(&f.path)))
                 .collect()
         })
         .collect();
