@@ -297,6 +297,12 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0058_constraint_instance_acks.sql"),
         false,
     ),
+    // Persistent: freshness marker for the .sutra/accepted.toml projection.
+    (
+        "0059_accepted_sync_marker",
+        include_str!("../../migrations/0059_accepted_sync_marker.sql"),
+        false,
+    ),
 ];
 
 impl Db {

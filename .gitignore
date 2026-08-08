@@ -10,4 +10,5 @@ target/
 .sutra/acks/
 !.sutra/rules.toml
 !.sutra/owners.toml
+!.sutra/accepted.toml
 .codex

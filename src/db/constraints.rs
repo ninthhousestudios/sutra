@@ -79,6 +79,34 @@ const ACK_SELECT_COLS: &str = "id, constraint_id, constraint_name, file_path, \
                                enclosing_symbol, snippet, accepted_count, rationale, \
                                acked_by, created_at, updated_at";
 
+// --- Portable acceptance projection input (.sutra/accepted.toml; sutra/303) ---
+
+/// A waiver resolved from the tracked file, ready to insert into the cache. Owns
+/// its columns (they come from a parsed file plus a name->id resolution); no
+/// `id`/timestamps — the DB mints those, the file carries neither.
+#[derive(Debug, Clone)]
+pub struct WaiverProjection {
+    pub constraint_id: String,
+    pub constraint_name: Option<String>,
+    pub file_path: String,
+    pub symbol_qualified_name: Option<String>,
+    pub rationale: String,
+    pub waived_by: String,
+}
+
+/// An instance ack resolved from the tracked file, ready to insert into the cache.
+#[derive(Debug, Clone)]
+pub struct AckProjection {
+    pub constraint_id: String,
+    pub constraint_name: Option<String>,
+    pub file_path: String,
+    pub enclosing_symbol: Option<String>,
+    pub snippet: Option<String>,
+    pub accepted_count: i64,
+    pub rationale: Option<String>,
+    pub acked_by: String,
+}
+
 // --- Ratchet registry ---
 
 #[derive(Debug, Clone)]
@@ -360,6 +388,84 @@ impl Db {
             .query_map(params.as_slice(), map_ack_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // -----------------------------------------------------------------------
+    // Portable acceptance projection (.sutra/accepted.toml; sutra/303)
+    // -----------------------------------------------------------------------
+
+    /// Atomically rebuild the waiver + ack cache tables from the tracked file and
+    /// stamp the freshness marker with `file_hash`. The whole reprojection is one
+    /// transaction — a half-applied cache would silently under- or over-suppress
+    /// findings (lesson 019ed6cd: every multi-statement SQLite mutation runs in a
+    /// transaction). `file_hash` is what a later reader compares against to decide
+    /// the cache is fresh, so it is committed in the same transaction as the rows
+    /// it describes.
+    pub fn reproject_accepted(
+        &self,
+        waivers: &[WaiverProjection],
+        acks: &[AckProjection],
+        file_hash: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            conn.execute("DELETE FROM constraint_waivers", [])?;
+            conn.execute("DELETE FROM constraint_instance_acks", [])?;
+            let mut w_stmt = conn.prepare_cached(
+                "INSERT INTO constraint_waivers
+                 (constraint_id, constraint_name, file_path, symbol_qualified_name,
+                  rationale, waived_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for w in waivers {
+                w_stmt.execute(params![
+                    w.constraint_id,
+                    w.constraint_name,
+                    w.file_path,
+                    w.symbol_qualified_name,
+                    w.rationale,
+                    w.waived_by,
+                ])?;
+            }
+            let mut a_stmt = conn.prepare_cached(
+                "INSERT INTO constraint_instance_acks
+                 (constraint_id, constraint_name, file_path, enclosing_symbol, snippet,
+                  accepted_count, rationale, acked_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for a in acks {
+                a_stmt.execute(params![
+                    a.constraint_id,
+                    a.constraint_name,
+                    a.file_path,
+                    a.enclosing_symbol,
+                    a.snippet,
+                    a.accepted_count,
+                    a.rationale,
+                    a.acked_by,
+                ])?;
+            }
+            conn.execute(
+                "UPDATE accepted_sync SET file_hash = ?1 WHERE id = 1",
+                params![file_hash],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The content hash the cache was last projected from. `Ok(None)` means the
+    /// cache has never been projected (always treat as stale) — distinct from a
+    /// lookup failure, which propagates.
+    pub fn get_accepted_sync_marker(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let hash: Option<String> = conn.query_row(
+            "SELECT file_hash FROM accepted_sync WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(hash)
     }
 
     // -----------------------------------------------------------------------
