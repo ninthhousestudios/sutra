@@ -1,0 +1,755 @@
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/bin/guard.rs"
+symbol = "run"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/c_imports.rs"
+symbol = "parse_compile_commands"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/components/anchors.rs"
+symbol = "compute_semantic_anchors"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/components/clustering.rs"
+symbol = "split_oversized"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/components/identity.rs"
+symbol = "create_fresh_components"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/components/identity.rs"
+symbol = "detect_events"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/components/identity.rs"
+symbol = "reconcile_components"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/config.rs"
+symbol = "Config::from_env"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/check.rs"
+symbol = "evaluate_dd"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/check.rs"
+symbol = "evaluate_raw"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/check.rs"
+symbol = "make_finding"
+rationale = "Arc<str> refcount bump — O(1) clone for constraint identity fields"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/engine.rs"
+symbol = "DdEngine::query_forbidden_deps"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/engine.rs"
+symbol = "DdEngine::set_forbidden_pairs"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/engine.rs"
+symbol = "ensure_warm"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/external.rs"
+symbol = "cargo_manifest_deps"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/external.rs"
+symbol = "check_import_items"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/external.rs"
+symbol = "check_workspace_externals"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/external.rs"
+symbol = "make_external_finding"
+rationale = "Arc<str> refcount bump — O(1) clone for constraint identity fields"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/external.rs"
+symbol = "workspace_dep_renames"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/patterns.rs"
+symbol = "check_forbidden_patterns"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/patterns.rs"
+symbol = "find_enclosing_symbol"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/patterns.rs"
+symbol = "flatten_extracted"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/patterns.rs"
+symbol = "match_key"
+rationale = "Owned-required, not borrow-bypass: match_key builds an owned MatchKey from a borrowed &ConstraintFinding. The Arc<str> clone is a refcount bump; the two Option<String> clones are unavoidable because the key must outlive the findings it is derived from (subtract_multiset consumes them), so borrowing is impossible. This is the guard's own pre-existing fingerprint logic, centralized here for sutra/305."
+by = "josh"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/resolver.rs"
+symbol = "ConstraintResolver::resolve"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/resolver.rs"
+symbol = "file_ids_for"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/resolver.rs"
+symbol = "find_component"
+rationale = "Arc<str> refcount bump — O(1) clone for constraint identity fields"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/constraints/worker.rs"
+symbol = "run_worker"
+rationale = "Rc<RefCell<T>> / differential-dataflow Collection clone — cheap shared-ownership for dataflow callbacks"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/attributes.rs"
+symbol = "enrich_all_effects"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/bitset.rs"
+symbol = "BitSet::intersect"
+rationale = "pure functional return — clone self to produce modified copy"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/context.rs"
+symbol = "FormalContext::all_concepts"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/context.rs"
+symbol = "FormalContext::count_with_attrs"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/context.rs"
+symbol = "FormalContext::exemplars_for"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/engine.rs"
+symbol = "FcaEngine::build_context"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/engine.rs"
+symbol = "FcaEngine::check_inverse"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/engine.rs"
+symbol = "FcaEngine::update_incremental"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/engine.rs"
+symbol = "detect_deviations"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/conventions/pipeline.rs"
+symbol = "rebuild"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/db/components.rs"
+symbol = "Db::all_anchors_grouped"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/db/mod.rs"
+symbol = "Db::insert_snapshot"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/db/mod.rs"
+symbol = "Db::insert_snapshot_atomic"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/error.rs"
+symbol = "SutraError::data"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/git.rs"
+symbol = "churn_from_commit_files"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/git.rs"
+symbol = "git_commit_files"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/git.rs"
+symbol = "parse_blame_porcelain"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/graph.rs"
+symbol = "compute_rollups_with_adjacency"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/guard.rs"
+symbol = "build_proposed_content"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/guard.rs"
+symbol = "is_signature_preserving"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/health/findings.rs"
+symbol = "HealthFinding::to_row"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/health/ondemand.rs"
+symbol = "compute_health_delta"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/health/scoring.rs"
+symbol = "score_workspace"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/lessons.rs"
+symbol = "LessonsDb::check_staleness"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/lessons.rs"
+symbol = "LessonsDb::query_for_context_capped"
+rationale = "Pre-existing clones carried over verbatim when query_for_context's body moved into query_for_context_capped (sutra/277). The lesson id String is genuinely owned twice: once as the `seen` HashSet key and once as the `matched_anchors` map key, both outliving the sqlite row."
+by = "agent"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/main.rs"
+symbol = "cmd_serve_http"
+rationale = "Arc<T> clone for async task/closure shared ownership"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/main.rs"
+symbol = "cmd_serve_stdio"
+rationale = "Arc<T> clone for async task/closure shared ownership"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/main.rs"
+symbol = "main"
+rationale = "Arc<T> clone for async task/closure shared ownership"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/main.rs"
+symbol = "maybe_reparse_cwd"
+rationale = "Arc<T> clone for async task/closure shared ownership"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/mcp.rs"
+symbol = "SutraServer::clone"
+rationale = "Arc<T>/RwLock clone for concurrent server state sharing"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/mcp.rs"
+symbol = "SutraServer::register_workspace"
+rationale = "Arc<T>/RwLock clone for concurrent server state sharing"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/mcp.rs"
+symbol = "SutraServer::wrap_response"
+rationale = "Arc<T>/RwLock clone for concurrent server state sharing"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/adapter.rs"
+symbol = "ParserPool::parse_with"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "collect_typedef_declarators"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "collect_var_declarators"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "extract_const_define"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "extract_enum"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "extract_function"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "extract_macro"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/c.rs"
+symbol = "extract_struct"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/dart.rs"
+symbol = "collect_symbols"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/dart.rs"
+symbol = "extract_variable_symbols"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/python.rs"
+symbol = "collect_assignment_symbols"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/python.rs"
+symbol = "extract_class"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/python.rs"
+symbol = "extract_function"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/parser/rust.rs"
+symbol = "collect_symbols_inner"
+rationale = "parser symbol construction — name/signature reused across multiple extracted symbols"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/pipeline.rs"
+symbol = "parse_workspace"
+rationale = "owned struct field construction from DB rows"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/pipeline.rs"
+symbol = "post_parse_sequence"
+rationale = "owned struct field construction from DB rows"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/pipeline.rs"
+symbol = "resolve_file_refs"
+rationale = "owned struct field construction from DB rows"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/python_imports.rs"
+symbol = "discover_package_roots"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/resolver.rs"
+symbol = "resolve_single"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/resolver.rs"
+symbol = "resolved"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/rest.rs"
+symbol = "add_workspace"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/rules.rs"
+symbol = "Rules::all_constraints"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/rust_imports.rs"
+symbol = "normalize_to_crate_segments"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/similarity/codebook.rs"
+symbol = "Codebook::get_or_create"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/similarity/diff.rs"
+symbol = "detect_shape_changes"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/similarity/hrr.rs"
+symbol = "HrrVec::normalize"
+rationale = "pure functional return — clone self to produce modified copy"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/similarity/hrr.rs"
+symbol = "HrrVec::permute"
+rationale = "pure functional return — clone self to produce modified copy"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/change_signals.rs"
+symbol = "gather"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/explore.rs"
+symbol = "collect_fan_out"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/explore.rs"
+symbol = "expand_patterns"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/explore.rs"
+symbol = "handle"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/file_health.rs"
+symbol = "handle_inner"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/mod.rs"
+symbol = "ToolContext::wrap"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/mod.rs"
+symbol = "get_or_open_db"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/orient.rs"
+symbol = "handle"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/orient.rs"
+symbol = "resolve_scope"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/pr_risk.rs"
+symbol = "compute"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/review.rs"
+symbol = "build_findings"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/review.rs"
+symbol = "build_recommended_reads"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/symbol_diff.rs"
+symbol = "callees_in_range"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/trace.rs"
+symbol = "dfs_callees"
+rationale = "DFS path snapshot — recording stack state at branch point"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/trace.rs"
+symbol = "dfs_callers"
+rationale = "DFS path snapshot — recording stack state at branch point"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/trend.rs"
+symbol = "resolve_snapshots"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/tools/winnow.rs"
+symbol = "handle"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/vocabulary.rs"
+symbol = "find_component_id"
+rationale = "Arc<str> refcount bump — O(1) clone for constraint identity fields"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/vocabulary.rs"
+symbol = "resolve"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/vocabulary.rs"
+symbol = "sync_aliases"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/waivers.rs"
+symbol = "ConstraintFinding::find_waiver"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
+
+[[waiver]]
+constraint = "no-clone-driven-dev"
+file = "src/waivers.rs"
+symbol = "ResolvedHealthFinding::find_waiver"
+rationale = "owned struct field construction from borrowed data"
+by = "clone-audit-sutra/251"
