@@ -67,6 +67,25 @@ impl Db {
         Ok(rows?)
     }
 
+    /// Edges that exist only because a parent module declares a child with
+    /// `mod child;` / `pub mod child;` (import `kind = 'mod'`). These wire the
+    /// module tree — they are not architectural coupling. Idiomatic Rust hoists
+    /// shared items into `mod.rs` and children reach back up via `use super::X`,
+    /// which closes a file-import cycle that exists *only* because of the `mod`
+    /// edge. Cycle detection subtracts these so it reports genuine peer-to-peer
+    /// import loops, not module-tree wiring (sutra/304).
+    pub fn module_declaration_edges(&self) -> Result<std::collections::HashSet<(i64, i64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT file_id, resolved_file_id FROM imports \
+             WHERE resolved_file_id IS NOT NULL AND kind = 'mod'",
+        )?;
+        let rows: rusqlite::Result<std::collections::HashSet<(i64, i64)>> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
     pub fn all_symbol_file_map(&self) -> Result<Vec<(i64, i64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT id, file_id FROM symbols")?;

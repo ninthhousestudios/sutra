@@ -1249,6 +1249,145 @@ scope = "src/**"
     assert!(cycle_findings[0].constraint_name.is_none());
 }
 
+/// An idiomatic `mod.rs` re-export module: the parent declares its child with
+/// `mod child;` and the child reaches shared items back up via `use super::X`.
+/// That closes a file-import cycle held together *only* by the module-tree
+/// edge, which is not architectural coupling — the builtin must stay silent
+/// (sutra/304).
+#[test]
+fn module_declaration_cycle_not_reported() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    db.upsert_file("src/synthesis/mod.rs", "rust", "h1", 10, true)
+        .unwrap();
+    db.upsert_file("src/synthesis/child.rs", "rust", "h2", 10, true)
+        .unwrap();
+    let mod_rs = db.file_by_path("src/synthesis/mod.rs").unwrap().unwrap();
+    let child = db.file_by_path("src/synthesis/child.rs").unwrap().unwrap();
+
+    // Parent declares the child (module-tree wiring).
+    db.insert_import(mod_rs.id, "self::child", Some(child.id), 1, "mod", None)
+        .unwrap();
+    // Child reaches a hoisted item back up in the parent module file.
+    db.insert_import(
+        child.id,
+        "super::Candidate",
+        Some(mod_rs.id),
+        1,
+        "import",
+        None,
+    )
+    .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert!(
+        cycle_findings.is_empty(),
+        "a mod.rs re-export cycle is module-tree wiring, not coupling, got: {:?}",
+        cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+}
+
+/// Dropping module-declaration edges must not suppress a genuine peer cycle
+/// that happens to share the workspace with module-tree wiring. `a` and `b`
+/// import each other's real APIs via `use`; that loop still fires even while a
+/// separate `mod.rs`/child pair is filtered out (sutra/304).
+#[test]
+fn genuine_use_cycle_survives_module_edge_filtering() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(rules_dir.join("rules.toml"), "").unwrap();
+
+    for (path, hash) in [
+        ("src/wiring/mod.rs", "h1"),
+        ("src/wiring/leaf.rs", "h2"),
+        ("src/a.rs", "h3"),
+        ("src/b.rs", "h4"),
+    ] {
+        db.upsert_file(path, "rust", hash, 10, true).unwrap();
+    }
+    let mod_rs = db.file_by_path("src/wiring/mod.rs").unwrap().unwrap();
+    let leaf = db.file_by_path("src/wiring/leaf.rs").unwrap().unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+    let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+
+    // Module-tree cycle — suppressed.
+    db.insert_import(mod_rs.id, "self::leaf", Some(leaf.id), 1, "mod", None)
+        .unwrap();
+    db.insert_import(leaf.id, "super::Shared", Some(mod_rs.id), 1, "import", None)
+        .unwrap();
+
+    // Genuine peer cycle through real `use` edges — must still fire.
+    db.insert_import(fa.id, "crate::b::Thing", Some(fb.id), 1, "import", None)
+        .unwrap();
+    db.insert_import(fb.id, "crate::a::Other", Some(fa.id), 1, "import", None)
+        .unwrap();
+
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: None,
+        },
+        dir.path(),
+        EvalScope::Workspace,
+        &registry,
+    )
+    .unwrap();
+
+    let cycle_findings: Vec<_> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "no_cycles")
+        .collect();
+    assert_eq!(
+        cycle_findings.len(),
+        1,
+        "exactly the a<->b use-cycle should fire, got: {:?}",
+        cycle_findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+    );
+    let detail = &cycle_findings[0].detail;
+    assert!(
+        detail.contains("src/a.rs") && detail.contains("src/b.rs"),
+        "reported cycle should be a<->b, got: {detail}"
+    );
+    assert!(
+        !detail.contains("wiring"),
+        "module-tree pair must not appear in a cycle, got: {detail}"
+    );
+}
+
 #[test]
 fn evaluate_dd_finds_forbidden_pattern_violations() {
     use sutra::constraints::check::{EvalScope, FactsSource, evaluate};

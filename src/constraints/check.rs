@@ -315,6 +315,10 @@ fn evaluate_dd(
     // radius and cycle discovery both want the full picture); test-only edges
     // are filtered out at finding time so `include_tests` stays per-constraint.
     let production_edges = db.production_import_edges()?;
+    // Module-declaration edges (`mod child;`) wire the module tree, not real
+    // coupling. Cycle detection subtracts them so an idiomatic `mod.rs`
+    // re-export module doesn't read as an architectural cycle (sutra/304).
+    let module_edges = db.module_declaration_edges()?;
     if edges.is_empty() {
         let constraint_waivers = db.get_constraint_waivers(None)?;
         let (active, waived) = waivers::partition(findings, &constraint_waivers);
@@ -522,35 +526,42 @@ fn evaluate_dd(
         }
         let matched = match_no_cycles_constraint(&all_constraints, &cycle_paths);
 
-        // A cycle held together by `#[cfg(test)]` imports does not exist in a
-        // release build. Re-run SCC detection over production edges only and
-        // report whatever genuine sub-cycles survive — nothing, when the whole
-        // loop was test wiring (sutra/290).
-        let reported: Vec<Vec<&str>> =
+        // Re-run SCC detection over the edge subset that a genuine cycle would
+        // need, dropping edges that don't count as architectural coupling:
+        //   - `#[cfg(test)]` imports absent from a release build (sutra/290) —
+        //     unless the constraint opted into test edges;
+        //   - `mod child;` module-tree wiring, which closes an idiomatic
+        //     re-export cycle that isn't real coupling (sutra/304).
+        // Whatever sub-cycles survive are reported — nothing, when the whole
+        // loop was test wiring or module declarations.
+        let base_edges =
             if matched.is_some_and(|c| c.include_tests || test_directed.contains(c.id.as_ref())) {
-                vec![cycle_paths]
+                &edge_set
             } else {
-                super::worker::compute_sccs(&cycle_node_set, &production_edges)
-                    .into_iter()
-                    // A singleton SCC is a real cycle only when the file imports
-                    // itself. `has_backing` already established that self-edge
-                    // exists; what remains is whether production backs it.
-                    .filter(|scc| {
-                        scc.len() > 1
-                            || scc
-                                .iter()
-                                .next()
-                                .is_some_and(|&id| production_edges.contains(&(id, id)))
-                    })
-                    .map(|scc| {
-                        let mut ids: Vec<i64> = scc.into_iter().collect();
-                        ids.sort_unstable();
-                        ids.iter()
-                            .filter_map(|id| path_map.get(id).copied())
-                            .collect()
-                    })
-                    .collect()
+                &production_edges
             };
+        let cycle_edges: HashSet<(i64, i64)> =
+            base_edges.difference(&module_edges).copied().collect();
+        let reported: Vec<Vec<&str>> = super::worker::compute_sccs(&cycle_node_set, &cycle_edges)
+            .into_iter()
+            // A singleton SCC is a real cycle only when the file imports
+            // itself. `has_backing` established a self-edge exists; what remains
+            // is whether the surviving edge subset still backs it.
+            .filter(|scc| {
+                scc.len() > 1
+                    || scc
+                        .iter()
+                        .next()
+                        .is_some_and(|&id| cycle_edges.contains(&(id, id)))
+            })
+            .map(|scc| {
+                let mut ids: Vec<i64> = scc.into_iter().collect();
+                ids.sort_unstable();
+                ids.iter()
+                    .filter_map(|id| path_map.get(id).copied())
+                    .collect()
+            })
+            .collect();
 
         for paths in reported {
             findings.push(ConstraintFinding {
