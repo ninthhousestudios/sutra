@@ -1816,15 +1816,16 @@ name = "no-unsafe"
         })
         .unwrap();
 
-    db.create_constraint_waiver(
-        &pc.id,
-        pc.name.as_deref(),
-        "src/standalone.rs",
-        Some("do_thing"),
-        "justified unsafe",
-        "josh",
-    )
-    .unwrap();
+    // Waivers now live in .sutra/accepted.toml, keyed by constraint NAME
+    // (sutra/303/308). The guard's read-only conn resolves them straight from
+    // the file when the cache is stale — which it is here, since no server
+    // review has reprojected.
+    let waiver_toml = format!(
+        "[[waiver]]\nconstraint = \"{}\"\nfile = \"src/standalone.rs\"\nsymbol = \"do_thing\"\n\
+         rationale = \"justified unsafe\"\nby = \"josh\"\n",
+        pc.name.as_deref().unwrap(),
+    );
+    std::fs::write(dir.path().join(".sutra/accepted.toml"), waiver_toml).unwrap();
 
     let db_path = dir.path().join("test").join("index.db");
     let conn = rusqlite::Connection::open_with_flags(

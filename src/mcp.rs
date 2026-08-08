@@ -431,9 +431,11 @@ impl SutraServer {
         violations (current constraint violations — covers forbidden_dep, \
         boundary, no_cycles, and the external-crate kinds forbidden_external / confined_external \
         [use-statement + Cargo manifest signals], and max_fan_in [fan-in threshold from DB rollups]), \
-        waive (constraint_id, file_path, rationale, waived_by; optional constraint_name, \
+        waive (constraint_id or constraint_name, file_path, rationale, waived_by; optional \
         symbol_qualified_name), \
-        unwaive (waiver_id)."
+        unwaive (constraint_id or constraint_name, file_path; optional symbol_qualified_name). \
+        Waivers and acks persist to version-controlled .sutra/accepted.toml, keyed by constraint \
+        NAME; unwaive/unack remove by content key, not a row id."
     )]
     pub async fn sutra_constraints(
         &self,

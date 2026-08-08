@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::constraints::DdEngine;
+use crate::constraints::accepted::{self, AckEntry, WaiverEntry};
 use crate::constraints::check::{self, EvalScope, FactsSource};
 use crate::db::Db;
 use crate::error::{Result, SutraError};
@@ -14,19 +15,24 @@ use crate::rules::{self, ConstraintKind};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConstraintsArgs {
     pub workspace: String,
-    /// Action: "list", "violations", "waive", "unwaive", "baseline", "ack", "unack"
+    /// Action: "list", "violations", "waive", "unwaive", "baseline", "ack", "unack".
+    /// Waivers and acks are persisted to `.sutra/accepted.toml` (version-controlled,
+    /// keyed by constraint NAME); the DB is a rebuilt-on-read projection. `unwaive`
+    /// and `unack` remove by content KEY, not a row id — the projection re-mints ids
+    /// on every sync, so ids are not stable handles.
     pub action: String,
-    /// Constraint ID — 8-char blake3 hash (for waive/baseline/ack)
+    /// Constraint ID — 8-char blake3 hash (for waive/baseline/ack; resolved to the
+    /// constraint's name, which is what the accepted file keys on)
     #[serde(default)]
     pub constraint_id: Option<String>,
-    /// Human-readable constraint name (optional; alternative to constraint_id for
-    /// baseline/ack, and stored with waiver/ack for display)
+    /// Human-readable constraint name — the accepted-file key. Alternative to
+    /// constraint_id for waive/unwaive/baseline/ack/unack.
     #[serde(default)]
     pub constraint_name: Option<String>,
-    /// File path the waiver/ack applies to (for waive/ack)
+    /// File path the waiver/ack applies to (for waive/unwaive/ack/unack)
     #[serde(default)]
     pub file_path: Option<String>,
-    /// Symbol qualified name to scope the waiver (optional, for waive)
+    /// Symbol qualified name scoping a waiver (for waive; part of the unwaive key)
     #[serde(default)]
     pub symbol_qualified_name: Option<String>,
     /// Rationale for the waiver/ack (required for waive and ack; optional for baseline)
@@ -38,16 +44,11 @@ pub struct ConstraintsArgs {
     /// Who is acknowledging the instance(s) (for baseline/ack)
     #[serde(default)]
     pub acked_by: Option<String>,
-    /// Waiver ID (for unwaive)
-    #[serde(default)]
-    pub waiver_id: Option<i64>,
-    /// Instance-ack ID (for unack)
-    #[serde(default)]
-    pub ack_id: Option<i64>,
     /// Line of the specific match instance to ack (for ack; or use `snippet`)
     #[serde(default)]
     pub line: Option<u32>,
-    /// Snippet (matched node's first line) selecting the instance to ack (for ack)
+    /// Snippet (matched node's first line) selecting the instance to ack, and part
+    /// of the unack content key (for ack/unack)
     #[serde(default)]
     pub snippet: Option<String>,
     /// Glob restricting which files a baseline snapshots (optional, for baseline)
@@ -64,11 +65,11 @@ pub fn handle(
     match args.action.as_str() {
         "list" => handle_list(db, workspace_root),
         "violations" => handle_violations(db, workspace_root, dd_engine),
-        "waive" => handle_waive(db, args),
-        "unwaive" => handle_unwaive(db, args),
+        "waive" => handle_waive(db, workspace_root, args),
+        "unwaive" => handle_unwaive(db, workspace_root, args),
         "baseline" => handle_baseline(db, workspace_root, dd_engine, args),
         "ack" => handle_ack(db, workspace_root, args),
-        "unack" => handle_unack(db, args),
+        "unack" => handle_unack(db, workspace_root, args),
         other => Err(SutraError::Internal(format!(
             "unknown action: {other}. expected: list, violations, waive, unwaive, \
              baseline, ack, unack"
@@ -81,6 +82,15 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
 
     let mut rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = rules.all_constraints();
+
+    // `list` reads the waiver cache directly (below), so gate freshness here — the
+    // report chokepoint in `check::evaluate` does not run on this path.
+    let accepted_warnings: Vec<String> =
+        accepted::refresh_cache(db, workspace_root, &all_constraints)?
+            .iter()
+            .map(accepted::AcceptedWarning::message)
+            .collect();
+
     let waivers = db.get_constraint_waivers(None)?;
 
     let mut waiver_counts: HashMap<&str, usize> = HashMap::new();
@@ -197,6 +207,9 @@ fn handle_list(db: &Db, workspace_root: &Path) -> Result<serde_json::Value> {
     if !ratchets.is_empty() {
         result["active_ratchet_count"] = json!(ratchets.len());
     }
+    if !accepted_warnings.is_empty() {
+        result["accepted_warnings"] = json!(accepted_warnings);
+    }
     if !constraint_parse_errors.is_empty() {
         result["parse_errors"] = json!(
             constraint_parse_errors
@@ -249,6 +262,11 @@ fn handle_violations(
     if !acked.is_empty() {
         result["acknowledged"] = json!(acked);
     }
+    // Config warnings from resolving accepted.toml (unknown/ambiguous constraint
+    // refs) — surfaced, not dropped (sutra/308 hazard 4).
+    if !outcome.accepted_warnings.is_empty() {
+        result["accepted_warnings"] = json!(outcome.accepted_warnings);
+    }
     if !outcome.parse_errors.is_empty() {
         result["parse_errors"] = json!(
             outcome
@@ -290,54 +308,110 @@ fn finding_to_json(f: &check::ConstraintFinding) -> serde_json::Value {
     v
 }
 
-fn handle_waive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let constraint_id = args
-        .constraint_id
-        .as_ref()
-        .ok_or_else(|| SutraError::Internal("waive requires constraint_id".into()))?;
+/// The accepted-file key for a constraint: its human-stable NAME, or its id when
+/// it has no name. Mirrors `migrate_db_to_file` — an id-keyed entry re-surfaces as
+/// an `unknown` warning on the next load (resolution is name-only), which is the
+/// signal to give the rule a name. Names are what survive a scope/param edit that
+/// reshapes the blake3 id (sutra/303).
+fn accepted_key(constraint_id: &str, constraint_name: Option<&str>) -> String {
+    constraint_name
+        .map(str::to_string)
+        .unwrap_or_else(|| constraint_id.to_string())
+}
+
+/// Write a guard-honored waiver to `.sutra/accepted.toml` and re-project the cache
+/// so it governs the very next report. The DB write is gone — the file is the
+/// source of truth (sutra/303). `migrate_db_to_file` runs first so any legacy
+/// DB-only waivers are seeded into the file before this one is appended; skip it
+/// and an absent file would be created carrying only the new entry, and the
+/// re-projection would wipe the rest (sutra/308 hazard 1).
+fn handle_waive(
+    db: &Db,
+    workspace_root: &Path,
+    args: &ConstraintsArgs,
+) -> Result<serde_json::Value> {
     let file_path = args
         .file_path
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| SutraError::Internal("waive requires file_path".into()))?;
     let rationale = args
         .rationale
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| SutraError::Internal("waive requires rationale".into()))?;
     let waived_by = args
         .waived_by
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| SutraError::Internal("waive requires waived_by".into()))?;
 
-    let id = db.create_constraint_waiver(
-        constraint_id,
+    let mut rules_loaded = rules::load_rules(workspace_root)?;
+    let (all_constraints, _errors) = rules_loaded.all_constraints();
+    let (constraint_id, constraint_name) = resolve_constraint(
+        &all_constraints,
+        args.constraint_id.as_deref(),
         args.constraint_name.as_deref(),
-        file_path,
-        args.symbol_qualified_name.as_deref(),
-        rationale,
-        waived_by,
     )?;
-
-    Ok(json!({
-        "waiver_id": id,
+    let key = accepted_key(&constraint_id, constraint_name.as_deref());
+    // Build the ack before the key is moved into the entry below.
+    let result = json!({
+        "waived": key,
         "constraint_id": constraint_id,
         "file_path": file_path,
-    }))
+    });
+
+    accepted::migrate_db_to_file(db, workspace_root)?;
+    accepted::upsert_waiver(
+        workspace_root,
+        WaiverEntry {
+            constraint: key,
+            file: file_path.to_string(),
+            symbol: args.symbol_qualified_name.as_deref().map(str::to_string),
+            rationale: rationale.to_string(),
+            by: waived_by.to_string(),
+        },
+    )?;
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
+
+    Ok(result)
 }
 
-fn handle_unwaive(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let waiver_id = args
-        .waiver_id
-        .ok_or_else(|| SutraError::Internal("unwaive requires waiver_id".into()))?;
+/// Remove a waiver by its `(constraint, file, symbol)` content key and re-project.
+/// Key-based, not id-based: the projection re-mints row ids on every sync, so an
+/// id is not a stable handle (sutra/308 unit F).
+fn handle_unwaive(
+    db: &Db,
+    workspace_root: &Path,
+    args: &ConstraintsArgs,
+) -> Result<serde_json::Value> {
+    let file_path = args
+        .file_path
+        .as_deref()
+        .ok_or_else(|| SutraError::Internal("unwaive requires file_path".into()))?;
 
-    let deleted = db.delete_constraint_waiver(waiver_id)?;
+    let mut rules_loaded = rules::load_rules(workspace_root)?;
+    let (all_constraints, _errors) = rules_loaded.all_constraints();
+    let (constraint_id, constraint_name) = resolve_constraint(
+        &all_constraints,
+        args.constraint_id.as_deref(),
+        args.constraint_name.as_deref(),
+    )?;
+    let key = accepted_key(&constraint_id, constraint_name.as_deref());
 
-    if !deleted {
+    accepted::migrate_db_to_file(db, workspace_root)?;
+    let removed = accepted::remove_waiver(
+        workspace_root,
+        &key,
+        file_path,
+        args.symbol_qualified_name.as_deref(),
+    )?;
+    if !removed {
         return Err(SutraError::Internal(format!(
-            "waiver {waiver_id} not found"
+            "no waiver for constraint '{key}' on {file_path} (symbol {:?})",
+            args.symbol_qualified_name
         )));
     }
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
 
-    Ok(json!({ "revoked": waiver_id }))
+    Ok(json!({ "revoked": key, "file_path": file_path }))
 }
 
 pub(crate) fn ack_to_json(a: &crate::db::ConstraintInstanceAckRow) -> serde_json::Value {
@@ -421,6 +495,7 @@ fn handle_baseline(
         args.constraint_id.as_deref(),
         args.constraint_name.as_deref(),
     )?;
+    let key = accepted_key(&constraint_id, constraint_name.as_deref());
 
     // Candidate files: every indexed file plus unindexed pattern-only stubs,
     // narrowed by the optional action scope. check_forbidden_patterns applies the
@@ -471,6 +546,10 @@ fn handle_baseline(
             .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
             .then(a.snippet.cmp(&b.snippet))
     });
+    // Seed any legacy DB-only acks/waivers into the file before appending these,
+    // then upsert one entry per content key; a single re-projection at the end
+    // rebuilds the cache (sutra/308 unit F, hazard 1).
+    accepted::migrate_db_to_file(db, workspace_root)?;
     let mut keys_acked = 0usize;
     let mut instances = 0i64;
     let mut i = 0;
@@ -483,22 +562,25 @@ fn handle_baseline(
         {
             j += 1;
         }
-        let count = (j - i) as i64;
+        let count = (j - i) as u32;
         let f = &target[i];
-        db.create_constraint_instance_ack(
-            &constraint_id,
-            constraint_name.as_deref(),
-            &f.from_path,
-            f.enclosing_symbol.as_deref(),
-            f.snippet.as_deref(),
-            count,
-            args.rationale.as_deref(),
-            acked_by,
+        accepted::upsert_ack(
+            workspace_root,
+            AckEntry {
+                constraint: key.to_string(),
+                file: f.from_path.to_string(),
+                symbol: f.enclosing_symbol.as_deref().map(str::to_string),
+                snippet: f.snippet.as_deref().map(str::to_string),
+                count,
+                rationale: args.rationale.as_deref().map(str::to_string),
+                by: acked_by.to_string(),
+            },
         )?;
         keys_acked += 1;
-        instances += count;
+        instances += i64::from(count);
         i = j;
     }
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
 
     Ok(json!({
         "constraint_id": constraint_id,
@@ -572,6 +654,12 @@ fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<
             f.enclosing_symbol == selected.enclosing_symbol && f.snippet == selected.snippet
         })
         .count() as i64;
+    let key = accepted_key(&constraint_id, constraint_name.as_deref());
+
+    // Read the current count off a cache coherent with the file (migrate seeds
+    // legacy rows, ensure reprojects) so the +1 caps against the real prior ack
+    // (sutra/308 unit F, hazard 1).
+    accepted::refresh_cache(db, workspace_root, &all_constraints)?;
     // Existing accepted_count for this key, if any.
     let existing = db
         .get_constraint_instance_acks_for_file(file_path)?
@@ -584,38 +672,73 @@ fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<
         .map(|a| a.accepted_count)
         .unwrap_or(0);
     let new_count = (existing + 1).min(matched);
-
-    let id = db.create_constraint_instance_ack(
-        &constraint_id,
-        constraint_name.as_deref(),
-        file_path,
-        selected.enclosing_symbol.as_deref(),
-        selected.snippet.as_deref(),
-        new_count,
-        Some(rationale),
-        acked_by,
-    )?;
-
-    Ok(json!({
-        "ack_id": id,
+    // Build the ack before the key is moved into the entry below.
+    let result = json!({
+        "acked": key,
         "constraint_id": constraint_id,
         "file_path": file_path,
         "enclosing_symbol": selected.enclosing_symbol,
         "snippet": selected.snippet,
         "accepted_count": new_count,
         "matched": matched,
-    }))
+    });
+
+    accepted::upsert_ack(
+        workspace_root,
+        AckEntry {
+            constraint: key,
+            file: file_path.to_string(),
+            symbol: selected.enclosing_symbol.as_deref().map(str::to_string),
+            snippet: selected.snippet.as_deref().map(str::to_string),
+            count: new_count as u32,
+            rationale: Some(rationale.to_string()),
+            by: acked_by.to_string(),
+        },
+    )?;
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
+
+    Ok(result)
 }
 
-fn handle_unack(db: &Db, args: &ConstraintsArgs) -> Result<serde_json::Value> {
-    let ack_id = args
-        .ack_id
-        .ok_or_else(|| SutraError::Internal("unack requires ack_id".into()))?;
-    let deleted = db.delete_constraint_instance_ack(ack_id)?;
-    if !deleted {
-        return Err(SutraError::Internal(format!("ack {ack_id} not found")));
+/// Remove an ack by its `(constraint, file, symbol, snippet)` content key and
+/// re-project. Key-based, not id-based, for the same reason as `unwaive`: the
+/// projection re-mints row ids on every sync (sutra/308 unit F).
+fn handle_unack(
+    db: &Db,
+    workspace_root: &Path,
+    args: &ConstraintsArgs,
+) -> Result<serde_json::Value> {
+    let file_path = args
+        .file_path
+        .as_deref()
+        .ok_or_else(|| SutraError::Internal("unack requires file_path".into()))?;
+
+    let mut rules_loaded = rules::load_rules(workspace_root)?;
+    let (all_constraints, _errors) = rules_loaded.all_constraints();
+    let (constraint_id, constraint_name) = resolve_constraint(
+        &all_constraints,
+        args.constraint_id.as_deref(),
+        args.constraint_name.as_deref(),
+    )?;
+    let key = accepted_key(&constraint_id, constraint_name.as_deref());
+
+    accepted::migrate_db_to_file(db, workspace_root)?;
+    let removed = accepted::remove_ack(
+        workspace_root,
+        &key,
+        file_path,
+        args.symbol_qualified_name.as_deref(),
+        args.snippet.as_deref(),
+    )?;
+    if !removed {
+        return Err(SutraError::Internal(format!(
+            "no ack for constraint '{key}' on {file_path} (symbol {:?}, snippet {:?})",
+            args.symbol_qualified_name, args.snippet
+        )));
     }
-    Ok(json!({ "revoked_ack": ack_id }))
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
+
+    Ok(json!({ "revoked_ack": key, "file_path": file_path }))
 }
 
 #[cfg(test)]
@@ -827,20 +950,24 @@ scope = "src/"
             "both foo clones acked -> only the distinct bar clone remains"
         );
 
-        // unack the foo key -> both foo clones resurface.
-        let ack_id = after
+        // unack the foo key -> both foo clones resurface. Removal is key-based
+        // (constraint + file + symbol + snippet); the projection re-mints row ids
+        // on every sync, so an id is not a stable handle (sutra/308 unit F).
+        let foo = after
             .get("acknowledged")
             .and_then(|a| a.as_array())
             .and_then(|a| a.iter().find(|r| r["snippet"] == "foo.clone()"))
-            .map(|r| r["ack_id"].as_i64().unwrap())
-            .unwrap();
+            .expect("foo ack surfaced");
         let unack = ConstraintsArgs {
             workspace: "test".into(),
             action: "unack".into(),
-            ack_id: Some(ack_id),
+            constraint_name: Some("no-clone".into()),
+            file_path: Some("src/lib.rs".into()),
+            symbol_qualified_name: foo["enclosing_symbol"].as_str().map(str::to_string),
+            snippet: Some("foo.clone()".into()),
             ..blank_args()
         };
-        handle_unack(&db, &unack).unwrap();
+        handle_unack(&db, dir.path(), &unack).unwrap();
         let restored = handle_violations(&db, dir.path(), None).unwrap();
         assert_eq!(
             active_pattern_count(&restored),
@@ -861,8 +988,6 @@ scope = "src/"
             rationale: None,
             waived_by: None,
             acked_by: None,
-            waiver_id: None,
-            ack_id: None,
             line: None,
             snippet: None,
             scope: None,

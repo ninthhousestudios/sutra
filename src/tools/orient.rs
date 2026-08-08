@@ -347,6 +347,18 @@ pub fn handle(
     // Constraint system
     let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, constraint_parse_errors) = loaded_rules.all_constraints();
+
+    // orient reads the waiver + ack caches directly (below), before it routes
+    // through `check::evaluate`, so gate freshness here too: migrate any legacy
+    // DB-only rows, then re-project from `.sutra/accepted.toml` (sutra/308). The
+    // `evaluate` call further down re-checks freshness, but by then the on-disk
+    // hash matches the marker, so it is a cheap no-op.
+    let accepted_warnings: Vec<String> =
+        crate::constraints::accepted::refresh_cache(db, workspace_root, &all_constraints)?
+            .iter()
+            .map(crate::constraints::accepted::AcceptedWarning::message)
+            .collect();
+
     let all_constraint_waivers = db.get_constraint_waivers(None).unwrap_or_default();
     // Report-only instance acks (sutra/305), surfaced per component alongside
     // waivers so acknowledged clones dropped from `violations` stay visible on the
@@ -655,6 +667,10 @@ pub fn handle(
         "scope": scope,
         "orientation": orientation_sections,
     });
+
+    if !accepted_warnings.is_empty() {
+        result["accepted_warnings"] = json!(accepted_warnings);
+    }
 
     if !constraint_parse_errors.is_empty() {
         result["constraint_parse_errors"] =

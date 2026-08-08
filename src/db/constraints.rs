@@ -158,6 +158,22 @@ pub(crate) fn active_ratchets_from_conn(conn: &rusqlite::Connection) -> Vec<Cons
         .unwrap_or_default()
 }
 
+/// Read the accepted-cache freshness marker from a read-only connection — the
+/// guard's edit-time path holds a bare `Connection`, not a writable `Db`, so it
+/// cannot call [`Db::get_accepted_sync_marker`]. `None` (never projected, or the
+/// row/query failed) reads as stale, which is the conservative default: the
+/// guard then derives waivers straight from the file rather than trusting a cache
+/// it cannot confirm.
+pub(crate) fn accepted_sync_marker_from_conn(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT file_hash FROM accepted_sync WHERE id = 1",
+        [],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 impl Db {
     pub fn create_constraint_waiver(
         &self,

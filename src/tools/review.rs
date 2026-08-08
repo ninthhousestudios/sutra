@@ -54,6 +54,11 @@ pub struct ReviewFindings {
     /// so acknowledged clones dropped from `constraint_violations` stay visible on
     /// the review surface, not silent (sutra/306) — parity with waivers.
     pub acknowledged: Vec<serde_json::Value>,
+    /// Operator-facing warnings from resolving `.sutra/accepted.toml` against the
+    /// live rules (unknown/ambiguous constraint refs). Surfaced so a waiver
+    /// pointing at a deleted constraint is visible, not silently inert
+    /// (sutra/308 hazard 4).
+    pub accepted_warnings: Vec<String>,
     pub deviations: Vec<Deviation>,
 }
 
@@ -379,6 +384,7 @@ pub fn build_findings(
     let constraint_violations_total =
         constraint_violations.len() + waived_constraint_violations.len();
     let constraint_parse_errors = check_outcome.parse_errors;
+    let accepted_warnings = check_outcome.accepted_warnings;
 
     // Deviation detection: on-the-fly FCA over component siblings
     let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
@@ -479,6 +485,7 @@ pub fn build_findings(
         constraint_parse_errors,
         constraint_violations_total,
         acknowledged,
+        accepted_warnings,
         deviations,
     })
 }
@@ -924,6 +931,9 @@ pub fn compute(
     }
     if !findings.acknowledged.is_empty() {
         result["acknowledged"] = json!(findings.acknowledged);
+    }
+    if !findings.accepted_warnings.is_empty() {
+        result["accepted_warnings"] = json!(findings.accepted_warnings);
     }
     if !findings.constraint_parse_errors.is_empty() {
         result["constraint_parse_errors"] = json!(

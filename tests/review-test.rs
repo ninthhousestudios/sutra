@@ -1081,13 +1081,17 @@ fn build_findings_partitions_constraint_waivers() {
 
     let rules_dir = dir.path().join(".sutra");
     fs::create_dir_all(&rules_dir).unwrap();
+    // Named constraint: with waivers now file-authoritative and keyed by
+    // constraint NAME (sutra/303/308), a portable waiver needs a name to
+    // resolve — an id-keyed fallback cannot (resolution is name-only).
     fs::write(
         rules_dir.join("rules.toml"),
         r#"
-[constraints]
-forbidden_deps = [
-  { from = "src/ui/*", to = "src/db/*" },
-]
+[[constraint]]
+kind = "forbidden_dep"
+from = "src/ui/*"
+to = "src/db/*"
+name = "ui-not-db"
 "#,
     )
     .unwrap();
@@ -1131,14 +1135,17 @@ forbidden_deps = [
     )
     .unwrap();
 
-    // Create a constraint waiver for this specific violation
+    // Seed a legacy DB waiver (constraint_name carried) and let the DD review
+    // path migrate it into .sutra/accepted.toml, then honor it — the sutra/308
+    // hazard-1 migration: waivers that lived only in the DB must survive the
+    // move to file-authoritative, not be reprojected away.
     let (constraints, _parse_errors) = sutra::rules::load_rules(dir.path())
         .unwrap()
         .all_constraints();
     let constraint_id = &constraints[0].id;
     db.create_constraint_waiver(
         constraint_id,
-        None,
+        Some("ui-not-db"),
         "src/ui/view.rs",
         None,
         "legacy coupling, will be removed in next sprint",

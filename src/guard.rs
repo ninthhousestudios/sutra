@@ -1461,15 +1461,18 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        // First, get the constraint ID by running without waivers
+        // First, without waivers
         let outcome = check_file_constraints(&conn, dir.path(), 1);
         assert_eq!(outcome.active.len(), 1);
-        let constraint_id = outcome.active[0].constraint_id.clone();
 
-        // Now add waiver
-        conn.execute(
-            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'src/tools/review.rs', 'accepted', 'test')",
-            params![constraint_id],
+        // Waivers now live in .sutra/accepted.toml (sutra/303/308), keyed by
+        // constraint NAME. The guard's read-only conn cannot reproject the cache,
+        // so with a stale/absent marker it resolves the waiver straight from this
+        // file — the same one a server review projects from (guard predicts audit).
+        std::fs::write(
+            dir.path().join(".sutra/accepted.toml"),
+            "[[waiver]]\nconstraint = \"no-tools-daemon\"\nfile = \"src/tools/review.rs\"\n\
+             rationale = \"accepted\"\nby = \"test\"\n",
         )
         .unwrap();
 
@@ -1627,12 +1630,13 @@ name = "no-tools-daemon"
         let outcome =
             check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
         assert_eq!(outcome.active.len(), 1);
-        let constraint_id = outcome.active[0].constraint_id.clone();
 
-        // Waiver on the SOURCE file (tools/review.rs)
-        conn.execute(
-            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'src/tools/review.rs', 'accepted', 'test')",
-            params![constraint_id],
+        // Waiver on the SOURCE file (tools/review.rs), in .sutra/accepted.toml —
+        // the file-authoritative source the guard resolves from (sutra/303/308).
+        std::fs::write(
+            dir.path().join(".sutra/accepted.toml"),
+            "[[waiver]]\nconstraint = \"no-tools-daemon\"\nfile = \"src/tools/review.rs\"\n\
+             rationale = \"accepted\"\nby = \"test\"\n",
         )
         .unwrap();
 
@@ -1733,11 +1737,13 @@ name = "protos-confined"
         let (conn, dir) = setup_external_db();
         let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
         let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
-        let constraint_id = outcome.active[0].constraint_id.clone();
+        assert_eq!(outcome.active.len(), 1);
 
-        conn.execute(
-            "INSERT INTO constraint_waivers (constraint_id, file_path, rationale, waived_by) VALUES (?1, 'report/src/lib.rs', 'transition', 'test')",
-            params![constraint_id],
+        // File-authoritative waiver keyed by constraint name (sutra/303/308).
+        std::fs::write(
+            dir.path().join(".sutra/accepted.toml"),
+            "[[waiver]]\nconstraint = \"report-stays-pure\"\nfile = \"report/src/lib.rs\"\n\
+             rationale = \"transition\"\nby = \"test\"\n",
         )
         .unwrap();
 

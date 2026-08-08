@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use glob::{MatchOptions, Pattern};
 
-use crate::constraints::{self, ConstraintResolver, DdEngine, external};
+use crate::constraints::{self, ConstraintResolver, DdEngine, accepted, external};
 pub use crate::constraints::{ConstraintFinding, FindingDelta};
 use crate::db::{ConstraintRatchetRow, active_ratchets_from_conn};
 use crate::error::Result;
@@ -21,6 +21,13 @@ pub struct CheckOutcome {
     pub waived: Vec<Waived<ConstraintFinding>>,
     pub resolved: Vec<ConstraintFinding>,
     pub parse_errors: Vec<ConstraintParseError>,
+    /// Operator-facing warnings from resolving `.sutra/accepted.toml` against the
+    /// live rule set (unknown/ambiguous constraint refs). Surfaced on the report
+    /// so a waiver silently pointing at a deleted constraint is visible, never
+    /// dropped (sutra/308 hazard 4). Only the DD-backed report path populates
+    /// this; the guard's `RawConn` path leaves it empty (config warnings belong
+    /// on the report, not at the edit-time gate).
+    pub accepted_warnings: Vec<String>,
 }
 
 pub enum EvalScope<'a> {
@@ -160,6 +167,17 @@ fn evaluate_dd(
 ) -> Result<CheckOutcome> {
     let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
+
+    // Freshness gate for `.sutra/accepted.toml`: seed the file from any legacy
+    // DB-only rows (migrate, gated on file absence) BEFORE re-projecting the
+    // cache — the order is load-bearing (sutra/308 hazard 1). Every DB-backed
+    // read below (the waiver partition, the ack subtraction) now derives from a
+    // cache coherent with the file on disk.
+    let accepted_warnings: Vec<String> =
+        accepted::refresh_cache(db, workspace_root, &all_constraints)?
+            .iter()
+            .map(accepted::AcceptedWarning::message)
+            .collect();
 
     let all_files = db.all_files()?;
     let path_map: HashMap<i64, &str> = all_files.iter().map(|f| (f.id, &*f.path)).collect();
@@ -330,6 +348,7 @@ fn evaluate_dd(
             waived,
             resolved,
             parse_errors,
+            accepted_warnings,
         });
     }
 
@@ -636,6 +655,7 @@ fn evaluate_dd(
         waived,
         resolved,
         parse_errors,
+        accepted_warnings,
     })
 }
 
@@ -821,28 +841,56 @@ fn evaluate_raw(
         .chain(external_findings.iter().map(|f| f.from_path.as_str()))
         .chain(single_file_path.as_deref())
         .collect();
-    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
-        .prepare(
-            "SELECT id, constraint_id, constraint_name, file_path, \
-             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-             FROM constraint_waivers",
-        )?
-        .query_map([], |row| {
-            Ok(ConstraintWaiverRow {
-                id: row.get(0)?,
-                constraint_id: row.get(1)?,
-                constraint_name: row.get(2)?,
-                file_path: row.get(3)?,
-                symbol_qualified_name: row.get(4)?,
-                rationale: row.get(5)?,
-                waived_by: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .filter(|w| relevant_paths.contains(w.file_path.as_str()))
-        .collect();
+    // The guard holds a read-only connection and cannot reproject the cache. When
+    // the cache is fresh (a server review already projected the current file) the
+    // DB read is the fast path. When it is stale — a hand-edited `accepted.toml`
+    // no server pass has seen yet — derive the waivers straight from that same
+    // file, so the guard honors exactly what the next audit will (guard must
+    // predict the report, sutra/308 hazard 3). Acks are report-only; the guard
+    // never needs them.
+    let constraint_waivers: Vec<ConstraintWaiverRow> =
+        if accepted::is_cache_fresh_conn(conn, workspace_root)? {
+            conn.prepare(
+                "SELECT id, constraint_id, constraint_name, file_path, \
+                 symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+                 FROM constraint_waivers",
+            )?
+            .query_map([], |row| {
+                Ok(ConstraintWaiverRow {
+                    id: row.get(0)?,
+                    constraint_id: row.get(1)?,
+                    constraint_name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    symbol_qualified_name: row.get(4)?,
+                    rationale: row.get(5)?,
+                    waived_by: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|w| relevant_paths.contains(w.file_path.as_str()))
+            .collect()
+        } else {
+            accepted::resolve_waivers_for_guard(workspace_root, &all_constraints)?
+                .into_iter()
+                .filter(|w| relevant_paths.contains(w.file_path.as_str()))
+                .map(|w| ConstraintWaiverRow {
+                    // The file carries no id/timestamps; the guard only matches on
+                    // (constraint_id, file, symbol) and reads rationale/by, so the
+                    // synthesized display fields are inert here.
+                    id: 0,
+                    constraint_id: w.constraint_id.into(),
+                    constraint_name: w.constraint_name.map(Into::into),
+                    file_path: w.file_path,
+                    symbol_qualified_name: w.symbol_qualified_name,
+                    rationale: w.rationale,
+                    waived_by: w.waived_by,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                })
+                .collect()
+        };
 
     let mut findings = external_findings;
     for (from_id, to_id) in &edges {

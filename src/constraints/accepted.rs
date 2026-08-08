@@ -487,6 +487,36 @@ pub fn migrate_db_to_file(db: &Db, root: &Path) -> Result<Option<AcceptedFile>> 
     Ok(Some(file))
 }
 
+/// The read-surface freshness gate, applied at the head of every DD-backed report
+/// path (`evaluate_dd`, `orient`, the constraints `list` action). Seeds the file
+/// from any legacy DB-only rows (once, gated on file absence) and then re-projects
+/// the cache iff the on-disk file changed since the last projection. Returns the
+/// warnings (unknown/ambiguous constraint refs) to surface on the report.
+///
+/// The ordering is load-bearing: `migrate_db_to_file` MUST run before
+/// `ensure_cache_fresh`, or a repo whose acceptances still live only in the DB
+/// (no file yet) would reproject from an absent -> empty file and wipe them
+/// (sutra/308 hazard 1). The mutating actions rely on the same invariant: they
+/// migrate before their first `upsert_*` for exactly this reason.
+pub fn refresh_cache(
+    db: &Db,
+    root: &Path,
+    constraints: &[Constraint],
+) -> Result<Vec<AcceptedWarning>> {
+    migrate_db_to_file(db, root)?;
+    ensure_cache_fresh(db, root, constraints)
+}
+
+/// Guard-side freshness check against a read-only connection. `evaluate_raw`
+/// (the guard's edit-time path) holds a bare `Connection`, not a writable `Db`,
+/// so it cannot reproject; it uses this to decide whether the cache it is about
+/// to read is coherent with the file on disk, falling back to an in-memory
+/// resolution ([`resolve_waivers_for_guard`]) when it is not.
+pub fn is_cache_fresh_conn(conn: &rusqlite::Connection, root: &Path) -> Result<bool> {
+    let marker = crate::db::accepted_sync_marker_from_conn(conn);
+    Ok(marker.as_deref() == Some(current_file_hash(root)?.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
