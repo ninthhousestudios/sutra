@@ -27,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{AckProjection, Db, WaiverProjection};
@@ -329,7 +330,8 @@ pub fn resolve_waivers_for_guard(
 
 /// Serialize to disk in a canonical, stably-sorted order so mutations produce
 /// minimal, review-legible git diffs. Sorts `file` in place (hence `&mut`) rather
-/// than cloning it to sort.
+/// than cloning it to sort. The write is atomic (temp-file + rename on the same
+/// filesystem) so a crash mid-write cannot leave a truncated source of truth.
 pub fn write_accepted_file(root: &Path, file: &mut AcceptedFile) -> Result<()> {
     file.waivers
         .sort_by(|a, b| waiver_key(a).cmp(&waiver_key(b)));
@@ -341,8 +343,42 @@ pub fn write_accepted_file(root: &Path, file: &mut AcceptedFile) -> Result<()> {
         std::fs::create_dir_all(parent)
             .map_err(|e| SutraError::Internal(format!("{}: {e}", parent.display())))?;
     }
-    std::fs::write(&path, toml)
-        .map_err(|e| SutraError::Internal(format!("{}: {e}", path.display())))
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &toml)
+        .map_err(|e| SutraError::Internal(format!("{}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        SutraError::Internal(format!(
+            "rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        ))
+    })
+}
+
+/// Advisory file lock for the accepted.toml read-modify-write span. Prevents
+/// concurrent MCP calls (or a racing `baseline` loop) from producing a lost
+/// update. The lock file sits next to the data file (`.sutra/accepted.lock`);
+/// the `_guard` is held for the duration of the mutation and released on drop.
+///
+/// Read-only paths (freshness checks, guard resolution) do NOT take this lock —
+/// they derive from whatever state is on disk at the time of read, which is
+/// always a complete file thanks to atomic writes.
+pub fn lock_accepted(root: &Path) -> Result<std::fs::File> {
+    let lock_path = root.join(".sutra").join("accepted.lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| SutraError::Internal(format!("{}: {e}", parent.display())))?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| SutraError::Internal(format!("could not open accepted lock file: {e}")))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| SutraError::Internal(format!("could not acquire accepted lock: {e}")))?;
+    Ok(lock_file)
 }
 
 type WaiverKey<'a> = (&'a str, &'a str, Option<&'a str>);
@@ -362,8 +398,10 @@ fn ack_key(a: &AckEntry) -> AckKey<'_> {
 
 /// Upsert one waiver entry into the file and write it back. The MCP `waive`
 /// action calls this, then re-projects — so the acceptance lands in `git diff`
-/// immediately, a reviewable event.
+/// immediately, a reviewable event. Holds the advisory file lock for the full
+/// read-modify-write span.
 pub fn upsert_waiver(root: &Path, entry: WaiverEntry) -> Result<()> {
+    let _lock = lock_accepted(root)?;
     let mut file = load_accepted_file(root)?;
     if let Some(existing) = file
         .waivers
@@ -378,13 +416,14 @@ pub fn upsert_waiver(root: &Path, entry: WaiverEntry) -> Result<()> {
 }
 
 /// Remove a waiver by its `(constraint, file, symbol)` key. Returns whether one
-/// was removed.
+/// was removed. Holds the advisory file lock.
 pub fn remove_waiver(
     root: &Path,
     constraint: &str,
     file_path: &str,
     symbol: Option<&str>,
 ) -> Result<bool> {
+    let _lock = lock_accepted(root)?;
     let mut file = load_accepted_file(root)?;
     let before = file.waivers.len();
     let key = (constraint, file_path, symbol);
@@ -397,8 +436,9 @@ pub fn remove_waiver(
     Ok(removed)
 }
 
-/// Upsert one ack entry (single `ack` or one key from a `baseline`).
+/// Upsert one ack entry (single `ack`). Holds the advisory file lock.
 pub fn upsert_ack(root: &Path, entry: AckEntry) -> Result<()> {
+    let _lock = lock_accepted(root)?;
     let mut file = load_accepted_file(root)?;
     if let Some(existing) = file.acks.iter_mut().find(|a| ack_key(a) == ack_key(&entry)) {
         *existing = entry;
@@ -408,8 +448,24 @@ pub fn upsert_ack(root: &Path, entry: AckEntry) -> Result<()> {
     write_accepted_file(root, &mut file)
 }
 
+/// Batch-upsert multiple ack entries in a single file write cycle. Used by
+/// `baseline` to avoid N separate read-modify-write I/O round-trips. Holds the
+/// advisory file lock for the entire batch.
+pub fn upsert_acks_batch(root: &Path, entries: Vec<AckEntry>) -> Result<()> {
+    let _lock = lock_accepted(root)?;
+    let mut file = load_accepted_file(root)?;
+    for entry in entries {
+        if let Some(existing) = file.acks.iter_mut().find(|a| ack_key(a) == ack_key(&entry)) {
+            *existing = entry;
+        } else {
+            file.acks.push(entry);
+        }
+    }
+    write_accepted_file(root, &mut file)
+}
+
 /// Remove an ack by its `(constraint, file, symbol, snippet)` key. Returns whether
-/// one was removed.
+/// one was removed. Holds the advisory file lock.
 pub fn remove_ack(
     root: &Path,
     constraint: &str,
@@ -417,6 +473,7 @@ pub fn remove_ack(
     symbol: Option<&str>,
     snippet: Option<&str>,
 ) -> Result<bool> {
+    let _lock = lock_accepted(root)?;
     let mut file = load_accepted_file(root)?;
     let before = file.acks.len();
     let key = (constraint, file_path, symbol, snippet);

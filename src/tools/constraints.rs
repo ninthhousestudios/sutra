@@ -309,14 +309,26 @@ fn finding_to_json(f: &check::ConstraintFinding) -> serde_json::Value {
 }
 
 /// The accepted-file key for a constraint: its human-stable NAME, or its id when
-/// it has no name. Mirrors `migrate_db_to_file` — an id-keyed entry re-surfaces as
-/// an `unknown` warning on the next load (resolution is name-only), which is the
-/// signal to give the rule a name. Names are what survive a scope/param edit that
-/// reshapes the blake3 id (sutra/303).
+/// it has no name. Used by removal paths (`unwaive`, `unack`) that must match
+/// legacy migrated entries which may have been keyed by id.
 fn accepted_key(constraint_id: &str, constraint_name: Option<&str>) -> String {
     constraint_name
         .map(str::to_string)
         .unwrap_or_else(|| constraint_id.to_string())
+}
+
+/// Like `accepted_key`, but rejects nameless constraints with an actionable error.
+/// Used by write paths (`waive`, `baseline`, `ack`) where an id-keyed entry would
+/// silently resolve as Unknown on the next load and never take effect — the waiver
+/// or ack appears to succeed but is inert (sutra/310).
+fn require_named_constraint(constraint_id: &str, constraint_name: Option<&str>) -> Result<String> {
+    constraint_name.map(str::to_string).ok_or_else(|| {
+        SutraError::Internal(format!(
+            "constraint {constraint_id} has no name — add `name = \"...\"` to its \
+             rule in .sutra/rules.toml before waiving or acking (portable waivers/acks \
+             key by name, not the blake3 id)"
+        ))
+    })
 }
 
 /// Write a guard-honored waiver to `.sutra/accepted.toml` and re-project the cache
@@ -350,8 +362,7 @@ fn handle_waive(
         args.constraint_id.as_deref(),
         args.constraint_name.as_deref(),
     )?;
-    let key = accepted_key(&constraint_id, constraint_name.as_deref());
-    // Build the ack before the key is moved into the entry below.
+    let key = require_named_constraint(&constraint_id, constraint_name.as_deref())?;
     let result = json!({
         "waived": key,
         "constraint_id": constraint_id,
@@ -362,7 +373,7 @@ fn handle_waive(
     accepted::upsert_waiver(
         workspace_root,
         WaiverEntry {
-            constraint: key,
+            constraint: key.to_string(),
             file: file_path.to_string(),
             symbol: args.symbol_qualified_name.as_deref().map(str::to_string),
             rationale: rationale.to_string(),
@@ -495,7 +506,7 @@ fn handle_baseline(
         args.constraint_id.as_deref(),
         args.constraint_name.as_deref(),
     )?;
-    let key = accepted_key(&constraint_id, constraint_name.as_deref());
+    let key = require_named_constraint(&constraint_id, constraint_name.as_deref())?;
 
     // Candidate files: every indexed file plus unindexed pattern-only stubs,
     // narrowed by the optional action scope. check_forbidden_patterns applies the
@@ -547,11 +558,12 @@ fn handle_baseline(
             .then(a.snippet.cmp(&b.snippet))
     });
     // Seed any legacy DB-only acks/waivers into the file before appending these,
-    // then upsert one entry per content key; a single re-projection at the end
-    // rebuilds the cache (sutra/308 unit F, hazard 1).
+    // then batch-upsert all entries in one file write cycle (sutra/310) with a
+    // single re-projection at the end (sutra/308 unit F, hazard 1).
     accepted::migrate_db_to_file(db, workspace_root)?;
     let mut keys_acked = 0usize;
     let mut instances = 0i64;
+    let mut batch = Vec::new();
     let mut i = 0;
     while i < target.len() {
         let mut j = i + 1;
@@ -564,22 +576,20 @@ fn handle_baseline(
         }
         let count = (j - i) as u32;
         let f = &target[i];
-        accepted::upsert_ack(
-            workspace_root,
-            AckEntry {
-                constraint: key.to_string(),
-                file: f.from_path.to_string(),
-                symbol: f.enclosing_symbol.as_deref().map(str::to_string),
-                snippet: f.snippet.as_deref().map(str::to_string),
-                count,
-                rationale: args.rationale.as_deref().map(str::to_string),
-                by: acked_by.to_string(),
-            },
-        )?;
+        batch.push(AckEntry {
+            constraint: key.to_string(),
+            file: f.from_path.to_string(),
+            symbol: f.enclosing_symbol.as_deref().map(str::to_string),
+            snippet: f.snippet.as_deref().map(str::to_string),
+            count,
+            rationale: args.rationale.as_deref().map(str::to_string),
+            by: acked_by.to_string(),
+        });
         keys_acked += 1;
         instances += i64::from(count);
         i = j;
     }
+    accepted::upsert_acks_batch(workspace_root, batch)?;
     accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
 
     Ok(json!({
@@ -654,7 +664,7 @@ fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<
             f.enclosing_symbol == selected.enclosing_symbol && f.snippet == selected.snippet
         })
         .count() as i64;
-    let key = accepted_key(&constraint_id, constraint_name.as_deref());
+    let key = require_named_constraint(&constraint_id, constraint_name.as_deref())?;
 
     // Read the current count off a cache coherent with the file (migrate seeds
     // legacy rows, ensure reprojects) so the +1 caps against the real prior ack
