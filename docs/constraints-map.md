@@ -70,7 +70,7 @@ src/constraints/
                       resolve_accepted, current_file_hash.
                       See "Accepted.toml freshness gate" section below.
   check.rs          — Unified constraint evaluation. evaluate() dispatches to
-                      evaluate_dd (DD-backed: review, orient, sutra_constraints
+                      evaluate_dd (DD-backed: review, sutra_constraints
                       violations) or evaluate_raw (raw SQLite: guard hook).
                       CheckOutcome, EvalScope, FactsSource.
                       Covers: forbidden_dep/boundary via DD maintained view,
@@ -112,8 +112,8 @@ src/rules.rs        — TOML parsing for .sutra/rules.toml.
                       Rules, Constraints, ForbiddenDep, ConventionsConfig.
                       Functions: parse_rules, load_rules, Rules::all_constraints,
                       scope_matches_path (hybrid glob-or-prefix scope matching,
-                      used by match_no_cycles_constraint, constraint_coverage,
-                      orient's generic scope filter), match_no_cycles_constraint.
+                      used by match_no_cycles_constraint, constraint_coverage),
+                      match_no_cycles_constraint.
 
 src/db/
   constraints.rs    — ConstraintWaiverRow, CRUD for constraint_waivers table
@@ -136,11 +136,6 @@ src/tools/
                       set_forbidden_pairs + query_violations maintained view.
                       Enriched ConstraintViolation with constraint metadata.
                       Constraint waiver partition + DdDelta violation diffing.
-  orient.rs         — handle() includes constraints section per component.
-                      constraints_for_component: scope matching (path prefix,
-                      glob, boundary, max_fan_in, no_cycles).
-                      compute_violations: DD engine ingestion + violation query.
-                      Filters violations + constraint waivers to component files.
   constraints.rs    — MCP tool: sutra_constraints. Actions: list (all
                       constraints with metadata, waiver counts,
                       matched_file_count per field, dead-constraint warning),
@@ -389,7 +384,6 @@ every DD-backed report path. Call sites:
 | Surface | Where |
 |---|---|
 | `evaluate_dd` | `check.rs:177` — before any DB-backed waiver/ack read |
-| `orient` | `orient.rs:357` — constraints section |
 | `list` | `constraints.rs:89` — reads waiver cache directly, no `evaluate` |
 
 `refresh_cache` does two things in load-bearing order:
@@ -650,7 +644,7 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 | sutra/72 | boundary resolver | done | 70, 71 | src/constraints/resolver.rs |
 | sutra/73 | constraint waivers (DB) | done | 70 | src/db/constraints.rs, migrations |
 | sutra/74 | review integration | needs-review | 71, 73 | src/tools/review.rs |
-| sutra/75 | orient constraint section | done | 70, 73 | src/tools/orient.rs |
+| sutra/75 | orient constraint section | done (orient later deleted, sutra/312) | 70, 73 | ~~src/tools/orient.rs~~ |
 | sutra/76 | guard severity filtering | done | 74 | src/guard.rs, src/bin/guard.rs |
 | sutra/77 | MCP constraint tools | needs-review | 71, 73 | src/tools/constraints.rs |
 | sutra/78 | review-1: foundation | done | 69-71 | — |
@@ -674,8 +668,6 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
   forbidden deps ad-hoc, maintained violations, eviction/rewarm)
 - Review integration: `tests/review-test.rs` (22 tests — maintained view, waiver partition,
   delta labels, enriched violation fields, compute serialization)
-- Orient constraints: `#[cfg(test)]` in `src/tools/orient.rs` (8 constraint tests — scope
-  matching by prefix/boundary/glob, out-of-scope exclusion, waivers, violations, sketch mode)
 - Pattern engine: `#[cfg(test)]` in `src/constraints/patterns.rs` (13 tests — rust/dart
   match, scope filtering, language filtering, enclosing symbol, identity propagation,
   cfg(test) exclusion, include_tests opt-in, bare #[test] attrs, cfg(not(test)) safety)

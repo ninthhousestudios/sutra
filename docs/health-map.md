@@ -20,8 +20,7 @@ src/health/
                       compute_component_instability(db). Uses import_edges
                       + component_members_with_line_count to partition
                       directed import edges into efferent/afferent per
-                      component. Surfaced in orient health section and
-                      sutra_file_health component scores.
+                      component. Surfaced in sutra_file_health component scores.
   git_metrics.rs    — git-organizational biomarkers consuming commits +
                       commit_files tables. compute_co_change_scatter,
                       compute_change_entropy, compute_ownership_risk,
@@ -96,11 +95,6 @@ src/similarity/
                       compute_pattern_families.
 
 src/tools/
-  orient.rs         — sutra_orient: health section injected per component.
-                      Shows health_score (NLOC-weighted), top 5 findings
-                      (sorted by severity then weight), and component
-                      instability (Ce/Ca/I). Loads findings once before
-                      component loop, computes instability once.
   file_health.rs    — MCP tool: queries findings with waiver status, scores
                       via scoring::score_file, builds per-file + per-component
                       JSON. Accepts optional `component` filter (by name).
@@ -145,7 +139,7 @@ Enum with 12 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
 On-demand (review-time via git blame): `FunctionHotspot`,
 `CodeAgeVolatility`. Shape-diff (review-time): `HrrShapeChange`.
 Component instability: `ComponentInstability` (computed via
-`health/instability.rs`, surfaced as component-level metric in orient +
+`health/instability.rs`, surfaced as component-level metric in
 sutra_file_health, not as a per-file HealthFinding).
 Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`, `CoverageGradient`.
 
@@ -356,7 +350,7 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 | sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
 | sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
 | sutra/95 | convention drift detection | removed | dropped in sutra/232 (zero usage) |
-| sutra/96 | orient + health MCP tools | done | health/instability.rs, tools/orient.rs, tools/file_health.rs |
+| sutra/96 | orient + health MCP tools | done (orient later deleted, sutra/312) | health/instability.rs, ~~tools/orient.rs~~, tools/file_health.rs |
 
 ## Test locations
 
@@ -371,7 +365,6 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
   HealthFinding::to_row, health delta: degradation, improvement,
   no-snapshot fallback, on-demand finding attribution,
   component instability: basic, isolated, fully-efferent,
-  orient health section: present with findings, absent when clean,
   file health: component filter, component instability in scores,
   import cycle: cyclic fires, acyclic absent, DB roundtrip)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,

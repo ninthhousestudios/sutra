@@ -4,17 +4,37 @@ Quick-reference for agents planning or implementing convention-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
 specific files. Updated after each convention-system landing.
 
-Last updated: 2026-08-10 (sutra/312: deleted sutra_orient + describe_patterns/ObservedPattern)
+Last updated: 2026-08-10 (sutra/317: FCA convention detection is now list-only.
+The two in-loop consumers were retired — the review deviation report (sutra/313)
+and `sutra_orient`'s descriptive pattern summary (sutra/312). What remains:
+FCA still mines conventions and persists them for `sutra_conventions(list)`.)
+
+## Current shape (post 312/313)
+
+FCA convention **detection** survives and runs in the parse pipeline; it
+persists discovered conventions to the DB for the `sutra_conventions(list)`
+tool. Both former in-loop **consumers** are gone:
+
+- `sutra_review` no longer computes or emits `deviations` (sutra/313). It has
+  zero convention involvement now.
+- `sutra_orient` (and its on-the-fly `describe_patterns` / `ObservedPattern`
+  descriptive summary) was deleted (sutra/312).
+
+So the live convention surface is a single passive lister. `check_inverse`
+(deprecated/forbidden pattern matching, returns `ConventionMatch`) still exists
+in `engine.rs` but has **no production caller** — it is exercised only by unit
+tests. The FCA core (`FormalContext`, attribute extraction) is deliberately
+kept intact for possible future constraint-authoring use.
 
 ## Module layout
 
 ```
 src/conventions/
-  mod.rs            — re-exports, module declarations
-  engine.rs         — FcaEngine, SymbolAttrs, Convention, Deviation,
-                      ConventionViolation (legacy, used by check),
-                      rebuild/check/check_inverse, dedup,
-                      detect_deviations (on-the-fly review path)
+  mod.rs            — re-exports, module declarations, SymbolAttrs
+  engine.rs         — FcaEngine, Convention, ConventionMatch,
+                      rebuild/rebuild_with_params/update_incremental,
+                      conventions(), check_inverse (no production caller),
+                      component_min_support, deduplicate_component_conventions
   context.rs        — FormalContext, Implication, approximate_implications,
                       count_with_attrs, exemplars_for (FCA core)
   bitset.rs         — compact bitset for FCA attribute sets
@@ -32,15 +52,12 @@ src/db/
                       set_component_lifecycle
 
 src/tools/
-  review.rs         — handle (entry), build_findings (deviation detection),
-                      compute (JSON assembly), ReviewFindings struct,
-                      Deviation re-export
-  conventions.rs    — MCP tool action: list
+  conventions.rs    — MCP tool action: list (the only convention consumer)
 ```
 
 ## Key types
 
-### SymbolAttrs (engine.rs)
+### SymbolAttrs (mod.rs)
 Input to FCA. Fields: `name`, `file`, `attributes: Vec<String>`, `component_id: Option<String>`.
 Attributes are strings like `kind:function`, `vis:pub`, `has_doc`, `effect:fs`, `naming:snake_case`.
 
@@ -48,79 +65,35 @@ Attributes are strings like `kind:function`, `vis:pub`, `has_doc`, `effect:fs`, 
 FCA output. Fields: `id` (blake3 hash), `antecedent`, `consequent` (both `Vec<String>`),
 `support`, `confidence`, `component_id: Option<String>`.
 
-### Deviation (engine.rs)
-Review-time finding. Fields: `symbol`, `file`, `pattern_antecedent`, `pattern_consequent`,
-`missing`, `support`, `confidence`, `total_matching`, `conforming`, `exemplars`,
-`strength` (support × confidence), `informational` (true for sketch-mode components).
+### ConventionMatch (engine.rs)
+Result of `check_inverse` — a changed symbol matching a `deprecated` or
+`forbidden` lifecycle pattern. Carries `lifecycle_state`. Present but not wired
+to any tool at present.
 
 ### AttributeRole (attributes.rs)
 Classification: `Identity` (antecedent-only, e.g. `vis:pub`, `kind:function`) vs
 `Obligation` (consequent-checkable, e.g. `has_doc`, `returns_result`, `naming:*`, `effect:*`).
 
-### ReviewFindings (review.rs)
-Aggregation passed from `build_findings` to `compute`. Fields:
-`constraint_violations`, `deviations`,
-`waived_constraint_violations`, `constraint_parse_errors`.
-
 ## Data flow
 
-### Review-time deviation detection (build_findings → compute)
-
-```
-build_findings(db, workspace_root, changed_paths, base_revision, dd_engine, registry)
-  |
-  +-- Constraint evaluation via check::evaluate
-  |
-  +-- Extract SymbolAttrs for ALL files, grouped by component
-  |     (same enrich_all_effects pipeline as pipeline.rs)
-  |
-  +-- Identify changed symbols (subset of above)
-  |
-  +-- detect_deviations(changed_sym_attrs, all_by_component, orphans,
-  |     toolchain_pairs, sketch_components)
-  |     Per component:
-  |       1. Build FormalContext from component siblings
-  |       2. approximate_implications (includes confidence=1.0)
-  |       3. Filter: consequent must be Obligation, not toolchain-enforced
-  |       4. For each changed symbol matching antecedent but missing consequent:
-  |          → Deviation with counts, exemplars, strength
-  |     Rank by strength (support × confidence), cap at 5
-  |
-  --> ReviewFindings { constraint_violations, deviations, ... }
-
-compute(db, workspace_root, changed_paths, churn, findings)
-  --> JSON with risk_score, deviations, constraints
-```
-
-### Rebuild pipeline (pipeline.rs — persists to DB for sutra_conventions tool)
+### Rebuild pipeline (pipeline.rs — the only live path)
 
 ```
 rebuild(db, registry, workspace_root)
   → FCA over all symbols (global + per-component)
   → Persists conventions to DB (conventions table)
-  → Used by sutra_conventions tool, NOT by review
+  → Consumed only by sutra_conventions(list)
 ```
 
-## Output contract (sutra_review JSON)
+`sutra_review` and the deleted `sutra_orient` used to compute conventions
+on-the-fly; neither does now. Nothing reads conventions on-the-fly anymore.
 
-The `deviations` array replaces the former `convention_violations`. Each entry:
-```json
-{
-  "symbol": "core::process",
-  "file": "src/core.rs",
-  "pattern": "kind:function, vis:pub → has_doc",
-  "missing": ["has_doc"],
-  "evidence": "8/10 siblings have has_doc",
-  "exemplars": ["helper::format", "util::parse"],
-  "support": 8,
-  "confidence": 0.95,
-  "strength": 7.6,
-  "informational": false
-}
-```
+## Output contract (sutra_conventions list)
 
-`risk_breakdown.deviations` replaces `risk_breakdown.convention_violations`.
-Informational deviations (sketch-mode components) do not contribute to risk score.
+`sutra_conventions(action="list")` returns the persisted conventions. Each entry
+carries `id`, `antecedent`, `consequent`, `support`, `confidence`, and
+`component_id`. There is no longer a `deviations` array anywhere in the tool
+surface (removed from `sutra_review` in sutra/313).
 
 ## Database tables (convention-related)
 
@@ -131,14 +104,14 @@ Informational deviations (sketch-mode components) do not contribute to risk scor
 | components | Durable | 0008+0009+0021 | Component identity, lifecycle_state (stable/sketch) |
 | component_membership | Ephemeral | 0008 | Component-to-file mapping (rebuilt on cluster) |
 
-Review does not read from the conventions table — it computes on-the-fly.
-The conventions table survives for the `sutra_conventions` tool (list action).
-
 ## Sketch mode (ADR-0001)
 
-Component lifecycle_state column: `stable` (default) or `sketch`.
-When sketch: deviations are reported with `informational: true` and excluded from
-risk score. Constraints remain enforced regardless of sketch mode.
+Component `lifecycle_state` column: `stable` (default) or `sketch`. The column
+is still stored and settable, but its former convention-time effect — marking
+deviations `informational` and excluding them from the review risk score — no
+longer has a surface, because the deviation report was removed (sutra/313).
+Constraints remain enforced regardless of sketch mode. See the open question in
+sutra/317 on whether sketch mode is now vestigial for conventions.
 
 ## FCA thresholds
 
@@ -146,7 +119,6 @@ risk score. Constraints remain enforced regardless of sketch mode.
 - Per-component: adaptive `max(2, ceil(component_symbol_count * 0.4))`, capped at MAX_COMPONENT_SUPPORT=20
 - Direction filter: only identity→obligation implications are checkable
 - Toolchain-enforced pairs (e.g. `is_async → returns_future`) excluded via adapter declarations
-- MAX_DEVIATIONS=5 per review
 
 ## Design docs
 
