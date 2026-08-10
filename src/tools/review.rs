@@ -9,7 +9,6 @@ use serde_json::json;
 use crate::components;
 use crate::constraints::DdEngine;
 use crate::constraints::check::{self, EvalScope, FactsSource};
-use crate::conventions;
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
@@ -33,14 +32,15 @@ pub struct ReviewArgs {
 const MAX_AFFECTED: usize = 20;
 const MAX_READS: usize = 10;
 
-const W_BLAST: f64 = 0.30;
-const W_COMPLEXITY: f64 = 0.20;
-const W_HOTSPOT: f64 = 0.15;
-const W_CHURN: f64 = 0.15;
-const W_CONVENTIONS: f64 = 0.20;
+// Renormalized after removing the deviations factor (sutra/313): weights
+// previously summed to 1.0 including deviations (weight 0.2); scaling the
+// remaining four by 1/0.8 preserves that invariant.
+const W_BLAST: f64 = 0.375;
+const W_COMPLEXITY: f64 = 0.25;
+const W_HOTSPOT: f64 = 0.1875;
+const W_CHURN: f64 = 0.1875;
 
 pub use crate::constraints::ConstraintFinding;
-pub use crate::conventions::Deviation;
 use crate::waivers::Waived;
 
 #[derive(Default)]
@@ -59,7 +59,6 @@ pub struct ReviewFindings {
     /// pointing at a deleted constraint is visible, not silently inert
     /// (sutra/308 hazard 4).
     pub accepted_warnings: Vec<String>,
-    pub deviations: Vec<Deviation>,
 }
 
 pub fn handle(
@@ -328,14 +327,6 @@ pub fn build_findings(
     let all_files = db.all_files()?;
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
 
-    let comp_with_paths = db.active_components_with_paths()?;
-    let mut file_to_component: HashMap<&str, &str> = HashMap::new();
-    for (comp_id, _, paths) in &comp_with_paths {
-        for path in paths {
-            file_to_component.insert(path, comp_id);
-        }
-    }
-
     // Constraint evaluation via unified check core
     let changed_ids: HashSet<i64> = changed_paths
         .iter()
@@ -386,93 +377,7 @@ pub fn build_findings(
     let constraint_parse_errors = check_outcome.parse_errors;
     let accepted_warnings = check_outcome.accepted_warnings;
 
-    // Deviation detection: on-the-fly FCA over component siblings
     let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
-    let mut changed_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
-    let mut all_sym_attrs_by_component: HashMap<String, Vec<conventions::SymbolAttrs>> =
-        HashMap::new();
-    let mut orphan_sym_attrs: Vec<conventions::SymbolAttrs> = Vec::new();
-
-    for f in &all_files {
-        let syms = db.find_symbols_by_file(f.id)?;
-        let refs = db.find_refs_in_file(f.id)?;
-
-        let target_ids: Vec<i64> = refs
-            .iter()
-            .filter(|r| r.context_kind == "call")
-            .filter_map(|r| r.target_symbol_id)
-            .collect();
-        let mut callee_cache: HashMap<i64, conventions::ResolvedCallee> = HashMap::new();
-        for id in &target_ids {
-            if !callee_cache.contains_key(id)
-                && let Some(sym) = db.symbol_by_id(*id)?
-            {
-                callee_cache.insert(
-                    *id,
-                    conventions::ResolvedCallee {
-                        qualified_name: sym.qualified_name.to_string(),
-                        signature: sym.signature,
-                    },
-                );
-            }
-        }
-
-        let dart_import_packages = if f.language == "dart" {
-            conventions::dart_effect_packages(&db.imports_for_file(f.id)?)
-        } else {
-            None
-        };
-
-        let is_changed = changed_set.contains(&*f.path);
-        for s in &syms {
-            if let Some(mut attrs) =
-                conventions::extract_attrs_for_symbol(s, &f.path, &f.language, registry)
-            {
-                if let Some(adapter) = registry.adapter_for_language(&f.language)
-                    && let Some(fca_source) = adapter.as_fca_source()
-                {
-                    conventions::enrich_all_effects(
-                        &mut attrs,
-                        s,
-                        &refs,
-                        &callee_cache,
-                        fca_source,
-                        dart_import_packages.as_ref(),
-                    );
-                }
-                attrs.component_id = file_to_component
-                    .get(attrs.file.as_str())
-                    .map(|s| s.to_string());
-
-                if is_changed {
-                    changed_sym_attrs.push(attrs.clone());
-                }
-
-                match &attrs.component_id {
-                    Some(cid) => all_sym_attrs_by_component
-                        .entry(cid.clone())
-                        .or_default()
-                        .push(attrs),
-                    None => orphan_sym_attrs.push(attrs),
-                }
-            }
-        }
-    }
-
-    let sketch_components: HashSet<String> = comp_with_paths
-        .iter()
-        .filter(|(id, _, _)| db.component_lifecycle_state(id).ok().as_deref() == Some("sketch"))
-        .map(|(id, _, _)| id.clone())
-        .collect();
-
-    let toolchain_pairs = collect_toolchain_pairs(registry);
-    let deviations = conventions::detect_deviations(
-        &changed_sym_attrs,
-        &all_sym_attrs_by_component,
-        &orphan_sym_attrs,
-        &toolchain_pairs,
-        &sketch_components,
-    );
 
     // Report-only instance acks on the changed files, so acknowledged clones
     // dropped from constraint_violations stay visible here (sutra/306).
@@ -486,7 +391,6 @@ pub fn build_findings(
         constraint_violations_total,
         acknowledged,
         accepted_warnings,
-        deviations,
     })
 }
 
@@ -589,44 +493,11 @@ fn behavioral_coupling(
 fn build_recommended_reads(
     db: &Db,
     workspace_root: &Path,
-    findings: &ReviewFindings,
     affected_files: &[change_signals::AffectedFile],
-    changed_files: &[serde_json::Value],
     behavioral_partners: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
-    let mut violation_sites: Vec<(String, i64, f64)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for d in &findings.deviations {
-        if d.informational {
-            continue;
-        }
-        if !seen.insert(d.file.clone()) {
-            continue;
-        }
-        let blast = affected_files
-            .iter()
-            .find(|a| a.path == d.file)
-            .map(|a| a.blast_radius)
-            .or_else(|| {
-                changed_files
-                    .iter()
-                    .find(|cf| cf["path"].as_str() == Some(d.file.as_str()))
-                    .and_then(|cf| cf["blast_radius"].as_i64())
-            })
-            .unwrap_or(0);
-        violation_sites.push((d.file.clone(), blast, d.confidence));
-    }
-    violation_sites.sort_by(|a, b| {
-        b.2.partial_cmp(&a.2)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.1.cmp(&a.1))
-            .then_with(|| a.0.cmp(&b.0))
-    });
-
-    let mut reads: Vec<(String, i64, bool, bool)> = Vec::new();
-    for (path, blast, _) in &violation_sites {
-        reads.push((path.clone(), *blast, true, false));
-    }
+    let mut reads: Vec<(String, i64, bool)> = Vec::new();
     for bp in behavioral_partners {
         if let Some(partner) = bp["partner"].as_str()
             && seen.insert(partner.to_string())
@@ -637,24 +508,27 @@ fn build_recommended_reads(
                 .flatten()
                 .map(|f| f.blast_radius)
                 .unwrap_or(0);
-            reads.push((partner.to_string(), blast, false, true));
+            reads.push((partner.to_string(), blast, true));
         }
     }
     for a in affected_files {
         if !seen.contains(&a.path) {
-            reads.push((a.path.clone(), a.blast_radius, false, false));
+            reads.push((a.path.clone(), a.blast_radius, false));
         }
     }
     reads.truncate(MAX_READS);
 
-    reads.iter().map(|(path, blast, is_violation, is_behavioral)| {
-        let fl = file_freshness(db, workspace_root, path);
-        let mut entry = json!({ "path": path, "blast_radius": blast, "violation_site": is_violation, "_freshness": fl });
-        if *is_behavioral {
-            entry["behavioral_partner"] = json!(true);
-        }
-        entry
-    }).collect()
+    reads
+        .iter()
+        .map(|(path, blast, is_behavioral)| {
+            let fl = file_freshness(db, workspace_root, path);
+            let mut entry = json!({ "path": path, "blast_radius": blast, "_freshness": fl });
+            if *is_behavioral {
+                entry["behavioral_partner"] = json!(true);
+            }
+            entry
+        })
+        .collect()
 }
 
 pub fn compute(
@@ -675,14 +549,13 @@ pub fn compute(
             "risk_score": 0.0,
             "risk_breakdown": {
                 "blast_radius": 0.0, "complexity_delta": 0.0,
-                "hotspot_overlap": 0.0, "churn": 0.0, "deviations": 0.0,
+                "hotspot_overlap": 0.0, "churn": 0.0,
             },
             "recommended_reads": [],
             "constraint_violations": [],
             "resolved_constraint_violations": [],
             "constraint_violations_total": 0,
             "waived_constraint_violations": [],
-            "deviations": [],
         });
         if explain {
             result["_explain"] = json!({
@@ -692,7 +565,6 @@ pub fn compute(
                     "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": 0.0, "rationale": "peak cognitive complexity in changed code" },
                     "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": 1.0, "contribution": 0.0, "rationale": "proportion of changed files that are churn hotspots" },
                     "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": 0.0, "rationale": "total recent churn across changed files" },
-                    "deviations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": 0.0, "rationale": "number of pattern deviations detected" },
                 },
             });
         }
@@ -829,28 +701,6 @@ pub fn compute(
             entry
         })
         .collect();
-    let deviations_out: Vec<_> = findings
-        .deviations
-        .iter()
-        .map(|d| {
-            json!({
-                "symbol": d.symbol,
-                "file": d.file,
-                "pattern": format!("{} → {}",
-                    d.pattern_antecedent.join(", "),
-                    d.pattern_consequent.join(", ")),
-                "missing": d.missing,
-                "evidence": format!("{}/{} siblings have {}",
-                    d.conforming, d.total_matching,
-                    d.pattern_consequent.join(", ")),
-                "exemplars": d.exemplars,
-                "support": d.support,
-                "confidence": d.confidence,
-                "strength": scoring::round3(d.strength),
-                "informational": d.informational,
-            })
-        })
-        .collect();
     let file_count = changed_paths.len();
     let blast_score = scoring::normalize(signals.total_blast as f64, change_signals::BLAST_NORM);
     let complexity_score = scoring::normalize(
@@ -860,12 +710,6 @@ pub fn compute(
     let hotspot_ceiling = (file_count as f64).max(1.0);
     let hotspot_score = scoring::normalize(signals.hotspot_files as f64, hotspot_ceiling);
     let churn_score = scoring::normalize(signals.total_churn as f64, change_signals::CHURN_NORM);
-    let actionable_deviations = findings
-        .deviations
-        .iter()
-        .filter(|d| !d.informational)
-        .count();
-    let deviation_score = scoring::normalize(actionable_deviations as f64, 5.0);
 
     let risk_score = scoring::weighted_score(&[
         Signal {
@@ -884,21 +728,11 @@ pub fn compute(
             weight: W_CHURN,
             score: churn_score,
         },
-        Signal {
-            weight: W_CONVENTIONS,
-            score: deviation_score,
-        },
     ]);
 
     let behavioral = behavioral_coupling(db, workspace_root, changed_paths);
-    let recommended_reads = build_recommended_reads(
-        db,
-        workspace_root,
-        findings,
-        &signals.affected_files,
-        &changed_files_out,
-        &behavioral,
-    );
+    let recommended_reads =
+        build_recommended_reads(db, workspace_root, &signals.affected_files, &behavioral);
 
     let mut result = json!({
         "changed_files": changed_files_out,
@@ -917,13 +751,11 @@ pub fn compute(
             "complexity_delta": scoring::round3(complexity_score),
             "hotspot_overlap": scoring::round3(hotspot_score),
             "churn": scoring::round3(churn_score),
-            "deviations": scoring::round3(deviation_score),
         },
         "constraint_violations": constraint_violations_out,
         "resolved_constraint_violations": resolved_constraint_violations_out,
         "constraint_violations_total": findings.constraint_violations_total,
         "waived_constraint_violations": waived_constraint_violations_out,
-        "deviations": deviations_out,
         "recommended_reads": recommended_reads,
     });
     if !behavioral.is_empty() {
@@ -963,7 +795,6 @@ pub fn compute(
                 "complexity": { "weight": W_COMPLEXITY, "ceiling": change_signals::COMPLEXITY_NORM, "contribution": scoring::round3(W_COMPLEXITY * complexity_score), "rationale": "peak cognitive complexity in changed code" },
                 "hotspot_overlap": { "weight": W_HOTSPOT, "ceiling": hotspot_ceiling, "contribution": scoring::round3(W_HOTSPOT * hotspot_score), "rationale": "proportion of changed files that are churn hotspots" },
                 "churn": { "weight": W_CHURN, "ceiling": change_signals::CHURN_NORM, "contribution": scoring::round3(W_CHURN * churn_score), "rationale": "total recent churn across changed files" },
-                "deviations": { "weight": W_CONVENTIONS, "ceiling": 5.0, "contribution": scoring::round3(W_CONVENTIONS * deviation_score), "rationale": "number of pattern deviations detected" },
             },
         });
     }

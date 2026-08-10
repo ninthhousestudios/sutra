@@ -452,8 +452,9 @@ pub struct Rules {
     #[serde(default)]
     constraint: Vec<RawConstraint>,
     /// Removed FCA config surface. The `[conventions]` block (`suppress` /
-    /// `exempt`) was orphaned when convention violations were replaced by the
-    /// on-the-fly deviation report (sutra/234). It no longer does anything, but
+    /// `exempt`) was orphaned when FCA convention mining was retired (sutra/234;
+    /// the on-the-fly deviation report that briefly replaced it was itself
+    /// removed in sutra/313). It no longer does anything, but
     /// `Rules` has no `deny_unknown_fields`, so we keep a catch-all here to
     /// detect a lingering block and warn rather than silently ignore it — see
     /// `all_constraints`.
@@ -476,10 +477,10 @@ impl Rules {
             errors.push(ConstraintParseError {
                 index: 0,
                 name: Some("conventions".to_string()),
-                error: "the [conventions] block (suppress/exempt) has been removed: convention \
-                        violations were replaced by the on-the-fly deviation report and these \
-                        keys are no longer read. Delete the [conventions] block from \
-                        .sutra/rules.toml."
+                error: "the [conventions] block (suppress/exempt) has been removed: FCA \
+                        convention mining was retired and enforcement moved to hand-written \
+                        [[constraint]] rules; these keys are no longer read. Delete the \
+                        [conventions] block from .sutra/rules.toml."
                     .to_string(),
             });
         }

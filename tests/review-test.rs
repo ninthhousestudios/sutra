@@ -82,11 +82,9 @@ fn empty_diff_returns_correct_shape() {
     assert!(breakdown["complexity_delta"].as_f64().is_some());
     assert!(breakdown["hotspot_overlap"].as_f64().is_some());
     assert!(breakdown["churn"].as_f64().is_some());
-    assert!(breakdown["deviations"].as_f64().is_some());
 
     assert_eq!(result["recommended_reads"].as_array().unwrap().len(), 0);
     assert_eq!(result["constraint_violations"].as_array().unwrap().len(), 0);
-    assert_eq!(result["deviations"].as_array().unwrap().len(), 0);
 }
 
 fn setup_db_with_files() -> (tempfile::TempDir, Db) {
@@ -198,14 +196,15 @@ fn risk_breakdown_sums_correctly() {
     let complexity = breakdown["complexity_delta"].as_f64().unwrap();
     let hotspot = breakdown["hotspot_overlap"].as_f64().unwrap();
     let churn_s = breakdown["churn"].as_f64().unwrap();
-    let conv = breakdown["deviations"].as_f64().unwrap();
 
     assert!(blast > 0.0, "blast should reflect high blast_radius");
     assert!(complexity > 0.0, "complexity should reflect cognitive=20");
     assert!(churn_s > 0.0, "churn should reflect 12 commits");
 
+    // Renormalized after deviations removal (sutra/313): weights summed to 1.0
+    // including deviations (0.2); the remaining four are scaled by 1/0.8.
     let expected =
-        (0.30 * blast + 0.20 * complexity + 0.15 * hotspot + 0.15 * churn_s + 0.20 * conv).min(1.0);
+        (0.375 * blast + 0.25 * complexity + 0.1875 * hotspot + 0.1875 * churn_s).min(1.0);
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(
         (risk - (expected * 1000.0).round() / 1000.0).abs() < 0.002,
@@ -301,31 +300,7 @@ fn risk_score_clamped_to_one() {
         churn.counts.insert(p.clone(), 50);
     }
 
-    let findings = review::ReviewFindings {
-        constraint_violations: vec![],
-        resolved_constraint_violations: vec![],
-        waived_constraint_violations: vec![],
-        constraint_violations_total: 0,
-        deviations: (0..10)
-            .map(|i| review::Deviation {
-                symbol: format!("extreme_{i}::danger"),
-                file: format!("src/extreme_{i}.rs"),
-                pattern_antecedent: vec!["kind:function".into()].into(),
-                pattern_consequent: vec!["has_doc".into()].into(),
-                missing: vec!["has_doc".into()],
-                support: 5,
-                confidence: 0.95,
-                total_matching: 10,
-                conforming: 5,
-                exemplars: vec![],
-                strength: 4.75,
-                informational: false,
-            })
-            .collect(),
-        ..Default::default()
-    };
-
-    let result = review::compute(&db, dir.path(), &paths, &churn, &findings, false).unwrap();
+    let result = review::compute(&db, dir.path(), &paths, &churn, &no_findings(), false).unwrap();
     let risk = result["risk_score"].as_f64().unwrap();
     assert!(risk <= 1.0, "risk must be clamped to 1.0, got {risk}");
     assert!(risk >= 0.95, "extreme risk should be near 1.0, got {risk}");
@@ -421,281 +396,6 @@ fn constraint_violations_appear_in_output() {
     assert_eq!(cv[0]["to"], "src/internal.rs");
     assert_eq!(cv[1]["kind"], "no_cycles");
     assert_eq!(result["constraint_violations_total"].as_u64().unwrap(), 2);
-}
-
-#[test]
-fn deviations_appear_in_output() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
-
-    let findings = review::ReviewFindings {
-        deviations: vec![review::Deviation {
-            symbol: "core::process".into(),
-            file: "src/core.rs".into(),
-            pattern_antecedent: vec!["kind:function".into(), "vis:pub".into()].into(),
-            pattern_consequent: vec!["has_doc".into()].into(),
-            missing: vec!["has_doc".into()],
-            support: 8,
-            confidence: 0.95,
-            total_matching: 10,
-            conforming: 8,
-            exemplars: vec!["helper::format".into()],
-            strength: 7.6,
-            informational: false,
-        }],
-        ..Default::default()
-    };
-
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-
-    let dv = result["deviations"].as_array().unwrap();
-    assert_eq!(dv.len(), 1);
-    assert_eq!(dv[0]["symbol"], "core::process");
-    assert_eq!(dv[0]["file"], "src/core.rs");
-    assert_eq!(
-        dv[0]["missing"].as_array().unwrap(),
-        &[serde_json::json!("has_doc")]
-    );
-    assert_eq!(dv[0]["support"].as_u64().unwrap(), 8);
-    assert!((dv[0]["confidence"].as_f64().unwrap() - 0.95).abs() < f64::EPSILON);
-    assert_eq!(dv[0]["evidence"], "8/10 siblings have has_doc");
-    assert!(dv[0]["exemplars"].as_array().unwrap().len() > 0);
-    assert_eq!(dv[0]["informational"], false);
-}
-
-#[test]
-fn constraints_and_deviations_are_structurally_distinct() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
-
-    let findings = review::ReviewFindings {
-        constraint_violations: vec![review::ConstraintFinding {
-            constraint_id: "abc12345".into(),
-            constraint_name: None,
-            constraint_kind: "forbidden_dep".into(),
-            severity: Severity::Blocking,
-            provenance: None,
-            from_path: "src/core.rs".into(),
-            to_path: "src/internal.rs".into(),
-            component_context: None,
-            detail: "forbidden dep".into(),
-            delta: FindingDelta::Unknown,
-            line: None,
-            snippet: None,
-            enclosing_symbol: None,
-        }],
-        constraint_violations_total: 1,
-        deviations: vec![review::Deviation {
-            symbol: "core::process".into(),
-            file: "src/core.rs".into(),
-            pattern_antecedent: vec!["kind:function".into()].into(),
-            pattern_consequent: vec!["has_doc".into()].into(),
-            missing: vec!["has_doc".into()],
-            support: 5,
-            confidence: 0.92,
-            total_matching: 8,
-            conforming: 5,
-            exemplars: vec![],
-            strength: 4.6,
-            informational: false,
-        }],
-        ..Default::default()
-    };
-
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-
-    // Constraint violations have enriched fields
-    let cv = &result["constraint_violations"].as_array().unwrap()[0];
-    assert!(cv["kind"].is_string());
-    assert!(cv["constraint_id"].is_string());
-    assert!(cv["severity"].is_string());
-    assert!(cv["from"].is_string());
-    assert!(cv["to"].is_string());
-    assert!(cv["detail"].is_string());
-
-    // Deviations have symbol/file/pattern/evidence/missing/exemplars
-    let dv = &result["deviations"].as_array().unwrap()[0];
-    assert!(dv["symbol"].is_string());
-    assert!(dv["file"].is_string());
-    assert!(dv["pattern"].is_string());
-    assert!(dv["evidence"].is_string());
-    assert!(dv["missing"].is_array());
-    assert!(dv.get("constraint_id").is_none());
-}
-
-#[test]
-fn deviations_increase_risk_score() {
-    let (dir, db) = setup_db_with_files();
-    let changed = vec!["src/core.rs".to_string()];
-
-    let result_without = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &no_findings(),
-        false,
-    )
-    .unwrap();
-    let risk_without = result_without["risk_score"].as_f64().unwrap();
-
-    let findings = review::ReviewFindings {
-        deviations: vec![
-            review::Deviation {
-                symbol: "core::process".into(),
-                file: "src/core.rs".into(),
-                pattern_antecedent: vec!["kind:function".into()].into(),
-                pattern_consequent: vec!["has_doc".into()].into(),
-                missing: vec!["has_doc".into()],
-                support: 5,
-                confidence: 0.95,
-                total_matching: 8,
-                conforming: 5,
-                exemplars: vec![],
-                strength: 4.75,
-                informational: false,
-            },
-            review::Deviation {
-                symbol: "core::validate".into(),
-                file: "src/core.rs".into(),
-                pattern_antecedent: vec!["kind:function".into()].into(),
-                pattern_consequent: vec!["returns_result".into()].into(),
-                missing: vec!["returns_result".into()],
-                support: 4,
-                confidence: 0.90,
-                total_matching: 6,
-                conforming: 4,
-                exemplars: vec![],
-                strength: 3.6,
-                informational: false,
-            },
-            review::Deviation {
-                symbol: "core::init".into(),
-                file: "src/core.rs".into(),
-                pattern_antecedent: vec!["vis:pub".into()].into(),
-                pattern_consequent: vec!["has_doc".into()].into(),
-                missing: vec!["has_doc".into()],
-                support: 6,
-                confidence: 0.93,
-                total_matching: 10,
-                conforming: 6,
-                exemplars: vec![],
-                strength: 5.58,
-                informational: false,
-            },
-        ],
-        ..Default::default()
-    };
-
-    let result_with = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-    let risk_with = result_with["risk_score"].as_f64().unwrap();
-
-    assert!(
-        risk_with > risk_without,
-        "risk should increase with deviations: {risk_with} > {risk_without}"
-    );
-
-    let dev_score = result_with["risk_breakdown"]["deviations"]
-        .as_f64()
-        .unwrap();
-    assert!(dev_score > 0.0, "deviations signal should be > 0");
-}
-
-#[test]
-fn recommended_reads_ranks_violation_sites_first() {
-    let (dir, db) = setup_db();
-
-    // Create hub + 5 consumers
-    db.upsert_file("src/hub.rs", "rust", "hub", 300, true)
-        .unwrap();
-    let f_hub = db.file_by_path("src/hub.rs").unwrap().unwrap();
-    let hub_sym_id = db
-        .insert_symbol(&sym(
-            f_hub.id,
-            "hub::central",
-            "central",
-            Some("fn central()"),
-            1,
-            50,
-            Some(10),
-        ))
-        .unwrap();
-    db.update_rollups(f_hub.id, 10, 40).unwrap();
-
-    for i in 0..5 {
-        let path = format!("src/consumer_{i}.rs");
-        db.upsert_file(&path, "rust", &format!("c{i}"), 20, true)
-            .unwrap();
-        let f = db.file_by_path(&path).unwrap().unwrap();
-        let qn = format!("consumer_{i}::use_hub");
-        db.insert_symbol(&sym(f.id, &qn, "use_hub", None, 1, 10, Some(2)))
-            .unwrap();
-        db.insert_ref(f.id, Some(hub_sym_id), None, 3, 0, "call")
-            .unwrap();
-        db.update_rollups(f.id, 0, 100 - i as i64).unwrap();
-    }
-
-    // Consumer_3 has a deviation — should rank first in reads
-    let findings = review::ReviewFindings {
-        deviations: vec![review::Deviation {
-            symbol: "consumer_3::use_hub".into(),
-            file: "src/consumer_3.rs".into(),
-            pattern_antecedent: vec!["kind:function".into()].into(),
-            pattern_consequent: vec!["has_doc".into()].into(),
-            missing: vec!["has_doc".into()],
-            support: 5,
-            confidence: 0.95,
-            total_matching: 8,
-            conforming: 5,
-            exemplars: vec![],
-            strength: 4.75,
-            informational: false,
-        }],
-        ..Default::default()
-    };
-
-    let changed = vec!["src/hub.rs".to_string()];
-    let result = review::compute(
-        &db,
-        dir.path(),
-        &changed,
-        &Default::default(),
-        &findings,
-        false,
-    )
-    .unwrap();
-
-    let rr = result["recommended_reads"].as_array().unwrap();
-    assert!(!rr.is_empty());
-    assert_eq!(
-        rr[0]["path"], "src/consumer_3.rs",
-        "violation site should rank first"
-    );
-    assert_eq!(rr[0]["violation_site"], true);
 }
 
 /// A changed `.pyi` stub has no file row, so it never reaches `changed_ids`.
@@ -917,18 +617,6 @@ forbidden_deps = [
     assert_eq!(cv.severity, Severity::Blocking);
     assert!(cv.detail.contains("src/ui/view.rs"));
     assert!(findings.constraint_violations_total >= 1);
-
-    // FCA deviation detection: view::render is pub+function but lacks docs.
-    // With 6 documented pub functions in the corpus, the on-the-fly FCA should
-    // find the implication and report it as a deviation.
-    // Note: detection depends on component grouping, so we check opportunistically.
-    if !findings.deviations.is_empty() {
-        let d = &findings.deviations[0];
-        assert!(!d.symbol.is_empty());
-        assert!(!d.file.is_empty());
-        assert!(d.confidence >= 0.9);
-        assert!(d.support >= 3);
-    }
 }
 
 #[test]

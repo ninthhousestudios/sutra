@@ -177,36 +177,6 @@ Returns the last parse time and whether the workspace is stale, \
 plus file/symbol counts and parse errors.",
     },
     Topic {
-        name: "conventions",
-        summary: "Detect attribute-implication and structural pattern violations",
-        content: "\
-# Conventions
-
-`sutra_review` includes convention violation detection powered by Formal Concept \
-Analysis (FCA). It extracts attribute implications from your codebase and flags \
-violations in changed code.
-
-## Check conventions in a diff
-```
-sutra_review(workspace=\"myproject\")
-```
-The `deviations` section lists symbols that deviate from strong patterns, \
-showing which attributes were expected but missing, with counts and exemplars.
-
-## What it detects
-- **Attribute implications** — rules like 'pub functions in this module tend to have \
-  docs' or 'async functions here return Result'. FCA infers these from symbol \
-  attributes (name prefixes/suffixes, kind, visibility, module, doc presence).
-- **Structural patterns** — DD-constraint violations where dependencies between \
-  changed symbols break established dependency directions
-
-## How it works
-FCA extracts approximate implications from a formal context of symbol attributes. \
-Each implication has the form 'if a symbol has attributes A, it should also have \
-attributes B' (with support and confidence thresholds). When a changed symbol \
-satisfies the antecedent but lacks the consequent attributes, it's flagged.",
-    },
-    Topic {
         name: "troubleshooting",
         summary: "Common issues and how to fix them",
         content: "\
@@ -285,9 +255,8 @@ sutra_workspace(path=\"/absolute/path/to/project\", action=\"reparse\")
 sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
 sutra_review(workspace=\"myproject\", diff=\"staged\")
 ```
-Look at the `deviations` and `constraint_violations` sections. \
-FCA-derived pattern deviations and DD-constraint dependency directions are checked \
-against your staged changes.
+Look at the `constraint_violations` section — DD-constraint dependency directions \
+checked against your staged changes.
 
 ## Review a branch commit-by-commit
 ```

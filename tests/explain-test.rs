@@ -189,13 +189,7 @@ fn review_explain_true_has_weights() {
     assert!(explain["formula"].is_string());
 
     let weights = &explain["weights"];
-    for key in &[
-        "blast_radius",
-        "complexity",
-        "hotspot_overlap",
-        "churn",
-        "deviations",
-    ] {
+    for key in &["blast_radius", "complexity", "hotspot_overlap", "churn"] {
         let w = &weights[key];
         assert!(w["weight"].is_number(), "{key} must have weight");
         assert!(w["ceiling"].is_number(), "{key} must have numeric ceiling");
@@ -310,13 +304,7 @@ fn review_explain_true_empty_diff_has_explain() {
         "_explain must be present on empty diff"
     );
     assert!(explain["formula"].is_string());
-    for key in &[
-        "blast_radius",
-        "complexity",
-        "hotspot_overlap",
-        "churn",
-        "deviations",
-    ] {
+    for key in &["blast_radius", "complexity", "hotspot_overlap", "churn"] {
         let w = &explain["weights"][key];
         assert!(w["weight"].is_number(), "{key} must have weight");
         assert!(w["ceiling"].is_number(), "{key} must have numeric ceiling");
