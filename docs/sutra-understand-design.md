@@ -1,5 +1,12 @@
 # sutra understand — design doc
 
+> **Status note (2026-08):** Planning/vision document, not a canonical spec.
+> Since it was written, `sutra_orient` and the review-time FCA deviation report
+> were removed (sutra/312, sutra/313) after live use showed a high false-positive
+> rate; convention detection remains but is now list-only via `sutra_conventions`.
+> The "Orient mode" and deviation references below describe an earlier design
+> direction that may be revisited, not shipped behavior.
+
 ## The shift
 
 The v1 PRD positions sutra as a "review intelligence engine." This design

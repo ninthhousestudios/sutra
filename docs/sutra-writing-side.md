@@ -1,5 +1,12 @@
 # sutra writing side — preventing slop in agent-written code
 
+> **Status note (2026-08):** Planning/vision document, not a canonical spec.
+> Since it was written, `sutra_orient` and the review-time FCA deviation report
+> were removed (sutra/312, sutra/313) after live use showed a high false-positive
+> rate; convention detection remains but is now list-only via `sutra_conventions`.
+> "Orient mode" references below describe an earlier design direction that may be
+> revisited, not shipped behavior.
+
 ## The problem
 
 Agents write code. Humans direct and review. Both are responsible for
