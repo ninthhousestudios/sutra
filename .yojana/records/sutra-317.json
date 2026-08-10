@@ -1,0 +1,61 @@
+{
+  "id": "019fec0b-3df7-79b1-bd28-bbae93a17e88",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/317",
+  "sequence_number": 317,
+  "title": "Refresh README + docs narrative after sutra_orient deletion",
+  "description": "sutra/312 deleted the sutra_orient tool but scoped its doc cleanup to help recipes, tools_meta, conventions-map.md, and code doc-comments. Several live docs still advertise orient and need a coherent refresh — deferred because rewriting them is editorial/narrative judgment, not mechanical deletion, and the product's \"core loop\" framing is built around orient.\n\nLive-doc references still present (verified via rg 'orient' after the deletion commit b5952ba):\n- README.md: the core-loop line \"explore → orient → check → review → teach\" (line ~9), the sutra_orient tool-table row (~224), the surfacing paragraph naming sutra_orient (~202), the observed-patterns description (~47), and the example (~269). Deciding how to describe the loop WITHOUT orient is a product-identity call, not a find/replace.\n- docs/health-map.md and docs/constraints-map.md: describe orient's health/constraints sections as current architecture (health-map ~23/99/148/359/374; constraints-map ~73/116/139/392/653/677).\n- docs/sutra-understand-design.md, docs/sutra-vision.md: orient as a designed surface. NOTE: much of docs/reviews/* and docs/archived/* are point-in-time records — do NOT revise those (revisionism); only refresh docs describing the CURRENT tool inventory/architecture.\n\nSeparately: conventions-map.md is also stale vs sutra/313 (still documents the removed FCA deviation review report). Worth folding a 313 doc-refresh into the same pass.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Landed in 3 commits (35dd54a maps, 12d1ebe README, 612119f vision docs). Josh's product-identity calls: Fork 1=A (core loop → four beats: explore → check → review → teach; orient's briefing role absorbed into contextual lesson/convention surfacing at read time). Fork 2=A (Layer 2 conventions reframed as honest list-only via sutra_conventions; detection still runs, both in-loop consumers retired). Fork 3=A light-touch (vision docs are planning not canonical — added status-note banner to each rather than rewriting aspirational content).\n\nDelivered: README (core loop, Layer 2 §3, dropped retired [conventions] rules.toml block + sutra_orient tool row + Orient-before-editing workflow + all deviation refs; tool count corrected 37→31, which had drifted independently of this change); conventions-map.md rewritten to list-only reality; constraints-map.md + health-map.md orient refs removed from current-arch prose with historical task-ledger rows annotated not erased; status banners on sutra-vision/understand-design/writing-side.\n\nDeferred to sutra/318 (product decisions beyond mechanical cleanup, deliberately not done unilaterally): CONTEXT.md still models \"Orient\" as a canonical core-loop concept (contradicts the new README loop); sketch mode / ADR-0001 may now be vestigial for conventions. CONTEXT.md left untouched pending that call — it's canonical, not a planning doc, so the vision-doc banner approach doesn't fit.\n\nVerification: docs-only change, no test surface. Verified by targeted grep sweeps that README + the 3 maps carry no stale current-architecture orient/deviation refs (remaining hits are intentional changelog prose and strikethrough historical ledger rows). Full workspace cargo test was green at the start of this session (1545 passed) from the 312/313 review and is untouched by doc edits.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786371587575,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 317
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786372432327,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786373484990,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review cross-check (312/313 vidhi-review): task scope is complete — all my findings (conventions-map deviation drift, constraints/health-map orient refs) are already covered. One doc missing from the live-doc list:\n\n- docs/sutra-writing-side.md — genuinely names `sutra_orient` (line 86: \"An agent calls `sutra_orient` before modifying...\") and frames \"Orient mode\" as a current/designed surface (lines 79/81/168/351). Same class as sutra-vision.md / sutra-understand-design.md, which are listed, so it belongs in the same refresh pass.\n\nLower-confidence / judgment call: docs/brainstorm-constraints.md references \"orient output\" (153) and orient as a pipeline stage (229). It reads as a point-in-time brainstorm, so it may fall under the \"do NOT revise records\" rule — leaving the call to you. (docs/clone-audit also lists clones inside the deleted orient.rs, but it's a regenerable generated artifact, not narrative — skip.)",
+      "ts": 1786372418368
+    }
+  ],
+  "created_at": 1786371587575,
+  "updated_at": 1786373484990,
+  "completed_at": 1786373484990,
+  "edges": []
+}

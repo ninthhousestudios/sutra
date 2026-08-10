@@ -1,0 +1,127 @@
+{
+  "id": "019fea20-34aa-77d0-bbe4-181d768fd4dd",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/312",
+  "sequence_number": 312,
+  "title": "Delete sutra_orient (tool, handler, and now-dead conventions describe_patterns)",
+  "description": "DECISION LANDED: delete orient (see decisions). Implementation scope:\n\n1. Remove the sutra_orient MCP tool: registration/dispatch in src/mcp.rs, OrientArgs, and src/tools/orient.rs (handler + helpers: resolve_scope, constraints_for_component, hidden_coupling_for_component, constraint_detail, extract_component_sym_attrs, handle). Remove the module from src/tools/mod.rs.\n2. Now-dead conventions surface: after sutra/313, orient is the LAST consumer of describe_patterns / observed_patterns. Verify via sutra_refs, then remove describe_patterns and any ObservedPattern type left with no other caller. Keep the FormalContext core + attribute extraction (may serve future constraint authoring).\n3. Remove orient from help text (sutra_help recipes), docs/conventions-map.md references, and any MCP tool-count/inventory strings.\n4. Remove orient tests (the tests module in src/tools/orient.rs) and any cross-tool test that invokes orient.\n\nSEQUENCING: land AFTER sutra/313 (313 intentionally leaves describe_patterns intact \"because orient uses it\"; deleting orient is what makes it dead). Coordinate so the tree is green between the two.\n\nVERIFY: cargo test green; confirm the MCP tool list no longer advertises sutra_orient and sutra v0.9.0's tool count / server instructions are updated.\n\nCloses sutra/314, 315, 316 as wontfix (superseded).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Delete sutra_orient outright rather than realign it.",
+      "rationale": "Removing FCA conventions (sutra/313) strips orient of its only unique surface (observed_patterns). What remains bundles constraints/health/lessons/hidden-coupling, each a worse-packaged version of a focused tool (sutra_constraints/health/lessons/cochange) that an inference-capable consumer composes on demand — same principle that demolished the FCA lifecycle (lesson 019f8a3f). Usage corroborates: 7 calls ever, ~86% erroring.",
+      "rejected_alternative": "Realign to intuition (fix sutra/314-316, make scope optional). Rejected: investing in an aggregator after deleting its differentiator, to compete with four tools that already do each job better."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Went as planned. Removed: sutra_orient #[tool] method (mcp.rs), OrientArgs+handler+module (src/tools/orient.rs moved out), `pub mod orient` (tools/mod.rs), tools_meta core-tools inventory entry, help.rs orient Topic. Confirmed orient was the last consumer of describe_patterns/ObservedPattern via sutra_impact (0 callers) and deleted both plus MAX_ORIENT_PATTERNS. Cascade: review::collect_toolchain_pairs became dead (orient was its only caller) — removed it too. Kept FormalContext::count_with_attrs/exemplars_for (publicly re-exported API, tested, task said keep FCA core). Fixed stale doc-comments in guard.rs and lessons.rs (orient no longer one of the surfacing callers). Docs: conventions-map.md orient references removed; sutra root CLAUDE.md lessons-surfacing line. Tool count/roster in MCP server instructions is computed from tool_router.map, so it updated automatically — no manual string edit. cargo test: 1545 passed, 0 failed. Note: conventions-map.md was already partly stale vs sutra/313 (still describes the removed deviation review report) — left that untouched (313's debt). README.md and health-map/constraints-map still reference orient in narrative/inventory — filed follow-up (not in this task's scope).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "b5952ba"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "orient",
+    "conventions"
+  ],
+  "history": [
+    {
+      "ts": 1786339407018,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 312
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339753044,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "ready-for-agent"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339753044,
+      "kind": "updated",
+      "payload": {
+        "field": "title",
+        "from": "Decide: delete sutra_orient or realign it to intuition",
+        "to": "Delete sutra_orient (tool, handler, and now-dead conventions describe_patterns)"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786370998015,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786371565516,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, diff 913f800..b5952ba covering 312+313): approve with notes. Code deletion complete & verified — sweep found zero surviving refs to describe_patterns/ObservedPattern/detect_deviations/Deviation/sutra_orient; cargo test 1545 passed. Note (medium): docs/conventions-map.md header claims the orient/describe_patterns deletion but the body still documents the deleted Deviation type and the `deviations` review output contract as live — the doc CLAUDE.md tells agents to read first for convention work. Note (low): docs/constraints-map.md + health-map.md still reference sutra_orient as a live tool. Both doc-only; follow-up recommended.",
+      "ts": 1786372277053
+    }
+  ],
+  "created_at": 1786339407018,
+  "updated_at": 1786371565516,
+  "completed_at": 1786371565516,
+  "edges": [
+    {
+      "id": "019fea20-e60e-7493-aa5f-2bd2b7966b55",
+      "edge_type": "depends_on",
+      "source": "sutra/314",
+      "target": "sutra/312",
+      "note": null,
+      "created_at": 1786339452430
+    },
+    {
+      "id": "019fea20-e901-7dd1-8f62-21c53e943f98",
+      "edge_type": "depends_on",
+      "source": "sutra/315",
+      "target": "sutra/312",
+      "note": null,
+      "created_at": 1786339453185
+    },
+    {
+      "id": "019fea20-efb2-7fc3-bc10-54f59375bc59",
+      "edge_type": "depends_on",
+      "source": "sutra/316",
+      "target": "sutra/312",
+      "note": null,
+      "created_at": 1786339454898
+    },
+    {
+      "id": "019fea20-f231-7d73-815a-42519823848f",
+      "edge_type": "motivated_by",
+      "source": "sutra/312",
+      "target": "sutra/236",
+      "note": null,
+      "created_at": 1786339455537
+    }
+  ]
+}

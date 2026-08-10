@@ -233,7 +233,7 @@
 {"id":"sutra/233","title":"Attribute role typing: identity vs obligation + adapter-declared trivial implications","status":"done","closed_at":1783603117607}
 {"id":"sutra/234","title":"Diff-scoped deviation report in sutra_review","status":"done","closed_at":1783604716181}
 {"id":"sutra/235","title":"Rebuild sutra_orient conventions section on the deviation engine","status":"done","closed_at":1783607200273}
-{"id":"sutra/236","title":"Validate: does the deviation report earn its place?","status":"needs-info","closed_at":null}
+{"id":"sutra/236","title":"Validate: does the deviation report earn its place?","status":"done","closed_at":1786339477584}
 {"id":"sutra/237","title":"Track Rust mod/use statements as import edges","status":"done","closed_at":1783611983315}
 {"id":"sutra/238","title":"no_cycles named constraint never binds: scope dropped from evaluation (matched_file_count.scope always 0)","status":"done","closed_at":1783623680468}
 {"id":"sutra/239","title":"scope_matches_path: literal bracket directories misrouted to glob matching","status":"done","closed_at":1783624178357}
@@ -307,7 +307,15 @@
 {"id":"sutra/307","title":"Cycle detection: subtract only pure-mod edges, not any pair carrying a mod declaration","status":"done","closed_at":1786201354398}
 {"id":"sutra/308","title":"Wire accepted.toml freshness gate + rewire MCP write actions (sutra/303 integration)","status":"done","closed_at":1786206088699}
 {"id":"sutra/309","title":"Document accepted.toml freshness gate in constraints-map.md","status":"done","closed_at":1786206382650}
-{"id":"sutra/310","title":"Harden accepted.toml mutations: reject nameless waive, atomic write, file lock","status":"in-progress","closed_at":null}
+{"id":"sutra/310","title":"Harden accepted.toml mutations: reject nameless waive, atomic write, file lock","status":"done","closed_at":1786207242013}
+{"id":"sutra/311","title":"Migrate ref-ptr clones to Arc::clone form (clone_on_ref_ptr rollout, vidhi/13)","status":"done","closed_at":1786214047095}
+{"id":"sutra/312","title":"Delete sutra_orient (tool, handler, and now-dead conventions describe_patterns)","status":"done","closed_at":1786371565516}
+{"id":"sutra/313","title":"Remove FCA deviation report from sutra_review","status":"done","closed_at":1786340407052}
+{"id":"sutra/314","title":"orient merges waived findings into the violations array (inflates blocking count)","status":"wontfix","closed_at":1786339765712}
+{"id":"sutra/315","title":"orient arg schema fights agent intuition (path/query/scope footguns)","status":"wontfix","closed_at":1786339766327}
+{"id":"sutra/316","title":"orient returns hard MCP error (-32602) on unindexed workspace instead of a hint","status":"wontfix","closed_at":1786339766635}
+{"id":"sutra/317","title":"Refresh README + docs narrative after sutra_orient deletion","status":"done","closed_at":1786373484990}
+{"id":"sutra/318","title":"Decide: is \"Orient\" still a domain concept, and is sketch mode now vestigial?","status":"done","closed_at":1786375270467}
 {"id":"sutra/needs-designing/1","title":"Design: sutra_plan_refactoring","status":"wontfix","closed_at":null}
 {"id":"sutra/needs-designing/2","title":"Design: sutra_dupes — clone detection","status":"wontfix","closed_at":null}
 {"id":"sutra/needs-designing/3","title":"Design: sutra_boundaries — architectural-zone enforcement","status":"wontfix","closed_at":null}

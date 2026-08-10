@@ -1,0 +1,81 @@
+{
+  "id": "019fea20-5503-7b12-bc2e-dea6ad7ab415",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/313",
+  "sequence_number": 313,
+  "title": "Remove FCA deviation report from sutra_review",
+  "description": "Outcome of sutra/236 validation (Josh approved): the FCA deviation report produced a 100% false-positive rate over 5 weeks of live reviews, cited only to be dismissed, never fixed. Remove it from sutra_review.\n\nSCOPE (review only — leave describe_patterns/observed_patterns until the orient delete/realign decision lands):\n- Remove ReviewFindings::deviations field (src/tools/review.rs).\n- Remove the detect_deviations call from the review build path.\n- Remove detect_deviations + Deviation struct + MAX_DEVIATIONS from src/conventions/engine.rs (verify no other caller first — grep confirms review is the only consumer).\n- Risk score: remove the `deviations` factor (weight 0.2, ceiling 5.0) from the _explain block and the score formula. CONTRACT CARE (per CLAUDE.md refactor-contract note — risk scoring has silently drifted 3×): renormalize the remaining weights (blast_radius .3, churn .15, complexity .2, hotspot_overlap .15) to sum to 1.0, and update every test asserting an old risk score.\n- Tests to remove/update: deviations_appear_in_output, constraints_and_deviations_are_structurally_distinct, deviations_increase_risk_score (tests/review-test.rs).\n\nVERIFY: cargo test green; run sutra_review on a diff and confirm no deviations key and a sane renormalized risk score.\n\nKeep attribute extraction + FormalContext core intact (may serve future constraint authoring).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Landed on main as 0387673; cargo test 1575 passed / 2 ignored / 0 failed (verified twice by me, not just the agent). Implemented by a Sonnet subagent; I inspected the diff and re-ran tests rather than trusting the report. Scope grew beyond the original file list during verification — all doc-contract drift caused by the removal: (1) src/tools/help.rs — the entire \"conventions\" help topic advertised review's FCA deviation detection + a `deviations` output section that no longer exist, so removed it; also fixed the recipes-topic reference. (2) src/rules.rs — the [conventions]-block deprecation message and doc comment pointed at \"the on-the-fly deviation report\" as the replacement, now itself removed; reworded to point at hand-written [[constraint]] rules. (3) tests/explain-test.rs — two tests iterated the removed `deviations` weight key. The agent also removed the recommended_reads_ranks_violation_sites_first test and the `violation_site` field from recommended_reads entries (justified: deviations were their sole driver; grep confirmed no other producer/consumer). describe_patterns/observed_patterns + FormalContext core intact for orient (pending sutra/312 deletion).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "0387673"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "review"
+  ],
+  "history": [
+    {
+      "ts": 1786339415299,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 313
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339513712,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786340407052,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, diff 913f800..b5952ba covering 312+313): approve with notes. Deviation report cleanly removed from review.rs, engine.rs, and tests. Risk-score contract-care honored per CLAUDE.md: remaining weights renormalized by 1/0.8 (blast .375, complexity .25, hotspot/churn .1875) summing to 1.0, with rationale comment; test asserts the new closed-form. cargo test 1545 passed. Note (medium): docs/conventions-map.md still documents the `deviations` review output contract, Deviation type, risk_breakdown.deviations, and MAX_DEVIATIONS=5 — all removed here. Doc drift landed in the seam between 313 (code-only) and 312 (orient-focused doc edits). Follow-up recommended.",
+      "ts": 1786372280467
+    }
+  ],
+  "created_at": 1786339415299,
+  "updated_at": 1786340407052,
+  "completed_at": 1786340407052,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "validation",
+  "edges": [
+    {
+      "id": "019fea20-f4a6-7591-a487-6689df1a0ca7",
+      "edge_type": "motivated_by",
+      "source": "sutra/313",
+      "target": "sutra/236",
+      "note": null,
+      "created_at": 1786339456166
+    }
+  ]
+}

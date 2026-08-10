@@ -1,0 +1,85 @@
+{
+  "id": "019fe23a-78d3-71f1-8dee-249e276dc299",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/310",
+  "sequence_number": 310,
+  "title": "Harden accepted.toml mutations: reject nameless waive, atomic write, file lock",
+  "description": "Three related robustness gaps in the accepted.toml mutation path (surfaced by vidhi-review of sutra/303+308):\\n\\n1. **Waiving a nameless constraint silently produces an inert entry.** `accepted_key()` falls back to constraint_id when name is None. `resolve_ref()` matches by name only, so the entry resolves as Unknown on the next load — the waiver never takes effect but `handle_waive` returns success. Fix: reject at handle_waive entry with a clear error telling the user to name the constraint.\\n\\n2. **Non-atomic file write.** `write_accepted_file` does `std::fs::write` (O_TRUNC + write). Crash mid-write → truncated/corrupt source of truth, blocks all operations until manual repair. Fix: write to `.sutra/accepted.toml.tmp` then `fs::rename` (atomic on same filesystem).\\n\\n3. **No file-level lock on read-modify-write.** upsert/remove functions do load→modify→write with no flock. Two concurrent calls can produce a lost update. The codebase already has `acquire_parse_flock` in pipeline.rs. Fix: advisory flock around the load/mutate/write span. Pairs naturally with the atomic write.\\n\\nBonus: batch handle_baseline's N upsert_ack calls into one file write cycle instead of N.\"",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "handle_waive returns an error (not success) when the resolved constraint has no name"
+    },
+    {
+      "done": false,
+      "text": "write_accepted_file uses write-to-temp-then-rename for atomicity"
+    },
+    {
+      "done": false,
+      "text": "File mutations (upsert_waiver, remove_waiver, upsert_ack, remove_ack) hold an advisory flock"
+    },
+    {
+      "done": false,
+      "text": "handle_baseline does one file write for all ack entries, not N"
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/303"
+    },
+    {
+      "type": "yojana:task",
+      "value": "sutra/308"
+    },
+    {
+      "type": "git:commit",
+      "value": "204bf40"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786206910675,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 310
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786206914804,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786207242013,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786206910675,
+  "updated_at": 1786207242013,
+  "completed_at": 1786207242013,
+  "edges": []
+}

@@ -1,0 +1,70 @@
+{
+  "id": "019fe287-de33-7631-9e64-64944931d70d",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/311",
+  "sequence_number": 311,
+  "title": "Migrate ref-ptr clones to Arc::clone form (clone_on_ref_ptr rollout, vidhi/13)",
+  "description": "Part of the clone_on_ref_ptr rollout (vidhi/13). `clone_on_ref_ptr = \"warn\"` was added to sutra's `[lints.clippy]` baseline (Cargo.toml, committed). It flags 49 unique sites where a cheap Arc/Rc/Weak refcount bump is written in method form `x.clone()` instead of the house-standard qualified form `Arc::clone(&x)`.\n\n## Why\nOnce every ref-ptr clone is qualified, the `no-clone-driven-dev` sutra rule (method-form `.clone()` only) sees exclusively genuine value clones — the disambiguation is the point. See vidhi-rust/SKILL.md (Ownership) and language-rules/rust.toml no-clone-driven-dev.\n\n## Phase 1 — migrate the 49 ref-ptr clone sites (49 unique, clean-clippy measured at HEAD)\n```\n 15  src/main.rs\n 11  src/rules.rs\n  5  src/constraints/check.rs\n  4  src/tools/trace.rs\n  3  src/constraints/worker.rs\n  2  src/constraints/patterns.rs\n  2  src/tools/explore.rs\n  1  src/components/identity.rs\n  1  src/constraints/external.rs\n  1  src/mcp.rs\n  1  src/pipeline.rs\n  1  src/guard.rs\n  1  tests/pipeline-test.rs\n  1  tests/rest-test.rs\n```\n- `cargo clippy --fix` does NOT apply these — clone_on_ref_ptr's suggestion is MaybeIncorrect, so it is skipped. Hand-fix each: confirm the receiver is Arc/Rc/Weak, rewrite `x.clone()` → `Arc::clone(&x)` (or `Rc::clone`/`Weak::clone`). If a flagged `.clone()` is NOT a ref-ptr, it is a genuine value clone — leave it.\n- Verify: `cargo clippy --all-targets` reports 0 clone_on_ref_ptr, and the crate builds. Enumerate exact sites with a clean re-lint: `cargo clean -p <pkg> && cargo clippy --all-targets --message-format=json` filtered on code `clippy::clone_on_ref_ptr` (plain re-runs read stale clippy cache).\n\n## Phase 2 — audit the no-clone-driven-dev waivers (coupled; do after Phase 1)\n`no-clone-driven-dev` is blocking here with **146 waivers** in `.sutra/accepted.toml` (untracked). Composition: 145 symbol-scoped + **1 whole-file** waiver.\n- **Whole-file waiver on `src/constraints/check.rs`** (rationale: \"ConstraintFinding construction requires Arc<str> clones (ref-count bumps). 24 existing clones follow the same pattern\"). This is exactly what clone_on_ref_ptr eliminates: rewrite those Arc<str> ref-count bumps to `Arc::clone(&x)` in Phase 1, then **delete this whole-file waiver entirely** (`sutra_constraints action=unwaive constraint_name=no-clone-driven-dev file_path=src/constraints/check.rs`). A whole-file waiver blinds the rule to every future clone in the file — it must not survive.\n- **The 145 symbol-scoped waivers**: after migration, many were covering idiomatic Arc clones now written qualified — those are redundant, unwaive them. Residual genuine value-clone waivers stay, but should move from file/symbol scope to per-instance once sutra/305 (instance-based waivers) lands — do NOT re-file-waive them.\n\n## Phase 3 — cleanup stranded accepted.toml entries\nTwo `builtin:cycles` entries (`src/components/identity.rs`, `src/constraints/engine.rs`) name no live constraint — `sutra_constraints action=list` flags them as suppressing nothing. Remove them (unwaive / edit accepted.toml).",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Remove the 18 test-fixture no-clone waivers in addition to the 19 migration-caused ones",
+      "rationale": "All 37 suppress zero live violations; a waiver audit that knowingly leaves 18 dead entries isn't an audit, and 146->108 reflects the honest 'genuinely-needed' count. Rejected alternative: remove only the 19 migration-caused non-test waivers and leave the test ones as documentation for a hypothetical future include_tests flip — rejected because dead waivers are noise that defeats the disambiguation the whole rollout is for, and the test-exclusion is stable rule behavior."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Phase 1: 53 clone_on_ref_ptr sites (not 49 — HEAD moved since task creation), all confirmed genuine Arc/Rc bumps, rewritten to house-standard Arc::clone(&x)/Rc::clone(&x) (not clippy's verbose fully-qualified suggestion). parse_coord.clone() (main.rs) was NOT flagged and left as a value clone. explore.rs and tests/pipeline-test.rs needed `use std::sync::Arc;` added. guard.rs:1607 is in a test submodule whose `use Arc` lives in a different submodule, so qualified as std::sync::Arc::clone. Verified: cargo clippy --all-targets = 0 clone_on_ref_ptr, 0 errors; cargo test = 1581 passed.\n\nPhase 2/3: Audited waivers against the authoritative live match set from `sutra_constraints action=violations` (waived_violations, each carrying enclosing_symbol). A waiver is redundant iff it covers zero live matches. 146 no-clone waivers -> 108 needed, 38 removed (1 whole-file check.rs + 37 symbol). Removals done via `sutra_constraints action=unwaive` (sanctioned path — hand-editing risks resurrection via migrate_db_to_file per lesson 019fe22e). The 2 stranded builtin:cycles entries could NOT be unwaived (MCP refuses: name resolves to no live constraint) so were removed by hand-editing accepted.toml; safe because a dangling-name waiver has no DB constraint to reproject from. Verified post-cleanup: 0 active blocking clone violations, all 251 live matches still waived, accepted_warnings gone, DB reprojected correctly.\n\nNotable finding: of the 37 redundant symbol waivers, 18 were test-fixture waivers (tests::*) that were ALWAYS inert — the no-clone-driven-dev rule excludes #[cfg(test)] code (confirmed: make_fn_pair contains .clone() at diff.rs:550 but reports zero live matches). The sutra/251 clone audit created these dead waivers. Removed them as part of the audit.\n\nNote for Josh: `.sutra/accepted.lock` is present and untracked — likely should be gitignored (only accepted.toml is un-ignored via !.sutra/accepted.toml). Did not touch .gitattributes (unrelated untracked file).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "f91d818"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "clippy",
+    "clone",
+    "clone_on_ref_ptr",
+    "vidhi-13"
+  ],
+  "history": [
+    {
+      "ts": 1786211982899,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 311
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786212844143,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786214047095,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786211982899,
+  "updated_at": 1786214047095,
+  "completed_at": 1786214047095,
+  "edges": []
+}

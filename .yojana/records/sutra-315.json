@@ -1,0 +1,64 @@
+{
+  "id": "019fea20-ab69-77a2-932d-b3006e921bf0",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/315",
+  "sequence_number": 315,
+  "title": "orient arg schema fights agent intuition (path/query/scope footguns)",
+  "description": "orient requires BOTH `workspace` and `scope`, and `scope` must resolve to a component name/id or a file path — not `.`, not `repo`, not a free-text query. Agents intuit orient as \"point at a repo/area and get oriented\" and pass path/query/./repo, all of which error. The signature doesn't match the mental model, which is a large part of why orient is called 7 times ever.\n\nCANDIDATE FIX: accept `.`/repo/omitted scope as a whole-workspace overview; accept `path` as a `workspace` alias; and/or make scope optional. Align the tool to how agents actually reach for it.\n\nGATED on sutra/312: only worth doing if orient is kept (realign path). If deleted, close wontfix.",
+  "category": "bug",
+  "status": "wontfix",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": "History (~/.claude): of 7 orient calls, 3 failed on arg shape — agent passed `query=...` (like explore), passed `path=...` instead of `workspace=`, or omitted `scope`; 1 more passed scope=`.`/`repo` → \"no component found matching scope\".",
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "orient",
+    "ergonomics"
+  ],
+  "history": [
+    {
+      "ts": 1786339437417,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 315
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339766327,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-info",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "wontfix — superseded by sutra/312 (delete orient). Arg-schema footgun is moot once the tool is gone. Negative knowledge: orient required BOTH workspace and scope, with scope resolving only to a component name/id or file path (not path/query/./repo). That mismatch with how agents reach for a \"orient me on this area\" tool drove ~half its few invocations to error. Lesson for any future scoped tool: make the arg shape match the reach — accept a bare path / whole-workspace default, not a mandatory component handle.",
+      "ts": 1786339758853
+    }
+  ],
+  "created_at": 1786339437417,
+  "updated_at": 1786339766327,
+  "completed_at": 1786339766327,
+  "edges": [
+    {
+      "id": "019fea20-e901-7dd1-8f62-21c53e943f98",
+      "edge_type": "depends_on",
+      "source": "sutra/315",
+      "target": "sutra/312",
+      "note": null,
+      "created_at": 1786339453185
+    }
+  ]
+}

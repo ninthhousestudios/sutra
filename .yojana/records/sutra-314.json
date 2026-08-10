@@ -1,0 +1,65 @@
+{
+  "id": "019fea20-8b0b-7782-ad39-6b6c1a8bc981",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/314",
+  "sequence_number": 314,
+  "title": "orient merges waived findings into the violations array (inflates blocking count)",
+  "description": "VERIFIED against code: src/tools/orient.rs:482-486 chains outcome.waived into the violations output — `outcome.active.iter().chain(outcome.waived.iter().map(|w| &w.finding))` — then serializes every entry with severity:blocking and NO waived marker. check::evaluate already partitions active vs waived correctly upstream; orient re-merges them. A reader can't distinguish active from waived without hand-diffing file paths against the waivers array. This is the \"violations counted pre-waiver-partition\" contract hazard called out in sutra/CLAUDE.md (bitten 3× before).\n\nFIX: either (a) put waived findings in a separate `waived_violations` array, or (b) add `waived: true` + the waiver rationale to each merged entry so active/blocking is not overstated. Orient-local — review/constraints unaffected.\n\nGATED on sutra/312 (delete-or-realign orient): if orient is deleted this closes wontfix; the merge disappears with it.",
+  "category": "bug",
+  "status": "wontfix",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": "Run sutra_orient on a scope with waived constraint findings (e.g. sutra src/conventions/engine.rs, which has 15 waived no-clone-driven-dev entries). The `violations` array lists ~37 entries all at severity:blocking, most of which are actually waived; the waivers are only in a separate `waivers` array with no back-reference.",
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "orient",
+    "constraints",
+    "waivers"
+  ],
+  "history": [
+    {
+      "ts": 1786339429131,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 314
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339765712,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-info",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "wontfix — superseded by sutra/312 (delete orient). The waived-into-violations merge disappears with the tool. Kept as verified negative knowledge: real bug at src/tools/orient.rs:482-486, which chained outcome.waived into the violations array with severity:blocking and no waived marker. check::evaluate partitions active/waived correctly upstream; orient re-merged them. Lesson for any future surface: never re-merge active+waived findings without a per-entry waived flag or a separate array — this is the pre-waiver-partition contract hazard that has bitten this repo repeatedly.",
+      "ts": 1786339755780
+    }
+  ],
+  "created_at": 1786339429131,
+  "updated_at": 1786339765712,
+  "completed_at": 1786339765712,
+  "edges": [
+    {
+      "id": "019fea20-e60e-7493-aa5f-2bd2b7966b55",
+      "edge_type": "depends_on",
+      "source": "sutra/314",
+      "target": "sutra/312",
+      "note": null,
+      "created_at": 1786339452430
+    }
+  ]
+}

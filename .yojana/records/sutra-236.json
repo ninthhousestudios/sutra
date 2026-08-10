@@ -1,0 +1,120 @@
+{
+  "id": "019f3f7a-9c2d-7863-b532-2fa1b3184e14",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/236",
+  "sequence_number": 236,
+  "title": "Validate: does the deviation report earn its place?",
+  "description": "Per the sutra/176 decision (arc sutra/~12): the old system ran ~6 months with no usefulness measurement, which is how it reached a 1-in-1,500 hit rate before anyone counted. The replacement doesn't get that luxury. After the deviation report has been live for ~2-4 weeks of real reviews:\n\nMeasure:\n1. **Citation rate**: of sutra_review runs that reported deviations, in how many did the review agent's final output cite/act on one? (Sample transcripts, or grep review outputs vs findings.)\n2. **Fix rate**: do reported deviations disappear in subsequent snapshots (fixed) or persist indefinitely (noise)? A pattern whose deviations are never fixed is the old noise problem in new clothes.\n3. **Orient section**: same question for the descriptive section — do agents reference it, or skip past it? This was asserted useful in sutra/176 but never verified; it carries the same evidentiary burden the promotion pipeline failed.\n\nDecide:\n- Deviation report cited and deviations get fixed → keep; consider vocabulary enrichment (effects, callee patterns) as the next investment — the ceiling-raiser deferred from sutra/105 O1.\n- Recurring deviations that Josh keeps agreeing with → promote those by hand into constraint rules (the designated enforcement path).\n- Not cited / never fixed → shrink further: conventions reduce to orient's descriptive lens only, or delete outright. No second lifecycle system as a rescue.\n\nBlocked until the deviation-report phase lands; status needs-info until there's live data to evaluate.",
+  "category": "experiment",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "FCA convention output does not earn its place; remove the deviation report from sutra_review.",
+      "rationale": "5 weeks of live data: 100% false-positive rate (snake_case demanded of types/consts, returns_result of accessors — role-typing failure sutra/233 didn't fix), cited only to be dismissed as pre-existing noise, the returns_result cluster recurred unfixed across 7 reviews. Orient's observed_patterns lens is tautological too, so the 'shrink to descriptive lens' fallback is non-viable.",
+      "rejected_alternative": "Patch role typing (kind-gate snake_case, exclude accessors from returns_result) and keep one more cycle — rejected as the 'second lifecycle rescue' sutra/176 warned against, investing more in a mechanism with a demonstrated zero true-positive rate."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Validation executed by mining ~/.claude/projects tool-results + running orient live, not by waiting for new instrumentation. Spawned follow-ups: sutra/313 (remove FCA from review — approved, ready-for-agent), sutra/312 (delete-or-realign orient decision — ready-for-human), sutra/314-316 (orient bugs, gated on 312). describe_patterns/FormalContext core left intact pending 312.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "conventions",
+    "fca",
+    "validation"
+  ],
+  "history": [
+    {
+      "ts": 1783476427821,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 236
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786338737217,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-info",
+        "to": "ready-for-human"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339469290,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786339477584,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Validation data gathered (5 weeks live, July 8–Aug 8). Source: 13 sutra_review runs with non-empty deviations, mined from ~/.claude/projects tool-results across sutra, manas-cli, astrology-dashboard.\n\nFINDINGS\n1. Content quality: 100% false-positive rate. Every deviation in-window is one of two bugs — (a) naming:snake_case demanded of types/enum-variants/consts (BodyFamily, SymbolKind, FLAG_TEST, DART_LIFECYCLE_METHODS, TableColumn, OrientArgs); (b) returns_result demanded of pure accessors (SearchTier::confidence→f64, Db::workspace_id→&str, Db::conn_for_test). Both are the identity-vs-obligation role-typing failure sutra/233 was meant to fix — ALL these reviews postdate 233 landing, so 233 is insufficient. Zero true positives fired in the entire window.\n2. Fix rate: the identical 5-deviation returns_result cluster (SearchTier::confidence/label/confidence_json, Db::workspace_id, Db::conn_for_test) recurs across 7 separate reviews over the full month. Never fixed — nothing to fix. Textbook \"old noise in new clothes.\"\n3. Citation: agents cite deviations only to dismiss them as pre-existing noise (\"exist on main independent of this change — none introduced here\"; \"all pre-existing db/mod.rs patterns, none from this diff\"). Zero acted-upon. Net effect negative: the reviewer must spend words rebutting the report. snake_case: 0 agent mentions (pure skip).\n4. Diff-scoping (sutra/234) leaking: pre-existing whole-repo patterns surface in diff-scoped reviews — the \"only deviations introduced by this diff\" filter isn't holding.\n5. Orient section (sutra/235): UNMEASURED — sampled review outputs, not orient. No positive evidence of engagement; not asserted unused.\n\nRECOMMENDATION (Josh decides — HITL): Decision tree lands on branch 3 (not cited / never fixed → shrink or delete). Lean DELETE deviation report from sutra_review, per arc principle \"no second lifecycle system as a rescue\": demonstrated zero true-positive rate over 5 weeks. Cheaper fork if not ready to delete: kind-gate snake_case to fn/var/field + exclude accessors from returns_result, keep one more cycle, re-measure — but that is the rescue sutra/176 warned against.",
+      "ts": 1786338736390
+    },
+    {
+      "author": "user",
+      "text": "§5 CLOSED — orient conventions section measured, two ways.\n\nUSAGE (mined ~/.claude/projects, all history): sutra_orient invoked 7 times total, ever. 6 of 7 returned an error or error-payload (~86% failure): 3× arg-shape errors (agent passed `path`/`query` instead of `workspace`+`scope`, or omitted `scope`), 2× workspace-not-indexed hard MCP error (manas-brain, colibri), 1× soft \"no component found matching scope\" (scope=`.`/`repo`). Exactly 1 genuine success (yojana src/main.rs). So the orient conventions section (sutra/235) has effectively ZERO consumption — the tool is barely called and mostly errors before producing output.\n\nCONTENT (ran orient live on sutra src/conventions/engine.rs): the observed_patterns section returns 5 \"conventions\", ALL tautological restatements that Rust functions are snake_case — `has_sig→snake_case`, `kind:method→snake_case`, `is_method→snake_case`, `complexity:low→snake_case`, `complexity:zero→snake_case`. Zero project-specific signal; it's the language's mandatory naming rule five times. Same root failure as the deviation report: the only high-support FCA pattern is the language default.\n\nIMPLICATION FOR DECISION: the task's fallback option \"shrink conventions to orient's descriptive lens only\" is NOT viable — the descriptive lens is vacuous. Combined with the deviation-report finding (100% false positive, zero true positive over 5 weeks), both surfaces of the FCA convention output are non-performing. This pushes past \"shrink\" toward DELETE the convention output from both review and orient. Keep attribute extraction + FormalContext core only if a future constraint-authoring use emerges; otherwise it's dead weight.\n\n(Separate from 236: orient itself has a high error rate — arg-schema footgun + hard error on unindexed workspaces — and appears to list waived no-clone violations as active blocking. Candidate follow-up bugs, not part of this validation.)",
+      "ts": 1786339020738
+    }
+  ],
+  "created_at": 1783476427821,
+  "updated_at": 1786339477584,
+  "completed_at": 1786339477584,
+  "arc_id": "019f3f78-c805-7753-aa0f-f74437c93294",
+  "arc_phase": "validation",
+  "edges": [
+    {
+      "id": "019f3f7a-d969-7c83-a29c-1bd1b459c27e",
+      "edge_type": "depends_on",
+      "source": "sutra/236",
+      "target": "sutra/234",
+      "note": null,
+      "created_at": 1783476443497
+    },
+    {
+      "id": "019f3f7a-da9d-7892-9438-e2e19da5391a",
+      "edge_type": "depends_on",
+      "source": "sutra/236",
+      "target": "sutra/235",
+      "note": null,
+      "created_at": 1783476443805
+    },
+    {
+      "id": "019fea20-f231-7d73-815a-42519823848f",
+      "edge_type": "motivated_by",
+      "source": "sutra/312",
+      "target": "sutra/236",
+      "note": null,
+      "created_at": 1786339455537
+    },
+    {
+      "id": "019fea20-f4a6-7591-a487-6689df1a0ca7",
+      "edge_type": "motivated_by",
+      "source": "sutra/313",
+      "target": "sutra/236",
+      "note": null,
+      "created_at": 1786339456166
+    }
+  ]
+}

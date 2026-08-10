@@ -1,0 +1,66 @@
+{
+  "id": "019fec28-00e1-7960-81be-99b369806c7a",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/318",
+  "sequence_number": 318,
+  "title": "Decide: is \"Orient\" still a domain concept, and is sketch mode now vestigial?",
+  "description": "Two product-model decisions surfaced while refreshing docs after the sutra_orient (312) + deviation-report (313) deletions (sutra/317). Both are Josh's calls; deferred because they go beyond mechanical doc cleanup.\n\n1. CONTEXT.md domain model — \"Orient\" as a core-loop mode.\nCONTEXT.md (the canonical domain glossary) still models **Orient** as a live core-loop mode: line 44 (\"What Orient points agents at\"), the \"### Core loop\" section (line 140, \"**Orient**: Agent asks sutra for context before writing... conventions, boundaries, semantic anchors, cautions, templates\"), and line 209 (\"**Orient** serves Conventions, Boundaries, Anchors, and templates to agents\"). It never names the deleted `sutra_orient` tool — it models Orient as a *concept*. The README core loop was reframed to four beats (explore → check → review → teach, sutra/317 Fork 1), so CONTEXT.md now contradicts the front page.\nDECISION NEEDED: drop Orient from the canonical domain model to match the README, OR keep it as an aspirational concept (briefing-before-writing may be re-realized later) with a note. This is why 317 left CONTEXT.md untouched — it's canonical, not a planning doc, so the light-touch banner used for vision docs doesn't fit.\n\n2. Sketch mode (ADR-0001) may now be vestigial for conventions.\nSketch mode's only convention-time effect was marking review deviations `informational` and excluding them from the risk score. Deviations were removed in 313, so that effect no longer has a surface. The `lifecycle_state` column (stable/sketch) is still stored and settable, but nothing reads it for conventions now (verified: only check_inverse's ConventionMatch path + the db getter/setter reference it, and check_inverse has no production caller). Constraints remain enforced regardless of sketch mode.\nDECISION NEEDED: is sketch mode (and ADR-0001) now dead and a deletion candidate, or does it stay for a future consumer? Noted as an open question in the rewritten conventions-map.md.\n\nRelated: check_inverse / ConventionMatch (deprecated/forbidden pattern matching) also has no production caller now — possible dead-code cleanup in the same sweep.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Remove Orient from the canonical domain model (CONTEXT.md).",
+      "rationale": "The tool was deleted (312) and the README core loop was reframed to four beats without it (317); keeping Orient as a canonical concept contradicts the front page. Josh's call.",
+      "rejected_alternative": "Keep Orient as an aspirational concept — rejected; briefing-before-writing is now delivered by contextual surfacing on explore/read, not a distinct mode."
+    },
+    {
+      "decision": "Remove sketch mode (ADR-0001) AND the dead check_inverse/ConventionMatch path.",
+      "rationale": "Sketch mode's only effect was marking review deviations informational; deviations were removed (313), so it is vestigial. check_inverse has no production caller. Josh's call: remove both.",
+      "rejected_alternative": "Keep for a future consumer — rejected; no consumer planned."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Josh's calls: (1) remove Orient from the domain model; (2) remove both sketch mode and check_inverse/ConventionMatch. Landed in 2 commits.\n\nCODE (2e5950d): removed ConventionMatch struct, check_inverse fn, 5 tests, and the mod.rs re-export from src/conventions/engine.rs + mod.rs (0 callers, confirmed via sutra_impact); removed component_lifecycle_state + set_component_lifecycle from src/db/components.rs (0 callers); added migration 0060_drop_component_lifecycle.sql to drop the dead components.lifecycle_state column (followed the 0043/0044/0045 schema-cleanup-migration precedent; verify-match default `_ => false` needs no custom arm; migration_count() is derived so no constant bump). cargo build clean, cargo test 1540 passed (down 5 = the removed check_inverse tests); the DROP COLUMN ran in the fresh-DB migration tests.\n\nDOCS (23cd2a2): CONTEXT.md — Core loop Orient beat rewritten to Explore (matches the README four-beat loop from sutra/317); removed the now-unsurfaced Convention-lifecycle glossary entry, Sketch mode entry, and Component-lifecycle section, plus convention-deviation/lifecycle-promotion references (kept the valid component-identity content). conventions-map.md updated for the removals + dropped column. ADR-0001 marked superseded (retained as decision record).\n\nSCOPE HELD: left the convention_overrides table (migration 0007, the deprecated/forbidden/preferred store) in place — it has no reader after this change but removing a table is broader than the instruction; flagged in conventions-map.md as a candidate for a later cleanup migration. Point-in-time docs (docs/brainstorm-constraints.md, docs/prd-core-model.md) still reference sketch/lifecycle and were deliberately not revised; sutra-vision.md is covered by its 317 status banner.\n\nValidated lesson 019f8a3f (demolished FCA mine-persist-lifecycle apparatus) — cited.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786373472482,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 318
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786374507733,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786375270467,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786373472482,
+  "updated_at": 1786375270467,
+  "completed_at": 1786375270467,
+  "edges": []
+}
