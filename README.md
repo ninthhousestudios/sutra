@@ -4,9 +4,9 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (surfaced as descriptive conventions in orientation and as deviations in review), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 37 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 31 MCP tools that AI coding agents (and humans) can call.
 
-The core loop: **explore** (find relevant code in one call) → **orient** (brief the agent before it writes code) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints, conventions, and boundaries).
+The core loop: **explore** (find relevant code in one call, with lessons and conventions surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
 
 ## Install
 
@@ -38,26 +38,13 @@ Every response includes a **freshness envelope** (`as_of`, `is_stale`) so caller
 
 ### 2. Architectural components (Layer 1)
 
-Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They're the unit of orientation, convention scoping, and health scoring.
+Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They're the unit of convention scoping and health scoring.
 
 ### 3. Convention detection (Layer 2)
 
 Formal Concept Analysis (FCA) discovers implicit patterns in your code: "public functions return Result," "handlers take &self as first parameter," "error types implement Display." An identity→obligation filter separates "what things are" (structural facts) from "what they should do" (behavioral patterns worth surfacing), and toolchain-enforced patterns (e.g. `async` implying a returned future) are automatically excluded since the compiler already guarantees them.
 
-`sutra_orient` shows the top patterns observed in a component as a descriptive "what's normal here" summary — each with a count and exemplars, no lifecycle or promotion involved. `sutra_review` checks changed code against these patterns and reports **deviations**: diff-scoped breaks from an established pattern, ranked by how strongly the pattern held.
-
-`.sutra/rules.toml` can still suppress a convention entirely or exempt specific symbols from deviation checks:
-
-```toml
-[conventions]
-suppress = ["a1b4c2d1"]  # completely silence this convention during review
-
-[[conventions.exempt]]
-convention = "e5f6g7h8"
-symbols = ["InternalError", "src/foo.rs::DebugHelper"]  # per-symbol exemptions
-```
-
-`sutra_conventions(action="list")` lists all discovered conventions.
+Detection runs in the parse pipeline and persists to the index. `sutra_conventions(action="list")` returns the discovered conventions — each with its antecedent→consequent implication, support, confidence, and component scope. Conventions are surfaced as a queryable list; they are not enforced in review. (Two earlier in-loop consumers — an orientation summary and a review-time deviation report — were retired after live use showed a high false-positive rate.)
 
 ### 4. Constraint enforcement (Layer 3)
 
@@ -199,7 +186,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 
 **Writing:** Agents call `sutra_remember` with text and location anchors (the symbol or file they were working on). Sutra enriches the lesson automatically — inferring import-pattern anchors, directory globs, and category tags from the workspace index. Writing is low-ceremony; quality is controlled reactively.
 
-**Surfacing:** Lessons appear contextually through tools agents already call. `sutra_read` shows lessons anchored to the symbol being read. `sutra_impact` surfaces warnings about affected symbols. `sutra_orient` includes lessons alongside conventions. For explicit queries, `sutra_lessons` provides FTS5 text search with structured filters.
+**Surfacing:** Lessons appear contextually through tools agents already call. `sutra_read` shows lessons anchored to the symbol being read. `sutra_impact` surfaces warnings about affected symbols. For explicit queries, `sutra_lessons` provides FTS5 text search with structured filters.
 
 **Confidence lifecycle:** Lessons are born unverified with zero confidence. When an agent cites a lesson during a yojana task close-out (`sutra_remember(cite=<id>)`), confidence rises. After crossing a citation threshold, lessons flip to verified. Unverified lessons only surface when no verified lessons cover the same context, and are flagged `[unverified]`. Lessons that go uncited decay and are eventually auto-archived.
 
@@ -221,7 +208,6 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_context` | Token-budgeted context packing — symbol + deps + dependents within a budget |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
-| `sutra_orient` | Component orientation — observed patterns with counts and exemplars, active constraints and violations, health scores and findings, hidden coupling, lessons |
 | `sutra_components` | List discovered architectural components and member files |
 | `sutra_conventions` | List discovered conventions (FCA-derived patterns) |
 | `sutra_constraints` | Manage constraints (list, check violations, waive/unwaive) |
@@ -241,7 +227,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
 | `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
-| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, deviations (pattern breaks in changed code), health findings, HRR shape changes, health delta, and ranks recommended reads |
+| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, health findings, HRR shape changes, health delta, and ranks recommended reads |
 | `sutra_file_health` | Per-file and per-component health report with scores, active findings, category deductions, and component instability |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
@@ -263,22 +249,12 @@ Agent: sutra_explore(query="constraint enforcement")
 
 One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_read` → backtrack cycle. The strategy hint (`read_top_n`, `read_all`, `narrow_query`, `explore_component`) tells the agent what to do next.
 
-### Orient before editing
-
-```
-Agent: sutra_orient(scope="src/tools/review.rs")
-→ observed patterns (what's normal here — counts + exemplars)
-→ active constraints and any current violations
-→ health score and top findings
-```
-
 ### Review a branch
 
 ```
 Agent: sutra_review(diff="branch")
 → risk score (0.0–1.0) with per-signal breakdown
 → constraint violations (blocking/advisory)
-→ deviations (pattern breaks in changed code)
 → health findings and health delta vs. last snapshot
 → HRR shape changes (subtle structural shifts)
 → recommended files to inspect manually
@@ -477,7 +453,7 @@ workspace files ───► tree-sitter → symbols, refs, imports
     ▼                    ▼                     ▼
 FCA conventions    DD constraints         HRR vectors
 (patterns,         (forbidden deps,       (similarity,
- deviations)        boundaries, cycles)    duplicates)
+ list-only)         boundaries, cycles)    duplicates)
     │                    │                     │
     └────────────────────┼─────────────────────┘
                          ▼
@@ -487,10 +463,10 @@ FCA conventions    DD constraints         HRR vectors
                 SQLite snapshots (WAL)          lessons store
                          │                 (~/.sutra/lessons.db)
                          │              contextual surfacing via
-                         │            read / impact / orient tools
+                         │               read / impact tools
                          │
                          ▼
-                MCP server (stdio) → 37 tools with freshness envelopes
+                MCP server (stdio) → 31 tools with freshness envelopes
 ```
 
 ## Vision
@@ -501,10 +477,10 @@ Sutra's mission is to help human-AI teams produce *coherent* software, not just 
 |---|---|---|
 | 0 | Structural facts (tree-sitter → symbols, refs, imports) | Implemented |
 | 1 | Architecture (components, hierarchy, boundaries) | Implemented (directory-based clustering; graph clustering planned) |
-| 2 | Conventions (FCA detection, deviation report) | Implemented |
+| 2 | Conventions (FCA detection, `sutra_conventions` list) | Implemented (detection + list; in-loop surfacing retired) |
 | 3 | Constraints (DD enforcement, guard, waivers) | Implemented |
 | 4 | Health (biomarkers, scoring, snapshots, trends) | Implemented |
-| 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases, orient; HRR fuzzy matching planned) |
+| 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases; HRR fuzzy matching planned) |
 | 6 | Similarity (HRR vectors, duplicates, semantic diff) | Implemented |
 | 7 | Lessons (code-anchored negative knowledge, contextual surfacing, confidence lifecycle) | Implemented |
 | 8 | Verification (property tests, model checking, mutation testing) | Deferred |
