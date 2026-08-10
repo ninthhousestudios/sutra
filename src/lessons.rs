@@ -21,8 +21,8 @@ pub struct LessonsDb {
     candidate_limit: i64,
 }
 
-/// No cap — the default for owning callers (`sutra_read`, `sutra_impact`,
-/// `sutra_orient`), which preserves their existing behaviour exactly.
+/// No cap — the default for owning callers (`sutra_read`, `sutra_impact`),
+/// which preserves their existing behaviour exactly.
 const CANDIDATE_SCAN_UNBOUNDED: i64 = i64::MAX;
 
 /// Phase 2 scan cap for the guard. Anchor rows are ordered verified-then-

@@ -43,7 +43,7 @@ pub fn handle(
                     "enabled": true,
                     "tools": ["sutra_health", "sutra_map", "sutra_outline", "sutra_explore",
                               "sutra_grep", "sutra_read", "sutra_impact", "sutra_deps",
-                              "sutra_workspace", "sutra_components", "sutra_orient",
+                              "sutra_workspace", "sutra_components",
                               "sutra_similar"],
                 },
                 "analysis": {

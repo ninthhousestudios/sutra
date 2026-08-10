@@ -19,7 +19,6 @@ pub mod hotspots;
 pub mod impact;
 pub mod lessons;
 pub mod map;
-pub mod orient;
 pub mod outline;
 pub mod parse;
 pub mod pr_risk;

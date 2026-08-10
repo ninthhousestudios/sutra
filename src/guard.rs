@@ -214,10 +214,10 @@ pub fn lessons_disabled() -> bool {
 /// Look up lessons anchored to the file being written.
 ///
 /// This is the only surfacing path that reaches greenfield code: the other
-/// three (`sutra_read`, `sutra_impact`, `sutra_orient`) key off a symbol or an
-/// already-indexed scope, neither of which exists yet when a new file is being
-/// written. Here the proposed content supplies the imports, so `import_pattern`
-/// anchors match before the code below them is written.
+/// two (`sutra_read`, `sutra_impact`) key off a symbol or an already-indexed
+/// scope, neither of which exists yet when a new file is being written. Here
+/// the proposed content supplies the imports, so `import_pattern` anchors match
+/// before the code below them is written.
 ///
 /// Returns a rendered advisory block, or `None` when nothing matches.
 pub fn lessons_for_proposed(

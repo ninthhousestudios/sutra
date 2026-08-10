@@ -382,35 +382,6 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(
-        description = "Convention-aware orientation for a component or file scope. \
-        Returns observed conventions, \
-        active constraints (with violations and constraint waivers), \
-        and health findings. \
-        Scope can be a component name, component ID, or file path."
-    )]
-    pub async fn sutra_orient(
-        &self,
-        Parameters(args): Parameters<tools::orient::OrientArgs>,
-    ) -> Result<String, ErrorData> {
-        // Hold the parse lock across evaluation so a reparse cannot remint file
-        // ids mid-read and desync path_map from the engine's edges (sutra/298).
-        let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
-        let ctx = self.tool_context(&args.workspace)?;
-        let dd = self.get_dd_engine(&args.workspace);
-        let registry = crate::parser::adapter::default_registry();
-        let result = tools::orient::handle(
-            ctx.db(),
-            &args.scope,
-            ctx.workspace_root(),
-            Some(&dd),
-            Some(&self.lessons_db),
-            &registry,
-        )
-        .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
     #[tool(description = "List discovered conventions. \
         Actions: list (all conventions).")]
     pub async fn sutra_conventions(

@@ -91,20 +91,9 @@ pub struct ConventionMatch {
     pub confidence: f64,
 }
 
-#[derive(Debug, Clone)]
-pub struct ObservedPattern {
-    pub antecedent: Arc<[String]>,
-    pub consequent: Arc<[String]>,
-    pub support: usize,
-    pub confidence: f64,
-    pub total_matching: usize,
-    pub exemplars: Vec<String>,
-}
-
 const MIN_SUPPORT: usize = 3;
 pub const MIN_CONFIDENCE: f64 = 0.9;
 const MAX_COMPONENT_SUPPORT: usize = 20;
-const MAX_ORIENT_PATTERNS: usize = 5;
 
 pub fn component_min_support(component_size: usize) -> usize {
     ((component_size as f64 * 0.4).ceil() as usize).clamp(2, MAX_COMPONENT_SUPPORT)
@@ -326,70 +315,6 @@ pub fn deduplicate_component_conventions(
             })
         })
         .collect()
-}
-
-pub fn describe_patterns(
-    sym_attrs: &[SymbolAttrs],
-    component_id: Option<&str>,
-    toolchain_pairs: &[crate::parser::adapter::ToolchainPair],
-) -> Vec<ObservedPattern> {
-    use super::attributes::{AttributeRole, classify_attribute};
-
-    if sym_attrs.len() < 2 {
-        return Vec::new();
-    }
-    let min_support = match component_id {
-        Some(_) => component_min_support(sym_attrs.len()),
-        None => MIN_SUPPORT,
-    };
-    let mut engine = FcaEngine::new();
-    engine.rebuild_with_params(sym_attrs, min_support, MIN_CONFIDENCE, component_id);
-    let ctx = match &engine.context {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
-
-    let mut patterns: Vec<ObservedPattern> = engine
-        .conventions()
-        .iter()
-        .filter(|c| {
-            c.antecedent
-                .iter()
-                .all(|a| classify_attribute(a) == AttributeRole::Identity)
-                && c.consequent
-                    .iter()
-                    .all(|attr| classify_attribute(attr) == AttributeRole::Obligation)
-                && c.is_checkable(toolchain_pairs)
-        })
-        .map(|c| {
-            let ante: Vec<&str> = c.antecedent.iter().map(|s| s.as_str()).collect();
-            let cons: Vec<&str> = c.consequent.iter().map(|s| s.as_str()).collect();
-            let total_matching = ctx.count_with_attrs(&ante);
-            let exemplars: Vec<String> = ctx
-                .exemplars_for(&ante, &cons, 2)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            ObservedPattern {
-                antecedent: Arc::clone(&c.antecedent),
-                consequent: Arc::clone(&c.consequent),
-                support: c.support,
-                confidence: c.confidence,
-                total_matching,
-                exemplars,
-            }
-        })
-        .collect();
-
-    let strength = |p: &ObservedPattern| p.support as f64 * p.confidence;
-    patterns.sort_by(|a, b| {
-        strength(b)
-            .partial_cmp(&strength(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.support.cmp(&a.support))
-    });
-    patterns.truncate(MAX_ORIENT_PATTERNS);
-    patterns
 }
 
 #[cfg(test)]

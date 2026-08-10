@@ -394,20 +394,6 @@ pub fn build_findings(
     })
 }
 
-pub(crate) fn collect_toolchain_pairs(
-    registry: &LanguageRegistry,
-) -> Vec<crate::parser::adapter::ToolchainPair> {
-    let mut pairs = Vec::new();
-    for lang in &["rust", "dart", "python", "c", "javascript", "typescript"] {
-        if let Some(adapter) = registry.adapter_for_language(lang)
-            && let Some(fca_source) = adapter.as_fca_source()
-        {
-            pairs.extend_from_slice(fca_source.toolchain_enforced_pairs());
-        }
-    }
-    pairs
-}
-
 fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel {
     db.file_by_path(path)
         .ok()

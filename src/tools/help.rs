@@ -276,22 +276,6 @@ sutra_trace(workspace=\"myproject\", symbol=\"target_function\", direction=\"for
 `direction=backward` traces from the symbol to leaf functions. \
 Use this to understand how control flows through the codebase.",
     },
-    Topic {
-        name: "orient",
-        summary: "Get convention-aware orientation for a component",
-        content: "\
-## Orient to a component's conventions
-```
-sutra_orient(workspace=\"myproject\", scope=\"conventions\")
-```
-Returns preferred conventions with anti-pattern warnings for the target scope.
-
-Scope can be a component name, component ID, or a file path. \
-When given a file path, the tool resolves it to the owning component.
-
-Use this before writing new code in a component to understand \
-what patterns to follow and what to avoid.",
-    },
 ];
 
 pub fn handle(topic: Option<&str>) -> Result<Value> {
