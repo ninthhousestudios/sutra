@@ -389,19 +389,6 @@ impl Db {
         }
     }
 
-    pub fn component_lifecycle_state(&self, component_id: &str) -> Result<String> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT lifecycle_state FROM components WHERE id = ?1",
-            params![component_id],
-            |row| row.get(0),
-        )
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok("stable".to_string()),
-            other => Err(other.into()),
-        })
-    }
-
     pub fn component_names_by_file_ids(
         &self,
         file_ids: &[i64],
@@ -430,14 +417,5 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows.into_iter().collect())
-    }
-
-    pub fn set_component_lifecycle(&self, component_id: &str, state: &str) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE components SET lifecycle_state = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![state, component_id],
-        )?;
-        Ok(())
     }
 }

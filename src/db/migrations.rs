@@ -303,6 +303,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0059_accepted_sync_marker.sql"),
         false,
     ),
+    // Cleanup: drop the dead components.lifecycle_state column (sketch mode,
+    // sutra/318) — no reader or writer remained after sutra/312 + sutra/313.
+    (
+        "0060_drop_component_lifecycle",
+        include_str!("../../migrations/0060_drop_component_lifecycle.sql"),
+        false,
+    ),
 ];
 
 impl Db {
