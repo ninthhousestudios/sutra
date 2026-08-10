@@ -41,37 +41,24 @@ A symbol that is architecturally central to its component — removing or
 changing it would reshape the component's role. Identified heuristically
 (high fan-in, stable across history, prominent naming), confirmable by the
 human. Discovered anchors are proposals; human-confirmed anchors are
-authoritative. What Orient points agents at, what Review flags when mutated.
+authoritative. What Review flags when mutated.
 _Avoid_: key symbol, core type (too informal)
 
 ### Rules and patterns
 
 **Convention**:
 A pattern discovered from code — what the code actually does. Detected by
-FCA from the symbol-attribute matrix. Conventions are descriptive by origin;
-they describe reality, not intent. Even when promoted to preferred, a
-convention remains advisory — it's what the code does and should continue
-doing, not an absolute rule.
+FCA from the symbol-attribute matrix. Conventions are descriptive — they
+describe reality, not intent, and are advisory: what the code does and should
+continue doing, not an absolute rule.
 _Avoid_: rule (implies prescription), standard, norm
 
 **Constraint**:
 A rule declared by a human — what the code must do. Prescriptive and binding
 regardless of what the code currently does. Written directly for sutra or
-extracted from ADRs. A convention cannot become a constraint by promotion;
+extracted from ADRs. A convention cannot become a constraint;
 if you want absolute enforcement, write a constraint.
 _Avoid_: policy (too organizational), convention (different concept)
-
-**Convention lifecycle**:
-Every convention carries a lifecycle state scoped to a component.
-- **descriptive** — this pattern is common (default for detected conventions)
-- **preferred** — this pattern should continue (human-promoted)
-- **deprecated** — this pattern exists but should fade (agents warned away)
-- **forbidden** — do not copy this (agents blocked, violations flagged)
-
-Promotion is always a human act. Descriptive conventions never auto-promote.
-If FCA stops detecting a pattern, the descriptive convention disappears
-naturally. A convention can be preferred in one component and deprecated in
-another.
 
 ### Provenance
 
@@ -94,7 +81,7 @@ disagree.
 
 **Human-authored provenance**:
 Written directly for sutra by a human. Constraints, component boundaries,
-aliases, convention promotions.
+aliases.
 
 **ADR-derived provenance**:
 Extracted from an architectural decision record written for humans. The
@@ -114,8 +101,7 @@ How a finding should be treated. Not all findings are the same kind of
 failure.
 - **blocking** — must be addressed before merge (constraint failures,
   boundary violations)
-- **advisory** — flagged for human judgment (convention deviations, health
-  regressions)
+- **advisory** — flagged for human judgment (health regressions)
 - **informational** — reported but not flagged (new dependencies within
   allowed boundaries)
 
@@ -127,20 +113,13 @@ An assertion of intent — "this looks wrong but is what I want here" — not a
 silencing.
 _Avoid_: suppression (implies hiding), ignore, disable
 
-**Sketch mode**:
-A component lifecycle state for active prototyping. Affects conventions only
-— all convention lifecycle states flatten to informational. Constraints
-remain fully enforced. Violating a constraint during a spike may render the
-spike's conclusions meaningless; conventions are less important because you
-are experimenting with patterns.
-_Avoid_: draft mode, prototype mode (too implementation-specific)
-
 ### Core loop
 
-**Orient**:
-Agent asks sutra for context before writing. Sutra responds with the
-relevant conventions, boundaries, semantic anchors, cautions, and structural
-templates for the area being changed.
+**Explore**:
+Agent asks sutra to find the relevant code before writing. Conventions,
+lessons, semantic anchors, and cautions for the area surface contextually as
+it reads (sutra_read, sutra_impact) — understanding arrives with the code
+rather than through a separate briefing step.
 
 **Check**:
 Incremental, real-time architectural validation. Runs on each file change
@@ -156,7 +135,7 @@ deliberate. The report after writing.
 
 **Teach**:
 Human refines sutra's model. Updates constraints, component boundaries,
-aliases, convention lifecycle states, or confirms/rejects inferred claims.
+aliases, or confirms/rejects inferred claims.
 How sutra learns from corrections.
 
 ### Artifacts
@@ -167,8 +146,8 @@ rules were violated. Three sections:
 1. **What changed structurally** — new/removed edges, components touched,
    anchors mutated, component growth. Factual. Present even when nothing is
    wrong.
-2. **What rules were violated** — boundary crossings, convention deviations,
-   constraint failures. Findings with severity and provenance.
+2. **What rules were violated** — boundary crossings and constraint failures.
+   Findings with severity and provenance.
 3. **What wasn't verified** — verification gaps. No contract, weak mutation
    score, high-risk logic with no behavioral evidence.
 
@@ -189,12 +168,8 @@ Analyses declare which edge kinds they operate on. Boundary constraints check
 imports and calls. Blast radius propagates through calls. Clustering uses
 calls + imports but not containment.
 
-## Component lifecycle
+## Component identity
 
-- A **Component** is either **sketching** or **stable** (default).
-- Sketching: conventions informational, constraints enforced.
-- Stable: conventions enforced per lifecycle state, constraints enforced.
-- The human sets sketching explicitly. It does not auto-transition.
 - Components have identity and history — clustering changes are tracked as
   merges, splits, or drifts, not fresh sets.
 
@@ -206,10 +181,10 @@ calls + imports but not containment.
 - **Conventions** are detected from **Symbol** attributes within a **Component**
 - **Constraints** are declared by humans and checked against **Edges** and **Symbols**
 - **Semantic anchors** are the architecturally central **Symbols** of a **Component**
-- **Orient** serves **Conventions**, **Boundaries**, **Anchors**, and templates to agents
+- **Explore** surfaces **Conventions**, **Lessons**, and **Anchors** to agents as they read
 - **Check** validates **Edges** and **Symbols** against **Constraints** and **Conventions** in real time
 - **Review** produces the **Architectural change report** from the delta of a complete change
-- **Teach** updates **Constraints**, **Boundaries**, **Convention lifecycle** states, and **Component** definitions
+- **Teach** updates **Constraints**, **Boundaries**, and **Component** definitions
 - Every claim carries **Provenance**; every finding carries **Severity**
 - **Waivers** accept specific findings from **Check** or **Review**
 
