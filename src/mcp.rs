@@ -456,9 +456,11 @@ impl SutraServer {
     }
 
     #[tool(
-        description = "Read a symbol's source code from disk with line numbers. \
-        Includes context lines around the symbol. Returns stale warning if file was deleted. \
-        Default 500-line cap; use full=true or limit=N to override."
+        description = "Read ONE symbol's source code by name (a function/type/method), \
+        not a file. For a whole file's contents, use sutra_outline to list its symbols first, \
+        then sutra_read a specific one. Includes context lines around the symbol; returns a \
+        stale warning if the file was deleted. Default 500-line cap; use full=true or limit=N \
+        to override."
     )]
     pub async fn sutra_read(
         &self,
