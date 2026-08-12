@@ -1,7 +1,7 @@
 # Health system architecture map
 
 Quick-reference for agents planning or implementing health/similarity tasks.
-Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
+Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
 Last updated: 2026-07-08 (sutra/232: remove drift, template, waiver subsystems)

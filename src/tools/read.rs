@@ -67,7 +67,7 @@ pub fn handle(
             }
         };
         SutraError::NotFound {
-            tool: "sutra_read",
+            tool: "sutra_symbol",
             kind: format!("symbol `{symbol}`"),
             next_action,
         }
@@ -76,7 +76,7 @@ pub fn handle(
     let file = db
         .file_by_id(sym.file_id)?
         .ok_or_else(|| SutraError::NotFound {
-            tool: "sutra_read",
+            tool: "sutra_symbol",
             kind: format!("file for symbol `{symbol}`"),
             next_action: "The file may have been deleted. Run sutra_workspace(action=\"reparse\") to refresh.".to_string(),
         })?;
@@ -85,7 +85,7 @@ pub fn handle(
 
     if !abs_path.starts_with(workspace_root) {
         return Err(SutraError::InvalidArgument {
-            tool: "sutra_read",
+            tool: "sutra_symbol",
             argument: "symbol",
             constraint: "file path must stay within workspace root".to_string(),
             received: Some(file.path.to_string()),
@@ -439,7 +439,7 @@ fn diagnose_symbol_input(symbol: &str) -> Option<String> {
             return Some(format!(
                 "`{symbol}` is a file path, not a symbol name. \
                  Use sutra_outline(path=\"{symbol}\") to list its symbols, \
-                 then sutra_read a specific one."
+                 then sutra_symbol a specific one."
             ));
         }
         return Some(format!(

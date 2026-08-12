@@ -1,7 +1,7 @@
 # Constraint system architecture map
 
 Quick-reference for agents planning or implementing constraint-system tasks.
-Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
+Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each constraint-system landing.
 
 Last updated: 2026-08-08 (sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")

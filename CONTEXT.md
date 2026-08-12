@@ -118,7 +118,7 @@ _Avoid_: suppression (implies hiding), ignore, disable
 **Explore**:
 Agent asks sutra to find the relevant code before writing. Conventions,
 lessons, semantic anchors, and cautions for the area surface contextually as
-it reads (sutra_read, sutra_impact) — understanding arrives with the code
+it reads (sutra_symbol, sutra_impact) — understanding arrives with the code
 rather than through a separate briefing step.
 
 **Check**:

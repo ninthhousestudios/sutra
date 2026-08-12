@@ -301,11 +301,11 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                     m.target_kind.as_str(),
                     "symbol" | "function" | "struct" | "method"
                 ) {
-                    format!("sutra_read(symbol='{}')", m.target_ref)
+                    format!("sutra_symbol(symbol='{}')", m.target_ref)
                 } else if m.target_kind == "component" {
                     format!("sutra_map(workspace='...', component='{}')", m.target_ref)
                 } else {
-                    format!("sutra_read(file='{}')", loc.path)
+                    format!("sutra_outline(path='{}')", loc.path)
                 };
                 items.push(json!({
                     "symbol": &m.target_ref,
@@ -387,7 +387,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 "component": component,
                 "reason": "direct_match",
                 "estimated_tokens": lines * 4,
-                "fetch": format!("sutra_read(symbol='{}')", sym.qualified_name),
+                "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
             }],
             "edges": [],
             "strategy": {
@@ -540,7 +540,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 "component": component,
                 "reason": reason,
                 "estimated_tokens": lines * 4,
-                "fetch": format!("sutra_read(symbol='{}')", sym.qualified_name),
+                "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
             })
         })
         .collect();

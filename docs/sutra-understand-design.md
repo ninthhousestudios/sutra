@@ -475,7 +475,7 @@ the confidence-gated exploration pattern.
 
 **`file::symbol` notation**: Instead of reading entire files, the agent requests
 specific functions by `path::symbol_name`. The graph server knows symbol line
-ranges and returns only that slice. Sutra's `sutra_read` already supports
+ranges and returns only that slice. Sutra's `sutra_symbol` already supports
 symbol-level reads; the pattern here is surfacing symbol-level granularity in
 *retrieval results* (recommended reads point to functions, not just files).
 

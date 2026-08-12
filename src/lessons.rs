@@ -21,7 +21,7 @@ pub struct LessonsDb {
     candidate_limit: i64,
 }
 
-/// No cap — the default for owning callers (`sutra_read`, `sutra_impact`),
+/// No cap — the default for owning callers (`sutra_symbol`, `sutra_impact`),
 /// which preserves their existing behaviour exactly.
 const CANDIDATE_SCAN_UNBOUNDED: i64 = i64::MAX;
 

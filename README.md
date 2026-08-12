@@ -186,7 +186,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 
 **Writing:** Agents call `sutra_remember` with text and location anchors (the symbol or file they were working on). Sutra enriches the lesson automatically — inferring import-pattern anchors, directory globs, and category tags from the workspace index. Writing is low-ceremony; quality is controlled reactively.
 
-**Surfacing:** Lessons appear contextually through tools agents already call. `sutra_read` shows lessons anchored to the symbol being read. `sutra_impact` surfaces warnings about affected symbols. For explicit queries, `sutra_lessons` provides FTS5 text search with structured filters.
+**Surfacing:** Lessons appear contextually through tools agents already call. `sutra_symbol` shows lessons anchored to the symbol being read. `sutra_impact` surfaces warnings about affected symbols. For explicit queries, `sutra_lessons` provides FTS5 text search with structured filters.
 
 **Confidence lifecycle:** Lessons are born unverified with zero confidence. When an agent cites a lesson during a yojana task close-out (`sutra_remember(cite=<id>)`), confidence rises. After crossing a citation threshold, lessons flip to verified. Unverified lessons only surface when no verified lessons cover the same context, and are flagged `[unverified]`. Lessons that go uncited decay and are eventually auto-archived.
 
@@ -204,7 +204,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_outline` | File symbol table of contents — all symbols with kinds, line ranges, signatures |
 | `sutra_explore` | Structural exploration — resolves aliases, qualified names, and fuzzy queries → ranked symbol map with fetch instructions and strategy hint |
 | `sutra_grep` | Search indexed symbols by name pattern (FTS5-backed) |
-| `sutra_read` | Read a symbol's source code with line numbers and context |
+| `sutra_symbol` | Read a symbol's source code with line numbers and context |
 | `sutra_context` | Token-budgeted context packing — symbol + deps + dependents within a budget |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |
 | `sutra_deps` | File-level import dependency graph (BFS from a file, or all edges) |
@@ -242,12 +242,12 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 ```
 Agent: sutra_explore(query="constraint enforcement")
 → ranked symbol list with scores, components, estimated tokens
-→ literal sutra_read fetch instructions for each item
+→ literal sutra_symbol fetch instructions for each item
 → strategy hint: read_top_n (n=3) — "top 3 are high-confidence matches in the constraints component"
 → edges between result items (call/dep relationships)
 ```
 
-One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_read` → backtrack cycle. The strategy hint (`read_top_n`, `read_all`, `narrow_query`, `explore_component`) tells the agent what to do next.
+One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_symbol` → backtrack cycle. The strategy hint (`read_top_n`, `read_all`, `narrow_query`, `explore_component`) tells the agent what to do next.
 
 ### Review a branch
 
@@ -279,7 +279,7 @@ Agent: sutra_remember(text="WAL checkpoint can stall if ...", anchors=["LessonsD
 → lesson stored with inferred import-pattern and category anchors
 
 # Later, another agent reads the same code
-Agent: sutra_read(symbol="LessonsDb")
+Agent: sutra_symbol(symbol="LessonsDb")
 → source code + [lesson] WAL checkpoint can stall if ...
 
 # Explicit search

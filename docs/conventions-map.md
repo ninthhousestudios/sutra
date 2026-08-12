@@ -1,7 +1,7 @@
 # Convention system architecture map
 
 Quick-reference for agents planning or implementing convention-system tasks.
-Read this first, then do targeted `sutra_outline` / `sutra_read` calls on
+Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each convention-system landing.
 
 Last updated: 2026-08-10 (sutra/318: FCA convention detection is now list-only.

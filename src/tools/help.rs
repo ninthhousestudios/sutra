@@ -33,7 +33,7 @@ const TOPICS: &[Topic] = &[
 
 4. Read its source:
    ```
-   sutra_read(workspace=\"myproject\", symbol=\"handle_request\")
+   sutra_symbol(workspace=\"myproject\", symbol=\"handle_request\")
    ```
 
 5. Check impact before editing:

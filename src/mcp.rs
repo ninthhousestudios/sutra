@@ -441,7 +441,7 @@ impl SutraServer {
     #[tool(
         description = "Explore a topic in the codebase. Resolves aliases (.sutra/aliases.toml), \
         qualified names (Foo::bar), and fuzzy queries. Returns a ranked list of matching \
-        symbols with literal sutra_read fetch instructions and a strategy recommendation. \
+        symbols with literal sutra_symbol fetch instructions and a strategy recommendation. \
         One call replaces iterative map/outline/grep exploration."
     )]
     pub async fn sutra_explore(
@@ -457,12 +457,13 @@ impl SutraServer {
 
     #[tool(
         description = "Read ONE symbol's source code by name (a function/type/method), \
-        not a file. For a whole file's contents, use sutra_outline to list its symbols first, \
-        then sutra_read a specific one. Includes context lines around the symbol; returns a \
+        not a file — to read a whole file use the built-in Read tool, or sutra_outline to list \
+        its symbols first and then read a specific one. Includes context lines around the symbol; \
+        returns a \
         stale warning if the file was deleted. Default 500-line cap; use full=true or limit=N \
         to override."
     )]
-    pub async fn sutra_read(
+    pub async fn sutra_symbol(
         &self,
         Parameters(args): Parameters<ReadArgs>,
     ) -> Result<String, ErrorData> {

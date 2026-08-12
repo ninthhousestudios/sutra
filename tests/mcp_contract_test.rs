@@ -777,8 +777,8 @@ fn test_explore_basic() {
         assert!(item["estimated_tokens"].is_i64());
         let fetch = item["fetch"].as_str().unwrap();
         assert!(
-            fetch.starts_with("sutra_read(symbol='"),
-            "fetch must be a literal sutra_read call, got: {fetch}"
+            fetch.starts_with("sutra_symbol(symbol='"),
+            "fetch must be a literal sutra_symbol call, got: {fetch}"
         );
     }
     assert!(result["strategy"]["action"].is_string());
