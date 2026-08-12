@@ -429,9 +429,19 @@ fn diagnose_symbol_input(symbol: &str) -> Option<String> {
              try `{after}` instead of `{symbol}`."
         ));
     }
-    // "src/tools/review.rs::build_findings"
+    // "src/tools/review.rs::build_findings" (path-qualified symbol) or
+    // "vidya-core/src/sparql.rs" (bare file path with no symbol part)
     if symbol.contains('/') {
         let bare = symbol.rsplit("::").next().unwrap_or(symbol);
+        // No "::" to strip, or the tail is still a path → it's a file, not a
+        // symbol. Suggesting `bare` here would echo the input back verbatim.
+        if bare == symbol || bare.contains('/') {
+            return Some(format!(
+                "`{symbol}` is a file path, not a symbol name. \
+                 Use sutra_outline(path=\"{symbol}\") to list its symbols, \
+                 then sutra_read a specific one."
+            ));
+        }
         return Some(format!(
             "Don't use file paths — pass the symbol name directly: \
              try `{bare}` instead of `{symbol}`."
@@ -472,6 +482,14 @@ mod tests {
     fn diagnose_bare_filename() {
         let msg = diagnose_symbol_input("review.rs").unwrap();
         assert!(msg.contains("looks like a file path"));
+    }
+
+    #[test]
+    fn diagnose_bare_path_routes_to_outline() {
+        let msg = diagnose_symbol_input("vidya-core/src/sparql.rs").unwrap();
+        assert!(msg.contains("sutra_outline"));
+        // Must not echo the input back as a "suggestion".
+        assert!(!msg.contains("try `vidya-core/src/sparql.rs`"));
     }
 
     #[test]
