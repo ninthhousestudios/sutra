@@ -26,6 +26,7 @@ fn make_ts_entry(id: &str, root: PathBuf) -> WorkspaceEntry {
         id: id.to_string(),
         root,
         languages: vec!["typescript".to_string()],
+        frozen: false,
     }
 }
 
@@ -490,6 +491,7 @@ fn mixed_js_ts_workspace() {
         id: "mixed-js-ts".to_string(),
         root: dir.path().to_path_buf(),
         languages: vec!["javascript".to_string(), "typescript".to_string()],
+        frozen: false,
     };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
@@ -538,6 +540,7 @@ fn mixed_js_ts_cross_import_resolution() {
         id: "mixed-cross".to_string(),
         root: dir.path().to_path_buf(),
         languages: vec!["javascript".to_string(), "typescript".to_string()],
+        frozen: false,
     };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();

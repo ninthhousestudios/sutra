@@ -299,6 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: id.clone(),
                     root: PathBuf::from(root),
                     languages,
+                    frozen: false,
                 };
                 workspace::validate_db_dir_for_workspace(&config.db_dir, &entry)?;
                 workspace::add_workspace(&config.workspaces_path, entry)?;
@@ -414,6 +415,13 @@ fn maybe_reparse_cwd(
         None => return,
     };
     drop(ws_cfg);
+
+    // Frozen workspaces have an immutable index (e.g. decompiled binaries whose
+    // multi-minute reparse would otherwise be triggered by unrelated git HEAD
+    // moves). Never auto-reparse them; only explicit action="reparse" does.
+    if entry.frozen {
+        return;
+    }
 
     let db = match sutra::tools::get_or_open_db(db_cache, &entry, &config.db_dir) {
         Ok(db) => db,

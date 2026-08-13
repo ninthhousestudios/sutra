@@ -28,6 +28,7 @@ fn make_js_entry(id: &str, root: PathBuf) -> WorkspaceEntry {
         id: id.to_string(),
         root,
         languages: vec!["javascript".to_string()],
+        frozen: false,
     }
 }
 
@@ -594,6 +595,7 @@ fn js_import_extension_guessing_priority() {
         id: "ext-priority".to_string(),
         root: dir.path().to_path_buf(),
         languages: vec!["javascript".to_string(), "typescript".to_string()],
+        frozen: false,
     };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();

@@ -223,6 +223,7 @@ impl SutraServer {
             id: ws_id.clone(),
             root,
             languages,
+            frozen: false,
         };
         workspace::validate_db_dir_for_workspace(&self.config.db_dir, &entry)
             .map_err(sutra_to_rmcp)?;
@@ -242,11 +243,21 @@ impl SutraServer {
     }
 
     fn freshness(&self, db: &Db, workspace_root: &Path) -> serde_json::Value {
-        let (as_of, is_stale) = crate::freshness::is_workspace_stale(
+        let (as_of, mut is_stale) = crate::freshness::is_workspace_stale(
             db,
             workspace_root,
             self.config.stale_threshold_sec,
         );
+
+        // A frozen workspace has an immutable index; it is never considered
+        // stale for action purposes, so unrelated git HEAD moves don't provoke
+        // a reparse or misleading staleness signals.
+        let frozen = workspace::resolve_workspace(&self.workspaces.read(), db.workspace_id())
+            .map(|w| w.frozen)
+            .unwrap_or(false);
+        if frozen {
+            is_stale = false;
+        }
 
         let parsing = self.parse_coord.is_parsing(db.workspace_id());
 
@@ -254,6 +265,9 @@ impl SutraServer {
             "as_of": as_of,
             "is_stale": is_stale,
         });
+        if frozen {
+            val["frozen"] = serde_json::Value::Bool(true);
+        }
         if parsing {
             val["parsing_in_progress"] = serde_json::Value::Bool(true);
         }

@@ -208,6 +208,7 @@ async fn test_impact_real_codebase() {
         id: "sutra_self".to_string(),
         root: PathBuf::from(manifest_dir),
         languages: vec!["rust".to_string()],
+        frozen: false,
     };
     let config = Config {
         db_dir: db_dir.path().to_path_buf(),

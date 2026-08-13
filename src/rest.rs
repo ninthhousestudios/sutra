@@ -101,6 +101,7 @@ async fn add_workspace(
         id: id.clone(),
         root: root.clone(),
         languages: languages.clone(),
+        frozen: false,
     };
 
     if let Err(e) = crate::workspace::validate_db_dir_for_workspace(&state.config.db_dir, &entry) {

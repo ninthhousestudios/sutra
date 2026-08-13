@@ -23,6 +23,7 @@ fn test_open_for_workspace_rejects_index_inside_workspace_root() {
         id: "project".to_string(),
         root: workspace_root.clone(),
         languages: vec!["rust".to_string()],
+        frozen: false,
     };
 
     let result = Db::open_for_workspace(&entry, dir.path());

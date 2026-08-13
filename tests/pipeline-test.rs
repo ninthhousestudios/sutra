@@ -27,6 +27,7 @@ fn make_entry(id: &str, root: PathBuf) -> WorkspaceEntry {
         id: id.to_string(),
         root,
         languages: vec!["rust".to_string()],
+        frozen: false,
     }
 }
 
@@ -413,6 +414,7 @@ struct Borrowed<'a> { data: &'a str }
         id: "test".into(),
         root: dir.path().to_path_buf(),
         languages: vec!["rust".into()],
+        frozen: false,
     };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked("test", db_dir.path()).unwrap();
@@ -575,6 +577,7 @@ _UsedClass make() {
         id: "dart-dead".to_string(),
         root: dir.path().to_path_buf(),
         languages: vec!["dart".to_string()],
+        frozen: false,
     };
     let config = make_config(db_dir.path());
     let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();

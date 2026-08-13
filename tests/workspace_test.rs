@@ -7,6 +7,7 @@ fn entry(id: &str, root: &str, langs: &[&str]) -> WorkspaceEntry {
         id: id.to_string(),
         root: PathBuf::from(root),
         languages: langs.iter().map(|s| s.to_string()).collect(),
+        frozen: false,
     }
 }
 
@@ -40,6 +41,50 @@ languages = ["dart"]
     let beta = &config.workspace[1];
     assert_eq!(beta.id, "beta");
     assert_eq!(beta.languages, vec!["dart"]);
+
+    // `frozen` is optional and defaults to false when absent.
+    assert!(!alpha.frozen);
+    assert!(!beta.frozen);
+}
+
+/// `frozen = true` parses; the flag survives a save/load round-trip, and the
+/// default (false) is omitted from serialized output via skip_serializing_if.
+#[test]
+fn test_frozen_flag_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspaces.toml");
+
+    let toml = r#"
+[[workspace]]
+id = "frozen-corpus"
+root = "/code/decompiled"
+languages = ["c"]
+frozen = true
+
+[[workspace]]
+id = "live"
+root = "/code/live"
+languages = ["rust"]
+"#;
+    std::fs::write(&path, toml).unwrap();
+
+    let config = workspace::load_workspaces(&path).unwrap();
+    assert!(config.workspace[0].frozen, "frozen = true should parse");
+    assert!(!config.workspace[1].frozen, "omitted frozen defaults false");
+
+    // Round-trip: save, reload, flags preserved.
+    workspace::save_workspaces(&path, &config).unwrap();
+    let serialized = std::fs::read_to_string(&path).unwrap();
+    assert!(serialized.contains("frozen = true"));
+    // The false default must not be written for the live workspace.
+    assert!(
+        !serialized.contains("frozen = false"),
+        "the false default should be omitted via skip_serializing_if"
+    );
+
+    let reloaded = workspace::load_workspaces(&path).unwrap();
+    assert!(reloaded.workspace[0].frozen);
+    assert!(!reloaded.workspace[1].frozen);
 }
 
 /// TOML with a missing required field (`languages`) should produce a parse
@@ -103,6 +148,7 @@ fn test_reject_db_dir_that_places_index_at_workspace_root() {
             id: "yojana".to_string(),
             root: workspace_root,
             languages: vec!["rust".to_string()],
+            frozen: false,
         }],
     };
 
@@ -127,6 +173,7 @@ fn test_reject_db_dir_inside_workspace_root() {
         id: "yojana".to_string(),
         root: PathBuf::from("/home/u/projects/yojana"),
         languages: vec!["rust".to_string()],
+        frozen: false,
     };
 
     let result = workspace::validate_db_dir_for_workspace(
@@ -145,6 +192,7 @@ fn test_allow_default_style_db_dir_outside_workspace_root() {
         id: "yojana".to_string(),
         root: PathBuf::from("/home/u/projects/yojana"),
         languages: vec!["rust".to_string()],
+        frozen: false,
     };
 
     workspace::validate_db_dir_for_workspace(PathBuf::from("/home/u/.sutra").as_path(), &entry)

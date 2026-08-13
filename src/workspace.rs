@@ -16,6 +16,13 @@ pub struct WorkspaceEntry {
     pub id: String,
     pub root: PathBuf,
     pub languages: Vec<String>,
+    /// When true, the index is treated as immutable: startup auto-reparse is
+    /// skipped and freshness never reports the workspace as stale. Intended for
+    /// frozen corpora (e.g. decompiled binaries) whose 20-minute reparse would
+    /// otherwise be triggered by unrelated git HEAD moves. Reparse on explicit
+    /// `sutra_workspace(action="reparse")` still runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frozen: bool,
 }
 
 /// Load workspace config from `path`. Returns an empty config if the file does

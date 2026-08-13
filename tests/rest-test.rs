@@ -70,6 +70,7 @@ async fn status_returns_workspace_list() {
             id: "test_ws".into(),
             root: "/tmp/test_ws".into(),
             languages: vec!["rust".into()],
+            frozen: false,
         });
     }
     db_cache.lock().insert("test_ws".into(), Arc::new(db));

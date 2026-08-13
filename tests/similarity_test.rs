@@ -25,6 +25,7 @@ fn make_entry(id: &str, root: PathBuf) -> WorkspaceEntry {
         id: id.to_string(),
         root,
         languages: vec!["rust".to_string()],
+        frozen: false,
     }
 }
 

@@ -28,6 +28,7 @@ fn make_python_entry(id: &str, root: PathBuf) -> WorkspaceEntry {
         id: id.to_string(),
         root,
         languages: vec!["python".to_string()],
+        frozen: false,
     }
 }
 
