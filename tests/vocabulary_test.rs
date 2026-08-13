@@ -94,9 +94,88 @@ config = "src/config.rs"
 UP = "UserProfile"
 "#;
     let config = vocabulary::parse_aliases(toml).unwrap();
-    assert_eq!(config.component["auth"], "authentication");
+    assert!(matches!(
+        &config.component["auth"],
+        vocabulary::ComponentValue::Nickname(v) if v == "authentication"
+    ));
     assert_eq!(config.file["config"], "src/config.rs");
     assert_eq!(config.symbol["UP"], "UserProfile");
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical schema: namespaced symbols + array [component] membership
+// ---------------------------------------------------------------------------
+
+/// Build three symbols in one file whose short names mimic the kala-reverse
+/// `FUN_<hex>` targets, plus a couple of namespaced aliases + a membership
+/// group over them.
+fn setup_hierarchical(db: &Db, dir: &std::path::Path) {
+    let f = db
+        .upsert_file("src/positions.rs", "rust", "h1", 50, true)
+        .unwrap();
+    insert_symbol(db, f, "FUN_008d1c50", "FUN_008d1c50", "function");
+    insert_symbol(db, f, "FUN_008e5270", "FUN_008e5270", "function");
+    insert_symbol(db, f, "FUN_005546a0", "FUN_005546a0", "function");
+
+    let sutra_dir = dir.join(".sutra");
+    std::fs::create_dir_all(&sutra_dir).unwrap();
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        r#"
+[symbol]
+"positions/deg_to_rashi" = "FUN_008d1c50"
+"positions/is_own_sign" = "FUN_008e5270"
+"phenomena/is_own_sign" = "FUN_005546a0"
+
+[component]
+positions = ["positions/deg_to_rashi", "positions/is_own_sign"]
+"#,
+    )
+    .unwrap();
+    vocabulary::sync_aliases(db, dir).unwrap();
+}
+
+#[test]
+fn test_resolve_namespaced_symbol_full_and_short() {
+    let (dir, db) = setup_db();
+    setup_hierarchical(&db, dir.path());
+
+    // Full path resolves to the exact symbol.
+    let full = vocabulary::resolve(&db, "positions/deg_to_rashi").unwrap();
+    assert_eq!(full[0].source, "alias");
+    assert_eq!(full[0].target_ref, "FUN_008d1c50");
+    assert_eq!(full[0].locations[0].path, "src/positions.rs");
+
+    // Bare short name resolves via the short_name index.
+    let short = vocabulary::resolve(&db, "deg_to_rashi").unwrap();
+    assert!(short.iter().any(|m| m.target_ref == "FUN_008d1c50"));
+}
+
+#[test]
+fn test_resolve_short_name_collision_returns_all() {
+    let (dir, db) = setup_db();
+    setup_hierarchical(&db, dir.path());
+
+    // `is_own_sign` is the short segment of two distinct namespaced terms.
+    let matches = vocabulary::resolve(&db, "is_own_sign").unwrap();
+    let refs: Vec<&str> = matches.iter().map(|m| m.target_ref.as_str()).collect();
+    assert!(refs.contains(&"FUN_008e5270"), "positions/is_own_sign");
+    assert!(refs.contains(&"FUN_005546a0"), "phenomena/is_own_sign");
+}
+
+#[test]
+fn test_resolve_group_expands_to_members() {
+    let (dir, db) = setup_db();
+    setup_hierarchical(&db, dir.path());
+
+    let matches = vocabulary::resolve(&db, "positions").unwrap();
+    let group = matches.iter().find(|m| m.target_kind == "group").unwrap();
+    assert_eq!(group.source, "alias");
+    assert!(!group.orphan);
+    let paths: Vec<&str> = group.locations.iter().map(|l| l.path.as_str()).collect();
+    // Both member symbols live in src/positions.rs -> two locations.
+    assert_eq!(group.locations.len(), 2, "group unions both member locations");
+    assert!(paths.iter().all(|p| *p == "src/positions.rs"));
 }
 
 // ---------------------------------------------------------------------------

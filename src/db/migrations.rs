@@ -317,6 +317,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0061_alias_sync_marker.sql"),
         false,
     ),
+    // Hierarchical alias schema: namespaced [symbol] short-name resolution +
+    // array-valued [component] membership groups (sutra/321).
+    (
+        "0062_alias_groups",
+        include_str!("../../migrations/0062_alias_groups.sql"),
+        false,
+    ),
 ];
 
 impl Db {

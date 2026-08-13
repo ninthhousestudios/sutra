@@ -339,24 +339,38 @@ impl Db {
     // Vocabulary aliases
     // -----------------------------------------------------------------------
 
-    /// Replace the `aliases` projection and record `file_hash` as the
-    /// `alias_sync` freshness marker in the same transaction, so the marker can
-    /// never claim a projection the table doesn't hold (or vice versa).
+    /// Replace the `aliases` projection (plus group membership) and record
+    /// `file_hash` as the `alias_sync` freshness marker in the same transaction,
+    /// so the marker can never claim a projection the table doesn't hold (or
+    /// vice versa).
+    ///
+    /// `aliases` tuple: `(id, term, short_name, target_kind, target_ref)`.
+    /// `group_members` tuple: `(group_term, member_term)`.
     pub fn replace_all_aliases(
         &self,
-        aliases: &[(String, String, String, String)],
+        aliases: &[(String, String, Option<String>, String, String)],
+        group_members: &[(String, String)],
         file_hash: &str,
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM aliases", [])?;
+        tx.execute("DELETE FROM alias_group_member", [])?;
         let mut stmt = tx.prepare(
-            "INSERT INTO aliases (id, term, target_kind, target_ref) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO aliases (id, term, short_name, target_kind, target_ref) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
-        for (id, term, kind, target) in aliases {
-            stmt.execute(params![id, term, kind, target])?;
+        for (id, term, short_name, kind, target) in aliases {
+            stmt.execute(params![id, term, short_name, kind, target])?;
         }
         drop(stmt);
+        let mut mem_stmt = tx.prepare(
+            "INSERT INTO alias_group_member (group_term, member_term) VALUES (?1, ?2)",
+        )?;
+        for (group_term, member_term) in group_members {
+            mem_stmt.execute(params![group_term, member_term])?;
+        }
+        drop(mem_stmt);
         tx.execute(
             "UPDATE alias_sync SET file_hash = ?1 WHERE id = 1",
             params![file_hash],
@@ -379,37 +393,64 @@ impl Db {
 
     pub fn all_aliases(&self) -> Result<Vec<AliasRow>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, term, target_kind, target_ref FROM aliases ORDER BY term")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, term, short_name, target_kind, target_ref FROM aliases ORDER BY term",
+        )?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(AliasRow {
-                    id: r.get(0)?,
-                    term: r.get(1)?,
-                    target_kind: r.get(2)?,
-                    target_ref: r.get(3)?,
-                })
-            })?
+            .query_map([], Self::map_alias_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     pub fn find_alias(&self, term: &str) -> Result<Option<AliasRow>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, term, target_kind, target_ref FROM aliases WHERE term = ?1")?;
-        let mut rows = stmt.query_map(params![term], |r| {
-            Ok(AliasRow {
-                id: r.get(0)?,
-                term: r.get(1)?,
-                target_kind: r.get(2)?,
-                target_ref: r.get(3)?,
-            })
-        })?;
+        let mut stmt = conn.prepare(
+            "SELECT id, term, short_name, target_kind, target_ref FROM aliases WHERE term = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![term], Self::map_alias_row)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
+    }
+
+    /// Aliases whose namespaced term ends in `/<short>` — the resolution path
+    /// for a bare short name (`deg_to_rashi`) when exact-term match misses.
+    /// Returns all matches; a short name ambiguous across groups yields several.
+    pub fn find_aliases_by_short_name(&self, short: &str) -> Result<Vec<AliasRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, term, short_name, target_kind, target_ref FROM aliases \
+             WHERE short_name = ?1 ORDER BY term",
+        )?;
+        let rows = stmt
+            .query_map(params![short], Self::map_alias_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Member terms of a group (an array-valued `[component]` entry), ordered
+    /// as stored.
+    pub fn group_member_terms(&self, group_term: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT member_term FROM alias_group_member WHERE group_term = ?1 \
+             ORDER BY member_term",
+        )?;
+        let rows = stmt
+            .query_map(params![group_term], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    }
+
+    fn map_alias_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AliasRow> {
+        Ok(AliasRow {
+            id: r.get(0)?,
+            term: r.get(1)?,
+            short_name: r.get(2)?,
+            target_kind: r.get(3)?,
+            target_ref: r.get(4)?,
+        })
     }
 
     pub fn component_names_by_file_ids(

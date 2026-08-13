@@ -390,6 +390,8 @@ pub struct AnchorRow {
 pub struct AliasRow {
     pub id: String,
     pub term: String,
+    /// Trailing segment after '/' for namespaced terms, else `None`.
+    pub short_name: Option<String>,
     pub target_kind: String,
     pub target_ref: String,
 }
