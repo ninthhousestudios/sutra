@@ -155,9 +155,27 @@ Sutra lets you define human-readable names for code concepts so agents (and huma
 
 Three sections map terms to different target kinds:
 
-- **`[component]`** — maps a human name to a component name (as shown in `sutra_components`)
+- **`[component]`** — string value maps a human name to a component name (as shown in `sutra_components`)
 - **`[file]`** — maps a human name to a file path
 - **`[symbol]`** — maps a human name to a symbol name
+
+#### Hierarchical schema: namespaced symbols + membership groups
+
+For large curated maps (e.g. a name→symbol map over a decompiled binary), two richer shapes are supported alongside the flat form above:
+
+```toml
+[symbol]
+# Namespaced terms: "<group>/<human_name>" = target
+"positions/deg_to_rashi" = "FUN_008d1c50"
+"positions/is_own_sign"  = "FUN_008e5270"
+
+[component]
+# Array value = a membership GROUP over alias terms
+positions = ["positions/deg_to_rashi", "positions/is_own_sign"]
+```
+
+- **Namespaced `[symbol]` terms** resolve by **both** the full path (`positions/deg_to_rashi`) and the bare trailing segment (`deg_to_rashi`). When a short name is ambiguous across groups, resolution returns **all** matches.
+- **Array-valued `[component]` entries** define a membership group: resolving the group name (`positions`) expands to the union of every member symbol's locations. This is distinct from the string-valued `[component]` form — a **string** is a nickname pointing at a clustering-derived component, an **array** is an explicit group. The value type is the discriminator.
 
 Aliases are synced to the database during workspace indexing. `sutra_explore` resolves them as its first priority tier:
 
@@ -167,7 +185,7 @@ Agent: sutra_explore(query="being detail cards")
 → file locations for all member files
 ```
 
-Resolution searches in priority order: aliases (exact match) → component names (substring) → semantic anchor names (substring). Orphan detection warns when an alias points to a dissolved component or missing file.
+Resolution searches in priority order: exact alias term → short-name match for namespaced terms → component names (substring) → semantic anchor names (substring). Orphan detection warns when an alias points to a dissolved component, missing file, or absent symbol.
 
 This means you can tell an agent "find the being detail cards code" and it resolves to concrete file locations without the agent having to rediscover the mapping each time.
 
