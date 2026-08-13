@@ -29,21 +29,51 @@ pub fn parse_aliases(content: &str) -> Result<AliasConfig> {
 }
 
 pub fn load_aliases(root: &Path) -> Result<AliasConfig> {
+    parse_aliases(&read_aliases_source(root)?)
+}
+
+/// Raw contents of `.sutra/aliases.toml`, or the empty string when the file is
+/// absent (an absent file is a valid "no aliases" state, not an error). Kept
+/// separate from parsing so callers can hash the exact bytes the projection was
+/// built from.
+fn read_aliases_source(root: &Path) -> Result<String> {
     let path = root.join(".sutra/aliases.toml");
     if !path.exists() {
-        return Ok(AliasConfig::default());
+        return Ok(String::new());
     }
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| SutraError::Internal(format!("{e}")))?;
-    parse_aliases(&content)
+    std::fs::read_to_string(&path).map_err(|e| SutraError::Internal(format!("{e}")))
+}
+
+/// Content hash of `.sutra/aliases.toml` as it currently sits on disk. Cheap
+/// (a read + blake3) and stable across runs, so startup can decide whether the
+/// persisted `aliases` projection is stale without a parse.
+pub fn current_aliases_hash(root: &Path) -> Result<String> {
+    Ok(blake3::hash(read_aliases_source(root)?.as_bytes())
+        .to_hex()
+        .to_string())
 }
 
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
 
+/// Re-project `.sutra/aliases.toml` into the `aliases` table only when the file
+/// has changed since the last projection (tracked by the `alias_sync` marker).
+/// Returns `Some(count)` when a sync ran, `None` when the projection was already
+/// fresh. This is the cheap path that keeps forward alias resolution alive on
+/// startups that skip a full parse (frozen indexes, or fresh indexes whose
+/// source didn't change).
+pub fn sync_aliases_if_changed(db: &Db, root: &Path) -> Result<Option<usize>> {
+    let current = current_aliases_hash(root)?;
+    if db.get_alias_sync_marker()?.as_deref() == Some(current.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some(sync_aliases(db, root)?))
+}
+
 pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
-    let config = load_aliases(root)?;
+    let source = read_aliases_source(root)?;
+    let config = parse_aliases(&source)?;
     let mut seen: HashMap<&str, &str> = HashMap::new();
     let mut tuples: Vec<(String, String, String, String)> = Vec::new();
 
@@ -72,7 +102,8 @@ pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
     }
 
     let count = tuples.len();
-    db.replace_all_aliases(&tuples)?;
+    let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    db.replace_all_aliases(&tuples, &hash)?;
     Ok(count)
 }
 

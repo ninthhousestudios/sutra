@@ -310,6 +310,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0060_drop_component_lifecycle.sql"),
         false,
     ),
+    // Persistent: freshness marker for the .sutra/aliases.toml projection
+    // (sutra/320), mirroring 0059's accepted.toml marker.
+    (
+        "0061_alias_sync_marker",
+        include_str!("../../migrations/0061_alias_sync_marker.sql"),
+        false,
+    ),
 ];
 
 impl Db {

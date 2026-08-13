@@ -136,6 +136,59 @@ config = "src/config.rs"
 }
 
 #[test]
+fn test_sync_if_changed_gated_by_marker() {
+    let (dir, db) = setup_db();
+    let sutra_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&sutra_dir).unwrap();
+
+    // Marker starts NULL (never projected), so the first call syncs even though
+    // the file is absent (an absent file is a valid empty projection).
+    assert_eq!(
+        vocabulary::sync_aliases_if_changed(&db, dir.path()).unwrap(),
+        Some(0),
+        "first call projects even when aliases.toml is absent"
+    );
+    // Unchanged since last projection -> no-op.
+    assert_eq!(
+        vocabulary::sync_aliases_if_changed(&db, dir.path()).unwrap(),
+        None,
+        "unchanged aliases.toml must not re-sync"
+    );
+
+    // Authoring the file changes the hash -> re-sync, and forward resolution works.
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        "[component]\nauth = \"authentication\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        vocabulary::sync_aliases_if_changed(&db, dir.path()).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        db.find_alias("auth").unwrap().unwrap().target_ref,
+        "authentication"
+    );
+    assert_eq!(
+        vocabulary::sync_aliases_if_changed(&db, dir.path()).unwrap(),
+        None,
+        "still fresh after projecting the edit"
+    );
+
+    // Editing the target re-projects.
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        "[component]\nauth = \"other\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        vocabulary::sync_aliases_if_changed(&db, dir.path()).unwrap(),
+        Some(1)
+    );
+    assert_eq!(db.find_alias("auth").unwrap().unwrap().target_ref, "other");
+}
+
+#[test]
 fn test_sync_aliases_survives_reindex() {
     let (dir, db) = setup_db();
     let sutra_dir = dir.path().join(".sutra");

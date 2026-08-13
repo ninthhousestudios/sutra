@@ -416,23 +416,30 @@ fn maybe_reparse_cwd(
     };
     drop(ws_cfg);
 
-    // Frozen workspaces have an immutable index (e.g. decompiled binaries whose
-    // multi-minute reparse would otherwise be triggered by unrelated git HEAD
-    // moves). Never auto-reparse them; only explicit action="reparse" does.
-    if entry.frozen {
-        return;
-    }
-
     let db = match sutra::tools::get_or_open_db(db_cache, &entry, &config.db_dir) {
         Ok(db) => db,
         Err(_) => return,
     };
 
+    // Frozen workspaces have an immutable index (e.g. decompiled binaries whose
+    // multi-minute reparse would otherwise be triggered by unrelated git HEAD
+    // moves). Never auto-reparse them; only explicit action="reparse" does. Alias
+    // edits must still take effect though — the `aliases` projection is otherwise
+    // rebuilt only during parse — so cheaply re-sync .sutra/aliases.toml.
+    if entry.frozen {
+        sync_aliases_if_changed(&db, &entry);
+        return;
+    }
+
     let (_, is_stale) =
         sutra::freshness::is_workspace_stale(&db, &entry.root, config.stale_threshold_sec);
     if !is_stale {
+        // Not reparsing this startup, but aliases.toml is not an indexed source
+        // file and never trips staleness — re-sync it directly if it changed.
+        sync_aliases_if_changed(&db, &entry);
         return;
     }
+    // Stale & not frozen: the spawned parse_workspace re-syncs aliases itself.
 
     let lock = parse_coord.lock_for(&entry.id);
     let Ok(guard) = Arc::clone(&lock).try_lock_owned() else {
@@ -465,6 +472,23 @@ fn maybe_reparse_cwd(
             Err(e) => tracing::error!("stdio startup reparse panicked for {ws_id}: {e}"),
         }
     });
+}
+
+/// Re-project `.sutra/aliases.toml` into the `aliases` table when it changed
+/// since the last projection, for workspaces whose startup skips a full parse
+/// (frozen, or already fresh). Best-effort: a failure is logged, not fatal — the
+/// server still serves, just with the previous alias projection.
+fn sync_aliases_if_changed(db: &sutra::db::Db, entry: &WorkspaceEntry) {
+    match sutra::vocabulary::sync_aliases_if_changed(db, &entry.root) {
+        Ok(Some(n)) => {
+            tracing::info!(
+                "re-synced {n} aliases for {} (aliases.toml changed)",
+                entry.id
+            )
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("alias sync for {} failed: {e}", entry.id),
+    }
 }
 
 async fn cmd_serve_http(config: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {

@@ -339,7 +339,14 @@ impl Db {
     // Vocabulary aliases
     // -----------------------------------------------------------------------
 
-    pub fn replace_all_aliases(&self, aliases: &[(String, String, String, String)]) -> Result<()> {
+    /// Replace the `aliases` projection and record `file_hash` as the
+    /// `alias_sync` freshness marker in the same transaction, so the marker can
+    /// never claim a projection the table doesn't hold (or vice versa).
+    pub fn replace_all_aliases(
+        &self,
+        aliases: &[(String, String, String, String)],
+        file_hash: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM aliases", [])?;
@@ -350,8 +357,24 @@ impl Db {
             stmt.execute(params![id, term, kind, target])?;
         }
         drop(stmt);
+        tx.execute(
+            "UPDATE alias_sync SET file_hash = ?1 WHERE id = 1",
+            params![file_hash],
+        )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The content hash the `aliases` table was last projected from.
+    /// `Ok(None)` means never projected (always treat as stale) — distinct from
+    /// a lookup failure, which propagates.
+    pub fn get_alias_sync_marker(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let hash: Option<String> =
+            conn.query_row("SELECT file_hash FROM alias_sync WHERE id = 1", [], |row| {
+                row.get(0)
+            })?;
+        Ok(hash)
     }
 
     pub fn all_aliases(&self) -> Result<Vec<AliasRow>> {
