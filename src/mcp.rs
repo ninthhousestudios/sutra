@@ -463,6 +463,14 @@ impl SutraServer {
         Parameters(args): Parameters<ExploreArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
+        // Alias forward-resolution (the top tier below) reads the `aliases`
+        // projection, which parse_workspace is the only other writer of. Gate it
+        // at query time — like the accepted.toml cache — so alias edits take
+        // effect regardless of transport, server CWD, or a frozen index that
+        // never reparses. Cheap (hash of a tiny file) and a no-op when unchanged.
+        if let Err(e) = crate::vocabulary::sync_aliases_if_changed(ctx.db(), ctx.workspace_root()) {
+            tracing::warn!("alias sync during explore failed: {e}");
+        }
         let budget = args.budget.unwrap_or(10);
         let result =
             tools::explore::handle(ctx.db(), &args.query, budget).map_err(sutra_to_rmcp)?;
