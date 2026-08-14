@@ -411,6 +411,8 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 | `SUTRA_STALE_THRESHOLD_SEC` | `600` | Seconds before an index snapshot is marked stale |
 | `SUTRA_PARSE_TIMEOUT_SEC` | `60` | Max wall-clock for a single workspace reparse |
 | `SUTRA_LOG_LEVEL` | `info` | Tracing filter when `RUST_LOG` is unset |
+| `SUTRA_SIMILARITY_MODE` | `auto` | HRR similarity fidelity: `full`, `strip-only`, `off`, or `auto` (downgrades to strip-only above 200k function symbols) |
+| `SUTRA_HRR_PARALLELISM` | CPU count | Max parallel HRR encode workers |
 
 ### Project configuration (`.sutra/`)
 
