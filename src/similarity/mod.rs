@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tracing::{info, warn};
+
 use crate::db::{Db, HrrSymbolRow};
 use crate::error::{Result, SutraError};
 use crate::parser::adapter::{LanguageRegistry, default_registry};
@@ -21,10 +23,89 @@ use crate::parser::adapter::{LanguageRegistry, default_registry};
 /// members of a pattern family (sutra/324).
 const MAX_HRR_SYMBOL_LINES: i64 = 2_000;
 
+/// (symbol_id, mode, quantized vector blob) rows destined for `hrr_vectors`.
+type VectorRow = (i64, String, Vec<u8>);
+
+/// In auto mode, workspaces above this many function symbols downgrade to
+/// strip-only: embed vectors exist solely for `sutra_similar mode=embed`
+/// (families, components, and diff use strip), and at this scale a brute-force
+/// embed scan is degraded anyway — halving storage is the better trade
+/// (sutra/327, cap-at-source precedent from sutra/324).
+const AUTO_STRIP_ONLY_SYMBOL_THRESHOLD: i64 = 200_000;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SimilarityMode {
+    /// strip + embed vectors for every function symbol.
+    Full,
+    /// strip vectors only — pattern families and diff keep full fidelity,
+    /// `sutra_similar mode=embed` becomes unavailable.
+    StripOnly,
+    /// No HRR encoding at all; existing vectors and families are left as-is.
+    Off,
+}
+
+impl SimilarityMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "full" => Some(Self::Full),
+            "strip-only" => Some(Self::StripOnly),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve the effective mode: explicit `SUTRA_SIMILARITY_MODE` wins; the
+/// default (`auto`) downgrades to strip-only above the symbol threshold.
+fn effective_similarity_mode(db: &Db) -> Result<SimilarityMode> {
+    match std::env::var("SUTRA_SIMILARITY_MODE").ok().as_deref() {
+        None | Some("auto") | Some("") => {}
+        Some(other) => match SimilarityMode::parse(other) {
+            Some(mode) => return Ok(mode),
+            None => {
+                warn!(
+                    value = other,
+                    "SUTRA_SIMILARITY_MODE not one of full|strip-only|off|auto — using auto"
+                );
+            }
+        },
+    }
+    let fn_count = db.function_symbol_count()?;
+    if fn_count > AUTO_STRIP_ONLY_SYMBOL_THRESHOLD {
+        warn!(
+            fn_count,
+            threshold = AUTO_STRIP_ONLY_SYMBOL_THRESHOLD,
+            "similarity: large workspace — downgrading to strip-only HRR \
+             (set SUTRA_SIMILARITY_MODE=full to override)"
+        );
+        Ok(SimilarityMode::StripOnly)
+    } else {
+        Ok(SimilarityMode::Full)
+    }
+}
+
 pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, bool)> {
     let changed_files = db.files_needing_hrr_recompute()?;
     if changed_files.is_empty() {
         return Ok((0, false));
+    }
+
+    let mode = effective_similarity_mode(db)?;
+    if mode == SimilarityMode::Off {
+        info!("similarity: HRR disabled (mode=off)");
+        return Ok((0, false));
+    }
+    if mode == SimilarityMode::StripOnly {
+        // Embed vectors from before the downgrade would leave `sutra_similar
+        // mode=embed` scanning a partial corpus — drop them so the feature is
+        // cleanly unavailable instead of quietly wrong.
+        let dropped = db.delete_embed_vectors()?;
+        if dropped > 0 {
+            info!(
+                dropped,
+                "similarity: removed embed vectors (strip-only mode)"
+            );
+        }
     }
 
     let file_ids: Vec<i64> = changed_files.iter().map(|f| f.file_id).collect();
@@ -48,7 +129,7 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
     for (i, sym) in symbols.iter().enumerate() {
         by_file.entry(&sym.file_path).or_default().push(i);
     }
-    let files: Vec<(&str, Vec<usize>)> = by_file.into_iter().collect();
+    let files: Vec<Vec<usize>> = by_file.into_values().collect();
 
     // Encoding is embarrassingly parallel now that the codebook is
     // content-addressed (sutra/327): each worker gets its own memo cache and
@@ -57,43 +138,42 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
     // partition.
     let n_workers = hrr_worker_count(files.len());
     let next = AtomicUsize::new(0);
-    let worker_results: Vec<Result<(Vec<(i64, String, Vec<u8>)>, Vec<i64>)>> =
-        std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n_workers)
-                .map(|_| {
-                    s.spawn(|| {
-                        let registry = default_registry();
-                        let mut cb = codebook::Codebook::new();
-                        let mut vectors = Vec::new();
-                        let mut completed_file_ids = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some((path, indices)) = files.get(i) else {
-                                break;
-                            };
-                            if let Some(file_id) = encode_file(
-                                workspace_root,
-                                &registry,
-                                &symbols,
-                                path,
-                                indices,
-                                &mut cb,
-                                &mut vectors,
-                            )? {
-                                completed_file_ids.push(file_id);
-                            }
+    let worker_results: Vec<Result<(Vec<VectorRow>, Vec<i64>)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..n_workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let registry = default_registry();
+                    let mut cb = codebook::Codebook::new();
+                    let mut vectors = Vec::new();
+                    let mut completed_file_ids = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(indices) = files.get(i) else {
+                            break;
+                        };
+                        if let Some(file_id) = encode_file(
+                            workspace_root,
+                            &registry,
+                            &symbols,
+                            indices,
+                            mode,
+                            &mut cb,
+                            &mut vectors,
+                        )? {
+                            completed_file_ids.push(file_id);
                         }
-                        Ok((vectors, completed_file_ids))
-                    })
+                    }
+                    Ok((vectors, completed_file_ids))
                 })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().expect("invariant: HRR encode worker panicked"))
-                .collect()
-        });
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("invariant: HRR encode worker panicked"))
+            .collect()
+    });
 
-    let mut vectors: Vec<(i64, String, Vec<u8>)> = Vec::new();
+    let mut vectors: Vec<VectorRow> = Vec::new();
     let mut completed_file_ids: Vec<i64> = Vec::new();
     for r in worker_results {
         let (v, c) = r?;
@@ -134,12 +214,12 @@ fn encode_file(
     workspace_root: &Path,
     registry: &LanguageRegistry,
     symbols: &[HrrSymbolRow],
-    path: &str,
     indices: &[usize],
+    mode: SimilarityMode,
     cb: &mut codebook::Codebook,
-    vectors: &mut Vec<(i64, String, Vec<u8>)>,
+    vectors: &mut Vec<VectorRow>,
 ) -> Result<Option<i64>> {
-    let full_path = workspace_root.join(path);
+    let full_path = workspace_root.join(&symbols[indices[0]].file_path);
     let source = match std::fs::read_to_string(&full_path) {
         Ok(s) => s,
         Err(_) => return Ok(None),
@@ -172,8 +252,10 @@ fn encode_file(
             let strip = encoder::encode_subtree(&node, source.as_bytes(), cb, false);
             vectors.push((sym.symbol_id, "strip".into(), strip.to_bytes()));
 
-            let embed = encoder::encode_subtree(&node, source.as_bytes(), cb, true);
-            vectors.push((sym.symbol_id, "embed".into(), embed.to_bytes()));
+            if mode == SimilarityMode::Full {
+                let embed = encoder::encode_subtree(&node, source.as_bytes(), cb, true);
+                vectors.push((sym.symbol_id, "embed".into(), embed.to_bytes()));
+            }
         }
     }
 
@@ -196,4 +278,26 @@ pub fn compute_pattern_families(db: &Db) -> Result<usize> {
     let count = families.len();
     db.replace_pattern_families(&families)?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SimilarityMode;
+
+    #[test]
+    fn mode_parse_known_values() {
+        assert_eq!(SimilarityMode::parse("full"), Some(SimilarityMode::Full));
+        assert_eq!(
+            SimilarityMode::parse("strip-only"),
+            Some(SimilarityMode::StripOnly)
+        );
+        assert_eq!(SimilarityMode::parse("off"), Some(SimilarityMode::Off));
+    }
+
+    #[test]
+    fn mode_parse_rejects_unknown() {
+        assert_eq!(SimilarityMode::parse("strip"), None);
+        assert_eq!(SimilarityMode::parse("auto"), None);
+        assert_eq!(SimilarityMode::parse(""), None);
+    }
 }

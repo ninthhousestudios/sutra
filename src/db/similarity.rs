@@ -79,6 +79,22 @@ impl Db {
         Ok(rows)
     }
 
+    pub fn function_symbol_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM symbols WHERE kind IN ('function', 'method')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn delete_embed_vectors(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let deleted = conn.execute("DELETE FROM hrr_vectors WHERE mode = 'embed'", [])?;
+        Ok(deleted)
+    }
+
     pub fn function_symbol_names(&self) -> Result<Vec<(i64, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
