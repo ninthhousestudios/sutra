@@ -89,6 +89,19 @@ impl Db {
         Ok(count)
     }
 
+    /// Cheap (idx_hrr_vectors_mode-backed) probe so strip-only mode can skip the
+    /// embed purge — and its implicit write transaction — on every incremental
+    /// parse once the embed vectors are already gone (sutra/328).
+    pub fn has_embed_vectors(&self) -> Result<bool> {
+        let conn = self.conn.lock();
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM hrr_vectors WHERE mode = 'embed')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(exists)
+    }
+
     pub fn delete_embed_vectors(&self) -> Result<usize> {
         let conn = self.conn.lock();
         let deleted = conn.execute("DELETE FROM hrr_vectors WHERE mode = 'embed'", [])?;
@@ -246,7 +259,11 @@ impl Db {
 
     pub fn load_all_vectors_by_mode(&self, mode: &str) -> Result<Vec<(i64, HrrVec)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1")?;
+        // ORDER BY: stable input order so ranked search breaks exact-cosine
+        // ties the same way run-to-run (sutra/328, matches load_all_strip_vectors).
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1 ORDER BY symbol_id",
+        )?;
         let rows = stmt
             .query_map(params![mode], |row| {
                 let id: i64 = row.get(0)?;

@@ -92,13 +92,18 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
 
     let mode = effective_similarity_mode(db)?;
     if mode == SimilarityMode::Off {
+        // Intentionally return WITHOUT recording hrr_file_hashes: leaving these
+        // files "unrecomputed" is what lets a later switch back to full/strip
+        // trigger a real recompute instead of treating stale files as done
+        // (sutra/328). The repeated no-op re-entry per parse is the cost of that.
         info!("similarity: HRR disabled (mode=off)");
         return Ok((0, false));
     }
-    if mode == SimilarityMode::StripOnly {
+    if mode == SimilarityMode::StripOnly && db.has_embed_vectors()? {
         // Embed vectors from before the downgrade would leave `sutra_similar
         // mode=embed` scanning a partial corpus — drop them so the feature is
-        // cleanly unavailable instead of quietly wrong.
+        // cleanly unavailable instead of quietly wrong. Gated on has_embed_vectors
+        // so steady-state strip-only parses don't re-run this each time (sutra/328).
         let dropped = db.delete_embed_vectors()?;
         if dropped > 0 {
             info!(

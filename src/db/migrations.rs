@@ -343,6 +343,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0064_drop_hrr_codebook.sql"),
         false,
     ),
+    // Index on an ephemeral table (hrr_vectors) — ephemeral_only so reindex
+    // replays it after 0030 recreates the table (sutra/328).
+    (
+        "0065_hrr_vectors_mode_index",
+        include_str!("../../migrations/0065_hrr_vectors_mode_index.sql"),
+        true,
+    ),
 ];
 
 impl Db {
