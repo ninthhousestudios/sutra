@@ -14,7 +14,7 @@ use crate::components;
 use crate::config::Config;
 use crate::db::{
     Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
-    SnapshotComponentRow, SnapshotFileRow, SnapshotParams, SymbolEntry,
+    SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use crate::error::Result;
 use crate::graph;
@@ -140,6 +140,88 @@ const MAX_REFS_PER_FILE: usize = 15_000;
 /// Instrumentation only — returns `None` off Linux or on read failure. Used to
 /// attribute reparse RSS to a phase of `post_parse_sequence` (sutra/324); view
 /// with `RUST_LOG=sutra=debug`.
+/// Minimum interval between periodic progress lines in the parse and
+/// resolution loops, so multi-hour runs are distinguishable from stalls.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Bulk mode activates above this many files in a loop. Small parses keep
+/// per-file commits (finer crash granularity); large parses share one
+/// transaction per batch of files to cut per-file WAL fsyncs.
+const BULK_MODE_THRESHOLD: usize = 1000;
+const BULK_BATCH_FILES: usize = 64;
+/// Checkpoint-truncate the WAL every N committed batches: continuous write
+/// transactions starve SQLite's passive auto-checkpoint, and kala-reverse
+/// grew a 798MB WAL with no bound.
+const BULK_CHECKPOINT_EVERY_BATCHES: usize = 16;
+
+/// RAII bulk-batch handle over `Db::begin_batch`/`commit_batch`: commits
+/// every `BULK_BATCH_FILES` files, rolls an open batch back on drop so the
+/// error path never leaves a transaction dangling.
+struct BulkBatch<'a> {
+    db: &'a Db,
+    active: bool,
+    open: bool,
+    files_in_batch: usize,
+    batches_committed: usize,
+}
+
+impl<'a> BulkBatch<'a> {
+    fn new(db: &'a Db, active: bool) -> Self {
+        Self {
+            db,
+            active,
+            open: false,
+            files_in_batch: 0,
+            batches_committed: 0,
+        }
+    }
+
+    fn file_start(&mut self) -> Result<()> {
+        if self.active && !self.open {
+            self.db.begin_batch()?;
+            self.open = true;
+        }
+        Ok(())
+    }
+
+    fn file_done(&mut self) -> Result<()> {
+        if self.active {
+            self.files_in_batch += 1;
+            if self.files_in_batch >= BULK_BATCH_FILES {
+                self.commit()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        if self.open {
+            self.db.commit_batch()?;
+            self.open = false;
+            self.files_in_batch = 0;
+            self.batches_committed += 1;
+            if self
+                .batches_committed
+                .is_multiple_of(BULK_CHECKPOINT_EVERY_BATCHES)
+                && let Err(e) = self.db.wal_checkpoint_truncate()
+            {
+                debug!("wal checkpoint skipped: {e}");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for BulkBatch<'_> {
+    fn drop(&mut self) {
+        if self.open
+            && let Err(e) = self.db.rollback_batch()
+        {
+            warn!("bulk batch rollback failed: {e}");
+        }
+    }
+}
+
 fn current_rss_mb() -> Option<u64> {
     let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
     let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
@@ -374,8 +456,7 @@ fn parse_single_file(
 fn resolve_file_refs(
     db: &Db,
     file_id: i64,
-    all_symbols: &[SymbolEntry],
-    class_members: &resolver::ClassMembers<'_>,
+    index: &resolver::SymbolIndex<'_>,
 ) -> Result<(i64, i64, i64)> {
     let file_symbols_rows = db.find_symbols_by_file(file_id)?;
     let file_refs = db.find_refs_in_file(file_id)?;
@@ -437,10 +518,9 @@ fn resolve_file_refs(
     let resolved = resolver::resolve_refs(
         &extracted_symbols,
         &extracted_refs,
-        all_symbols,
+        index,
         &extracted_imports,
         file_id,
-        class_members,
     );
 
     let ref_rows: Vec<ResolvedRefRow<'_>> = resolved
@@ -534,10 +614,14 @@ pub fn parse_workspace(
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
     let inner = (|| -> Result<PostParseResult> {
-        for file_path in &source_files {
+        let mut last_progress = Instant::now();
+        let mut last_progress_walked: usize = 0;
+        let mut bulk = BulkBatch::new(db, source_files.len() >= BULK_MODE_THRESHOLD);
+        for (walked, file_path) in source_files.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
+            bulk.file_start()?;
             if let Some(result) = parse_single_file(
                 db,
                 file_path,
@@ -553,7 +637,35 @@ pub fn parse_workspace(
                     refs_extracted += result.refs_extracted;
                 }
             }
+            bulk.file_done()?;
+            if last_progress.elapsed() >= PROGRESS_INTERVAL {
+                let window_secs = last_progress.elapsed().as_secs_f64();
+                let recent_per_min =
+                    (walked + 1 - last_progress_walked) as f64 / window_secs * 60.0;
+                let remaining = source_files.len() - (walked + 1);
+                let eta_s = if recent_per_min > 0.0 {
+                    (remaining as f64 / recent_per_min * 60.0) as u64
+                } else {
+                    0
+                };
+                info!(
+                    workspace = %workspace.id,
+                    files = walked + 1,
+                    files_total = source_files.len(),
+                    parsed = files_parsed,
+                    symbols = symbols_extracted,
+                    refs = refs_extracted,
+                    elapsed_s = start.elapsed().as_secs(),
+                    recent_files_per_min = format!("{recent_per_min:.1}"),
+                    eta_s,
+                    "parse progress"
+                );
+                last_progress = Instant::now();
+                last_progress_walked = walked + 1;
+            }
         }
+
+        bulk.commit()?;
 
         if files_parsed == 0 && parse_errors == 0 && pruned == 0 && !db.has_pending_work()? {
             return Ok(PostParseResult::NoChanges);
@@ -762,18 +874,35 @@ fn post_parse_sequence(
     let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
-    let class_members = resolver::build_class_members(&all_db_symbols);
+    let symbol_index = resolver::SymbolIndex::build(&all_db_symbols);
     log_phase_rss("post_parse:symbols_loaded");
     let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;
     let mut skipped_count: i64 = 0;
-    for &file_id in &resolution_set {
-        let (resolved, unresolved, skipped) =
-            resolve_file_refs(db, file_id, &all_db_symbols, &class_members)?;
+    let resolution_total = resolution_set.len();
+    let resolution_started = Instant::now();
+    let mut last_progress = Instant::now();
+    let mut bulk = BulkBatch::new(db, resolution_total >= BULK_MODE_THRESHOLD);
+    for (done, &file_id) in resolution_set.iter().enumerate() {
+        bulk.file_start()?;
+        let (resolved, unresolved, skipped) = resolve_file_refs(db, file_id, &symbol_index)?;
+        bulk.file_done()?;
         resolved_count += resolved;
         unresolved_count += unresolved;
         skipped_count += skipped;
+        if last_progress.elapsed() >= PROGRESS_INTERVAL {
+            last_progress = Instant::now();
+            info!(
+                files_resolved = done + 1,
+                files_total = resolution_total,
+                resolved = resolved_count,
+                unresolved = unresolved_count,
+                elapsed_s = resolution_started.elapsed().as_secs(),
+                "resolution progress"
+            );
+        }
     }
+    bulk.commit()?;
 
     let dart_resolved = crate::dart_packages::resolve_dart_imports(db, workspace_root)?;
     if dart_resolved > 0 {
@@ -865,6 +994,7 @@ fn post_parse_sequence(
         }
         log_phase_rss("post_parse:entity_walk_done");
 
+        info!(files = files.len(), "discovering components");
         let component_count =
             components::discover_components(db, &files, &gd, workspace_root, boundary_multipliers)?;
         log_phase_rss("post_parse:components_done");
@@ -883,10 +1013,12 @@ fn post_parse_sequence(
         }
         log_phase_rss("post_parse:aliases_done");
 
+        info!(
+            symbols = all_db_symbols.len(),
+            "similarity: computing HRR vectors"
+        );
         let (hrr_count, hrr_changed) = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
-        if hrr_count > 0 {
-            info!(count = hrr_count, "computed HRR vectors");
-        }
+        info!(count = hrr_count, "similarity: HRR vectors done");
         log_phase_rss("post_parse:hrr_done");
 
         let mut loaded_rules = crate::rules::load_rules(workspace_root)?;
@@ -910,10 +1042,9 @@ fn post_parse_sequence(
         log_phase_rss("post_parse:health_done");
 
         if hrr_changed {
+            info!("similarity: detecting pattern families");
             let family_count = crate::similarity::compute_pattern_families(db)?;
-            if family_count > 0 {
-                info!(count = family_count, "detected pattern families");
-            }
+            info!(count = family_count, "similarity: pattern families done");
             log_phase_rss("post_parse:pattern_families_done");
         }
     }

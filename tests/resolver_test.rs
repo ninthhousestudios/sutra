@@ -10,8 +10,8 @@ fn resolve(
     imports: &[ExtractedImport],
     file_id: i64,
 ) -> Vec<resolver::ResolvedRef> {
-    let cm = resolver::build_class_members(all_symbols);
-    resolve_refs(file_symbols, refs, all_symbols, imports, file_id, &cm)
+    let index = resolver::SymbolIndex::build(all_symbols);
+    resolve_refs(file_symbols, refs, &index, imports, file_id)
 }
 
 fn make_symbol(

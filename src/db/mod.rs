@@ -781,7 +781,7 @@ impl Db {
     ) -> Result<(i64, i64)> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = batch_aware_transaction(&conn)?;
 
         // Delete old file data if it exists.
         let old_file_id: Option<i64> = match conn.query_row(
@@ -951,7 +951,9 @@ impl Db {
             [],
         )?;
 
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok((file_id, symbol_ids.len() as i64))
     }
 
@@ -1461,6 +1463,34 @@ impl Db {
         Ok(())
     }
 
+    /// Begin a multi-file bulk batch. While a batch is open,
+    /// `replace_file_data` and `replace_refs_and_clear_resolution` join it
+    /// instead of opening their own transactions, so many files share one
+    /// commit (and one WAL fsync).
+    pub fn begin_batch(&self) -> Result<()> {
+        self.conn.lock().execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    pub fn commit_batch(&self) -> Result<()> {
+        self.conn.lock().execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback_batch(&self) -> Result<()> {
+        self.conn.lock().execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
+    /// Checkpoint the WAL and truncate it. Best-effort: a concurrent reader
+    /// can legitimately block a full checkpoint, so busy errors are not fatal.
+    pub fn wal_checkpoint_truncate(&self) -> Result<()> {
+        self.conn
+            .lock()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
     /// Atomically replace all refs for a file and clear its needs_resolution flag.
     pub fn replace_refs_and_clear_resolution(
         &self,
@@ -1468,7 +1498,7 @@ impl Db {
         refs: &[ResolvedRefRow<'_>],
     ) -> Result<()> {
         let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = batch_aware_transaction(&conn)?;
         conn.execute("DELETE FROM refs WHERE file_id = ?1", params![file_id])?;
         for r in refs {
             conn.execute(
@@ -1491,7 +1521,9 @@ impl Db {
             "UPDATE files SET needs_resolution = 0 WHERE id = ?1",
             params![file_id],
         )?;
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -2133,6 +2165,17 @@ impl Db {
 // ---------------------------------------------------------------------------
 // Row mappers
 // ---------------------------------------------------------------------------
+
+/// Open a transaction unless the connection is already inside one (an open
+/// bulk batch — see `Db::begin_batch`), in which case the caller's statements
+/// join the batch and `None` is returned. SQLite cannot nest BEGIN.
+fn batch_aware_transaction(conn: &Connection) -> Result<Option<rusqlite::Transaction<'_>>> {
+    if conn.is_autocommit() {
+        Ok(Some(conn.unchecked_transaction()?))
+    } else {
+        Ok(None)
+    }
+}
 
 fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
     let parsed_ok_int: i64 = row.get(5)?;

@@ -52,25 +52,54 @@ pub fn build_class_members(all_symbols: &[SymbolEntry]) -> ClassMembers<'_> {
     map
 }
 
+/// Keyed views over the all-symbols list, built once per resolution pass.
+/// Candidate lists preserve `all_symbols` iteration order so first-match and
+/// tie-break semantics are identical to the linear scans they replace.
+pub struct SymbolIndex<'a> {
+    by_short_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
+    by_qualified_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
+    class_members: ClassMembers<'a>,
+}
+
+impl<'a> SymbolIndex<'a> {
+    pub fn build(all_symbols: &'a [SymbolEntry]) -> Self {
+        let mut by_short_name: HashMap<&'a str, Vec<&'a SymbolEntry>> = HashMap::new();
+        let mut by_qualified_name: HashMap<&'a str, Vec<&'a SymbolEntry>> = HashMap::new();
+        for s in all_symbols {
+            by_short_name
+                .entry(s.short_name.as_str())
+                .or_default()
+                .push(s);
+            by_qualified_name
+                .entry(s.qualified_name.as_str())
+                .or_default()
+                .push(s);
+        }
+        Self {
+            by_short_name,
+            by_qualified_name,
+            class_members: build_class_members(all_symbols),
+        }
+    }
+
+    fn short(&self, name: &str) -> &[&'a SymbolEntry] {
+        self.by_short_name.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    fn qualified(&self, name: &str) -> &[&'a SymbolEntry] {
+        self.by_qualified_name.get(name).map_or(&[], Vec::as_slice)
+    }
+}
+
 pub fn resolve_refs(
     file_symbols: &[ExtractedSymbol],
     refs: &[ExtractedRef],
-    all_symbols: &[SymbolEntry],
+    index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     file_id: i64,
-    class_members: &ClassMembers<'_>,
 ) -> Vec<ResolvedRef> {
     refs.iter()
-        .map(|r| {
-            resolve_single(
-                r,
-                file_symbols,
-                all_symbols,
-                file_imports,
-                file_id,
-                class_members,
-            )
-        })
+        .map(|r| resolve_single(r, file_symbols, index, file_imports, file_id))
         .collect()
 }
 
@@ -89,10 +118,9 @@ fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
 fn resolve_single(
     r: &ExtractedRef,
     file_symbols: &[ExtractedSymbol],
-    all_symbols: &[SymbolEntry],
+    index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     file_id: i64,
-    class_members: &ClassMembers<'_>,
 ) -> ResolvedRef {
     if matches!(r.context_kind, RefContextKind::Import) {
         return ResolvedRef {
@@ -128,15 +156,12 @@ fn resolve_single(
         // Type-tracking hint: "::type_tracking::ClassName" — look up ClassName.{name}
         // in the class_members map built from parent_symbol_id chains.
         if let Some(class_name) = hint.strip_prefix(TYPE_TRACKING_PREFIX) {
-            let class_syms: Vec<&SymbolEntry> = all_symbols
+            let class_syms = index
+                .short(class_name)
                 .iter()
-                .filter(|s| {
-                    s.short_name == class_name
-                        && matches!(s.kind.as_str(), "class" | "mixin" | "extension" | "struct")
-                })
-                .collect();
+                .filter(|s| matches!(s.kind.as_str(), "class" | "mixin" | "extension" | "struct"));
             for class_sym in class_syms {
-                if let Some(members) = class_members.get(&class_sym.id)
+                if let Some(members) = index.class_members.get(&class_sym.id)
                     && let Some(&(_, member_id)) = members.iter().find(|(n, _)| *n == name.as_str())
                 {
                     return resolved(r, member_id, ResolutionMethod::TypeTracking);
@@ -145,10 +170,7 @@ fn resolve_single(
             // Type found but member not in DB — fall through to standard resolution.
         }
 
-        if let Some(s) = all_symbols
-            .iter()
-            .find(|s| s.file_id == file_id && s.qualified_name == *hint)
-        {
+        if let Some(s) = index.qualified(hint).iter().find(|s| s.file_id == file_id) {
             return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
     }
@@ -163,15 +185,17 @@ fn resolve_single(
         .collect();
 
     if let Some(best) = pick_nearest_local(&local_matches, r.line, file_symbols) {
-        if let Some(s) = all_symbols
+        if let Some(s) = index
+            .qualified(&best.qualified_name)
             .iter()
-            .find(|s| s.file_id == file_id && s.qualified_name == best.qualified_name)
+            .find(|s| s.file_id == file_id)
         {
             return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
-        if let Some(s) = all_symbols
+        if let Some(s) = index
+            .short(&best.short_name)
             .iter()
-            .find(|s| s.file_id == file_id && s.short_name == best.short_name)
+            .find(|s| s.file_id == file_id)
         {
             return resolved(r, s.id, ResolutionMethod::ScopeChain);
         }
@@ -183,7 +207,7 @@ fn resolve_single(
         name,
         &r.context_kind,
         use_kind_filter,
-        all_symbols,
+        index,
         file_imports,
         &mut visited,
     ) {
@@ -191,11 +215,11 @@ fn resolve_single(
     }
 
     // --- Step 3: global match (all_symbols by short_name) ---
-    let global_matches: Vec<&SymbolEntry> = all_symbols
+    let global_matches: Vec<&SymbolEntry> = index
+        .short(name)
         .iter()
-        .filter(|s| {
-            s.short_name == *name && (!use_kind_filter || kind_compatible(&r.context_kind, &s.kind))
-        })
+        .filter(|s| !use_kind_filter || kind_compatible(&r.context_kind, &s.kind))
+        .copied()
         .collect();
 
     if global_matches.len() == 1 {
@@ -221,10 +245,7 @@ fn resolve_single(
     }
 
     if use_kind_filter {
-        let fallback: Vec<&SymbolEntry> = all_symbols
-            .iter()
-            .filter(|s| s.short_name == *name)
-            .collect();
+        let fallback = index.short(name);
         if fallback.len() == 1 {
             return resolved(r, fallback[0].id, ResolutionMethod::GlobalFallback);
         }
@@ -320,7 +341,7 @@ fn find_via_imports(
     name: &str,
     context: &RefContextKind,
     use_kind_filter: bool,
-    all_symbols: &[SymbolEntry],
+    index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     visited: &mut HashSet<&str>,
 ) -> Option<i64> {
@@ -339,7 +360,9 @@ fn find_via_imports(
             continue;
         }
 
-        if let Some(s) = all_symbols.iter().find(|s| s.qualified_name == *path)
+        // First qualified-name match is checked for kind compatibility but not
+        // searched past — mirrors the original scan's let-chain semantics.
+        if let Some(s) = index.qualified(path).first()
             && (!use_kind_filter || kind_compatible(context, &s.kind))
         {
             return Some(s.id);
@@ -349,27 +372,27 @@ fn find_via_imports(
             .map(|(prefix, _)| prefix)
             .unwrap_or(path.as_str());
 
-        if let Some(s) = all_symbols.iter().find(|s| {
-            s.short_name == name
-                && s.qualified_name.starts_with(import_prefix)
+        if let Some(s) = index.short(name).iter().find(|s| {
+            s.qualified_name.starts_with(import_prefix)
                 && (!use_kind_filter || kind_compatible(context, &s.kind))
         }) {
             return Some(s.id);
         }
 
         if (last_segment == name || alias_match)
-            && let Some(s) = all_symbols.iter().find(|s| {
-                s.short_name == name && (!use_kind_filter || kind_compatible(context, &s.kind))
-            })
+            && let Some(s) = index
+                .short(name)
+                .iter()
+                .find(|s| !use_kind_filter || kind_compatible(context, &s.kind))
         {
             return Some(s.id);
         }
 
         if alias_match
-            && let Some(s) = all_symbols.iter().find(|s| {
-                s.short_name == last_segment
-                    && (!use_kind_filter || kind_compatible(context, &s.kind))
-            })
+            && let Some(s) = index
+                .short(last_segment)
+                .iter()
+                .find(|s| !use_kind_filter || kind_compatible(context, &s.kind))
         {
             return Some(s.id);
         }
