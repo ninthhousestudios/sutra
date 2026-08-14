@@ -15,6 +15,13 @@ use crate::db::Db;
 use crate::error::{Result, SutraError};
 use crate::parser::adapter::default_registry;
 
+/// Skip HRR encoding for symbols spanning more than this many lines. A giant
+/// decompiled function (10k-15k lines as a SINGLE symbol) forces
+/// `encode_subtree` to recurse its entire tree-sitter AST, a hard RSS/CPU spike
+/// with no similarity payoff — such functions are unique boilerplate, not
+/// members of a pattern family (sutra/324).
+const MAX_HRR_SYMBOL_LINES: i64 = 2_000;
+
 pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, bool)> {
     let changed_files = db.files_needing_hrr_recompute()?;
     if changed_files.is_empty() {
@@ -78,6 +85,9 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
 
         for &idx in indices {
             let sym = &symbols[idx];
+            if sym.end_line - sym.start_line > MAX_HRR_SYMBOL_LINES {
+                continue;
+            }
             let start =
                 tree_sitter::Point::new((sym.start_line - 1) as usize, sym.start_col as usize);
             let end = tree_sitter::Point::new((sym.end_line - 1) as usize, sym.end_col as usize);

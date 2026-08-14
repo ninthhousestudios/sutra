@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fs2::FileExt;
 use parking_lot::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::components;
 use crate::config::Config;
@@ -126,6 +126,33 @@ pub struct ParseSnapshot {
 
 /// Maximum lines per file — files larger than this are skipped with a warning.
 const MAX_LINES: usize = 100_000;
+
+/// Safety valve for pathological single files (e.g. Ghidra/BinaryNinja
+/// decompiled functions with thousands of `var_XXXX` locals): cap the number of
+/// references indexed per file. A single 15k-line decompiled function can emit
+/// tens of thousands of refs; across a large corpus these dominate the
+/// whole-corpus `all_resolved_refs` Vec that `GraphData::load` materializes,
+/// which is the primary driver of reparse RSS (sutra/324). Real source files
+/// never approach this bound, so it only truncates decompiled noise.
+const MAX_REFS_PER_FILE: usize = 15_000;
+
+/// Current resident set size in MB, read from `/proc/self/statm` (Linux).
+/// Instrumentation only — returns `None` off Linux or on read failure. Used to
+/// attribute reparse RSS to a phase of `post_parse_sequence` (sutra/324); view
+/// with `RUST_LOG=sutra=debug`.
+fn current_rss_mb() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // statm reports pages; the Linux page size is 4 KiB on all targets we run on.
+    Some(resident_pages.saturating_mul(4096) / (1024 * 1024))
+}
+
+/// Log RSS at a named phase boundary. No-op formatting cost when `debug` is off.
+fn log_phase_rss(phase: &str) {
+    if let Some(mb) = current_rss_mb() {
+        debug!(phase, rss_mb = mb, "reparse memory");
+    }
+}
 
 /// Directories to skip when walking the workspace.
 pub(crate) const SKIP_DIRS: &[&str] = &[
@@ -279,9 +306,18 @@ fn parse_single_file(
             is_test: imp.is_test,
         })
         .collect();
+    if parse_result.references.len() > MAX_REFS_PER_FILE {
+        warn!(
+            path = %rel_path,
+            refs = parse_result.references.len(),
+            max = MAX_REFS_PER_FILE,
+            "file exceeds per-file ref cap, truncating (pathological decompiled function?)"
+        );
+    }
     let ref_params: Vec<InsertRefParams<'_>> = parse_result
         .references
         .iter()
+        .take(MAX_REFS_PER_FILE)
         .map(|rf| InsertRefParams {
             unresolved_name: Some(&rf.name),
             line: rf.line as i64,
@@ -694,11 +730,13 @@ fn post_parse_sequence(
 ) -> Result<(i64, i64, i64)> {
     // Query resolution work from DB — includes freshly-parsed files,
     // dependents of deleted symbols, and orphans from interrupted parses.
+    log_phase_rss("post_parse:start");
     let resolution_ids = db.files_needing_resolution()?;
     let resolution_set: HashSet<i64> = resolution_ids.into_iter().collect();
 
     let all_db_symbols = db.all_symbols_summary()?;
     let class_members = resolver::build_class_members(&all_db_symbols);
+    log_phase_rss("post_parse:symbols_loaded");
     let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;
     let mut skipped_count: i64 = 0;
@@ -735,9 +773,11 @@ fn post_parse_sequence(
         info!(count = js_resolved, "resolved JS/TS import edges");
     }
 
+    log_phase_rss("post_parse:refs_resolved");
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;
+        log_phase_rss("post_parse:graph_loaded");
         let adjacency = graph::build_file_adjacency(&files, &gd);
         let dirty_hint = if resolution_set.is_empty() {
             None
@@ -746,6 +786,7 @@ fn post_parse_sequence(
         };
         graph::compute_rollups_with_adjacency(db, &files, &adjacency, dirty_hint)?;
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency, &gd)?;
+        log_phase_rss("post_parse:pagerank_done");
 
         let cochange_window = components::load_config(workspace_root)?
             .cochange_window_days
@@ -814,6 +855,7 @@ fn post_parse_sequence(
         if hrr_count > 0 {
             info!(count = hrr_count, "computed HRR vectors");
         }
+        log_phase_rss("post_parse:hrr_done");
 
         let mut loaded_rules = crate::rules::load_rules(workspace_root)?;
         let (all_constraints, _parse_errors) = loaded_rules.all_constraints();
@@ -833,12 +875,14 @@ fn post_parse_sequence(
             info!(count = findings.len(), "computed health findings");
         }
         db.replace_health_findings(&findings)?;
+        log_phase_rss("post_parse:health_done");
 
         if hrr_changed {
             let family_count = crate::similarity::compute_pattern_families(db)?;
             if family_count > 0 {
                 info!(count = family_count, "detected pattern families");
             }
+            log_phase_rss("post_parse:pattern_families_done");
         }
     }
 
