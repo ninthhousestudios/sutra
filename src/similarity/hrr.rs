@@ -210,18 +210,46 @@ impl HrrVec {
         Self { data: out }
     }
 
+    /// Storage format: 4-byte f32 LE scale followed by one i8 per component,
+    /// where component = i8 * scale and scale = max_abs / 127 (sutra/327).
+    /// Quantization error per component is ≤ scale/2 and averages out over
+    /// the dimension, so cosine similarities move by well under 1% — an 8×
+    /// size reduction versus raw f64 (8KB → ~1KB at dim 1024).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(self.data.len() * 8);
+        let max_abs = self.data.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        let scale = max_abs / 127.0;
+        let mut buf = Vec::with_capacity(4 + self.data.len());
+        buf.extend_from_slice(&(scale as f32).to_le_bytes());
         for &v in &self.data {
-            buf.extend_from_slice(&v.to_le_bytes());
+            let q = if scale == 0.0 {
+                0i8
+            } else {
+                (v / scale).round().clamp(-127.0, 127.0) as i8
+            };
+            buf.push(q as u8);
         }
         buf
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let data: Vec<f64> = bytes
-            .chunks_exact(8)
-            .map(|chunk| f64::from_le_bytes(chunk.try_into().unwrap()))
+        // Legacy blobs are raw f64 LE (dim × 8 bytes) — unambiguous, since the
+        // quantized format is 4 + dim bytes. Kept so vectors written before
+        // the format change still decode instead of turning to garbage.
+        if bytes.len() == DEFAULT_DIM * 8 {
+            let data: Vec<f64> = bytes
+                .chunks_exact(8)
+                .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("chunks_exact(8)")))
+                .collect();
+            return Self { data };
+        }
+        let scale = f64::from(f32::from_le_bytes(
+            bytes[..4]
+                .try_into()
+                .expect("invariant: blob has scale header"),
+        ));
+        let data: Vec<f64> = bytes[4..]
+            .iter()
+            .map(|&b| f64::from(b as i8) * scale)
             .collect();
         Self { data }
     }
@@ -414,12 +442,48 @@ mod tests {
     }
 
     #[test]
-    fn byte_roundtrip() {
+    fn byte_roundtrip_quantized() {
         let mut rng = Rng::new(42);
         let v = HrrVec::random(&mut rng);
         let bytes = v.to_bytes();
-        assert_eq!(bytes.len(), DEFAULT_DIM * 8);
+        assert_eq!(bytes.len(), 4 + DEFAULT_DIM);
         let recovered = HrrVec::from_bytes(&bytes);
+
+        let max_abs = v.data.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+        let step = max_abs / 127.0;
+        for (a, b) in v.data.iter().zip(recovered.data.iter()) {
+            assert!(
+                (a - b).abs() <= step / 2.0 + 1e-9,
+                "component error beyond quantization step: {a} vs {b}"
+            );
+        }
+        let sim = v.cosine_similarity(&recovered);
+        assert!(sim > 0.999, "quantization distorted cosine: sim={sim}");
+    }
+
+    #[test]
+    fn byte_roundtrip_deterministic() {
+        let mut rng = Rng::new(7);
+        let v = HrrVec::random(&mut rng);
+        assert_eq!(v.to_bytes(), HrrVec::from_bytes(&v.to_bytes()).to_bytes());
+    }
+
+    #[test]
+    fn legacy_f64_blob_still_decodes() {
+        let mut rng = Rng::new(42);
+        let v = HrrVec::random(&mut rng);
+        let mut legacy = Vec::with_capacity(DEFAULT_DIM * 8);
+        for &x in &v.data {
+            legacy.extend_from_slice(&x.to_le_bytes());
+        }
+        let recovered = HrrVec::from_bytes(&legacy);
+        assert_eq!(v.data, recovered.data);
+    }
+
+    #[test]
+    fn zero_vector_roundtrip() {
+        let v = HrrVec::zero();
+        let recovered = HrrVec::from_bytes(&v.to_bytes());
         assert_eq!(v.data, recovered.data);
     }
 }
