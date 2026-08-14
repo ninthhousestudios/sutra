@@ -20,7 +20,9 @@ pub use constraints::{
 pub(crate) use constraints::{accepted_sync_marker_from_conn, active_ratchets_from_conn};
 pub use conventions::ConventionRow;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
-pub use similarity::{PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary};
+pub use similarity::{
+    HrrSymbolRow, PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary,
+};
 
 use std::path::Path;
 use std::sync::Arc;
