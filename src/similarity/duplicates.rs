@@ -216,6 +216,10 @@ pub fn find_pattern_families(
         let root = uf.find(i);
         groups.entry(root).or_default().push(i);
     }
+    // Stable iteration order so family output is deterministic run-to-run
+    // (sutra/327) — HashMap order varies per process.
+    let mut groups: Vec<(usize, Vec<usize>)> = groups.into_iter().collect();
+    groups.sort_unstable_by_key(|(root, _)| *root);
 
     // Phase 2: complete-link pruning — remove members until all pairs pass
     let mut families = Vec::new();

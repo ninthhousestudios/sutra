@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 
@@ -86,7 +84,8 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT s.id, s.qualified_name
              FROM symbols s
-             WHERE s.kind IN ('function', 'method')",
+             WHERE s.kind IN ('function', 'method')
+             ORDER BY s.id",
         )?;
         let rows = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -156,7 +155,6 @@ impl Db {
         &self,
         vectors: &[(i64, &str, &[u8])],
         file_hashes: &[(i64, &str)],
-        codebook_entries: &[(String, Vec<u8>)],
     ) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
@@ -173,14 +171,6 @@ impl Db {
             )?;
             for &(file_id, hash) in file_hashes {
                 hash_stmt.execute(params![file_id, hash])?;
-            }
-
-            if !codebook_entries.is_empty() {
-                let mut cb_stmt = conn
-                    .prepare("INSERT OR IGNORE INTO hrr_codebook (key, vector) VALUES (?1, ?2)")?;
-                for (key, blob) in codebook_entries {
-                    cb_stmt.execute(params![key, blob])?;
-                }
             }
         }
         tx.commit()?;
@@ -208,39 +198,13 @@ impl Db {
         Ok(count)
     }
 
-    pub fn load_hrr_codebook(&self) -> Result<HashMap<String, HrrVec>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT key, vector FROM hrr_codebook")?;
-        let mut entries = HashMap::new();
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let key: String = row.get(0)?;
-            let blob: Vec<u8> = row.get(1)?;
-            entries.insert(key, HrrVec::from_bytes(&blob));
-        }
-        Ok(entries)
-    }
-
-    pub fn save_hrr_codebook_entries(&self, entries: &[(String, Vec<u8>)]) -> Result<usize> {
-        if entries.is_empty() {
-            return Ok(0);
-        }
-        let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
-        let mut stmt =
-            conn.prepare("INSERT OR IGNORE INTO hrr_codebook (key, vector) VALUES (?1, ?2)")?;
-        for (key, blob) in entries {
-            stmt.execute(params![key, blob])?;
-        }
-        drop(stmt);
-        tx.commit()?;
-        Ok(entries.len())
-    }
-
     pub fn load_all_strip_vectors(&self) -> Result<Vec<(i64, HrrVec)>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT symbol_id, vector FROM hrr_vectors WHERE mode = 'strip'")?;
+        // ORDER BY: downstream family detection must see a stable input order
+        // for run-to-run determinism (sutra/327).
+        let mut stmt = conn.prepare(
+            "SELECT symbol_id, vector FROM hrr_vectors WHERE mode = 'strip' ORDER BY symbol_id",
+        )?;
         let rows = stmt
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -387,29 +351,6 @@ impl Db {
                     start_line: row.get(3)?,
                     end_line: row.get(4)?,
                 })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn strip_vectors_by_component(&self) -> Result<Vec<(String, i64, Vec<u8>)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT cm.component_id, hv.symbol_id, hv.vector
-             FROM hrr_vectors hv
-             JOIN symbols s ON s.id = hv.symbol_id
-             JOIN component_membership cm ON cm.file_id = s.file_id
-             JOIN components c ON c.id = cm.component_id
-             WHERE hv.mode = 'strip' AND c.dissolved_at IS NULL
-             ORDER BY cm.component_id",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)

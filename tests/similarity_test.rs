@@ -82,14 +82,6 @@ fn load_vectors(db: &Db) -> Vec<(i64, String, HrrVec)> {
     .unwrap()
 }
 
-fn codebook_count(db: &Db) -> usize {
-    let conn = db.conn_for_test();
-    conn.query_row("SELECT COUNT(*) FROM hrr_codebook", [], |row| {
-        row.get::<_, i64>(0)
-    })
-    .unwrap() as usize
-}
-
 fn get_vec<'a>(vecs: &'a [(i64, String, HrrVec)], sym_id: i64, mode: &str) -> &'a HrrVec {
     vecs.iter()
         .find(|(id, m, _)| *id == sym_id && m == mode)
@@ -131,7 +123,9 @@ fn determinism_same_tree_same_vector() {
     parse(&f);
     let vecs1 = load_vectors(&f.db);
 
-    // Reindex (drops ephemeral tables including hrr_vectors, but keeps hrr_codebook)
+    // Reindex drops ephemeral tables including hrr_vectors; the codebook is
+    // content-addressed (sutra/327), so re-encoding must reproduce the same
+    // vectors from scratch.
     f.db.reindex().unwrap();
     parse(&f);
     let vecs2 = load_vectors(&f.db);
@@ -228,20 +222,6 @@ fn strip_ignores_identifiers_embed_distinguishes() {
         embed_sim < strip_sim,
         "embed should be less similar than strip: embed={embed_sim:.4} strip={strip_sim:.4}"
     );
-}
-
-#[test]
-fn codebook_persists_across_reindex() {
-    let f = setup(&[("src/lib.rs", "pub fn persisted(x: i32) -> i32 { x }\n")]);
-    parse(&f);
-
-    let count_before = codebook_count(&f.db);
-    assert!(count_before > 0, "codebook should have entries after parse");
-
-    // Reindex drops ephemeral tables but keeps durable hrr_codebook
-    f.db.reindex().unwrap();
-    let count_after = codebook_count(&f.db);
-    assert_eq!(count_before, count_after, "codebook should survive reindex");
 }
 
 #[test]

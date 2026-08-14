@@ -9,8 +9,6 @@ pub mod search;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use tracing::info;
-
 use crate::db::Db;
 use crate::error::{Result, SutraError};
 use crate::parser::adapter::default_registry;
@@ -36,12 +34,11 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
             .iter()
             .map(|f| (f.file_id, f.content_hash.as_str()))
             .collect();
-        db.insert_hrr_vectors_and_hashes(&[], &file_hashes, &[])?;
+        db.insert_hrr_vectors_and_hashes(&[], &file_hashes)?;
         return Ok((0, true));
     }
 
-    let existing = db.load_hrr_codebook()?;
-    let mut cb = codebook::Codebook::from_entries(existing);
+    let mut cb = codebook::Codebook::new();
 
     let registry = default_registry();
 
@@ -108,16 +105,11 @@ pub fn compute_hrr_vectors(db: &Db, workspace_root: &Path) -> Result<(usize, boo
         .filter_map(|fid| file_id_to_hash.get(fid).map(|h| (*fid, *h)))
         .collect();
 
-    let new_entries = cb.into_new_entries();
     let vec_refs: Vec<(i64, &str, &[u8])> = vectors
         .iter()
         .map(|(id, mode, blob)| (*id, mode.as_str(), blob.as_slice()))
         .collect();
-    db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes, &new_entries)?;
-
-    if !new_entries.is_empty() {
-        info!(new_count = new_entries.len(), "new HRR codebook entries");
-    }
+    db.insert_hrr_vectors_and_hashes(&vec_refs, &file_hashes)?;
 
     Ok((symbols.len(), true))
 }

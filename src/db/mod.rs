@@ -174,11 +174,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
-        name: "hrr_codebook",
-        partition: TablePartition::Durable,
-        is_virtual: false,
-    },
-    TableMeta {
         name: "hrr_vectors",
         partition: TablePartition::Ephemeral,
         is_virtual: false,

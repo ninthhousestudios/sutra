@@ -333,6 +333,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0063_file_mtime.sql"),
         true,
     ),
+    // Codebook vectors are content-addressed as of sutra/327 — drop the
+    // durable table and force a one-time HRR recompute (old vectors used a
+    // per-run random basis and are not comparable to new ones). Not
+    // ephemeral_only: reindex rebuilds hrr_vectors/hrr_file_hashes empty, so
+    // there is nothing to replay.
+    (
+        "0064_drop_hrr_codebook",
+        include_str!("../../migrations/0064_drop_hrr_codebook.sql"),
+        false,
+    ),
 ];
 
 impl Db {

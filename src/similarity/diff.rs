@@ -131,8 +131,7 @@ pub fn detect_shape_changes(
     registry: &LanguageRegistry,
     config: &ShapeChangeConfig,
 ) -> Vec<ShapeChange> {
-    let existing = db.load_hrr_codebook().unwrap_or_default();
-    let mut cb = Codebook::from_entries(existing);
+    let mut cb = Codebook::new();
     let mut results = Vec::new();
 
     for path in changed_paths {
@@ -425,7 +424,7 @@ fn example(x: i32) -> i32 {
         assert_eq!(new_fns.len(), 1);
         assert_eq!(old_fns[0].name, "example");
 
-        let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+        let mut cb = Codebook::new();
         let old_vec = encode_fn_node(
             &old_tree,
             old_fns[0].ts_node_start,
@@ -500,7 +499,7 @@ fn process(data: &[i32]) -> i32 {
         assert_eq!(old_fns.len(), 1);
         assert_eq!(new_fns.len(), 1);
 
-        let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+        let mut cb = Codebook::new();
         let old_vec = encode_fn_node(
             &old_tree,
             old_fns[0].ts_node_start,
@@ -620,7 +619,7 @@ fn process(data: &[i32]) -> i32 {
             assert_eq!(old_fns.len(), 1, "size={size}");
             assert_eq!(new_fns.len(), 1, "size={size}");
 
-            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let mut cb = Codebook::new();
             let old_vec = encode_fn_node(
                 &old_tree,
                 old_fns[0].ts_node_start,
@@ -695,7 +694,7 @@ fn process(data: &[i32]) -> i32 {
             assert_eq!(old_fns.len(), 1, "if→match size={size}");
             assert_eq!(new_fns.len(), 1, "if→match size={size}");
 
-            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let mut cb = Codebook::new();
             let old_vec = encode_fn_node(
                 &old_tree,
                 old_fns[0].ts_node_start,
@@ -771,7 +770,7 @@ fn process(data: &[i32]) -> i32 {
             assert_eq!(old_fns.len(), 1, "trivial size={size}");
             assert_eq!(new_fns.len(), 1, "trivial size={size}");
 
-            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let mut cb = Codebook::new();
             let old_vec = encode_fn_node(
                 &old_tree,
                 old_fns[0].ts_node_start,
@@ -845,7 +844,7 @@ fn process(data: &[i32]) -> i32 {
             let old_fns = extract_functions(&old_tree, old_src.as_bytes(), RUST_FN_KINDS);
             let new_fns = extract_functions(&new_tree, new_src.as_bytes(), RUST_FN_KINDS);
 
-            let mut cb = Codebook::from_entries(std::collections::HashMap::new());
+            let mut cb = Codebook::new();
             let old_vec = encode_fn_node(
                 &old_tree,
                 old_fns[0].ts_node_start,
