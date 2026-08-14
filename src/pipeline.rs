@@ -856,15 +856,18 @@ fn post_parse_sequence(
                 HashMap::new()
             }
         };
+        log_phase_rss("post_parse:cochange_done");
 
         match entity_change_walk(db, workspace_root, 500) {
             Ok(count) if count > 0 => info!(count, "indexed entity changes"),
             Ok(_) => {}
             Err(e) => warn!("entity change walk failed: {e}"),
         }
+        log_phase_rss("post_parse:entity_walk_done");
 
         let component_count =
             components::discover_components(db, &files, &gd, workspace_root, boundary_multipliers)?;
+        log_phase_rss("post_parse:components_done");
         if component_count > 0 {
             info!(component_count, "discovered components");
             let anchor_count = components::compute_semantic_anchors(db, &gd, &churn_map)?;
@@ -872,11 +875,13 @@ fn post_parse_sequence(
                 info!(anchor_count, "computed semantic anchors");
             }
         }
+        log_phase_rss("post_parse:anchors_done");
 
         let alias_count = crate::vocabulary::sync_aliases(db, workspace_root)?;
         if alias_count > 0 {
             info!(alias_count, "synced vocabulary aliases");
         }
+        log_phase_rss("post_parse:aliases_done");
 
         let (hrr_count, hrr_changed) = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
         if hrr_count > 0 {
