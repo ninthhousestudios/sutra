@@ -99,8 +99,18 @@ async fn stress_c_corpus_parse_and_resolution() {
         resolvable as f64 / secs
     );
 
-    // A second parse with nothing changed must take the cheap path and leave
-    // no file stuck with needs_resolution from the bulk-batched first pass.
+    // A second parse with nothing changed must take the cheap NoChanges path.
+    // files_parsed==0 alone doesn't prove the first pass fully resolved: a file
+    // stuck at needs_resolution=1 still has an unchanged content hash, so it's
+    // skipped by the parse loop (files_parsed stays 0) yet re-resolved via
+    // has_pending_work. Asserting zero re-resolution is what actually guards
+    // that the bulk-batched first pass committed every file's resolution.
     let snap2 = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
     assert_eq!(snap2.files_parsed, 0, "unchanged reparse reparsed files");
+    assert_eq!(
+        snap2.resolved_count + snap2.unresolved_count,
+        0,
+        "unchanged reparse re-resolved refs — a file was left stuck at \
+         needs_resolution by the bulk-batched first pass"
+    );
 }

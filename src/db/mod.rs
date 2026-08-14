@@ -1464,24 +1464,29 @@ impl Db {
     /// `replace_file_data` and `replace_refs_and_clear_resolution` join it
     /// instead of opening their own transactions, so many files share one
     /// commit (and one WAL fsync).
-    pub fn begin_batch(&self) -> Result<()> {
+    ///
+    /// Not `pub`: unbalanced begin/commit leaves the connection in
+    /// non-autocommit state, after which `batch_aware_transaction` silently
+    /// turns every per-file transaction into a no-op batch-join. `BulkBatch`
+    /// (pipeline.rs) is the only intended caller and balances these via RAII.
+    pub(crate) fn begin_batch(&self) -> Result<()> {
         self.conn.lock().execute_batch("BEGIN IMMEDIATE")?;
         Ok(())
     }
 
-    pub fn commit_batch(&self) -> Result<()> {
+    pub(crate) fn commit_batch(&self) -> Result<()> {
         self.conn.lock().execute_batch("COMMIT")?;
         Ok(())
     }
 
-    pub fn rollback_batch(&self) -> Result<()> {
+    pub(crate) fn rollback_batch(&self) -> Result<()> {
         self.conn.lock().execute_batch("ROLLBACK")?;
         Ok(())
     }
 
     /// Checkpoint the WAL and truncate it. Best-effort: a concurrent reader
     /// can legitimately block a full checkpoint, so busy errors are not fatal.
-    pub fn wal_checkpoint_truncate(&self) -> Result<()> {
+    pub(crate) fn wal_checkpoint_truncate(&self) -> Result<()> {
         self.conn
             .lock()
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
