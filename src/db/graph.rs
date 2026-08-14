@@ -4,6 +4,15 @@ use crate::error::Result;
 
 use super::{CommitRow, Db};
 
+/// Commits touching more than this many files are excluded from the cochange
+/// self-join. A commit spanning thousands of files (bulk import, decompiler
+/// dump, mechanical mass-rename) carries no co-edit signal, yet it generates
+/// O(n²) file pairs — a single 28k-file import produced ~3.9e8 pairs at
+/// jaccard 1.0 and OOM-killed the process at ~12.5 GB (sutra/324). Capping
+/// per-commit fan-out bounds both the SQLite join intermediate and the result
+/// Vec by the largest *genuine* co-edit commit.
+const MAX_COCHANGE_COMMIT_FANOUT: i64 = 50;
+
 impl Db {
     pub fn update_rollups(&self, file_id: i64, fan_in: i64, blast_radius: i64) -> Result<()> {
         self.conn.lock().execute(
@@ -151,13 +160,20 @@ impl Db {
     ) -> Result<Vec<(i64, i64, f64, i64)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "WITH file_commit_counts AS (
-                SELECT file_id, COUNT(*) AS cnt FROM commit_files GROUP BY file_id
+            "WITH eligible_commits AS (
+                SELECT commit_hash FROM commit_files
+                GROUP BY commit_hash HAVING COUNT(*) <= ?2
+            ),
+            file_commit_counts AS (
+                SELECT file_id, COUNT(*) AS cnt FROM commit_files
+                WHERE commit_hash IN (SELECT commit_hash FROM eligible_commits)
+                GROUP BY file_id
             ),
             shared AS (
                 SELECT a.file_id AS fa, b.file_id AS fb, COUNT(*) AS shared_cnt
                 FROM commit_files a
                 JOIN commit_files b ON a.commit_hash = b.commit_hash AND a.file_id < b.file_id
+                WHERE a.commit_hash IN (SELECT commit_hash FROM eligible_commits)
                 GROUP BY a.file_id, b.file_id
             )
             SELECT s.fa, s.fb,
@@ -169,7 +185,7 @@ impl Db {
             WHERE CAST(s.shared_cnt AS REAL) / (ca.cnt + cb.cnt - s.shared_cnt) >= ?1",
         )?;
         let rows: rusqlite::Result<Vec<(i64, i64, f64, i64)>> = stmt
-            .query_map(params![threshold], |row| {
+            .query_map(params![threshold, MAX_COCHANGE_COMMIT_FANOUT], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect();
