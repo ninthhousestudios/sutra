@@ -241,6 +241,10 @@ pub struct FileRow {
     pub fan_in_files: i64,
     pub blast_radius: i64,
     pub pagerank: Option<f64>,
+    /// File mtime (ns since epoch) captured at last parse, or `None` for rows
+    /// predating the mtime baseline (sutra/324). Used only to skip the read+hash
+    /// of unchanged files on a frozen-workspace reparse.
+    pub mtime_ns: Option<i64>,
 }
 
 /// An import row the resolver could not point at a workspace file — the input
@@ -669,7 +673,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
              FROM files WHERE id = ?1",
             params![id],
             map_file_row,
@@ -685,7 +689,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
              FROM files WHERE path = ?1",
             params![path],
             map_file_row,
@@ -702,7 +706,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
              FROM files
              ORDER BY blast_radius DESC",
         )?;
@@ -769,6 +773,7 @@ impl Db {
         content_hash: &str,
         line_count: i64,
         parsed_ok: bool,
+        mtime_ns: Option<i64>,
         symbols: &[InsertSymbolParams<'_>],
         parent_indices: &[Option<usize>],
         imports: &[InsertImportParams<'_>],
@@ -817,14 +822,15 @@ impl Db {
 
         // Upsert the file row (marks needs_resolution for post-parse ref resolution).
         conn.execute(
-            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed, needs_resolution)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed, mtime_ns, needs_resolution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)
              ON CONFLICT(path) DO UPDATE SET
                 language         = excluded.language,
                 content_hash     = excluded.content_hash,
                 line_count       = excluded.line_count,
                 parsed_ok        = excluded.parsed_ok,
                 last_parsed      = excluded.last_parsed,
+                mtime_ns         = excluded.mtime_ns,
                 needs_resolution = 1",
             params![
                 path,
@@ -832,7 +838,8 @@ impl Db {
                 content_hash,
                 line_count,
                 parsed_ok as i64,
-                now
+                now,
+                mtime_ns
             ],
         )?;
         let file_id: i64 = conn.query_row(
@@ -2140,6 +2147,7 @@ fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
         fan_in_files: row.get(7)?,
         blast_radius: row.get(8)?,
         pagerank: row.get(9)?,
+        mtime_ns: row.get(10)?,
     })
 }
 

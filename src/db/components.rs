@@ -364,9 +364,8 @@ impl Db {
             stmt.execute(params![id, term, short_name, kind, target])?;
         }
         drop(stmt);
-        let mut mem_stmt = tx.prepare(
-            "INSERT INTO alias_group_member (group_term, member_term) VALUES (?1, ?2)",
-        )?;
+        let mut mem_stmt =
+            tx.prepare("INSERT INTO alias_group_member (group_term, member_term) VALUES (?1, ?2)")?;
         for (group_term, member_term) in group_members {
             mem_stmt.execute(params![group_term, member_term])?;
         }

@@ -354,6 +354,7 @@ mod tests {
             fan_in_files: 0,
             blast_radius: 0,
             pagerank: None,
+            mtime_ns: None,
         }
     }
 }

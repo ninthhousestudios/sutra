@@ -1399,7 +1399,7 @@ fn test_replace_file_data_atomic() {
 
     let (file_id, sym_count) = db
         .replace_file_data(
-            "test.rs", "rust", "hash1", 5, true, &symbols, &parents, &imports, &refs,
+            "test.rs", "rust", "hash1", 5, true, None, &symbols, &parents, &imports, &refs,
         )
         .unwrap();
     assert!(file_id > 0);
@@ -1408,7 +1408,7 @@ fn test_replace_file_data_atomic() {
     // Replace again with different data — should not duplicate.
     let (file_id2, sym_count2) = db
         .replace_file_data(
-            "test.rs", "rust", "hash2", 10, true, &symbols, &parents, &imports, &refs,
+            "test.rs", "rust", "hash2", 10, true, None, &symbols, &parents, &imports, &refs,
         )
         .unwrap();
     assert!(file_id2 > 0);

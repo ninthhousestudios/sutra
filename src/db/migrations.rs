@@ -324,6 +324,15 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0062_alias_groups.sql"),
         false,
     ),
+    // Per-file mtime baseline so frozen-workspace reparse can skip the read+hash
+    // of unchanged files via a stat (sutra/324). ephemeral_only: it ALTERs the
+    // `files` table, which reindex drops and recreates from 0001, so this must
+    // replay to re-add the column (like the 0047/0049/0051/0053 ALTERs).
+    (
+        "0063_file_mtime",
+        include_str!("../../migrations/0063_file_mtime.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -496,6 +505,7 @@ impl Db {
                     && Self::column_exists(conn, "snapshots", "health_score")
             }
             "0004_symbol_flags" => Self::column_exists(conn, "symbols", "flags"),
+            "0063_file_mtime" => Self::column_exists(conn, "files", "mtime_ns"),
             "0005_conventions" => {
                 let exists: bool = conn
                     .query_row(

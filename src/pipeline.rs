@@ -232,6 +232,7 @@ fn parse_single_file(
     workspace_root: &Path,
     registry: &LanguageRegistry,
     pool: &mut ParserPool,
+    trust_mtime: bool,
 ) -> Result<Option<FileParseResult>> {
     let rel_path = file_path
         .strip_prefix(workspace_root)
@@ -245,6 +246,27 @@ fn parse_single_file(
         None => return Ok(None),
     };
     let language = adapter.language_id();
+
+    // Cheap stat before reading: on a frozen-workspace reparse an unchanged file
+    // (mtime matches the stored baseline) is skipped without reading its bytes,
+    // so ingesting a few new files into a large corpus doesn't re-read the whole
+    // corpus (sutra/324). Non-frozen workspaces don't trust mtime — a mtime-
+    // preserving edit must still be caught by the content-hash check below.
+    let mtime_ns: Option<i64> = std::fs::metadata(file_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64);
+
+    let existing = db.file_by_path(&rel_path)?;
+    if trust_mtime
+        && let Some(ns) = mtime_ns
+        && let Some(ref ex) = existing
+        && ex.mtime_ns == Some(ns)
+        && !db.file_has_null_language_attrs(ex.id)?
+    {
+        return Ok(None);
+    }
 
     let contents = match std::fs::read_to_string(file_path) {
         Ok(c) => c,
@@ -267,7 +289,6 @@ fn parse_single_file(
 
     let content_hash = blake3::hash(contents.as_bytes()).to_hex().to_string();
 
-    let existing = db.file_by_path(&rel_path)?;
     if let Some(ref ex) = existing
         && ex.content_hash == content_hash
         && !db.file_has_null_language_attrs(ex.id)?
@@ -334,6 +355,7 @@ fn parse_single_file(
         &content_hash,
         line_count as i64,
         parse_result.parsed_ok,
+        mtime_ns,
         &flat_symbols,
         &parent_indices,
         &import_params,
@@ -516,9 +538,14 @@ pub fn parse_workspace(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::error::SutraError::Internal("parse cancelled".into()));
             }
-            if let Some(result) =
-                parse_single_file(db, file_path, &workspace.root, registry, &mut pool)?
-            {
+            if let Some(result) = parse_single_file(
+                db,
+                file_path,
+                &workspace.root,
+                registry,
+                &mut pool,
+                workspace.frozen,
+            )? {
                 parse_errors += result.parse_errors;
                 if result.file_id != 0 {
                     files_parsed += 1;
