@@ -56,6 +56,14 @@ const LSH_SEED: u64 = 0xDEAD_BEEF_CAFE_1234;
 const BRUTE_FORCE_THRESHOLD: usize = 50;
 const MAX_BUCKET_SIZE: usize = 200;
 const MAX_GROUP_SIZE: usize = 1000;
+/// Upper bound on the working set fed to the O(members²) core-extraction
+/// ranking. Union-find can transitively merge thousands of near-identical
+/// symbols (e.g. decompiled C functions, unioned via LSH star-buckets) into a
+/// single group; ranking all-pairs over ~15k members fills SimCache with ~10⁸
+/// entries and OOMs (sutra/324). Pre-truncating bounds the ranking cost; the
+/// survivors are still reduced to MAX_GROUP_SIZE, and a family of thousands of
+/// clones is boilerplate noise regardless of which members are kept.
+const CORE_EXTRACTION_CAP: usize = 2000;
 
 struct SimHashIndex {
     tables: Vec<HashMap<u64, Vec<usize>>>,
@@ -219,6 +227,14 @@ pub fn find_pattern_families(
         // For oversized groups, keep the most connected members by
         // average similarity to all others (greedy core extraction).
         if members.len() > MAX_GROUP_SIZE {
+            // Bound the O(members²) ranking below: a pathologically large
+            // group (thousands of near-identical clones) would otherwise fill
+            // SimCache with ~10⁸ pairs and OOM (sutra/324). Deterministically
+            // pre-truncate the working set first.
+            if members.len() > CORE_EXTRACTION_CAP {
+                members.sort_unstable();
+                members.truncate(CORE_EXTRACTION_CAP);
+            }
             let mut avg_sims: Vec<(usize, f64)> = members
                 .iter()
                 .enumerate()
