@@ -523,6 +523,77 @@ fn single_file_change_recomputes_only_that_file() {
 }
 
 #[test]
+fn pattern_families_deterministic_across_full_recompute() {
+    // Three structurally identical functions (one family) plus an unrelated
+    // shape, spread across files so file iteration order matters. A reindex +
+    // reparse recomputes vectors and families from scratch with fresh HashMap
+    // seeds — family membership must not wobble (sutra/327).
+    let files: &[(&str, &str)] = &[
+        (
+            "src/a.rs",
+            "pub fn clone_a(x: i32, y: i32) -> i32 { x + y }\n",
+        ),
+        (
+            "src/b.rs",
+            "pub fn clone_b(p: i32, q: i32) -> i32 { p + q }\n",
+        ),
+        (
+            "src/c.rs",
+            "pub fn clone_c(m: i32, n: i32) -> i32 { m + n }\n",
+        ),
+        (
+            "src/d.rs",
+            "pub fn other(x: i32) -> i32 { if x > 0 { x * 2 } else { x - 1 } }\n",
+        ),
+    ];
+    let f = setup(files);
+    parse(&f);
+
+    let load_families = |db: &Db| -> Vec<Vec<String>> {
+        let conn = db.conn_for_test();
+        let mut stmt = conn
+            .prepare(
+                "SELECT pfm.family_id, s.qualified_name
+                 FROM pattern_family_members pfm
+                 JOIN symbols s ON s.id = pfm.symbol_id
+                 ORDER BY pfm.family_id, s.qualified_name",
+            )
+            .unwrap();
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut families: Vec<Vec<String>> = Vec::new();
+        let mut last_id = None;
+        for (fid, name) in rows {
+            if last_id != Some(fid) {
+                families.push(Vec::new());
+                last_id = Some(fid);
+            }
+            families.last_mut().unwrap().push(name);
+        }
+        families.sort();
+        families
+    };
+
+    let families1 = load_families(&f.db);
+    assert!(
+        families1.iter().any(|fam| fam.len() >= 3),
+        "expected the three structural clones to form a family, got {families1:?}"
+    );
+
+    f.db.reindex().unwrap();
+    parse(&f);
+    let families2 = load_families(&f.db);
+
+    assert_eq!(
+        families1, families2,
+        "pattern families changed across identical recomputes"
+    );
+}
+
+#[test]
 fn hrr_file_hashes_written_atomically_with_vectors() {
     let f = setup(&[("src/lib.rs", "pub fn hello() -> i32 { 42 }\n")]);
     parse(&f);
