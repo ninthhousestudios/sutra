@@ -72,9 +72,12 @@ src/similarity/
   hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
                       convolution, Rng (deterministic xoshiro256++).
                       Key methods: cosine_similarity, bind/unbind,
-                      bundle, permute, to_bytes/from_bytes.
-  codebook.rs       — Codebook: maps AST node-kind strings to random
-                      HrrVec. Persists to hrr_codebook table (durable).
+                      bundle, permute, to_bytes/from_bytes. Storage format
+                      is i8-quantized + 4-byte f32 scale header (~1KB/vec,
+                      8× smaller than f64; legacy f64 blobs still decode).
+  codebook.rs       — Codebook: content-addressed (sutra/327) — key → HrrVec
+                      seeded by FNV-1a hash of the key, per-run memo only,
+                      nothing persisted. Deterministic in any encounter order.
   encoder.rs        — encode_subtree(node, source, codebook, embed_idents).
                       embed_idents=false → strip mode (structure only),
                       embed_idents=true → embed mode (structure + names).
@@ -91,8 +94,13 @@ src/similarity/
   search.rs         — find_similar: cosine-similarity ranked search.
                       SimilarityMatch{symbol_id, score}. Self-exclusion,
                       threshold filtering, limit truncation.
-  mod.rs            — compute_hrr_vectors (pipeline entry),
-                      compute_pattern_families.
+  mod.rs            — compute_hrr_vectors (pipeline entry; per-file encoding
+                      parallelized via thread::scope + atomic work queue,
+                      SUTRA_HRR_PARALLELISM override), compute_pattern_families.
+                      SimilarityMode knob: SUTRA_SIMILARITY_MODE =
+                      full|strip-only|off|auto (auto downgrades to strip-only
+                      above 200k function symbols; strip-only drops embed
+                      vectors, off skips HRR entirely).
 
 src/tools/
   file_health.rs    — MCP tool: queries findings with waiver status, scores
@@ -110,10 +118,11 @@ src/tools/
 src/db/
   similarity.rs     — HrrSymbolRow, SymbolSummary, PatternFamily types.
                       Db methods: function_symbols_for_hrr, replace_hrr_vectors,
-                      load_hrr_codebook, save_hrr_codebook_entries,
                       load_all_strip_vectors, load_hrr_vector (single),
                       load_all_vectors_by_mode, replace_pattern_families,
-                      query_pattern_families, symbols_by_ids.
+                      query_pattern_families, symbols_by_ids,
+                      function_symbol_count, delete_embed_vectors.
+                      (hrr_codebook table dropped by migration 0064.)
   components.rs     — component_members_with_line_count() added for
                       NLOC-weighted component health scoring.
 
