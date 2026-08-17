@@ -36,10 +36,73 @@ pub struct AliasConfig {
     pub symbol: HashMap<String, String>,
 }
 
+/// One `aliases` projection row: `(id, term, short_name, target_kind, target_ref)`.
+type AliasTuple = (String, String, Option<String>, String, String);
+
 /// Trailing segment of a namespaced term (`positions/deg_to_rashi` ->
 /// `deg_to_rashi`), or `None` when the term carries no `/`.
 fn short_name_of(term: &str) -> Option<String> {
     term.rsplit_once('/').map(|(_, seg)| seg.to_string())
+}
+
+/// Generic structural/role segments that carry no domain meaning on their own.
+/// Excluded from sub-token indexing so a search for "report" or "table" doesn't
+/// resolve to every symbol whose name happens to end in one. Deliberately short.
+const SUBTOKEN_STOPLIST: &[&str] = &[
+    "main",
+    "report",
+    "table",
+    "init",
+    "dispatch",
+    "dispatcher",
+    "handler",
+    "panel",
+    "builder",
+    "print",
+    "screen",
+    "2nd",
+];
+
+/// Domain sub-tokens of a namespaced term's short name, split on `_`, so a bare
+/// technique word resolves (`dashas/vimshottari_main` -> `vimshottari`).
+/// Returns nothing when the short name is a single segment (already indexed as
+/// the short name itself) or every segment is filtered. Generic (stoplisted) and
+/// trivially short (<3 char) segments are dropped; duplicates within a term are
+/// collapsed.
+fn sub_tokens(term: &str) -> Vec<String> {
+    let Some(short) = short_name_of(term) else {
+        return Vec::new();
+    };
+    let segments: Vec<&str> = short.split('_').collect();
+    if segments.len() < 2 {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for seg in segments {
+        if seg.len() < 3 || SUBTOKEN_STOPLIST.contains(&seg) || out.iter().any(|s| s == seg) {
+            continue;
+        }
+        out.push(seg.to_string());
+    }
+    out
+}
+
+/// Push one alias projection row (fresh id). Kept a free fn rather than a
+/// closure so sub-token emission can borrow `tuples` in the same scope.
+fn push_alias(
+    tuples: &mut Vec<AliasTuple>,
+    term: &str,
+    short_name: Option<String>,
+    section: &str,
+    target: String,
+) {
+    tuples.push((
+        Uuid::now_v7().to_string(),
+        term.to_string(),
+        short_name,
+        section.to_string(),
+        target,
+    ));
 }
 
 pub fn parse_aliases(content: &str) -> Result<AliasConfig> {
@@ -94,29 +157,30 @@ pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
     let source = read_aliases_source(root)?;
     let config = parse_aliases(&source)?;
     let mut seen: HashMap<&str, &str> = HashMap::new();
-    // (id, term, short_name, target_kind, target_ref)
-    let mut tuples: Vec<(String, String, Option<String>, String, String)> = Vec::new();
+    let mut tuples: Vec<AliasTuple> = Vec::new();
     // (group_term, member_term)
     let mut group_members: Vec<(String, String)> = Vec::new();
-
-    let mut record = |term: &str, section: &'static str, target: String| {
-        tuples.push((
-            Uuid::now_v7().to_string(),
-            term.to_string(),
-            short_name_of(term),
-            section.into(),
-            target,
-        ));
-    };
 
     // [component]: string -> nickname (kind=component); array -> membership
     // group (kind=group + member rows).
     for (term, value) in &config.component {
         check_duplicate(&mut seen, term, "component")?;
         match value {
-            ComponentValue::Nickname(target) => record(term, "component", target.clone()),
+            ComponentValue::Nickname(target) => push_alias(
+                &mut tuples,
+                term,
+                short_name_of(term),
+                "component",
+                target.clone(),
+            ),
             ComponentValue::Group(members) => {
-                record(term, "group", term.clone());
+                push_alias(
+                    &mut tuples,
+                    term,
+                    short_name_of(term),
+                    "group",
+                    term.clone(),
+                );
                 for member in members {
                     group_members.push((term.clone(), member.clone()));
                 }
@@ -127,7 +191,24 @@ pub fn sync_aliases(db: &Db, root: &Path) -> Result<usize> {
     for (section, map) in [("file", &config.file), ("symbol", &config.symbol)] {
         for (term, target_ref) in map {
             check_duplicate(&mut seen, term, section)?;
-            record(term, section, target_ref.clone());
+            push_alias(
+                &mut tuples,
+                term,
+                short_name_of(term),
+                section,
+                target_ref.clone(),
+            );
+            // Sub-token rows make bare domain words resolvable via the
+            // short-name path (`dashas/vimshottari_main` -> "vimshottari").
+            // Symbol terms only — file paths and component nicknames carry no
+            // technique vocabulary. Synthetic `term#subtoken` keys stay unique
+            // (term is already unique) and won't be typed as exact queries.
+            if section == "symbol" {
+                for sub in sub_tokens(term) {
+                    let synth = format!("{term}#{sub}");
+                    push_alias(&mut tuples, &synth, Some(sub), section, target_ref.clone());
+                }
+            }
         }
     }
 
@@ -420,7 +501,9 @@ UP = "UserProfile"
 "#;
         let config = parse_aliases(toml).unwrap();
         assert_eq!(config.component.len(), 2);
-        assert!(matches!(&config.component["auth"], ComponentValue::Nickname(v) if v == "authentication"));
+        assert!(
+            matches!(&config.component["auth"], ComponentValue::Nickname(v) if v == "authentication")
+        );
         assert!(matches!(&config.component["db-layer"], ComponentValue::Nickname(v) if v == "db"));
         assert_eq!(config.file.len(), 1);
         assert_eq!(config.file["config"], "src/config.rs");
@@ -466,7 +549,10 @@ positions = ["positions/deg_to_rashi", "positions/is_own_sign"]
 auth = "authentication"
 "#;
         let config = parse_aliases(toml).unwrap();
-        assert!(matches!(&config.component["auth"], ComponentValue::Nickname(_)));
+        assert!(matches!(
+            &config.component["auth"],
+            ComponentValue::Nickname(_)
+        ));
         match &config.component["positions"] {
             ComponentValue::Group(members) => assert_eq!(members.len(), 2),
             other => panic!("expected group, got {other:?}"),
@@ -491,8 +577,43 @@ auth = "authentication"
 
     #[test]
     fn test_short_name_of() {
-        assert_eq!(short_name_of("positions/deg_to_rashi").as_deref(), Some("deg_to_rashi"));
+        assert_eq!(
+            short_name_of("positions/deg_to_rashi").as_deref(),
+            Some("deg_to_rashi")
+        );
         assert_eq!(short_name_of("deg_to_rashi"), None);
         assert_eq!(short_name_of("a/b/c").as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn test_sub_tokens_splits_and_filters() {
+        // Bare technique word becomes resolvable; generic "main" is stoplisted.
+        assert_eq!(sub_tokens("dashas/vimshottari_main"), vec!["vimshottari"]);
+        // Leading "report" role prefix dropped, technique kept.
+        assert_eq!(
+            sub_tokens("dashas/report_shodashottari"),
+            vec!["shodashottari"]
+        );
+        // Multi-word technique keeps every non-generic segment.
+        assert_eq!(
+            sub_tokens("positions/special_lagna_bhava"),
+            vec!["special", "lagna", "bhava"]
+        );
+    }
+
+    #[test]
+    fn test_sub_tokens_empty_cases() {
+        // No '/': not a namespaced symbol term.
+        assert!(sub_tokens("deg_to_rashi").is_empty());
+        // Single-segment short name is already indexed as the short name.
+        assert!(sub_tokens("dashas/vimshottari").is_empty());
+        // Every segment filtered (generic + too short) yields nothing.
+        assert!(sub_tokens("ui/main_2nd").is_empty());
+    }
+
+    #[test]
+    fn test_sub_tokens_dedup_and_min_length() {
+        // Duplicate segment collapsed; <3-char segments dropped.
+        assert_eq!(sub_tokens("x/kala_id_kala"), vec!["kala"]);
     }
 }

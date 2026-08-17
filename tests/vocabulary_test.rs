@@ -174,8 +174,60 @@ fn test_resolve_group_expands_to_members() {
     assert!(!group.orphan);
     let paths: Vec<&str> = group.locations.iter().map(|l| l.path.as_str()).collect();
     // Both member symbols live in src/positions.rs -> two locations.
-    assert_eq!(group.locations.len(), 2, "group unions both member locations");
+    assert_eq!(
+        group.locations.len(),
+        2,
+        "group unions both member locations"
+    );
     assert!(paths.iter().all(|p| *p == "src/positions.rs"));
+}
+
+#[test]
+fn test_resolve_subtoken_of_short_name() {
+    let (dir, db) = setup_db();
+    let f = db
+        .upsert_file("src/dashas.rs", "rust", "h1", 50, true)
+        .unwrap();
+    insert_symbol(&db, f, "FUN_005ec7a0", "FUN_005ec7a0", "function");
+
+    let sutra_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&sutra_dir).unwrap();
+    std::fs::write(
+        sutra_dir.join("aliases.toml"),
+        "[symbol]\n\"dashas/vimshottari_main\" = \"FUN_005ec7a0\"\n",
+    )
+    .unwrap();
+    vocabulary::sync_aliases(&db, dir.path()).unwrap();
+
+    // Full path and short name still resolve.
+    assert!(
+        vocabulary::resolve(&db, "dashas/vimshottari_main")
+            .unwrap()
+            .iter()
+            .any(|m| m.target_ref == "FUN_005ec7a0")
+    );
+    assert!(
+        vocabulary::resolve(&db, "vimshottari_main")
+            .unwrap()
+            .iter()
+            .any(|m| m.target_ref == "FUN_005ec7a0")
+    );
+
+    // The bare technique sub-token now resolves to the same symbol.
+    let bare = vocabulary::resolve(&db, "vimshottari").unwrap();
+    assert!(
+        bare.iter().any(|m| m.target_ref == "FUN_005ec7a0"),
+        "bare technique word should resolve via sub-token"
+    );
+
+    // The stoplisted generic segment does NOT resolve.
+    assert!(
+        !vocabulary::resolve(&db, "main")
+            .unwrap()
+            .iter()
+            .any(|m| m.target_ref == "FUN_005ec7a0"),
+        "generic 'main' must be stoplisted, not resolvable"
+    );
 }
 
 // ---------------------------------------------------------------------------
