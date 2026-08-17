@@ -350,6 +350,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0065_hrr_vectors_mode_index.sql"),
         true,
     ),
+    // Re-project aliases once: sync_aliases now emits sub-token rows, but the
+    // hash gate would skip the rebuild since aliases.toml is unchanged (sutra/330).
+    (
+        "0066_reset_alias_sync_for_subtokens",
+        include_str!("../../migrations/0066_reset_alias_sync_for_subtokens.sql"),
+        false,
+    ),
 ];
 
 impl Db {
