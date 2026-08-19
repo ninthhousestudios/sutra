@@ -1340,6 +1340,27 @@ impl Db {
         })
     }
 
+    /// All distinct files that define a symbol carrying `qualified_name`.
+    ///
+    /// A single logical entity is routinely split across files — a Rust struct
+    /// and its `impl` blocks, for instance, all share the qualified name of the
+    /// type. `resolve_symbol` collapses that set to one arbitrary row, so a
+    /// caller acting on the resolved symbol's file (the modification guard's
+    /// impact ack) would only cover one of the definition sites. This returns
+    /// every file so the ack can span the whole entity (sutra/329).
+    pub fn symbol_definition_files(&self, qualified_name: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT f.path FROM symbols s \
+             JOIN files f ON s.file_id = f.id \
+             WHERE s.qualified_name = ?1 ORDER BY f.path",
+        )?;
+        let paths = stmt
+            .query_map(params![qualified_name], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(paths)
+    }
+
     pub fn resolve_symbol_diagnostic(
         &self,
         name: &str,

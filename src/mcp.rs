@@ -572,14 +572,16 @@ impl SutraServer {
     #[tool(
         description = "Blast radius analysis for a symbol. Counts direct callers, \
         runs transitive BFS (depth 3), and computes risk level (low/medium/high). \
-        Also acknowledges the file for the modification guard."
+        Also acknowledges every file that defines the symbol for the modification \
+        guard, clearing its load-bearing block on a retried edit; the acked paths \
+        are returned in `guard_ack`."
     )]
     pub async fn sutra_impact(
         &self,
         Parameters(args): Parameters<ImpactArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::impact::handle(
+        let mut result = tools::impact::handle(
             ctx.db(),
             &args.symbol,
             args.explain.unwrap_or(false),
@@ -587,9 +589,29 @@ impl SutraServer {
             ctx.workspace_root(),
         )
         .map_err(sutra_to_rmcp)?;
-        if let Some(file_path) = result["file"].as_str() {
-            guard::touch_ack(ctx.workspace_root(), file_path);
+        // Acknowledge the file(s) for the modification guard. The guard blocks a
+        // load-bearing *file* and names one of its hot symbols; the agent runs
+        // sutra_impact on that name, which resolves to one arbitrary definition
+        // site. When the entity spans several files (a struct + its impl blocks
+        // all share a qualified name), that site need not be the file being
+        // edited, so a single-file ack silently fails to clear the guard
+        // (sutra/329). Ack every definition site so the retry always lands, and
+        // report the set so the caller can see the handshake completed.
+        let mut acked: Vec<String> = Vec::new();
+        if let Some(qname) = result["symbol"].as_str()
+            && let Ok(files) = ctx.db().symbol_definition_files(qname)
+        {
+            acked = files;
         }
+        if let Some(file_path) = result["file"].as_str()
+            && !acked.iter().any(|p| p == file_path)
+        {
+            acked.push(file_path.to_string());
+        }
+        for path in &acked {
+            guard::touch_ack(ctx.workspace_root(), path);
+        }
+        result["guard_ack"] = serde_json::json!(acked);
         to_compact_json(ctx.wrap(result))
     }
 

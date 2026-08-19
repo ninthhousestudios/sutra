@@ -355,3 +355,53 @@ fn impact_no_lessons_field_when_none_match() {
     .unwrap();
     assert!(result.get("lessons").is_none());
 }
+
+// A single logical entity (a struct + its impl blocks) is split across files
+// but shares one qualified name. `resolve_symbol` collapses that to one
+// arbitrary row, so the guard's impact ack — keyed on the resolved file — could
+// miss the file actually being edited (sutra/329). `symbol_definition_files`
+// returns every site so the ack can span the whole entity.
+#[test]
+fn symbol_definition_files_spans_all_sites() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    for (path, hash) in [
+        ("src/db/mod.rs", "h_mod"),
+        ("src/db/graph.rs", "h_graph"),
+        ("src/db/health.rs", "h_health"),
+    ] {
+        db.upsert_file(path, "rust", hash, 100, true).unwrap();
+    }
+
+    // Same qualified name "Db" defined across three files (struct + two impls),
+    // mirroring the real layout that triggered the bug.
+    for path in ["src/db/mod.rs", "src/db/graph.rs", "src/db/health.rs"] {
+        let fid = db.file_by_path(path).unwrap().unwrap().id;
+        db.insert_symbol(&sym(fid, "Db", "Db", Some("struct Db"), 1, 2))
+            .unwrap();
+    }
+
+    // resolve_symbol collapses to exactly one arbitrary file...
+    let resolved = db.resolve_symbol("Db", None).unwrap().unwrap();
+    assert_eq!(resolved.qualified_name.as_ref(), "Db");
+
+    // ...but the definition-file query returns every site.
+    let mut files = db.symbol_definition_files("Db").unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![
+            "src/db/graph.rs".to_string(),
+            "src/db/health.rs".to_string(),
+            "src/db/mod.rs".to_string(),
+        ]
+    );
+
+    // Unknown name yields no files rather than an error.
+    assert!(
+        db.symbol_definition_files("Nonexistent")
+            .unwrap()
+            .is_empty()
+    );
+}
