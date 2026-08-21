@@ -9,6 +9,7 @@ use crate::db::Db;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProvenanceArgs {
+    #[serde(default)]
     pub workspace: String,
     pub symbol: String,
 }

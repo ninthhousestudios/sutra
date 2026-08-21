@@ -10,6 +10,7 @@ use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MapArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub path_prefix: Option<String>,

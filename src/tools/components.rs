@@ -10,6 +10,7 @@ use crate::error::Result;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ComponentsArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub compact: Option<bool>,

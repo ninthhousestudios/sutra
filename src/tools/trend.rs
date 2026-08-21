@@ -9,6 +9,7 @@ use crate::error::Result;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TrendArgs {
+    #[serde(default)]
     pub workspace: String,
     /// ISO timestamp for the start of the comparison window.
     /// Defaults to the second-most-recent snapshot.

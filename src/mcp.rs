@@ -97,6 +97,11 @@ pub struct SutraServer {
     parse_coord: ParseCoordinator,
     dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
     lessons_db: Arc<LessonsDb>,
+    /// Canonical id of the workspace to use when a tool call omits `workspace`
+    /// (empty string). Set only on the stdio path, where the server process
+    /// shares the client session's CWD; `None` under the http daemon, which
+    /// serves many repos and has no single "current" workspace.
+    default_workspace: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -110,6 +115,7 @@ impl Clone for SutraServer {
             parse_coord: self.parse_coord.clone(),
             dd_engines: Arc::clone(&self.dd_engines),
             lessons_db: Arc::clone(&self.lessons_db),
+            default_workspace: self.default_workspace.clone(),
             tool_router: Self::tool_router(),
         }
     }
@@ -131,6 +137,7 @@ impl SutraServer {
             parse_coord,
             dd_engines: Arc::new(Mutex::new(HashMap::new())),
             lessons_db,
+            default_workspace: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -140,9 +147,18 @@ impl SutraServer {
         self
     }
 
+    /// Set the workspace used when a tool call omits `workspace`. Passed the
+    /// canonical id of the CWD workspace on the stdio path; a no-op default of
+    /// `None` keeps the http daemon explicit-workspace-only.
+    pub fn with_default_workspace(mut self, ws_id: Option<String>) -> Self {
+        self.default_workspace = ws_id;
+        self
+    }
+
     fn get_dd_engine(&self, ws_id: &str) -> Arc<DdEngine> {
+        let ws_id = self.canonical_ws_id(ws_id);
         let mut engines = self.dd_engines.lock();
-        Arc::clone(engines.entry(ws_id.to_string()).or_insert_with(|| {
+        Arc::clone(engines.entry(ws_id).or_insert_with(|| {
             Arc::new(DdEngine::new(Duration::from_secs(
                 self.config.constraints_idle_timeout_sec,
             )))
@@ -153,9 +169,39 @@ impl SutraServer {
         &self,
         ws_id: &str,
     ) -> std::result::Result<crate::workspace::WorkspaceEntry, ErrorData> {
+        // Empty `workspace` means "use the session default" — the CWD workspace
+        // on the stdio path. With no default (http daemon, or CWD outside any
+        // registered workspace) this is a clear error rather than a silent guess.
+        let ws_id = if ws_id.trim().is_empty() {
+            match self.default_workspace.as_deref() {
+                Some(id) => id,
+                None => {
+                    return Err(ErrorData::new(
+                        rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                        "no `workspace` given and no session default (the server's CWD is \
+                         not inside a registered workspace); pass `workspace` explicitly"
+                            .to_string(),
+                        None,
+                    ));
+                }
+            }
+        } else {
+            ws_id
+        };
         workspace::resolve_workspace(&self.workspaces.read(), ws_id)
             .cloned()
             .map_err(sutra_to_rmcp)
+    }
+
+    /// Canonical workspace id for a raw arg, applying the session default for an
+    /// empty arg. Infallible: helpers that *key* on the id (parse lock, DD
+    /// engine map) must land on the same canonical id `resolve_workspace`
+    /// resolves to — path/basename/empty alike — or they desync onto a stray
+    /// key. On resolution failure it degrades to the raw input (prior behavior).
+    fn canonical_ws_id(&self, ws_id: &str) -> String {
+        self.resolve_workspace(ws_id)
+            .map(|w| w.id)
+            .unwrap_or_else(|_| ws_id.to_string())
     }
 
     fn get_db(&self, ws_id: &str) -> std::result::Result<Arc<Db>, ErrorData> {
@@ -264,6 +310,9 @@ impl SutraServer {
         let mut val = serde_json::json!({
             "as_of": as_of,
             "is_stale": is_stale,
+            // Echo which workspace answered, so an omitted `workspace` that
+            // defaulted to an unexpected repo is visible in the response.
+            "workspace": db.workspace_id(),
         });
         if frozen {
             val["frozen"] = serde_json::Value::Bool(true);
@@ -275,7 +324,7 @@ impl SutraServer {
     }
 
     async fn await_parse(&self, ws_id: &str) {
-        let lock = self.parse_coord.lock_for(ws_id);
+        let lock = self.parse_coord.lock_for(&self.canonical_ws_id(ws_id));
         let _guard = lock.lock().await;
     }
 

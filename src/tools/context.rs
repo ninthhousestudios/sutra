@@ -13,6 +13,7 @@ use crate::lessons::LessonsDb;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Symbol name to build context for (qualified or short name).
     pub symbol: String,

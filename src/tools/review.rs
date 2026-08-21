@@ -20,6 +20,7 @@ use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewArgs {
+    #[serde(default)]
     pub workspace: String,
     /// "branch" (default), "staged", "unstaged", or a commit spec (e.g. "HEAD~3..HEAD", "abc123")
     #[serde(default)]

@@ -11,6 +11,7 @@ use crate::lessons::LessonsDb;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImpactArgs {
+    #[serde(default)]
     pub workspace: String,
     pub symbol: String,
     /// When true, include `_explain` with BFS frontier by depth and threshold constants.

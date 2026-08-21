@@ -10,6 +10,7 @@ use crate::similarity::search;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SimilarArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Symbol name to find similar functions for. Omit to find all near-duplicate pattern families.
     #[serde(default)]

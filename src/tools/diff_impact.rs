@@ -12,6 +12,7 @@ use crate::tools::symbol_diff;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffImpactArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub base: Option<String>,

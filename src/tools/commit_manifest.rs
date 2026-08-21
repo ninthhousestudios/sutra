@@ -13,6 +13,7 @@ const MAX_COMMITS: usize = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommitManifestArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Base commit (default: merge-base with default branch)
     #[serde(default)]

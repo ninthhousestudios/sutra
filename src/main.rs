@@ -350,6 +350,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 type DbCache = Arc<Mutex<HashMap<String, Arc<Db>>>>;
 type WsConfig = Arc<RwLock<workspace::WorkspacesConfig>>;
 
+/// The registered workspace containing the current working directory, if any.
+///
+/// Longest matching root wins, so a nested workspace is preferred over an
+/// ancestor that also contains the CWD. Only meaningful on the stdio path,
+/// where the server process inherits the client session's CWD.
+fn detect_cwd_workspace(ws_config: &WsConfig) -> Option<WorkspaceEntry> {
+    let cwd = std::env::current_dir().ok()?;
+    ws_config
+        .read()
+        .workspace
+        .iter()
+        .filter(|w| cwd.starts_with(&w.root))
+        .max_by_key(|w| w.root.as_os_str().len())
+        .cloned()
+}
+
 fn load_validated_workspaces(config: &Config) -> sutra::error::Result<workspace::WorkspacesConfig> {
     let ws_config = workspace::load_workspaces(&config.workspaces_path)?;
     workspace::validate_db_dir_outside_workspaces(&config.db_dir, &ws_config)?;
@@ -375,13 +391,17 @@ async fn cmd_serve_stdio(config: Arc<Config>) -> Result<(), Box<dyn std::error::
     let lessons_db = Arc::new(
         sutra::lessons::LessonsDb::open(&config.db_dir).expect("failed to open lessons.db"),
     );
+    // The stdio process shares the client session's CWD, so its containing
+    // workspace is the natural default when a tool call omits `workspace`.
+    let default_workspace = detect_cwd_workspace(&ws_config).map(|w| w.id);
     let server = SutraServer::new(
         Arc::clone(&config),
         Arc::clone(&ws_config),
         Arc::clone(&db_cache),
         parse_coord.clone(),
         lessons_db,
-    );
+    )
+    .with_default_workspace(default_workspace);
 
     // Background reparse: if CWD is inside a registered workspace and the
     // index is stale, kick off a parse without blocking the MCP handshake.
@@ -403,18 +423,10 @@ fn maybe_reparse_cwd(
     db_cache: &DbCache,
     parse_coord: &sutra::pipeline::ParseCoordinator,
 ) {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-
-    let ws_cfg = ws_config.read();
-    let entry = ws_cfg.workspace.iter().find(|w| cwd.starts_with(&w.root));
-    let entry = match entry {
-        Some(e) => e.clone(),
+    let entry = match detect_cwd_workspace(ws_config) {
+        Some(e) => e,
         None => return,
     };
-    drop(ws_cfg);
 
     let db = match sutra::tools::get_or_open_db(db_cache, &entry, &config.db_dir) {
         Ok(db) => db,

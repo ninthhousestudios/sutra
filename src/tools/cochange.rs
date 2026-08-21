@@ -7,6 +7,7 @@ use crate::error::{Result, SutraError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CochangeArgs {
+    #[serde(default)]
     pub workspace: String,
     /// File path (file granularity) or qualified symbol name (function granularity).
     pub path: String,

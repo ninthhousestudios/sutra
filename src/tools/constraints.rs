@@ -14,6 +14,7 @@ use crate::rules::{self, ConstraintKind};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConstraintsArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Action: "list", "violations", "waive", "unwaive", "baseline", "ack", "unack".
     /// Waivers and acks are persisted to `.sutra/accepted.toml` (version-controlled,

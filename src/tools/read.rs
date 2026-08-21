@@ -10,6 +10,7 @@ use crate::lessons::LessonsDb;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadArgs {
+    #[serde(default)]
     pub workspace: String,
     #[schemars(
         description = "Symbol name to read. Pass a qualified name (e.g. \"evaluate_dd\", \

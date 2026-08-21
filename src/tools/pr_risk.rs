@@ -12,6 +12,7 @@ use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PrRiskArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub base: Option<String>,

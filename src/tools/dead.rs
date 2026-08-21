@@ -6,6 +6,7 @@ use crate::db::Db;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeadArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub path_prefix: Option<String>,

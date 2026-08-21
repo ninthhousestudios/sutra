@@ -10,6 +10,7 @@ use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindArgs {
+    #[serde(default)]
     pub workspace: String,
     pub name: String,
     #[serde(default)]

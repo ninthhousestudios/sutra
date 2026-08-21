@@ -6,6 +6,7 @@ use crate::db::Db;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OutlineArgs {
+    #[serde(default)]
     pub workspace: String,
     pub path: String,
     /// If true, return only structural fields. Default is false (full detail).

@@ -16,6 +16,7 @@ type SymbolPredicate = Box<dyn Fn(&SymbolEntry) -> bool>;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WinnowArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Filter by symbol kind (function, method, struct, etc.)
     #[serde(default)]

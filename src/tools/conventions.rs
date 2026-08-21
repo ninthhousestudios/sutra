@@ -7,6 +7,7 @@ use crate::error::{Result, SutraError};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConventionsArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Action: "list"
     pub action: String,

@@ -7,6 +7,7 @@ use crate::vocabulary;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ResolveArgs {
+    #[serde(default)]
     pub workspace: String,
     /// The term to resolve against aliases, component names, and anchor names.
     pub query: String,

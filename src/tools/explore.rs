@@ -12,6 +12,7 @@ const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "meth
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExploreArgs {
+    #[serde(default)]
     pub workspace: String,
     /// Topic to explore — symbol names, concepts, feature areas
     pub query: String,

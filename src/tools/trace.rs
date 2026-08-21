@@ -10,6 +10,7 @@ use crate::parser::dart::DART_LIFECYCLE_METHODS;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TraceArgs {
+    #[serde(default)]
     pub workspace: String,
     pub symbol: String,
     /// "forward" (entry points → symbol, default) or "backward" (symbol → leaves)

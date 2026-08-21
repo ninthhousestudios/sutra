@@ -8,6 +8,7 @@ use crate::db::Db;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RefsArgs {
+    #[serde(default)]
     pub workspace: String,
     pub symbol: String,
     /// Filter to refs with this context_kind (e.g. "construction", "call", "type_use")

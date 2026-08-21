@@ -13,6 +13,7 @@ use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HotspotsArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub window_days: Option<u32>,

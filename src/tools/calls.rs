@@ -8,6 +8,7 @@ use crate::db::Db;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CallsArgs {
+    #[serde(default)]
     pub workspace: String,
     pub symbol: String,
     #[serde(default)]

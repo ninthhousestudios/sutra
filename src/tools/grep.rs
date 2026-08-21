@@ -10,6 +10,7 @@ use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepArgs {
+    #[serde(default)]
     pub workspace: String,
     pub pattern: String,
     #[serde(default)]
@@ -91,4 +92,41 @@ fn handle_inner(
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod optional_workspace_tests {
+    use super::GrepArgs;
+
+    // An omitted `workspace` must deserialize (empty string → session default is
+    // applied downstream in resolve_workspace) rather than being a hard error.
+    #[test]
+    fn workspace_may_be_omitted_when_deserializing() {
+        let args: GrepArgs = serde_json::from_value(serde_json::json!({
+            "pattern": "foo",
+        }))
+        .expect("workspace should be optional at the deser layer");
+        assert_eq!(args.workspace, "");
+        assert_eq!(args.pattern, "foo");
+    }
+
+    // schemars must drop `workspace` from `required` (so MCP clients may omit it)
+    // while genuinely-required fields like `pattern` stay required.
+    #[test]
+    fn schema_marks_workspace_optional_pattern_required() {
+        let schema = schemars::schema_for!(GrepArgs);
+        let value = serde_json::to_value(&schema).unwrap();
+        let required: Vec<&str> = value["required"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"workspace"),
+            "workspace must not be required; got {required:?}"
+        );
+        assert!(
+            required.contains(&"pattern"),
+            "pattern must stay required; got {required:?}"
+        );
+    }
 }

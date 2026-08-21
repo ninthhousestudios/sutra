@@ -14,6 +14,7 @@ use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileHealthArgs {
+    #[serde(default)]
     pub workspace: String,
     #[serde(default)]
     pub path: Option<String>,
