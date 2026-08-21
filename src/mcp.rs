@@ -324,6 +324,10 @@ impl SutraServer {
     }
 
     async fn await_parse(&self, ws_id: &str) {
+        // Best-effort wait, not a correctness gate: `canonical_ws_id` degrades an
+        // unresolvable empty arg (no session default) to a "" lock key rather than
+        // erroring like `hold_parse_lock`. Harmless — the request's `get_db` errors
+        // out regardless, so the "" lock is acquired and dropped for nothing.
         let lock = self.parse_coord.lock_for(&self.canonical_ws_id(ws_id));
         let _guard = lock.lock().await;
     }
