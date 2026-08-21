@@ -1,9 +1,9 @@
 {
   "id": "019e0e07-574f-75f1-908e-4263a7365ce1",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/9",
-  "sequence_number": 9,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/340",
+  "sequence_number": 340,
   "title": "HDC design decision: practical evaluation for binary MAP vs HRR vs hybrid",
   "description": "Follow-on from sutra/needs-designing/8 (HDC AST encoding experiment). Spike 1 validated binary MAP for similarity search. Spike 2 validated HRR for compositional decomposition and analogical reasoning. Now need practical, use-case-driven evaluation to decide the architecture.\n\nKey design question: binary MAP only, HRR only, or hybrid (binary MAP for indexing + HRR for decomposition queries)?\n\nPractical tests needed — framed as \"can this answer real sutra queries?\":\n\n1. **Structural search**: \"find all functions shaped like: pub fn → validate args → query db → return Result.\" Binary MAP can do this via prototype similarity. Can HRR match it? Is the 10x FFT cost worth it for this use case?\n\n2. **Decomposition queries**: \"given this function, what's its error-handling strategy?\" Requires unbinding the error-handling role from an encoded function. Binary MAP can't do this (spike 1: R@1 ≈ 0%). Does HRR reliably decompose real functions?\n\n3. **Transform search**: \"find the async version of this sync function\" or \"find functions like X but with error handling added.\" Requires analogical arithmetic. Spike 2 showed 75-100% on trait transforms — but those were trait-group-level. Does it work for individual function queries?\n\n4. **Cross-file structural diff**: \"how does module A's error handling differ from module B's?\" Requires multi-scale + unbinding. Novel capability if it works.\n\n5. **Performance budget**: What's the encoding cost at sutra's scale (~800 symbols)? At a large monorepo scale? Is incremental re-encoding feasible?\n\nEach test should produce a clear signal: works well enough to ship, needs more work, or not viable. The output is a design decision on sutra/needs-designing/8.",
   "category": "experiment",

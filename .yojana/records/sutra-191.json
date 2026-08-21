@@ -1,0 +1,116 @@
+{
+  "id": "019eff1f-4c83-7142-96dc-044d0a09a3f5",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/191",
+  "sequence_number": 191,
+  "title": "Fix C parser/index scaling before retrying Linux kernel stress parse",
+  "description": "A live stress parse of /home/josh/soft/linux was still running after ~18 hours and had not reached post-processing. Process 205094 (`sutra parse linux`) was active at ~100% CPU, so this was not a deadlock. The DB had grown to ~2.39 GB with ~42.9k of 63,328 .c/.h files indexed, ~1.03M symbols, ~23.1M refs, ~254k imports, snapshots=0, and every parsed file still marked needs_resolution=1. Throughput near the observed point was about 100 files in ~6m53s (~14 files/min), implying roughly another day just for the initial file parse before ref resolution/health/similarity/convention passes. SQLite was functioning, but the current write/resolution design scales poorly for Linux-sized C workspaces.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "Ref resolution no longer performs per-ref linear scans over the full all-symbol list; keyed lookup structures preserve existing first-match/tie-break resolution semantics (verified by before/after resolution diff on a real workspace)."
+    },
+    {
+      "done": true,
+      "text": "Parse loop and resolution loop emit periodic progress (files done/total, elapsed, recent throughput, ETA); similarity/HRR/pattern-family phases log entry/exit with counts so a bounded-slow pass is distinguishable from a stall from the log alone."
+    },
+    {
+      "done": true,
+      "text": "Bulk parse path batches many files per transaction and checkpoints the WAL periodically so WAL size stays bounded on 25k+ file parses."
+    },
+    {
+      "done": true,
+      "text": "Re-validated: generic `other` refs are not extracted (sutra/194) and field_access refs are retained because they resolve (sutra/195); measured ref volume on a C corpus recorded in the task."
+    },
+    {
+      "done": true,
+      "text": "A benchmark/stress fixture demonstrates parse+resolution throughput and guards regressions."
+    }
+  ],
+  "decisions": [
+    "Observed root cause appears to be scale behavior, not SQLite corruption or a hung parser: the process was active, WAL was changing, and rows were still being inserted.",
+    "The largest immediate data-volume driver is C reference extraction recording nearly every non-definition identifier/type/field identifier. Observed ref context counts were approximately: other 14.1M, field_access 4.3M, call 3.9M, type_use 0.84M, construction ~296.",
+    "The DB size was dominated by refs and their indexes: refs ~817 MB, idx_refs_unresolved ~490 MB, idx_refs_file ~317 MB, idx_refs_target ~256 MB. Symbols plus FTS were much smaller by comparison.",
+    "Post-parse resolution is likely to be worse than the file parse because resolver.rs resolves each ref using scans over all_symbols; with ~23M refs and >1M symbols this can become effectively intractable.",
+    "2026-08-14 revision: original plan was ~40% overtaken — Other refs already removed by sutra/194, field_access refs deliberately KEPT because sutra/195 made them resolve (dropping them would break trace/dead-code); the 'configurable ref extraction' knob was dropped as YAGNI once the volume driver was gone. Rejected alternative: building the config knob anyway — no remaining volume problem justifies it.",
+    "Keyed resolver index built order-preserving (per-name Vecs pushed in all_symbols iteration order) rather than arbitrary-order HashSet/first-wins, because resolution is scan-order-dependent (first .find() match; min_by_key ties). Rejected alternative: 'fix' the order-dependence at the same time — that would change observable resolution output and belongs in its own task if ever.",
+    "Secondary-index drop/rebuild during bulk load deferred until measurement with the keyed resolver shows parse writes still dominate. Rejected alternative: implement it now — real complexity (resolution needs idx_refs_file mid-run) for an unsized win."
+  ],
+  "implementation_plan": "Revised 2026-08-14 after code audit — original plan was ~40% overtaken by sutra/194 (Other refs no longer extracted, c.rs:760), sutra/195 (field_access refs now resolve; do NOT drop them), and sutra/324 (post-parse RSS phase markers, cochange fan-out cap, core-extraction cap).\n\nPriority order:\n1. Keyed resolver index (the algorithmic fix). Build a SymbolIndex once in post_parse_sequence (which already loads all_db_symbols once): HashMap by short_name -> Vec<&SymbolEntry>, and (file_id, qualified_name) keyed map for scope-chain hint lookups; reuse in find_via_imports. Pass &SymbolIndex into resolve_refs instead of &[SymbolEntry]. CONTRACT LANDMINE (L9): current resolution is scan-order-dependent (.find() first match in DB order; ties via min_by_key(qualified_name.len())). Per-name Vecs must preserve all_symbols iteration order so first-match/tie-break semantics are bit-identical. Verify with before/after resolution diff on a real indexed workspace, not just unit tests.\n2. Progress instrumentation: parse loop logs every N files/T seconds (files_parsed/total, symbols, refs, elapsed, recent files/min, ETA); resolution loop logs files_resolved/total; similarity/HRR/pattern-family phases log entry/exit with counts.\n3. Bulk-write mode when files_to_parse > ~1000: batch ~64 files per transaction (cuts 63k WAL fsyncs to ~1k) + periodic PRAGMA wal_checkpoint(TRUNCATE) (kala-reverse hit 798MB WAL). Defer the secondary-index-drop/rebuild idea until re-measurement with #1 in place shows parse writes still dominate.\n4. Benchmark fixture: stress bench on a mid-size pure-C corpus reporting parse files/min and resolution refs/sec, as regression guard.\n5. Re-validate stale ACs: confirm Other refs not extracted, measure ref volume on a C corpus; strike the \"configurable ref extraction\" knob (YAGNI now the 14.1M-row driver is gone).",
+  "execution_record": "Landed in e31ac43 (SymbolIndex keyed resolver + bulk write batching + progress instrumentation) and 33114a4 (stress bench), committed to main, not yet pushed.\n\nContract verification (the L9 landmine): parsed the sutra workspace into isolated DBs with a baseline HEAD binary (git worktree) and the new binary; full refs dump (path, line, col, context_kind, target qualified_name, resolution_method) was bit-identical — 39,276 rows. Pattern-family counts differed between runs (160/180/187) but rerunning the BASELINE twice reproduced the variance: pre-existing run-to-run nondeterminism in the similarity pass, not a regression.\n\nMeasured on real C (linux/fs, 2,175 files, new binary): 706,044 refs = 325/file (field_access 331k, call 320k, type_use 55k, ZERO `other` — confirms sutra/194 removed the 14.1M-row driver; full Linux extrapolates to ~20M refs, inherent density, not extraction waste). File-parse ran 400–1,100 files/min with 30s progress+ETA lines; resolution of all 706k refs finished fast enough to never hit the 30s progress interval (old code: hours-to-intractable at this symbol count). End-to-end 15.3 min, of which HRR vectors 5.9 min + pattern families 4.2 min — similarity now visibly dominates, exactly the diagnosability the kala-reverse incident lacked. WAL stayed ≤9.5MB throughout and truncated to 0 at completion (kala-reverse baseline: 798MB). needs_resolution cleared on all files after bulk-batched run.\n\nSynthetic bench (tests/stress-bench-test.rs, opt-in --ignored): 1,200-file C corpus, 2,437 files/min end-to-end, asserts ≥90% call-ref resolution + clean unchanged reparse.\n\nSurprise finding → follow-up filed: linux-fs index.db is 1.4GB but refs+indexes are now only ~54MB — hrr_codebook (754MB) + hrr_vectors (572MB) dominate. HRR storage is the next scaling front for large C workspaces.\n\nDeferred by design: dropping/rebuilding secondary ref indexes during bulk load — re-measure first; parse writes no longer dominate after the resolver fix. Full 63k-file Linux retry not yet run (follow-up task filed).",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "e31ac43",
+      "label": "keyed resolver + bulk batching + progress"
+    },
+    {
+      "type": "git:commit",
+      "value": "33114a4",
+      "label": "stress bench"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "SymbolIndex",
+      "label": "keyed resolver index"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "c-parser",
+    "sqlite",
+    "performance",
+    "stress-test"
+  ],
+  "history": [
+    {
+      "ts": 1782396701827,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 191
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786717060540,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-agent",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786719089209,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Second live case (2026-08-12): `sutra parse kala-reverse` — 28,013 files, 100% pure C. Hit a similar \"frozen DB, 100% CPU, no progress signal\" stall. `perf top` on the live process showed the CPU sink is NOT the resolver this time — it's the **similarity / duplicate-detection pass**:\n\n- 22.9% core::hash::BuildHasher::hash_one\n- 21.1% hashbrown::HashMap::insert\n- 10.9% RawIterRange::fold_impl + 9.0% sip::Hasher::write\n- 1.9% sutra::similarity::duplicates::exact_dice\n- 0.5% sutra::similarity::minhash::shingles\n\n~65% of cycles are hashing + HashMap inserts building minhash/shingle indexes. exact_dice (the potential O(n²) pairwise) was only 1.9%, so minhash is keeping it out of quadratic — this instance is bounded/healthy, just slow and opaque.\n\nTwo takeaways for this task:\n1. The missing progress instrumentation (AC #5) bit again — from outside the process there was no way to distinguish \"bounded similarity pass, ~tens of min left\" from \"intractable resolver, days left\" without attaching perf. That diagnosability gap is the highest-value part of this task; it turned a 2-minute answer into a manual perf investigation.\n2. **Scope note:** 191's implementation_plan targets refs/resolver + SQLite write amplification. On this C workspace the actual CPU sink was the *similarity pass*, which the plan doesn't address. Consider whether the similarity/minhash pass needs its own scaling guard (skip/threshold for very large workspaces, or progress logging) so it isn't a second unbounded-looking front after the resolver is fixed.\n\nAlso observed the write-amplification 191 predicted: 808MB index.db + 798MB WAL for a workspace whose committed content was only ~34k symbols / ~162k refs — consistent with per-file replace_file_data churn without checkpointing.",
+      "ts": 1786552977207
+    },
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, claude inline) of e31ac43+33114a4, range 73db9f0..33114a4. Verdict: **approve with notes** — all fixable notes now fixed in c6fafbd.\n\nAll 5 ACs met. The load-bearing part — the SymbolIndex resolver rewrite that had to stay bit-identical — is correct: traced all nine replaced linear scans; SymbolIndex::build pushes per-name Vecs in all_symbols iteration order, so every candidate list preserves scan order and first-match (.find) + tie-break (min_by_key) are identical. find_via_imports qualified path correctly preserves the original let-chain's \"check first match's kind, don't search past it\" via .first() (comment says so). Bulk batching: batch_aware_transaction no-ops nested txns on the single Mutex-guarded conn; BulkBatch Drop rolls back an open batch on error/cancel. sutra_review risk 0.963 (blast/churn/complexity maxed — expected for the hottest pipeline fns); all 10 health findings advisory hotspots, 0 active constraint/convention violations. cargo check --tests clean; stress-bench-test passes.\n\nFindings (all low):\n1. [FIXED c6fafbd] begin/commit/rollback_batch + wal_checkpoint_truncate were `pub` — unbalanced begin/commit leaves the conn non-autocommit, after which batch_aware_transaction silently turns every per-file txn into a no-op batch-join. Narrowed to pub(crate); BulkBatch is the only caller (verified via rg).\n2. [FIXED c6fafbd] stress bench second-parse assertion (files_parsed==0) didn't verify its \"no file stuck at needs_resolution\" claim — a stuck file has an unchanged content hash so parse skips it (files_parsed stays 0) yet has_pending_work re-resolves it. Added assert that reparse re-resolves zero refs. Test still passes.\n3. [WONTFIX — informational] bulk mode rolls back up to 63 files of work on cancel/error (was per-file before). No corruption — rolled-back files re-parse next run; negligible against the 25k+ file regime bulk mode targets. Left as-is.",
+      "ts": 1786724383203
+    }
+  ],
+  "created_at": 1782396701827,
+  "updated_at": 1786719089209,
+  "completed_at": 1786719089209,
+  "edges": []
+}

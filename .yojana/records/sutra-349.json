@@ -1,0 +1,52 @@
+{
+  "id": "01a0258e-cec7-70b0-b390-2edb70854e70",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/349",
+  "sequence_number": 349,
+  "title": "Default omitted `workspace` arg to the stdio session's CWD workspace",
+  "description": "Every MCP tool required an explicit `workspace`; agents routinely omit it and have to recall. On the stdio path the server process shares the client session's CWD, so its containing workspace is a natural default.\n\nBehavior: omit `workspace` → resolves to the workspace containing the stdio process's CWD; pass one → it wins unchanged; no default available (CWD outside any registered workspace, or the http daemon) → clear INVALID_PARAMS error, never a silent guess. Scope is stdio-only by design; the http daemon stays explicit-workspace-only since it serves many repos and has no single \"current\" workspace.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Keep `workspace` as `String` with `#[serde(default)]` (empty = use default) rather than `Option<String>`",
+      "rationale": "schemars still drops a serde-defaulted field from `required` so clients may omit it, while the String type keeps all 35 `&args.workspace` call sites compiling unchanged. Option<String> would force ~70 edits and a tool_context signature change.",
+      "rejected_alternative": "Change field to Option<String> across 28 structs + 35 call sites"
+    },
+    {
+      "decision": "Set the default only on the stdio path; http daemon stays explicit-workspace-only",
+      "rationale": "The daemon serves many repos from one process and current_dir() is the daemon's launch dir, not the caller's — a CWD default there would silently answer from the wrong repo. Leaving default_workspace=None makes the daemon degrade to a clear error.",
+      "rejected_alternative": "Compute the default inside SutraServer::new so both transports inherit it"
+    }
+  ],
+  "implementation_plan": "- src/mcp.rs: `default_workspace: Option<String>` field + `with_default_workspace()` builder (threaded through new/clone). `resolve_workspace` substitutes the default for an empty arg — single chokepoint for tool_context/get_db/hold_parse_lock. New `canonical_ws_id()`; route await_parse + get_dd_engine through it so they key the parse lock / DD-engine map on the canonical id. `freshness()` echoes resolved `workspace` in every response.\n- src/main.rs: `detect_cwd_workspace()` shared helper with longest-prefix match; maybe_reparse_cwd refactored onto it; default set only on the stdio path.\n- 28 tool arg structs: `#[serde(default)]` on `workspace: String` (kept as String, empty = use default) so schemars drops it from `required` and all `&args.workspace` call sites compile unchanged.",
+  "execution_record": "Went as planned. Chose `#[serde(default)] workspace: String` (empty = default) over `Option<String>` to avoid ~70 edits (field type + every call site); keeps type String so handlers are untouched. Verification: 2 new tests in src/tools/grep.rs assert schemars drops workspace from `required` and serde tolerates omission; full suite 1564 passed / 3 ignored; clippy clean in touched files (9 pre-existing warnings elsewhere). Committed on main, not pushed.\n\nIncidental fixes surfaced: (1) maybe_reparse_cwd used first-match `.find()` on CWD prefix — replaced with longest-prefix so a nested workspace beats an ancestor. (2) await_parse/get_dd_engine keyed a lock/hashmap on the raw arg string, desyncing from hold_parse_lock's canonical id when a path/basename (or now empty) was passed — routing through canonical_ws_id fixes both the new empty case and the pre-existing inconsistency.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [
+    "src/mcp.rs",
+    "src/main.rs",
+    "src/tools/grep.rs"
+  ],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1787336511175,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 349
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1787336511175,
+  "updated_at": 1787336511175,
+  "completed_at": null,
+  "edges": []
+}

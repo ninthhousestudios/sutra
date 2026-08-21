@@ -1,9 +1,9 @@
 {
   "id": "019e0e85-513a-7b41-8b32-e7a6a393c0a1",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/10",
-  "sequence_number": 10,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/341",
+  "sequence_number": 341,
   "title": "PRD: HRR structural search integration into sutra",
   "description": "Write a PRD for integrating HRR-based structural search into sutra as a production feature.\n\nDesign decision from sutra/needs-designing/9: HRR only (no binary MAP). 1024 f64 vectors, no dimensionality reduction needed at typical workspace scales.\n\nKey questions the PRD needs to answer:\n\n- **What tools does this expose?** E.g. `sutra_similar` (structural nearest neighbors), `sutra_transform` (analogical search), `sutra_diff` (cross-file structural diff). Which are MVP, which are stretch?\n- **When does encoding happen?** On parse (piggyback on tree-sitter walk), on demand, or background? Incremental re-encoding on file change is ~14ms for 10 functions — cheap enough to do on every reparse.\n- **Where do vectors live?** In the existing SQLite DB alongside symbols? Separate file? The vectors are 8KB each, 3 per function — SQLite blob columns work but may bloat the DB.\n- **What's the query interface?** Given a function, find structurally similar functions. Given two functions, compute structural distance. Given a module, show structural profile.\n- **What about decomposition?** The unbind→cleanup pipeline only works 16-31% of the time. Ship it as experimental? Defer entirely? Try a different approach (direct role-filler encoding)?\n- **Cross-file diff** works 50-68% — ship as experimental or defer?\n- **Codebook persistence** — the codebook must be stable across reparses (same node kind → same base vector). Seed-based RNG handles this if the seed is fixed.\n\nReference: spike code in `src/hdc.rs`, `src/hrr.rs`, `src/bin/hdc-eval.rs`, `src/bin/hrr-spike.rs` on branch `spike/hdc-ast-encoding`.",
   "category": "enhancement",

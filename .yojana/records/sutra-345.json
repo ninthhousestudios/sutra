@@ -1,9 +1,9 @@
 {
   "id": "019eb5a4-b21e-78a2-a0b2-8000428ef926",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/14",
-  "sequence_number": 14,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/345",
+  "sequence_number": 345,
   "title": "External-crate dependency constraints — forbidden_external kind",
   "description": "Current constraint kinds (forbidden_dep, boundary, no_cycles, max_fan_in) operate on workspace-internal file/component edges. They cannot express \"crate X must not depend on external crate Y\".\n\nMotivating cases from the adityas/backend PRD: \"report crate knows nothing of Axum, Supabase, or Stripe\"; \"quiver-client is the only place Quiver's protos appear\"; \"nothing links Arjuna\" (AGPL network boundary — legally load-bearing). These are the highest-stakes architectural rules in that project and sutra is blind to all of them.\n\nDesign questions: enforce over use-statements (tree-sitter already sees them) vs Cargo.toml/pubspec.yaml manifest edges vs both? Per-crate scoping in a workspace (\"from = report/**, to_external = axum\")? Guard behavior on manifest edits? An allowlist variant (\"quiver-client is the ONLY crate that may import tonic-generated modules\") may be the more useful primitive than per-pair forbids.",
   "category": null,

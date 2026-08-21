@@ -1,9 +1,9 @@
 {
   "id": "019e8352-0974-7c22-97a8-4b4e20b8761c",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/11",
-  "sequence_number": 11,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/342",
+  "sequence_number": 342,
   "title": "Function-level structural diffs in diff_impact",
   "description": "## Motivation\n\nSutra's `sutra_diff_impact` identifies which files changed and which symbols are affected (transitive callers), but it doesn't report *how* each symbol changed — was it added, deleted, modified, or did its signature change? This is the most valuable gap identified from surveying git-prism (`/home/josh/soft/sutra-surveys/git-prism`), which provides per-function change classification (added/modified/deleted/renamed/signature_changed) using tree-sitter and content-hash diffing.\n\n## What this enables\n\n- Review tools can surface \"public API changed\" vs \"implementation-only change\" distinctions\n- Component-level summaries like \"the public surface of this component shifted\"\n- Better risk scoring — signature changes are higher-risk than body-only changes\n- Agents get structured change semantics instead of raw diffs\n\n## Approach sketch\n\nCompare the symbol table (name, kind, signature, signature_hash, start/end lines) between two refs. Sutra already stores `signature_hash` per symbol — diffing two snapshots could classify each symbol as added/deleted/signature_changed/body_changed. The tricky part is doing this without a second full parse: either parse both refs on demand, or compare current index state against `git show HEAD~1:file` parsed on the fly.\n\n## Prior art\n\ngit-prism's `get_change_manifest` does this with tree-sitter for 13 languages, comparing function-level content hashes between two refs. Their approach is on-demand (no persistent index), ours would leverage the existing index for the current state and only parse the prior ref.",
   "category": "enhancement",

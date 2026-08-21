@@ -1,0 +1,61 @@
+{
+  "id": "01a01a40-9c31-71c3-9cc6-bc2a0934b541",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/348",
+  "sequence_number": 348,
+  "title": "Lesson injection signal-to-noise: relevance gating and dedup",
+  "description": "Lessons are valuable but the current injection is noisy. Investigate how to raise signal-to-noise without losing the surfacing that makes lessons useful.\n\n## Concrete observations (swe_dashboard session, adding an ayanamsha)\n\n1. **Repetition per edit.** The PreToolUse:Edit hook injected the SAME lesson block on every Edit to a given file, and it appeared TWICE per call (duplicated in the hook output). Across ~10 edits in one session that lesson text was re-sent ~20 times. It re-enters model context each turn on top of that. Pure repeated overhead.\n\n2. **Relevance mismatch.** The lesson repeatedly surfaced on ayanamsa_catalog.dart / calc_context.dart was about \"migrating a tab's *ResultProvider from List<T>/T? to CalcOutcome<T>\" — anchored to those files but irrelevant to the change being made (adding a catalog entry + resolution). It's anchored by file, so it fires for ANY edit to that file regardless of what the edit does.\n\n3. **Unverified lessons carry equal weight.** The noisy one was tagged [unverified] with confidence 0, yet was injected as prominently as a high-confidence lesson would be.\n\n## Questions to design around\n- Should lesson injection dedup within a session (surface a given lesson id at most once, or once per file), rather than re-firing on every Edit? The hook double-emit is a straightforward bug to fix regardless.\n- Can relevance gate on more than the file anchor — e.g. the symbols/regions the edit actually touches, or a semantic match against the diff — so a file-anchored lesson only fires when the edit is near its subject?\n- Should [unverified]/low-confidence lessons be suppressed from proactive injection (still available via explicit sutra_lessons query), or shown more quietly?\n- Token-cost framing: each injection rides every subsequent turn's context. Cheap-looking per-fire, expensive cumulatively.\n\n## Not in scope\nThe lesson STORE and explicit sutra_lessons(query=) retrieval work fine — this is specifically about the proactive PreToolUse injection channel's noise.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1787146837041,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 17
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1787146921851,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1787146924604,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Superseded: created in the archived sutra/needs-designing by mistake. Moved to top-level sutra/331. Closing this one.",
+      "ts": 1787146919140
+    }
+  ],
+  "created_at": 1787146837041,
+  "updated_at": 1787146924604,
+  "completed_at": 1787146924604,
+  "edges": []
+}

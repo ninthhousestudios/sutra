@@ -1,0 +1,51 @@
+{
+  "id": "01a00106-c709-7701-a4da-38d1589ae3f2",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/328",
+  "sequence_number": 328,
+  "title": "Similarity mode-knob cleanup: redundant strip-only delete, off-mode comment, embed tie-order",
+  "description": "Three low-severity follow-ups from the sutra/327 review (vidhi-review), all in src/similarity/mod.rs + src/db/similarity.rs:\n\n1. strip-only re-runs a full-table `DELETE FROM hrr_vectors WHERE mode='embed'` on every incremental parse. First parse clears them; every later parse scans to delete 0 rows. Gate the delete so it only runs when embed vectors actually exist (or otherwise avoid the per-parse full scan).\n\n2. mode=off returns (0,false) before recording hrr_file_hashes, so files_needing_hrr_recompute keeps reporting the same files and every parse re-derives off. This is arguably correct (flipping back to full then triggers a real recompute), but it reads like a bug — add a comment stating it's intentional.\n\n3. embed similarity search (load_all_vectors_by_mode) is unordered, so exact-cosine ties can wobble run-to-run. The strip path was made deterministic (ORDER BY symbol_id); do the same for the embed load for consistency. Cosmetic — family membership is unaffected.</description>\n<parameter name=\"acceptance_criteria\">[\"strip-only mode does not issue a full-table embed delete when no embed vectors exist\", \"mode=off early-return has a comment explaining why hrr_file_hashes are intentionally not recorded\", \"load_all_vectors_by_mode returns rows ORDER BY symbol_id\", \"cargo test similarity passes\"]",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Fix for #1 went deeper than a simple guard: the PK (symbol_id, mode) can't serve a mode-only predicate, so the embed purge, the strip family load, AND the embed similarity scan were all full-table scans of ~1KB/row blobs. Added a composite index idx_hrr_vectors_mode(mode, symbol_id) — one migration that fixes #1 and makes #3's ORDER BY free instead of a sort. Index is on the ephemeral hrr_vectors table, so the migration is ephemeral_only=true (reindex drops ephemeral tables and replays only ephemeral_only migrations; verified 0030_hrr_vectors is also true, so 0065 replays after it). Also gated the purge on a new has_embed_vectors() probe to skip the implicit write transaction in steady-state strip-only parses. Verified: cargo build clean; similarity_test 16/16, db-test 66/66, components_test 28/28 (the latter two exercise reindex/ephemeral-replay of the new index). Clippy: only pre-existing warnings in untouched files.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "1267493"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786723616521,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 328
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786723874273,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786723616521,
+  "updated_at": 1786723874273,
+  "completed_at": 1786723874273,
+  "edges": []
+}

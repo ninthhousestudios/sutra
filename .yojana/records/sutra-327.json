@@ -1,0 +1,72 @@
+{
+  "id": "01a000c2-d041-7341-9160-a9bd6223c79c",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/327",
+  "sequence_number": 327,
+  "title": "HRR codebook/vector storage dominates index size on large C workspaces",
+  "description": "Found during sutra/191 close-out. After the refs/index fixes, linux/fs (2,175 files, 50k symbols) produces a 1.4GB index.db of which refs+indexes are only ~54MB — hrr_codebook is 754MB (90,822 entries) and hrr_vectors 572MB. HRR compute was also the wall-time tail: 5.9 min vectors + 4.2 min pattern families of a 15.3 min total. Extrapolated to full Linux (63k files, ~1M symbols) this is tens of GB of similarity data and likely hours of compute — HRR is now the binding constraint on large-workspace parses, not refs or the resolver.\n\nDesign questions: should the codebook be bounded (vocabulary cap / frequency floor before minting an entry)? Should HRR/pattern-families downgrade or skip above a symbol-count threshold (config knob), the way giant workspaces arguably don't need duplicate detection at full fidelity? Can vectors be quantized or stored more compactly? Related capped-cost precedent: sutra/324 (cochange fan-out cap, core-extraction cap) and lesson 01a0008a-659b (cap fan-out at the source). Also observed: pattern-family output is run-to-run nondeterministic (160/180/187 on identical input) — worth deciding whether determinism is a goal while in here.\n\n(Moved from sutra/needs-designing/16 — that project is archived. Blocks-ish sutra/326: the full Linux retry should probably wait for this, since fs/ alone produced 1.33GB of HRR data.)",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": "Root causes: (a) codebook mints an 8.2KB f64[1024] vector per AST node kind AND per distinct identifier (id:{text}) and persists all of them solely so key→vector is stable across incremental runs — unbounded in vocabulary, 754MB on linux/fs, plus full-table load into RAM per recompute and per diff-impact run; (b) stored symbol vectors are f64 (8KB × 2 modes per symbol = 572MB); (c) nondeterminism: new codebook keys draw from a SEQUENTIAL shared Rng (seed = 0x55545241 ^ entries.len()) in HashMap-iteration encounter order, so key→vector assignment differs per run and near-threshold cosines flip (160/180/187 pattern families).\n\nPlan, in commit-sized steps:\n1. Content-addressed codebook: vector_for(key) = HrrVec::random(Rng::new(stable_hash64(key))), memoized in-memory per run; codebook becomes a pure read-through cache. Delete hrr_codebook persistence (load_hrr_codebook, save_hrr_codebook_entries, codebook arg of insert_hrr_vectors_and_hashes, diff.rs codebook load). Fixes determinism at the root and drops 754MB to 0 at any scale. 64-bit collision at 90k keys ≈ 1e-10 and degrades gracefully (two tokens share a vector).\n2. Quantize stored vectors: i8 + per-vector max-abs scale (8KB → ~1KB, 8x); dequantize to f64 on load so similarity math is untouched. Post-normalize components ~N(0,1/1024); cosine error averages out over 1024 dims to <1%.\n3. Parallelize per-file encode with rayon (unblocked by step 1 removing &mut Codebook sharing) — targets the 5.9-min vector phase.\n4. Scale knob: [similarity] mode = full|strip-only|off + auto-downgrade above a symbol-count threshold (sutra/324 cap-at-source precedent). embed vectors serve only sutra_similar mode=embed; families/components/diff use strip only, so strip-only is a principled default for giant corpora.\n5. Migration: drop hrr_codebook, clear hrr_vectors + hrr file hashes (basis + format change ⇒ one-time recompute), schema/index version bump.\n6. Determinism hardening: sort order-sensitive inputs in duplicates.rs by symbol_id.\n\nRejected: vocabulary cap / frequency floor before minting codebook entries — bounds the table but keeps the statefulness, the per-run 754MB load, the nondeterminism, and the parallelism blocker. Once nothing is stored there is nothing to cap.\n\nExpected outcome on linux/fs: 1.4GB index → ~150MB; full-Linux HRR footprint ~2GB (full) / ~1GB (strip-only). Unblocks sutra/326.",
+  "execution_record": "Executed per plan; deviations: (1) removed Db::strip_vectors_by_component while changing the blob format — grep-verified dead (definition only, no callers, no tests); (2) added a legacy-length f64 decode fallback in HrrVec::from_bytes (old blobs are dim*8 bytes, quantized are 4+dim — unambiguous) so an index written between migration 0064 and the format change degrades gracefully instead of decoding garbage; (3) used std::thread::scope + AtomicUsize work queue instead of adding a rayon dependency (repo has no rayon and no existing pool pattern to mirror); (4) encode_file hit clippy too-many-arguments — resolved by deriving the file path from HrrSymbolRow instead of passing it. Verification: full suite 1557 passing incl. new pattern-family determinism-across-reindex integration test and quantization roundtrip/legacy-decode unit tests; release stress bench (1200-file C corpus, 37k symbols) passed through the parallel HRR + families path. Determinism root cause confirmed during design read: new codebook keys drew from a SEQUENTIAL shared Rng in HashMap-iteration encounter order — content-addressing fixed it at the source. Unblocks sutra/326; a linux/fs reparse to confirm the ~150MB projection is the natural next measurement.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "git:range",
+      "value": "33114a4..7021e38",
+      "label": "6 commits: codebook content-addressing, i8 quantization, parallel encode, mode knob, determinism test, docs"
+    }
+  ],
+  "files": [],
+  "tags": [
+    "similarity",
+    "performance",
+    "stress-test",
+    "needs-designing"
+  ],
+  "history": [
+    {
+      "ts": 1786719162433,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 327
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786721812885,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786723247723,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "agent",
+      "text": "Review (vidhi-review, claude inline): APPROVE WITH NOTES. Range 33114a4..7021e38, 7 commits / 12 files. Verified: RNG seeding can't hit a degenerate all-zero state (safe at any FNV hash incl. 0); strip_vectors_by_component was already dead at base (clean removal); no lingering refs to removed codebook API; determinism holds — similarity_test 16/16 + similarity unit 57/57 pass incl. the new full-recompute pattern-family determinism test. Refactor-contract diff of encode_file matches old inline skip/complete semantics exactly. Structural risk 0.906 (blast/churn/complexity — expected for subsystem rewrite; health_delta improves). 3 LOW findings, none blocking: (1) strip-only re-runs a full-table embed DELETE every incremental parse (redundant, idempotent); (2) mode=off never records hrr_file_hashes so it re-enters each parse — arguably correct, wants a comment; (3) embed search tie-order still nondeterministic (load_all_vectors_by_mode unordered) — cosmetic, families unaffected. Design rightly rejects the vocabulary-cap alternative: statelessness kills the 754MB table, the per-run load, the nondeterminism, and the parallelism blocker at once.",
+      "ts": 1786723574935
+    }
+  ],
+  "created_at": 1786719162433,
+  "updated_at": 1786723247723,
+  "completed_at": 1786723247723,
+  "edges": []
+}

@@ -1,0 +1,61 @@
+{
+  "id": "01a000c1-fbd4-7010-a644-4cf22dc9e371",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/347",
+  "sequence_number": 347,
+  "title": "HRR codebook/vector storage dominates index size on large C workspaces",
+  "description": "Found during sutra/191 close-out. After the refs/index fixes, linux/fs (2,175 files, 50k symbols) produces a 1.4GB index.db of which refs+indexes are only ~54MB — hrr_codebook is 754MB (90,822 entries) and hrr_vectors 572MB. HRR compute was also the wall-time tail: 5.9 min vectors + 4.2 min pattern families of a 15.3 min total. Extrapolated to full Linux (63k files, ~1M symbols) this is tens of GB of similarity data and likely hours of compute — HRR is now the binding constraint on large-workspace parses, not refs or the resolver.\n\nDesign questions: should the codebook be bounded (vocabulary cap / frequency floor before minting an entry)? Should HRR/pattern-families downgrade or skip above a symbol-count threshold (config knob), the way giant workspaces arguably don't need duplicate detection at full fidelity? Can vectors be quantized or stored more compactly? Related capped-cost precedent: sutra/324 (cochange fan-out cap, core-extraction cap) and lesson 01a0008a-659b (cap fan-out at the source). Also observed: pattern-family output is run-to-run nondeterministic (160/180/187 on identical input) — worth deciding whether determinism is a goal while in here.",
+  "category": "enhancement",
+  "status": "wontfix",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": null,
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786719108052,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra/needs-designing",
+        "sequence_number": 16
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786719172962,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "needs-triage"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786719175646,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "wontfix"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "Moved to sutra/327 — sutra/needs-designing is archived. No design work happened here; the full description carried over verbatim.",
+      "ts": 1786719165935
+    }
+  ],
+  "created_at": 1786719108052,
+  "updated_at": 1786719175646,
+  "completed_at": 1786719175646,
+  "edges": []
+}

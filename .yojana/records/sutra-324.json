@@ -1,0 +1,84 @@
+{
+  "id": "019ffe48-5b76-7d50-84d0-4dfd8cae68ea",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/324",
+  "sequence_number": 324,
+  "title": "Reparse OOM: 12GB peak on kala-reverse; frozen workspace forced full (non-incremental) reparse",
+  "description": "Two distinct issues surfaced while indexing newly-added decompiled C in the kala-reverse workspace (see kala-reverse/34, /35).\n\nISSUE 1 - frozen workspace did not do an incremental (changed-files-only) parse. Normally sutra reparses only changed files; here it parsed the whole corpus. Hypothesis: the frozen/durable state has no per-file mtime/hash baseline to diff against (or reparse is unconditionally full), so adding files forces a full rebuild. Expected: a frozen workspace should support incremental single-file add/ingest without a full reparse (kala-reverse relies on 'never reparse' - full reparse is a 21min + now-OOM operation). Decide: make status ingest new files incrementally even when frozen, OR add an explicit incremental-add path.\n\nISSUE 2 - 12GB peak RAM / OOM. First parse of a comparable corpus was fine, so the regression tracks the newly-added files. Hypotheses to verify:\n - Non-streaming parse: full reparse holds all ASTs / symbol tables in memory simultaneously rather than parsing+flushing per file. Peak scales with total corpus, not per-file.\n - Pathological single files: a 10k-15k-line decompiled function is ONE symbol with a deeply-nested do/while/if body and thousands of var_XXXX locals. Tree-sitter AST (10-100x source size) + per-symbol analysis (locals table, refs) on one such function may spike memory hard; several in a batch compound it.\n - Analysis tier (call graph / xrefs) built across the whole corpus including these giants amplifies graph memory.\n\nASKS: (a) confirm which mechanism dominates (profile RSS over a reparse; instrument per-file peak); (b) stream/flush per file so peak is bounded by largest file, not corpus size; (c) consider a size/line cap or degraded handling for pathological single-function files; (d) give frozen an incremental-add path so kala-reverse can ingest recovered files without a full reparse.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Cap per-commit fan-out at 50 files in the cochange self-join (MAX_COCHANGE_COMMIT_FANOUT)",
+      "rationale": "A commit touching >50 files carries no co-edit signal (bulk import, mechanical mass-rename); it only injects O(n²) noise pairs. kala-reverse's outlier is 28013 vs next-largest 103, so 50 cleanly excludes bulk imports while keeping genuine feature commits. Hardcoded const, not config-surfaced — the principle is universal, not workspace-specific.",
+      "rejected": "LIMIT/truncate on the result Vec — doesn't bound the SQLite join/group intermediate memory, only the final materialization."
+    },
+    {
+      "decision": "Pre-truncate oversized pattern-family groups to 2000 members (CORE_EXTRACTION_CAP) before O(k²) core extraction",
+      "rationale": "The ranking needs all-pairs to pick the 'most connected' core, but for a group of thousands of near-identical clones the choice of which to keep is immaterial and the family is boilerplate noise. Bounding the input bounds SimCache growth; MAX_GROUP_SIZE still reduces survivors to 1000. Verified: peak 9.9G→976M, output (116 families) unchanged.",
+      "rejected": "Sampling the ranking against a random subset — still caches O(members×sample) pairs and complicates determinism; hard pre-truncation is simpler and empirically sufficient."
+    }
+  ],
+  "implementation_plan": "Wave (this task): #1 RSS instrumentation around post_parse_sequence phases + per-file, to confirm GraphData::load is the peak. #2 mtime pre-filter so unchanged files skip the read+hash. #4 bound peak on pathological giants: per-symbol/file ref cap + skip HRR/pattern-family for oversized symbols (and/or lower MAX_LINES for C). Deferred to follow-up (sutra/#3-followup): true incremental-add path (ingest only new files, dirty-scoped derived tier) for frozen workspaces.",
+  "execution_record": "Reopened from needs-review: the fix had shipped on an UNVERIFIED hypothesis (its own note said \"PENDING VERIFICATION ... GraphData::load is the hypothesised peak\"). Josh re-ran it and it OOM'd the box (hard restart). His screenshot was decisive: instrumentation stopped at pagerank_done=51MB while the process sat at 12G — proving the peak was in the 5 UNINSTRUMENTED phases after pagerank, not GraphData.\n\nDiagnostic method (safe, no more box lockups): (a) added log_phase_rss brackets to all 5 post-pagerank phases (commit 06f6896); (b) re-ran under `systemd-run --user --scope -p MemoryMax=11G -p MemorySwapMax=0` so the cgroup kills only the process, not the box. First capped run: OOM-killed at 11G with last marker = entity_walk_done → culprit = discover_components. Traced through run_clustering → add_cochange_edges → cochange_pairs_above_threshold; confirmed empirically from the DB: one commit touches 28,013 files (next-largest 103).\n\nFix 1 (fc0535d): eligible_commits CTE excludes commits touching > MAX_COCHANGE_COMMIT_FANOUT (50) files from the self-join. kala-reverse query dropped from ~3.9e8 pairs to 28 in 9ms.\n\nSecond capped run completed (no kill) but peaked 9.9G — the peak had MOVED to compute_pattern_families (14-min phase, only runs when hrr_changed, so never seen before). Boundary RSS was ≤424MB → the 9.9G was an intra-phase transient. Traced to find_pattern_families oversized-group core extraction.\n\nFix 2 (this commit): pre-truncate oversized union-find groups to CORE_EXTRACTION_CAP (2000) before the O(k²) ranking. Verified under a TIGHTER 4G cap: forced the pattern-family phase (invalidated one hrr_file_hash to trigger hrr_changed), reparse completed, peak 9.9G→976M, family count unchanged (116).\n\nNet: full reparse peak 12G+ OOM → <1G. Full suite green (exit 0), clippy clean on touched files. Phase instrumentation kept (debug-only). The uncapped ref-cap value (15k) from the prior fix left as-is.\n\nDEFERRED (unchanged): sutra/325 = true incremental-add path for frozen workspaces (post_parse still rebuilds the whole derived tier on any change). This task only bounds the peak.",
+  "reproduction": "Workspace: kala-reverse (~28k one-function-per-file Ghidra/BN-decompiled C files, /home/josh/soft/kala-reverse). Marked durable/frozen (never auto-reparse; parse dated 2026-08-12). Since that parse, ~2000+ files were added, including outliers: BinaryNinja-recovered giants 8k-15k lines / ~1MB each as a SINGLE function, and Ghidra giants like 0042eb30.c (343KB). Triggered a reparse (to index the new files) -> RSS climbed to ~12GB -> OS OOM-killed the process. The ORIGINAL full parse (fewer/smaller files) completed in ~21min without OOM.",
+  "root_cause": "Two uncapped O(n²) computations in post_parse_sequence, both detonated by kala-reverse's pathological shape (28k near-identical decompiled-C functions bulk-committed in ONE 28,013-file commit). (1) discover_components→run_clustering→add_cochange_edges: Db::cochange_pairs_above_threshold self-joins commit_files on shared commit_hash; a commit touching N files yields ~N²/2 pairs, each at jaccard 1.0 (files appear in exactly one commit) so all survive the threshold filter, materializing ~3.9e8 tuples × 32B ≈ 12.5GB into one Vec → OOM-kill at 12G (this is where the process died; the phases after were never reached). (2) similarity::find_pattern_families: union-find transitively merges LSH star-buckets so ~27k self-similar functions collapse into a few giant groups; the oversized-group core-extraction ranks every member against every other (O(members²)), filling the shared SimCache with ~1e8 pairs — transient peak 9.9G. MAX_GROUP_SIZE capped the output, not the cost of computing it. NOTE: the prior shipped fix (53c9a49/4ee4278) targeted GraphData::load / all_resolved_refs on the hypothesis it was the peak; a real RSS profile showed graph_loaded=41MB — that hypothesis was wrong. The ref/HRR caps are harmless insurance, not the fix.",
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786677582710,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 324
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786677824288,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786678925134,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "needs-review"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786711517666,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-review",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786715433354,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786677582710,
+  "updated_at": 1786715433354,
+  "completed_at": 1786715433354,
+  "edges": []
+}

@@ -188,7 +188,7 @@
 {"id":"sutra/188","title":"Python complexity scoring + unresolved-ref effect fallback","status":"done","closed_at":1782395002477}
 {"id":"sutra/189","title":"Python import resolver + pipeline wiring","status":"done","closed_at":1782396268116}
 {"id":"sutra/190","title":"Python adapter integration tests + end-to-end verification","status":"done","closed_at":1782402500825}
-{"id":"sutra/191","title":"Fix C parser/index scaling before retrying Linux kernel stress parse","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/191","title":"Fix C parser/index scaling before retrying Linux kernel stress parse","status":"done","closed_at":1786719089209}
 {"id":"sutra/192","title":"Fix Python effect fallback and greedy import prefix resolution","status":"done","closed_at":1782397736102}
 {"id":"sutra/193","title":"Deepen Dart ref classifier to reduce Other fallthrough","status":"done","closed_at":1782412920552}
 {"id":"sutra/194","title":"Stop extracting Other refs across all language parsers","status":"done","closed_at":1782416414512}
@@ -316,21 +316,37 @@
 {"id":"sutra/316","title":"orient returns hard MCP error (-32602) on unindexed workspace instead of a hint","status":"wontfix","closed_at":1786339766635}
 {"id":"sutra/317","title":"Refresh README + docs narrative after sutra_orient deletion","status":"done","closed_at":1786373484990}
 {"id":"sutra/318","title":"Decide: is \"Orient\" still a domain concept, and is sketch mode now vestigial?","status":"done","closed_at":1786375270467}
-{"id":"sutra/needs-designing/1","title":"Design: sutra_plan_refactoring","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/2","title":"Design: sutra_dupes — clone detection","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/3","title":"Design: sutra_boundaries — architectural-zone enforcement","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/4","title":"Design: sutra_search_ast — structural pattern matching","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/5","title":"Design: sutra_refactor_targets — ranked recommendations","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/6","title":"Design: compact wire format (MUNCH-style)","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/7","title":"Structural motif discovery over the symbol/call/import graph","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/8","title":"HDC AST encoding experiment for structural code search","status":"done","closed_at":1778360037385}
-{"id":"sutra/needs-designing/9","title":"HDC design decision: practical evaluation for binary MAP vs HRR vs hybrid","status":"done","closed_at":1778360058486}
-{"id":"sutra/needs-designing/10","title":"PRD: HRR structural search integration into sutra","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/11","title":"Function-level structural diffs in diff_impact","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/12","title":"Thread callee graph into diff_impact","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/13","title":"Before/after snapshots and per-commit manifests","status":"wontfix","closed_at":null}
-{"id":"sutra/needs-designing/14","title":"External-crate dependency constraints — forbidden_external kind","status":"done","closed_at":1781166295583}
-{"id":"sutra/needs-designing/15","title":"Multi-crate Cargo workspace import resolution — cross-crate edges never resolve","status":"done","closed_at":1781200575594}
+{"id":"sutra/319","title":"Staleness gate should use content hashes, not repo-wide git HEAD + mtime","status":"ready-for-human","closed_at":null}
+{"id":"sutra/320","title":"Frozen workspace: alias forward-resolution (name→symbol) is dead","status":"done","closed_at":1786611618067}
+{"id":"sutra/321","title":"Support hierarchical alias schema (namespaced symbols + array [component] membership)","status":"done","closed_at":1786616522969}
+{"id":"sutra/322","title":"Install + restart sutra MCP server to activate hierarchical alias schema (sutra/321) and frozen-alias sync (sutra/320)","status":"done","closed_at":1786616634987}
+{"id":"sutra/323","title":"forbidden_pattern: per-rule scope exclusion (carve out a file/glob from a pattern rule)","status":"needs-triage","closed_at":null}
+{"id":"sutra/324","title":"Reparse OOM: 12GB peak on kala-reverse; frozen workspace forced full (non-incremental) reparse","status":"done","closed_at":1786715433354}
+{"id":"sutra/325","title":"Incremental-add path for frozen workspaces (ingest new files without whole-corpus derived rebuild)","status":"ready-for-human","closed_at":null}
+{"id":"sutra/326","title":"Retry Linux kernel stress parse with the sutra/191 fixes","status":"ready-for-agent","closed_at":null}
+{"id":"sutra/327","title":"HRR codebook/vector storage dominates index size on large C workspaces","status":"done","closed_at":1786723247723}
+{"id":"sutra/328","title":"Similarity mode-knob cleanup: redundant strip-only delete, off-mode comment, embed tie-order","status":"done","closed_at":1786723874273}
+{"id":"sutra/329","title":"Load-bearing edit guard doesn't clear after sutra_impact is run","status":"done","closed_at":1787143467427}
+{"id":"sutra/330","title":"Alias vocabulary: index sub-tokens of [symbol] short names (split on '_')","status":"done","closed_at":1786974756557}
+{"id":"sutra/331","title":"Lesson injection signal-to-noise: relevance gating and dedup","status":"ready-for-human","closed_at":null}
+{"id":"sutra/332","title":"Design: sutra_plan_refactoring","status":"wontfix","closed_at":null}
+{"id":"sutra/333","title":"Design: sutra_dupes — clone detection","status":"wontfix","closed_at":null}
+{"id":"sutra/334","title":"Design: sutra_boundaries — architectural-zone enforcement","status":"wontfix","closed_at":null}
+{"id":"sutra/335","title":"Design: sutra_search_ast — structural pattern matching","status":"wontfix","closed_at":null}
+{"id":"sutra/336","title":"Design: sutra_refactor_targets — ranked recommendations","status":"wontfix","closed_at":null}
+{"id":"sutra/337","title":"Design: compact wire format (MUNCH-style)","status":"wontfix","closed_at":null}
+{"id":"sutra/338","title":"Structural motif discovery over the symbol/call/import graph","status":"wontfix","closed_at":null}
+{"id":"sutra/339","title":"HDC AST encoding experiment for structural code search","status":"done","closed_at":1778360037385}
+{"id":"sutra/340","title":"HDC design decision: practical evaluation for binary MAP vs HRR vs hybrid","status":"done","closed_at":1778360058486}
+{"id":"sutra/341","title":"PRD: HRR structural search integration into sutra","status":"wontfix","closed_at":null}
+{"id":"sutra/342","title":"Function-level structural diffs in diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/343","title":"Thread callee graph into diff_impact","status":"wontfix","closed_at":null}
+{"id":"sutra/344","title":"Before/after snapshots and per-commit manifests","status":"wontfix","closed_at":null}
+{"id":"sutra/345","title":"External-crate dependency constraints — forbidden_external kind","status":"done","closed_at":1781166295583}
+{"id":"sutra/346","title":"Multi-crate Cargo workspace import resolution — cross-crate edges never resolve","status":"done","closed_at":1781200575594}
+{"id":"sutra/347","title":"HRR codebook/vector storage dominates index size on large C workspaces","status":"wontfix","closed_at":1786719175646}
+{"id":"sutra/348","title":"Lesson injection signal-to-noise: relevance gating and dedup","status":"wontfix","closed_at":1787146924604}
+{"id":"sutra/349","title":"Default omitted `workspace` arg to the stdio session's CWD workspace","status":"done","closed_at":null}
 {"id":"sutra/simple-additions/1","title":"Per-result freshness + confidence signals","status":"done","closed_at":1778233384829}
 {"id":"sutra/simple-additions/2","title":"sutra_winnow — multi-axis composite query","status":"done","closed_at":1778233941078}
 {"id":"sutra/simple-additions/3","title":"sutra_trend — snapshot diff + aggregate metrics","status":"done","closed_at":1778235260604}

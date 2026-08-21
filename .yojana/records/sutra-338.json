@@ -1,9 +1,9 @@
 {
   "id": "019e0a5a-36b1-73e1-b0b5-0b92bd3b61d4",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/7",
-  "sequence_number": 7,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/338",
+  "sequence_number": 338,
   "title": "Structural motif discovery over the symbol/call/import graph",
   "description": "Find small (3–5 node) connected subgraphs that occur in the sutra symbol/call/import graph **significantly more often than in a randomized null-model graph**. Goal: surface recurring structural patterns and anti-patterns (\"module exposes type → trait impl in same module → consumer in sibling module\"; circular sibling references; over-coupled facade modules).\n\nReference: Milo et al., \"Network Motifs: Simple Building Blocks of Complex Networks\" (2002). Tools: gtrieScanner, FANMOD; or roll our own — algorithm is straightforward (enumerate small subgraphs, count, compare to null).\n\nWhy this over PH: motifs are *interpretable* — a 4-node diagram with \"happens 47× more than chance\" tells a story. PH persistence diagrams don't.\n\nDesign questions to grill before building:\n- Which graph: call graph, import graph, type-uses graph, or a unified multigraph?\n- Null model: configuration model (preserve degree distribution), edge-swap, or uniform random? Different choices give different \"significant\" motifs.\n- Motif size: 3 only? 3+4? 3+4+5? Combinatorics blow up fast.\n- Directed or undirected? sutra's edges are directed; preserving that matters.\n- Statistical significance threshold (Z-score? p-value with how many null samples?).\n- Output: report skill, MCP tool, or stored as an analyzable artifact?",
   "category": null,

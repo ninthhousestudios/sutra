@@ -1,0 +1,57 @@
+{
+  "id": "019ffaa4-c90e-7a41-8d74-27d5ae562296",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/322",
+  "sequence_number": 322,
+  "title": "Install + restart sutra MCP server to activate hierarchical alias schema (sutra/321) and frozen-alias sync (sutra/320)",
+  "description": "sutra/320 (frozen alias sync marker, a10913b) and sutra/321 (hierarchical alias schema, 7e25bab) are committed but NOT live — the running sutra MCP server is still the old binary. Until install + server restart:\n- migration 0062 hasn't run against the live kala-reverse index.db (still flat aliases schema),\n- sutra_explore(\"deg_to_rashi\") / (\"positions\") against the live kala-reverse workspace still return 0.\n\nVerified working on a copy of the index (see sutra/321 execution_record). Action: rebuild+install the sutra binary, restart the MCP server, then confirm live sutra_explore(\"deg_to_rashi\")->FUN_008d1c50 and sutra_explore(\"positions\")-> member symbols in the real kala-reverse workspace. Note the current branch is unmerged.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Josh rebuilt/installed the sutra binary and restarted the MCP server, activating sutra/320 (frozen alias sync) and sutra/321 (hierarchical alias schema). Migration 0062 now applied to the live kala-reverse index; forward alias resolution live.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [
+    "deploy"
+  ],
+  "history": [
+    {
+      "ts": 1786616531214,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 322
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786616631293,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786616634987,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786616531214,
+  "updated_at": 1786616634987,
+  "completed_at": 1786616634987,
+  "edges": []
+}

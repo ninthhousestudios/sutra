@@ -1,9 +1,9 @@
 {
   "id": "019e06ed-02a8-7b31-b55c-08bcbe192fc1",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/1",
-  "sequence_number": 1,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/332",
+  "sequence_number": 332,
   "title": "Design: sutra_plan_refactoring",
   "description": "Design how sutra emits edit-ready `{old_text, new_text}` blocks for refactoring operations (rename / move / extract / signature change), with import rewrites and collision detection.\n\n**Open questions to resolve:**\n- Scope for v1: rename only, or all four operations?\n- Trait/generic coordination — renaming a trait method requires updating every `impl` block and call site. Tree-sitter sees these but emitting *correct byte ranges* across hundreds of sites is fragile. How do we validate?\n- Macro-generated code is invisible to tree-sitter. How do we warn the agent when a rename probably extends into macro output?\n- Cross-crate renames in a cargo workspace — feasible. External downstream crates — out of scope.\n- Rollback contract if half the edits fail to apply.\n\n**Output:** design doc in docs/plans/ describing chosen scope, output schema, validation strategy, and Rust-specific edge case handling.\n\nReference: docs/feature-ideas.md → \"sutra_plan_refactoring\" (jcodemunch's `plan_refactoring` is the inspiration).",
   "category": "enhancement",

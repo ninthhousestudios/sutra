@@ -1,9 +1,9 @@
 {
   "id": "019e8352-2dda-7861-b1ee-77f0f15e2106",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/12",
-  "sequence_number": 12,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/343",
+  "sequence_number": 343,
   "title": "Thread callee graph into diff_impact",
   "description": "## Motivation\n\n`sutra_diff_impact` currently walks the caller graph (inbound blast radius) — \"what depends on this changed symbol.\" It doesn't walk callees — \"what does this changed symbol depend on.\" Sutra already has callee data via `sutra_calls`, but it's not wired into the diff impact path.\n\n## Why it matters\n\nWhen a function's implementation changes, knowing what it *calls* helps assess whether the change could break downstream behavior. Example: if `process_order()` changed and now calls `charge_card()` instead of `authorize_payment()`, the callee delta is the most important signal — more than knowing who calls `process_order()`.\n\n## Approach sketch\n\n`sutra_calls` already computes callees from resolved refs within a symbol's line range. Extend `sutra_diff_impact` output to include a `callees_changed` section per affected symbol, showing callees added/removed between the two states. This pairs naturally with the function-level structural diff task — if we know a symbol's body changed, we can diff its callee set.\n\n## Prior art\n\ngit-prism's `get_function_context` includes both callers and callees per changed function.",
   "category": "enhancement",

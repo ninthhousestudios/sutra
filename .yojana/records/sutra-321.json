@@ -1,0 +1,116 @@
+{
+  "id": "019ffa63-3025-7a91-b787-efecc049e124",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/321",
+  "sequence_number": 321,
+  "title": "Support hierarchical alias schema (namespaced symbols + array [component] membership)",
+  "description": "sutra's alias vocabulary only supports a flat schema: AliasConfig.{component,file,symbol} are HashMap<String,String>, and find_alias does exact-term match. Real usage (kala-reverse, whose PRIMARY deliverable is a name->symbol map over a 28k-symbol decompiled binary) needs a richer schema that sutra currently rejects outright:\n\n  [symbol]    \"component/human_name\" = \"FUN_<hex>\"    e.g. \"positions/deg_to_rashi\" = \"FUN_008d1c50\"\n  [component] \"name\" = [\"human_name\", ...]            e.g. runtime = [\"runtime/import_resolver\"]\n\nToday vocabulary::parse_aliases fails on the array-valued [component] section (serde type error: sequence where String expected), so the ENTIRE file is rejected and forward resolution is dead (see sutra/320 for the full diagnosis). This is option B from the sutra/320 decision — extend sutra to fit the model rather than force the user to flatten (option A), because flattening loses the component-grouping semantics that are the point of the map.\n\nScope:\n1. Parse: accept string-OR-array for [component] (an ad-hoc membership set of symbol terms), keep [symbol]/[file] as-is. Likely a serde untagged enum or custom deserialize on the [component] value.\n2. Storage: persist component membership (the \"positions = [8 terms]\" grouping) so a component-name query returns all member symbols. Decide: reuse the aliases table with a kind, or a new alias_membership table. NOTE this grouping is DISTINCT from sutra's existing clustering-derived components ([component] alias currently points a nickname at a real derived component) — reconcile the two meanings or namespace them.\n3. Resolution: (a) resolve a component name -> all member symbols' locations; (b) resolve a namespaced [symbol] term by BOTH its full path (\"positions/deg_to_rashi\") AND its short segment (\"deg_to_rashi\"); define collision semantics when a short name is ambiguous across components (return all vs. disambiguate).\n4. Migration/back-comfort: existing flat aliases.toml files must still parse unchanged.\n\nTypes-first gate applies: this changes AliasConfig's data model + adds a membership store + new resolution signatures. Draft the type skeleton (AliasConfig shape, membership storage, find/resolve signatures, collision + orphan semantics, error taxonomy) for review BEFORE implementation.\n\nVerify against the real file at the end: vocabulary::parse_aliases(/home/josh/soft/kala-reverse/.sutra/aliases.toml) must succeed, and sutra_explore(\"deg_to_rashi\") / (\"positions\") must resolve to symbols.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "HITL",
+  "acceptance_criteria": [
+    {
+      "done": true,
+      "text": "vocabulary::parse_aliases succeeds on the real kala-reverse/.sutra/aliases.toml (array [component] + namespaced [symbol])"
+    },
+    {
+      "done": true,
+      "text": "sutra_explore(\"deg_to_rashi\") resolves to FUN_008d1c50 via short-name match"
+    },
+    {
+      "done": true,
+      "text": "sutra_explore(\"positions\") resolves to all member symbols of the positions component group"
+    },
+    {
+      "done": true,
+      "text": "existing flat aliases.toml files parse and resolve unchanged (back-compat)"
+    },
+    {
+      "done": true,
+      "text": "short-name collision semantics defined and tested"
+    },
+    {
+      "done": true,
+      "text": "types-first skeleton reviewed before implementation"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Discriminate old vs new [component] meaning by TOML value type (string=nickname, array=group) rather than adding a separate [group] section",
+      "rationale": "Matches how the real kala-reverse file is already authored and needs zero reconciliation ambiguity; a string is unambiguously a nickname, an array unambiguously a membership group.",
+      "rejected_alternative": "A dedicated [group] TOML section — cleaner separation but diverges from the file Josh already wrote and adds a fourth section to document/migrate."
+    },
+    {
+      "decision": "Short-name collision resolves to ALL matching aliases (one ResolveMatch each)",
+      "rationale": "resolve() already returns Vec<ResolveMatch>; returning all candidates maximizes discoverability in sutra_explore and avoids silent first-wins. Verified with two distinct */is_own_sign terms.",
+      "rejected_alternative": "Require the full component/name path and error on bare ambiguous short names — safer but hurts the primary use (typing a bare human name)."
+    }
+  ],
+  "implementation_plan": "1. vidhi-types-first: type skeleton for AliasConfig (string-or-array [component]), membership storage model, find_alias/resolve signatures + collision/orphan semantics, error taxonomy — reviewed before bodies.\n2. Migration for membership storage (mirror existing singleton/marker patterns; reconcile with clustering-derived components meaning).\n3. parse_aliases + AliasConfig deserialize; keep flat-schema back-compat.\n4. sync_aliases writes membership; find_alias segment/short-name match; vocabulary::resolve component-name -> members and namespaced-symbol -> short+full.\n5. Tests: real kala-reverse file parses; short-name and component-name resolution; ambiguous short-name collision; flat legacy file still works.",
+  "execution_record": "Implemented per the approved skeleton, no design deviations. Discriminator = TOML value type: string [component] value -> nickname (kind='component', legacy), array -> membership group (kind='group' + alias_group_member rows). Untagged ComponentValue enum (verified parsing under toml 0.8 before proposing). Namespaced [symbol] terms get a derived short_name column (trailing segment after '/'); resolve() tries exact term first, else find_aliases_by_short_name (short-name collision -> return ALL, one ResolveMatch each). Group resolves to union of member symbol locations. Migration 0062 rebuilds the aliases projection (short_name + 'group' in CHECK), adds alias_group_member, resets alias_sync marker to force one reprojection.\n\nVerified end-to-end against a COPY of the real kala-reverse index.db (857MB, /home/josh/.sutra/kala-reverse) via a throwaway gated test (since the live server is the old binary): 49 alias terms projected; deg_to_rashi (short) -> FUN_008d1c50 @ 008d1c50.c non-orphan; positions/deg_to_rashi (full) -> FUN_008d1c50; positions group -> 6 member locations. Throwaway test removed after passing. 792 lib + 18 vocabulary integration tests green, clippy clean.\n\nPENDING (not yet live): the running sutra MCP server is still the old binary (same pending install+restart step noted on sutra/320). This code is committed (7e25bab) on the current branch, unmerged/not redeployed. sutra_explore against the live kala-reverse workspace will only reflect the fix after install + server restart. Filing follow-up.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [
+    {
+      "type": "yojana:task",
+      "value": "sutra/320",
+      "label": "root-cause diagnosis"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "AliasConfig"
+    },
+    {
+      "type": "sutra:symbol",
+      "value": "resolve",
+      "label": "vocabulary::resolve forward path"
+    },
+    {
+      "type": "doc:path",
+      "value": "/home/josh/soft/kala-reverse/.sutra/aliases.toml",
+      "label": "target schema"
+    }
+  ],
+  "files": [
+    "src/vocabulary.rs",
+    "src/db/components.rs",
+    "src/tools/explore.rs",
+    "migrations/"
+  ],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786612232229,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 321
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786615906213,
+      "kind": "status_changed",
+      "payload": {
+        "from": "ready-for-human",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786616522969,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786612232229,
+  "updated_at": 1786616522969,
+  "completed_at": 1786616522969,
+  "edges": []
+}

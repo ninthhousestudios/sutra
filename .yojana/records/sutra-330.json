@@ -1,0 +1,67 @@
+{
+  "id": "01a00ff7-b637-7b10-9fbc-51da83c2bf31",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/330",
+  "sequence_number": 330,
+  "title": "Alias vocabulary: index sub-tokens of [symbol] short names (split on '_')",
+  "description": "sutra_explore resolves [component] names and [symbol] SHORT names (the segment after the last '/', via short_name_of), but not sub-tokens. For a namespaced alias like `dashas/vimshottari_main`, \"vimshottari_main\" resolves (short name) but \"vimshottari\" does NOT — short_name_of() splits only on '/', never '_', and resolve() is exact-match. Users naturally search the bare technique term (\"vimshottari\", \"shodashottari\"), which is the domain term the alias file exists to resolve.\n\nFix (in src/vocabulary.rs::sync_aliases): in addition to the full term and the '/'-trailing short name, split the short name on '_' and emit each meaningful sub-token as an additional alias row pointing at the same target. `dashas/vimshottari_main` then indexes {dashas/vimshottari_main, vimshottari_main, vimshottari, main}.\n\nDesign notes:\n- Reuses the existing exact-match resolve() path — no matching-semantics change.\n- No schema migration: the `aliases` table is a pure projection rebuilt wholesale by replace_all_aliases on every sync; changes land on next sync_aliases (reset alias_sync marker to force reprojection).\n- Short-name collisions already \"return ALL matches\" by design, so sub-token collisions across symbols are intended behavior.\n- Apply a SHORT stoplist for generic segments (main, report, table, init, dispatch, handler, panel, 2nd, etc.) to avoid noisy resolvable terms. Josh approved a short stoplist.\n\nValidates against kala-reverse's .sutra/aliases.toml: after the fix, `sutra_explore(vimshottari)` should resolve to FUN_005ec7a0.",
+  "category": "enhancement",
+  "status": "done",
+  "slice_type": "AFK",
+  "acceptance_criteria": [
+    {
+      "done": false,
+      "text": "sync_aliases emits sub-token alias rows from '_'-split short names, same target"
+    },
+    {
+      "done": false,
+      "text": "Short stoplist filters generic segments (main/report/table/init/dispatch/handler/panel/builder/print/screen/2nd)"
+    },
+    {
+      "done": false,
+      "text": "Existing full-term + short-name resolution still works (no regression)"
+    },
+    {
+      "done": false,
+      "text": "Unit test covers sub-token projection + stoplist exclusion"
+    },
+    {
+      "done": true,
+      "text": "Verified LIVE on kala-reverse after redeploy: explore('vimshottari') -> FUN_005ec7a0+FUN_005eeba0, explore('shodashottari') -> FUN_005d90d0, explore('main') leaks no dasha (stoplist holds). Migration 0066 reprojected on new-binary startup."
+    }
+  ],
+  "decisions": [],
+  "implementation_plan": null,
+  "execution_record": "Implemented in src/vocabulary.rs: sub_tokens() splits a namespaced [symbol] term's short name (segment after last '/') on '_', dropping stoplisted generics and <3-char segments and collapsing dups; sync_aliases emits one extra projection row per sub-token (synthetic unique `term#subtoken` key, sub-token in short_name column, same target_kind/target_ref) so bare technique words resolve via the existing exact-match short-name path (resolve() Priority 1.5). Refactored the record closure into a free push_alias() + AliasTuple type alias (avoids clippy type_complexity / borrow conflict). No schema change — aliases is a pure rebuilt projection.\n\nSurprise/catch during execution: a code-only projection change does NOT reproject, because sync_aliases_if_changed is gated on the aliases.toml content hash (unchanged). Added migration 0066 to null the alias_sync marker (mirrors 0062's approach for the schema change) so the next startup re-projects under the new logic.\n\nVerified: cargo test --lib vocabulary (10 pass) + --test vocabulary_test (19 pass, incl. new test_resolve_subtoken_of_short_name asserting vimshottari resolves and 'main' does not); cargo clippy --lib clean for vocabulary.rs (6 pre-existing warnings in other files only). Two commits on sutra main.\n\nPENDING (not landed to the live tool): the running sutra MCP server in Josh's sessions is the old binary; live sutra_explore('vimshottari') on kala-reverse won't resolve until sutra is rebuilt/installed and the MCP server restarts (migration 0066 then reprojects automatically on that first startup). This is an operational deploy step in Josh's control; flagged to Josh rather than a separate task.",
+  "reproduction": null,
+  "root_cause": null,
+  "context_refs": [],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786974287415,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 330
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786974756557,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [],
+  "created_at": 1786974287415,
+  "updated_at": 1786974944658,
+  "completed_at": 1786974756557,
+  "edges": []
+}

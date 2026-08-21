@@ -1,9 +1,9 @@
 {
   "id": "019e0a5a-7655-7880-85d6-d0b74191f63d",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/8",
-  "sequence_number": 8,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/339",
+  "sequence_number": 339,
   "title": "HDC AST encoding experiment for structural code search",
   "description": "Standalone experiment: encode tree-sitter ASTs into hyperdimensional (VSA) vectors using random base vectors per node-kind and binding/bundling for structure. Goal is to test whether HDC-based structural search (e.g. \"find all functions matching shape: pub fn → calls db → returns Result\") beats existing tree-sitter queries + embedding similarity.\n\nReference: Plate's HRR (1995), Kanerva's HDC. Real research area, real Rust-friendly bitwise SIMD primitives. Capacity falls off with tree depth — bounded encoding scheme matters.\n\nThis is a contained experiment, not infrastructure. Two outcomes both valuable:\n- HDC clearly beats tree-sitter queries on some class of structural search → generalize.\n- HDC adds nothing over tree-sitter queries + cheap embeddings → close, document why.\n\nDesign questions:\n- Binding scheme: XOR (bipolar), permutation (sequence-aware), or holographic reduced representation (real-valued)?\n- Vector dimension: 10000 bits is the canonical default; is that right for our AST sizes?\n- Tree encoding: role-filler bundling, recursive binding by depth, or a graph-structured variant?\n- Cleanup memory: how do we map noisy unbinding results back to known node-kinds?\n- Evaluation: what's the test set? Hand-labeled \"find all X-shaped functions\" queries against a known repo?\n- Cross-language stretch goal (Rust ↔ Dart shared base vectors) or single-language MVP first?\n\nBias toward MVP first. Defer cross-language until single-language structural search demonstrably works.",
   "category": null,

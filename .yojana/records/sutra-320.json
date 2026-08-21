@@ -1,0 +1,72 @@
+{
+  "id": "019ffa4f-4d20-7e01-8992-560670124841",
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/320",
+  "sequence_number": 320,
+  "title": "Frozen workspace: alias forward-resolution (name→symbol) is dead",
+  "description": "In this frozen workspace, forward alias resolution (human name → symbol) returns nothing for ANY alias — newly-added, long-committed, and [component] names alike — even though the reverse anchor map is clearly loaded (hex queries tag reason:\"alias:anchor\"). This breaks sutra_explore's documented top tier (\"resolves .sutra/aliases.toml domain terms as its top tier\"), which for the kala-reverse project is the stated primary deliverable — the whole point of building aliases.toml is name→symbol lookup.\n\nLikely mechanism (unconfirmed): freezing loads the alias→anchor reverse map but skips building the alias-name / component-name FTS vocabulary that name→symbol resolution depends on (that vocabulary is normally (re)built during parse, which freeze suppresses).\n\nCaveat: only observed in frozen mode; not tested unfrozen in this session (reparse is disallowed on this 21-min-parse workspace). Triage should confirm whether non-frozen resolution works and whether the fix is to persist/rebuild the alias vocabulary at freeze/load time rather than only at parse time.",
+  "category": "bug",
+  "status": "done",
+  "slice_type": null,
+  "acceptance_criteria": [],
+  "decisions": [
+    {
+      "decision": "Durable per-file freshness marker (option B), not a frozen-only alias sync (A) or splitting the parse tail into a hydrate pass (C)",
+      "rationale": "B fixes the real defect — alias edits should take effect independent of source changes or frozen state — for barely more code than A, and reuses the pattern already established by 0059's accepted.toml marker. A only patches the frozen symptom. C is cleanest architecturally but a larger refactor of the contract-sensitive parse tail; deferred.",
+      "rejected_alternative": "Option A: call sync_aliases unconditionally on frozen startup with no change-detection — re-projects every startup and does nothing for non-frozen workspaces edited without a source change."
+    }
+  ],
+  "implementation_plan": null,
+  "execution_record": "Fix = give the projection its own durable freshness marker rather than a frozen-only patch (option B of three considered; A=frozen-only, C=split parse tail). Added migration 0061_alias_sync_marker (singleton alias_sync table, mirrors 0059 accepted_sync). replace_all_aliases now takes the file hash and updates the marker in the same transaction (atomic — marker can't claim a projection the table lacks). New vocabulary::sync_aliases_if_changed gates re-projection on content-hash vs marker; new current_aliases_hash helper. main.rs::maybe_reparse_cwd reordered to open the db before the frozen check, and calls sync_aliases_if_changed in both parse-skipping branches (frozen return, and !is_stale return); the stale-and-not-frozen branch still relies on the spawned parse_workspace. Full parse path behavior unchanged (sync_aliases still runs, now also stamping the marker). 1543 tests pass; added test_sync_if_changed_gated_by_marker. NOTE: committed but NOT yet live — the running sutra MCP server is the old binary; requires install + restart to activate (same pending step as the frozen flag).",
+  "reproduction": "Workspace kala-reverse (/home/josh/soft/kala-reverse), sutra v0.9.5, reconnected with the `frozen` flag set (is_stale:false, no reparse). `.sutra/aliases.toml` has 34 [symbol] anchors + 15 [component] groups.\n\n- sutra_explore(query=\"FUN_008e5270\") → returns the symbol, tagged reason:\"alias:anchor\". So the reverse (symbol→is-anchor) map IS loaded from aliases.toml.\n- sutra_explore(query=\"is_own_sign\") → 0 items (narrow_query).\n- sutra_explore(query=\"deg_to_rashi\") → 0 items. (Committed alias from kala-reverse/5, not a new edit.)\n- sutra_explore(query=\"galactic_center_ayanamsa\") → 0 items.\n- sutra_explore(query=\"positions\")  [a [component] name] → 0 items.\n- sutra_grep(pattern=\"is_own_sign\") → 0 matches.",
+  "root_cause": "The `aliases` table (a persisted projection of .sutra/aliases.toml) had exactly one writer — vocabulary::sync_aliases — called only from parse_workspace. Any startup that skipped a full parse (frozen index, or fresh index whose source didn't change) never re-ran the projection, so forward name->symbol resolution read a stale/empty table. aliases.toml is not an indexed source file, so editing it never trips the staleness gate either; the projection was wrongly coupled to source parsing. The frozen flag (e47e343) exposed a latent bug, it did not create one. Reverse/anchor lookup kept working because it reads semantic_anchors, which is baked into index.db at parse time and doesn't depend on re-reading the toml.",
+  "context_refs": [
+    {
+      "type": "git:commit",
+      "value": "a10913b"
+    }
+  ],
+  "files": [],
+  "tags": [],
+  "history": [
+    {
+      "ts": 1786610928928,
+      "kind": "task_created",
+      "payload": {
+        "project": "sutra",
+        "sequence_number": 320
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786611605455,
+      "kind": "status_changed",
+      "payload": {
+        "from": "needs-triage",
+        "to": "in-progress"
+      },
+      "actor": "agent"
+    },
+    {
+      "ts": 1786611618067,
+      "kind": "status_changed",
+      "payload": {
+        "from": "in-progress",
+        "to": "done"
+      },
+      "actor": "agent"
+    }
+  ],
+  "messages": [
+    {
+      "author": "user",
+      "text": "CORRECTION — the commits on this task (frozen-aware alias sync, a10913b; query-time gate, a1350f9) are real fixes but do NOT resolve the observed symptom in kala-reverse. Verified root cause of the dead forward resolution is a SCHEMA MISMATCH, not sync timing:\n\nkala-reverse/.sutra/aliases.toml uses a hierarchical schema (documented in its own header):\n  [symbol]    \"component/human_name\" = \"FUN_<hex>\"   e.g. \"positions/deg_to_rashi\" = \"FUN_008d1c50\"\n  [component] \"name\" = [\"human_name\", ...]            e.g. runtime = [\"runtime/import_resolver\"]\n\nsutra's AliasConfig has component/file/symbol as HashMap<String,String>. The array-valued [component] entries are a serde type error: vocabulary::parse_aliases(\"<real file>\") fails at line 122 (\"TOML parse error\"). So the WHOLE file is rejected -> sync_aliases returns Err -> the aliases table is never populated -> every forward lookup returns 0. Reverse/anchor resolution works because it reads semantic_anchors (baked in at parse), not the toml.\n\nAdditionally, even if it parsed, terms are stored namespaced (\"positions/deg_to_rashi\"), so find_alias exact-match on the short name \"deg_to_rashi\" would still miss.\n\nTwo paths: (A) reshape aliases.toml to sutra's flat schema (loses the component-grouping model); (B) extend sutra to support the hierarchical schema Josh designed (array [component] membership + short-name/segment resolution). Decision pending with Josh; will file a follow-up task for the chosen direction. This symptom should be tracked as NOT fixed until then.",
+      "ts": 1786612122978
+    }
+  ],
+  "created_at": 1786610928928,
+  "updated_at": 1786611618067,
+  "completed_at": 1786611618067,
+  "edges": []
+}

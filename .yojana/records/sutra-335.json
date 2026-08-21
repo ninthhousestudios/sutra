@@ -1,9 +1,9 @@
 {
   "id": "019e06ed-7310-7071-bf0b-219d99e686e5",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/4",
-  "sequence_number": 4,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/335",
+  "sequence_number": 335,
   "title": "Design: sutra_search_ast — structural pattern matching",
   "description": "Design structural pattern matching with preset anti-pattern detectors for Rust + Dart.\n\n**Open questions:**\n- Rule format: hardcoded Rust functions per pattern (clean, proliferates) vs. tree-sitter query files (declarative, verbose, language-coupled) vs. mini-DSL (jcodemunch's path — flexible, you're inventing a language).\n- Cross-language node-type abstraction — jcodemunch's \"universal node-type mapping\" is a big project. Recommendation: **skip it**, ship per-language rule sets.\n- Which presets are actually worth shipping? Generic ones (god function, deeply nested, magic numbers) translate; language-specific ones are where the value is — `unwrap()` outside tests, `?` in `main`, missing `#[must_use]`, swallowed errors, hardcoded secrets, TODO/FIXME.\n\n**Recommendation already in docs/feature-ideas.md:** ship ~10 curated Rust + ~5 Dart presets as hardcoded functions first. Mini-DSL only if usage justifies it.\n\n**Output:** design doc in docs/plans/ listing the v1 preset rules + chosen rule format.\n\nReference: docs/feature-ideas.md → \"sutra_search_ast\".",
   "category": "enhancement",

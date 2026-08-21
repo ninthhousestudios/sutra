@@ -1,9 +1,9 @@
 {
   "id": "019eb5bf-31ba-7743-a9e3-a532f3d7052c",
-  "project_id": "019e06eb-42f8-7432-bcab-401bd45d5bad",
-  "project_slug": "sutra/needs-designing",
-  "human_id": "sutra/needs-designing/15",
-  "sequence_number": 15,
+  "project_id": "019e016f-8672-7ec2-ae1c-616256d88f8f",
+  "project_slug": "sutra",
+  "human_id": "sutra/346",
+  "sequence_number": 346,
   "title": "Multi-crate Cargo workspace import resolution — cross-crate edges never resolve",
   "description": "normalize_to_crate_segments (src/rust_imports.rs:71) only recognizes crate::/self::/super:: and THE root Cargo.toml's [package] name. In a multi-crate workspace (e.g. adityas/backend: server + report + quiver-client), `use report::render` from server/ returns None → the import stays unresolved → no edge → forbidden_dep \"server/** -> report/**\" and boundary constraints between workspace crates NEVER fire. Silently inert, same failure class as max_fan_in (sutra/simple-additions/8). Also file_to_module_segments assumes paths start with \"src/\", which is false for crate-subdir layouts (\"server/src/main.rs\"), so super::/self:: resolution inside member crates is likely wrong too.\n\nFound during sutra/needs-designing/14 (2026-06-11). Interim mitigation (documented in README + vidhi-sutra SKILL.md): sibling-crate imports classify as EXTERNAL, so forbidden_external/confined_external express crate-to-crate seams, including via the Cargo.toml path-dependency signal.\n\nDesign questions: parse [workspace.members] and each member's [package] name → per-crate module roots; resolution maps <member_name>::path → <member_dir>/src/path; file_to_module_segments needs crate-root-relative semantics. Decide whether resolved cross-crate edges should then make external-kind classification of siblings disappear (it should — and seed rules written with the external-kind workaround would need migrating to forbidden_dep).",
   "category": null,
