@@ -3,7 +3,7 @@
 This workspace is indexed by sutra (MCP code intelligence). For code exploration:
 - Use `sutra_map` instead of `find`/`ls` to discover files
 - Use `sutra_outline` instead of reading whole files to get symbol tables of contents
-- Use `sutra_grep` / `sutra_explore` instead of shell `grep` for symbol search
+- Use `sutra_explore` / `sutra_lookup` to find symbols by name (sutra_lookup is a name lookup, not a text search — use `rg` for file text, `sutra_refs`/`sutra_calls` for usages)
 - Use `sutra_symbol` to read specific symbols by name instead of reading full files
 
 When exploring an unfamiliar area, start with `sutra_explore(query, workspace)` — it replaces iterative map/outline/grep cycles with a single ranked result set and strategy hint.

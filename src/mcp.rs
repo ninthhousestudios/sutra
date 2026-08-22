@@ -69,9 +69,9 @@ use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
 use crate::tools::explore::ExploreArgs;
 use crate::tools::file_health::FileHealthArgs;
-use crate::tools::grep::GrepArgs;
 use crate::tools::hotspots::HotspotsArgs;
 use crate::tools::impact::ImpactArgs;
+use crate::tools::lookup::LookupArgs;
 use crate::tools::map::MapArgs;
 use crate::tools::outline::OutlineArgs;
 use crate::tools::pr_risk::PrRiskArgs;
@@ -486,15 +486,19 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Search indexed symbols by name pattern. \
-        FTS5-backed search across symbol names, signatures, and docstrings. \
+    #[tool(description = "Look up symbols by NAME (functions, types, methods). \
+        FTS5-backed over symbol names, signatures, and docstrings; the ONLY regex \
+        operator honored is `|` for alternation (\"Foo|Bar\" matches either). \
+        This is NOT a text search — for file text, comments, or string literals use rg; \
+        for usages/call sites of a symbol use sutra_refs or sutra_calls; \
+        for fuzzy or topic search use sutra_explore. \
         Returns compact results by default; pass detail=true for signatures and docstrings.")]
-    pub async fn sutra_grep(
+    pub async fn sutra_lookup(
         &self,
-        Parameters(args): Parameters<GrepArgs>,
+        Parameters(args): Parameters<LookupArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let result = tools::grep::handle_ctx(
+        let result = tools::lookup::handle_ctx(
             &ctx,
             &args.pattern,
             args.kind.as_deref(),

@@ -26,7 +26,7 @@ module_boundary_hints() → ModuleBoundaryStrength
 **Variable/constant extraction:** Top-level and class-level variable/constant
 declarations must be indexed. Map immutable bindings (`const`, `final`,
 `readonly`) to `SymbolKind::Const` and mutable bindings to
-`SymbolKind::Static`. Without this, `sutra_grep` can't find module-level
+`SymbolKind::Static`. Without this, `sutra_lookup` can't find module-level
 configuration, constants, or global state.
 
 Everything above Layer 0 — conventions (FCA), constraints (DD), health

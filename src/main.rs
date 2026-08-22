@@ -45,8 +45,8 @@ enum Commands {
         #[arg(long)]
         limit: Option<i64>,
     },
-    /// Search symbols by pattern (JSON output)
-    Grep {
+    /// Look up symbols by name (JSON output)
+    Lookup {
         /// Workspace id
         workspace: String,
         /// Search pattern
@@ -223,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = sutra::tools::map::handle(&db, path_prefix.as_deref(), limit, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
-        Commands::Grep {
+        Commands::Lookup {
             workspace: ws_id,
             pattern,
             kind,
@@ -232,7 +232,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
-            let result = sutra::tools::grep::handle(&db, &pattern, kind.as_deref(), limit, false)?;
+            let result =
+                sutra::tools::lookup::handle(&db, &pattern, kind.as_deref(), limit, false)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Find {

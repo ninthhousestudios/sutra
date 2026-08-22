@@ -75,7 +75,7 @@ Attach freshness state to every result entry:
 parse timestamp. Aggregate into a `_meta.freshness` summary on each response.
 
 Confidence is narrower — only meaningful for ranked queries
-(`sutra_find`, `sutra_grep`). Compute from top-1/top-2 score gap and
+(`sutra_find`, `sutra_lookup`). Compute from top-1/top-2 score gap and
 identity-match presence.
 
 **Why straightforward:** freshness is plumbing — no new analysis, just

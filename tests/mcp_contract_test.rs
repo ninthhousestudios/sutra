@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
 use sutra::tools::{
-    ToolContext, deps, explore, find, grep, impact, map, outline, read, refs, tools_meta, winnow,
+    ToolContext, deps, explore, find, impact, lookup, map, outline, read, refs, tools_meta, winnow,
 };
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
@@ -161,18 +161,55 @@ fn test_find_contract() {
 }
 
 #[test]
-fn test_grep_contract() {
+fn test_lookup_contract() {
     let (_dir, db) = setup_test_db();
-    let result = grep::handle(&db, "main", None, None, false).unwrap();
+    let result = lookup::handle(&db, "main", None, None, false).unwrap();
 
     let matches = result["matches"]
         .as_array()
-        .expect("grep result must have 'matches' array");
+        .expect("lookup result must have 'matches' array");
     assert!(!matches.is_empty());
 
     let hit = &matches[0];
     assert!(hit["qualified_name"].is_string());
     assert!(hit["kind"].is_string());
+}
+
+#[test]
+fn test_lookup_alternation_unions_terms() {
+    let (_dir, db) = setup_test_db();
+    // A `|` term that never matches must not suppress the term that does; the
+    // result is the union, deduped — so "main|zz_no_such_symbol" == "main".
+    let unioned = lookup::handle(&db, "main|zz_no_such_symbol", None, None, false).unwrap();
+    let plain = lookup::handle(&db, "main", None, None, false).unwrap();
+
+    let unioned_matches = unioned["matches"].as_array().unwrap();
+    assert!(
+        !unioned_matches.is_empty(),
+        "alternation must keep live term"
+    );
+    assert_eq!(
+        unioned_matches.len(),
+        plain["matches"].as_array().unwrap().len(),
+        "empty alternation term must not add or remove matches"
+    );
+    assert!(
+        unioned["hint"].is_null(),
+        "non-empty result carries no hint"
+    );
+}
+
+#[test]
+fn test_lookup_empty_emits_hint() {
+    let (_dir, db) = setup_test_db();
+    let result = lookup::handle(&db, "zz_definitely_no_such_symbol", None, None, false).unwrap();
+
+    assert_eq!(result["total"], 0);
+    // A silent empty is the footgun this replaces: steer callers to the right tool.
+    let hint = result["hint"]
+        .as_str()
+        .expect("empty result must carry a hint");
+    assert!(hint.contains("rg"), "hint should point text searches at rg");
 }
 
 #[test]
@@ -337,17 +374,17 @@ fn test_find_freshness_and_confidence() {
 }
 
 #[test]
-fn test_grep_freshness_and_confidence() {
+fn test_lookup_freshness_and_confidence() {
     let (dir, db) = setup_test_db_with_root();
     let ctx = freshness_ctx(&dir, db);
-    let result = grep::handle_ctx(&ctx, "main", None, None, false).unwrap();
+    let result = lookup::handle_ctx(&ctx, "main", None, None, false).unwrap();
 
     let matches = result["matches"].as_array().unwrap();
     assert!(!matches.is_empty());
     for entry in matches {
         assert!(
             entry["_freshness"].is_string(),
-            "grep entry must have _freshness"
+            "lookup entry must have _freshness"
         );
     }
 

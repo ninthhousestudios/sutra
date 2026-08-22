@@ -130,12 +130,13 @@ sutra_explore(workspace=\"myproject\", query=\"Config\")
 ```
 Resolves aliases, qualified names, and fuzzy queries. Returns ranked matches with fetch instructions.
 
-## Search by pattern
+## Look up symbols by name
 ```
-sutra_grep(workspace=\"myproject\", pattern=\"handle\", kind=\"function\")
+sutra_lookup(workspace=\"myproject\", pattern=\"handle\", kind=\"function\")
 ```
-FTS5-backed search across symbol names, signatures, and docstrings. \
-Optional `kind` filter (function, struct, method, trait, enum, etc.).
+Name lookup over symbols (FTS5 across names, signatures, docstrings). \
+Use `|` for alternation (\"Foo|Bar\"). NOT a text search — use rg for file text, \
+sutra_refs/sutra_calls for usages. Optional `kind` filter (function, struct, method, trait, enum, etc.).
 
 ## File dependencies
 ```

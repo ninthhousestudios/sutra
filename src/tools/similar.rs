@@ -74,7 +74,7 @@ fn handle_similar(
                     indexed_kinds: db.distinct_symbol_kinds().unwrap_or_default(),
                     freshness: None,
                     suggestion: "Use sutra_explore to search by partial name, \
-                                 or sutra_grep for a text search.".to_string(),
+                                 or sutra_lookup to match symbol names by pattern.".to_string(),
                 }).unwrap(),
             }));
         }

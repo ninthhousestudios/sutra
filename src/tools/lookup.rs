@@ -2,14 +2,16 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Db;
+use std::collections::HashSet;
+
+use crate::db::{Db, SearchTier};
 use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
 
 use super::ToolContext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct GrepArgs {
+pub struct LookupArgs {
     #[serde(default)]
     pub workspace: String,
     pub pattern: String,
@@ -57,7 +59,44 @@ fn handle_inner(
     mut annotator: Option<FreshnessAnnotator<'_>>,
 ) -> Result<serde_json::Value> {
     let limit = limit.unwrap_or(20);
-    let (results, tier) = db.find_symbols_by_name_tiered(pattern, kind, limit)?;
+
+    // Support grep-style alternation: "A|B|C" matches symbols named like any of
+    // the terms. Each term is looked up independently and the rows are unioned
+    // (deduped by symbol id, first-seen order preserved). A single term (no `|`)
+    // takes the plain path so the exact-match tier is reported faithfully.
+    let terms: Vec<&str> = pattern
+        .split('|')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let (results, tier) = if terms.len() > 1 {
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut merged = Vec::new();
+        // A union across fuzzy terms is inherently broad; only claim the exact
+        // tier when every term that produced rows produced them exactly.
+        let mut all_exact = true;
+        for term in &terms {
+            let (rows, term_tier) = db.find_symbols_by_name_tiered(term, kind, limit)?;
+            if !rows.is_empty() && term_tier != SearchTier::Exact {
+                all_exact = false;
+            }
+            for row in rows {
+                if seen.insert(row.id) {
+                    merged.push(row);
+                }
+            }
+        }
+        merged.truncate(limit as usize);
+        let tier = if all_exact && !merged.is_empty() {
+            SearchTier::Exact
+        } else {
+            SearchTier::Fts
+        };
+        (merged, tier)
+    } else {
+        db.find_symbols_by_name_tiered(pattern, kind, limit)?
+    };
 
     let items: Vec<_> = results
         .iter()
@@ -85,6 +124,17 @@ fn handle_inner(
         .collect();
 
     let mut result = json!({ "matches": items, "total": items.len() });
+    if items.is_empty() {
+        // Distinguish "no symbol by that name" from "wrong tool": callers reach
+        // for this expecting text/regex grep and get a silent empty otherwise.
+        result["hint"] = json!(
+            "No symbol matched by name. sutra_lookup searches symbol names \
+             (definitions), not file text — and `|` is the only regex-style \
+             operator it honors (alternation). For text, comments, or string \
+             literals use rg; for usages/call sites of a known symbol use \
+             sutra_refs or sutra_calls; for fuzzy or topic search use sutra_explore."
+        );
+    }
     if let Some(ann) = annotator {
         result["_meta"] = json!({
             "freshness": ann.finish(),
@@ -96,13 +146,13 @@ fn handle_inner(
 
 #[cfg(test)]
 mod optional_workspace_tests {
-    use super::GrepArgs;
+    use super::LookupArgs;
 
     // An omitted `workspace` must deserialize (empty string → session default is
     // applied downstream in resolve_workspace) rather than being a hard error.
     #[test]
     fn workspace_may_be_omitted_when_deserializing() {
-        let args: GrepArgs = serde_json::from_value(serde_json::json!({
+        let args: LookupArgs = serde_json::from_value(serde_json::json!({
             "pattern": "foo",
         }))
         .expect("workspace should be optional at the deser layer");
@@ -114,7 +164,7 @@ mod optional_workspace_tests {
     // while genuinely-required fields like `pattern` stay required.
     #[test]
     fn schema_marks_workspace_optional_pattern_required() {
-        let schema = schemars::schema_for!(GrepArgs);
+        let schema = schemars::schema_for!(LookupArgs);
         let value = serde_json::to_value(&schema).unwrap();
         let required: Vec<&str> = value["required"]
             .as_array()

@@ -221,7 +221,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_map` | Project file skeleton ranked by importance (symbol count + fan-in + blast radius) |
 | `sutra_outline` | File symbol table of contents — all symbols with kinds, line ranges, signatures |
 | `sutra_explore` | Structural exploration — resolves aliases, qualified names, and fuzzy queries → ranked symbol map with fetch instructions and strategy hint |
-| `sutra_grep` | Search indexed symbols by name pattern (FTS5-backed) |
+| `sutra_lookup` | Look up symbols by name (FTS5-backed; `\|` alternation). Not a text search — use rg for that |
 | `sutra_symbol` | Read a symbol's source code with line numbers and context |
 | `sutra_context` | Token-budgeted context packing — symbol + deps + dependents within a budget |
 | `sutra_impact` | Blast radius analysis — direct callers, BFS depth-3, risk level |

@@ -113,7 +113,7 @@ fn handle_inner(
             queried_kind: kind.map(String::from),
             indexed_kinds,
             freshness: freshness_level,
-            suggestion: "Try sutra_grep for a broader text search, \
+            suggestion: "Try sutra_lookup to match symbol names by pattern, \
                              or verify the exact symbol name with sutra_map."
                 .to_string(),
         })

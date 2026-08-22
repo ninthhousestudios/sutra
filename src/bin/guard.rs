@@ -57,8 +57,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let db_path = db_dir.join(&ws_id).join("index.db");
             if db_path.is_file() {
                 let reason = if tool_lower == "grep" {
-                    "STOP: sutra MCP is available. Use `sutra_grep` or `sutra_explore` \
-                     instead of Grep for indexed symbol search."
+                    "STOP: sutra MCP is available. Use `sutra_explore` or `sutra_lookup` \
+                     instead of Grep to search symbols by name."
                 } else {
                     "STOP: sutra MCP is available. Use `sutra_map` instead of Glob \
                      for project structure, or `sutra_explore` to locate symbols."
