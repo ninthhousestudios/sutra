@@ -263,20 +263,45 @@ pub fn lessons_for_proposed(
     if found.lessons.is_empty() {
         return None;
     }
-    Some(format_lesson_advisory(&found))
+    Some(format_lesson_advisory(&found, rel_path))
 }
 
-fn format_lesson_advisory(found: &crate::lessons::ContextLessons) -> String {
+/// Select what the guard puts in front of the agent. Verified lessons fill the
+/// cap first; a single unverified *hypothesis* takes a remaining slot, but never
+/// crowds out a verified match (sutra/331). An unverified lesson is only ever
+/// cited — and so promoted to verified — when it surfaces, so we keep exactly
+/// one alive in this channel rather than starve that loop. Anything suppressed
+/// is reported with a `file=` retrieval pointer so nothing is silently lost.
+fn format_lesson_advisory(found: &crate::lessons::ContextLessons, rel_path: &str) -> String {
+    let (verified, unverified): (Vec<_>, Vec<_>) = found.lessons.iter().partition(|l| l.verified);
+
+    let mut shown: Vec<&crate::lessons::SurfacedLesson> =
+        verified.iter().take(GUARD_LESSON_CAP).copied().collect();
+    let mut shown_unverified = 0usize;
+    if shown.len() < GUARD_LESSON_CAP && !unverified.is_empty() {
+        shown.push(unverified[0]);
+        shown_unverified = 1;
+    }
+
     let mut out = String::from("sutra lessons anchored to this file (advisory, not blocking):\n");
-    for l in found.lessons.iter().take(GUARD_LESSON_CAP) {
+    for l in &shown {
         out.push_str(&format!("- {} [{}]\n", l.text, l.id));
     }
-    // `omitted` counts what the store already dropped at its own cap; add what
-    // this tighter per-write cap drops on top.
-    let omitted = found.omitted + found.lessons.len().saturating_sub(GUARD_LESSON_CAP);
-    if omitted > 0 {
+
+    // Suppressed unverified lessons stay one query away rather than riding
+    // every subsequent edit's context.
+    let more_unverified = unverified.len() - shown_unverified;
+    if more_unverified > 0 {
         out.push_str(&format!(
-            "({omitted} more matched — `sutra_lessons(query=...)` for the rest)\n"
+            "({more_unverified} more unverified — `sutra_lessons(file=\"{rel_path}\", verified=false)` to review)\n"
+        ));
+    }
+    // `omitted` is what the store dropped at its own cap; add the verified
+    // matches this tighter per-write cap left out.
+    let more = verified.len().saturating_sub(GUARD_LESSON_CAP) + found.omitted;
+    if more > 0 {
+        out.push_str(&format!(
+            "({more} more anchored here — `sutra_lessons(file=\"{rel_path}\")` for the rest)\n"
         ));
     }
     out.push_str("If one of these applies, cite it: `sutra_remember(cite=\"<id>\")`.");
@@ -1187,17 +1212,26 @@ mod tests {
         }
     }
 
+    fn surfaced_unverified(id: &str, text: &str) -> crate::lessons::SurfacedLesson {
+        crate::lessons::SurfacedLesson {
+            verified: false,
+            ..surfaced(id, text)
+        }
+    }
+
     #[test]
-    fn advisory_caps_lessons_and_counts_both_omission_sources() {
-        // 4 matched here + 3 already dropped at the store's own cap.
+    fn advisory_caps_verified_and_counts_both_omission_sources() {
+        // 4 verified matched here + 3 already dropped at the store's own cap.
         let found = crate::lessons::ContextLessons {
             lessons: (0..4).map(|i| surfaced(&i.to_string(), "note")).collect(),
             omitted: 3,
         };
-        let out = format_lesson_advisory(&found);
+        let out = format_lesson_advisory(&found, "src/x.rs");
         assert_eq!(out.matches("- note [").count(), GUARD_LESSON_CAP);
         // 3 from the store + 2 dropped by the tighter per-write cap.
-        assert!(out.contains("(5 more matched"), "{out}");
+        assert!(out.contains("(5 more anchored here"), "{out}");
+        assert!(out.contains("sutra_lessons(file=\"src/x.rs\")"), "{out}");
+        assert!(!out.contains("more unverified"), "{out}");
     }
 
     #[test]
@@ -1206,8 +1240,54 @@ mod tests {
             lessons: vec![surfaced("a", "only")],
             omitted: 0,
         };
-        let out = format_lesson_advisory(&found);
-        assert!(!out.contains("more matched"), "{out}");
+        let out = format_lesson_advisory(&found, "src/x.rs");
+        assert!(!out.contains("more anchored here"), "{out}");
+        assert!(!out.contains("more unverified"), "{out}");
+    }
+
+    #[test]
+    fn advisory_shows_one_unverified_hypothesis_and_points_to_the_rest() {
+        // One verified fills a slot; a single unverified hypothesis takes the
+        // other; the remaining two unverified are pointed at, not shown.
+        let found = crate::lessons::ContextLessons {
+            lessons: vec![
+                surfaced("v", "verified note"),
+                surfaced_unverified("h1", "hypothesis one"),
+                surfaced_unverified("h2", "hypothesis two"),
+                surfaced_unverified("h3", "hypothesis three"),
+            ],
+            omitted: 0,
+        };
+        let out = format_lesson_advisory(&found, "lib/calc.dart");
+        assert!(out.contains("- verified note [v]"), "{out}");
+        assert!(out.contains("- hypothesis one [h1]"), "{out}");
+        assert!(!out.contains("[h2]") && !out.contains("[h3]"), "{out}");
+        assert!(
+            out.contains(
+                "(2 more unverified — `sutra_lessons(file=\"lib/calc.dart\", verified=false)`"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn advisory_verified_fill_cap_suppresses_all_unverified_with_pointer() {
+        // Cap is filled by verified matches, so no hypothesis is shown — but
+        // the unverified ones are still discoverable via the pointer.
+        let found = crate::lessons::ContextLessons {
+            lessons: vec![
+                surfaced("v1", "verified one"),
+                surfaced("v2", "verified two"),
+                surfaced_unverified("h1", "hypothesis one"),
+                surfaced_unverified("h2", "hypothesis two"),
+            ],
+            omitted: 0,
+        };
+        let out = format_lesson_advisory(&found, "src/x.rs");
+        let shown = out.lines().filter(|l| l.starts_with("- ")).count();
+        assert_eq!(shown, GUARD_LESSON_CAP, "{out}");
+        assert!(!out.contains("hypothesis"), "{out}");
+        assert!(out.contains("(2 more unverified"), "{out}");
     }
 
     #[test]

@@ -835,10 +835,15 @@ fn tags_matching_query(all_tags: &[String], query: &str) -> Vec<String> {
     all_tags
         .iter()
         .filter(|tag| {
-            // The `lang:` marker is storage syntax, not part of the tag's
-            // name — a query for "rust" must still hit `lang:rust`.
             let lowered = tag.to_lowercase();
-            let lowered = language_claim(&lowered).unwrap_or(&lowered);
+            // A language tag is a *scope*, not an intent: every lesson in a
+            // Dart workspace carries `lang:dart`, so a query that merely
+            // mentions "dart" would drag in all of them and bury the topic
+            // matches (sutra/331). Language is selectable explicitly via
+            // `category="dart"`; keep it out of the intent-matching tier.
+            if language_claim(&lowered).is_some() {
+                return false;
+            }
             tokens.iter().any(|t| {
                 lowered == t.as_str() || lowered.split(['-', '_', '.']).any(|seg| seg == t.as_str())
             })
@@ -864,6 +869,10 @@ pub struct LessonsSearchParams<'a> {
     pub query: Option<&'a str>,
     pub category: Option<&'a str>,
     pub symbol: Option<&'a str>,
+    /// Filter to lessons anchored to this exact file path (`kind = 'file'`).
+    /// Directory- and glob-anchored lessons are not retrieved here — this is an
+    /// exact anchor match, the retrieval path for a file-anchored advisory.
+    pub file: Option<&'a str>,
     pub verified: Option<bool>,
     pub project: Option<&'a str>,
     pub include_archived: bool,
@@ -908,6 +917,14 @@ impl SearchFilters {
             f.conditions
                 .push(format!("a.kind = 'symbol' AND a.value = ?{}", f.next_idx));
             f.binds.push(sym.to_string());
+            f.next_idx += 1;
+        }
+
+        if let Some(file) = params.file {
+            f.joins.push_str(" JOIN anchors af ON af.lesson_id = l.id");
+            f.conditions
+                .push(format!("af.kind = 'file' AND af.value = ?{}", f.next_idx));
+            f.binds.push(file.to_string());
             f.next_idx += 1;
         }
 

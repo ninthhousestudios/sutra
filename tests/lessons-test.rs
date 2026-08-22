@@ -627,6 +627,7 @@ fn search_params<'a>() -> LessonsSearchParams<'a> {
         query: None,
         category: None,
         symbol: None,
+        file: None,
         verified: None,
         project: None,
         include_archived: false,
@@ -705,6 +706,66 @@ fn query_matches_category_tags_not_only_text() {
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, tagged);
+}
+
+#[test]
+fn language_tag_is_not_matched_by_the_category_tier() {
+    let (_dir, db) = setup_lessons_db();
+    // Its only category is the language claim; the prose never says "dart".
+    db.store(&StoreLessonParams {
+        text: "Prefer cascades when building a widget's child list",
+        anchors: &[(AnchorKind::Symbol, "build")],
+        categories: &["dart"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    // A query that merely mentions the language must not drag the lesson in
+    // via the category tier — language is a scope, not an intent (sutra/331).
+    // Every lesson in a Dart workspace carries `lang:dart`, so matching on it
+    // is equivalent to "return everything".
+    let results = db
+        .search(&LessonsSearchParams {
+            query: Some("dart"),
+            ..search_params()
+        })
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "language tag leaked into the category tier: {results:?}"
+    );
+}
+
+#[test]
+fn search_filters_to_an_exact_file_anchor() {
+    let (_dir, db) = setup_lessons_db();
+    let target = db
+        .store(&StoreLessonParams {
+            text: "Resolution must fall back to the default ayanamsha",
+            anchors: &[(AnchorKind::File, "lib/calc_context.dart")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.store(&StoreLessonParams {
+        text: "Unrelated lesson anchored to another file",
+        anchors: &[(AnchorKind::File, "lib/other.dart")],
+        categories: &[],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            file: Some("lib/calc_context.dart"),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, target);
 }
 
 #[test]
@@ -1427,10 +1488,14 @@ fn unsupported_language_tags_do_not_leak() {
     }
 }
 
-/// The `lang:` prefix is storage syntax, not part of the tag's name: both the
-/// explicit `category=` filter and the search category tier must see through it.
+/// The `lang:` prefix is storage syntax, not part of the tag's name: the
+/// explicit `category=` filter must see through it, including aliases. The
+/// free-text search *tier*, by contrast, deliberately does not match language
+/// tags — language is a scope, not an intent, and matching a query token like
+/// "rust" against `lang:rust` is equivalent to "return every rust lesson"
+/// (sutra/331). Reach language via `category=`, not the query tier.
 #[test]
-fn language_tags_remain_reachable_by_name() {
+fn language_tags_reachable_by_category_filter_not_the_query_tier() {
     let (_dir, db) = setup_lessons_db();
     db.store(&StoreLessonParams {
         text: "Ownership rules for temporaries",
@@ -1453,12 +1518,13 @@ fn language_tags_remain_reachable_by_name() {
     };
     assert_eq!(db.search(&by_alias).unwrap().len(), 1, "category=rs");
 
-    // Category tier: the query names the tag but not any word of the prose.
+    // Query tier: the token names the language tag but no word of the prose,
+    // and language tags are excluded from the tier — so there is no hit.
     let by_query = LessonsSearchParams {
         query: Some("rust"),
         ..search_params()
     };
-    assert_eq!(db.search(&by_query).unwrap().len(), 1, "query=rust");
+    assert_eq!(db.search(&by_query).unwrap().len(), 0, "query=rust");
 }
 
 /// Rows written before a language entered the dictionary are rewritten on open.

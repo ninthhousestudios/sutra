@@ -17,6 +17,10 @@ pub struct LessonsArgs {
     /// Filter by anchor symbol name
     #[serde(default)]
     pub symbol: Option<String>,
+    /// Filter to lessons anchored to this exact file path — the retrieval path
+    /// for the file-anchored advisory the edit guard emits.
+    #[serde(default)]
+    pub file: Option<String>,
     /// Filter to verified lessons only
     #[serde(default)]
     pub verified: Option<bool>,
@@ -33,10 +37,14 @@ pub fn handle(lessons_db: &LessonsDb, args: &LessonsArgs) -> Result<serde_json::
         query: args.query.as_deref(),
         category: args.category.as_deref(),
         symbol: args.symbol.as_deref(),
+        file: args.file.as_deref(),
         verified: args.verified,
         project: args.project.as_deref(),
         include_archived: args.include_archived.unwrap_or(false),
-        limit: 50,
+        // Kept tight: the category tier can fill the tail with topic matches,
+        // and each lesson is prose-heavy — a 50-row default returned ~14k
+        // tokens of mostly-tangential hits (sutra/331).
+        limit: 15,
     };
     let lessons = lessons_db.search(&params)?;
     Ok(json!({
