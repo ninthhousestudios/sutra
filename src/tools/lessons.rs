@@ -9,6 +9,9 @@ use crate::lessons::{LessonsDb, LessonsSearchParams};
 pub struct LessonsArgs {
     /// Search query. Matches lesson text (FTS5) and category tags — phrase it
     /// as the work you are about to do ("sqlite migration", "golden testing").
+    /// Language tags (`lang:rust`, `lang:dart`) are excluded from this tier: a
+    /// language is a scope, not an intent, so reach it via `category=` instead
+    /// (sutra/331).
     #[serde(default)]
     pub query: Option<String>,
     /// Filter by category tag
