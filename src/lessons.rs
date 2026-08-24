@@ -559,7 +559,21 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
 
 impl LessonsDb {
     pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
-        self.query_for_context_capped(ctx, CONTEXT_SURFACING_CAP, Surfacing::Record)
+        self.query_for_context_capped(ctx, &[], CONTEXT_SURFACING_CAP, Surfacing::Record)
+    }
+
+    /// As [`query_for_context`], but also matches symbol anchors against a set
+    /// of symbols supplied out-of-band. The guard (sutra/351) matches a
+    /// proposed edit that touches several symbols at once and has no single
+    /// focal `symbol_name`, so it leaves `ctx.symbol_name` empty and passes the
+    /// touched set here. Purely additive: these symbols only ever *widen* the
+    /// symbol-anchor phase; file/import/directory matching is unchanged.
+    pub fn query_for_context_with_symbols(
+        &self,
+        ctx: &MatchContext<'_>,
+        symbols: &[&str],
+    ) -> Result<ContextLessons> {
+        self.query_for_context_capped(ctx, symbols, CONTEXT_SURFACING_CAP, Surfacing::Record)
     }
 
     /// As `query_for_context`, but with a caller-supplied cap and control over
@@ -577,6 +591,7 @@ impl LessonsDb {
     pub fn query_for_context_capped(
         &self,
         ctx: &MatchContext<'_>,
+        extra_symbols: &[&str],
         cap: usize,
         surfacing: Surfacing,
     ) -> Result<ContextLessons> {
@@ -587,31 +602,53 @@ impl LessonsDb {
         // Track which anchor keys actually caused each lesson to surface
         let mut matched_anchors: HashMap<String, HashSet<String>> = HashMap::new();
 
-        // Phase 1: symbol match (indexed, fast). Also checks short name
-        // so anchors stored as "foo" match when the caller passes "Mod::foo".
-        let short_name = ctx
-            .symbol_name
-            .rsplit("::")
-            .next()
-            .unwrap_or(ctx.symbol_name);
-        let has_qualifier = short_name != ctx.symbol_name;
-        {
-            let mut stmt = conn.prepare(
+        // Phase 1: symbol match (indexed, fast). The focal `symbol_name` plus
+        // any out-of-band `extra_symbols` (an edit touching several symbols at
+        // once) each contribute their full name and their short (last-segment)
+        // name, so anchors stored as "foo" match when the caller passes
+        // "Mod::foo". An empty candidate set (guard edit that overlaps no
+        // symbol, or a purely file-anchored lookup) skips the phase entirely,
+        // exactly as passing an empty `symbol_name` did before.
+        let mut symbol_candidates: Vec<&str> = Vec::new();
+        for &sym in std::iter::once(&ctx.symbol_name).chain(extra_symbols.iter()) {
+            if sym.is_empty() {
+                continue;
+            }
+            if !symbol_candidates.contains(&sym) {
+                symbol_candidates.push(sym);
+            }
+            let short = sym.rsplit("::").next().unwrap_or(sym);
+            if short != sym && !symbol_candidates.contains(&short) {
+                symbol_candidates.push(short);
+            }
+        }
+        if !symbol_candidates.is_empty() {
+            let placeholders = symbol_candidates
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
                 "SELECT DISTINCT l.id, l.text, l.verified, l.confidence,
                         l.project_origin, l.created_at, a.value
                  FROM lessons l
                  JOIN anchors a ON a.lesson_id = l.id
-                 WHERE a.kind = 'symbol' AND (a.value = ?1 OR (?3 AND a.value = ?2))
+                 WHERE a.kind = 'symbol' AND a.value IN ({placeholders})
                    AND l.archived = 0
-                   AND (l.project_origin IS NULL OR l.project_origin = ?4 OR ?4 IS NULL)
-                 ORDER BY l.verified DESC, l.confidence DESC",
-            )?;
-            let mut rows = stmt.query(params![
-                ctx.symbol_name,
-                short_name,
-                has_qualifier,
-                ctx.project
-            ])?;
+                   AND (l.project_origin IS NULL OR l.project_origin = ? OR ? IS NULL)
+                 ORDER BY l.verified DESC, l.confidence DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            // Bind the IN placeholders, then the project param twice (matched
+            // once and null-checked once).
+            let mut binds: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(symbol_candidates.len() + 2);
+            for c in &symbol_candidates {
+                binds.push(c);
+            }
+            binds.push(&ctx.project);
+            binds.push(&ctx.project);
+            let mut rows = stmt.query(binds.as_slice())?;
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
                 let anchor_val: String = row.get(6)?;

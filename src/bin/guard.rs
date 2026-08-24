@@ -265,6 +265,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &conn,
             &project_root,
             &rel_path,
+            &hook.tool_input,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
             hook.session_id.as_deref(),
@@ -352,6 +353,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &conn,
                 &project_root,
                 &rel_path,
+                &hook.tool_input,
                 parsed_result.as_ref(),
                 hook.hook_event_name.as_deref(),
                 hook.session_id.as_deref(),
@@ -363,6 +365,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &conn,
             &project_root,
             &rel_path,
+            &hook.tool_input,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
             hook.session_id.as_deref(),
@@ -382,6 +385,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &conn,
             &project_root,
             &rel_path,
+            &hook.tool_input,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
             hook.session_id.as_deref(),
@@ -398,11 +402,19 @@ fn emit_lessons(
     conn: &Connection,
     project_root: &std::path::Path,
     rel_path: &str,
+    tool_input: &guard::ToolInput,
     parsed: Option<&sutra::parser::ParseResult>,
     event_name: Option<&str>,
     session_id: Option<&str>,
 ) {
-    let Some(note) = guard::lessons_for_proposed(conn, project_root, rel_path, parsed, session_id)
+    // Symbol anchors fire only on the symbols this edit touches (sutra/351),
+    // not every symbol in the file. Empty when unparsed — file/import anchors
+    // still match.
+    let touched: Vec<&str> = parsed
+        .map(|p| guard::edit_touched_symbols(tool_input, project_root, rel_path, p))
+        .unwrap_or_default();
+    let Some(note) =
+        guard::lessons_for_proposed(conn, project_root, rel_path, parsed, &touched, session_id)
     else {
         return;
     };

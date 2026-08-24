@@ -232,6 +232,7 @@ pub fn lessons_for_proposed(
     project_root: &Path,
     rel_path: &str,
     parsed: Option<&ParseResult>,
+    touched_symbols: &[&str],
     session_id: Option<&str>,
 ) -> Option<String> {
     lessons_for_proposed_in(
@@ -240,6 +241,7 @@ pub fn lessons_for_proposed(
         project_root,
         rel_path,
         parsed,
+        touched_symbols,
         session_id,
     )
 }
@@ -253,6 +255,7 @@ fn lessons_for_proposed_in(
     project_root: &Path,
     rel_path: &str,
     parsed: Option<&ParseResult>,
+    touched_symbols: &[&str],
     session_id: Option<&str>,
 ) -> Option<String> {
     if lessons_disabled() {
@@ -288,7 +291,12 @@ fn lessons_for_proposed_in(
         workspace_languages: &ws_langs,
     };
 
-    let mut found = ldb.query_for_context(&ctx).ok()?;
+    // Symbol-anchored lessons fire on the symbols this edit actually touches
+    // (sutra/351). `symbol_name` stays empty — a proposed edit has no single
+    // focal symbol — and the touched set widens the symbol-anchor phase.
+    let mut found = ldb
+        .query_for_context_with_symbols(&ctx, touched_symbols)
+        .ok()?;
     if found.lessons.is_empty() {
         return None;
     }
@@ -506,6 +514,60 @@ pub fn build_proposed_content(
         }
         _ => tool_input.content.clone(),
     }
+}
+
+/// Qualified names of the symbols an edit actually modifies, for symbol-anchored
+/// lesson matching (sutra/351).
+///
+/// `parsed` names *every* symbol in the whole proposed file, so feeding all of
+/// them would fire a symbol anchor on any edit to a file that merely contains
+/// the symbol — no more precise than a file anchor. So for a targeted
+/// `old_string`→`new_string` edit we intersect the changed line span with the
+/// proposed symbol spans and keep only the overlap. A full-content write (no
+/// `old_string`, e.g. a new file) has no sub-file region, so every symbol is in
+/// play and all are returned.
+///
+/// Fail-open toward a superset: anything that stops us locating the region (an
+/// unreadable file, an `old_string` no longer present) returns all symbols. The
+/// result only ever *widens* symbol matching, so a superset over-surfaces at
+/// worst — it never blocks or drops an edit.
+pub fn edit_touched_symbols<'a>(
+    tool_input: &ToolInput,
+    project_root: &Path,
+    rel_path: &str,
+    parsed: &'a ParseResult,
+) -> Vec<&'a str> {
+    let all = || {
+        crate::parser::flatten_symbols(&parsed.symbols)
+            .into_iter()
+            .map(|s| s.qualified_name.as_str())
+            .collect::<Vec<_>>()
+    };
+
+    let (Some(old), Some(new)) = (&tool_input.old_string, &tool_input.new_string) else {
+        // Full-content write / create: the whole file is the edit.
+        return all();
+    };
+
+    let Ok(current) = std::fs::read_to_string(project_root.join(rel_path)) else {
+        return all();
+    };
+    // Mirror `build_proposed_content`: the first occurrence is what was
+    // replaced. The prefix before `off` is byte-identical in the current and
+    // proposed content, so the 1-based start line is shared; the replacement
+    // then occupies `new`'s lines from there. Parser line numbers are 1-based
+    // with inclusive `end_line`, so the overlap test matches that convention.
+    let Some(off) = current.find(old.as_str()) else {
+        return all();
+    };
+    let changed_start = current[..off].matches('\n').count() + 1;
+    let changed_end = changed_start + new.matches('\n').count();
+
+    crate::parser::flatten_symbols(&parsed.symbols)
+        .into_iter()
+        .filter(|s| s.start_line <= changed_end && s.end_line >= changed_start)
+        .map(|s| s.qualified_name.as_str())
+        .collect()
 }
 
 /// Language for a path, derived from the registered adapters' extension map.
@@ -1422,14 +1484,14 @@ mod tests {
         let root = std::path::Path::new("/tmp/proj");
 
         let first =
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"));
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], Some("s1"));
         assert!(
             first.as_deref().is_some_and(|n| n.contains(&id)),
             "first edit should surface the lesson"
         );
 
         let second =
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"));
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], Some("s1"));
         assert!(second.is_none(), "same session must not re-surface it");
     }
 
@@ -1441,12 +1503,12 @@ mod tests {
         let root = std::path::Path::new("/tmp/proj");
 
         assert!(
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"))
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], Some("s1"))
                 .is_some()
         );
         // A different session starts with a clean slate.
         assert!(
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s2"))
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], Some("s2"))
                 .is_some()
         );
     }
@@ -1460,10 +1522,108 @@ mod tests {
 
         // No session id → old behaviour: every edit re-surfaces.
         assert!(
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, None).is_some()
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], None)
+                .is_some()
         );
         assert!(
-            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, None).is_some()
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, &[], None)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn edit_touched_symbols_narrows_to_the_edited_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rel = "src/foo.rs";
+        let current = "fn alpha() {\n    let x = 1;\n}\n\nfn beta() {\n    let y = 2;\n}\n";
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(rel), current).unwrap();
+
+        // A targeted edit inside alpha's body names alpha and not beta, even
+        // though beta lives in the same file — the precision a whole-file file
+        // anchor cannot give (sutra/351).
+        let edit = ToolInput {
+            file_path: Some(rel.into()),
+            old_string: Some("let x = 1;".into()),
+            new_string: Some("let x = 42;".into()),
+            content: None,
+        };
+        let proposed = build_proposed_content(&edit, root, rel).unwrap();
+        let parsed = parse_proposed(rel, &proposed).unwrap();
+        let touched = edit_touched_symbols(&edit, root, rel, &parsed);
+        assert!(
+            touched.iter().any(|s| s.contains("alpha")),
+            "edited symbol should be named: {touched:?}"
+        );
+        assert!(
+            !touched.iter().any(|s| s.contains("beta")),
+            "untouched sibling must not be named: {touched:?}"
+        );
+
+        // A full-content write has no sub-file region — every symbol is in play.
+        let write = ToolInput {
+            file_path: Some(rel.into()),
+            old_string: None,
+            new_string: None,
+            content: Some(current.into()),
+        };
+        let parsed_all = parse_proposed(rel, current).unwrap();
+        let all = edit_touched_symbols(&write, root, rel, &parsed_all);
+        assert!(
+            all.iter().any(|s| s.contains("alpha")) && all.iter().any(|s| s.contains("beta")),
+            "a full write should name every symbol: {all:?}"
+        );
+    }
+
+    fn seed_symbol_lesson(db_dir: &std::path::Path, symbol: &str) -> String {
+        let db = crate::lessons::LessonsDb::open(db_dir).unwrap();
+        db.store(&crate::lessons::StoreLessonParams {
+            text: "symbol lesson",
+            anchors: &[(crate::lessons::AnchorKind::Symbol, symbol)],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn symbol_anchored_lesson_surfaces_only_for_touched_symbol() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = seed_symbol_lesson(dir.path(), "alpha");
+        let conn = Connection::open_in_memory().unwrap();
+        let root = std::path::Path::new("/tmp/proj");
+        let parsed = parse_proposed("src/foo.rs", "fn alpha() {}\nfn beta() {}\n").unwrap();
+
+        // Touching alpha surfaces the alpha-anchored lesson through the guard.
+        let hit = lessons_for_proposed_in(
+            &conn,
+            dir.path(),
+            root,
+            "src/foo.rs",
+            Some(&parsed),
+            &["alpha"],
+            None,
+        );
+        assert!(
+            hit.as_deref().is_some_and(|n| n.contains(&id)),
+            "alpha-anchored lesson should surface when the edit touches alpha"
+        );
+
+        // Touching only a sibling in the same file must not surface it.
+        let miss = lessons_for_proposed_in(
+            &conn,
+            dir.path(),
+            root,
+            "src/foo.rs",
+            Some(&parsed),
+            &["beta"],
+            None,
+        );
+        assert!(
+            miss.is_none(),
+            "a sibling-symbol edit must not surface the alpha lesson"
         );
     }
 

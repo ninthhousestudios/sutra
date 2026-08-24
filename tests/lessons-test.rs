@@ -2833,7 +2833,7 @@ fn symbol_anchor_outranks_directory_anchor() {
 
     // And it survives a cap of one, which is the point of the ranking.
     let capped = db
-        .query_for_context_capped(&ctx, 1, sutra::lessons::Surfacing::Record)
+        .query_for_context_capped(&ctx, &[], 1, sutra::lessons::Surfacing::Record)
         .unwrap();
     assert_eq!(capped.lessons[0].id, narrow);
     assert_eq!(capped.omitted, 1);
@@ -2877,4 +2877,119 @@ fn specificity_counts_only_the_anchors_that_matched() {
         .lessons;
     assert_eq!(lessons.len(), 2);
     assert_eq!(lessons[0].id, file_anchored);
+}
+
+// ---------------------------------------------------------------------------
+// Out-of-band symbol matching (sutra/351): the guard edit touches several
+// symbols at once and supplies them via `query_for_context_with_symbols`
+// rather than a single focal `symbol_name`.
+// ---------------------------------------------------------------------------
+
+fn empty_ctx<'a>() -> MatchContext<'a> {
+    MatchContext {
+        symbol_name: "",
+        file_path: None,
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    }
+}
+
+#[test]
+fn extra_symbols_match_symbol_anchors() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "touch alpha",
+            anchors: &[(AnchorKind::Symbol, "alpha")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    // Supplied out-of-band, alpha fires; an unrelated touched symbol does not.
+    let hit = db
+        .query_for_context_with_symbols(&empty_ctx(), &["alpha", "gamma"])
+        .unwrap()
+        .lessons;
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].id, id);
+
+    let miss = db
+        .query_for_context_with_symbols(&empty_ctx(), &["beta"])
+        .unwrap()
+        .lessons;
+    assert!(miss.is_empty());
+
+    // An empty touched set skips the symbol phase, exactly as an empty
+    // `symbol_name` did before this change.
+    let none = db
+        .query_for_context_with_symbols(&empty_ctx(), &[])
+        .unwrap()
+        .lessons;
+    assert!(none.is_empty());
+}
+
+#[test]
+fn extra_symbols_match_on_short_name() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "short match",
+            anchors: &[(AnchorKind::Symbol, "helper")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    // Anchor stored as the short name matches a fully-qualified touched symbol.
+    let hit = db
+        .query_for_context_with_symbols(&empty_ctx(), &["Mod::helper"])
+        .unwrap()
+        .lessons;
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].id, id);
+}
+
+#[test]
+fn extra_symbols_union_with_focal_symbol_name() {
+    let (_dir, db) = setup_lessons_db();
+    let focal = db
+        .store(&StoreLessonParams {
+            text: "focal",
+            anchors: &[(AnchorKind::Symbol, "focal_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    let extra = db
+        .store(&StoreLessonParams {
+            text: "extra",
+            anchors: &[(AnchorKind::Symbol, "extra_fn")],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+
+    // Both the focal `symbol_name` and the out-of-band set are matched.
+    let ctx = MatchContext {
+        symbol_name: "focal_fn",
+        file_path: None,
+        imports: &[],
+        project: None,
+        workspace_languages: &[],
+    };
+    let ids: std::collections::HashSet<String> = db
+        .query_for_context_with_symbols(&ctx, &["extra_fn"])
+        .unwrap()
+        .lessons
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert!(ids.contains(&focal));
+    assert!(ids.contains(&extra));
 }
