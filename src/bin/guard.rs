@@ -267,6 +267,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &rel_path,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
+            hook.session_id.as_deref(),
         );
         return Ok(());
     };
@@ -353,6 +354,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &rel_path,
                 parsed_result.as_ref(),
                 hook.hook_event_name.as_deref(),
+                hook.session_id.as_deref(),
             );
             return Ok(());
         }
@@ -363,6 +365,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &rel_path,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
+            hook.session_id.as_deref(),
         );
         return Ok(());
     }
@@ -381,6 +384,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &rel_path,
             parsed_result.as_ref(),
             hook.hook_event_name.as_deref(),
+            hook.session_id.as_deref(),
         );
     }
 
@@ -396,8 +400,10 @@ fn emit_lessons(
     rel_path: &str,
     parsed: Option<&sutra::parser::ParseResult>,
     event_name: Option<&str>,
+    session_id: Option<&str>,
 ) {
-    let Some(note) = guard::lessons_for_proposed(conn, project_root, rel_path, parsed) else {
+    let Some(note) = guard::lessons_for_proposed(conn, project_root, rel_path, parsed, session_id)
+    else {
         return;
     };
     match guard::render_advisory_stdout(&note, event_name) {

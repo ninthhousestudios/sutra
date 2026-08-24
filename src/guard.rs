@@ -9,6 +9,8 @@ use crate::constraints::check::{self, CheckOutcome, EvalScope, FactsSource};
 use crate::parser::ParseResult;
 use crate::rules::{self, Severity};
 
+mod session_dedup;
+
 pub const DEFAULT_PAGERANK_MIN: f64 = 0.05;
 pub const DEFAULT_BLAST_MIN: i64 = 10;
 pub const DEFAULT_ACK_TTL_SECS: u64 = 600;
@@ -69,6 +71,11 @@ pub struct HookInput {
     pub cwd: Option<String>,
     #[serde(default)]
     pub hook_event_name: Option<String>,
+    /// Claude Code passes this in the PreToolUse hook JSON; it scopes lesson
+    /// dedup (sutra/350). `default` so a harness that omits it degrades to
+    /// no dedup rather than failing to parse.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +232,28 @@ pub fn lessons_for_proposed(
     project_root: &Path,
     rel_path: &str,
     parsed: Option<&ParseResult>,
+    session_id: Option<&str>,
+) -> Option<String> {
+    lessons_for_proposed_in(
+        conn,
+        &sutra_db_dir(),
+        project_root,
+        rel_path,
+        parsed,
+        session_id,
+    )
+}
+
+/// Body of [`lessons_for_proposed`] with the store directory injected, so tests
+/// can point at a temp dir without mutating the process-global `SUTRA_DB_DIR`.
+/// Both the lessons store and the session-dedup store live under `db_dir`.
+fn lessons_for_proposed_in(
+    conn: &Connection,
+    db_dir: &Path,
+    project_root: &Path,
+    rel_path: &str,
+    parsed: Option<&ParseResult>,
+    session_id: Option<&str>,
 ) -> Option<String> {
     if lessons_disabled() {
         return None;
@@ -236,7 +265,7 @@ pub fn lessons_for_proposed(
     // here (no store yet) costs one `exists()` and nothing else, which is what
     // keeps zero-match writes off the sqlite path entirely.
     let ldb = crate::lessons::LessonsDb::open_existing(
-        &sutra_db_dir(),
+        db_dir,
         crate::lessons::GUARD_BUSY_TIMEOUT_MS,
         crate::lessons::GUARD_CANDIDATE_SCAN_LIMIT,
     )
@@ -259,11 +288,41 @@ pub fn lessons_for_proposed(
         workspace_languages: &ws_langs,
     };
 
-    let found = ldb.query_for_context(&ctx).ok()?;
+    let mut found = ldb.query_for_context(&ctx).ok()?;
     if found.lessons.is_empty() {
         return None;
     }
-    Some(format_lesson_advisory(&found, rel_path))
+
+    // Session-scoped dedup (sutra/350): surface a given lesson id at most once
+    // per session. The guard is a fresh process per edit and Claude Code keeps
+    // every prior turn's injected advisory in the conversation, so re-emitting
+    // an identical block on the next edit is near-pure token waste. Fail-open
+    // throughout: a store that won't open, read, or write leaves `found`
+    // untouched, so the worst case is the old re-emit — never a blocked edit.
+    // A missing `session_id` skips dedup entirely (old behaviour) — the store
+    // is opened only when a session id is present, so a sessionless edit never
+    // materialises it.
+    let dedup =
+        session_id.and_then(|sid| Some((session_dedup::SessionDedup::open(db_dir).ok()?, sid)));
+    if let Some((store, sid)) = &dedup {
+        // A read error yields an empty set → nothing filtered → fail-open.
+        let seen = store.surfaced_in_session(sid).unwrap_or_default();
+        found.lessons.retain(|l| !seen.contains(&l.id));
+        if found.lessons.is_empty() {
+            return None;
+        }
+    }
+
+    let (note, shown) = format_lesson_advisory(&found, rel_path);
+
+    // Record only what was actually shown — the suppressed/"more matched"
+    // lessons are pointed at, not surfaced, so they stay eligible for a later
+    // edit where they might be the one shown.
+    if let Some((store, sid)) = &dedup {
+        let _ = store.record(sid, &shown);
+    }
+
+    Some(note)
 }
 
 /// Select what the guard puts in front of the agent. Verified lessons fill the
@@ -275,7 +334,14 @@ pub fn lessons_for_proposed(
 /// (sutra/331 decision #3): lessons surfaced here via a directory, glob, or
 /// import-pattern anchor are counted but won't come back through it, so the
 /// pointer is worded to promise only the exact-path subset, not the whole count.
-fn format_lesson_advisory(found: &crate::lessons::ContextLessons, rel_path: &str) -> String {
+/// Returns the rendered advisory block and the ids of the lessons actually
+/// shown in it (not the pointed-at "more" ones) — the caller records those for
+/// session dedup (sutra/350). The ids borrow `found`, so the caller records
+/// them before dropping it and no allocation is needed.
+fn format_lesson_advisory<'a>(
+    found: &'a crate::lessons::ContextLessons,
+    rel_path: &str,
+) -> (String, Vec<&'a str>) {
     let (verified, unverified): (Vec<_>, Vec<_>) = found.lessons.iter().partition(|l| l.verified);
 
     let mut shown: Vec<&crate::lessons::SurfacedLesson> =
@@ -309,7 +375,8 @@ fn format_lesson_advisory(found: &crate::lessons::ContextLessons, rel_path: &str
         ));
     }
     out.push_str("If one of these applies, cite it: `sutra_remember(cite=\"<id>\")`.");
-    out
+    let shown_ids = shown.iter().map(|l| l.id.as_str()).collect();
+    (out, shown_ids)
 }
 
 /// Render an advisory note for the model. Unlike `render_stdout` this never
@@ -1230,7 +1297,7 @@ mod tests {
             lessons: (0..4).map(|i| surfaced(&i.to_string(), "note")).collect(),
             omitted: 3,
         };
-        let out = format_lesson_advisory(&found, "src/x.rs");
+        let (out, _shown) = format_lesson_advisory(&found, "src/x.rs");
         assert_eq!(out.matches("- note [").count(), GUARD_LESSON_CAP);
         // 3 from the store + 2 dropped by the tighter per-write cap.
         assert!(out.contains("(5 more matched"), "{out}");
@@ -1244,7 +1311,7 @@ mod tests {
             lessons: vec![surfaced("a", "only")],
             omitted: 0,
         };
-        let out = format_lesson_advisory(&found, "src/x.rs");
+        let (out, _shown) = format_lesson_advisory(&found, "src/x.rs");
         assert!(!out.contains("more matched"), "{out}");
         assert!(!out.contains("more unverified"), "{out}");
     }
@@ -1262,7 +1329,7 @@ mod tests {
             ],
             omitted: 0,
         };
-        let out = format_lesson_advisory(&found, "lib/calc.dart");
+        let (out, _shown) = format_lesson_advisory(&found, "lib/calc.dart");
         assert!(out.contains("- verified note [v]"), "{out}");
         assert!(out.contains("- hypothesis one [h1]"), "{out}");
         assert!(!out.contains("[h2]") && !out.contains("[h3]"), "{out}");
@@ -1287,7 +1354,7 @@ mod tests {
             ],
             omitted: 0,
         };
-        let out = format_lesson_advisory(&found, "src/x.rs");
+        let (out, _shown) = format_lesson_advisory(&found, "src/x.rs");
         let shown = out.lines().filter(|l| l.starts_with("- ")).count();
         assert_eq!(shown, GUARD_LESSON_CAP, "{out}");
         assert!(!out.contains("hypothesis"), "{out}");
@@ -1307,12 +1374,97 @@ mod tests {
             ],
             omitted: 0,
         };
-        let out = format_lesson_advisory(&found, "lib/ayanamsa_catalog.dart");
+        let (out, _shown) = format_lesson_advisory(&found, "lib/ayanamsa_catalog.dart");
         let shown = out.lines().filter(|l| l.starts_with("- ")).count();
         assert_eq!(shown, 1, "{out}");
         assert!(out.contains("- hypothesis one [h1]"), "{out}");
         assert!(out.contains("(2 more unverified"), "{out}");
         assert!(!out.contains("more matched"), "{out}");
+    }
+
+    #[test]
+    fn advisory_returns_ids_of_lessons_actually_shown() {
+        // The returned ids drive session dedup, so they must be exactly the
+        // rendered list items — never the pointed-at "more" lessons.
+        let found = crate::lessons::ContextLessons {
+            lessons: vec![
+                surfaced("v", "verified note"),
+                surfaced_unverified("h1", "hypothesis one"),
+                surfaced_unverified("h2", "hypothesis two"),
+            ],
+            omitted: 0,
+        };
+        let (out, shown) = format_lesson_advisory(&found, "src/x.rs");
+        assert_eq!(shown, vec!["v", "h1"]);
+        assert!(out.contains("[v]") && out.contains("[h1]"), "{out}");
+        assert!(!out.contains("[h2]"), "{out}");
+    }
+
+    fn seed_file_lesson(db_dir: &std::path::Path, file_anchor: &str) -> String {
+        let db = crate::lessons::LessonsDb::open(db_dir).unwrap();
+        // `project_origin: None` so the lesson surfaces regardless of the
+        // (arbitrary) project name derived from `project_root`.
+        db.store(&crate::lessons::StoreLessonParams {
+            text: "greenfield lesson",
+            anchors: &[(crate::lessons::AnchorKind::File, file_anchor)],
+            categories: &[],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn session_dedup_suppresses_second_emit_in_same_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = seed_file_lesson(dir.path(), "src/foo.rs");
+        let conn = Connection::open_in_memory().unwrap();
+        let root = std::path::Path::new("/tmp/proj");
+
+        let first =
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"));
+        assert!(
+            first.as_deref().is_some_and(|n| n.contains(&id)),
+            "first edit should surface the lesson"
+        );
+
+        let second =
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"));
+        assert!(second.is_none(), "same session must not re-surface it");
+    }
+
+    #[test]
+    fn session_dedup_is_scoped_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_file_lesson(dir.path(), "src/foo.rs");
+        let conn = Connection::open_in_memory().unwrap();
+        let root = std::path::Path::new("/tmp/proj");
+
+        assert!(
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s1"))
+                .is_some()
+        );
+        // A different session starts with a clean slate.
+        assert!(
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, Some("s2"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn missing_session_id_disables_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_file_lesson(dir.path(), "src/foo.rs");
+        let conn = Connection::open_in_memory().unwrap();
+        let root = std::path::Path::new("/tmp/proj");
+
+        // No session id → old behaviour: every edit re-surfaces.
+        assert!(
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, None).is_some()
+        );
+        assert!(
+            lessons_for_proposed_in(&conn, dir.path(), root, "src/foo.rs", None, None).is_some()
+        );
     }
 
     #[test]
