@@ -59,7 +59,8 @@ impl SessionDedup {
                  lesson_id  TEXT    NOT NULL,
                  ts         INTEGER NOT NULL,
                  PRIMARY KEY (session_id, lesson_id)
-             ) WITHOUT ROWID;"
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS idx_surfaced_ts ON surfaced_lessons (ts);"
         ))?;
         let cutoff = now_secs() - TTL_SECS;
         let _ = conn.execute(

@@ -557,6 +557,30 @@ fn map_surfaced_lesson(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurfacedLess
     })
 }
 
+/// Distinct symbol-anchor candidates for the Phase-1 match query. The focal
+/// `symbol_name` plus any out-of-band `extra_symbols` (an edit touching several
+/// symbols at once) each contribute their full name and their short
+/// (last-`::`-segment) name, so an anchor stored as "foo" matches when the
+/// caller passes "Mod::foo". Empties are dropped and insertion order is
+/// preserved; an empty result means "skip the symbol phase", exactly as an
+/// empty `symbol_name` did before `extra_symbols` existed.
+fn symbol_anchor_candidates<'s>(symbol_name: &'s str, extra_symbols: &[&'s str]) -> Vec<&'s str> {
+    let mut candidates: Vec<&str> = Vec::new();
+    for &sym in std::iter::once(&symbol_name).chain(extra_symbols.iter()) {
+        if sym.is_empty() {
+            continue;
+        }
+        if !candidates.contains(&sym) {
+            candidates.push(sym);
+        }
+        let short = sym.rsplit("::").next().unwrap_or(sym);
+        if short != sym && !candidates.contains(&short) {
+            candidates.push(short);
+        }
+    }
+    candidates
+}
+
 impl LessonsDb {
     pub fn query_for_context(&self, ctx: &MatchContext<'_>) -> Result<ContextLessons> {
         self.query_for_context_capped(ctx, &[], CONTEXT_SURFACING_CAP, Surfacing::Record)
@@ -602,26 +626,11 @@ impl LessonsDb {
         // Track which anchor keys actually caused each lesson to surface
         let mut matched_anchors: HashMap<String, HashSet<String>> = HashMap::new();
 
-        // Phase 1: symbol match (indexed, fast). The focal `symbol_name` plus
-        // any out-of-band `extra_symbols` (an edit touching several symbols at
-        // once) each contribute their full name and their short (last-segment)
-        // name, so anchors stored as "foo" match when the caller passes
-        // "Mod::foo". An empty candidate set (guard edit that overlaps no
-        // symbol, or a purely file-anchored lookup) skips the phase entirely,
-        // exactly as passing an empty `symbol_name` did before.
-        let mut symbol_candidates: Vec<&str> = Vec::new();
-        for &sym in std::iter::once(&ctx.symbol_name).chain(extra_symbols.iter()) {
-            if sym.is_empty() {
-                continue;
-            }
-            if !symbol_candidates.contains(&sym) {
-                symbol_candidates.push(sym);
-            }
-            let short = sym.rsplit("::").next().unwrap_or(sym);
-            if short != sym && !symbol_candidates.contains(&short) {
-                symbol_candidates.push(short);
-            }
-        }
+        // Phase 1: symbol match (indexed, fast). An empty candidate set (guard
+        // edit that overlaps no symbol, or a purely file-anchored lookup) skips
+        // the phase entirely, exactly as passing an empty `symbol_name` did
+        // before.
+        let symbol_candidates = symbol_anchor_candidates(ctx.symbol_name, extra_symbols);
         if !symbol_candidates.is_empty() {
             let placeholders = symbol_candidates
                 .iter()
