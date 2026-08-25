@@ -189,13 +189,6 @@ The workspace hasn't been registered yet. Register it:
 sutra_workspace(path=\"/absolute/path/to/project\")
 ```
 
-## \"analysis tier required\"
-Some tools (sutra_refs, sutra_calls, sutra_review, etc.) require the analysis tier. \
-Enable it:
-```
-sutra_workspace(path=\"/absolute/path/to/project\", enable=[\"analysis\"])
-```
-
 ## Stale results
 Files changed since last parse. Reparse:
 ```
@@ -226,7 +219,7 @@ files are syntactically valid.",
 
 ## Review my current diff
 ```
-sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
+sutra_workspace(path=\"/home/user/project\")
 sutra_review(workspace=\"myproject\")
 ```
 Returns risk score, changed symbols, transitive impact, convention violations, \
@@ -234,7 +227,7 @@ and recommended reads sorted by review priority.
 
 ## Find callers and affected tests for a function
 ```
-sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
+sutra_workspace(path=\"/home/user/project\")
 sutra_calls(workspace=\"myproject\", symbol=\"handle_request\", direction=\"callers\", depth=2)
 sutra_refs(workspace=\"myproject\", symbol=\"handle_request\", context_kind=\"call\")
 sutra_winnow(workspace=\"myproject\", calls_to=\"handle_request\", file_glob=\"tests/**\")
@@ -253,7 +246,7 @@ sutra_workspace(path=\"/absolute/path/to/project\", action=\"reparse\")
 
 ## Check whether a change violates local conventions
 ```
-sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
+sutra_workspace(path=\"/home/user/project\")
 sutra_review(workspace=\"myproject\", diff=\"staged\")
 ```
 Look at the `constraint_violations` section — DD-constraint dependency directions \
@@ -261,7 +254,7 @@ checked against your staged changes.
 
 ## Review a branch commit-by-commit
 ```
-sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
+sutra_workspace(path=\"/home/user/project\")
 sutra_commit_manifest(workspace=\"myproject\")
 ```
 Returns per-commit entries with changed files and symbol-level change classifications \
@@ -270,7 +263,7 @@ was split into separate commits. Pass `base` and `head` for a custom range.
 
 ## Trace a path between two symbols
 ```
-sutra_workspace(path=\"/home/user/project\", enable=[\"analysis\"])
+sutra_workspace(path=\"/home/user/project\")
 sutra_trace(workspace=\"myproject\", symbol=\"target_function\", direction=\"forward\")
 ```
 `direction=forward` traces from entry points to the symbol. \

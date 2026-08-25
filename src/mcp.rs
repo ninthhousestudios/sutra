@@ -222,19 +222,16 @@ impl SutraServer {
         ))
     }
 
-    fn require_analysis(&self) -> std::result::Result<(), ErrorData> {
-        if !self
-            .analysis_enabled
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
-                "Analysis tier not enabled. Call sutra_workspace with enable=[\"analysis\"] first."
-                    .to_string(),
-                None,
-            ));
-        }
-        Ok(())
+    /// Enable the analysis tier. Analysis data (reference graph, git history,
+    /// review analytics) is built at parse time, so there is no expensive work
+    /// to defer and every analysis tool is advertised unconditionally. This
+    /// used to reject calls until the caller ran
+    /// `sutra_workspace(enable=["analysis"])`, which only cost a wasted
+    /// round-trip — so analysis tools now enable the tier lazily on first use.
+    /// The flag still drives `sutra_workspace` tier-status reporting.
+    fn enable_analysis(&self) {
+        self.analysis_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn register_workspace(
@@ -688,12 +685,12 @@ impl SutraServer {
 
     #[tool(description = "All usages of a symbol across the codebase. \
         Groups references by file with line numbers. Optional context_kind filter \
-        (e.g. \"construction\", \"call\", \"type_use\") to narrow results. Requires analysis tier.")]
+        (e.g. \"construction\", \"call\", \"type_use\") to narrow results.")]
     pub async fn sutra_refs(
         &self,
         Parameters(args): Parameters<RefsArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::refs::handle(ctx.db(), &args.symbol, args.context_kind.as_deref())
             .map_err(sutra_to_rmcp)?;
@@ -701,13 +698,12 @@ impl SutraServer {
     }
 
     #[tool(description = "Call hierarchy for a function. \
-        direction=callers (default) or callees. BFS to depth (default 1, max 3). \
-        Requires analysis tier.")]
+        direction=callers (default) or callees. BFS to depth (default 1, max 3).")]
     pub async fn sutra_calls(
         &self,
         Parameters(args): Parameters<CallsArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::calls::handle(
             ctx.db(),
@@ -723,12 +719,12 @@ impl SutraServer {
         direction=forward (default): finds paths from entry points to the symbol. \
         direction=backward: finds paths from the symbol to leaf functions. \
         Detects and marks cycles. Entry points: main, Dart lifecycle methods, \
-        or any symbol with zero callers. Requires analysis tier.")]
+        or any symbol with zero callers.")]
     pub async fn sutra_trace(
         &self,
         Parameters(args): Parameters<TraceArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::trace::handle(
             ctx.db(),
@@ -742,12 +738,12 @@ impl SutraServer {
     }
 
     #[tool(description = "Blast radius of a git diff. \
-        Shows changed files, affected symbols, and their callers. Requires analysis tier.")]
+        Shows changed files, affected symbols, and their callers.")]
     pub async fn sutra_diff_impact(
         &self,
         Parameters(args): Parameters<DiffImpactArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::diff_impact::handle(
@@ -764,13 +760,12 @@ impl SutraServer {
         Returns each commit with its changed files and symbol-level change \
         classifications (added/deleted/signature_changed/body_changed). \
         Use for multi-commit branch review where per-commit intent matters. \
-        Defaults to branch range (merge-base..HEAD). Max 50 commits. \
-        Requires analysis tier.")]
+        Defaults to branch range (merge-base..HEAD). Max 50 commits.")]
     pub async fn sutra_commit_manifest(
         &self,
         Parameters(args): Parameters<CommitManifestArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::commit_manifest::handle(
@@ -786,12 +781,12 @@ impl SutraServer {
     #[tool(description = "Composite PR risk score (0.0–1.0) for a git diff. \
         Combines blast_radius, complexity, churn, and volume signals with \
         documented weights. Returns per-signal breakdown and top-N riskiest \
-        changed symbols. Requires analysis tier.")]
+        changed symbols.")]
     pub async fn sutra_pr_risk(
         &self,
         Parameters(args): Parameters<PrRiskArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::pr_risk::handle(
@@ -808,13 +803,13 @@ impl SutraServer {
     #[tool(
         description = "Git history of a symbol's file with commit classification \
         (feature, bugfix, refactor, test, docs, chore, performance, unknown). \
-        Uses --follow for rename tracking. Requires analysis tier."
+        Uses --follow for rename tracking."
     )]
     pub async fn sutra_provenance(
         &self,
         Parameters(args): Parameters<ProvenanceArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::provenance::handle(ctx.db(), ctx.workspace_root(), &args.symbol)
             .map_err(sutra_to_rmcp)?;
@@ -825,14 +820,13 @@ impl SutraServer {
         description = "Entities that historically change together in git history. \
         granularity='file' (default): file-level co-change by path. \
         granularity='function': function-level co-change by qualified symbol name. \
-        Reports both jaccard and confidence metrics for function granularity. \
-        Requires analysis tier."
+        Reports both jaccard and confidence metrics for function granularity."
     )]
     pub async fn sutra_cochange(
         &self,
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::cochange::handle(
             ctx.db(),
@@ -849,14 +843,13 @@ impl SutraServer {
         identifies changed files and symbols, computes transitive impact, calculates a \
         0.0–1.0 risk score with breakdown, and ranks recommended reads. \
         diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
-        or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit. \
-        Requires analysis tier."
+        or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit."
     )]
     pub async fn sutra_review(
         &self,
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         // Hold (not merely await) the parse lock across the DD-backed review so a
         // reparse cannot remint file ids mid-evaluation (sutra/298). This
         // subsumes the previous await_parse, which only waited for an in-flight
@@ -878,14 +871,13 @@ impl SutraServer {
     #[tool(
         description = "Find dead symbols (zero inbound references) and unreachable files \
         (zero importers). Automatically excludes #[test]/#[bench] functions, items inside \
-        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, and integration test files. \
-        Requires analysis tier."
+        #[cfg(test)] modules, #[no_mangle]/FFI entrypoints, and integration test files."
     )]
     pub async fn sutra_dead(
         &self,
         Parameters(args): Parameters<DeadArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::dead::handle(
             ctx.db(),
@@ -896,15 +888,12 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(
-        description = "Riskiest files ranked by git churn × blast radius × complexity. \
-        Requires analysis tier."
-    )]
+    #[tool(description = "Riskiest files ranked by git churn × blast radius × complexity.")]
     pub async fn sutra_hotspots(
         &self,
         Parameters(args): Parameters<HotspotsArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
             .map_err(sutra_to_rmcp)?;
@@ -916,13 +905,13 @@ impl SutraServer {
         (1.0-10.0), active findings with full detail, category deductions, and component \
         instability (Martin's Ce/(Ca+Ce)). Filter by file path or component name. \
         Default mode='actionable' shows only files with findings; mode='all' includes everything. \
-        Worst files first. Requires analysis tier."
+        Worst files first."
     )]
     pub async fn sutra_file_health(
         &self,
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
-        self.require_analysis()?;
+        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::file_health::handle_ctx(
             &ctx,
@@ -955,14 +944,14 @@ impl SutraServer {
         description = "Multi-axis composite query. AND-intersects filters (kind, \
         min_complexity, min_churn, calls_to, file_glob, name_regex) and ranks results \
         by importance (PageRank), complexity, or churn. Each result includes per-axis \
-        values. Requires analysis tier for calls_to."
+        values."
     )]
     pub async fn sutra_winnow(
         &self,
         Parameters(args): Parameters<WinnowArgs>,
     ) -> Result<String, ErrorData> {
         if args.calls_to.is_some() {
-            self.require_analysis()?;
+            self.enable_analysis();
         }
         let ctx = self.tool_context(&args.workspace)?;
         let filter = tools::winnow::WinnowFilter {
@@ -1008,8 +997,9 @@ impl SutraServer {
     #[tool(description = "Workspace lifecycle and tier management. \
             Actions: 'status' (default — register workspace, return health/counts/freshness), \
             'reparse' (register + synchronous reparse). \
-            Tier management: pass enable/disable to toggle tool tiers (e.g. enable=[\"analysis\"] \
-            for sutra_refs, sutra_calls, sutra_review, etc.).")]
+            Tier management: enable/disable toggle tier-status reporting. Analysis-tier \
+            tools (sutra_refs, sutra_calls, sutra_review, etc.) enable on first use, so \
+            manually enabling the tier is optional.")]
     pub async fn sutra_workspace(
         &self,
         Parameters(args): Parameters<WorkspaceToolArgs>,
