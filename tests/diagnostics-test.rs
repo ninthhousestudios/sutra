@@ -63,10 +63,6 @@ fn test_suggest_next_query_non_empty() {
             freshness: None,
             suggestion: "reparse".into(),
         },
-        Diagnostic::AnalysisTierDisabled {
-            tool: "refs".into(),
-            suggestion: "enable analysis".into(),
-        },
         Diagnostic::PartialResolution {
             resolved_name: "Foo".into(),
             unresolved_count: 3,

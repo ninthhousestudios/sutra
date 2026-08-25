@@ -1,9 +1,8 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use sutra::db::{Db, InsertSymbolParams, SnapshotParams};
 use sutra::tools::{
-    ToolContext, deps, explore, find, impact, lookup, map, outline, read, refs, tools_meta, winnow,
+    ToolContext, deps, explore, find, impact, lookup, map, outline, read, refs, winnow,
 };
 
 fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
@@ -248,26 +247,6 @@ fn test_deps_global_contract() {
         result["total_edges"].is_number(),
         "'total_edges' must be a number"
     );
-}
-
-#[test]
-fn test_tools_meta_contract() {
-    let flag = AtomicBool::new(false);
-    let result = tools_meta::handle(&flag, None, None, true);
-
-    let tiers = result["tiers"]
-        .as_object()
-        .expect("tools_meta must have 'tiers' object");
-    assert!(tiers.contains_key("core"), "tiers must include 'core'");
-    assert!(
-        tiers.contains_key("analysis"),
-        "tiers must include 'analysis'"
-    );
-
-    let core = &tiers["core"];
-    assert_eq!(core["enabled"], true, "core tier must always be enabled");
-    let tools = core["tools"].as_array().expect("core must list tools");
-    assert!(!tools.is_empty());
 }
 
 #[test]

@@ -33,10 +33,6 @@ pub enum Diagnostic {
         freshness: Option<FreshnessLevel>,
         suggestion: String,
     },
-    AnalysisTierDisabled {
-        tool: String,
-        suggestion: String,
-    },
     PartialResolution {
         resolved_name: String,
         unresolved_count: usize,
@@ -60,7 +56,6 @@ impl Diagnostic {
             Diagnostic::NoSuchSymbol { suggestion, .. }
             | Diagnostic::Ambiguous { suggestion, .. }
             | Diagnostic::Stale { suggestion, .. }
-            | Diagnostic::AnalysisTierDisabled { suggestion, .. }
             | Diagnostic::PartialResolution { suggestion, .. }
             | Diagnostic::SymbolExistsWithNoResults { suggestion, .. } => suggestion,
         }
@@ -75,7 +70,6 @@ impl Diagnostic {
             | Diagnostic::SymbolExistsWithNoResults { freshness, .. } => {
                 *freshness = Some(level);
             }
-            Diagnostic::AnalysisTierDisabled { .. } => {}
         }
         self
     }

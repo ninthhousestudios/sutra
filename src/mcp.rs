@@ -47,12 +47,6 @@ pub struct WorkspaceToolArgs {
     /// Languages to index (default: ["rust", "dart"])
     #[serde(default)]
     pub languages: Option<Vec<String>>,
-    /// Tier names to enable (e.g. ["analysis"])
-    #[serde(default)]
-    pub enable: Option<Vec<String>>,
-    /// Tier names to disable (e.g. ["analysis"])
-    #[serde(default)]
-    pub disable: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +87,6 @@ pub struct SutraServer {
     db_cache: Arc<Mutex<HashMap<String, Arc<Db>>>>,
     config: Arc<Config>,
     workspaces: Arc<RwLock<WorkspacesConfig>>,
-    analysis_enabled: Arc<AtomicBool>,
     parse_coord: ParseCoordinator,
     dd_engines: Arc<Mutex<HashMap<String, Arc<DdEngine>>>>,
     lessons_db: Arc<LessonsDb>,
@@ -111,7 +104,6 @@ impl Clone for SutraServer {
             db_cache: Arc::clone(&self.db_cache),
             config: Arc::clone(&self.config),
             workspaces: Arc::clone(&self.workspaces),
-            analysis_enabled: Arc::clone(&self.analysis_enabled),
             parse_coord: self.parse_coord.clone(),
             dd_engines: Arc::clone(&self.dd_engines),
             lessons_db: Arc::clone(&self.lessons_db),
@@ -133,7 +125,6 @@ impl SutraServer {
             db_cache,
             config,
             workspaces,
-            analysis_enabled: Arc::new(AtomicBool::new(false)),
             parse_coord,
             dd_engines: Arc::new(Mutex::new(HashMap::new())),
             lessons_db,
@@ -220,18 +211,6 @@ impl SutraServer {
             true,
             response_freshness,
         ))
-    }
-
-    /// Enable the analysis tier. Analysis data (reference graph, git history,
-    /// review analytics) is built at parse time, so there is no expensive work
-    /// to defer and every analysis tool is advertised unconditionally. This
-    /// used to reject calls until the caller ran
-    /// `sutra_workspace(enable=["analysis"])`, which only cost a wasted
-    /// round-trip — so analysis tools now enable the tier lazily on first use.
-    /// The flag still drives `sutra_workspace` tier-status reporting.
-    fn enable_analysis(&self) {
-        self.analysis_enabled
-            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn register_workspace(
@@ -690,7 +669,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<RefsArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::refs::handle(ctx.db(), &args.symbol, args.context_kind.as_deref())
             .map_err(sutra_to_rmcp)?;
@@ -703,7 +681,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CallsArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::calls::handle(
             ctx.db(),
@@ -724,7 +701,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<TraceArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::trace::handle(
             ctx.db(),
@@ -743,7 +719,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DiffImpactArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::diff_impact::handle(
@@ -765,7 +740,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CommitManifestArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::commit_manifest::handle(
@@ -786,7 +760,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<PrRiskArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         self.await_parse(&args.workspace).await;
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::pr_risk::handle(
@@ -809,7 +782,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ProvenanceArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::provenance::handle(ctx.db(), ctx.workspace_root(), &args.symbol)
             .map_err(sutra_to_rmcp)?;
@@ -826,7 +798,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::cochange::handle(
             ctx.db(),
@@ -849,7 +820,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         // Hold (not merely await) the parse lock across the DD-backed review so a
         // reparse cannot remint file ids mid-evaluation (sutra/298). This
         // subsumes the previous await_parse, which only waited for an in-flight
@@ -877,7 +847,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DeadArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::dead::handle(
             ctx.db(),
@@ -893,7 +862,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<HotspotsArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
             .map_err(sutra_to_rmcp)?;
@@ -911,7 +879,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
-        self.enable_analysis();
         let ctx = self.tool_context(&args.workspace)?;
         let result = tools::file_health::handle_ctx(
             &ctx,
@@ -950,9 +917,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<WinnowArgs>,
     ) -> Result<String, ErrorData> {
-        if args.calls_to.is_some() {
-            self.enable_analysis();
-        }
         let ctx = self.tool_context(&args.workspace)?;
         let filter = tools::winnow::WinnowFilter {
             kind: args.kind,
@@ -994,52 +958,26 @@ impl SutraServer {
         to_compact_json(ctx.wrap(result))
     }
 
-    #[tool(description = "Workspace lifecycle and tier management. \
+    #[tool(description = "Workspace lifecycle. \
             Actions: 'status' (default — register workspace, return health/counts/freshness), \
-            'reparse' (register + synchronous reparse). \
-            Tier management: enable/disable toggle tier-status reporting. Analysis-tier \
-            tools (sutra_refs, sutra_calls, sutra_review, etc.) enable on first use, so \
-            manually enabling the tier is optional.")]
+            'reparse' (register + synchronous reparse).")]
     pub async fn sutra_workspace(
         &self,
         Parameters(args): Parameters<WorkspaceToolArgs>,
     ) -> Result<String, ErrorData> {
-        let has_tier_change = args.enable.is_some() || args.disable.is_some();
-
-        // Tier-only call (no path): toggle tiers and return tier status
-        if args.path.is_none() {
-            if has_tier_change {
-                tools::tools_meta::handle(
-                    &self.analysis_enabled,
-                    args.enable.as_deref(),
-                    args.disable.as_deref(),
-                    false,
-                );
-            }
-            return to_compact_json(tools::tools_meta::handle(
-                &self.analysis_enabled,
+        let path = args.path.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                rmcp::model::ErrorCode(crate::error::codes::INVALID_PARAMS),
+                "sutra_workspace requires a `path` (absolute path to the project root)."
+                    .to_string(),
                 None,
-                None,
-                true,
-            ));
-        }
-
-        let path = args.path.as_deref().unwrap();
+            )
+        })?;
         let action = args.action.as_deref().unwrap_or("status");
 
         let (ws_id, entry, _) = self.register_workspace(path, args.languages)?;
         let entry = Arc::new(entry);
         let db = self.get_db(&ws_id)?;
-
-        // Apply tier changes after successful workspace registration
-        if has_tier_change {
-            tools::tools_meta::handle(
-                &self.analysis_enabled,
-                args.enable.as_deref(),
-                args.disable.as_deref(),
-                false,
-            );
-        }
 
         match action {
             "status" => {
