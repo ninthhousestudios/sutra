@@ -108,9 +108,12 @@ Plus `sutra_help` with agent-oriented recipes.
     with the staleness age and affected files, so that I know to trigger a
     reparse before trusting results.
 
-17. As an agent, when an analysis tier is disabled, I want an
+17. ~~As an agent, when an analysis tier is disabled, I want an
     `analysis_tier_disabled` diagnostic explaining which tier and how to
-    enable it, so that I don't mistake missing results for absent data.
+    enable it, so that I don't mistake missing results for absent data.~~
+    **Dropped** — the analysis tier was removed entirely; it gated no
+    expensive work and hid no schemas, so all tools are now callable
+    unconditionally and no such diagnostic is needed.
 
 18. As an agent, I want `sutra_help` to return recipes for common workflows
     ("review my current diff," "find callers and affected tests," "check
