@@ -1,6 +1,6 @@
 # AgentOps session artifacts
 .agents/
-docs/box-dyn
+docs/sutra-python-repo-notes.md
 
 # Build output
 target/
