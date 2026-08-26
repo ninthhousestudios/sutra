@@ -1232,6 +1232,16 @@ fn classify_ref_context(node: Node) -> RefContextKind {
         _ => {}
     }
 
+    // Class base classes: the base identifier in `class Sub(Base):` sits inside
+    // the class_definition's `superclasses` argument_list. Emit it as a TypeUse
+    // so inheritance produces a ref that binds to the base `class` symbol (via
+    // resolver `kind_compatible`). Scoped strictly to superclasses — regular
+    // call arguments have an argument_list whose parent is `call`, not
+    // `class_definition`, so they stay unaffected.
+    if is_class_base_ref(node) {
+        return RefContextKind::TypeUse;
+    }
+
     // Any ancestor being a "type" node means we're inside a type annotation
     if has_type_ancestor(node) {
         return RefContextKind::TypeUse;
@@ -1257,6 +1267,42 @@ fn has_type_ancestor(node: Node) -> bool {
         current = n.parent();
     }
     false
+}
+
+/// True when `node` is a statically-named base class in a `class Sub(Base):` or
+/// `class Sub(pkg.Base):` header — an identifier sitting (directly, or as the
+/// rightmost `.attribute` segment) in the `superclasses` argument_list of a
+/// `class_definition`. A dynamic base (`class Sub(factory()):`) is a `call`
+/// node, not a bare identifier, so it never reaches here; regular call
+/// arguments (`foo(bar)`) have an argument_list whose parent is `call`, so they
+/// are excluded too.
+fn is_class_base_ref(node: Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    let arg_list = match parent.kind() {
+        // Bare base: `Base` is a direct child of the argument_list.
+        "argument_list" => parent,
+        // Dotted base: `Base` is the `attribute` field of `pkg.Base`. Only the
+        // rightmost segment qualifies, and its attribute node must be a direct
+        // child of the argument_list.
+        "attribute" => {
+            if parent.child_by_field_name("attribute").map(|a| a.id()) != Some(node.id()) {
+                return false;
+            }
+            match parent.parent() {
+                Some(gp) if gp.kind() == "argument_list" => gp,
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+    arg_list.parent().is_some_and(|class_def| {
+        class_def.kind() == "class_definition"
+            && class_def
+                .child_by_field_name("superclasses")
+                .is_some_and(|s| s.id() == arg_list.id())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,6 +1623,79 @@ mod tests {
             .collect();
         assert!(type_refs.iter().any(|r| r.name == "int"));
         assert!(type_refs.iter().any(|r| r.name == "str"));
+    }
+
+    #[test]
+    fn inheritance_base_class_ref() {
+        let r = parse_py("class Sub(Base):\n    pass\n");
+        let type_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(
+            type_refs.iter().any(|r| r.name == "Base"),
+            "base class Base should emit a TypeUse ref: {:?}",
+            r.references
+        );
+    }
+
+    #[test]
+    fn inheritance_multiple_base_class_refs() {
+        let r = parse_py("class Sub(A, B):\n    pass\n");
+        let type_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(type_refs.iter().any(|r| r.name == "A"));
+        assert!(type_refs.iter().any(|r| r.name == "B"));
+    }
+
+    #[test]
+    fn inheritance_dotted_base_class_ref() {
+        let r = parse_py("class Sub(pkg.Base):\n    pass\n");
+        let type_refs: Vec<_> = r
+            .references
+            .iter()
+            .filter(|r| r.context_kind == RefContextKind::TypeUse)
+            .collect();
+        assert!(
+            type_refs.iter().any(|r| r.name == "Base"),
+            "dotted base pkg.Base should emit a TypeUse ref to Base: {:?}",
+            r.references
+        );
+    }
+
+    #[test]
+    fn inheritance_dynamic_base_no_ref() {
+        // A dynamic base is a call, not a bare identifier — no base-class ref.
+        let r = parse_py("class Sub(factory()):\n    pass\n");
+        assert!(
+            !r.references
+                .iter()
+                .any(|r| r.context_kind == RefContextKind::TypeUse),
+            "dynamic base should emit no TypeUse ref: {:?}",
+            r.references
+        );
+        // The call itself is still recorded as a Call ref.
+        assert!(
+            r.references
+                .iter()
+                .any(|r| r.name == "factory" && r.context_kind == RefContextKind::Call)
+        );
+    }
+
+    #[test]
+    fn call_args_emit_no_type_ref() {
+        // Branch is scoped to class superclasses, not every argument_list —
+        // regular call arguments must not become refs.
+        let r = parse_py("foo(bar)\n");
+        assert!(
+            !r.references.iter().any(|r| r.name == "bar"),
+            "call argument bar should not emit a ref: {:?}",
+            r.references
+        );
     }
 
     #[test]
