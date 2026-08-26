@@ -121,6 +121,21 @@ pub fn resolve_workspace<'a>(config: &'a WorkspacesConfig, id: &str) -> Result<&
         })
 }
 
+/// Find a registered workspace whose root is the same directory as `root`,
+/// compared after normalization so symlinks, `.`, and `..` don't cause a miss.
+///
+/// Unlike [`resolve_workspace`] this never falls back to basename matching — it
+/// answers only "is this exact directory already a workspace?", which is what a
+/// path-based (re)registration needs so it can reuse a workspace registered
+/// under a custom id rather than trying to add a self-overlapping duplicate.
+pub fn find_by_root<'a>(config: &'a WorkspacesConfig, root: &Path) -> Option<&'a WorkspaceEntry> {
+    let target = normalize_path(root);
+    config
+        .workspace
+        .iter()
+        .find(|w| normalize_path(&w.root) == target)
+}
+
 /// Add a new workspace entry to the config file. Returns an error if an entry
 /// with the same id already exists, or if the new root overlaps an existing
 /// workspace's root in either direction (ancestor or descendant). Overlap is
@@ -210,4 +225,56 @@ pub fn remove_workspace(path: &Path, id: &str) -> Result<()> {
 /// Load and return all workspace entries.
 pub fn list_workspaces(path: &Path) -> Result<Vec<WorkspaceEntry>> {
     Ok(load_workspaces(path)?.workspace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, root: &str) -> WorkspaceEntry {
+        WorkspaceEntry {
+            id: id.into(),
+            root: PathBuf::from(root),
+            languages: vec!["python".into()],
+            frozen: false,
+        }
+    }
+
+    // sutra/355: a workspace whose id differs from its directory basename must
+    // still be resolvable by its root, so a path-based (re)registration reuses
+    // it instead of adding a self-overlapping duplicate.
+    #[test]
+    fn find_by_root_matches_custom_id_workspace() {
+        let config = WorkspacesConfig {
+            workspace: vec![entry("varuna", "/nonexistent-sutra355/proj/varuna360-core")],
+        };
+        let found = find_by_root(
+            &config,
+            Path::new("/nonexistent-sutra355/proj/varuna360-core"),
+        );
+        assert_eq!(found.map(|w| w.id.as_str()), Some("varuna"));
+
+        // Basename-based resolution can't reach it — the gap find_by_root closes.
+        assert!(resolve_workspace(&config, "varuna360-core").is_err());
+    }
+
+    #[test]
+    fn find_by_root_normalizes_dot_and_parent_components() {
+        let config = WorkspacesConfig {
+            workspace: vec![entry("app", "/nonexistent-sutra355/proj/app")],
+        };
+        assert!(find_by_root(&config, Path::new("/nonexistent-sutra355/proj/./app")).is_some());
+        assert!(
+            find_by_root(&config, Path::new("/nonexistent-sutra355/proj/sub/../app")).is_some()
+        );
+    }
+
+    #[test]
+    fn find_by_root_rejects_subdir_and_sibling() {
+        let config = WorkspacesConfig {
+            workspace: vec![entry("app", "/nonexistent-sutra355/proj/app")],
+        };
+        assert!(find_by_root(&config, Path::new("/nonexistent-sutra355/proj/app/sub")).is_none());
+        assert!(find_by_root(&config, Path::new("/nonexistent-sutra355/proj/other")).is_none());
+    }
 }

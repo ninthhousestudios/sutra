@@ -234,6 +234,16 @@ impl SutraServer {
             )
         })?;
 
+        // If this exact directory is already registered — possibly under a
+        // custom id that differs from the basename — reuse that entry. Deriving
+        // a fresh basename id and re-adding would trip add_workspace's
+        // root-overlap guard against the existing workspace (it overlaps
+        // itself), which made status/reparse unreachable for custom-id
+        // workspaces (sutra/355).
+        if let Some(existing) = workspace::find_by_root(&self.workspaces.read(), &root) {
+            return Ok((existing.id.clone(), existing.clone(), true));
+        }
+
         let dir_name = root
             .file_name()
             .and_then(|n| n.to_str())
