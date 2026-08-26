@@ -405,3 +405,65 @@ fn symbol_definition_files_spans_all_sites() {
             .is_empty()
     );
 }
+
+// End-to-end (parse -> resolve -> impact) proof for sutra/356 + sutra/357: a
+// Python base class referenced by both a subclass (inheritance TypeUse ref) and
+// a literal `ChartGUI()` construction (Call ref bound to the class) shows up in
+// its blast radius. `direct_callers` counts `context_kind == "call"`, so the
+// construction site (kept as Call) is counted; the inheritance ref is a TypeUse
+// and only swells `direct_refs`.
+#[tokio::test]
+async fn test_impact_counts_python_class_construction_and_inheritance() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    std::fs::create_dir_all(&app).unwrap();
+
+    std::fs::write(
+        app.join("base.py"),
+        "class ChartGUI:\n    def __init__(self):\n        pass\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("use.py"),
+        "from app.base import ChartGUI\n\n\nclass ProChartGUI(ChartGUI):\n    pass\n\n\ndef build():\n    return ChartGUI()\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceEntry {
+        id: "py_impact".to_string(),
+        root: dir.path().to_path_buf(),
+        languages: vec!["python".to_string()],
+        frozen: false,
+    };
+    let config = Config {
+        db_dir: db_dir.path().to_path_buf(),
+        workspaces_path: db_dir.path().join("workspaces.toml"),
+        listen_addr: "127.0.0.1:0".to_string(),
+        parse_parallelism: 1,
+        stale_threshold_sec: 600,
+        log_level: "warn".to_string(),
+        constraints_idle_timeout_sec: 1800,
+        parse_timeout_ms: 5000,
+    };
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    let result =
+        impact::handle(&db, "ChartGUI", false, None, std::path::Path::new("test")).unwrap();
+    let direct_callers = result["direct_callers"].as_u64().unwrap();
+    let direct_refs = result["direct_refs"].as_u64().unwrap();
+    assert!(
+        direct_callers >= 1,
+        "construction site ChartGUI() should count as a caller (sutra/357): {result}"
+    );
+    assert!(
+        direct_refs >= 2,
+        "construction + inheritance refs should both resolve to ChartGUI (sutra/356+357): {result}"
+    );
+}

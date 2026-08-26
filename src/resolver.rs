@@ -97,9 +97,10 @@ pub fn resolve_refs(
     index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     file_id: i64,
+    lang: &str,
 ) -> Vec<ResolvedRef> {
     refs.iter()
-        .map(|r| resolve_single(r, file_symbols, index, file_imports, file_id))
+        .map(|r| resolve_single(r, file_symbols, index, file_imports, file_id, lang))
         .collect()
 }
 
@@ -121,6 +122,7 @@ fn resolve_single(
     index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     file_id: i64,
+    lang: &str,
 ) -> ResolvedRef {
     if matches!(r.context_kind, RefContextKind::Import) {
         return ResolvedRef {
@@ -242,6 +244,39 @@ fn resolve_single(
         };
         let best = pool.iter().min_by_key(|s| s.qualified_name.len()).unwrap();
         return resolved(r, best.id, ResolutionMethod::GlobalFallback);
+    }
+
+    // --- Step 3b: Python class-as-constructor (language-scoped) ---
+    // `ClassName(...)` is emitted as a Call ref but constructs an instance.
+    // `kind_compatible(Call, "class")` is false, so steps 1-3 (which match only
+    // function|method|macro) never bind a class. Reaching here means no
+    // function/method candidate resolved — so a same-named function still wins
+    // (it would have returned above). Retry the name search as Construction,
+    // which binds to `class` via `kind_compatible`, but keep the ref's Call
+    // context: `sutra_impact` counts direct callers by `context_kind == "call"`
+    // (impact.rs), so re-tagging Construction would *exclude* the site from the
+    // caller count — the opposite of the goal. Python-only: Rust/Dart/TS
+    // resolution is unchanged, and a dynamic `factory()` base stays unresolved
+    // (no class symbol of that name exists to bind).
+    if lang == "python" && matches!(r.context_kind, RefContextKind::Call) {
+        let as_construction = ExtractedRef {
+            context_kind: RefContextKind::Construction,
+            ..r.clone()
+        };
+        let retry = resolve_single(
+            &as_construction,
+            file_symbols,
+            index,
+            file_imports,
+            file_id,
+            lang,
+        );
+        if let Some(id) = retry.target_symbol_id {
+            let method = retry
+                .resolution_method
+                .unwrap_or(ResolutionMethod::GlobalFallback);
+            return resolved(r, id, method);
+        }
     }
 
     if use_kind_filter {

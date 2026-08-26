@@ -10,8 +10,21 @@ fn resolve(
     imports: &[ExtractedImport],
     file_id: i64,
 ) -> Vec<resolver::ResolvedRef> {
+    // "rust" is a neutral non-python language: the Python class-as-constructor
+    // rule stays off, so these tests exercise the general resolution path.
+    resolve_lang(file_symbols, refs, all_symbols, imports, file_id, "rust")
+}
+
+fn resolve_lang(
+    file_symbols: &[ExtractedSymbol],
+    refs: &[ExtractedRef],
+    all_symbols: &[SymbolEntry],
+    imports: &[ExtractedImport],
+    file_id: i64,
+    lang: &str,
+) -> Vec<resolver::ResolvedRef> {
     let index = resolver::SymbolIndex::build(all_symbols);
-    resolve_refs(file_symbols, refs, &index, imports, file_id)
+    resolve_refs(file_symbols, refs, &index, imports, file_id, lang)
 }
 
 fn make_symbol(
@@ -471,6 +484,104 @@ fn test_kind_filter_fallback() {
         resolved[0].target_symbol_id,
         Some(1),
         "should fall back to struct when no function matches a Call ref"
+    );
+}
+
+/// Python `C()` is emitted as a Call ref but constructs the class; the
+/// language-scoped rule binds it to the in-repo class while keeping the Call
+/// context (so `sutra_impact`, which counts callers by `context_kind == "call"`,
+/// still counts the construction site).
+#[test]
+fn test_python_class_call_binds_construction() {
+    let file_symbols = vec![make_symbol("mod::C", "C", SymbolKind::Class, 1, 5)];
+    let refs = vec![make_ref("C", 10, RefContextKind::Call)];
+    let all_symbols = vec![sym(1, "mod::C", "C", "class")];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_lang(&file_symbols, &refs, &all_symbols, &imports, 0, "python");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(1),
+        "Python C() should bind to class C"
+    );
+    assert_eq!(
+        resolved[0].original.context_kind,
+        RefContextKind::Call,
+        "construction site keeps Call context so sutra_impact counts it"
+    );
+}
+
+/// A same-named function takes precedence over the class (function wins; the
+/// class is only a fallback when no function/method resolves).
+#[test]
+fn test_python_call_prefers_function_over_class() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("C", 10, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym(1, "mod::C", "C", "class"),
+        sym(2, "mod::factory::C", "C", "function"),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_lang(&file_symbols, &refs, &all_symbols, &imports, 0, "python");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "function C should win over class C for a Call ref"
+    );
+    assert_eq!(
+        resolved[0].original.context_kind,
+        RefContextKind::Call,
+        "function-bound call stays Call, not Construction"
+    );
+}
+
+/// Dynamic construction (`gui_class(...)`) stays unresolved — no class/function
+/// of that name exists, and the resolver must not fabricate a binding.
+#[test]
+fn test_python_dynamic_call_unresolved() {
+    let file_symbols: Vec<ExtractedSymbol> = vec![];
+    let refs = vec![make_ref("gui_class", 10, RefContextKind::Call)];
+    let all_symbols = vec![sym(1, "mod::ChartGUI", "ChartGUI", "class")];
+    let imports: Vec<ExtractedImport> = vec![];
+
+    let resolved = resolve_lang(&file_symbols, &refs, &all_symbols, &imports, 0, "python");
+
+    assert_eq!(resolved.len(), 1);
+    assert!(
+        resolved[0].target_symbol_id.is_none(),
+        "dynamic gui_class() must stay unresolved"
+    );
+}
+
+/// The class-as-constructor rule is Python-scoped. With two same-named classes
+/// (no callable), the generic unique-symbol fallback cannot fire, so only the
+/// Python path resolves the Call ref — proving Rust/Dart/TS are unchanged.
+#[test]
+fn test_class_call_construction_is_python_scoped() {
+    let refs = vec![make_ref("C", 10, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym_in_file(1, "a::C", "C", "class", 1),
+        sym_in_file(2, "b::C", "C", "class", 2),
+    ];
+    let imports: Vec<ExtractedImport> = vec![];
+    // Call site lives in file 0 — neither class's file — so same-file
+    // preference can't disambiguate; the unique fallback needs len == 1.
+
+    let py = resolve_lang(&[], &refs, &all_symbols, &imports, 0, "python");
+    assert!(
+        py[0].target_symbol_id.is_some(),
+        "python resolves non-unique class construction to a class"
+    );
+
+    let rust = resolve_lang(&[], &refs, &all_symbols, &imports, 0, "rust");
+    assert!(
+        rust[0].target_symbol_id.is_none(),
+        "non-python leaves a non-unique Call->class unresolved (language gate)"
     );
 }
 

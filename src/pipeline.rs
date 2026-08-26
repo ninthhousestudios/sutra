@@ -534,12 +534,21 @@ fn resolve_file_refs(
         })
         .collect();
 
+    // Language gates the Python class-as-constructor rule in the resolver;
+    // absent a file row (should not happen post-parse) fall back to a neutral
+    // value so the general resolution path is unaffected.
+    let language = db
+        .file_by_id(file_id)?
+        .map(|f| f.language)
+        .unwrap_or_default();
+
     let resolved = resolver::resolve_refs(
         &extracted_symbols,
         &extracted_refs,
         index,
         &extracted_imports,
         file_id,
+        &language,
     );
 
     let ref_rows: Vec<ResolvedRefRow<'_>> = resolved
