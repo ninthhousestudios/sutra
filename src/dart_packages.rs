@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::db::Db;
 use crate::error::Result;
-use crate::pipeline::SKIP_DIRS;
+use crate::pipeline::workspace_walker;
 
 pub(crate) struct DartPackageMap {
     pub(crate) packages: HashMap<String, String>,
@@ -14,29 +14,17 @@ pub(crate) struct DartPackageMap {
 impl DartPackageMap {
     pub(crate) fn build(workspace_root: &Path) -> Self {
         let mut packages = HashMap::new();
-        let mut stack = vec![workspace_root.to_path_buf()];
 
-        while let Some(dir) = stack.pop() {
-            let entries = match std::fs::read_dir(&dir) {
+        for entry in workspace_walker(workspace_root).build() {
+            let entry = match entry {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-
-                if path.is_dir() {
-                    if name_str.starts_with('.') || SKIP_DIRS.contains(&name_str.as_ref()) {
-                        continue;
-                    }
-                    stack.push(path);
-                } else if name_str == "pubspec.yaml"
-                    && let Some((pkg_name, lib_dir)) = extract_package_info(workspace_root, &path)
-                {
-                    packages.insert(pkg_name, lib_dir);
-                }
+            if entry.file_name().to_str() == Some("pubspec.yaml")
+                && let Some((pkg_name, lib_dir)) =
+                    extract_package_info(workspace_root, entry.path())
+            {
+                packages.insert(pkg_name, lib_dir);
             }
         }
 

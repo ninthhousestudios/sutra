@@ -236,7 +236,9 @@ fn log_phase_rss(phase: &str) {
     }
 }
 
-/// Directories to skip when walking the workspace.
+/// Build-output directories to skip even when a workspace does not gitignore
+/// them. Hidden dirs (`.git`, `.claude`, …) are already pruned by the walker's
+/// `hidden` filter; these are the non-hidden ones worth hard-skipping.
 pub(crate) const SKIP_DIRS: &[&str] = &[
     "target",
     "build",
@@ -248,6 +250,23 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     "__pycache__",
     ".claude",
 ];
+
+/// A workspace directory walker that respects `.gitignore` (plus `.ignore`,
+/// parent gitignores, `.git/info/exclude`, and the global gitignore), skips
+/// hidden entries, and hard-skips build-output dirs in [`SKIP_DIRS`].
+///
+/// `require_git(false)` makes `.gitignore` files apply even when the workspace
+/// is not itself a git checkout, so "respect .gitignore" holds regardless of
+/// whether `.git` is present. Symlinks are not followed (git/ripgrep default).
+pub(crate) fn workspace_walker(root: &Path) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.require_git(false).filter_entry(|entry| {
+        // Prune known build outputs that a project may not have gitignored.
+        !(entry.file_type().is_some_and(|ft| ft.is_dir())
+            && SKIP_DIRS.contains(&entry.file_name().to_string_lossy().as_ref()))
+    });
+    builder
+}
 
 struct FileParseResult {
     file_id: i64,
@@ -555,16 +574,22 @@ fn resolve_file_refs(
     Ok((resolved_count, unresolved, skipped))
 }
 
-fn prune_deleted_files(db: &Db, workspace_root: &Path) -> usize {
+/// Drop indexed files that the current walk no longer yields. This covers both
+/// files deleted from disk and files that are still present but newly excluded —
+/// e.g. code that a `.gitignore` rule now hides. `present` is the set of absolute
+/// paths returned by [`walk_source_files`] for this workspace.
+fn prune_stale_files(db: &Db, workspace_root: &Path, present: &[std::path::PathBuf]) -> usize {
     let files = match db.all_files() {
         Ok(f) => f,
         Err(_) => return 0,
     };
+    let present: HashSet<&Path> = present.iter().map(|p| p.as_path()).collect();
     let mut count = 0;
     for file in &files {
-        if !workspace_root.join(&*file.path).exists() {
+        let abs = workspace_root.join(&*file.path);
+        if !present.contains(abs.as_path()) {
             if let Err(e) = db.delete_file_cascade(file.id) {
-                warn!(file = %file.path, "failed to prune deleted file: {e}");
+                warn!(file = %file.path, "failed to prune stale file: {e}");
             } else {
                 count += 1;
             }
@@ -588,14 +613,15 @@ pub fn parse_workspace(
 
     let allowed_extensions: Vec<&str> = registry.extensions_for_languages(&workspace.languages);
 
-    // Prune indexed files that no longer exist on disk.
-    let pruned = prune_deleted_files(db, &workspace.root);
-    if pruned > 0 {
-        info!(workspace = %workspace.id, pruned, "pruned deleted files from index");
-    }
-
     let source_files = walk_source_files(&workspace.root, &allowed_extensions);
     info!(workspace = %workspace.id, files_found = source_files.len(), "walked workspace");
+
+    // Prune indexed files the walk no longer yields — deleted from disk or newly
+    // excluded (e.g. now covered by a `.gitignore` rule).
+    let pruned = prune_stale_files(db, &workspace.root, &source_files);
+    if pruned > 0 {
+        info!(workspace = %workspace.id, pruned, "pruned stale files from index");
+    }
 
     if source_files.is_empty()
         && workspace.root.is_dir()
@@ -1139,34 +1165,21 @@ pub(crate) fn walk_source_files(
     allowed_extensions: &[&str],
 ) -> Vec<std::path::PathBuf> {
     let mut result = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
 
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
+    for entry in workspace_walker(root).build() {
+        let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                warn!(path = %dir.display(), error = %e, "could not read directory");
+                warn!(error = %e, "could not read workspace entry");
                 continue;
             }
         };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-
-            if path.is_dir() {
-                // Skip hidden dirs and known build output.
-                if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
-                    continue;
-                }
-                stack.push(path);
-            } else if path.is_file()
-                && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                && allowed_extensions.contains(&ext)
-            {
-                result.push(path);
-            }
+        let path = entry.path();
+        if entry.file_type().is_some_and(|ft| ft.is_file())
+            && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && allowed_extensions.contains(&ext)
+        {
+            result.push(path.to_path_buf());
         }
     }
 
@@ -1342,5 +1355,58 @@ mod parse_coordinator_tests {
         let _mark = coord.mark_parsing("ws");
         assert!(coord.is_parsing("ws"));
         assert!(!coord.is_parsing("other"), "flag must not leak across ws");
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::walk_source_files;
+    use std::fs;
+
+    /// The walk must honor `.gitignore`: an ignored file and everything under an
+    /// ignored directory are excluded, while tracked source is still found.
+    #[test]
+    fn walk_respects_gitignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        fs::write(root.join(".gitignore"), "secret.rs\nignored_dir/\n").expect("gitignore");
+        fs::write(root.join("keep.rs"), "fn keep() {}").expect("keep");
+        fs::write(root.join("secret.rs"), "fn secret() {}").expect("secret");
+        fs::create_dir(root.join("ignored_dir")).expect("mkdir");
+        fs::write(root.join("ignored_dir").join("hidden.rs"), "fn h() {}").expect("hidden");
+
+        let found: Vec<String> = walk_source_files(root, &["rs"])
+            .iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            found.contains(&"keep.rs".to_string()),
+            "tracked file kept: {found:?}"
+        );
+        assert!(
+            !found.contains(&"secret.rs".to_string()),
+            "gitignored file excluded"
+        );
+        assert!(
+            !found.iter().any(|p| p.contains("hidden.rs")),
+            "contents of a gitignored dir excluded: {found:?}"
+        );
+    }
+
+    /// `SKIP_DIRS` build outputs stay pruned even when not gitignored.
+    #[test]
+    fn walk_hard_skips_build_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        fs::write(root.join("keep.rs"), "fn keep() {}").expect("keep");
+        fs::create_dir(root.join("target")).expect("mkdir");
+        fs::write(root.join("target").join("gen.rs"), "fn gen() {}").expect("gen");
+
+        let found = walk_source_files(root, &["rs"]);
+        assert_eq!(found.len(), 1, "only keep.rs, target/ pruned: {found:?}");
+        assert!(found[0].ends_with("keep.rs"));
     }
 }
