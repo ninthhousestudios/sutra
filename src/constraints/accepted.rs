@@ -242,6 +242,27 @@ pub fn resolve_accepted(file: AcceptedFile, constraints: &[Constraint]) -> Accep
         }
     }
     for a in file.acks {
+        // Reserved carve-out (sutra/360): an un-owned import cycle is stamped with
+        // the synthetic `builtin:cycles` id and has no rules.toml entry, so it can
+        // never resolve by name. Recognize the reserved name and project it against
+        // the synthetic id directly. This is the ONLY id-keyed exception; every
+        // other nameless ref still falls through to `resolve_ref` and warns as
+        // Unknown (sutra/310 preserved). Deliberately ack-only — the waiver branch
+        // stays name-pure, so an un-owned cycle can never carry a leaky, guard-honored
+        // from_path waiver (sutra/359).
+        if a.constraint == crate::constraints::check::BUILTIN_CYCLES_ID {
+            load.acks.push(AckProjection {
+                constraint_id: a.constraint,
+                constraint_name: None,
+                file_path: a.file,
+                enclosing_symbol: a.symbol,
+                snippet: a.snippet,
+                accepted_count: i64::from(a.count),
+                rationale: a.rationale,
+                acked_by: a.by,
+            });
+            continue;
+        }
         match resolve_ref(&a.constraint, constraints) {
             RefResolution::Resolved(c) => load.acks.push(AckProjection {
                 constraint_id: c.id.to_string(),
@@ -728,5 +749,43 @@ mod tests {
         let f = load_accepted_file(root).unwrap();
         assert_eq!(f.waivers.len(), 1);
         assert_eq!(f.waivers[0].rationale, "revised reason");
+    }
+
+    /// The reserved `builtin:cycles` name resolves an ack against the synthetic id
+    /// with no rules.toml entry — the one sanctioned id-keyed carve-out (sutra/360).
+    /// Every other nameless ref still warns as Unknown, so sutra/310's ban on
+    /// general id-keyed entries holds.
+    #[test]
+    fn builtin_cycles_ack_resolves_via_carveout_others_still_warn() {
+        let live = one_named("some-rule"); // no live constraint is named builtin:cycles
+        let file = AcceptedFile {
+            waivers: vec![],
+            acks: vec![
+                AckEntry {
+                    constraint: "builtin:cycles".into(),
+                    file: "src/a.rs".into(),
+                    symbol: None,
+                    snippet: Some("src/a.rs -> src/b.rs".into()),
+                    count: 1,
+                    rationale: Some("reviewed".into()),
+                    by: "josh".into(),
+                },
+                AckEntry {
+                    constraint: "ghost-rule".into(),
+                    file: "src/c.rs".into(),
+                    symbol: None,
+                    snippet: Some("x".into()),
+                    count: 1,
+                    rationale: None,
+                    by: "josh".into(),
+                },
+            ],
+        };
+        let load = resolve_accepted(file, &live);
+        assert_eq!(load.acks.len(), 1, "only the builtin ack projects");
+        assert_eq!(load.acks[0].constraint_id, "builtin:cycles");
+        assert!(load.acks[0].constraint_name.is_none());
+        assert_eq!(load.warnings.len(), 1, "the nameless non-builtin ref warns");
+        assert_eq!(load.warnings[0].constraint_ref, "ghost-rule");
     }
 }

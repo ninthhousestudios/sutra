@@ -16,11 +16,13 @@ use crate::rules::{self, ConstraintKind};
 pub struct ConstraintsArgs {
     #[serde(default)]
     pub workspace: String,
-    /// Action: "list", "violations", "waive", "unwaive", "baseline", "ack", "unack".
-    /// Waivers and acks are persisted to `.sutra/accepted.toml` (version-controlled,
-    /// keyed by constraint NAME); the DB is a rebuilt-on-read projection. `unwaive`
-    /// and `unack` remove by content KEY, not a row id — the projection re-mints ids
-    /// on every sync, so ids are not stable handles.
+    /// Action: "list", "violations", "waive", "unwaive", "baseline", "ack", "unack",
+    /// "ack-cycle", "unack-cycle". Waivers and acks are persisted to
+    /// `.sutra/accepted.toml` (version-controlled, keyed by constraint NAME); the DB
+    /// is a rebuilt-on-read projection. `unwaive` and `unack` remove by content KEY,
+    /// not a row id — the projection re-mints ids on every sync, so ids are not
+    /// stable handles. `ack-cycle` accepts one import cycle by its file-set
+    /// (`members`) so it drops off the report; a reshaped cycle re-surfaces.
     pub action: String,
     /// Constraint ID — 8-char blake3 hash (for waive/baseline/ack; resolved to the
     /// constraint's name, which is what the accepted file keys on)
@@ -55,6 +57,11 @@ pub struct ConstraintsArgs {
     /// Glob restricting which files a baseline snapshots (optional, for baseline)
     #[serde(default)]
     pub scope: Option<String>,
+    /// The member file paths of an import cycle to accept or revoke (for
+    /// ack-cycle / unack-cycle). Order-insensitive — a cycle's identity is its
+    /// file *set*; pass the exact members shown in the `violations` report.
+    #[serde(default)]
+    pub members: Option<Vec<String>>,
 }
 
 pub fn handle(
@@ -71,9 +78,11 @@ pub fn handle(
         "baseline" => handle_baseline(db, workspace_root, dd_engine, args),
         "ack" => handle_ack(db, workspace_root, args),
         "unack" => handle_unack(db, workspace_root, args),
+        "ack-cycle" => handle_ack_cycle(db, workspace_root, dd_engine, args),
+        "unack-cycle" => handle_unack_cycle(db, workspace_root, args),
         other => Err(SutraError::Internal(format!(
             "unknown action: {other}. expected: list, violations, waive, unwaive, \
-             baseline, ack, unack"
+             baseline, ack, unack, ack-cycle, unack-cycle"
         ))),
     }
 }
@@ -752,6 +761,153 @@ fn handle_unack(
     Ok(json!({ "revoked_ack": key, "file_path": file_path }))
 }
 
+/// Accept a single import cycle by its file-set so it drops off the report, while
+/// a reshaped cycle (a member added or removed) re-surfaces — the answer to "this
+/// known-good cycle is un-owned so it has no name to waive, no longer gates
+/// (sutra/359), yet still clutters the report" (sutra/360). Keyed by the cycle's
+/// fingerprint, not a leaky single path (sutra/359 problem 2). The set is
+/// re-verified against the live report so a typo'd or stale file-set cannot seed a
+/// phantom ack; the owned/un-owned constraint identity is read off the matching
+/// finding, so the operator need not name the constraint.
+fn handle_ack_cycle(
+    db: &Db,
+    workspace_root: &Path,
+    dd_engine: Option<&DdEngine>,
+    args: &ConstraintsArgs,
+) -> Result<serde_json::Value> {
+    let members = args
+        .members
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| {
+            SutraError::Internal("ack-cycle requires members (the cycle's file set)".into())
+        })?;
+    let rationale = args
+        .rationale
+        .as_deref()
+        .ok_or_else(|| SutraError::Internal("ack-cycle requires rationale".into()))?;
+    let acked_by = args
+        .acked_by
+        .as_deref()
+        .ok_or_else(|| SutraError::Internal("ack-cycle requires acked_by".into()))?;
+
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    let fingerprint = check::cycle_fingerprint(&refs);
+
+    // Re-verify: the file-set must name a cycle the live report actually shows, so
+    // a wrong or stale set cannot strand an inert ack. The finding also carries the
+    // cycle's constraint identity (an owned rule id, or the reserved builtin).
+    let registry = crate::parser::adapter::default_registry();
+    let outcome = check::evaluate(
+        &FactsSource::DdBacked { db, dd_engine },
+        workspace_root,
+        EvalScope::Workspace,
+        &registry,
+    )?;
+    let finding = outcome
+        .active
+        .iter()
+        .find(|f| f.constraint_kind == "no_cycles" && f.snippet.as_deref() == Some(&fingerprint))
+        .ok_or_else(|| {
+            SutraError::Internal(format!(
+                "no active import cycle matches [{fingerprint}] — pass the exact member set \
+                 from the violations report (an already-acked or waived cycle won't match)"
+            ))
+        })?;
+
+    // An owned cycle keys by its rule name (a nameless owned rule is rejected, as
+    // for any ack — sutra/310); an un-owned cycle keys by the reserved builtin name,
+    // the one sanctioned id-keyed entry (resolved by the carve-out in resolve_accepted).
+    let key = if finding.constraint_id.as_ref() == check::BUILTIN_CYCLES_ID {
+        check::BUILTIN_CYCLES_ID.to_string()
+    } else {
+        require_named_constraint(
+            finding.constraint_id.as_ref(),
+            finding.constraint_name.as_deref(),
+        )?
+    };
+    // The ack's storage bucket is the cycle's lexically first member — identical to
+    // the finding's `from_path` (the matched fingerprint proves the sets are equal),
+    // computed from `refs` so no owned data is cloned out of the borrowed finding.
+    let file = refs.iter().copied().min().unwrap_or("").to_string();
+    let result = json!({
+        "acked_cycle": &key,
+        "constraint_id": finding.constraint_id.as_ref(),
+        "file": &file,
+        "members": &fingerprint,
+    });
+
+    accepted::migrate_db_to_file(db, workspace_root)?;
+    accepted::upsert_ack(
+        workspace_root,
+        AckEntry {
+            constraint: key,
+            file,
+            symbol: None,
+            snippet: Some(fingerprint),
+            count: 1,
+            rationale: Some(rationale.to_string()),
+            by: acked_by.to_string(),
+        },
+    )?;
+    let mut rules_loaded = rules::load_rules(workspace_root)?;
+    let (all_constraints, _errors) = rules_loaded.all_constraints();
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
+
+    Ok(result)
+}
+
+/// Revoke a cycle ack by its file-set. Mirrors `ack-cycle`: canonicalize the
+/// members to the same fingerprint, read the stored entry's constraint key from the
+/// file (an owned rule's name or the reserved builtin), and remove by content key —
+/// so removal works regardless of ownership without the operator naming the
+/// constraint. The file is the source of truth, read directly.
+fn handle_unack_cycle(
+    db: &Db,
+    workspace_root: &Path,
+    args: &ConstraintsArgs,
+) -> Result<serde_json::Value> {
+    let members = args
+        .members
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| {
+            SutraError::Internal("unack-cycle requires members (the cycle's file set)".into())
+        })?;
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    let fingerprint = check::cycle_fingerprint(&refs);
+    // The ack's storage bucket is the cycle's lexically first member — the same
+    // `from_path` the finding carries and `ack-cycle` wrote under.
+    let file = refs.iter().copied().min().unwrap_or("").to_string();
+
+    // Seed any legacy DB-only rows first (hazard 1), then read the entry to recover
+    // its constraint key verbatim so removal matches an owned or builtin cycle alike.
+    accepted::migrate_db_to_file(db, workspace_root)?;
+    let existing = accepted::load_accepted_file(workspace_root)?;
+    let key: &str = existing
+        .acks
+        .iter()
+        .find(|a| {
+            a.file == file && a.symbol.is_none() && a.snippet.as_deref() == Some(&fingerprint)
+        })
+        .map(|a| a.constraint.as_str())
+        .ok_or_else(|| {
+            SutraError::Internal(format!("no cycle ack matches [{fingerprint}] on {file}"))
+        })?;
+
+    let removed = accepted::remove_ack(workspace_root, key, &file, None, Some(&fingerprint))?;
+    if !removed {
+        return Err(SutraError::Internal(format!(
+            "no cycle ack matches [{fingerprint}] on {file}"
+        )));
+    }
+    let mut rules_loaded = rules::load_rules(workspace_root)?;
+    let (all_constraints, _errors) = rules_loaded.all_constraints();
+    accepted::ensure_cache_fresh(db, workspace_root, &all_constraints)?;
+
+    Ok(json!({ "revoked_cycle_ack": key, "file": file, "members": fingerprint }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +1143,176 @@ scope = "src/"
         );
     }
 
+    // --- Cycle acks by file-set (sutra/360) ---
+
+    /// Seed a workspace whose `.sutra/rules.toml` is `rule` and whose import graph
+    /// holds a production 2-cycle `src/a.rs <-> src/b.rs` (kind "use", so neither
+    /// test-edge nor module-tree narrowing removes it).
+    fn cycle_workspace(rule: &str) -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+        let rules_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("rules.toml"), rule).unwrap();
+        for (p, h) in [("src/a.rs", "h1"), ("src/b.rs", "h2")] {
+            db.upsert_file(p, "rust", h, 10, true).unwrap();
+        }
+        let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+        let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+        db.insert_import(fa.id, "src/b.rs", Some(fb.id), 1, "use", None)
+            .unwrap();
+        db.insert_import(fb.id, "src/a.rs", Some(fa.id), 1, "use", None)
+            .unwrap();
+        (dir, db)
+    }
+
+    fn active_cycle_count(v: &serde_json::Value) -> usize {
+        v["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["constraint_kind"] == "no_cycles")
+            .count()
+    }
+
+    fn cycle_finding(v: &serde_json::Value) -> Option<&serde_json::Value> {
+        v["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["constraint_kind"] == "no_cycles")
+    }
+
+    /// An un-owned cycle (no `no_cycles` rule covers it) is stamped `builtin:cycles`
+    /// and has no name to waive — yet it can be acked by its file-set, drops off the
+    /// report, persists to accepted.toml (survives a fresh evaluation that
+    /// re-projects from the file), and is fully reversible with `unack-cycle`.
+    #[test]
+    fn unowned_cycle_ackable_by_file_set_persists_and_unack_restores() {
+        let (dir, db) = cycle_workspace("");
+
+        let before = handle_violations(&db, dir.path(), None).unwrap();
+        let cyc = cycle_finding(&before).expect("un-owned cycle reported");
+        assert_eq!(cyc["constraint_id"], "builtin:cycles");
+        assert_eq!(cyc["snippet"], "src/a.rs -> src/b.rs");
+
+        // A bogus set must not seed a phantom ack — the re-verify guard rejects it.
+        let bogus = ConstraintsArgs {
+            action: "ack-cycle".into(),
+            members: Some(vec!["src/a.rs".into(), "src/nope.rs".into()]),
+            rationale: Some("x".into()),
+            acked_by: Some("josh".into()),
+            ..blank_args()
+        };
+        assert!(handle_ack_cycle(&db, dir.path(), None, &bogus).is_err());
+
+        // Ack by file-set, members in reverse order to prove set (not path) identity.
+        let ack = ConstraintsArgs {
+            action: "ack-cycle".into(),
+            members: Some(vec!["src/b.rs".into(), "src/a.rs".into()]),
+            rationale: Some("reviewed: idiomatic re-export cycle".into()),
+            acked_by: Some("josh".into()),
+            ..blank_args()
+        };
+        let out = handle_ack_cycle(&db, dir.path(), None, &ack).unwrap();
+        assert_eq!(out["acked_cycle"], "builtin:cycles");
+        assert_eq!(out["members"], "src/a.rs -> src/b.rs");
+        assert_eq!(out["file"], "src/a.rs");
+
+        // Persisted to the file as the reserved builtin key (the sole id-keyed entry).
+        let onfile = accepted::load_accepted_file(dir.path()).unwrap();
+        assert_eq!(onfile.acks.len(), 1);
+        assert_eq!(onfile.acks[0].constraint, "builtin:cycles");
+        assert_eq!(
+            onfile.acks[0].snippet.as_deref(),
+            Some("src/a.rs -> src/b.rs")
+        );
+
+        let after = handle_violations(&db, dir.path(), None).unwrap();
+        assert_eq!(
+            active_cycle_count(&after),
+            0,
+            "acked cycle drops off report"
+        );
+        assert_eq!(
+            after["acknowledged"].as_array().unwrap().len(),
+            1,
+            "ack state surfaced, not silent"
+        );
+
+        // Reverse it: the cycle comes back.
+        let unack = ConstraintsArgs {
+            action: "unack-cycle".into(),
+            members: Some(vec!["src/a.rs".into(), "src/b.rs".into()]),
+            ..blank_args()
+        };
+        handle_unack_cycle(&db, dir.path(), &unack).unwrap();
+        let restored = handle_violations(&db, dir.path(), None).unwrap();
+        assert_eq!(active_cycle_count(&restored), 1, "unack restores the cycle");
+    }
+
+    /// A cycle's identity is its file *set*: growing the SCC to a new member yields
+    /// a different fingerprint, so an ack of the old set no longer cancels it and it
+    /// re-surfaces (the whole point over a leaky single-path key, sutra/359).
+    #[test]
+    fn reshaped_cycle_resurfaces_past_an_ack() {
+        let (dir, db) = cycle_workspace("");
+
+        let ack = ConstraintsArgs {
+            action: "ack-cycle".into(),
+            members: Some(vec!["src/a.rs".into(), "src/b.rs".into()]),
+            rationale: Some("reviewed".into()),
+            acked_by: Some("josh".into()),
+            ..blank_args()
+        };
+        handle_ack_cycle(&db, dir.path(), None, &ack).unwrap();
+        assert_eq!(
+            active_cycle_count(&handle_violations(&db, dir.path(), None).unwrap()),
+            0
+        );
+
+        // Grow the SCC to {a, b, c}: b -> c -> a closes a larger loop.
+        db.upsert_file("src/c.rs", "rust", "h3", 10, true).unwrap();
+        let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+        let fb = db.file_by_path("src/b.rs").unwrap().unwrap();
+        let fc = db.file_by_path("src/c.rs").unwrap().unwrap();
+        db.insert_import(fb.id, "src/c.rs", Some(fc.id), 2, "use", None)
+            .unwrap();
+        db.insert_import(fc.id, "src/a.rs", Some(fa.id), 2, "use", None)
+            .unwrap();
+
+        let reshaped = handle_violations(&db, dir.path(), None).unwrap();
+        let rc = cycle_finding(&reshaped).expect("reshaped cycle re-surfaces");
+        assert_eq!(rc["snippet"], "src/a.rs -> src/b.rs -> src/c.rs");
+        assert_eq!(active_cycle_count(&reshaped), 1);
+    }
+
+    /// A cycle fully inside an authored, named `no_cycles` rule was only *waivable*
+    /// before (leaky from_path); now it is ackable by file-set too, keyed by the
+    /// rule's name.
+    #[test]
+    fn owned_named_cycle_ackable_by_file_set() {
+        let rule = "[[constraint]]\nkind = \"no_cycles\"\nname = \"no-module-cycles\"\n";
+        let (dir, db) = cycle_workspace(rule);
+
+        let before = handle_violations(&db, dir.path(), None).unwrap();
+        let cyc = cycle_finding(&before).expect("owned cycle reported");
+        assert_ne!(cyc["constraint_id"], "builtin:cycles", "owned by the rule");
+
+        let ack = ConstraintsArgs {
+            action: "ack-cycle".into(),
+            members: Some(vec!["src/a.rs".into(), "src/b.rs".into()]),
+            rationale: Some("reviewed".into()),
+            acked_by: Some("josh".into()),
+            ..blank_args()
+        };
+        let out = handle_ack_cycle(&db, dir.path(), None, &ack).unwrap();
+        assert_eq!(out["acked_cycle"], "no-module-cycles");
+
+        let after = handle_violations(&db, dir.path(), None).unwrap();
+        assert_eq!(active_cycle_count(&after), 0);
+    }
+
     /// Default-filled args so tests set only the fields they exercise.
     fn blank_args() -> ConstraintsArgs {
         ConstraintsArgs {
@@ -1002,6 +1328,7 @@ scope = "src/"
             line: None,
             snippet: None,
             scope: None,
+            members: None,
         }
     }
 }

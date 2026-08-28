@@ -15,6 +15,26 @@ use crate::rules::{
 };
 use crate::waivers::{self, Waived};
 
+/// Synthetic constraint id stamped on an import cycle that no authored `no_cycles`
+/// rule covers. Doubles as the reserved `accepted.toml` name that
+/// `resolve_accepted` recognizes so an un-owned cycle can carry a file-set ack
+/// without a rules.toml entry — the ONE id-keyed carve-out (sutra/360). Every
+/// other nameless acceptance is still rejected (sutra/310).
+pub const BUILTIN_CYCLES_ID: &str = "builtin:cycles";
+
+/// Canonical, reparse-stable fingerprint of an import cycle: its member paths
+/// sorted lexically and joined. A cycle's identity is its *set* of files, not any
+/// single member, so the fingerprint is order-insensitive and survives file-id
+/// reminting (unlike the id-sorted node order, sutra/297). Used both where a
+/// cycle finding is stamped (`snippet`, the ack `MatchKey` content part) and in
+/// the `ack-cycle` write path, so both sides key a cycle identically.
+pub fn cycle_fingerprint(members: &[&str]) -> String {
+    let mut m: Vec<&str> = members.to_vec();
+    m.sort_unstable();
+    m.dedup();
+    m.join(" -> ")
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutcome {
     pub active: Vec<ConstraintFinding>,
@@ -109,13 +129,15 @@ fn test_directed_ids(constraints: &[Constraint]) -> HashSet<&str> {
         .collect()
 }
 
-/// Subtract report-only instance acks from `forbidden_pattern` active findings
-/// (sutra/305). Acks are honored ONLY here on the report path — never by the
-/// guard — so a specific examined clone can be acknowledged while its siblings
-/// and any future addition stay governed. Count-aware via the shared
+/// Subtract report-only instance acks from `forbidden_pattern` and `no_cycles`
+/// active findings (sutra/305, sutra/360). Acks are honored ONLY here on the
+/// report path — never by the guard — so a specific examined clone or a known-good
+/// import cycle can be acknowledged while its siblings, any future addition, and
+/// any reshaped cycle stay governed. Count-aware via the shared
 /// [`super::patterns::subtract_multiset`]: an ack of N cancels N matches of that
-/// content key in that file, and a surplus (e.g. a new byte-identical clone)
-/// still surfaces. Non-pattern findings pass through untouched.
+/// content key in that file, and a surplus (e.g. a new byte-identical clone, or a
+/// cycle that gained a member) still surfaces. Every other kind is waive-only and
+/// passes through untouched.
 ///
 /// Only reachable from the DD-backed (`evaluate_dd`) report path; the guard's
 /// `RawConn` evaluation never calls it, which is what keeps acks off the
@@ -126,18 +148,26 @@ fn apply_instance_acks(
 ) -> Result<Vec<ConstraintFinding>> {
     use super::patterns::{self, MatchKey};
 
-    let (mut pattern_findings, mut kept): (Vec<_>, Vec<_>) = active
-        .into_iter()
-        .partition(|f| f.constraint_kind.as_str() == "forbidden_pattern");
-    if pattern_findings.is_empty() {
+    // Both forbidden_pattern and no_cycles carry a content fingerprint in
+    // `snippet` (a pattern's matched line; a cycle's sorted file-set, sutra/360),
+    // so both are cancellable by the same content-keyed subtraction. Every other
+    // kind is waive-only and passes through untouched.
+    let (mut ackable, mut kept): (Vec<_>, Vec<_>) = active.into_iter().partition(|f| {
+        matches!(
+            f.constraint_kind.as_str(),
+            "forbidden_pattern" | "no_cycles"
+        )
+    });
+    if ackable.is_empty() {
         return Ok(kept);
     }
 
     // Acks are stored per file, so cancel per file: an ack in file A must not
-    // cancel a same-content match in file B. Sort by path and walk contiguous
-    // runs — no owned-key clone needed to group.
-    pattern_findings.sort_by(|a, b| a.from_path.cmp(&b.from_path));
-    let mut remaining = pattern_findings;
+    // cancel a same-content match in file B. A cycle's bucket is its lexically
+    // first member (from_path), which is where its ack is written. Sort by path
+    // and walk contiguous runs — no owned-key clone needed to group.
+    ackable.sort_by(|a, b| a.from_path.cmp(&b.from_path));
+    let mut remaining = ackable;
     while !remaining.is_empty() {
         let run_end = remaining
             .iter()
@@ -574,19 +604,29 @@ fn evaluate_dd(
                         .is_some_and(|&id| cycle_edges.contains(&(id, id)))
             })
             .map(|scc| {
-                let mut ids: Vec<i64> = scc.into_iter().collect();
-                ids.sort_unstable();
-                ids.iter()
+                let mut paths: Vec<&str> = scc
+                    .iter()
                     .filter_map(|id| path_map.get(id).copied())
-                    .collect()
+                    .collect();
+                // Sort by path string, not id: file ids are reminted on every
+                // reparse, so an id order would make the cycle's from_path (the
+                // ack storage bucket) and its fingerprint unstable across sessions
+                // (sutra/297, sutra/360).
+                paths.sort_unstable();
+                paths
             })
             .collect();
 
         for paths in reported {
+            // The cycle's file-set fingerprint (order-insensitive, reparse-stable)
+            // is its ack identity: carried in `snippet`, the `MatchKey` content
+            // part, so `apply_instance_acks` cancels exactly this cycle while a
+            // reshaped one (a member added or removed) re-surfaces (sutra/360).
+            let fingerprint = cycle_fingerprint(&paths);
             findings.push(ConstraintFinding {
                 constraint_id: matched
                     .map(|c| Arc::clone(&c.id))
-                    .unwrap_or_else(|| "builtin:cycles".into()),
+                    .unwrap_or_else(|| BUILTIN_CYCLES_ID.into()),
                 constraint_name: matched.and_then(|c| c.name.clone()),
                 constraint_kind: "no_cycles".into(),
                 // An authored rule keeps its own severity. An *un-owned* cycle —
@@ -601,10 +641,10 @@ fn evaluate_dd(
                 from_path: paths.first().unwrap_or(&"").to_string(),
                 to_path: paths.last().unwrap_or(&"").to_string(),
                 component_context: None,
-                detail: format!("import cycle: {}", paths.join(" -> ")),
+                detail: format!("import cycle: {fingerprint}"),
                 delta: FindingDelta::Unknown,
                 line: None,
-                snippet: None,
+                snippet: Some(fingerprint),
                 enclosing_symbol: None,
             });
         }

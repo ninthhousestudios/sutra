@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-08-08 (sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
+Last updated: 2026-08-28 (sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -433,6 +433,8 @@ All write actions follow the same pattern:
 | `baseline` | `accepted::upsert_ack` (per content key) | `(constraint, file, symbol, snippet)` |
 | `ack` | `accepted::upsert_ack` (single instance) | `(constraint, file, symbol, snippet)` |
 | `unack` | `accepted::remove_ack` | `(constraint, file, symbol, snippet)` |
+| `ack-cycle` | `accepted::upsert_ack` (one cycle) | `(constraint, file, snippet=file-set)` |
+| `unack-cycle` | `accepted::remove_ack` | `(constraint, file, snippet=file-set)` |
 
 `migrate_db_to_file` runs first in each — so any legacy DB-only rows are
 seeded before the new entry is appended; skip it and an absent file would be
@@ -454,6 +456,59 @@ partitioning into projectable rows (`AcceptedLoad.waivers` + `.acks`) and
 
 Warnings are surfaced on every report surface (`accepted_warnings` field) and
 via the `violations` tool output, never silently swallowed.
+
+## Cycle acks by file-set (sutra/360)
+
+An import cycle is accepted the same content-keyed way a `forbidden_pattern`
+clone is — reusing the ack machinery whole rather than a parallel path. The
+cycle's identity is its **sorted file-set**, and that set rides in the finding's
+`snippet` (the `MatchKey` content part), so `apply_instance_acks` cancels exactly
+that cycle while a reshaped one re-surfaces. sutra/359 first *demoted* un-owned
+cycles from Blocking to Advisory (removing the phantom gate); this is the
+per-instance acceptance lever that demotion deferred.
+
+- **Fingerprint.** `check::cycle_fingerprint(&[&str])` sorts the members
+  lexically, dedups, and joins with `" -> "`. Lexical (not id) order is
+  load-bearing: file ids are reminted on every reparse (sutra/297), so an id
+  order would make both the ack's storage bucket and the fingerprint unstable
+  across sessions. The cycle finding sets `snippet = Some(fingerprint)` and
+  `from_path`/`to_path` to the lexically first/last member (the ack bucket).
+- **Ackable kinds.** `apply_instance_acks` partitions on
+  `forbidden_pattern | no_cycles` (was pattern-only). Every other kind is
+  waive-only and passes through untouched. Count-awareness is inherited but
+  trivial for a cycle (a given file-set is one instance, `count = 1`); a member
+  added or removed changes the set → a key miss → the cycle re-surfaces. This
+  covers both an **un-owned** cycle (`constraint_id = builtin:cycles`) and one
+  **owned** by a named `no_cycles` rule — the latter was previously only
+  *waivable* (leaky from_path), never ackable.
+- **Reserved `builtin:cycles` carve-out.** An un-owned cycle has no rules.toml
+  entry, so its ack cannot resolve by name. `resolve_accepted`'s **ack branch**
+  recognizes the reserved name `builtin:cycles` and projects it against the
+  synthetic id directly. This is the **only** id-keyed acceptance — every other
+  nameless ref still warns Unknown, so sutra/310's ban on general id-keyed
+  entries holds. Deliberately **ack-only**: the waiver branch stays name-pure, so
+  an un-owned cycle can never carry a leaky, guard-honored from_path waiver.
+- **Write path.** `ack-cycle` takes `members` (the file set, order-insensitive),
+  re-verifies it against the live report (a typo'd/stale set is rejected, not
+  stranded as a phantom ack), reads the owned/un-owned constraint identity off
+  the matching finding, and upserts `[[ack]] constraint = <name|builtin:cycles>,
+  file = <lex-first member>, snippet = <fingerprint>, count = 1`. `unack-cycle`
+  mirrors it, recovering the stored constraint key from the file so removal works
+  for owned and builtin alike without the operator naming the constraint. A
+  nameless *owned* `no_cycles` rule is still rejected (`require_named_constraint`),
+  same as any ack.
+
+`[[ack]]` for a cycle in `.sutra/accepted.toml`:
+
+```toml
+[[ack]]
+constraint = "builtin:cycles"          # or the named no_cycles rule
+file = "src/a.rs"                       # lexically first member (the bucket)
+snippet = "src/a.rs -> src/b.rs"        # the sorted file-set — the identity
+count = 1
+rationale = "reviewed: idiomatic re-export cycle"
+by = "josh"
+```
 
 ## TOML format (.sutra/rules.toml)
 
@@ -659,10 +714,15 @@ severity=blocking. Deduplicates by constraint ID (first-seen wins).
 
 ## Test locations
 
-- Accepted.toml: `#[cfg(test)]` in `src/constraints/accepted.rs` (8 tests —
+- Accepted.toml: `#[cfg(test)]` in `src/constraints/accepted.rs` (9 tests —
   roundtrip, absent-file, malformed-file, unknown-constraint warning,
   cache freshness + idempotency, edited-file reprojects, guard-resolution
-  matches server, upsert-replaces-not-appends)
+  matches server, upsert-replaces-not-appends, builtin:cycles carve-out resolves
+  while other nameless refs still warn)
+- Cycle acks by file-set (sutra/360): `#[cfg(test)]` in `src/tools/constraints.rs`
+  (3 tests — un-owned cycle ackable + persists + unack restores + phantom-set
+  rejected, reshaped cycle re-surfaces past an ack, owned named cycle ackable by
+  file-set)
 - Unit tests: `#[cfg(test)]` in `src/rules.rs` (22 tests — parsing, identity, defaults, errors)
 - Integration tests: `tests/constraints-test.rs` (27 tests — cycles, blast radius,
   forbidden deps ad-hoc, maintained violations, eviction/rewarm)
