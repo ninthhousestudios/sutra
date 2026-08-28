@@ -589,7 +589,14 @@ fn evaluate_dd(
                     .unwrap_or_else(|| "builtin:cycles".into()),
                 constraint_name: matched.and_then(|c| c.name.clone()),
                 constraint_kind: "no_cycles".into(),
-                severity: matched.map(|c| c.severity).unwrap_or(Severity::Blocking),
+                // An authored rule keeps its own severity. An *un-owned* cycle —
+                // no `no_cycles` rule covers it — falls back to Advisory, not
+                // Blocking: Blocking is reserved for cycles you declared you care
+                // about, and those carry a name and are already waivable. A
+                // rule-less, name-less builtin finding has no suppression lever
+                // (sutra/359), so blocking on it strands the operator. It still
+                // surfaces as the safety-net signal; it just no longer gates.
+                severity: matched.map(|c| c.severity).unwrap_or(Severity::Advisory),
                 provenance: matched.and_then(|c| c.provenance.clone()),
                 from_path: paths.first().unwrap_or(&"").to_string(),
                 to_path: paths.last().unwrap_or(&"").to_string(),

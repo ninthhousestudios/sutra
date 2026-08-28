@@ -1247,6 +1247,9 @@ scope = "src/**"
     assert_eq!(cycle_findings.len(), 1);
     assert_eq!(cycle_findings[0].constraint_id.as_ref(), "builtin:cycles");
     assert!(cycle_findings[0].constraint_name.is_none());
+    // An un-owned cycle is Advisory, never Blocking: it has no name and thus no
+    // suppression lever, so gating on it strands the operator (sutra/359).
+    assert_eq!(cycle_findings[0].severity, sutra::rules::Severity::Advisory);
 }
 
 /// An idiomatic `mod.rs` re-export module: the parent declares its child with

@@ -357,7 +357,8 @@ fn constraint_violations_appear_in_output() {
                 constraint_id: "builtin:cycles".into(),
                 constraint_name: None,
                 constraint_kind: "no_cycles".into(),
-                severity: Severity::Blocking,
+                // Un-owned builtin cycles are Advisory, not Blocking (sutra/359).
+                severity: Severity::Advisory,
                 provenance: None,
                 from_path: "src/core.rs".into(),
                 to_path: "src/helper.rs".into(),
