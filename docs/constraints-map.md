@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-08-28 (sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
+Last updated: 2026-08-28 (sutra/361: accepted.toml is tool-owned, `notes` field for durable context — see "Tool-owned file & notes"; sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -369,6 +369,42 @@ count = 2                           # how many matches of this key are accepted
 rationale = "examined: unavoidable" # optional for baseline, required for ack
 by = "josh"
 ```
+
+### Tool-owned file & `notes` (sutra/361)
+
+`accepted.toml` is **tool-owned**, not a free-form hand-authored document. Every
+write action (waive / unwaive / ack / unack / baseline / ack-cycle) is a
+read-modify-write: `load_accepted_file` → mutate the `AcceptedFile` struct →
+`write_accepted_file`, which **canonically re-sorts** the `[[waiver]]`/`[[ack]]`
+arrays (by `waiver_key`/`ack_key`) and re-serializes via serde. Two consequences
+of the serde round-trip:
+
+- Raw `#` comments are **not preserved** — serde carries no comment nodes, so any
+  hand-authored comment is dropped on the next mutation. This is the accepted
+  contract, not a bug (the alternative, a `toml_edit` document-tree RMW, was
+  rejected: it fights the canonical sort and requires reworking every mutator off
+  the typed model).
+- Entry **ordering** is not preserved either — it is machine-canonicalized for
+  minimal, review-legible diffs.
+
+For durable, human-authored context (e.g. how a whole waiver set was triaged —
+the set-level rationale that has no single owning entry), use the top-level
+`notes` field. It is a list of lines, preserved verbatim across every write, and
+serializes above the tables:
+
+```toml
+notes = [
+    "no-clone-driven-dev waivers below triaged for vidya/52:",
+    "  generated code — clone is intrinsic, not a smell",
+]
+
+[[waiver]]
+# ...
+```
+
+`notes` is pure file-level documentation: it is **never** projected to the DB
+cache and never consulted by `resolve_accepted` / the guard. Per-entry rationale
+still belongs in the entry's `rationale` field.
 
 Entries are keyed by constraint **name** (resolved to an id at load via
 `resolve_ref`), not by the blake3 id. A constraint with no name can only be

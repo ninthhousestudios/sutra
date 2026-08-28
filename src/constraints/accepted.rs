@@ -47,6 +47,15 @@ pub fn accepted_path(root: &Path) -> PathBuf {
 /// one file so a waiver and its sibling acks review side-by-side.
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AcceptedFile {
+    /// Free-form, human-authored notes, one line per element, preserved verbatim
+    /// across every tool write (sutra/361). This file is tool-owned: every mutation
+    /// re-serializes the struct and canonically re-sorts the arrays, so raw `#`
+    /// comments do NOT survive — put durable set-level context (e.g. how a waiver
+    /// set was triaged) here instead. Declared first so it serializes above the
+    /// `[[waiver]]`/`[[ack]]` tables (a top-level scalar after a table array is not
+    /// valid TOML). Never projected to the DB cache — pure file-level documentation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// Guard-honored, coarse suppression (also removes the finding from reports).
     #[serde(default, rename = "waiver", skip_serializing_if = "Vec::is_empty")]
     pub waivers: Vec<WaiverEntry>,
@@ -650,6 +659,47 @@ mod tests {
         assert_eq!(back, f);
     }
 
+    /// sutra/361: `notes` survive a mutation (they ride the serde round-trip), but
+    /// raw `#` comments do not — accepted.toml is a tool-owned, canonically-sorted
+    /// file. This asserts the documented stripping behavior alongside the fix.
+    #[test]
+    fn notes_survive_mutation_but_raw_comments_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = AcceptedFile::default();
+        f.notes = vec![
+            "no-clone-driven-dev waivers below triaged for vidya/52:".to_string(),
+            "  generated code — clone is intrinsic, not a smell".to_string(),
+        ];
+        f.waivers.push(waiver("no-loops", "src/a.rs"));
+        write_accepted_file(dir.path(), &mut f).unwrap();
+
+        // A hand-editor drops in a raw TOML comment the tool cannot preserve.
+        let path = accepted_path(dir.path());
+        let seeded = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            format!("# hand-authored header, will not survive\n{seeded}"),
+        )
+        .unwrap();
+
+        // Any mutation triggers the notes-preserving, comment-lossy RMW.
+        upsert_waiver(dir.path(), waiver("no-loops", "src/b.rs")).unwrap();
+
+        let back = load_accepted_file(dir.path()).unwrap();
+        assert_eq!(back.notes, f.notes, "notes survive a mutation");
+        assert_eq!(back.waivers.len(), 2, "the new waiver also landed");
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("hand-authored header"),
+            "raw # comments are not preserved (accepted.toml is tool-owned): {after}"
+        );
+        assert!(
+            after.contains("no-clone-driven-dev"),
+            "notes render back into the file: {after}"
+        );
+    }
+
     #[test]
     fn absent_file_is_empty_not_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -759,6 +809,7 @@ mod tests {
     fn builtin_cycles_ack_resolves_via_carveout_others_still_warn() {
         let live = one_named("some-rule"); // no live constraint is named builtin:cycles
         let file = AcceptedFile {
+            notes: vec![],
             waivers: vec![],
             acks: vec![
                 AckEntry {
