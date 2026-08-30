@@ -10,7 +10,7 @@ use crate::db::Db;
 pub struct DepsArgs {
     #[serde(default)]
     pub workspace: String,
-    #[serde(default)]
+    #[serde(default, alias = "file")]
     pub path: Option<String>,
     #[serde(default)]
     pub depth: Option<usize>,

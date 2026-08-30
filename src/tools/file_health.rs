@@ -16,7 +16,7 @@ use super::ToolContext;
 pub struct FileHealthArgs {
     #[serde(default)]
     pub workspace: String,
-    #[serde(default)]
+    #[serde(default, alias = "file")]
     pub path: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,

@@ -21,7 +21,7 @@ pub struct TrendArgs {
     pub to: Option<String>,
     /// File path for per-file historical health query.
     /// When set, returns a time series instead of a comparison.
-    #[serde(default)]
+    #[serde(default, alias = "file")]
     pub path: Option<String>,
     /// Max snapshots for per-file history (default 10).
     #[serde(default)]

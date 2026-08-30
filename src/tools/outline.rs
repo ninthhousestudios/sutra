@@ -8,6 +8,7 @@ use crate::db::Db;
 pub struct OutlineArgs {
     #[serde(default)]
     pub workspace: String,
+    #[serde(alias = "file")]
     pub path: String,
     /// If true, return only structural fields. Default is false (full detail).
     #[serde(default)]
@@ -66,4 +67,21 @@ pub fn handle(db: &Db, path: &str, compact: bool) -> Result<serde_json::Value> {
         "symbols": items,
         "total": items.len(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutlineArgs;
+
+    #[test]
+    fn file_alias_deserializes_to_path() {
+        // Agents intuitively reach for `file:`; the serde alias must accept it.
+        let args: OutlineArgs =
+            serde_json::from_value(serde_json::json!({ "file": "src/lib.rs" })).unwrap();
+        assert_eq!(args.path, "src/lib.rs");
+
+        let args: OutlineArgs =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs" })).unwrap();
+        assert_eq!(args.path, "src/lib.rs");
+    }
 }

@@ -10,6 +10,7 @@ pub struct CochangeArgs {
     #[serde(default)]
     pub workspace: String,
     /// File path (file granularity) or qualified symbol name (function granularity).
+    #[serde(alias = "file")]
     pub path: String,
     #[serde(default)]
     pub threshold: Option<f64>,

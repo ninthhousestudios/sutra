@@ -22,7 +22,7 @@ pub struct LessonsArgs {
     pub symbol: Option<String>,
     /// Filter to lessons anchored to this exact file path — the retrieval path
     /// for the file-anchored advisory the edit guard emits.
-    #[serde(default)]
+    #[serde(default, alias = "path")]
     pub file: Option<String>,
     /// Filter to verified lessons only
     #[serde(default)]
