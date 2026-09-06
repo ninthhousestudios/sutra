@@ -124,7 +124,7 @@ fn test_map_contract() {
 #[test]
 fn test_outline_contract() {
     let (_dir, db) = setup_test_db();
-    let result = outline::handle(&db, "src/main.rs", false).unwrap();
+    let result = outline::handle(&db, "src/main.rs", outline::OutlineDetail::Signatures).unwrap();
 
     assert!(result["path"].is_string(), "'path' must be a string");
     let symbols = result["symbols"]
@@ -264,7 +264,11 @@ fn test_find_not_found() {
 #[test]
 fn test_outline_not_found() {
     let (_dir, db) = setup_test_db();
-    let result = outline::handle(&db, "src/does_not_exist.rs", true);
+    let result = outline::handle(
+        &db,
+        "src/does_not_exist.rs",
+        outline::OutlineDetail::Minimal,
+    );
 
     assert!(
         result.is_err(),

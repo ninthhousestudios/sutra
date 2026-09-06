@@ -69,7 +69,8 @@ async fn test_register_parse_query_cycle() {
     assert!(!matches.is_empty(), "find should locate 'hello'");
 
     // Outline one of the parsed files — path is relative to workspace root.
-    let outline_result = outline::handle(&db, "src/lib.rs", true).unwrap();
+    let outline_result =
+        outline::handle(&db, "src/lib.rs", outline::OutlineDetail::Minimal).unwrap();
     let symbols = outline_result["symbols"].as_array().unwrap();
     assert!(
         !symbols.is_empty(),

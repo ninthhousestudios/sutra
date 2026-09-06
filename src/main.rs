@@ -87,6 +87,12 @@ enum Commands {
         workspace: String,
         /// File path (relative to workspace root)
         path: String,
+        /// Structural fields only — drop signatures (leanest)
+        #[arg(long)]
+        compact: bool,
+        /// Add docstrings, complexity metrics, short_name, and parent ids
+        #[arg(long)]
+        verbose: bool,
     },
     /// Blast radius analysis for a symbol (JSON output)
     Impact {
@@ -272,11 +278,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Outline {
             workspace: ws_id,
             path,
+            compact,
+            verbose,
         } => {
             let ws_config = load_validated_workspaces(&config)?;
             let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
             let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
-            let result = sutra::tools::outline::handle(&db, &path, false)?;
+            let detail =
+                sutra::tools::outline::OutlineDetail::from_flags(Some(compact), Some(verbose));
+            let result = sutra::tools::outline::handle(&db, &path, detail)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Impact {

@@ -409,16 +409,18 @@ impl SutraServer {
 
     #[tool(
         description = "File symbol table of contents — all symbols in a file with \
-        qualified names, kinds, line ranges, and signatures."
+        qualified names, kinds, line ranges, and signatures. Default tier includes \
+        signatures. Pass compact=true for structural fields only (no signatures); \
+        pass verbose=true to add docstrings, complexity metrics, short_name, and \
+        parent ids."
     )]
     pub async fn sutra_outline(
         &self,
         Parameters(args): Parameters<OutlineArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace)?;
-        let compact = args.compact.unwrap_or(false);
-        let result =
-            tools::outline::handle(ctx.db(), &args.path, compact).map_err(sutra_to_rmcp)?;
+        let detail = tools::outline::OutlineDetail::from_flags(args.compact, args.verbose);
+        let result = tools::outline::handle(ctx.db(), &args.path, detail).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 
