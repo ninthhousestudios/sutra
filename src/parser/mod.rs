@@ -44,6 +44,29 @@ pub struct ExtractedSymbol {
     pub language_attrs: Option<String>,
 }
 
+/// Assemble doc-comment lines collected by walking preceding sibling comment
+/// nodes into a single docstring.
+///
+/// Lines arrive in reverse source order (siblings are walked backwards), so
+/// they are reversed to top-to-bottom. Each line's trailing whitespace is
+/// stripped before joining: tree-sitter keeps the trailing newline on a line
+/// comment node's text, and without stripping it every adjacent line pair would
+/// be separated by a blank line (`\n\n`) instead of a single break — doubling
+/// the token cost of every multi-line docstring. Genuinely blank doc lines
+/// (`///` on its own) survive as intentional paragraph breaks. Returns None
+/// when no doc lines were collected.
+pub fn join_doc_lines(mut lines: Vec<String>) -> Option<String> {
+    if lines.is_empty() {
+        return None;
+    }
+    lines.reverse();
+    for line in &mut lines {
+        let len = line.trim_end().len();
+        line.truncate(len);
+    }
+    Some(lines.join("\n"))
+}
+
 pub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {
     let mut out = Vec::new();
     fn walk<'a>(symbols: &'a [ExtractedSymbol], out: &mut Vec<&'a ExtractedSymbol>) {

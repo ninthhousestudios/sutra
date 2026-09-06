@@ -657,12 +657,7 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
         sibling = sib.prev_sibling();
     }
 
-    if doc_lines.is_empty() {
-        None
-    } else {
-        doc_lines.reverse();
-        Some(doc_lines.join("\n"))
-    }
+    crate::parser::join_doc_lines(doc_lines)
 }
 
 fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {

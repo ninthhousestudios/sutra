@@ -868,12 +868,7 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
         break;
     }
 
-    if doc_lines.is_empty() {
-        None
-    } else {
-        doc_lines.reverse();
-        Some(doc_lines.join("\n"))
-    }
+    crate::parser::join_doc_lines(doc_lines)
 }
 
 fn extract_signature(node: Node, src: &[u8], kind: SymbolKind) -> (Option<String>, Option<String>) {
@@ -1394,6 +1389,25 @@ mod tests {
         let adapter = RustAdapter;
         let mut pool = ParserPool::new(Duration::from_secs(5));
         pool.parse_with(&adapter, source, file_path)
+    }
+
+    #[test]
+    fn multiline_docstring_joins_with_single_newline() {
+        // A line comment node's text keeps its trailing newline; joining without
+        // trimming would separate every line with a blank line (`\n\n`) and
+        // double the docstring's token cost. Blank doc lines stay as paragraph
+        // breaks.
+        let src = "/// first line\n/// second line\n///\n/// after a break\nfn foo() {}\n";
+        let result = parse_rust(src, "src/lib.rs").unwrap();
+        let sym = result
+            .symbols
+            .iter()
+            .find(|s| s.short_name == "foo")
+            .expect("foo symbol");
+        assert_eq!(
+            sym.docstring.as_deref(),
+            Some("first line\nsecond line\n\nafter a break")
+        );
     }
 
     #[test]

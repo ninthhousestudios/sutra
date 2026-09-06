@@ -741,12 +741,7 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
         break;
     }
 
-    if doc_lines.is_empty() {
-        None
-    } else {
-        doc_lines.reverse();
-        Some(doc_lines.join("\n"))
-    }
+    crate::parser::join_doc_lines(doc_lines)
 }
 
 /// Build a function/method signature string. Returns (signature, blake3_hash).
