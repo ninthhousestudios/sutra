@@ -101,6 +101,24 @@ enum Commands {
         /// Symbol name
         symbol: String,
     },
+    /// Check changed files for constraint violations (git hook / CI gate).
+    ///
+    /// Evaluates the workspace's rules over a diff scope and exits non-zero on
+    /// any unwaived violation at or above the severity threshold. The workspace
+    /// is resolved from the current directory.
+    Check {
+        /// Diff scope: "staged" (default), "unstaged", "branch", or a commit
+        /// spec (e.g. "HEAD~3..HEAD", "abc123").
+        #[arg(long, default_value = "staged")]
+        diff: String,
+        /// Minimum severity that fails the gate: blocking (default), advisory,
+        /// or informational.
+        #[arg(long, default_value = "blocking")]
+        severity: String,
+        /// Output format: "human" (default) or "json".
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
     /// Manage constraint ratchets (CLI-only, not exposed via MCP)
     #[command(subcommand)]
     Ratchet(RatchetCmd),
@@ -344,6 +362,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sutra::guard::uninstall()?;
             }
         },
+        Commands::Check {
+            diff,
+            severity,
+            format,
+        } => {
+            cmd_check(&config, &diff, &severity, &format)?;
+        }
         Commands::Ratchet(cmd) => {
             cmd_ratchet(&config, cmd)?;
         }
@@ -684,6 +709,58 @@ WantedBy=default.target
         println!("Enabled and started sutra.service");
     }
 
+    Ok(())
+}
+
+fn cmd_check(
+    config: &Config,
+    diff: &str,
+    severity: &str,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let threshold = sutra::rules::Severity::from_str_lossy(severity).ok_or_else(|| {
+        format!("invalid --severity '{severity}' (expected blocking, advisory, or informational)")
+    })?;
+    if !matches!(format, "human" | "json") {
+        return Err(format!("invalid --format '{format}' (expected human or json)").into());
+    }
+
+    let ws_config = load_validated_workspaces(config)?;
+    let cwd = std::env::current_dir()?;
+    let cwd_str = cwd.to_string_lossy();
+    let ws = workspace::resolve_workspace(&ws_config, &cwd_str)?;
+    let db = Db::open_for_workspace(ws, &config.db_dir)?;
+    let ws_root = std::path::Path::new(&ws.root);
+    let registry = sutra::parser::adapter::default_registry();
+
+    // A gate that reads a stale index gives false confidence. Reparse only when
+    // stale (a running server usually keeps it fresh, so this is skipped) — the
+    // forbidden_pattern check reads disk content directly, but new files and
+    // edge-based rules need the index current. Frozen workspaces never auto-reparse.
+    if !ws.frozen {
+        let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
+        let stamp_changed =
+            db.parser_stamp().unwrap_or(None).as_deref() != Some(sutra::parser::PARSER_STAMP);
+        if is_stale || stamp_changed {
+            eprintln!("index stale — reparsing {} before check…", ws.id);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+        }
+    }
+
+    let report = sutra::tools::check::handle(&db, ws_root, diff, threshold, &registry)?;
+
+    match format {
+        "json" => println!(
+            "{}",
+            serde_json::to_string(&sutra::tools::check::to_json(&report))?
+        ),
+        _ => print!("{}", sutra::tools::check::render_human(&report)),
+    }
+
+    if report.failed() {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

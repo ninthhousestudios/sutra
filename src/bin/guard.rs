@@ -424,6 +424,13 @@ fn emit_lessons(
     }
 }
 
+/// Merge-time / CI constraint gate. Delegates to the shared `tools::check`
+/// core (the same evaluation `sutra check` uses) so both entry points gate
+/// identically — including malformed-rules gating, which this path previously
+/// dropped. Kept distinct from `sutra check` only in its call-site policy: a
+/// dependency-light `open_unchecked` (no workspaces.toml), no reparse (reads
+/// the index as-is), and fail-open on error (the caller in `main` maps an Err
+/// to exit 0 — a guard outage must never block a commit).
 fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let project_root = std::env::current_dir()
         .ok()
@@ -434,99 +441,25 @@ fn run_check_constraints(staged: bool) -> Result<bool, Box<dyn std::error::Error
     let db_dir = guard::sutra_db_dir();
     let db = sutra::db::Db::open_unchecked(&ws_id, &db_dir)?;
 
-    let (changed_paths, base_revision) = if staged {
-        (
-            sutra::git::git_diff_staged(&project_root)?,
-            "HEAD".to_string(),
-        )
-    } else {
-        let default_branch = sutra::git::detect_default_branch(&project_root)?;
-        let base = sutra::git::git_merge_base(&project_root, &default_branch)?;
-        let entries = sutra::git::git_diff_files(&project_root, &base, "HEAD")?;
-        let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
-        (paths, base)
-    };
-
-    if changed_paths.is_empty() {
-        println!("{{}}");
-        return Ok(false);
-    }
-
+    let mode = if staged { "staged" } else { "branch" };
     let registry = sutra::parser::adapter::default_registry();
-    let findings = sutra::tools::review::build_findings(
-        &db,
-        &project_root,
-        &changed_paths,
-        &base_revision,
-        None,
-        &registry,
-    )?;
+    let report =
+        sutra::tools::check::handle(&db, &project_root, mode, Severity::Blocking, &registry)?;
 
-    let mut blocking = Vec::new();
-    let mut advisory = Vec::new();
-    let mut informational = Vec::new();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&sutra::tools::check::to_json(&report))?
+    );
 
-    for v in &findings.constraint_violations {
-        let mut entry = serde_json::json!({
-            "constraint_id": v.constraint_id,
-            "constraint_name": v.constraint_name,
-            "kind": v.constraint_kind,
-            "severity": v.severity.as_str(),
-            "from": v.from_path,
-            "to": v.to_path,
-            "detail": v.detail,
-        });
-        if let Some(line) = v.line {
-            entry["line"] = serde_json::json!(line);
-        }
-        if let Some(snippet) = &v.snippet {
-            entry["snippet"] = serde_json::json!(snippet);
-        }
-        match v.severity {
-            Severity::Blocking => blocking.push(entry),
-            Severity::Advisory => advisory.push(entry),
-            _ => informational.push(entry),
-        }
-    }
-
-    let waived: Vec<_> = findings
-        .waived_constraint_violations
-        .iter()
-        .map(|v| {
-            serde_json::json!({
-                "constraint_id": v.finding.constraint_id,
-                "constraint_name": v.finding.constraint_name,
-                "kind": v.finding.constraint_kind,
-                "severity": v.finding.severity.as_str(),
-                "from": v.finding.from_path,
-                "to": v.finding.to_path,
-                "detail": v.finding.detail,
-                "rationale": v.rationale,
-                "waived_by": v.waived_by,
-            })
-        })
-        .collect();
-
-    let has_blocking = !blocking.is_empty();
-
-    let output = serde_json::json!({
-        "blocking": blocking,
-        "advisory": advisory,
-        "informational": informational,
-        "waived": waived,
-        "exit_code": if has_blocking { 1 } else { 0 },
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output)?);
-
-    if has_blocking {
+    if report.failed() {
         eprintln!(
-            "sutra-guard: {} blocking constraint violation(s) found",
-            blocking.len()
+            "sutra-guard: constraint check failed ({} blocking violation(s), {} malformed rule(s))",
+            report.blocking.len(),
+            report.parse_errors.len(),
         );
     }
 
-    Ok(has_blocking)
+    Ok(report.failed())
 }
 
 fn resolve_project_root(

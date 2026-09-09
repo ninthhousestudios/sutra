@@ -71,35 +71,7 @@ pub fn handle(
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
-    let (changed_paths, base_revision, head_revision) = match mode {
-        "staged" => (
-            git::git_diff_staged(workspace_root)?,
-            "HEAD".to_string(),
-            Some(String::new()),
-        ),
-        "unstaged" => (
-            git::git_diff_unstaged(workspace_root)?,
-            "HEAD".to_string(),
-            None,
-        ),
-        "branch" => {
-            let default_branch = git::detect_default_branch(workspace_root)?;
-            let base = git::git_merge_base(workspace_root, &default_branch)?;
-            let entries = git::git_diff_files(workspace_root, &base, "HEAD")?;
-            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
-            (paths, base, Some("HEAD".to_string()))
-        }
-        spec => {
-            let (base, head) = if let Some((a, b)) = spec.split_once("..") {
-                (a.to_string(), b.to_string())
-            } else {
-                (format!("{spec}~1"), spec.to_string())
-            };
-            let entries = git::git_diff_files(workspace_root, &base, &head)?;
-            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
-            (paths, base, Some(head))
-        }
-    };
+    let (changed_paths, base_revision, head_revision) = resolve_diff_scope(workspace_root, mode)?;
 
     let churn = ChurnMap {
         counts: git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?,
@@ -242,6 +214,48 @@ pub fn handle(
         }
     }
     Ok(result)
+}
+
+/// Resolve a diff-mode string to `(changed_paths, base_revision, head_revision)`.
+///
+/// Shared by the review compositor and the `sutra check` CLI gate so both
+/// interpret `"staged"` / `"unstaged"` / `"branch"` / a commit spec identically.
+/// `head_revision` is `Some("")` for staged (the index), `None` for unstaged
+/// (the worktree), and an explicit revision otherwise.
+pub fn resolve_diff_scope(
+    workspace_root: &Path,
+    mode: &str,
+) -> Result<(Vec<String>, String, Option<String>)> {
+    let resolved = match mode {
+        "staged" => (
+            git::git_diff_staged(workspace_root)?,
+            "HEAD".to_string(),
+            Some(String::new()),
+        ),
+        "unstaged" => (
+            git::git_diff_unstaged(workspace_root)?,
+            "HEAD".to_string(),
+            None,
+        ),
+        "branch" => {
+            let default_branch = git::detect_default_branch(workspace_root)?;
+            let base = git::git_merge_base(workspace_root, &default_branch)?;
+            let entries = git::git_diff_files(workspace_root, &base, "HEAD")?;
+            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
+            (paths, base, Some("HEAD".to_string()))
+        }
+        spec => {
+            let (base, head) = if let Some((a, b)) = spec.split_once("..") {
+                (a.to_string(), b.to_string())
+            } else {
+                (format!("{spec}~1"), spec.to_string())
+            };
+            let entries = git::git_diff_files(workspace_root, &base, &head)?;
+            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
+            (paths, base, Some(head))
+        }
+    };
+    Ok(resolved)
 }
 
 fn extract_outgoing_edges(
