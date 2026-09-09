@@ -515,7 +515,19 @@ fn resolve_file_refs(
         })
         .collect();
 
-    let extracted_refs: Vec<parser::ExtractedRef> = file_refs
+    // Carry through refs that were resolved in a prior pass and no longer carry
+    // a call-site name (unresolved_name is cleared on resolution). They point at
+    // unchanged symbols in other files; re-running the resolver on them would
+    // drop them — there is no name left to match — so preserve them verbatim.
+    // Only name-bearing refs are (re)resolved. On a full parse every ref is
+    // freshly extracted with a name, so nothing is carried and behaviour is
+    // unchanged; this only fires on the incremental query path when a caller is
+    // re-resolved without being re-extracted (sutra/378).
+    let (carried, resolvable): (Vec<&crate::db::RefRow>, Vec<&crate::db::RefRow>) = file_refs
+        .iter()
+        .partition(|r| r.target_symbol_id.is_some() && r.unresolved_name.is_none());
+
+    let extracted_refs: Vec<parser::ExtractedRef> = resolvable
         .iter()
         .map(|r| parser::ExtractedRef {
             name: r.unresolved_name.clone().unwrap_or_default(),
@@ -555,7 +567,7 @@ fn resolve_file_refs(
         &language,
     );
 
-    let ref_rows: Vec<ResolvedRefRow<'_>> = resolved
+    let mut ref_rows: Vec<ResolvedRefRow<'_>> = resolved
         .iter()
         .map(|rr| ResolvedRefRow {
             target_symbol_id: rr.target_symbol_id,
@@ -568,6 +580,19 @@ fn resolve_file_refs(
             receiver: rr.original.receiver.as_deref(),
         })
         .collect();
+
+    // Preserve the carried-through resolved rows verbatim (resolution_method is
+    // write-only diagnostic metadata, not read by any query, so it is dropped).
+    ref_rows.extend(carried.iter().map(|r| ResolvedRefRow {
+        target_symbol_id: r.target_symbol_id,
+        unresolved_name: r.unresolved_name.as_deref(),
+        line: r.line,
+        col: r.col,
+        context_kind: r.context_kind.as_str(),
+        resolution_method: None,
+        resolved_local_target: r.resolved_local_target.as_deref(),
+        receiver: r.receiver.as_deref(),
+    }));
 
     db.replace_refs_and_clear_resolution(file_id, &ref_rows)?;
 
@@ -583,6 +608,8 @@ fn resolve_file_refs(
             resolved_count += 1;
         }
     }
+    // Carried refs kept their existing resolution.
+    resolved_count += carried.len() as i64;
 
     Ok((resolved_count, unresolved, skipped))
 }

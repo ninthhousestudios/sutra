@@ -817,6 +817,28 @@ impl Db {
                 params![old_id],
             )?;
 
+            // Detach inbound references from OTHER files before the cascade
+            // delete removes this file's symbols. A resolved ref stores no
+            // call-site name (unresolved_name is cleared on resolution), so
+            // recover it from the target symbol's short_name; nulling the target
+            // keeps the row alive through `refs.target_symbol_id ON DELETE
+            // CASCADE` so post-parse resolution can re-link it to this file's
+            // new symbols. Without this an edit to this file silently drops
+            // resolved inbound edges from unchanged caller files (sutra/378).
+            // SQLite evaluates every SET expression against the pre-update row,
+            // so the COALESCE subquery still sees the old target_symbol_id.
+            conn.execute(
+                "UPDATE refs
+                    SET unresolved_name = COALESCE(
+                            unresolved_name,
+                            (SELECT short_name FROM symbols WHERE symbols.id = refs.target_symbol_id)
+                        ),
+                        target_symbol_id = NULL
+                  WHERE file_id != ?1
+                    AND target_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
+                params![old_id],
+            )?;
+
             let symbol_ids: Vec<i64> = {
                 let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
                 let ids: rusqlite::Result<Vec<i64>> =

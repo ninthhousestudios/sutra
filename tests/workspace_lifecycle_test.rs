@@ -357,6 +357,124 @@ async fn test_incremental_refresh_noop_when_clean() {
     assert_eq!(second.files_walked, 0);
 }
 
+/// Count refs in `caller_file` that resolve to symbol `sym` defined in
+/// `def_file`.
+fn inbound_resolved(db: &Db, def_file: &str, sym: &str, caller_file: &str) -> usize {
+    let def_fid = db.file_by_path(def_file).unwrap().unwrap().id;
+    let sym_id = db
+        .find_symbols_by_file(def_fid)
+        .unwrap()
+        .into_iter()
+        .find(|s| &*s.short_name == sym)
+        .unwrap_or_else(|| panic!("symbol {sym} not found in {def_file}"))
+        .id;
+    let caller_fid = db.file_by_path(caller_file).unwrap().unwrap().id;
+    db.find_refs_to_symbol(sym_id)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.file_id == caller_fid)
+        .count()
+}
+
+/// sutra/378: an incremental reparse of a file must not silently drop resolved
+/// INBOUND references from unchanged caller files. Reparsing the definition file
+/// deletes and re-inserts its symbols (new ids); the caller's resolved ref rows
+/// have no call-site name left (cleared on resolution) and would be cascade-
+/// deleted with no way to reconstruct them. The definition file's replace path
+/// detaches those inbound refs (name recovered from the target symbol) so
+/// post-parse resolution re-links them to the new symbols.
+#[tokio::test]
+async fn test_incremental_refresh_preserves_inbound_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.rs"), "pub fn target_fn() {}\n").unwrap();
+    std::fs::write(src.join("b.rs"), "pub fn caller() { target_fn(); }\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_inbound", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    // Baseline: b.rs's call resolves to a.rs's target_fn.
+    assert_eq!(
+        inbound_resolved(&db, "src/a.rs", "target_fn", "src/b.rs"),
+        1,
+        "baseline: caller must resolve to target_fn"
+    );
+
+    // Edit a.rs (add a sibling symbol; target_fn itself is unchanged) and refresh
+    // ONLY a.rs. b.rs is not re-extracted.
+    std::fs::write(
+        src.join("a.rs"),
+        "pub fn target_fn() {}\npub fn sibling() {}\n",
+    )
+    .unwrap();
+    let snap = refresh(&ws, &db, &config);
+    assert_eq!(snap.files_parsed, 1, "only a.rs is reparsed");
+
+    // The inbound edge from the untouched caller must survive the reparse.
+    assert_eq!(
+        inbound_resolved(&db, "src/a.rs", "target_fn", "src/b.rs"),
+        1,
+        "inbound ref from unchanged b.rs must survive a.rs's incremental reparse"
+    );
+}
+
+/// sutra/378 variant: when the reparse removes the referenced symbol (rename),
+/// the inbound ref must become correctly UNRESOLVED — its row preserved with the
+/// call-site name — never silently dropped and never left pointing at a stale id.
+#[tokio::test]
+async fn test_incremental_refresh_inbound_ref_unresolves_on_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.rs"), "pub fn target_fn() {}\n").unwrap();
+    std::fs::write(src.join("b.rs"), "pub fn caller() { target_fn(); }\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_inbound_rename", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+    assert_eq!(
+        inbound_resolved(&db, "src/a.rs", "target_fn", "src/b.rs"),
+        1
+    );
+
+    // Rename the referenced symbol out from under the caller.
+    std::fs::write(src.join("a.rs"), "pub fn renamed_fn() {}\n").unwrap();
+    refresh(&ws, &db, &config);
+
+    // The caller's ref row is preserved but unresolved — not silently dropped.
+    let caller_fid = db.file_by_path("src/b.rs").unwrap().unwrap().id;
+    let refs = db.find_refs_in_file(caller_fid).unwrap();
+    let call = refs
+        .iter()
+        .find(|r| r.context_kind == "call")
+        .expect("caller's call ref must still exist, not be dropped");
+    assert!(
+        call.target_symbol_id.is_none(),
+        "ref must be unresolved after the target was renamed away"
+    );
+    assert_eq!(
+        call.unresolved_name.as_deref(),
+        Some("target_fn"),
+        "the call-site name must be preserved on the now-unresolved ref"
+    );
+}
+
 /// Not a correctness test — measures query-path refresh latency for a one-file
 /// edit on the sutra repo itself (sutra/363 acceptance criterion 3). Run:
 /// `cargo test --test workspace_lifecycle_test measure_incremental_refresh -- --ignored --nocapture`.
