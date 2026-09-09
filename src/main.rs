@@ -760,9 +760,29 @@ fn cmd_check(
                 );
                 sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
             }
-            // Content drift only: incremental reparse of the drift set.
+            // Content drift only: incremental reparse of the drift set — unless
+            // an active Boundary rule needs component membership. Incremental
+            // refresh row-replaces changed files and the component_membership FK
+            // cascade drops their membership without re-deriving it (that's a
+            // full-parse job), so a Boundary rule would stop seeing the changed
+            // file and silently pass a real violation (sutra/386). Fall back to a
+            // full parse in that case; the common forbidden_pattern-only gate
+            // keeps the fast incremental path.
             (_, Some(drift)) if !drift.is_empty() => {
-                sutra::pipeline::parse_incremental(ws, &db, config, &registry, &drift)?;
+                let needs_components = sutra::rules::load_rules(ws_root)
+                    .map(|mut r| {
+                        sutra::constraints::check::requires_component_facts(&r.all_constraints().0)
+                    })
+                    .unwrap_or(true);
+                if needs_components {
+                    eprintln!(
+                        "component boundary constraints present — full reparse of {} before check…",
+                        ws.id
+                    );
+                    sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+                } else {
+                    sutra::pipeline::parse_incremental(ws, &db, config, &registry, &drift)?;
+                }
             }
             // Clean and stamp current — nothing to do.
             (_, Some(_)) => {}

@@ -1642,6 +1642,123 @@ severity = "blocking"
     assert_eq!(pattern_hits(&worktree), 1);
 }
 
+/// The mechanism behind sutra/386: an incremental refresh row-replaces a changed
+/// file, and the `component_membership` FK cascade drops its membership without
+/// re-deriving it — so a `Boundary` rule stops seeing that file and silently
+/// passes a real cross-component violation. Restoring membership (what a full
+/// parse's `discover_components` does — the fix's effect) re-arms the rule.
+#[test]
+fn boundary_violation_evades_after_membership_cascade_until_rediscovery() {
+    use sutra::constraints::check::{CheckOutcome, EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "boundary"
+from_component = "tools"
+to_component = "core"
+name = "tools-must-not-reach-core"
+severity = "blocking"
+"#,
+    )
+    .unwrap();
+
+    let tool_id = db
+        .upsert_file("src/tools/x.rs", "rust", "h1", 10, true)
+        .unwrap();
+    let core_id = db
+        .upsert_file("src/core/a.rs", "rust", "h2", 10, true)
+        .unwrap();
+
+    // prior_paths (path-keyed) feeds `find_matching_constraint`'s path→component
+    // map; component_membership (id-keyed) feeds the resolver's forbidden pairs.
+    // A boundary violation needs both; the incremental cascade drops only the
+    // latter, which is what makes the evasion silent.
+    db.batch_create_components(
+        &[
+            (
+                "comp-tools".into(),
+                "tools".into(),
+                r#"["src/tools/x.rs"]"#.into(),
+            ),
+            (
+                "comp-core".into(),
+                "core".into(),
+                r#"["src/core/a.rs"]"#.into(),
+            ),
+        ],
+        &[
+            ("comp-tools".into(), tool_id),
+            ("comp-core".into(), core_id),
+        ],
+    )
+    .unwrap();
+    db.upsert_clustering_meta(0, 2, "h1", 0, 0).unwrap();
+
+    // Forbidden tools -> core import edge.
+    db.insert_import(tool_id, "src/core/a.rs", Some(core_id), 1, "use", None)
+        .unwrap();
+
+    let registry = default_registry();
+    let run = || {
+        evaluate(
+            &FactsSource::DdBacked {
+                db: &db,
+                dd_engine: None,
+            },
+            dir.path(),
+            EvalScope::Workspace,
+            &registry,
+        )
+        .unwrap()
+    };
+    let boundary_hits = |o: &CheckOutcome| {
+        o.active
+            .iter()
+            .filter(|f| f.constraint_kind == "boundary")
+            .count()
+    };
+
+    // 1. Membership present → the violation fires.
+    assert_eq!(
+        boundary_hits(&run()),
+        1,
+        "tools->core edge must violate the boundary rule"
+    );
+
+    // 2. Reproduce an incremental refresh of the tools file: the row delete
+    //    cascades its component_membership away; the reparse re-inserts the file
+    //    (new id) and its edge but does NOT re-run component discovery.
+    db.delete_file_cascade(tool_id).unwrap();
+    let tool_id2 = db
+        .upsert_file("src/tools/x.rs", "rust", "h1b", 10, true)
+        .unwrap();
+    db.insert_import(tool_id2, "src/core/a.rs", Some(core_id), 1, "use", None)
+        .unwrap();
+    assert_eq!(
+        boundary_hits(&run()),
+        0,
+        "membership dropped by the cascade → the boundary violation silently evades (the sutra/386 bug)"
+    );
+
+    // 3. A full parse re-derives membership → the violation fires again.
+    db.batch_insert_membership(&[("comp-tools".into(), tool_id2)])
+        .unwrap();
+    assert_eq!(
+        boundary_hits(&run()),
+        1,
+        "restoring membership (what a full parse does) re-arms the boundary rule"
+    );
+}
+
 /// `.pyi` stubs are never indexed (they would double-count the symbols their
 /// `.py` sibling declares), so workspace-scope evaluation has to find them on
 /// disk. Rollups stay clean because no file row is created for them.

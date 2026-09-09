@@ -135,6 +135,21 @@ pub fn evaluate(
     }
 }
 
+/// Whether any active constraint resolves against component membership, and so
+/// needs the derived component tier to be current. Only `Boundary` does — every
+/// other kind resolves via path globs or import edges (see
+/// `ConstraintResolver::resolve`). An incremental refresh row-replaces changed
+/// files and the `component_membership` FK cascade drops their membership without
+/// re-deriving it (`discover_components` runs only in a full parse), so a gate
+/// evaluating a `Boundary` rule over an incrementally refreshed index would stop
+/// seeing the changed file and silently pass a real violation (sutra/386). The
+/// `sutra check` refresh uses this to force a full parse when it holds.
+pub fn requires_component_facts(constraints: &[Constraint]) -> bool {
+    constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::Boundary { .. }))
+}
+
 /// Read one scope-matched file's content from the requested snapshot. A missing
 /// file (deleted at the revision, unreadable on disk) yields `None` and is
 /// skipped — the same soft-fail the disk-only read had.
@@ -1470,6 +1485,36 @@ fn make_finding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requires_component_facts_only_for_boundary() {
+        let cs = |toml: &str| rules::parse_rules(toml).unwrap().all_constraints().0;
+
+        // Boundary is the sole component-membership-resolved kind (sutra/386).
+        assert!(requires_component_facts(&cs(
+            "[[constraint]]\nkind = \"boundary\"\n\
+             from_component = \"tools\"\nto_component = \"core\"\n"
+        )));
+
+        // Path-glob and edge/pattern kinds never touch component membership.
+        assert!(!requires_component_facts(&cs(
+            "[[constraint]]\nkind = \"forbidden_pattern\"\nlanguage = \"rust\"\n\
+             query = \"(unsafe_block) @m\"\nname = \"no-unsafe\"\n"
+        )));
+        assert!(!requires_component_facts(&cs(
+            "[[constraint]]\nkind = \"forbidden_dep\"\nfrom = \"a/**\"\nto = \"b/**\"\n"
+        )));
+        assert!(!requires_component_facts(&cs(
+            "[[constraint]]\nkind = \"no_cycles\"\n"
+        )));
+
+        // A mixed rule set still trips on the boundary member.
+        assert!(requires_component_facts(&cs(
+            "[[constraint]]\nkind = \"no_cycles\"\n\n\
+             [[constraint]]\nkind = \"boundary\"\n\
+             from_component = \"a\"\nto_component = \"b\"\n"
+        )));
+    }
 
     /// Workspace with a root package declaring `rusqlite` and a nested package
     /// that is NOT a declared `[workspace].members` entry — the shape where a
