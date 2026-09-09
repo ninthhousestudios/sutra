@@ -617,3 +617,70 @@ _UsedClass make() {
         );
     }
 }
+
+// sutra/364: a parser-identity change must bust the per-file content_hash skip.
+// The pipeline memoizes on source bytes alone, so before this fix a changed
+// extractor (grammar bump, adapter fix, symbol-kind change) left every unchanged
+// file replaying stale symbols until a hand-written reparse migration. The
+// workspace-level parser stamp forces exactly one full re-extraction on a
+// mismatch, then subsequent reparses skip unchanged files again.
+#[tokio::test]
+async fn test_parser_stamp_mismatch_forces_one_full_reparse() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("parser-stamp", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    let reparse = || {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap()
+    };
+
+    // First parse extracts the file and records the current extractor identity.
+    let first = reparse();
+    assert!(first.files_parsed >= 1, "first parse must extract the file");
+    assert_eq!(
+        db.parser_stamp().unwrap().as_deref(),
+        Some(sutra::parser::PARSER_STAMP),
+        "a full parse records the current parser stamp",
+    );
+
+    // Unchanged bytes + matching stamp → the content_hash skip fires, nothing
+    // re-parses. This is the memo the fix must NOT weaken.
+    let unchanged = reparse();
+    assert_eq!(
+        unchanged.files_parsed, 0,
+        "unchanged file with a matching stamp must be skipped",
+    );
+
+    // Simulate an extractor change: the stored stamp no longer matches this
+    // binary's. Bytes on disk are untouched.
+    db.set_parser_stamp("stale-extractor-identity").unwrap();
+
+    // The stamp mismatch forces exactly one full re-extraction despite the
+    // unchanged bytes, and re-records the current identity.
+    let after_change = reparse();
+    assert!(
+        after_change.files_parsed >= 1,
+        "a parser stamp mismatch must force re-extraction of unchanged files",
+    );
+    assert_eq!(
+        db.parser_stamp().unwrap().as_deref(),
+        Some(sutra::parser::PARSER_STAMP),
+        "the forced reparse re-records the current parser stamp",
+    );
+
+    // Healed: with the stamp matching again, the skip fires once more — the
+    // force is a one-shot, not a permanent full-reparse.
+    let healed = reparse();
+    assert_eq!(
+        healed.files_parsed, 0,
+        "after the stamp is re-recorded, unchanged files are skipped again",
+    );
+}

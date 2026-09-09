@@ -1,0 +1,14 @@
+-- Parser-identity stamp for the extractor-change skip-bust (sutra/364).
+--
+-- The pipeline skips re-parsing a file whose stored content_hash still matches
+-- its bytes. That memo is blind to *extractor* changes (new tree-sitter query,
+-- adapter fix, symbol-kind change, grammar bump): every unchanged file replays
+-- stale symbols until a hand-written `UPDATE files SET content_hash=''`
+-- migration forces a reparse (see 0054/0055/0056 — the "version bump to forget"
+-- pattern). This column records the extractor identity (see build.rs); a full
+-- parse compares it to the current build's stamp and, on a mismatch, forces one
+-- full re-extraction, then records the new stamp. No more per-change migration.
+--
+-- NULL on existing indexes → the first post-upgrade full parse sees a mismatch
+-- and re-extracts once, which is exactly the desired recovery.
+ALTER TABLE index_meta ADD COLUMN parser_stamp TEXT;

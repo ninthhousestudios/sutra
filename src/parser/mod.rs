@@ -10,6 +10,14 @@ pub mod typescript;
 
 use crate::error::Result;
 
+/// Identity of the extractor that produced the index: a hash over the
+/// `src/parser/` sources, the pinned tree-sitter grammar versions, and the
+/// crate version, computed at build time (see `build.rs`, sutra/364). When this
+/// differs from the stamp stored in `index_meta`, the per-file `content_hash`
+/// skip is stale — the extractor changed even though the bytes did not — so a
+/// full parse must re-extract every file once and re-record the stamp.
+pub const PARSER_STAMP: &str = env!("SUTRA_PARSER_STAMP");
+
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     pub file_path: String,

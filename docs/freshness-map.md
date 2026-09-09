@@ -25,6 +25,35 @@ docs-only commit must not invalidate the index.
 "no baseline / read failure" — the caller must treat that as *must parse*, never
 as clean.
 
+## Extractor identity is orthogonal to content (sutra/364)
+
+Content staleness catches changed *bytes*. It cannot catch a changed
+*extractor* — a tree-sitter grammar bump, an adapter fix, a symbol-kind change —
+because the bytes are identical; only the symbols a re-parse *would* produce
+differ. Historically each such change shipped a hand-written
+`UPDATE files SET content_hash=''` migration (0054/0055/0056) to bust the skip,
+the "version bump to forget" pattern graft eliminated by hashing the extractor
+into its cache key.
+
+`build.rs` computes a `PARSER_STAMP` (`src/parser::PARSER_STAMP`) — an FNV hash
+over the `src/parser/` sources, the pinned tree-sitter grammar versions, and the
+crate version. `parse_workspace` compares it to `index_meta.parser_stamp` at
+parse start; on a mismatch (or a `NULL` stamp on a pre-364 index) it passes
+`force_reparse=true` into `parse_single_file`, which bypasses **both** the mtime
+and content-hash short-circuits, then re-records the stamp on success. So a
+parser change forces exactly one full re-extraction and subsequent reparses skip
+unchanged files again.
+
+This lives at the **full-parse** entry, not the query path:
+- `parse_incremental` (query-path refresh) always passes `force_reparse=false` —
+  a stamp mismatch needs a full walk, which must not run on the hot path.
+- `is_workspace_stale` / the `is_stale` envelope stay pure content (their
+  contract), so a stamp change does not flip `is_stale` with no way to self-heal
+  on the query path. Instead `maybe_reparse_cwd` (stdio startup) reparses when
+  `is_stale || stamp_changed`; the explicit `reparse` action and the parse-all
+  path heal via the in-`parse_workspace` check unconditionally. A binary upgrade
+  (new stamp) thus heals at the next startup reparse.
+
 ## Refresh before answering (sutra/363)
 
 Every query tool funnels through `SutraServer::tool_context`, which calls

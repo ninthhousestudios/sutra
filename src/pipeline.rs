@@ -334,6 +334,7 @@ fn parse_single_file(
     registry: &LanguageRegistry,
     pool: &mut ParserPool,
     trust_mtime: bool,
+    force_reparse: bool,
 ) -> Result<Option<FileParseResult>> {
     let rel_path = file_path
         .strip_prefix(workspace_root)
@@ -363,7 +364,11 @@ fn parse_single_file(
     let size_bytes: Option<i64> = meta.as_ref().map(|m| m.len() as i64);
 
     let existing = db.file_by_path(&rel_path)?;
-    if trust_mtime
+    // A parser-identity change (sutra/364) invalidates every skip: the bytes are
+    // unchanged but the extractor that produced the stored symbols is not, so
+    // neither the mtime nor the content-hash short-circuit may fire.
+    if !force_reparse
+        && trust_mtime
         && let Some(ns) = mtime_ns
         && let Some(ref ex) = existing
         && ex.mtime_ns == Some(ns)
@@ -393,7 +398,8 @@ fn parse_single_file(
 
     let content_hash = blake3::hash(contents.as_bytes()).to_hex().to_string();
 
-    if let Some(ref ex) = existing
+    if !force_reparse
+        && let Some(ref ex) = existing
         && ex.content_hash == content_hash
         && !db.file_has_null_language_attrs(ex.id)?
     {
@@ -687,6 +693,19 @@ pub fn parse_workspace(
         );
     }
 
+    // Parser-identity gate (sutra/364): if the extractor that built the index
+    // differs from this binary's — a grammar bump, adapter fix, or symbol-kind
+    // change, all invisible to the per-file content_hash — force one full
+    // re-extraction so no unchanged file replays stale symbols. `None` (an index
+    // built before the stamp existed) reads as a mismatch and heals the same way.
+    let force_reparse = db.parser_stamp().unwrap_or(None).as_deref() != Some(parser::PARSER_STAMP);
+    if force_reparse {
+        info!(
+            workspace = %workspace.id,
+            "parser identity changed since last parse; forcing full re-extraction"
+        );
+    }
+
     let mut files_parsed: i64 = 0;
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;
@@ -707,6 +726,7 @@ pub fn parse_workspace(
                 registry,
                 &mut pool,
                 workspace.frozen,
+                force_reparse,
             )? {
                 parse_errors += result.parse_errors;
                 if result.file_id != 0 {
@@ -814,6 +834,16 @@ pub fn parse_workspace(
             ) {
                 warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
             }
+        }
+    }
+
+    // Record the extractor identity once the parse ran to completion: every file
+    // now reflects this binary's extractor, so a later parse with the same stamp
+    // may trust the content_hash skip again (sutra/364). Only on success — a
+    // failed/partial parse must leave the old stamp so the next parse re-heals.
+    if inner.is_ok() {
+        if let Err(e) = db.set_parser_stamp(parser::PARSER_STAMP) {
+            warn!(workspace = %workspace.id, "failed to record parser stamp after parse: {e}");
         }
     }
 
@@ -1058,9 +1088,18 @@ pub fn parse_incremental(
     // content-hash check inside parse_single_file.
     for rel in drift.changed.iter().chain(&drift.added) {
         let full = workspace.root.join(rel);
-        if let Some(result) =
-            parse_single_file(db, &full, &workspace.root, registry, &mut pool, false)?
-        {
+        // Content-drift path: these files are already known-changed, and an
+        // extractor change is healed by the full parse (parse_workspace), not
+        // the query hot path — so never force here (force_reparse=false).
+        if let Some(result) = parse_single_file(
+            db,
+            &full,
+            &workspace.root,
+            registry,
+            &mut pool,
+            false,
+            false,
+        )? {
             parse_errors += result.parse_errors;
             if result.file_id != 0 {
                 files_parsed += 1;

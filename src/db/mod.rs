@@ -1638,6 +1638,29 @@ impl Db {
         Ok(data_gen)
     }
 
+    /// The extractor-identity stamp recorded at the last full parse, or `None`
+    /// on an index built before sutra/364 (column defaults NULL). A `None` reads
+    /// as "unknown extractor" — the caller must force a re-extraction.
+    pub fn parser_stamp(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let stamp: Option<String> = conn.query_row(
+            "SELECT parser_stamp FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(stamp)
+    }
+
+    /// Record the extractor identity that produced the current index. Called
+    /// after a full parse re-extracts under the active extractor.
+    pub fn set_parser_stamp(&self, stamp: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE index_meta SET parser_stamp = ?1 WHERE id = 1",
+            params![stamp],
+        )?;
+        Ok(())
+    }
+
     /// Mark derived data as complete up to the given generation.
     pub fn set_derived_complete(&self, generation: i64) -> Result<()> {
         self.conn.lock().execute(

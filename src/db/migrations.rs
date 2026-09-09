@@ -366,6 +366,16 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0067_file_size.sql"),
         true,
     ),
+    // Parser-identity stamp on index_meta so an extractor change (not just a
+    // byte change) busts the per-file content_hash skip (sutra/364). NOT
+    // ephemeral_only: index_meta is a Durable table that reindex does not drop,
+    // so a replayed `ADD COLUMN` would fail with a duplicate column. The column
+    // survives reindex with the table (a full parse re-records it anyway).
+    (
+        "0068_parser_stamp",
+        include_str!("../../migrations/0068_parser_stamp.sql"),
+        false,
+    ),
 ];
 
 impl Db {
@@ -540,6 +550,7 @@ impl Db {
             "0004_symbol_flags" => Self::column_exists(conn, "symbols", "flags"),
             "0063_file_mtime" => Self::column_exists(conn, "files", "mtime_ns"),
             "0067_file_size" => Self::column_exists(conn, "files", "size_bytes"),
+            "0068_parser_stamp" => Self::column_exists(conn, "index_meta", "parser_stamp"),
             "0005_conventions" => {
                 let exists: bool = conn
                     .query_row(

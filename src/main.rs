@@ -455,7 +455,12 @@ fn maybe_reparse_cwd(
     }
 
     let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &entry.root, &entry.languages);
-    if !is_stale {
+    // An extractor change (sutra/364) leaves the bytes clean but the stored
+    // symbols stale, so content-staleness alone would skip the heal. Reparse if
+    // the recorded parser stamp differs from this binary's (or is absent).
+    let stamp_changed =
+        db.parser_stamp().unwrap_or(None).as_deref() != Some(sutra::parser::PARSER_STAMP);
+    if !is_stale && !stamp_changed {
         // Not reparsing this startup, but aliases.toml is not an indexed source
         // file and never trips staleness — re-sync it directly if it changed.
         sync_aliases_if_changed(&db, &entry);
