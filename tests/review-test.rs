@@ -438,8 +438,16 @@ severity = "blocking"
     // The stub is deliberately never indexed — no upsert_file for it.
     let changed = vec!["python/swisseph_rs/azalt.pyi".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     let pattern: Vec<_> = findings
         .constraint_violations
@@ -494,8 +502,16 @@ severity = "blocking"
 
     let changed = vec!["python/swisseph_rs/other.py".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     assert!(
         findings
@@ -604,8 +620,16 @@ forbidden_deps = [
 
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     // DD should find the forbidden dep via maintained view
     assert!(
@@ -751,8 +775,16 @@ forbidden_deps = [
     // Only view.rs is changed — its forbidden import should be detected as introduced
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     assert!(!findings.constraint_violations.is_empty());
     let v = &findings.constraint_violations[0];
@@ -844,8 +876,16 @@ name = "ui-not-db"
 
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     assert!(
         findings.constraint_violations.is_empty(),
@@ -972,9 +1012,16 @@ forbidden_deps = [
     // build_findings must resync the engine and still detect the violation
     let changed = vec!["src/ui/view.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", Some(&shared), &registry)
-            .unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        Some(&shared),
+        &registry,
+    )
+    .unwrap();
     assert!(
         !findings.constraint_violations.is_empty(),
         "a shared engine holding a stale graph should be resynced, not trusted"
@@ -1168,6 +1215,7 @@ fn build_findings_surfaces_error_on_bad_rules() {
         dir.path(),
         &["src/foo.rs".to_string()],
         "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
         None,
         &registry,
     );
@@ -1200,8 +1248,16 @@ fn build_findings_cycle_violations_counted_in_total() {
 
     let changed = vec!["src/a.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     assert!(
         findings
@@ -1317,6 +1373,7 @@ forbidden_deps = [
     let changed_ids: std::collections::HashSet<i64> = [f_view.id].into_iter().collect();
     let old_edges: std::collections::HashSet<(i64, i64)> =
         [(f_view.id, f_query.id)].into_iter().collect();
+    let changed_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     let registry = default_registry();
     let outcome = evaluate(
@@ -1329,6 +1386,8 @@ forbidden_deps = [
             changed_ids: &changed_ids,
             old_edges: &old_edges,
             changed_pattern_only_paths: &[],
+            content: sutra::constraints::check::ContentSource::Worktree,
+            changed_paths: &changed_paths,
         },
         &registry,
     )
@@ -1395,8 +1454,16 @@ scope = "src/"
 
     let changed = vec!["src/core.rs".to_string(), "src/safe.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     let pattern_violations: Vec<_> = findings
         .constraint_violations
@@ -1456,8 +1523,16 @@ scope = "src/"
 
     let changed = vec!["src/lib.rs".to_string(), "tests/test.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     let pattern_violations: Vec<_> = findings
         .constraint_violations
@@ -1527,8 +1602,16 @@ name = "no-unsafe"
 
     let changed = vec!["src/ffi.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     let active_pattern: Vec<_> = findings
         .constraint_violations
@@ -1610,8 +1693,16 @@ scope = "src/"
 
     let changed = vec!["src/lib.rs".to_string()];
     let registry = default_registry();
-    let findings =
-        review::build_findings(&db, dir.path(), &changed, "HEAD", None, &registry).unwrap();
+    let findings = review::build_findings(
+        &db,
+        dir.path(),
+        &changed,
+        "HEAD",
+        sutra::constraints::check::ContentSource::Worktree,
+        None,
+        &registry,
+    )
+    .unwrap();
 
     // The two acked foo clones are gone; only the distinct bar clone remains.
     let pattern: Vec<_> = findings

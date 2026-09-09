@@ -1528,6 +1528,120 @@ severity = "advisory"
     assert!(pattern_findings[0].snippet.is_some());
 }
 
+/// A `--staged` (or commit-spec) gate must read the *requested snapshot*, not the
+/// working tree: staging a clean file and then dirtying it only on disk must not
+/// smuggle the worktree violation past a staged check, and the inverse must not
+/// block a clean staged commit over an unstaged edit (sutra/385, Finding 1).
+#[test]
+fn evaluate_dd_pattern_scan_honors_the_content_source() {
+    use std::collections::HashSet;
+    use std::process::Command;
+    use sutra::constraints::check::{ContentSource, EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+
+    let rules_dir = root.join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+severity = "blocking"
+"#,
+    )
+    .unwrap();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // Staged (index) version is CLEAN.
+    std::fs::write(src_dir.join("lib.rs"), "fn safe() { let x = 1; }\n").unwrap();
+    git(&["add", "."]);
+
+    // Working tree now holds an unstaged VIOLATION.
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "fn risky() { unsafe { core::ptr::null::<u8>().read() }; }\n",
+    )
+    .unwrap();
+
+    let db = Db::open_unchecked("test", root).unwrap();
+    db.upsert_file("src/lib.rs", "rust", "h1", 1, true).unwrap();
+    let file_id = db
+        .all_files()
+        .unwrap()
+        .iter()
+        .find(|f| &*f.path == "src/lib.rs")
+        .unwrap()
+        .id;
+
+    let changed_ids: HashSet<i64> = HashSet::from([file_id]);
+    let changed_paths: HashSet<&str> = HashSet::from(["src/lib.rs"]);
+    let old_edges: HashSet<(i64, i64)> = HashSet::new();
+    let no_stubs: Vec<String> = Vec::new();
+    let registry = default_registry();
+    let engine = DdEngine::new(Duration::from_secs(60));
+
+    let run = |content| {
+        evaluate(
+            &FactsSource::DdBacked {
+                db: &db,
+                dd_engine: Some(&engine),
+            },
+            root,
+            EvalScope::ChangedFiles {
+                changed_ids: &changed_ids,
+                old_edges: &old_edges,
+                changed_pattern_only_paths: &no_stubs,
+                content,
+                changed_paths: &changed_paths,
+            },
+            &registry,
+        )
+        .unwrap()
+    };
+
+    let pattern_hits = |o: &sutra::constraints::check::CheckOutcome| {
+        o.active
+            .iter()
+            .filter(|f| f.constraint_kind == "forbidden_pattern")
+            .count()
+    };
+
+    // Staged index is clean → gate must NOT flag the worktree violation.
+    let staged = run(ContentSource::Revision(""));
+    assert_eq!(
+        pattern_hits(&staged),
+        0,
+        "staged snapshot is clean; the worktree violation must not leak into a staged check"
+    );
+
+    // Reading the working tree surfaces the same violation → the switch is real.
+    let worktree = run(ContentSource::Worktree);
+    assert_eq!(pattern_hits(&worktree), 1);
+}
+
 /// `.pyi` stubs are never indexed (they would double-count the symbols their
 /// `.py` sibling declares), so workspace-scope evaluation has to find them on
 /// disk. Rollups stay clean because no file row is created for them.
@@ -1642,6 +1756,7 @@ name = "no-unsafe"
 
     let changed_ids: std::collections::HashSet<i64> = [fa.id].into_iter().collect();
     let old_edges: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    let changed_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     let registry = default_registry();
     let outcome = evaluate(
@@ -1654,6 +1769,8 @@ name = "no-unsafe"
             changed_ids: &changed_ids,
             old_edges: &old_edges,
             changed_pattern_only_paths: &[],
+            content: sutra::constraints::check::ContentSource::Worktree,
+            changed_paths: &changed_paths,
         },
         &registry,
     )

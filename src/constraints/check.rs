@@ -50,6 +50,21 @@ pub struct CheckOutcome {
     pub accepted_warnings: Vec<String>,
 }
 
+/// Where scope-matched source content is read for forbidden-pattern scans (and
+/// which manifests define the diff scope). A gate over `--staged` or a commit
+/// spec must read the *requested snapshot*, not whatever the working tree
+/// happens to hold — reading disk lets a fix applied only in the worktree mask
+/// bytes that are still staged, and vice versa (sutra/385).
+#[derive(Clone, Copy)]
+pub enum ContentSource<'a> {
+    /// The working tree on disk. The review compositor's contract (it assesses
+    /// current state) and the `unstaged` diff mode.
+    Worktree,
+    /// A git revision read via `git show <rev>:<path>`. `""` is the staged index
+    /// (`git show :path`); any other value is a commit-ish.
+    Revision(&'a str),
+}
+
 pub enum EvalScope<'a> {
     Workspace,
     ChangedFiles {
@@ -59,6 +74,13 @@ pub enum EvalScope<'a> {
         /// They have no id, so they can't ride along in `changed_ids` — without
         /// them a changed stub is invisible to review-scoped pattern checks.
         changed_pattern_only_paths: &'a [String],
+        /// Where forbidden-pattern content is read from for the scoped files.
+        content: ContentSource<'a>,
+        /// Every path in the diff (source files, stubs, and manifests alike).
+        /// Manifest findings are scoped to this set so a staged commit isn't
+        /// blocked by a forbidden dependency in an untouched Cargo.toml
+        /// (sutra/385).
+        changed_paths: &'a HashSet<&'a str>,
     },
     SingleFile(i64),
     Edges {
@@ -110,6 +132,24 @@ pub fn evaluate(
             ))
         }
         FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope, registry),
+    }
+}
+
+/// Read one scope-matched file's content from the requested snapshot. A missing
+/// file (deleted at the revision, unreadable on disk) yields `None` and is
+/// skipped — the same soft-fail the disk-only read had.
+fn read_scoped_content(
+    workspace_root: &Path,
+    content: ContentSource,
+    rel_path: &str,
+) -> Option<String> {
+    match content {
+        ContentSource::Worktree => std::fs::read_to_string(workspace_root.join(rel_path)).ok(),
+        ContentSource::Revision(rev) => {
+            crate::git::git_file_content_at(workspace_root, rev, rel_path)
+                .ok()
+                .flatten()
+        }
     }
 }
 
@@ -301,18 +341,31 @@ fn evaluate_dd(
         {
             findings.push(external::config_error_finding(&msg));
         }
+        // Scope manifest/pubspec findings to the diff: a staged commit must not
+        // be blocked by a forbidden dependency in an untouched manifest
+        // (sutra/385). `None` (workspace audit / guard) scans every manifest.
+        let manifest_scope = match scope {
+            EvalScope::ChangedFiles { changed_paths, .. } => Some(*changed_paths),
+            _ => None,
+        };
         findings.extend(external::check_workspace_externals(
             &all_constraints,
             workspace_root,
             &unresolved,
             changed_ids,
+            manifest_scope,
             &crate_name_refs,
         ));
     }
 
-    // Forbidden pattern checks — read source from disk for scope-matched files.
+    // Forbidden pattern checks — read source from the requested snapshot for
+    // scope-matched files (the working tree, the staged index, or a commit).
     // Runs before the edge-empty early return since patterns are per-file, not edge-based.
     if has_patterns {
+        let content = match scope {
+            EvalScope::ChangedFiles { content, .. } => *content,
+            _ => ContentSource::Worktree,
+        };
         let scan_ids: HashSet<i64> = match scope {
             EvalScope::ChangedFiles { changed_ids, .. } => (*changed_ids).clone(),
             EvalScope::SingleFile(id) => std::iter::once(*id).collect(),
@@ -337,13 +390,13 @@ fn evaluate_dd(
                 if !scan_ids.contains(&f.id) {
                     continue;
                 }
-                if let Ok(content) = std::fs::read_to_string(workspace_root.join(&*f.path)) {
-                    sources.push((f.path.to_string(), content));
+                if let Some(src) = read_scoped_content(workspace_root, content, &f.path) {
+                    sources.push((f.path.to_string(), src));
                 }
             }
             for path in scan_stub_paths {
-                if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
-                    sources.push((path.clone(), content));
+                if let Some(src) = read_scoped_content(workspace_root, content, path) {
+                    sources.push((path.clone(), src));
                 }
             }
             let source_refs: Vec<(&str, &str)> = sources
@@ -1465,7 +1518,7 @@ mod tests {
     fn index_root_findings(workspace_root: &Path) -> usize {
         let mut loaded = rules::load_rules(workspace_root).unwrap();
         let (cs, _) = loaded.all_constraints();
-        external::check_workspace_externals(&cs, workspace_root, &[], None, &[])
+        external::check_workspace_externals(&cs, workspace_root, &[], None, None, &[])
             .into_iter()
             .filter(|f| f.from_path == "Cargo.toml")
             .count()

@@ -680,12 +680,19 @@ fn walk_project_files(root: &Path, dir: &Path, depth: usize, out: &mut ProjectFi
 /// Index-side external check: unresolved import rows + workspace manifests.
 /// `unresolved` rows come straight from `Db::unresolved_imports_with_files`.
 /// `changed_ids` (review scope) filters import findings to changed files;
-/// manifest findings always pass (manifests are not indexed files).
+/// `manifest_scope` does the same for manifest/pubspec findings — `None` scans
+/// every manifest (workspace audit / guard), `Some` keeps only manifests in the
+/// diff so an untouched manifest can't block an unrelated staged commit
+/// (sutra/385).
 pub fn check_workspace_externals(
     constraints: &[Constraint],
     workspace_root: &Path,
     unresolved: &[UnresolvedImport],
     changed_ids: Option<&std::collections::HashSet<i64>>,
+    // Manifest/pubspec findings are kept only when their file is in this set.
+    // `None` scans every manifest (workspace audit / guard); `Some` restricts to
+    // the diff so an untouched manifest can't block an unrelated commit (sutra/385).
+    manifest_scope: Option<&std::collections::HashSet<&str>>,
     workspace_crate_names: &[&str],
 ) -> Vec<ConstraintFinding> {
     if !has_external_constraints(constraints) {
@@ -727,8 +734,12 @@ pub fn check_workspace_externals(
     }
     let cargo_dirs = package_dirs_of(project_files.manifests.iter().map(|(rel, _)| rel.as_str()));
     let pubspec_dirs = package_dirs_of(project_files.pubspecs.iter().map(|(rel, _)| rel.as_str()));
+    let in_scope = |rel: &str| manifest_scope.is_none_or(|s| s.contains(rel));
     let mut findings = check_import_items(constraints, &items);
     for (rel_path, content) in &project_files.manifests {
+        if !in_scope(rel_path) {
+            continue;
+        }
         findings.extend(check_manifest(
             constraints,
             rel_path,
@@ -738,6 +749,9 @@ pub fn check_workspace_externals(
         ));
     }
     for (rel_path, content) in &project_files.pubspecs {
+        if !in_scope(rel_path) {
+            continue;
+        }
         findings.extend(check_pubspec(constraints, rel_path, content, &pubspec_dirs));
     }
     findings
@@ -959,6 +973,43 @@ cc = "1"
 
         let clean = check_manifest(&cs, "server/Cargo.toml", manifest, None, &[]);
         assert!(clean.is_empty());
+    }
+
+    #[test]
+    fn workspace_externals_scopes_manifests_to_the_diff() {
+        use std::collections::HashSet;
+
+        let cs = constraints_from(FORBID);
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report");
+        std::fs::create_dir_all(&report).unwrap();
+        std::fs::write(
+            report.join("Cargo.toml"),
+            "[dependencies]\naxum = \"0.8\"\n",
+        )
+        .unwrap();
+
+        let axum_hits = |findings: &[ConstraintFinding]| {
+            findings
+                .iter()
+                .filter(|f| f.to_path == "crate:axum")
+                .count()
+        };
+
+        // Workspace audit (None) flags the violating manifest.
+        let all = check_workspace_externals(&cs, dir.path(), &[], None, None, &[]);
+        assert_eq!(axum_hits(&all), 1);
+
+        // A staged scope that doesn't include report/Cargo.toml must not flag it —
+        // legacy drift in an untouched manifest can't block an unrelated commit.
+        let other: HashSet<&str> = HashSet::from(["src/unrelated.rs"]);
+        let scoped = check_workspace_externals(&cs, dir.path(), &[], None, Some(&other), &[]);
+        assert_eq!(axum_hits(&scoped), 0);
+
+        // A scope that DOES include the manifest keeps the finding.
+        let incl: HashSet<&str> = HashSet::from(["report/Cargo.toml"]);
+        let kept = check_workspace_externals(&cs, dir.path(), &[], None, Some(&incl), &[]);
+        assert_eq!(axum_hits(&kept), 1);
     }
 
     #[test]

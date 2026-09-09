@@ -13,6 +13,7 @@ use std::path::Path;
 use serde_json::json;
 
 use crate::constraints::ConstraintFinding;
+use crate::constraints::check::ContentSource;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
@@ -57,13 +58,23 @@ pub fn handle(
     threshold: Severity,
     registry: &LanguageRegistry,
 ) -> Result<CheckReport> {
-    let (changed_paths, base_revision, _head) =
+    let (changed_paths, base_revision, head) =
         review::resolve_diff_scope(workspace_root, diff_mode)?;
+    // Gate the *requested snapshot*, not the working tree: `resolve_diff_scope`
+    // returns `Some("")` for the staged index, `Some(rev)` for a commit spec, and
+    // `None` for unstaged (the worktree). Reading disk instead would let a fix
+    // applied only in the worktree mask still-staged bytes, and vice versa
+    // (sutra/385).
+    let content = match head.as_deref() {
+        Some(rev) => ContentSource::Revision(rev),
+        None => ContentSource::Worktree,
+    };
     let findings = review::build_findings(
         db,
         workspace_root,
         &changed_paths,
         &base_revision,
+        content,
         None,
         registry,
     )?;

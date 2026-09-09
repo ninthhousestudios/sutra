@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::components;
 use crate::constraints::DdEngine;
-use crate::constraints::check::{self, EvalScope, FactsSource};
+use crate::constraints::check::{self, ContentSource, EvalScope, FactsSource};
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
@@ -84,6 +84,9 @@ pub fn handle(
         workspace_root,
         &changed_paths,
         &base_revision,
+        // The compositor assesses current state — read the working tree, not the
+        // diff snapshot, regardless of `diff_mode` (sutra/385).
+        ContentSource::Worktree,
         dd_engine,
         &registry,
     ) {
@@ -335,6 +338,10 @@ pub fn build_findings(
     workspace_root: &Path,
     changed_paths: &[String],
     base_revision: &str,
+    // Where forbidden-pattern content is read for the scoped files. `sutra check`
+    // passes the requested snapshot (the staged index or a commit); the review
+    // compositor passes `Worktree` to preserve its assess-current-state contract.
+    content: ContentSource,
     shared_dd: Option<&DdEngine>,
     registry: &LanguageRegistry,
 ) -> Result<ReviewFindings> {
@@ -370,6 +377,8 @@ pub fn build_findings(
         .cloned()
         .collect();
 
+    let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
+
     let check_outcome = check::evaluate(
         &FactsSource::DdBacked {
             db,
@@ -380,6 +389,8 @@ pub fn build_findings(
             changed_ids: &changed_ids,
             old_edges: &old_edges,
             changed_pattern_only_paths: &changed_pattern_only_paths,
+            content,
+            changed_paths: &changed_set,
         },
         registry,
     )?;
@@ -391,8 +402,6 @@ pub fn build_findings(
         constraint_violations.len() + waived_constraint_violations.len();
     let constraint_parse_errors = check_outcome.parse_errors;
     let accepted_warnings = check_outcome.accepted_warnings;
-
-    let changed_set: HashSet<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
 
     // Report-only instance acks on the changed files, so acknowledged clones
     // dropped from constraint_violations stay visible here (sutra/306).
