@@ -13,8 +13,7 @@ use tracing::{debug, info, warn};
 use crate::components;
 use crate::config::Config;
 use crate::db::{
-    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
-    SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
+    Db, ResolvedRefRow, SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use crate::error::Result;
 use crate::graph;
@@ -123,18 +122,6 @@ pub struct ParseSnapshot {
     /// Refs where resolution was skipped (Import context).
     pub skipped_count: i64,
 }
-
-/// Maximum lines per file — files larger than this are skipped with a warning.
-const MAX_LINES: usize = 100_000;
-
-/// Safety valve for pathological single files (e.g. Ghidra/BinaryNinja
-/// decompiled functions with thousands of `var_XXXX` locals): cap the number of
-/// references indexed per file. A single 15k-line decompiled function can emit
-/// tens of thousands of refs; across a large corpus these dominate the
-/// whole-corpus `all_resolved_refs` Vec that `GraphData::load` materializes,
-/// which is the primary driver of reparse RSS (sutra/324). Real source files
-/// never approach this bound, so it only truncates decompiled noise.
-const MAX_REFS_PER_FILE: usize = 15_000;
 
 /// Current resident set size in MB, read from `/proc/self/statm` (Linux).
 /// Instrumentation only — returns `None` off Linux or on read failure. Used to
@@ -290,49 +277,6 @@ enum PostParseResult {
     NoChanges,
 }
 
-fn flatten_symbols_dfs<'a>(
-    symbols: &'a [parser::ExtractedSymbol],
-    parent_idx: Option<usize>,
-    out: &mut Vec<InsertSymbolParams<'a>>,
-    parents: &mut Vec<Option<usize>>,
-) {
-    for sym in symbols {
-        let my_idx = out.len();
-        out.push(InsertSymbolParams {
-            file_id: 0, // filled by replace_file_data
-            qualified_name: &sym.qualified_name,
-            short_name: &sym.short_name,
-            kind: sym.kind.as_str(),
-            signature: sym.signature.as_deref(),
-            signature_hash: sym.signature_hash.as_deref(),
-            structural_hash: sym.structural_hash.as_deref(),
-            visibility: sym.visibility.as_deref(),
-            start_line: sym.start_line as i64,
-            start_col: sym.start_col as i64,
-            end_line: sym.end_line as i64,
-            end_col: sym.end_col as i64,
-            parent_symbol_id: None, // resolved via parent_indices
-            docstring: sym.docstring.as_deref(),
-            cyclomatic: sym.cyclomatic.map(|v| v as i64),
-            cognitive: sym.cognitive.map(|v| v as i64),
-            max_nesting: sym.max_nesting.map(|v| v as i64),
-            flags: sym.flags as i64,
-            language_attrs: sym.language_attrs.as_deref(),
-        });
-        parents.push(parent_idx);
-        flatten_symbols_dfs(&sym.children, Some(my_idx), out, parents);
-    }
-}
-
-fn flatten_symbols_for_insert(
-    symbols: &[parser::ExtractedSymbol],
-) -> (Vec<InsertSymbolParams<'_>>, Vec<Option<usize>>) {
-    let mut out = Vec::new();
-    let mut parents = Vec::new();
-    flatten_symbols_dfs(symbols, None, &mut out, &mut parents);
-    (out, parents)
-}
-
 fn parse_single_file(
     db: &Db,
     file_path: &Path,
@@ -398,8 +342,8 @@ fn parse_single_file(
     };
 
     let line_count = contents.lines().count();
-    if line_count > MAX_LINES {
-        warn!(path = %rel_path, lines = line_count, max = MAX_LINES, "file exceeds line limit, skipping");
+    if line_count > parser::persist::MAX_LINES {
+        warn!(path = %rel_path, lines = line_count, max = parser::persist::MAX_LINES, "file exceeds line limit, skipping");
         // An oversized file is not re-extracted. If it already has an index row
         // (it shrank under the limit once, then grew past it), that row survives
         // and must block a parser-stamp advance the same as a parse failure
@@ -443,39 +387,10 @@ fn parse_single_file(
         parse_errors = 1;
     }
 
-    let (flat_symbols, parent_indices) = flatten_symbols_for_insert(&parse_result.symbols);
-    let import_params: Vec<InsertImportParams<'_>> = parse_result
-        .imports
-        .iter()
-        .map(|imp| InsertImportParams {
-            imported_path: &imp.raw_path,
-            line: imp.line as i64,
-            kind: imp.kind,
-            alias: imp.alias.as_deref(),
-            is_test: imp.is_test,
-        })
-        .collect();
-    if parse_result.references.len() > MAX_REFS_PER_FILE {
-        warn!(
-            path = %rel_path,
-            refs = parse_result.references.len(),
-            max = MAX_REFS_PER_FILE,
-            "file exceeds per-file ref cap, truncating (pathological decompiled function?)"
-        );
-    }
-    let ref_params: Vec<InsertRefParams<'_>> = parse_result
-        .references
-        .iter()
-        .take(MAX_REFS_PER_FILE)
-        .map(|rf| InsertRefParams {
-            unresolved_name: Some(&rf.name),
-            line: rf.line as i64,
-            col: rf.col as i64,
-            context_kind: rf.context_kind.as_str(),
-            resolved_local_target: rf.resolved_local_target.as_deref(),
-            receiver: rf.receiver.as_deref(),
-        })
-        .collect();
+    let (flat_symbols, parent_indices) =
+        parser::persist::flatten_symbols_for_insert(&parse_result.symbols);
+    let import_params = parser::persist::build_import_params(&parse_result);
+    let ref_params = parser::persist::build_ref_params(&parse_result, &rel_path);
 
     let (file_id, symbols_extracted) = db.replace_file_data(
         &rel_path,

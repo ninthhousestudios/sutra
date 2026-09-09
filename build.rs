@@ -31,6 +31,23 @@ fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
     h
 }
 
+/// Collect every `.rs` file under `dir`, recursing into subdirectories, so the
+/// parser stamp covers extractor code regardless of how src/parser/ is
+/// organized into submodules.
+fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|x| x.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let parser_dir = Path::new(&manifest_dir).join("src").join("parser");
@@ -38,22 +55,40 @@ fn main() {
 
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
 
-    // 1. Every extractor source file, hashed name-then-contents in a stable
-    //    order. This is where the symbol/ref/raw-import extraction lives; a
-    //    change here changes what a re-parse would produce.
-    let mut sources: Vec<_> = fs::read_dir(&parser_dir)
-        .expect("read src/parser")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rs"))
-        .collect();
+    // 1. Every extractor source file under src/parser/ (recursively), hashed
+    //    relative-path-then-contents in a stable order. This is where the
+    //    symbol/ref/raw-import extraction lives AND the extraction→persistence
+    //    normalization (`persist.rs`, sutra/383); a change to any of them
+    //    changes what a re-parse of unchanged bytes would produce. Watch the
+    //    directory itself too, so adding or removing a file re-runs this script.
+    println!("cargo:rerun-if-changed={}", parser_dir.display());
+    let mut sources: Vec<std::path::PathBuf> = Vec::new();
+    collect_rs_files(&parser_dir, &mut sources);
     sources.sort();
+    // Guard (sutra/383): the persisted-output normalization must stay inside the
+    // hashed tree. If `flatten_symbols_dfs` is moved out of src/parser/ (e.g.
+    // back into the un-hashed src/pipeline.rs), the stamp would stop covering it
+    // and a normalization change would silently skip unchanged files again.
+    let marker = b"fn flatten_symbols_dfs";
+    let mut has_normalization = false;
     for path in &sources {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        h = fnv1a(h, name.as_bytes());
+        let rel = path.strip_prefix(&manifest_dir).unwrap_or(path);
+        h = fnv1a(h, rel.to_string_lossy().as_bytes());
         let contents = fs::read(path).expect("read parser source");
+        if contents.windows(marker.len()).any(|w| w == marker) {
+            has_normalization = true;
+        }
         h = fnv1a(h, &contents);
         println!("cargo:rerun-if-changed={}", path.display());
     }
+    assert!(
+        has_normalization,
+        "parser-stamp guard (sutra/383): `fn flatten_symbols_dfs` was not found under \
+         src/parser/. Extraction→persistence normalization must live inside the hashed \
+         parser tree so PARSER_STAMP invalidates unchanged files when it changes. If you \
+         moved or renamed it, keep it under src/parser/ — not src/pipeline.rs, which is \
+         not hashed."
+    );
 
     // 2. The pinned tree-sitter grammar versions. A grammar bump can change node
     //    kinds without touching our sources, so hash the resolved versions too.

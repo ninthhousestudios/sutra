@@ -36,13 +36,25 @@ the "version bump to forget" pattern graft eliminated by hashing the extractor
 into its cache key.
 
 `build.rs` computes a `PARSER_STAMP` (`src/parser::PARSER_STAMP`) — an FNV hash
-over the `src/parser/` sources, the pinned tree-sitter grammar versions, and the
-crate version. `parse_workspace` compares it to `index_meta.parser_stamp` at
-parse start; on a mismatch (or a `NULL` stamp on a pre-364 index) it passes
-`force_reparse=true` into `parse_single_file`, which bypasses **both** the mtime
-and content-hash short-circuits, then re-records the stamp on success. So a
-parser change forces exactly one full re-extraction and subsequent reparses skip
-unchanged files again.
+over every `src/parser/**/*.rs` source (recursively), the pinned tree-sitter
+grammar versions, and the crate version. `parse_workspace` compares it to
+`index_meta.parser_stamp` at parse start; on a mismatch (or a `NULL` stamp on a
+pre-364 index) it passes `force_reparse=true` into `parse_single_file`, which
+bypasses **both** the mtime and content-hash short-circuits, then re-records the
+stamp on success. So a parser change forces exactly one full re-extraction and
+subsequent reparses skip unchanged files again.
+
+The hashed boundary is *all code that shapes persisted extraction output*, not
+just the grammars/adapters (sutra/383). The extraction→persistence normalization
+— symbol-tree flattening, ref/import field mapping, the per-file size caps —
+lives in `src/parser/persist.rs` precisely so the `src/parser/` hash covers it:
+a change there changes what a re-parse of unchanged bytes writes, so it must rev
+the stamp. Keeping it out of `src/pipeline.rs` is deliberate — that file is *not*
+hashed (it is full of parse-orchestration and DD code that must not rev the stamp
+on every unrelated edit). A `build.rs` assertion fails the build if
+`flatten_symbols_dfs` is moved out of the hashed `src/parser/` tree. Schema-level
+changes to how rows are written (`db::replace_file_data` and the insert SQL) go
+through migrations, which reindex — so they need no stamp coverage.
 
 Where the heal fires:
 - The check lives inside `parse_workspace` (compares `index_meta.parser_stamp`
