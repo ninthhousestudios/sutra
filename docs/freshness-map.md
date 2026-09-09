@@ -44,15 +44,30 @@ and content-hash short-circuits, then re-records the stamp on success. So a
 parser change forces exactly one full re-extraction and subsequent reparses skip
 unchanged files again.
 
-This lives at the **full-parse** entry, not the query path:
-- `parse_incremental` (query-path refresh) always passes `force_reparse=false` —
-  a stamp mismatch needs a full walk, which must not run on the hot path.
+Where the heal fires:
+- The check lives inside `parse_workspace` (compares `index_meta.parser_stamp`
+  to `PARSER_STAMP` at parse start), so **any** full parse heals: the explicit
+  `reparse` action, the parse-all path, and `maybe_reparse_cwd` (stdio startup,
+  which reparses when `is_stale || stamp_changed`).
+- `parse_incremental` (the incremental drift reparse) always passes
+  `force_reparse=false` — a stamp mismatch needs a full walk, not a drift-set
+  reparse.
+- The query path heals too (sutra/382). `refresh_before_answer` probes the stamp
+  alongside content drift; on a mismatch it runs a full `parse_workspace` instead
+  of the incremental reparse. This is the single choke point every transport
+  (stdio + http) and every workspace (CWD or not) funnels through — without it an
+  upgraded **http** deployment or a **non-CWD** workspace (neither covered by
+  `maybe_reparse_cwd`) would serve stale symbols indefinitely while reporting
+  `is_stale: false`. The heal runs *before* the caller reads freshness, so a
+  healed workspace reports honestly; only the bounded-wait degradation window
+  (a parse already in flight) answers stale, and it carries the "reparse in
+  flight" note. A persistently failing file leaves the stamp unadvanced
+  (sutra/381), so the query-path full heal can re-run until the file heals; the
+  parse lock caps that to one walk at a time.
 - `is_workspace_stale` / the `is_stale` envelope stay pure content (their
-  contract), so a stamp change does not flip `is_stale` with no way to self-heal
-  on the query path. Instead `maybe_reparse_cwd` (stdio startup) reparses when
-  `is_stale || stamp_changed`; the explicit `reparse` action and the parse-all
-  path heal via the in-`parse_workspace` check unconditionally. A binary upgrade
-  (new stamp) thus heals at the next startup reparse.
+  contract). They are not folded with the stamp: the query path heals the stamp
+  before freshness is computed, so is_stale stays honest without a stamp term
+  that could otherwise wedge `is_stale=true` forever.
 
 ## Refresh before answering (sutra/363)
 
@@ -71,8 +86,11 @@ copied from graft's `ensureFreshGraph`:
 3. **Re-probe under the lock.** A concurrent refresh may have already cleaned the
    drift, so N racing queries on one edit produce **one** parse, not N. If the
    re-probe is clean, return without parsing.
-4. **Incrementally reparse the drift set** (`pipeline::parse_incremental`) on
-   `spawn_blocking`, holding the lock + a `ParseMark` across it.
+4. **Reparse on `spawn_blocking`, holding the lock + a `ParseMark` across it.**
+   Content drift → incremental reparse of the drift set
+   (`pipeline::parse_incremental`). A parser-stamp mismatch → a full
+   `pipeline::parse_workspace` instead (sutra/382), which re-extracts every file,
+   re-records the stamp, and subsumes any pending content drift.
 5. **Never fatal.** A lock timeout, parse error, or task panic degrades to
    answering from the current index with a note. A query that works today must
    not start failing because a rebuild did.

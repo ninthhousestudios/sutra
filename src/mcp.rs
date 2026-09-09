@@ -234,12 +234,14 @@ impl SutraServer {
     /// and blocking the query on it is worse than a one-cycle-stale answer.
     const REFRESH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-    /// Refresh the index before answering (sutra/363): probe drift and, if the
-    /// workspace moved, incrementally reparse just the drift set under the parse
-    /// lock. Returns an optional envelope note. Never fatal — every failure mode
-    /// (lock contention past the deadline, parse error/panic) degrades to
-    /// answering from the current index; `is_stale` in the envelope still
-    /// reflects reality.
+    /// Refresh the index before answering (sutra/363, sutra/382): probe drift
+    /// and the parser stamp; if the workspace moved, incrementally reparse the
+    /// drift set under the parse lock, and if the extractor changed, run a full
+    /// re-extraction instead. Returns an optional envelope note. Never fatal —
+    /// every failure mode (lock contention past the deadline, parse error/panic)
+    /// degrades to answering from the current index; `is_stale` in the envelope
+    /// still reflects reality (and the stamp heal runs *before* the caller reads
+    /// freshness, so a healed workspace reports honestly).
     async fn refresh_before_answer(
         &self,
         db: &Arc<Db>,
@@ -250,17 +252,33 @@ impl SutraServer {
             return None;
         }
 
-        // Probe first. Clean → answer immediately, zero cost beyond the probe.
-        // No baseline (never parsed / read failure) → not something an
-        // incremental reparse can fix; leave it to startup / explicit reparse.
-        match crate::freshness::workspace_drift(db, &entry.root, &entry.languages) {
-            (_, Some(d)) if d.is_empty() => return None,
+        // The stored index may predate this binary's extractor (sutra/382): a
+        // parser change (grammar bump, adapter fix, symbol-kind change) leaves
+        // the bytes clean but the symbols stale, so content drift alone never
+        // flags it. Only a full re-extraction heals it — the incremental drift
+        // path deliberately does not (it would reparse only the drift set) — so
+        // a mismatch forces a full `parse_workspace` here. The query path is the
+        // single choke point every transport (stdio + http) and every workspace
+        // (CWD or not) funnels through; the startup reparse only covers the stdio
+        // CWD workspace, so http and non-CWD workspaces would otherwise never
+        // heal and would serve stale symbols while reporting `is_stale: false`.
+        let stamp_mismatch =
+            db.parser_stamp().unwrap_or(None).as_deref() != Some(crate::parser::PARSER_STAMP);
+
+        // Probe drift. A current stamp with no drift → answer immediately, zero
+        // cost beyond the probe. No baseline (never parsed / read failure) → not
+        // something the query path should fix (a stamp heal needs a prior index
+        // to re-extract); leave it to startup / explicit reparse.
+        let drifted = match crate::freshness::workspace_drift(db, &entry.root, &entry.languages) {
+            (_, Some(d)) => !d.is_empty(),
             (_, None) => return None,
-            (_, Some(_)) => {}
+        };
+        if !drifted && !stamp_mismatch {
+            return None;
         }
 
-        // Drifted: serialize behind the parse lock with a bounded wait. If a
-        // parse already holds it past the deadline, answer from the current
+        // Need a reparse: serialize behind the parse lock with a bounded wait. If
+        // a parse already holds it past the deadline, answer from the current
         // index rather than blocking the query on a big rebuild.
         let lock = self.parse_coord.lock_for(&entry.id);
         let guard = match tokio::time::timeout(Self::REFRESH_LOCK_WAIT, lock.lock_owned()).await {
@@ -272,12 +290,17 @@ impl SutraServer {
             }
         };
 
-        // Re-probe under the lock: a concurrent refresh may have already cleaned
-        // the drift, so N racing queries on one edit produce one parse, not N.
+        // Re-check under the lock: a concurrent refresh may have healed the stamp
+        // and/or cleaned the drift, so N racing queries produce one parse, not N.
+        let stamp_mismatch =
+            db.parser_stamp().unwrap_or(None).as_deref() != Some(crate::parser::PARSER_STAMP);
         let drift = match crate::freshness::workspace_drift(db, &entry.root, &entry.languages) {
-            (_, Some(d)) if !d.is_empty() => d,
-            _ => return None,
+            (_, Some(d)) if !d.is_empty() => Some(d),
+            _ => None,
         };
+        if drift.is_none() && !stamp_mismatch {
+            return None;
+        }
 
         let mark = self.parse_coord.mark_parsing(&entry.id);
         let db = Arc::clone(db);
@@ -288,14 +311,32 @@ impl SutraServer {
         // lifetime tracks the write, not this async future. spawn_blocking is not
         // cancelled when the awaiting future is dropped (HTTP client disconnect /
         // request cancellation); holding them out here would release the lock the
-        // instant the future drops while `parse_incremental` keeps mutating SQLite,
-        // letting a concurrent DD read (`hold_parse_lock`) or refresh enter
-        // mid-write and read a half-written index (sutra/380).
+        // instant the future drops while the parse keeps mutating SQLite, letting
+        // a concurrent DD read (`hold_parse_lock`) or refresh enter mid-write and
+        // read a half-written index (sutra/380).
         let result = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let _mark = mark;
             let registry = crate::parser::adapter::default_registry();
-            crate::pipeline::parse_incremental(&entry_bg, &db, &config, &registry, &drift)
+            if stamp_mismatch {
+                // Extractor changed: a full walk re-extracts every file and
+                // re-records the stamp, and subsumes any pending content drift.
+                // A persistently failing file leaves the stamp unadvanced
+                // (sutra/381), so this can re-run per query until the file heals;
+                // the parse lock caps that to one walk at a time, which is
+                // preferable to silently serving stale symbols.
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                crate::pipeline::parse_workspace(&entry_bg, &db, &config, &cancel, &registry)
+            } else {
+                // Hot path: only the drifted files.
+                crate::pipeline::parse_incremental(
+                    &entry_bg,
+                    &db,
+                    &config,
+                    &registry,
+                    drift.as_ref().expect("drift is Some when the stamp is current"),
+                )
+            }
         })
         .await;
 
@@ -304,6 +345,7 @@ impl SutraServer {
                 tracing::debug!(
                     files = snap.files_parsed,
                     ms = snap.duration_ms,
+                    full = stamp_mismatch,
                     "query-path refresh complete"
                 );
                 None
@@ -1258,4 +1300,90 @@ fn json_to_rmcp(e: serde_json::Error) -> ErrorData {
         format!("JSON serialization failed: {e}"),
         Some(serde_json::to_value(data).unwrap_or_default()),
     )
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn test_config(db_dir: &Path) -> Config {
+        Config {
+            db_dir: db_dir.to_path_buf(),
+            workspaces_path: db_dir.join("workspaces.toml"),
+            listen_addr: "127.0.0.1:0".to_string(),
+            parse_parallelism: 1,
+            log_level: "warn".to_string(),
+            constraints_idle_timeout_sec: 1800,
+            parse_timeout_ms: 5000,
+        }
+    }
+
+    // sutra/382: a clean-byte parser-stamp mismatch must heal on the query path
+    // (a full re-extraction), not only at stdio-CWD startup. The query path is
+    // the single choke point http and non-CWD workspaces reach. The server here
+    // has default_workspace = None (the http configuration) and the workspace is
+    // passed explicitly — the non-CWD case that maybe_reparse_cwd never covers.
+    #[tokio::test]
+    async fn test_query_path_heals_parser_stamp_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+
+        let db_dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(test_config(db_dir.path()));
+        let entry = workspace::WorkspaceEntry {
+            id: "stamp-heal".to_string(),
+            root: dir.path().to_path_buf(),
+            languages: vec!["rust".to_string()],
+            frozen: false,
+        };
+        let db = Arc::new(Db::open_unchecked(&entry.id, db_dir.path()).unwrap());
+
+        // Baseline full parse records the current extractor stamp.
+        {
+            let cancel = AtomicBool::new(false);
+            let registry = crate::parser::adapter::default_registry();
+            crate::pipeline::parse_workspace(&entry, &db, &config, &cancel, &registry).unwrap();
+        }
+        assert_eq!(
+            db.parser_stamp().unwrap().as_deref(),
+            Some(crate::parser::PARSER_STAMP),
+            "baseline parse records the current stamp",
+        );
+
+        // Simulate an extractor change: the stored stamp no longer matches, but
+        // the bytes on disk are untouched — there is no content drift to ride.
+        db.set_parser_stamp("stale-extractor-identity").unwrap();
+
+        let server = SutraServer::new(
+            Arc::clone(&config),
+            Arc::new(RwLock::new(WorkspacesConfig {
+                workspace: vec![entry.clone()],
+            })),
+            Arc::new(Mutex::new(HashMap::new())),
+            ParseCoordinator::new(),
+            Arc::new(LessonsDb::open(db_dir.path()).unwrap()),
+        );
+
+        // The query-path refresh sees the stamp mismatch (not content drift) and
+        // runs a full re-extraction, which re-records the current stamp. Only
+        // parse_workspace touches the stamp — parse_incremental never does — so
+        // the stamp advancing is proof the full path ran.
+        let note = server.refresh_before_answer(&db, entry.clone()).await;
+        assert!(
+            note.is_none(),
+            "a successful heal returns no degradation note: {note:?}",
+        );
+        assert_eq!(
+            db.parser_stamp().unwrap().as_deref(),
+            Some(crate::parser::PARSER_STAMP),
+            "the query-path refresh heals a clean-byte stamp mismatch via a full reparse",
+        );
+
+        // Healed: a second refresh sees a matching stamp and clean bytes → no-op.
+        let note2 = server.refresh_before_answer(&db, entry).await;
+        assert!(note2.is_none(), "no reparse once healed");
+    }
 }
