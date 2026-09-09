@@ -334,7 +334,9 @@ impl SutraServer {
                     &db,
                     &config,
                     &registry,
-                    drift.as_ref().expect("drift is Some when the stamp is current"),
+                    drift
+                        .as_ref()
+                        .expect("drift is Some when the stamp is current"),
                 )
             }
         })
@@ -670,8 +672,8 @@ impl SutraServer {
             tracing::warn!("alias sync during explore failed: {e}");
         }
         let budget = args.budget.unwrap_or(10);
-        let result =
-            tools::explore::handle(ctx.db(), &args.query, budget).map_err(sutra_to_rmcp)?;
+        let result = tools::explore::handle(ctx.db(), ctx.workspace_root(), &args.query, budget)
+            .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

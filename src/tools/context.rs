@@ -192,11 +192,22 @@ fn sort_neighbors(neighbors: &mut [Neighbor]) {
 
 fn read_body(workspace_root: &Path, db: &Db, sym: &SymbolRow) -> Option<String> {
     let file = db.file_by_id(sym.file_id).ok()??;
-    let abs_path = workspace_root.join(&*file.path);
-    let source = std::fs::read_to_string(&abs_path).ok()?;
+    read_line_span(workspace_root, &file.path, sym.start_line, sym.end_line)
+}
+
+/// Read the source text of a 1-based, inclusive `[start_line, end_line]` span
+/// from `rel_path` under `workspace_root`. Returns None if the file is
+/// unreadable or the span is empty / out of range.
+pub(crate) fn read_line_span(
+    workspace_root: &Path,
+    rel_path: &str,
+    start_line: i64,
+    end_line: i64,
+) -> Option<String> {
+    let source = std::fs::read_to_string(workspace_root.join(rel_path)).ok()?;
     let lines: Vec<&str> = source.lines().collect();
-    let start = (sym.start_line as usize).saturating_sub(1);
-    let end = std::cmp::min(sym.end_line as usize, lines.len());
+    let start = (start_line as usize).saturating_sub(1);
+    let end = std::cmp::min(end_line as usize, lines.len());
     if start >= end {
         return None;
     }

@@ -2,10 +2,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::tools::context::{estimate_tokens, read_line_span};
 use crate::vocabulary;
 
 const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "method", "enum"];
@@ -278,7 +280,25 @@ fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
     edges
 }
 
-pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
+/// Average source bytes per line, used only when a span's source can't be read
+/// (stale index / deleted file). The normal path reads the actual span bytes,
+/// so this constant never drives the estimate for a live symbol.
+const FALLBACK_BYTES_PER_LINE: usize = 40;
+
+/// Estimate a symbol span's token cost from its source bytes, via the shared
+/// char-based estimator. Degrades to a bytes-per-line approximation only when
+/// the span is unknown or its source is unreadable — never `lines * 4`.
+fn span_tokens(workspace_root: &Path, rel_path: &str, span: Option<(i64, i64)>) -> i64 {
+    if let Some((start, end)) = span
+        && let Some(src) = read_line_span(workspace_root, rel_path, start, end)
+    {
+        return estimate_tokens(&src) as i64;
+    }
+    let lines = span.map(|(s, e)| (e - s + 1).max(1) as usize).unwrap_or(10);
+    (lines * FALLBACK_BYTES_PER_LINE / 4) as i64
+}
+
+pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Result<Value> {
     // Priority 0: alias resolution — check .sutra/aliases.toml, component names, anchor names
     // Filter out orphan matches (targets that no longer exist) and fall through if nothing valid
     let alias_matches = vocabulary::resolve(db, query).unwrap_or_default();
@@ -294,10 +314,12 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 if items.len() >= budget {
                     break;
                 }
-                let lines = match (loc.start_line, loc.end_line) {
-                    (Some(s), Some(e)) => e - s + 1,
-                    _ => 10,
+                let span = match (loc.start_line, loc.end_line) {
+                    (Some(s), Some(e)) => Some((s, e)),
+                    _ => None,
                 };
+                let lines = span.map(|(s, e)| e - s + 1).unwrap_or(10);
+                let estimated_tokens = span_tokens(workspace_root, &loc.path, span);
                 let fetch = if matches!(
                     m.target_kind.as_str(),
                     "symbol" | "function" | "struct" | "method"
@@ -315,7 +337,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                     "lines": lines,
                     "component": &m.component_id,
                     "reason": format!("alias:{}", m.source),
-                    "estimated_tokens": lines * 4,
+                    "estimated_tokens": estimated_tokens,
                     "fetch": fetch,
                 }));
             }
@@ -379,6 +401,11 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
             .unwrap_or_default();
         let component = component_map.get(&sym.file_id);
         let lines = sym.end_line - sym.start_line + 1;
+        let estimated_tokens = span_tokens(
+            workspace_root,
+            &file_path,
+            Some((sym.start_line, sym.end_line)),
+        );
         return Ok(json!({
             "items": [{
                 "symbol": sym.qualified_name,
@@ -387,7 +414,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 "lines": lines,
                 "component": component,
                 "reason": "direct_match",
-                "estimated_tokens": lines * 4,
+                "estimated_tokens": estimated_tokens,
                 "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
             }],
             "edges": [],
@@ -401,7 +428,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 "direct_matches": 1,
                 "fan_out_items": 0,
                 "components_touched": 1,
-                "total_estimated_tokens": lines * 4
+                "total_estimated_tokens": estimated_tokens
             }
         }));
     }
@@ -528,6 +555,11 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 .unwrap_or_default();
             let component = component_map.get(&sym.file_id);
             let lines = sym.end_line - sym.start_line + 1;
+            let estimated_tokens = span_tokens(
+                workspace_root,
+                &file_path,
+                Some((sym.start_line, sym.end_line)),
+            );
             let reason = if direct_ids.contains(&sym.id) {
                 "direct_match"
             } else {
@@ -540,7 +572,7 @@ pub fn handle(db: &Db, query: &str, budget: i64) -> Result<Value> {
                 "lines": lines,
                 "component": component,
                 "reason": reason,
-                "estimated_tokens": lines * 4,
+                "estimated_tokens": estimated_tokens,
                 "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
             })
         })
@@ -726,5 +758,44 @@ mod tests {
         assert_eq!(fan_out_depth(9), 1);
         assert_eq!(fan_out_depth(10), 0);
         assert_eq!(fan_out_depth(100), 0);
+    }
+
+    #[test]
+    fn span_tokens_estimates_from_bytes_not_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let rel = "sample.rs";
+        // Three dense lines — ~50 chars each, far more than the 4 tokens/line
+        // the old `lines * 4` formula assumed.
+        let content = "let alpha = compute_something(beta, gamma, delta);\n\
+                       let result = alpha.transform().collect::<Vec<_>>();\n\
+                       return result.into_iter().map(|x| x + 1).sum();";
+        std::fs::write(dir.path().join(rel), content).unwrap();
+        let lines = content.lines().count() as i64;
+
+        let est = span_tokens(dir.path(), rel, Some((1, lines)));
+
+        // Byte-based: matches the shared char estimator on the actual span source.
+        assert_eq!(est, estimate_tokens(content) as i64);
+        // Within ±20% of the chars/4 proxy for a real tokenizer count.
+        let proxy = content.chars().count() as i64 / 4;
+        assert!(
+            (est - proxy).abs() * 5 <= proxy,
+            "estimate {est} should be within ±20% of the chars/4 count ({proxy})"
+        );
+        // ...and well above the old `lines * 4` undercount.
+        assert!(
+            est > lines * 4,
+            "estimate {est} should exceed lines*4 = {}",
+            lines * 4
+        );
+    }
+
+    #[test]
+    fn span_tokens_fallback_is_not_lines_times_four() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unreadable span: degrade to bytes-per-line, never `lines * 4`.
+        let est = span_tokens(dir.path(), "missing.rs", Some((1, 10)));
+        assert_eq!(est, (10 * FALLBACK_BYTES_PER_LINE / 4) as i64);
+        assert!(est > 10 * 4);
     }
 }
