@@ -653,15 +653,27 @@ pub fn parse_workspace(
 
     let allowed_extensions: Vec<&str> = registry.extensions_for_languages(&workspace.languages);
 
-    let source_files = walk_source_files(&workspace.root, &allowed_extensions);
+    let (source_files, walk_complete) =
+        walk_source_files_checked(&workspace.root, &allowed_extensions);
     info!(workspace = %workspace.id, files_found = source_files.len(), "walked workspace");
 
     // Prune indexed files the walk no longer yields — deleted from disk or newly
-    // excluded (e.g. now covered by a `.gitignore` rule).
-    let pruned = prune_stale_files(db, &workspace.root, &source_files);
-    if pruned > 0 {
-        info!(workspace = %workspace.id, pruned, "pruned stale files from index");
-    }
+    // excluded (e.g. now covered by a `.gitignore` rule). Only ever from a
+    // provably complete walk: a partial walk under-yields paths, so pruning on
+    // its shortfall would cascade-delete live files (sutra/379).
+    let pruned = if walk_complete {
+        let pruned = prune_stale_files(db, &workspace.root, &source_files);
+        if pruned > 0 {
+            info!(workspace = %workspace.id, pruned, "pruned stale files from index");
+        }
+        pruned
+    } else {
+        warn!(
+            workspace = %workspace.id,
+            "workspace walk hit entry errors; skipping stale-file prune to avoid deleting live index rows"
+        );
+        0
+    };
 
     if source_files.is_empty()
         && workspace.root.is_dir()
@@ -1294,19 +1306,27 @@ fn record_unchanged_snapshot(
     Ok(())
 }
 
-/// Recursively walk `root` and collect files with matching extensions.
+/// Recursively walk `root` and collect files with matching extensions, also
+/// reporting whether the traversal completed without per-entry errors. A `false`
+/// completeness flag means the walk *under-yielded* — an unreadable subtree, a
+/// transient I/O failure — so the returned path set is only a lower bound.
+/// Callers that derive *deletions* from "indexed but not walked" MUST NOT do so
+/// on an incomplete walk: the shortfall is missing paths, not deleted files, and
+/// treating it as deletions cascade-deletes live rows (sutra/379).
 /// Skips hidden dirs and known build output directories.
-pub(crate) fn walk_source_files(
+pub(crate) fn walk_source_files_checked(
     root: &Path,
     allowed_extensions: &[&str],
-) -> Vec<std::path::PathBuf> {
+) -> (Vec<std::path::PathBuf>, bool) {
     let mut result = Vec::new();
+    let mut complete = true;
 
     for entry in workspace_walker(root).build() {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
                 warn!(error = %e, "could not read workspace entry");
+                complete = false;
                 continue;
             }
         };
@@ -1321,7 +1341,18 @@ pub(crate) fn walk_source_files(
 
     // Sort for deterministic ordering.
     result.sort();
-    result
+    (result, complete)
+}
+
+/// Recursively walk `root` and collect files with matching extensions.
+/// Skips hidden dirs and known build output directories. Discards the walk's
+/// completeness signal — use [`walk_source_files_checked`] when the caller
+/// derives deletions from what the walk did not yield.
+pub(crate) fn walk_source_files(
+    root: &Path,
+    allowed_extensions: &[&str],
+) -> Vec<std::path::PathBuf> {
+    walk_source_files_checked(root, allowed_extensions).0
 }
 
 struct SnapshotHealthData {

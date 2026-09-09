@@ -136,28 +136,48 @@ pub fn probe_drift(
     stored: &[crate::db::FileFingerprint],
     allowed_extensions: &[&str],
 ) -> WorkspaceDrift {
+    let (walked, walk_complete) =
+        crate::pipeline::walk_source_files_checked(workspace_root, allowed_extensions);
+    classify_drift(workspace_root, stored, &walked, walk_complete)
+}
+
+/// Classify each walked path against the stored baseline into changed / added /
+/// removed. `walk_complete` gates the `removed` set: it is derived from "indexed
+/// but not walked", which is only a real deletion when the walk is provably
+/// complete. A partial walk (traversal error) under-yields paths, so the same
+/// difference is *missing observations*, not deletions — emitting it would
+/// cascade-delete live files (sutra/379). `changed`/`added` are safe from a
+/// partial walk: they only trigger reparse, never deletion.
+fn classify_drift(
+    workspace_root: &Path,
+    stored: &[crate::db::FileFingerprint],
+    walked: &[std::path::PathBuf],
+    walk_complete: bool,
+) -> WorkspaceDrift {
     use std::collections::HashMap;
 
     // Drain the index as we walk: a matched path is removed, so whatever remains
-    // afterward is exactly the set the walk never yielded — the removed files.
+    // afterward is exactly the set the walk never yielded.
     let mut index: HashMap<&str, &crate::db::FileFingerprint> =
         stored.iter().map(|fp| (fp.path.as_str(), fp)).collect();
     let mut drift = WorkspaceDrift::default();
 
-    for full in crate::pipeline::walk_source_files(workspace_root, allowed_extensions) {
+    for full in walked {
         let rel = full
             .strip_prefix(workspace_root)
-            .unwrap_or(&full)
+            .unwrap_or(full)
             .to_string_lossy()
             .to_string();
         match index.remove(rel.as_str()) {
             None => drift.added.push(rel),
-            Some(fp) if !file_matches_fingerprint(&full, fp) => drift.changed.push(rel),
+            Some(fp) if !file_matches_fingerprint(full, fp) => drift.changed.push(rel),
             Some(_) => {} // clean
         }
     }
 
-    drift.removed = index.into_keys().map(str::to_string).collect();
+    if walk_complete {
+        drift.removed = index.into_keys().map(str::to_string).collect();
+    }
     drift
 }
 
@@ -382,6 +402,72 @@ mod tests {
         let drift = probe_drift(dir.path(), &stored, RS);
         assert_eq!(drift.removed, vec!["gone.rs".to_string()]);
         assert!(drift.changed.is_empty() && drift.added.is_empty());
+    }
+
+    #[test]
+    fn incomplete_walk_emits_no_removed_drift() {
+        // A stored file the (partial) walk never yielded. On an INCOMPLETE walk
+        // this shortfall is a missing observation, not a deletion, so it must not
+        // become `removed` drift — that is what would drive delete_file_cascade
+        // over a live file (sutra/379).
+        let stored = vec![FileFingerprint {
+            path: "still-here.rs".to_string(),
+            size_bytes: Some(10),
+            mtime_ns: Some(1),
+            content_hash: "deadbeef".to_string(),
+        }];
+        let drift = classify_drift(Path::new("/nonexistent"), &stored, &[], false);
+        assert!(
+            drift.removed.is_empty(),
+            "an incomplete walk must not classify indexed files as removed"
+        );
+        assert!(drift.changed.is_empty() && drift.added.is_empty());
+    }
+
+    #[test]
+    fn complete_walk_still_classifies_removed() {
+        // Same shortfall, but the walk is COMPLETE: the path is genuinely gone,
+        // so a real deletion must still be reported. The fix must not suppress
+        // legitimate removals.
+        let stored = vec![FileFingerprint {
+            path: "gone.rs".to_string(),
+            size_bytes: Some(10),
+            mtime_ns: Some(1),
+            content_hash: "deadbeef".to_string(),
+        }];
+        let drift = classify_drift(Path::new("/nonexistent"), &stored, &[], true);
+        assert_eq!(drift.removed, vec!["gone.rs".to_string()]);
+        assert!(drift.changed.is_empty() && drift.added.is_empty());
+    }
+
+    /// End-to-end: an unreadable subtree makes the real walker yield an entry
+    /// error, so `probe_drift` sees an incomplete walk and must emit no `removed`
+    /// drift for the indexed file trapped inside it. Unix-only; skipped when the
+    /// permission error cannot be induced (e.g. running as root).
+    #[cfg(unix)]
+    #[test]
+    fn probe_drift_over_unreadable_subtree_emits_no_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("locked");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("lib.rs"), "fn a() {}").unwrap();
+        let stored = vec![fingerprint_of(dir.path(), "locked/lib.rs")];
+
+        // Make the subtree unreadable so the walker errors on it and never yields
+        // its contents.
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+        let inducible = fs::read_dir(&sub).is_err();
+        let drift = probe_drift(dir.path(), &stored, RS);
+        // Restore perms so tempdir cleanup can recurse in.
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if inducible {
+            assert!(
+                drift.removed.is_empty(),
+                "a partial walk must not classify the trapped file as removed: {drift:?}"
+            );
+        }
     }
 
     /// Not a correctness test — a manual probe-cost measurement on the sutra
