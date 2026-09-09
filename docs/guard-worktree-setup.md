@@ -176,9 +176,11 @@ sutra check --diff branch --format json   # CI: whole branch vs main, machine-re
 Both paths share one evaluation core (`src/tools/check.rs`), so they gate
 identically — including on a malformed `.sutra/rules.toml`, which is treated as
 blocking rather than passing silently. They differ only in call-site policy:
-`sutra check` resolves the workspace from CWD and reparses a stale index first
-(correctness for an interactive gate); `sutra-guard --check-constraints` reads
-the index as-is and fails open (a guard outage must never block a commit).
+`sutra check` resolves the workspace from CWD and refreshes a stale index first
+— incrementally (sub-second for a normal edit; a full reparse only on an
+extractor change or first run), mirroring the MCP query path; `sutra-guard
+--check-constraints` reads the index as-is and fails open (a guard outage must
+never block a commit).
 
 ## Gotchas specific to worktrees
 
