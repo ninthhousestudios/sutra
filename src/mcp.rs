@@ -279,17 +279,25 @@ impl SutraServer {
             _ => return None,
         };
 
-        let _mark = self.parse_coord.mark_parsing(&entry.id);
+        let mark = self.parse_coord.mark_parsing(&entry.id);
         let db = Arc::clone(db);
         let entry = Arc::new(entry);
         let entry_bg = Arc::clone(&entry);
         let config = Arc::clone(&self.config);
+        // Move the parse lock guard and mark INTO the blocking task so their
+        // lifetime tracks the write, not this async future. spawn_blocking is not
+        // cancelled when the awaiting future is dropped (HTTP client disconnect /
+        // request cancellation); holding them out here would release the lock the
+        // instant the future drops while `parse_incremental` keeps mutating SQLite,
+        // letting a concurrent DD read (`hold_parse_lock`) or refresh enter
+        // mid-write and read a half-written index (sutra/380).
         let result = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let _mark = mark;
             let registry = crate::parser::adapter::default_registry();
             crate::pipeline::parse_incremental(&entry_bg, &db, &config, &registry, &drift)
         })
         .await;
-        drop(guard);
 
         match result {
             Ok(Ok(snap)) => {
@@ -1105,12 +1113,17 @@ impl SutraServer {
                     // action does — otherwise the never-parsed path could remint
                     // ids under an in-flight constraints/orient read (sutra/298).
                     let lock = self.parse_coord.lock_for(&ws_id);
-                    let _guard = lock.lock().await;
-                    let _mark = self.parse_coord.mark_parsing(&ws_id);
+                    let guard = lock.lock_owned().await;
+                    let mark = self.parse_coord.mark_parsing(&ws_id);
                     let entry_bg = Arc::clone(&entry);
                     let db_bg = Arc::clone(&db);
                     let config_bg = Arc::clone(&self.config);
+                    // Guard + mark move into the blocking task so a cancelled
+                    // request future can't release the parse lock while
+                    // `parse_workspace` is still writing (sutra/380).
                     let _ = tokio::task::spawn_blocking(move || {
+                        let _guard = guard;
+                        let _mark = mark;
                         let cancel = AtomicBool::new(false);
                         let registry = crate::parser::adapter::default_registry();
                         crate::pipeline::parse_workspace(
@@ -1152,11 +1165,16 @@ impl SutraServer {
             "reparse" => {
                 let ws_root = entry.root.as_path().to_owned();
                 let lock = self.parse_coord.lock_for(&ws_id);
-                let _guard = lock.lock().await;
-                let _mark = self.parse_coord.mark_parsing(&ws_id);
+                let guard = lock.lock_owned().await;
+                let mark = self.parse_coord.mark_parsing(&ws_id);
                 let config = Arc::clone(&self.config);
                 let db_bg = Arc::clone(&db);
+                // Guard + mark move into the blocking task so a cancelled request
+                // future can't release the parse lock while the reparse is still
+                // writing (sutra/380).
                 let result = tokio::task::spawn_blocking(move || {
+                    let _guard = guard;
+                    let _mark = mark;
                     let cancel = AtomicBool::new(false);
                     let registry = crate::parser::adapter::default_registry();
                     tools::parse::handle(&entry, &db_bg, &config, &cancel, &registry)

@@ -1498,6 +1498,66 @@ mod parse_coordinator_tests {
         );
     }
 
+    // sutra/380: the query-path refresh moves the parse lock guard and mark INTO
+    // the spawn_blocking task. spawn_blocking tasks are not cancelled when the
+    // awaiting future is dropped (an HTTP client disconnect / request
+    // cancellation), so the lock must stay held for the whole write — otherwise a
+    // concurrent refresh or DD read could enter and read a half-written index.
+    // This models that path: abandon the await, assert a second acquirer cannot
+    // enter until the detached task finishes.
+    #[tokio::test]
+    async fn abandoned_await_keeps_lock_and_mark_until_blocking_task_finishes() {
+        use std::sync::mpsc;
+
+        let coord = ParseCoordinator::new();
+        let lock = coord.lock_for("ws");
+        let guard = lock.lock_owned().await;
+        let mark = coord.mark_parsing("ws");
+
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        // Guard + mark move into the blocking task, exactly as the refresh path
+        // does. They drop only when this closure returns.
+        let handle = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let _mark = mark;
+            started_tx.send(()).expect("signal start");
+            release_rx.recv().expect("await release"); // stands in for the write
+        });
+
+        // Wait until the task holds the guard, then abandon the await — dropping
+        // the JoinHandle detaches the blocking task; it is NOT cancelled.
+        started_rx.recv().expect("task started");
+        drop(handle);
+
+        // The detached write still holds the lock + mark: a concurrent acquirer
+        // keyed on the same workspace must contend, and freshness still sees a
+        // parse in progress.
+        assert!(
+            coord.lock_for("ws").try_lock().is_err(),
+            "parse lock must stay held by the detached blocking task"
+        );
+        assert!(coord.is_parsing("ws"), "parse mark must stay set mid-write");
+
+        // Let the write finish. `_mark` drops before `_guard` (reverse decl
+        // order), so once the lock is reacquirable the mark is already cleared.
+        release_tx.send(()).expect("release the write");
+        let reacquired = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            coord.lock_for("ws").lock_owned(),
+        )
+        .await;
+        assert!(
+            reacquired.is_ok(),
+            "lock never released after the detached task finished"
+        );
+        assert!(
+            !coord.is_parsing("ws"),
+            "mark cleared once the detached task dropped it"
+        );
+    }
+
     // The lock is still the serialization primitive that excludes a concurrent
     // parse/evaluation on the same workspace.
     #[test]
