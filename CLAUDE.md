@@ -11,6 +11,7 @@ When exploring an unfamiliar area, start with `sutra_explore(query, workspace)` 
 For convention system work, read `docs/conventions-map.md` first — it's a compressed architecture reference that replaces broad exploration.
 For constraint system work, read `docs/constraints-map.md` first — same idea, covers DD engine, rules parsing, TOML format, and remaining task graph.
 For health/similarity system work, read `docs/health-map.md` first — covers the finding model, biomarker tiers, waiver mechanism, pipeline integration, and scoring design.
+For freshness / query-path refresh work, read `docs/freshness-map.md` first — covers content-based staleness, the refresh-before-answering flow under the parse lock, and which derived data is refreshed inline vs deferred to a full reparse.
 For lessons system work, the core module is `src/lessons/` — shared sqlite store at `~/.sutra/lessons.db`, anchor matching engine, confidence lifecycle, and contextual surfacing through `sutra_symbol`/`sutra_impact`.
 
 ## Agent skills

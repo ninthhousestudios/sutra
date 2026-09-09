@@ -900,12 +900,13 @@ fn entity_change_walk(db: &Db, workspace_root: &Path, max_commits: u32) -> Resul
     Ok(total_changes)
 }
 
-fn post_parse_sequence(
-    db: &Db,
-    workspace_root: &Path,
-    boundary_multipliers: &HashMap<String, f64>,
-    registry: &LanguageRegistry,
-) -> Result<(i64, i64, i64)> {
+/// Resolve pending cross-file references and rebuild import edges — the tier of
+/// derived data that graph and symbol queries read directly. Shared by the full
+/// parse (via [`post_parse_sequence`]) and the query-path incremental refresh
+/// ([`parse_incremental`], sutra/363). Returns the resolution counts plus the
+/// set of file ids that needed resolution, which the full-parse graph tier
+/// reuses as its dirty hint.
+fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64, HashSet<i64>)> {
     // Query resolution work from DB — includes freshly-parsed files,
     // dependents of deleted symbols, and orphans from interrupted parses.
     log_phase_rss("post_parse:start");
@@ -969,6 +970,104 @@ fn post_parse_sequence(
     }
 
     log_phase_rss("post_parse:refs_resolved");
+    Ok((
+        resolved_count,
+        unresolved_count,
+        skipped_count,
+        resolution_set,
+    ))
+}
+
+/// Query-path incremental refresh (sutra/363): reparse only the drifted files
+/// and drop the removed ones, then re-resolve references. Writes exactly the
+/// tier that graph and symbol queries read — files, symbols, refs, and import
+/// edges — and deliberately skips the expensive derived tiers (pagerank, file
+/// rollups, components, semantic anchors, HRR vectors, health findings,
+/// cochange, and pattern families), which remain the job of an explicit
+/// `reparse`. The caller holds the per-workspace parse lock across this call.
+///
+/// No snapshot is recorded: staleness is content-based (per-file fingerprints,
+/// updated by `replace_file_data`), so the next drift probe reads clean without
+/// a new snapshot, and `set_derived_complete` is deliberately NOT called — the
+/// derived tier really is behind until a full reparse catches it up.
+pub fn parse_incremental(
+    workspace: &WorkspaceEntry,
+    db: &Db,
+    config: &Config,
+    registry: &LanguageRegistry,
+    drift: &crate::freshness::WorkspaceDrift,
+) -> Result<ParseSnapshot> {
+    let _flock = acquire_parse_flock(config, &workspace.id)?;
+    let start = Instant::now();
+    let mut pool = ParserPool::new(Duration::from_millis(config.parse_timeout_ms));
+
+    // Drop files the walk no longer yields (deleted or newly ignored).
+    let mut removed = 0i64;
+    for rel in &drift.removed {
+        if let Some(f) = db.file_by_path(rel)? {
+            db.delete_file_cascade(f.id)?;
+            removed += 1;
+        }
+    }
+
+    let mut files_parsed: i64 = 0;
+    let mut symbols_extracted: i64 = 0;
+    let mut refs_extracted: i64 = 0;
+    let mut parse_errors: i64 = 0;
+    // The query path only ever reaches non-frozen workspaces; never trust mtime
+    // (trust_mtime=false), so a mtime-preserving edit is still caught by the
+    // content-hash check inside parse_single_file.
+    for rel in drift.changed.iter().chain(&drift.added) {
+        let full = workspace.root.join(rel);
+        if let Some(result) =
+            parse_single_file(db, &full, &workspace.root, registry, &mut pool, false)?
+        {
+            parse_errors += result.parse_errors;
+            if result.file_id != 0 {
+                files_parsed += 1;
+                symbols_extracted += result.symbols_extracted;
+                refs_extracted += result.refs_extracted;
+            }
+        }
+    }
+
+    let (resolved_count, unresolved_count, skipped_count, _resolution_set) =
+        resolve_references(db, &workspace.root)?;
+
+    let duration_ms = start.elapsed().as_millis() as i64;
+    info!(
+        workspace = %workspace.id,
+        changed = drift.changed.len(),
+        added = drift.added.len(),
+        removed,
+        files_parsed,
+        symbols_extracted,
+        duration_ms,
+        "query-path incremental reparse"
+    );
+
+    Ok(ParseSnapshot {
+        files_walked: (drift.changed.len() + drift.added.len()) as i64,
+        files_parsed,
+        symbols_extracted,
+        refs_extracted,
+        parse_errors,
+        duration_ms,
+        resolved_count,
+        unresolved_count,
+        skipped_count,
+    })
+}
+
+fn post_parse_sequence(
+    db: &Db,
+    workspace_root: &Path,
+    boundary_multipliers: &HashMap<String, f64>,
+    registry: &LanguageRegistry,
+) -> Result<(i64, i64, i64)> {
+    let (resolved_count, unresolved_count, skipped_count, resolution_set) =
+        resolve_references(db, workspace_root)?;
+
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;
@@ -1052,10 +1151,7 @@ fn post_parse_sequence(
         }
         log_phase_rss("post_parse:aliases_done");
 
-        info!(
-            symbols = all_db_symbols.len(),
-            "similarity: computing HRR vectors"
-        );
+        info!("similarity: computing HRR vectors");
         let (hrr_count, hrr_changed) = crate::similarity::compute_hrr_vectors(db, workspace_root)?;
         info!(count = hrr_count, "similarity: HRR vectors done");
         log_phase_rss("post_parse:hrr_done");

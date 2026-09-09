@@ -226,3 +226,218 @@ async fn test_stale_detection() {
     let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
     assert!(is_stale, "edited workspace should be stale");
 }
+
+/// Compute drift against the current index and incrementally reparse only that
+/// set — the query-path refresh routine (sutra/363), driven directly.
+fn refresh(ws: &WorkspaceEntry, db: &Db, config: &Config) -> pipeline::ParseSnapshot {
+    let (_, drift) = sutra::freshness::workspace_drift(db, &ws.root, &ws.languages);
+    let drift = drift.expect("baseline must exist for an incremental refresh");
+    let registry = default_registry();
+    pipeline::parse_incremental(ws, db, config, &registry, &drift).unwrap()
+}
+
+/// An edit to an indexed file is picked up by an incremental refresh that walks
+/// only the drift set, and the new symbol is immediately queryable.
+#[tokio::test]
+async fn test_incremental_refresh_reflects_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let file_path = src.join("lib.rs");
+    std::fs::write(&file_path, "pub fn hello() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_edit", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    // The new symbol does not exist yet.
+    let before = find::handle(&db, "added_later", None, None, false).unwrap();
+    assert!(before["matches"].as_array().unwrap().is_empty());
+
+    // Edit the file, adding a symbol, then refresh.
+    std::fs::write(&file_path, "pub fn hello() {}\npub fn added_later() {}\n").unwrap();
+    let snap = refresh(&ws, &db, &config);
+
+    // Only the one drifted file was touched — no full workspace walk.
+    assert_eq!(
+        snap.files_walked, 1,
+        "refresh must touch only the drift set"
+    );
+    assert_eq!(snap.files_parsed, 1);
+
+    let after = find::handle(&db, "added_later", None, None, false).unwrap();
+    assert!(
+        !after["matches"].as_array().unwrap().is_empty(),
+        "the incremental refresh must make the new symbol queryable"
+    );
+
+    // The refresh cleaned the drift — the next probe reads clean.
+    let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
+    assert!(!is_stale, "workspace must be clean after the refresh");
+}
+
+/// A refresh handles a newly created file (added) and a deleted file (removed)
+/// in one pass.
+#[tokio::test]
+async fn test_incremental_refresh_add_and_remove() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.rs"), "pub fn alpha() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_addrm", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+    assert!(db.file_by_path("src/a.rs").unwrap().is_some());
+
+    // Add a new file and delete the original.
+    std::fs::write(src.join("b.rs"), "pub fn beta() {}\n").unwrap();
+    std::fs::remove_file(src.join("a.rs")).unwrap();
+
+    refresh(&ws, &db, &config);
+
+    assert!(
+        db.file_by_path("src/a.rs").unwrap().is_none(),
+        "removed file must be dropped from the index"
+    );
+    assert!(
+        db.file_by_path("src/b.rs").unwrap().is_some(),
+        "added file must be indexed"
+    );
+    let beta = find::handle(&db, "beta", None, None, false).unwrap();
+    assert!(!beta["matches"].as_array().unwrap().is_empty());
+}
+
+/// The re-probe collapse that makes N racing queries produce ONE parse: once a
+/// refresh has cleaned the drift, a subsequent refresh against the (now empty)
+/// drift set is a no-op. The server re-probes under the parse lock and relies on
+/// exactly this to skip redundant parses.
+#[tokio::test]
+async fn test_incremental_refresh_noop_when_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "pub fn hello() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_noop", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    std::fs::write(src.join("lib.rs"), "pub fn hello() {}\npub fn more() {}\n").unwrap();
+    let first = refresh(&ws, &db, &config);
+    assert_eq!(first.files_parsed, 1, "first refresh reparses the edit");
+
+    // Drift is now empty; a second refresh parses nothing.
+    let second = refresh(&ws, &db, &config);
+    assert_eq!(
+        second.files_parsed, 0,
+        "a clean workspace must not be reparsed"
+    );
+    assert_eq!(second.files_walked, 0);
+}
+
+/// Not a correctness test — measures query-path refresh latency for a one-file
+/// edit on the sutra repo itself (sutra/363 acceptance criterion 3). Run:
+/// `cargo test --test workspace_lifecycle_test measure_incremental_refresh -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn measure_incremental_refresh_on_self() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("self_bench", root.clone());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    // Setup (untimed): a full parse to build the baseline index.
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    // Simulate a one-file edit non-destructively: reparse one already-indexed
+    // file (identical bytes) plus the full resolution tier.
+    let one = db
+        .file_by_path("src/pipeline.rs")
+        .unwrap()
+        .expect("src/pipeline.rs must be indexed");
+    let drift = sutra::freshness::WorkspaceDrift {
+        changed: vec![one.path.to_string()],
+        added: vec![],
+        removed: vec![],
+    };
+    let registry = default_registry();
+
+    let start = std::time::Instant::now();
+    let snap = pipeline::parse_incremental(&ws, &db, &config, &registry, &drift).unwrap();
+    let elapsed = start.elapsed();
+    println!(
+        "one-file incremental refresh on sutra: {elapsed:?} (files_parsed={}, resolved={})",
+        snap.files_parsed, snap.resolved_count
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "one-file refresh should complete well under 1s, took {elapsed:?}"
+    );
+}
+
+/// A refresh over a file with broken syntax is never fatal: it returns Ok (the
+/// server would answer normally with a note), keeps the rest of the index
+/// intact, and reports the parse error.
+#[tokio::test]
+async fn test_incremental_refresh_bad_syntax_not_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("good.rs"), "pub fn good() {}\n").unwrap();
+    std::fs::write(src.join("edit.rs"), "pub fn editable() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_bad", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    // Corrupt one file's syntax.
+    std::fs::write(src.join("edit.rs"), "pub fn editable( { { { unclosed\n").unwrap();
+
+    let (_, drift) = sutra::freshness::workspace_drift(&db, &ws.root, &ws.languages);
+    let drift = drift.unwrap();
+    let registry = default_registry();
+    // Must not return Err — a bad edit degrades, it does not break the query.
+    let snap = pipeline::parse_incremental(&ws, &db, &config, &registry, &drift).unwrap();
+    assert!(
+        snap.parse_errors >= 1,
+        "broken syntax should report a parse error"
+    );
+
+    // The untouched file's symbols survive.
+    let good = find::handle(&db, "good", None, None, false).unwrap();
+    assert!(!good["matches"].as_array().unwrap().is_empty());
+}

@@ -200,17 +200,115 @@ impl SutraServer {
         tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir).map_err(sutra_to_rmcp)
     }
 
-    fn tool_context(&self, ws_id: &str) -> std::result::Result<tools::ToolContext, ErrorData> {
+    async fn tool_context(
+        &self,
+        ws_id: &str,
+    ) -> std::result::Result<tools::ToolContext, ErrorData> {
         let ws = self.resolve_workspace(ws_id)?;
         let db = tools::get_or_open_db(&self.db_cache, &ws, &self.config.db_dir)
             .map_err(sutra_to_rmcp)?;
-        let response_freshness = self.freshness(&db, &ws.root);
+        // Refresh before answering (sutra/363): if the workspace drifted, take
+        // the parse lock and incrementally reparse the drift set so the query
+        // below reads the edit. The freshness probe then re-runs and reports
+        // clean. Never fatal — a failure returns a note and we answer as-is.
+        // A second cheap resolve hands `refresh_before_answer` an owned entry to
+        // move across the spawn_blocking boundary without a value clone.
+        let refresh_note = self
+            .refresh_before_answer(&db, self.resolve_workspace(ws_id)?)
+            .await;
+        let mut response_freshness = self.freshness(&db, &ws.root);
+        if let Some(note) = refresh_note {
+            response_freshness["refresh"] = serde_json::Value::String(note);
+        }
         Ok(tools::ToolContext::new(
             db,
             ws.root,
             true,
             response_freshness,
         ))
+    }
+
+    /// Wait at most this long for an in-flight parse before answering from the
+    /// current index. A one-file incremental reparse finishes well under this;
+    /// exceeding it means a large parse (full or first parse) holds the lock,
+    /// and blocking the query on it is worse than a one-cycle-stale answer.
+    const REFRESH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Refresh the index before answering (sutra/363): probe drift and, if the
+    /// workspace moved, incrementally reparse just the drift set under the parse
+    /// lock. Returns an optional envelope note. Never fatal — every failure mode
+    /// (lock contention past the deadline, parse error/panic) degrades to
+    /// answering from the current index; `is_stale` in the envelope still
+    /// reflects reality.
+    async fn refresh_before_answer(
+        &self,
+        db: &Arc<Db>,
+        entry: workspace::WorkspaceEntry,
+    ) -> Option<String> {
+        // Frozen index is immutable — never refreshed on the query path.
+        if entry.frozen {
+            return None;
+        }
+
+        // Probe first. Clean → answer immediately, zero cost beyond the probe.
+        // No baseline (never parsed / read failure) → not something an
+        // incremental reparse can fix; leave it to startup / explicit reparse.
+        match crate::freshness::workspace_drift(db, &entry.root, &entry.languages) {
+            (_, Some(d)) if d.is_empty() => return None,
+            (_, None) => return None,
+            (_, Some(_)) => {}
+        }
+
+        // Drifted: serialize behind the parse lock with a bounded wait. If a
+        // parse already holds it past the deadline, answer from the current
+        // index rather than blocking the query on a big rebuild.
+        let lock = self.parse_coord.lock_for(&entry.id);
+        let guard = match tokio::time::timeout(Self::REFRESH_LOCK_WAIT, lock.lock_owned()).await {
+            Ok(g) => g,
+            Err(_) => {
+                return Some(
+                    "a reparse is in flight, answering from the current index".to_string(),
+                );
+            }
+        };
+
+        // Re-probe under the lock: a concurrent refresh may have already cleaned
+        // the drift, so N racing queries on one edit produce one parse, not N.
+        let drift = match crate::freshness::workspace_drift(db, &entry.root, &entry.languages) {
+            (_, Some(d)) if !d.is_empty() => d,
+            _ => return None,
+        };
+
+        let _mark = self.parse_coord.mark_parsing(&entry.id);
+        let db = Arc::clone(db);
+        let entry = Arc::new(entry);
+        let entry_bg = Arc::clone(&entry);
+        let config = Arc::clone(&self.config);
+        let result = tokio::task::spawn_blocking(move || {
+            let registry = crate::parser::adapter::default_registry();
+            crate::pipeline::parse_incremental(&entry_bg, &db, &config, &registry, &drift)
+        })
+        .await;
+        drop(guard);
+
+        match result {
+            Ok(Ok(snap)) => {
+                tracing::debug!(
+                    files = snap.files_parsed,
+                    ms = snap.duration_ms,
+                    "query-path refresh complete"
+                );
+                None
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("query-path refresh failed: {e}");
+                Some("index refresh failed, answering from the current index".to_string())
+            }
+            Err(e) => {
+                tracing::warn!("query-path refresh panicked: {e}");
+                Some("index refresh failed, answering from the current index".to_string())
+            }
+        }
     }
 
     fn register_workspace(
@@ -397,7 +495,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<MapArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::map::handle_ctx(
             &ctx,
             args.path_prefix.as_deref(),
@@ -419,7 +517,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<OutlineArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let detail = tools::outline::OutlineDetail::from_flags(args.compact, args.verbose);
         let result = tools::outline::handle(ctx.db(), &args.path, detail).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -432,7 +530,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ComponentsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let compact = args.compact.unwrap_or(true);
         let result = tools::components::handle(ctx.db(), compact).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -444,7 +542,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::conventions::ConventionsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::conventions::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
@@ -465,10 +563,14 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<tools::constraints::ConstraintsArgs>,
     ) -> Result<String, ErrorData> {
-        // Hold the parse lock across evaluation so a reparse cannot remint file
-        // ids mid-read and desync path_map from the engine's edges (sutra/298).
+        // tool_context first: it refreshes the index (query-path incremental
+        // reparse, sutra/363) and releases the parse lock before returning.
+        let ctx = self.tool_context(&args.workspace).await?;
+        // Then hold the parse lock across evaluation so a reparse cannot remint
+        // file ids mid-read and desync path_map from the engine's edges
+        // (sutra/298). The refresh above already ran under this same lock, so
+        // the DD read now reflects the post-refresh index.
         let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
-        let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::constraints::handle(ctx.db(), ctx.workspace_root(), Some(&dd), &args)
             .map_err(sutra_to_rmcp)?;
@@ -486,7 +588,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::lookup::handle_ctx(
             &ctx,
             &args.pattern,
@@ -508,7 +610,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ExploreArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         // Alias forward-resolution (the top tier below) reads the `aliases`
         // projection, which parse_workspace is the only other writer of. Gate it
         // at query time — like the accepted.toml cache — so alias edits take
@@ -535,7 +637,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReadArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::read::handle(
             ctx.db(),
             ctx.workspace_root(),
@@ -562,7 +664,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ContextArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::context::handle(
             ctx.db(),
             ctx.workspace_root(),
@@ -626,7 +728,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ImpactArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let mut result = tools::impact::handle(
             ctx.db(),
             &args.symbol,
@@ -668,7 +770,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DepsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let cycles = args.cycles.unwrap_or(false);
         let result = tools::deps::handle(ctx.db(), args.path.as_deref(), args.depth, cycles)
             .map_err(sutra_to_rmcp)?;
@@ -682,7 +784,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<RefsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::refs::handle(ctx.db(), &args.symbol, args.context_kind.as_deref())
             .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -694,7 +796,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CallsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::calls::handle(
             ctx.db(),
             &args.symbol,
@@ -714,7 +816,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<TraceArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::trace::handle(
             ctx.db(),
             &args.symbol,
@@ -733,7 +835,7 @@ impl SutraServer {
         Parameters(args): Parameters<DiffImpactArgs>,
     ) -> Result<String, ErrorData> {
         self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::diff_impact::handle(
             ctx.db(),
             ctx.workspace_root(),
@@ -754,7 +856,7 @@ impl SutraServer {
         Parameters(args): Parameters<CommitManifestArgs>,
     ) -> Result<String, ErrorData> {
         self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::commit_manifest::handle(
             ctx.db(),
             ctx.workspace_root(),
@@ -774,7 +876,7 @@ impl SutraServer {
         Parameters(args): Parameters<PrRiskArgs>,
     ) -> Result<String, ErrorData> {
         self.await_parse(&args.workspace).await;
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::pr_risk::handle(
             ctx.db(),
             ctx.workspace_root(),
@@ -795,7 +897,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ProvenanceArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::provenance::handle(ctx.db(), ctx.workspace_root(), &args.symbol)
             .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -811,7 +913,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<CochangeArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::cochange::handle(
             ctx.db(),
             &args.path,
@@ -833,12 +935,14 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
-        // Hold (not merely await) the parse lock across the DD-backed review so a
-        // reparse cannot remint file ids mid-evaluation (sutra/298). This
-        // subsumes the previous await_parse, which only waited for an in-flight
-        // parse and then released before evaluation ran.
+        // tool_context first: it refreshes the index (query-path incremental
+        // reparse, sutra/363) and releases the parse lock before returning.
+        let ctx = self.tool_context(&args.workspace).await?;
+        // Then hold (not merely await) the parse lock across the DD-backed
+        // review so a reparse cannot remint file ids mid-evaluation (sutra/298).
+        // This subsumes the previous await_parse, which only waited for an
+        // in-flight parse and then released before evaluation ran.
         let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
-        let ctx = self.tool_context(&args.workspace)?;
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::review::handle(
             ctx.db(),
@@ -860,7 +964,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<DeadArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::dead::handle(
             ctx.db(),
             args.path_prefix.as_deref(),
@@ -875,7 +979,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<HotspotsArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
             .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
@@ -892,7 +996,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::file_health::handle_ctx(
             &ctx,
             args.path.as_deref(),
@@ -915,7 +1019,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<TrendArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::trend::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
@@ -930,7 +1034,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<WinnowArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let filter = tools::winnow::WinnowFilter {
             kind: args.kind,
             min_complexity: args.min_complexity,
@@ -958,7 +1062,7 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<SimilarArgs>,
     ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace)?;
+        let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::similar::handle(
             ctx.db(),
             args.symbol.as_deref(),
