@@ -624,6 +624,7 @@ fn directory_with_trailing_slash() {
 
 fn search_params<'a>() -> LessonsSearchParams<'a> {
     LessonsSearchParams {
+        id: None,
         query: None,
         category: None,
         symbol: None,
@@ -672,6 +673,74 @@ fn fts5_text_search() {
         .unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].text.contains("lifetime"));
+}
+
+#[test]
+fn search_by_id_returns_full_text() {
+    // sutra/388: the retrieval path for a compact-surfaced lesson — the caller
+    // has the id from sutra_symbol and wants the full text back.
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Wrap SQLite mutations in a transaction. The second sentence adds detail.",
+            anchors: &[(AnchorKind::Symbol, "store")],
+            categories: &["sqlite"],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    db.store(&StoreLessonParams {
+        text: "An unrelated lesson that must not come back.",
+        anchors: &[(AnchorKind::Symbol, "other")],
+        categories: &["rust"],
+        source_task_ids: &[],
+        project_origin: None,
+    })
+    .unwrap();
+
+    let results = db
+        .search(&LessonsSearchParams {
+            id: Some(&id),
+            ..search_params()
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1, "id lookup returns exactly that lesson");
+    assert_eq!(results[0].id, id);
+    assert!(results[0].text.contains("The second sentence adds detail."));
+}
+
+#[test]
+fn gist_is_first_sentence_capped() {
+    let (_dir, db) = setup_lessons_db();
+    let id = db
+        .store(&StoreLessonParams {
+            text: "Keep the recognition set and the matching set derived from one \
+                   source. Otherwise unrecognised values fail open and leak everywhere.",
+            anchors: &[(AnchorKind::Symbol, "build")],
+            categories: &["rust"],
+            source_task_ids: &[],
+            project_origin: None,
+        })
+        .unwrap();
+    let results = db
+        .search(&LessonsSearchParams {
+            id: Some(&id),
+            ..search_params()
+        })
+        .unwrap();
+    let gist = results[0].gist();
+    assert!(
+        gist.starts_with("Keep the recognition set"),
+        "gist starts at the beginning of the text: {gist}"
+    );
+    assert!(
+        !gist.contains("fail open"),
+        "gist stops at the first sentence, dropping the rest: {gist}"
+    );
+    assert!(
+        gist.chars().count() <= 152,
+        "gist is capped near 150 chars (+ ellipsis): {gist}"
+    );
 }
 
 #[test]

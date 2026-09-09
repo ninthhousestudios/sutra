@@ -19,6 +19,11 @@ pub struct ReadArgs {
     )]
     pub symbol: String,
     #[serde(default)]
+    #[schemars(
+        description = "Lines of surrounding source shown above and below the symbol \
+        (default 2). The symbol's own span is always returned in full; this only \
+        controls the peek at neighbouring code."
+    )]
     pub context_lines: Option<usize>,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -46,7 +51,7 @@ pub fn handle(
     include_imports: bool,
     lessons_db: Option<&LessonsDb>,
 ) -> Result<serde_json::Value> {
-    let context_lines = context_lines.unwrap_or(5);
+    let context_lines = context_lines.unwrap_or(2);
     let line_cap = if full {
         usize::MAX
     } else {
@@ -141,10 +146,13 @@ pub fn handle(
     };
     let total_lines = sym_lines + 2 * context_lines;
 
+    // Unpadded `N|` gutter, not a fixed-width right-justified column: callers
+    // navigate by the start_line/end_line fields, not by parsing the gutter, so
+    // the alignment padding was pure overhead on every content line (sutra/388).
     let numbered: Vec<_> = lines[start..end]
         .iter()
         .enumerate()
-        .map(|(i, line)| format!("{:>5} {}", start + i + 1, line))
+        .map(|(i, line)| format!("{}|{}", start + i + 1, line))
         .collect();
 
     let import_lines = if include_imports {
@@ -195,11 +203,34 @@ pub fn handle(
         if !cl.lessons.is_empty() {
             let resolver = super::remember::build_hash_resolver(db);
             let _ = ldb.apply_staleness(&mut cl.lessons, &resolver);
-            result["lessons"] = serde_json::to_value(&cl.lessons).unwrap_or_default();
-            if cl.omitted > 0 {
+            // Compact rendering: the same lesson text is re-sent on every symbol
+            // in a matching file/import pattern within a session, so surface only
+            // id + confidence + first sentence here. Full text is one lookup away
+            // via sutra_lessons(id=…) — contextual-surfacing contract intact, just
+            // leaner (sutra/388).
+            let compact: Vec<serde_json::Value> = cl
+                .lessons
+                .iter()
+                .map(|l| {
+                    let mut o = json!({
+                        "id": l.id,
+                        "confidence": l.confidence,
+                        "gist": l.gist(),
+                    });
+                    if l.stale == Some(true) {
+                        o["stale"] = json!(true);
+                    }
+                    o
+                })
+                .collect();
+            result["lessons"] = json!(compact);
+            let hint = if cl.omitted > 0 {
                 result["lessons_omitted"] = json!(cl.omitted);
-                result["lessons_hint"] = json!("Use sutra_lessons for the full set.");
-            }
+                "Compact (first sentence). Full text or omitted lessons: sutra_lessons(id=…)."
+            } else {
+                "Compact (first sentence). Full text: sutra_lessons(id=…)."
+            };
+            result["lessons_hint"] = json!(hint);
         }
     }
 

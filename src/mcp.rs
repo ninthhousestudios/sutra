@@ -680,10 +680,11 @@ impl SutraServer {
     #[tool(
         description = "Read ONE symbol's source code by name (a function/type/method), \
         not a file — to read a whole file use the built-in Read tool, or sutra_outline to list \
-        its symbols first and then read a specific one. Includes context lines around the symbol; \
-        returns a \
+        its symbols first and then read a specific one. Includes 2 context lines around the \
+        symbol by default (context_lines to change); returns a \
         stale warning if the file was deleted. Default 500-line cap; use full=true or limit=N \
-        to override."
+        to override. Matching lessons are surfaced compactly (id + first sentence) — call \
+        sutra_lessons(id=…) for the full text."
     )]
     pub async fn sutra_symbol(
         &self,
@@ -759,7 +760,8 @@ impl SutraServer {
         (category, symbol anchor, verified). A query also matches category tags, so \
         intent-shaped lookups work before the code exists — sutra_lessons(query=\"sqlite \
         migration\") finds lessons tagged `sqlite` even when they never say the word. \
-        Text hits rank first; each result carries the match_kind that produced it."
+        Text hits rank first; each result carries the match_kind that produced it. \
+        Pass id=… to fetch the full text of a lesson surfaced compactly by sutra_symbol."
     )]
     pub async fn sutra_lessons(
         &self,

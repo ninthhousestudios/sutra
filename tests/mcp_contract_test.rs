@@ -448,6 +448,31 @@ fn test_read_fresh_returns_content() {
 }
 
 #[test]
+fn test_read_content_uses_unpadded_gutter() {
+    // sutra/388: the line-number gutter is unpadded (`N|line`), not a
+    // fixed-width right-justified column — callers navigate by start_line/
+    // end_line, so the padding was pure per-line overhead.
+    let (dir, db) = setup_test_db_with_root();
+    let result = read::handle(
+        &db,
+        dir.path(),
+        "main",
+        None,
+        None,
+        false,
+        false,
+        true,
+        None,
+    )
+    .unwrap();
+    let content = result["content"].as_str().unwrap();
+    assert_eq!(
+        content, "1|fn main() {}",
+        "content must use the unpadded `N|line` gutter"
+    );
+}
+
+#[test]
 fn test_read_stale_withholds_content() {
     let (dir, db) = setup_test_db_with_root();
     let result =
@@ -780,8 +805,8 @@ fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
 
 #[test]
 fn test_explore_basic() {
-    let (_dir, db) = setup_explore_db();
-    let result = explore::handle(&db, "import", 10).unwrap();
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "import", 10).unwrap();
 
     let items = result["items"].as_array().expect("items array");
     assert!(
@@ -814,8 +839,8 @@ fn test_explore_basic() {
 
 #[test]
 fn test_explore_zero_hits() {
-    let (_dir, db) = setup_explore_db();
-    let result = explore::handle(&db, "nonexistent_xyzzy", 10).unwrap();
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "nonexistent_xyzzy", 10).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.is_empty());
@@ -827,8 +852,8 @@ fn test_explore_zero_hits() {
 
 #[test]
 fn test_explore_budget_limits_items() {
-    let (_dir, db) = setup_explore_db();
-    let result = explore::handle(&db, "parse_imports", 1).unwrap();
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "parse_imports", 1).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "budget=1 should return at most 1 item");
@@ -836,8 +861,8 @@ fn test_explore_budget_limits_items() {
 
 #[test]
 fn test_explore_negative_budget_clamps() {
-    let (_dir, db) = setup_explore_db();
-    let result = explore::handle(&db, "parse_imports", -5).unwrap();
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "parse_imports", -5).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "negative budget should clamp to 1");
@@ -845,8 +870,8 @@ fn test_explore_negative_budget_clamps() {
 
 #[test]
 fn test_explore_reason_field() {
-    let (_dir, db) = setup_explore_db();
-    let result = explore::handle(&db, "import", 10).unwrap();
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "import", 10).unwrap();
 
     let items = result["items"].as_array().unwrap();
     for item in items {
@@ -863,8 +888,8 @@ fn test_explore_fan_out_few_hits() {
     // "build_ast" matches 1 symbol → 1-3 range → 2-hop fan-out
     // build_ast calls parse_imports, parse_imports calls resolve_imports
     // So fan-out should surface parse_imports (hop 1) and resolve_imports (hop 2)
-    let (_dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, "build_ast", 10).unwrap();
+    let (dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
 
     let items = result["items"].as_array().unwrap();
     let direct: Vec<_> = items
@@ -907,8 +932,8 @@ fn test_explore_fan_out_few_hits() {
 #[test]
 fn test_explore_fan_out_score_decay() {
     // Fan-out items should rank below direct matches
-    let (_dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, "build_ast", 10).unwrap();
+    let (dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
 
     let items = result["items"].as_array().unwrap();
     // First item should be the direct match
@@ -921,8 +946,8 @@ fn test_explore_fan_out_score_decay() {
 
 #[test]
 fn test_explore_edges() {
-    let (_dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, "build_ast", 10).unwrap();
+    let (dir, db) = setup_explore_db_with_calls();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
 
     let edges = result["edges"]
         .as_array()

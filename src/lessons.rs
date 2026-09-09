@@ -479,6 +479,44 @@ pub struct SurfacedLesson {
     pub match_kind: Option<MatchKind>,
 }
 
+impl SurfacedLesson {
+    /// First sentence of the lesson text, capped near `MAX` chars, for compact
+    /// surfacing (sutra/388). The full text is one lookup away via
+    /// `sutra_lessons(id=…)`, so callers that only need to know a lesson applies
+    /// can send this instead of re-sending the whole body on every symbol.
+    pub fn gist(&self) -> String {
+        const MAX: usize = 150;
+        let text = self.text.trim();
+        // First sentence ends at ". " (period followed by whitespace) or a
+        // newline, whichever comes first; fall back to the whole text.
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let sentence_end = chars
+            .iter()
+            .enumerate()
+            .find_map(|(i, &(byte, c))| {
+                let next_ws = chars.get(i + 1).map(|&(_, n)| n.is_whitespace());
+                if (c == '.' && next_ws == Some(true)) || c == '\n' {
+                    Some(byte + c.len_utf8())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(text.len());
+        let first = text[..sentence_end].trim_end();
+        let truncated_sentence = sentence_end < text.len();
+        if first.chars().count() <= MAX {
+            if truncated_sentence {
+                format!("{first} …")
+            } else {
+                first.to_string()
+            }
+        } else {
+            let cut: String = first.chars().take(MAX).collect();
+            format!("{}…", cut.trim_end())
+        }
+    }
+}
+
 /// Rank an anchor by how narrowly it binds to a single piece of code.
 ///
 /// A lesson anchored to one symbol is nearly always more relevant to the
@@ -912,6 +950,9 @@ pub enum MatchKind {
 }
 
 pub struct LessonsSearchParams<'a> {
+    /// Exact lesson id. The retrieval path for a compact-surfaced lesson
+    /// (sutra/388) — narrows every tier to that one row.
+    pub id: Option<&'a str>,
     pub query: Option<&'a str>,
     pub category: Option<&'a str>,
     pub symbol: Option<&'a str>,
@@ -948,6 +989,12 @@ impl SearchFilters {
             binds: Vec::new(),
             next_idx: start_idx,
         };
+
+        if let Some(id) = params.id {
+            f.conditions.push(format!("l.id = ?{}", f.next_idx));
+            f.binds.push(id.to_string());
+            f.next_idx += 1;
+        }
 
         if let Some(cat) = params.category {
             f.joins.push_str(" JOIN categories c ON c.lesson_id = l.id");

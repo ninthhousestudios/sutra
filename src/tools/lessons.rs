@@ -7,6 +7,12 @@ use crate::lessons::{LessonsDb, LessonsSearchParams};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LessonsArgs {
+    /// Fetch one lesson by its exact id. The retrieval path for the compact
+    /// lessons surfaced by sutra_symbol, which carry the id and first sentence
+    /// only — pass that id here for the full text. Combines with the other
+    /// filters, but on its own returns just that lesson (sutra/388).
+    #[serde(default)]
+    pub id: Option<String>,
     /// Search query. Matches lesson text (FTS5) and category tags — phrase it
     /// as the work you are about to do ("sqlite migration", "golden testing").
     /// Language tags (`lang:rust`, `lang:dart`) are excluded from this tier: a
@@ -37,6 +43,7 @@ pub struct LessonsArgs {
 
 pub fn handle(lessons_db: &LessonsDb, args: &LessonsArgs) -> Result<serde_json::Value> {
     let params = LessonsSearchParams {
+        id: args.id.as_deref(),
         query: args.query.as_deref(),
         category: args.category.as_deref(),
         symbol: args.symbol.as_deref(),

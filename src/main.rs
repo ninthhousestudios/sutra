@@ -77,7 +77,7 @@ enum Commands {
         workspace: String,
         /// Symbol name
         symbol: String,
-        /// Context lines around the symbol
+        /// Context lines around the symbol (default 2)
         #[arg(long)]
         context_lines: Option<usize>,
     },
