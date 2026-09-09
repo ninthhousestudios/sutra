@@ -165,6 +165,21 @@ sutra-guard --check-constraints --staged   # exit 1 if any staged change violate
 Wire it into your pre-merge / CI gate. This is the net that catches what the
 per-edit hook structurally can't.
 
+The main binary exposes the same gate through `sutra check` (JSON *or* human
+output, a `--severity` threshold, and `unstaged` / commit-spec diff modes):
+
+```bash
+sutra check                     # staged set, blocking threshold, human output
+sutra check --diff branch --format json   # CI: whole branch vs main, machine-readable
+```
+
+Both paths share one evaluation core (`src/tools/check.rs`), so they gate
+identically — including on a malformed `.sutra/rules.toml`, which is treated as
+blocking rather than passing silently. They differ only in call-site policy:
+`sutra check` resolves the workspace from CWD and reparses a stale index first
+(correctness for an interactive gate); `sutra-guard --check-constraints` reads
+the index as-is and fails open (a guard outage must never block a commit).
+
 ## Gotchas specific to worktrees
 
 - **A deny does not set a non-zero exit code.** The guard signals deny via a
