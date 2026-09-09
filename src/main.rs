@@ -733,18 +733,39 @@ fn cmd_check(
     let ws_root = std::path::Path::new(&ws.root);
     let registry = sutra::parser::adapter::default_registry();
 
-    // A gate that reads a stale index gives false confidence. Reparse only when
-    // stale (a running server usually keeps it fresh, so this is skipped) — the
-    // forbidden_pattern check reads disk content directly, but new files and
-    // edge-based rules need the index current. Frozen workspaces never auto-reparse.
+    // A gate that reads a stale index gives false confidence, so refresh before
+    // evaluating — but mirror the MCP query path (refresh_before_answer) rather
+    // than always full-reparsing: content drift alone takes the incremental path
+    // (drift set + ref resolution, sub-second — the derived tier it skips only
+    // affects component-scoped rules, not forbidden_pattern), and only an
+    // extractor-stamp mismatch or a missing baseline forces a full parse_workspace.
+    // Both parse paths take the cross-process parse flock, so this serializes with
+    // a running server. Frozen workspaces are never refreshed.
     if !ws.frozen {
-        let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
-        let stamp_changed =
+        let stamp_mismatch =
             db.parser_stamp().unwrap_or(None).as_deref() != Some(sutra::parser::PARSER_STAMP);
-        if is_stale || stamp_changed {
-            eprintln!("index stale — reparsing {} before check…", ws.id);
-            let cancel = std::sync::atomic::AtomicBool::new(false);
-            sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        match sutra::freshness::workspace_drift(&db, &ws.root, &ws.languages) {
+            // No baseline — the index doesn't exist yet; a full parse is the only
+            // way to have anything to check against.
+            (_, None) => {
+                eprintln!("no index for {} — parsing before check…", ws.id);
+                sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+            }
+            // Extractor changed: only a full re-extraction heals stale symbols.
+            (_, Some(_)) if stamp_mismatch => {
+                eprintln!(
+                    "extractor changed — full reparse of {} before check…",
+                    ws.id
+                );
+                sutra::pipeline::parse_workspace(ws, &db, config, &cancel, &registry)?;
+            }
+            // Content drift only: incremental reparse of the drift set.
+            (_, Some(drift)) if !drift.is_empty() => {
+                sutra::pipeline::parse_incremental(ws, &db, config, &registry, &drift)?;
+            }
+            // Clean and stamp current — nothing to do.
+            (_, Some(_)) => {}
         }
     }
 
