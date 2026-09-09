@@ -355,6 +355,7 @@ mod tests {
             blast_radius: 0,
             pagerank: None,
             mtime_ns: None,
+            size_bytes: None,
         }
     }
 }

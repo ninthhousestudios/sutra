@@ -83,70 +83,121 @@ impl From<FileStatus> for FreshnessLevel {
     }
 }
 
-/// Check whether indexed files have actually changed since last parse.
-/// Returns true only if HEAD moved, any indexed file was modified/deleted,
-/// or the parse timestamp is unparseable.
-pub fn workspace_has_changed(
-    workspace_root: &Path,
-    parse_timestamp: &str,
-    stored_head: Option<&str>,
-    indexed_paths: &[String],
-) -> bool {
-    let current_head = crate::git::head_commit_hash(workspace_root);
-    match (stored_head, &current_head) {
-        (Some(stored), Some(current)) => {
-            if current != stored {
-                return true;
-            }
-        }
-        // Git workspace but no stored HEAD (pre-migration snapshot) —
-        // force stale so the next parse records a HEAD hash.
-        (None, Some(_)) => return true,
-        _ => {}
-    }
-
-    let Ok(parsed_dt) = chrono::DateTime::parse_from_rfc3339(parse_timestamp) else {
-        return true;
-    };
-    let parsed_sys: std::time::SystemTime = parsed_dt.into();
-
-    for path in indexed_paths {
-        let full = workspace_root.join(path);
-        match std::fs::metadata(&full) {
-            Ok(meta) => {
-                if let Ok(mtime) = meta.modified()
-                    && mtime > parsed_sys
-                {
-                    return true;
-                }
-            }
-            Err(_) => return true,
-        }
-    }
-
-    false
+/// Byte-level drift of the workspace against its indexed baseline: source files
+/// that changed content, appeared, or vanished since the last parse. Structured
+/// (not a bool) so a reparse can touch only what moved (sutra/362).
+#[derive(Debug, Default, Clone)]
+pub struct WorkspaceDrift {
+    /// Indexed files whose bytes differ from the stored `content_hash`.
+    pub changed: Vec<String>,
+    /// Source files present on disk with no indexed row.
+    pub added: Vec<String>,
+    /// Indexed files the workspace walk no longer yields (deleted or now ignored).
+    pub removed: Vec<String>,
 }
 
+impl WorkspaceDrift {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// True when the file on disk still matches its stored fingerprint. Fast path:
+/// if `(size, mtime)` both match the baseline, the file is clean without a read.
+/// On any mismatch — or a missing baseline (pre-migration rows) — confirm by
+/// hashing the bytes, so a `touch` that preserves content reads as clean and a
+/// mtime-preserving edit is still caught.
+fn file_matches_fingerprint(full: &Path, fp: &crate::db::FileFingerprint) -> bool {
+    let Ok(meta) = std::fs::metadata(full) else {
+        // Cannot stat (vanished mid-walk / permission) — the reparse handles it.
+        return false;
+    };
+    let size = meta.len() as i64;
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64);
+    if fp.size_bytes == Some(size) && mtime_ns.is_some() && fp.mtime_ns == mtime_ns {
+        return true;
+    }
+    match std::fs::read(full) {
+        Ok(bytes) => blake3::hash(&bytes).to_hex().to_string() == fp.content_hash,
+        Err(_) => false,
+    }
+}
+
+/// Compute drift by walking the workspace with the same walker/ignore rules the
+/// parse pipeline uses (so newly created source files are visible) and comparing
+/// each source file to its stored fingerprint. `allowed_extensions` scopes the
+/// walk to indexable files, so a docs-only change never registers as drift.
+pub fn probe_drift(
+    workspace_root: &Path,
+    stored: &[crate::db::FileFingerprint],
+    allowed_extensions: &[&str],
+) -> WorkspaceDrift {
+    use std::collections::HashMap;
+
+    // Drain the index as we walk: a matched path is removed, so whatever remains
+    // afterward is exactly the set the walk never yielded — the removed files.
+    let mut index: HashMap<&str, &crate::db::FileFingerprint> =
+        stored.iter().map(|fp| (fp.path.as_str(), fp)).collect();
+    let mut drift = WorkspaceDrift::default();
+
+    for full in crate::pipeline::walk_source_files(workspace_root, allowed_extensions) {
+        let rel = full
+            .strip_prefix(workspace_root)
+            .unwrap_or(&full)
+            .to_string_lossy()
+            .to_string();
+        match index.remove(rel.as_str()) {
+            None => drift.added.push(rel),
+            Some(fp) if !file_matches_fingerprint(&full, fp) => drift.changed.push(rel),
+            Some(_) => {} // clean
+        }
+    }
+
+    drift.removed = index.into_keys().map(str::to_string).collect();
+    drift
+}
+
+/// Drift of the workspace against the last parse. Returns
+/// `(last_parse_timestamp, drift)`; `drift` is `None` when there is no baseline
+/// to compare against (no prior parse, or the fingerprint read failed) — the
+/// caller should treat that as "must parse", never as "clean".
+pub fn workspace_drift(
+    db: &Db,
+    workspace_root: &Path,
+    languages: &[String],
+) -> (Option<String>, Option<WorkspaceDrift>) {
+    let ts = match db.last_parse_info() {
+        Ok(Some((ts, _head))) => ts,
+        _ => return (None, None),
+    };
+    // Distinguish "no files" from "failed to look": a read error must not read as
+    // an empty baseline (which would flag every file removed).
+    let Ok(stored) = db.all_file_fingerprints() else {
+        return (Some(ts), None);
+    };
+    let registry = crate::parser::adapter::default_registry();
+    let allowed_extensions = registry.extensions_for_languages(languages);
+    let drift = probe_drift(workspace_root, &stored, &allowed_extensions);
+    (Some(ts), Some(drift))
+}
+
+/// Whether the index no longer reflects the workspace bytes. Staleness is a claim
+/// about content, never about elapsed time — there is no grace window. Git HEAD
+/// is not consulted: a docs-only commit (HEAD moves, no indexed file changes)
+/// must not invalidate the index (sutra/319, sutra/362).
 pub fn is_workspace_stale(
     db: &Db,
     workspace_root: &Path,
-    stale_threshold_sec: u64,
+    languages: &[String],
 ) -> (Option<String>, bool) {
-    match db.last_parse_info() {
-        Ok(Some((ts, head_commit))) => {
-            let is_stale = chrono::DateTime::parse_from_rfc3339(&ts)
-                .map(|dt| {
-                    let age = chrono::Utc::now() - dt.with_timezone(&chrono::Utc);
-                    if age.num_seconds() as u64 <= stale_threshold_sec {
-                        return false;
-                    }
-                    let paths = db.all_indexed_paths().unwrap_or_default();
-                    workspace_has_changed(workspace_root, &ts, head_commit.as_deref(), &paths)
-                })
-                .unwrap_or(true);
-            (Some(ts), is_stale)
-        }
-        _ => (None, true),
+    match workspace_drift(db, workspace_root, languages) {
+        (ts, Some(drift)) => (ts, !drift.is_empty()),
+        // No baseline / read failure — must parse.
+        (ts, None) => (ts, true),
     }
 }
 
@@ -234,64 +285,150 @@ mod tests {
         assert_eq!(j["stale"], 1);
     }
 
-    #[test]
-    fn workspace_unchanged_when_no_files_modified() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "fn hello() {}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let parsed_at = chrono::Utc::now().to_rfc3339();
-        let paths = vec!["lib.rs".to_string()];
-        assert!(!workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+    use crate::db::FileFingerprint;
+
+    const RS: &[&str] = &["rs"];
+
+    /// Fingerprint a file exactly as a parse would: size, mtime, and blake3 of
+    /// its bytes captured from what is currently on disk.
+    fn fingerprint_of(root: &Path, rel: &str) -> FileFingerprint {
+        let full = root.join(rel);
+        let meta = fs::metadata(&full).unwrap();
+        let mtime_ns = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        let bytes = fs::read(&full).unwrap();
+        FileFingerprint {
+            path: rel.to_string(),
+            size_bytes: Some(meta.len() as i64),
+            mtime_ns: Some(mtime_ns),
+            content_hash: blake3::hash(&bytes).to_hex().to_string(),
+        }
     }
 
     #[test]
-    fn workspace_changed_when_file_modified() {
+    fn clean_when_no_file_modified() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn hello() {}").unwrap();
+        let stored = vec![fingerprint_of(dir.path(), "lib.rs")];
+        assert!(probe_drift(dir.path(), &stored, RS).is_empty());
+    }
+
+    #[test]
+    fn edit_detected_immediately_without_grace_window() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("lib.rs");
         fs::write(&file, "fn hello() {}").unwrap();
-        let parsed_at = chrono::Utc::now().to_rfc3339();
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let stored = vec![fingerprint_of(dir.path(), "lib.rs")];
+        // Edit and probe in the same instant — the old grace window would have
+        // reported this clean; content-based staleness must catch it now.
         fs::write(&file, "fn hello() { changed }").unwrap();
-        let paths = vec!["lib.rs".to_string()];
-        assert!(workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+        let drift = probe_drift(dir.path(), &stored, RS);
+        assert_eq!(drift.changed, vec!["lib.rs".to_string()]);
+        assert!(drift.added.is_empty() && drift.removed.is_empty());
     }
 
     #[test]
-    fn workspace_changed_when_file_deleted() {
+    fn new_source_file_is_added_drift() {
         let dir = tempdir().unwrap();
-        let parsed_at = chrono::Utc::now().to_rfc3339();
-        let paths = vec!["gone.rs".to_string()];
-        assert!(workspace_has_changed(dir.path(), &parsed_at, None, &paths));
+        fs::write(dir.path().join("lib.rs"), "fn hello() {}").unwrap();
+        let stored = vec![fingerprint_of(dir.path(), "lib.rs")];
+        // A brand-new source file with no indexed row (no commit needed).
+        fs::write(dir.path().join("new.rs"), "fn other() {}").unwrap();
+        let drift = probe_drift(dir.path(), &stored, RS);
+        assert_eq!(drift.added, vec!["new.rs".to_string()]);
+        assert!(drift.changed.is_empty() && drift.removed.is_empty());
     }
 
     #[test]
-    fn workspace_not_stale_when_stored_head_but_not_git() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "fn hello() {}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let parsed_at = chrono::Utc::now().to_rfc3339();
-        let paths = vec!["lib.rs".to_string()];
-        // Non-git dir: head_commit_hash returns None, stored HEAD present
-        // — (Some, None) falls through to mtime check which passes.
-        assert!(!workspace_has_changed(
-            dir.path(),
-            &parsed_at,
-            Some("abc123"),
-            &paths,
-        ));
-    }
-
-    #[test]
-    fn workspace_not_stale_non_git_no_stored_head() {
+    fn touch_without_content_change_is_clean() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("lib.rs");
         fs::write(&file, "fn hello() {}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let parsed_at = chrono::Utc::now().to_rfc3339();
-        let paths = vec!["lib.rs".to_string()];
-        // Non-git dir, no stored HEAD — (None, None) falls through to mtime.
-        assert!(!workspace_has_changed(dir.path(), &parsed_at, None, &paths,));
+        let stored = vec![fingerprint_of(dir.path(), "lib.rs")];
+        // Rewrite identical bytes after a delay: mtime moves, size and content
+        // do not. The (size, mtime) fast path misses, the hash confirm rescues.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&file, "fn hello() {}").unwrap();
+        assert!(probe_drift(dir.path(), &stored, RS).is_empty());
+    }
+
+    #[test]
+    fn docs_only_change_is_not_drift() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn hello() {}").unwrap();
+        fs::write(dir.path().join("README.md"), "# hi").unwrap();
+        let stored = vec![fingerprint_of(dir.path(), "lib.rs")];
+        // Modify and add non-source files — outside `allowed_extensions`, so the
+        // walk never sees them and they produce no drift.
+        fs::write(dir.path().join("README.md"), "# changed").unwrap();
+        fs::write(dir.path().join("NOTES.md"), "new").unwrap();
+        assert!(probe_drift(dir.path(), &stored, RS).is_empty());
+    }
+
+    #[test]
+    fn deleted_file_is_removed_drift() {
+        let dir = tempdir().unwrap();
+        // Stored baseline references a file that is not on disk.
+        let stored = vec![FileFingerprint {
+            path: "gone.rs".to_string(),
+            size_bytes: Some(10),
+            mtime_ns: Some(1),
+            content_hash: "deadbeef".to_string(),
+        }];
+        let drift = probe_drift(dir.path(), &stored, RS);
+        assert_eq!(drift.removed, vec!["gone.rs".to_string()]);
+        assert!(drift.changed.is_empty() && drift.added.is_empty());
+    }
+
+    /// Not a correctness test — a manual probe-cost measurement on the sutra
+    /// repo itself (sutra/362 acceptance). Run: `cargo test --lib
+    /// measure_probe_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_probe_cost_on_self() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Build an all-clean baseline exactly as a parse would (setup, untimed).
+        let stored: Vec<FileFingerprint> = crate::pipeline::walk_source_files(root, RS)
+            .iter()
+            .filter_map(|full| {
+                let rel = full.strip_prefix(root).ok()?.to_string_lossy().to_string();
+                Some(fingerprint_of(root, &rel))
+            })
+            .collect();
+        // Warm the page cache, then take the best of several runs.
+        let _ = probe_drift(root, &stored, RS);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            let drift = probe_drift(root, &stored, RS);
+            best = best.min(t.elapsed());
+            assert!(drift.is_empty(), "self should be clean: {drift:?}");
+        }
+        println!(
+            "probe_drift over {} files: {:?} warm (best of 5)",
+            stored.len(),
+            best
+        );
+    }
+
+    #[test]
+    fn missing_baseline_falls_through_to_hash_confirm() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "fn hello() {}").unwrap();
+        // Pre-migration row: no size/mtime baseline, only content_hash. Fast path
+        // cannot fire; the hash confirm must still recognize the file as clean.
+        let bytes = fs::read(&file).unwrap();
+        let stored = vec![FileFingerprint {
+            path: "lib.rs".to_string(),
+            size_bytes: None,
+            mtime_ns: None,
+            content_hash: blake3::hash(&bytes).to_hex().to_string(),
+        }];
+        assert!(probe_drift(dir.path(), &stored, RS).is_empty());
     }
 }

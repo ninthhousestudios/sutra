@@ -9,7 +9,6 @@ pub struct Config {
     pub workspaces_path: PathBuf,
     pub listen_addr: String,
     pub parse_parallelism: usize,
-    pub stale_threshold_sec: u64,
     pub log_level: String,
     pub constraints_idle_timeout_sec: u64,
     pub parse_timeout_ms: u64,
@@ -33,7 +32,6 @@ impl Config {
             std::env::var("SUTRA_LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3201".to_string());
 
         let parse_parallelism = parse_env_or("SUTRA_PARSE_PARALLELISM", num_cpus());
-        let stale_threshold_sec = parse_env_or("SUTRA_STALE_THRESHOLD_SEC", 600u64);
         let log_level = std::env::var("SUTRA_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
         let constraints_idle_timeout_sec = parse_env_or(
             "SUTRA_CONSTRAINTS_IDLE_TIMEOUT_SEC",
@@ -46,7 +44,6 @@ impl Config {
             workspaces_path,
             listen_addr,
             parse_parallelism,
-            stale_threshold_sec,
             log_level,
             constraints_idle_timeout_sec,
             parse_timeout_ms,
@@ -61,7 +58,6 @@ impl Config {
             workspaces_path: PathBuf::from("/tmp/sutra-test/workspaces.toml"),
             listen_addr: "127.0.0.1:0".into(),
             parse_parallelism: 1,
-            stale_threshold_sec: 600,
             log_level: "warn".into(),
             constraints_idle_timeout_sec: 1800,
             parse_timeout_ms: 5000,

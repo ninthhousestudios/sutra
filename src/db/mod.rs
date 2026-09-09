@@ -242,6 +242,21 @@ pub struct FileRow {
     /// predating the mtime baseline (sutra/324). Used only to skip the read+hash
     /// of unchanged files on a frozen-workspace reparse.
     pub mtime_ns: Option<i64>,
+    /// File size in bytes captured at last parse, or `None` for rows predating
+    /// the size baseline (sutra/362). Paired with `mtime_ns` as the (size, mtime)
+    /// fast path of the freshness drift probe.
+    pub size_bytes: Option<i64>,
+}
+
+/// The subset of a file's indexed state the freshness drift probe compares
+/// against disk: the `(size_bytes, mtime_ns)` fast-path baseline and the
+/// `content_hash` confirm (sutra/362).
+#[derive(Debug, Clone)]
+pub struct FileFingerprint {
+    pub path: String,
+    pub size_bytes: Option<i64>,
+    pub mtime_ns: Option<i64>,
+    pub content_hash: String,
 }
 
 /// An import row the resolver could not point at a workspace file — the input
@@ -670,7 +685,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns, size_bytes
              FROM files WHERE id = ?1",
             params![id],
             map_file_row,
@@ -686,7 +701,7 @@ impl Db {
         let conn = self.conn.lock();
         match conn.query_row(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns, size_bytes
              FROM files WHERE path = ?1",
             params![path],
             map_file_row,
@@ -703,7 +718,7 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, path, language, content_hash, line_count, parsed_ok,
-                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns, size_bytes
              FROM files
              ORDER BY blast_radius DESC",
         )?;
@@ -771,6 +786,7 @@ impl Db {
         line_count: i64,
         parsed_ok: bool,
         mtime_ns: Option<i64>,
+        size_bytes: Option<i64>,
         symbols: &[InsertSymbolParams<'_>],
         parent_indices: &[Option<usize>],
         imports: &[InsertImportParams<'_>],
@@ -819,8 +835,8 @@ impl Db {
 
         // Upsert the file row (marks needs_resolution for post-parse ref resolution).
         conn.execute(
-            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed, mtime_ns, needs_resolution)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)
+            "INSERT INTO files (path, language, content_hash, line_count, parsed_ok, last_parsed, mtime_ns, size_bytes, needs_resolution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)
              ON CONFLICT(path) DO UPDATE SET
                 language         = excluded.language,
                 content_hash     = excluded.content_hash,
@@ -828,6 +844,7 @@ impl Db {
                 parsed_ok        = excluded.parsed_ok,
                 last_parsed      = excluded.last_parsed,
                 mtime_ns         = excluded.mtime_ns,
+                size_bytes       = excluded.size_bytes,
                 needs_resolution = 1",
             params![
                 path,
@@ -836,7 +853,8 @@ impl Db {
                 line_count,
                 parsed_ok as i64,
                 now,
-                mtime_ns
+                mtime_ns,
+                size_bytes
             ],
         )?;
         let file_id: i64 = conn.query_row(
@@ -2032,16 +2050,27 @@ impl Db {
         }
     }
 
-    /// Return all indexed file paths (relative to workspace root).
-    pub fn all_indexed_paths(&self) -> Result<Vec<String>> {
+    /// Return the freshness fingerprint of every indexed file: path plus the
+    /// `(size, mtime)` fast-path baseline and the `content_hash` confirm. Drives
+    /// the drift probe (sutra/362), so it selects only those four columns rather
+    /// than materializing full [`FileRow`]s.
+    pub fn all_file_fingerprints(&self) -> Result<Vec<FileFingerprint>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT path FROM files")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut paths = Vec::new();
+        let mut stmt =
+            conn.prepare("SELECT path, size_bytes, mtime_ns, content_hash FROM files")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(FileFingerprint {
+                path: row.get(0)?,
+                size_bytes: row.get(1)?,
+                mtime_ns: row.get(2)?,
+                content_hash: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
         for r in rows {
-            paths.push(r.map_err(SutraError::Db)?);
+            out.push(r.map_err(SutraError::Db)?);
         }
-        Ok(paths)
+        Ok(out)
     }
 
     /// Return the N most recent snapshots, ordered newest-first.
@@ -2214,6 +2243,7 @@ fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
         blast_radius: row.get(8)?,
         pagerank: row.get(9)?,
         mtime_ns: row.get(10)?,
+        size_bytes: row.get(11)?,
     })
 }
 

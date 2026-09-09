@@ -13,7 +13,6 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         workspaces_path: db_dir.join("workspaces.toml"),
         listen_addr: "127.0.0.1:0".to_string(),
         parse_parallelism: 1,
-        stale_threshold_sec: 600,
         log_level: "warn".to_string(),
         constraints_idle_timeout_sec: 1800,
         parse_timeout_ms: 5000,
@@ -217,10 +216,13 @@ async fn test_stale_detection() {
         "last_parse_time should be set after a parse"
     );
 
-    // Config with stale_threshold_sec=0 means any parse time is considered stale.
-    let stale_config = Config {
-        stale_threshold_sec: 0,
-        ..make_config(db_dir.path())
-    };
-    assert_eq!(stale_config.stale_threshold_sec, 0);
+    // Freshly parsed: no byte drift, so the workspace is not stale — regardless
+    // of elapsed time (there is no grace window).
+    let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
+    assert!(!is_stale, "just-parsed workspace should not be stale");
+
+    // Edit a source file: the content changes, so it must read as stale.
+    std::fs::write(src.join("lib.rs"), "pub fn hello() { /* changed */ }\n").unwrap();
+    let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &ws.root, &ws.languages);
+    assert!(is_stale, "edited workspace should be stale");
 }

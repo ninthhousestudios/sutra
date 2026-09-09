@@ -357,6 +357,15 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0066_reset_alias_sync_for_subtokens.sql"),
         false,
     ),
+    // Per-file size baseline paired with mtime_ns for the freshness drift probe's
+    // (size, mtime) fast path (sutra/362). ephemeral_only: it ALTERs the `files`
+    // table, which reindex drops and recreates from 0001, so this must replay to
+    // re-add the column (like 0063_file_mtime and the 0047/0049/0051/0053 ALTERs).
+    (
+        "0067_file_size",
+        include_str!("../../migrations/0067_file_size.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -530,6 +539,7 @@ impl Db {
             }
             "0004_symbol_flags" => Self::column_exists(conn, "symbols", "flags"),
             "0063_file_mtime" => Self::column_exists(conn, "files", "mtime_ns"),
+            "0067_file_size" => Self::column_exists(conn, "files", "size_bytes"),
             "0005_conventions" => {
                 let exists: bool = conn
                     .query_row(

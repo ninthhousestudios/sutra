@@ -110,7 +110,6 @@ async fn post_workspaces_registers_new_workspace() {
         workspaces_path: ws_path,
         listen_addr: "127.0.0.1:0".into(),
         parse_parallelism: 1,
-        stale_threshold_sec: 600,
         log_level: "warn".into(),
         constraints_idle_timeout_sec: 1800,
         parse_timeout_ms: 5000,

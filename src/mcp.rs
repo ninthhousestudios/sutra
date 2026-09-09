@@ -275,21 +275,22 @@ impl SutraServer {
     }
 
     fn freshness(&self, db: &Db, workspace_root: &Path) -> serde_json::Value {
-        let (as_of, mut is_stale) = crate::freshness::is_workspace_stale(
-            db,
-            workspace_root,
-            self.config.stale_threshold_sec,
-        );
+        let ws_guard = self.workspaces.read();
+        let entry = workspace::resolve_workspace(&ws_guard, db.workspace_id()).ok();
+        let frozen = entry.map(|e| e.frozen).unwrap_or(false);
+        let languages: &[String] = entry.map(|e| e.languages.as_slice()).unwrap_or(&[]);
 
-        // A frozen workspace has an immutable index; it is never considered
-        // stale for action purposes, so unrelated git HEAD moves don't provoke
-        // a reparse or misleading staleness signals.
-        let frozen = workspace::resolve_workspace(&self.workspaces.read(), db.workspace_id())
-            .map(|w| w.frozen)
-            .unwrap_or(false);
-        if frozen {
-            is_stale = false;
-        }
+        // A frozen workspace has an immutable index; it is never stale for action
+        // purposes, so skip the drift probe entirely (its corpus may be huge) and
+        // just report the last parse timestamp. Otherwise the probe scopes its
+        // walk to the workspace's indexed languages, so a docs-only change is
+        // never mistaken for an added source file.
+        let (as_of, is_stale) = if frozen {
+            (db.last_parse_info().ok().flatten().map(|(ts, _)| ts), false)
+        } else {
+            crate::freshness::is_workspace_stale(db, workspace_root, languages)
+        };
+        drop(ws_guard);
 
         let parsing = self.parse_coord.is_parsing(db.workspace_id());
 

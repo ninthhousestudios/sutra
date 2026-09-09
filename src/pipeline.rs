@@ -353,11 +353,14 @@ fn parse_single_file(
     // so ingesting a few new files into a large corpus doesn't re-read the whole
     // corpus (sutra/324). Non-frozen workspaces don't trust mtime — a mtime-
     // preserving edit must still be caught by the content-hash check below.
-    let mtime_ns: Option<i64> = std::fs::metadata(file_path)
-        .and_then(|m| m.modified())
-        .ok()
+    let meta = std::fs::metadata(file_path).ok();
+    let mtime_ns: Option<i64> = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos() as i64);
+    // Size baseline paired with mtime for the freshness drift probe (sutra/362).
+    let size_bytes: Option<i64> = meta.as_ref().map(|m| m.len() as i64);
 
     let existing = db.file_by_path(&rel_path)?;
     if trust_mtime
@@ -457,6 +460,7 @@ fn parse_single_file(
         line_count as i64,
         parse_result.parsed_ok,
         mtime_ns,
+        size_bytes,
         &flat_symbols,
         &parent_indices,
         &import_params,

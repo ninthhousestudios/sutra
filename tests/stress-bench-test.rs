@@ -24,7 +24,6 @@ fn make_config(db_dir: &std::path::Path) -> Config {
         workspaces_path: db_dir.join("workspaces.toml"),
         listen_addr: "127.0.0.1:0".to_string(),
         parse_parallelism: 1,
-        stale_threshold_sec: 600,
         log_level: "warn".to_string(),
         constraints_idle_timeout_sec: 1800,
         parse_timeout_ms: 5000,

@@ -454,8 +454,7 @@ fn maybe_reparse_cwd(
         return;
     }
 
-    let (_, is_stale) =
-        sutra::freshness::is_workspace_stale(&db, &entry.root, config.stale_threshold_sec);
+    let (_, is_stale) = sutra::freshness::is_workspace_stale(&db, &entry.root, &entry.languages);
     if !is_stale {
         // Not reparsing this startup, but aliases.toml is not an indexed source
         // file and never trips staleness — re-sync it directly if it changed.
