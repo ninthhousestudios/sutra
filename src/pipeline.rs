@@ -273,6 +273,12 @@ struct FileParseResult {
     symbols_extracted: i64,
     refs_extracted: i64,
     parse_errors: i64,
+    /// True when this call returned without re-extracting the file while a prior
+    /// index row for it still exists — a read failure, a parse failure, or an
+    /// oversized-file skip. Under a parser-identity forced reparse (sutra/364,
+    /// sutra/381) such a row still reflects the OLD extractor, so the caller must
+    /// not advance the parser stamp: the file was not covered by this extractor.
+    retained_stale_row: bool,
 }
 
 enum PostParseResult {
@@ -386,6 +392,7 @@ fn parse_single_file(
                 symbols_extracted: 0,
                 refs_extracted: 0,
                 parse_errors: 1,
+                retained_stale_row: existing.is_some(),
             }));
         }
     };
@@ -393,7 +400,17 @@ fn parse_single_file(
     let line_count = contents.lines().count();
     if line_count > MAX_LINES {
         warn!(path = %rel_path, lines = line_count, max = MAX_LINES, "file exceeds line limit, skipping");
-        return Ok(None);
+        // An oversized file is not re-extracted. If it already has an index row
+        // (it shrank under the limit once, then grew past it), that row survives
+        // and must block a parser-stamp advance the same as a parse failure
+        // (sutra/381). Report it rather than an opaque skip.
+        return Ok(Some(FileParseResult {
+            file_id: 0,
+            symbols_extracted: 0,
+            refs_extracted: 0,
+            parse_errors: 0,
+            retained_stale_row: existing.is_some(),
+        }));
     }
 
     let content_hash = blake3::hash(contents.as_bytes()).to_hex().to_string();
@@ -416,6 +433,7 @@ fn parse_single_file(
                 symbols_extracted: 0,
                 refs_extracted: 0,
                 parse_errors: 1,
+                retained_stale_row: existing.is_some(),
             }));
         }
     };
@@ -479,6 +497,8 @@ fn parse_single_file(
         symbols_extracted,
         refs_extracted,
         parse_errors,
+        // replace_file_data ran: the row now reflects this binary's extractor.
+        retained_stale_row: false,
     }))
 }
 
@@ -710,6 +730,11 @@ pub fn parse_workspace(
     let mut symbols_extracted: i64 = 0;
     let mut refs_extracted: i64 = 0;
     let mut parse_errors: i64 = 0;
+    // Set when any walked file kept a pre-existing index row instead of being
+    // re-extracted (read/parse failure, oversized skip). A forced reparse that
+    // leaves such rows has NOT re-extracted the whole index, so the parser stamp
+    // must not advance (sutra/381).
+    let mut left_stale_rows = false;
     let inner = (|| -> Result<PostParseResult> {
         let mut last_progress = Instant::now();
         let mut last_progress_walked: usize = 0;
@@ -729,6 +754,9 @@ pub fn parse_workspace(
                 force_reparse,
             )? {
                 parse_errors += result.parse_errors;
+                if result.retained_stale_row {
+                    left_stale_rows = true;
+                }
                 if result.file_id != 0 {
                     files_parsed += 1;
                     symbols_extracted += result.symbols_extracted;
@@ -837,14 +865,28 @@ pub fn parse_workspace(
         }
     }
 
-    // Record the extractor identity once the parse ran to completion: every file
-    // now reflects this binary's extractor, so a later parse with the same stamp
-    // may trust the content_hash skip again (sutra/364). Only on success — a
-    // failed/partial parse must leave the old stamp so the next parse re-heals.
-    if inner.is_ok() {
+    // Record the extractor identity only when this parse actually covered the
+    // whole index with the current extractor (sutra/364, sutra/381). `inner.is_ok`
+    // is necessary but not sufficient: a per-file read/parse failure or an
+    // oversized skip returns Ok while keeping the file's OLD row (`left_stale_rows`),
+    // and an incomplete walk (`!walk_complete`) never visits some on-disk files at
+    // all — both leave old-extractor symbols in place. Advancing the stamp then
+    // would let the next parse trust the content_hash skip over those stale rows
+    // forever. When a forced reparse can't prove full coverage, leave the old
+    // stamp so the next parse re-heals. (When not forced the stamp already matches,
+    // so re-writing it is a harmless no-op — the coverage gate only bites a heal.)
+    let extraction_covered_index = walk_complete && !left_stale_rows;
+    if inner.is_ok() && (!force_reparse || extraction_covered_index) {
         if let Err(e) = db.set_parser_stamp(parser::PARSER_STAMP) {
             warn!(workspace = %workspace.id, "failed to record parser stamp after parse: {e}");
         }
+    } else if force_reparse && inner.is_ok() {
+        warn!(
+            workspace = %workspace.id,
+            walk_complete,
+            left_stale_rows,
+            "parser identity heal incomplete; leaving prior stamp so the next parse retries the uncovered files"
+        );
     }
 
     let (resolved_count, unresolved_count, skipped_count) = match inner? {

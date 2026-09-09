@@ -684,3 +684,77 @@ async fn test_parser_stamp_mismatch_forces_one_full_reparse() {
         "after the stamp is re-recorded, unchanged files are skipped again",
     );
 }
+
+// sutra/381: a parser-identity forced reparse must NOT advance the stamp when a
+// walked file fails to re-extract and keeps its prior (old-extractor) row.
+// Otherwise the next parse sees a matching stamp + matching content_hash and
+// skips that stale file forever — a permanently mixed-extractor index. The heal
+// stays pending (stamp unchanged) until a later parse covers every file.
+#[tokio::test]
+async fn test_parser_stamp_not_advanced_when_forced_reparse_leaves_stale_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let lib = src.join("lib.rs");
+    let good = b"pub fn alpha() {}\n";
+    std::fs::write(&lib, good).unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("parser-stamp-fail", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    let reparse = || {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap()
+    };
+
+    // First parse indexes the file and records the current extractor identity.
+    let first = reparse();
+    assert!(first.files_parsed >= 1, "first parse must extract the file");
+    assert_eq!(
+        db.parser_stamp().unwrap().as_deref(),
+        Some(sutra::parser::PARSER_STAMP),
+    );
+
+    // Force a parser-identity mismatch, then make the file unreadable as UTF-8 so
+    // the forced reparse hits the read-failure path and KEEPS the old row.
+    db.set_parser_stamp("stale-extractor-identity").unwrap();
+    std::fs::write(&lib, [0xff, 0xfe, 0xff]).unwrap();
+
+    // The forced reparse can't re-extract the file, so it must leave the stale
+    // stamp in place — NOT advance it to the current identity.
+    let failed = reparse();
+    assert_eq!(
+        failed.files_parsed, 0,
+        "the unreadable file is not re-extracted",
+    );
+    assert_eq!(
+        db.parser_stamp().unwrap().as_deref(),
+        Some("stale-extractor-identity"),
+        "a forced reparse that left a stale row must NOT advance the parser stamp",
+    );
+
+    // Restore the original bytes. Because the stamp is still stale the next parse
+    // is still forced and RE-EXTRACTS the file (not skipped on a hash match) —
+    // the heal completes and the stamp finally advances.
+    std::fs::write(&lib, good).unwrap();
+    let healed = reparse();
+    assert!(
+        healed.files_parsed >= 1,
+        "the previously failed file is retried, not skipped, on the next parse",
+    );
+    assert_eq!(
+        db.parser_stamp().unwrap().as_deref(),
+        Some(sutra::parser::PARSER_STAMP),
+        "once the whole index is covered, the forced reparse records the stamp",
+    );
+
+    // Fully healed: matching stamp + unchanged bytes → the skip fires again.
+    let clean = reparse();
+    assert_eq!(
+        clean.files_parsed, 0,
+        "healed: unchanged file is skipped again",
+    );
+}
