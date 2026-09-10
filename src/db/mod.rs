@@ -944,10 +944,10 @@ impl Db {
             conn.prepare_cached("DELETE FROM symbols_fts WHERE symbol_id = ?1")?
                 .execute(params![id])?;
             conn.prepare_cached(
-                "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )?
-            .execute(params![id, p.short_name, p.qualified_name, p.docstring])?;
+            .execute(params![id, p.short_name, p.qualified_name, p.docstring, p.signature])?;
         }
 
         // Insert imports.
@@ -1052,9 +1052,9 @@ impl Db {
 
         conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![id])?;
         conn.execute(
-            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![id, p.short_name, p.qualified_name, p.docstring],
+            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, p.short_name, p.qualified_name, p.docstring, p.signature],
         )?;
 
         Ok(id)
@@ -1160,7 +1160,12 @@ impl Db {
         }
 
         let escaped = name.replace('"', "\"\"");
-        let fts_query = format!("\"{escaped}\"*");
+        // Column-scope to the name/docstring columns this tier has always
+        // searched. symbols_fts also indexes `signature` as of 0069, but that
+        // column feeds explore's lexical stage only — an unscoped MATCH would
+        // silently broaden find/lookup, turning a NAME search into one that
+        // matches parameter types (sutra/371 refactor-contract guard).
+        let fts_query = format!("{{short_name qualified_name docstring}} : \"{escaped}\"*");
         let ids: Vec<i64> = {
             let mut stmt = conn.prepare(
                 "SELECT symbol_id FROM symbols_fts
@@ -1201,6 +1206,61 @@ impl Db {
             }
         }
         Ok((results, SearchTier::Fts))
+    }
+
+    /// Total indexed symbol count — the corpus size `N` for explore's IDF
+    /// (sutra/371).
+    pub fn symbol_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT count(*) FROM symbols", [], |row| row.get(0))?)
+    }
+
+    /// Document frequency of one lexical token: how many symbols carry a token
+    /// with this prefix in any indexed FTS column (short_name / qualified_name /
+    /// docstring / signature). Drives IDF in explore's lexical stage (sutra/371)
+    /// — a token in every symbol weighs ~0, a rare one weighs heavily. Matched
+    /// as an FTS5 prefix (`"tok"*`), the same rule the candidate retrieval and
+    /// the in-process scorer use, so a query token's df reflects the tokens it
+    /// will actually score against (e.g. `import` counts `imports`). The caller
+    /// passes an already-tokenized word.
+    pub fn fts_doc_frequency(&self, token: &str) -> Result<i64> {
+        let conn = self.conn.lock();
+        let escaped = token.replace('"', "\"\"");
+        let match_expr = format!("\"{escaped}\"*");
+        Ok(conn.query_row(
+            "SELECT count(*) FROM symbols_fts WHERE symbols_fts MATCH ?1",
+            params![match_expr],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Full symbol rows for an arbitrary FTS5 MATCH expression, ordered by the
+    /// FTS bm25 `rank` (best first) and capped at `limit`. explore's lexical
+    /// candidate retrieval (sutra/371): the in-process scorer re-ranks these, so
+    /// this is a recall net, not the final order.
+    pub fn fts_candidates(&self, match_expr: &str, limit: i64) -> Result<Vec<SymbolRow>> {
+        // Fetch ids under the lock, then release it before per-id fetches:
+        // symbol_by_id locks the same non-reentrant mutex.
+        let ids: Vec<i64> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT symbol_id FROM symbols_fts
+                 WHERE symbols_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2",
+            )?;
+            let ids: rusqlite::Result<Vec<i64>> = stmt
+                .query_map(params![match_expr, limit], |row| row.get(0))?
+                .collect();
+            ids?
+        };
+        let mut results = Vec::with_capacity(ids.len());
+        for sid in ids {
+            if let Some(sym) = self.symbol_by_id(sid)? {
+                results.push(sym);
+            }
+        }
+        Ok(results)
     }
 
     /// Return all symbols in a file ordered by start_line.

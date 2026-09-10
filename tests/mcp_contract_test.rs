@@ -868,6 +868,179 @@ fn test_explore_negative_budget_clamps() {
     assert!(items.len() <= 1, "negative budget should clamp to 1");
 }
 
+/// Insert a `pub fn` symbol whose short and qualified name are both `name`.
+fn insert_named_symbol(
+    db: &Db,
+    file_id: i64,
+    name: &str,
+    signature: Option<&str>,
+    docstring: Option<&str>,
+    start: i64,
+    end: i64,
+) -> i64 {
+    db.insert_symbol(&InsertSymbolParams {
+        file_id,
+        qualified_name: name,
+        short_name: name,
+        kind: "function",
+        signature,
+        signature_hash: None,
+        structural_hash: None,
+        visibility: Some("pub"),
+        start_line: start,
+        start_col: 0,
+        end_line: end,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring,
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn test_explore_finds_signature_only_match() {
+    // sutra/371 AC1: a query term appearing ONLY in a symbol's signature (a
+    // parameter type), not in its name or docstring, still surfaces the symbol —
+    // signature is indexed in symbols_fts as of migration 0069.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_sig_test", dir.path()).unwrap();
+    db.upsert_file("src/handler.rs", "rust", "h", 40, true)
+        .unwrap();
+    let file = db.file_by_path("src/handler.rs").unwrap().unwrap();
+    // Only `process`'s signature carries "widget"; names/docstrings never do.
+    insert_named_symbol(
+        &db,
+        file.id,
+        "process",
+        Some("fn process(cfg: WidgetConfig) -> Result<()>"),
+        None,
+        1,
+        15,
+    );
+    insert_named_symbol(
+        &db,
+        file.id,
+        "helper",
+        Some("fn helper(x: i64)"),
+        None,
+        20,
+        30,
+    );
+
+    let result = explore::handle(&db, dir.path(), "widget", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["symbol"] == "process"),
+        "signature-only 'widget' match should surface `process`, got {items:?}"
+    );
+}
+
+#[test]
+fn test_explore_finds_docstring_only_match() {
+    // sutra/371 AC2: a query term appearing only in a docstring surfaces the symbol.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_doc_only_test", dir.path()).unwrap();
+    db.upsert_file("src/retry.rs", "rust", "h", 40, true)
+        .unwrap();
+    let file = db.file_by_path("src/retry.rs").unwrap().unwrap();
+    insert_named_symbol(
+        &db,
+        file.id,
+        "attempt",
+        Some("fn attempt()"),
+        Some("Implements the exponential backoff schedule."),
+        1,
+        15,
+    );
+    insert_named_symbol(
+        &db,
+        file.id,
+        "reset",
+        Some("fn reset()"),
+        None,
+        20,
+        30,
+    );
+
+    let result = explore::handle(&db, dir.path(), "backoff", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["symbol"] == "attempt"),
+        "docstring-only 'backoff' match should surface `attempt`, got {items:?}"
+    );
+}
+
+#[test]
+fn test_explore_test_path_ranks_below_definition() {
+    // sutra/371 AC4: on a name tie, the test-path symbol ranks below the real
+    // definition it mirrors (the multiplicative test de-rank).
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_testpath_test", dir.path()).unwrap();
+    db.upsert_file("src/parser.rs", "rust", "h1", 40, true)
+        .unwrap();
+    db.upsert_file("tests/parser_extra.rs", "rust", "h2", 40, true)
+        .unwrap();
+    let def_file = db.file_by_path("src/parser.rs").unwrap().unwrap();
+    let test_file = db.file_by_path("tests/parser_extra.rs").unwrap().unwrap();
+    insert_named_symbol(
+        &db,
+        def_file.id,
+        "tokenize",
+        Some("fn tokenize(src: &str)"),
+        None,
+        1,
+        20,
+    );
+    insert_named_symbol(
+        &db,
+        test_file.id,
+        "tokenize",
+        Some("fn tokenize(src: &str)"),
+        None,
+        1,
+        20,
+    );
+
+    let result = explore::handle(&db, dir.path(), "tokenize", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+    let def_pos = items.iter().position(|i| i["file"] == "src/parser.rs");
+    let test_pos = items
+        .iter()
+        .position(|i| i["file"] == "tests/parser_extra.rs");
+    assert!(
+        def_pos.is_some() && test_pos.is_some(),
+        "both symbols should appear, got {items:?}"
+    );
+    assert!(
+        def_pos < test_pos,
+        "definition (pos {def_pos:?}) should rank above the test-path symbol (pos {test_pos:?})"
+    );
+}
+
+#[test]
+fn test_explore_emits_coverage_signals() {
+    // sutra/371 AC5: the response carries coverage / coverage_strong. An exact-
+    // name query lands entirely in the name field → coverage_strong == 1.0.
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "parse_imports", 10, false).unwrap();
+    let summary = &result["summary"];
+    assert!(summary["coverage"].is_number(), "coverage must be present");
+    assert!(
+        summary["coverage_strong"].is_number(),
+        "coverage_strong must be present"
+    );
+    assert!(
+        (summary["coverage_strong"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+        "exact-name query should have full name coverage, got {}",
+        summary["coverage_strong"]
+    );
+}
+
 #[test]
 fn test_explore_reason_field() {
     let (dir, db) = setup_explore_db();

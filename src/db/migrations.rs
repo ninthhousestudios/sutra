@@ -376,6 +376,15 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0068_parser_stamp.sql"),
         false,
     ),
+    // Widen symbols_fts with a `signature` column so signature-only matches
+    // surface in explore (sutra/371). ephemeral_only: symbols_fts is Ephemeral;
+    // reindex drops it and 0001 recreates the 4-column shape, so this must
+    // replay to re-add the column (same reasoning as the 0063/0067 ALTERs).
+    (
+        "0069_symbols_fts_signature",
+        include_str!("../../migrations/0069_symbols_fts_signature.sql"),
+        true,
+    ),
 ];
 
 impl Db {

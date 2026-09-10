@@ -5,13 +5,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::db::{Db, SearchTier, SymbolRow};
+use crate::db::{Db, SymbolRow};
 use crate::error::Result;
+use crate::parser::adapter::any_language_is_test_path;
 use crate::tools::context::{estimate_tokens, read_line_span};
+use crate::tools::explore_lexical::{self, DocFields};
 use crate::tools::outline;
 use crate::vocabulary;
-
-const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "method", "enum"];
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExploreArgs {
@@ -30,66 +30,6 @@ pub struct ExploreArgs {
     pub compact: Option<bool>,
 }
 
-fn expand_patterns(query: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut patterns = Vec::new();
-    let mut push = |s: String| {
-        if seen.insert(s.clone()) {
-            patterns.push(s);
-        }
-    };
-
-    push(query.to_string());
-
-    // Split on whitespace: "import parsing" → join as "import_parsing", plus individual words
-    let ws_words: Vec<&str> = query.split_whitespace().collect();
-    if ws_words.len() > 1 {
-        push(ws_words.join("_"));
-        for word in &ws_words {
-            if word.len() >= 3 {
-                push(word.to_string());
-            }
-        }
-    }
-
-    // Split on underscores: "parse_imports" → individual segments
-    let us_words: Vec<&str> = query.split('_').collect();
-    if us_words.len() > 1 {
-        for word in &us_words {
-            if word.len() >= 3 {
-                push(word.to_string());
-            }
-        }
-    }
-
-    // CamelCase variant from multi-word queries: "import parsing" → "ImportParsing" / "ImportPars"
-    let camel_words: Vec<&str> = query.split(['_', ' ']).filter(|w| !w.is_empty()).collect();
-    if camel_words.len() > 1 {
-        let title_case = |w: &str| -> String {
-            let mut chars = w.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
-            }
-        };
-        let full: String = camel_words.iter().map(|w| title_case(w)).collect();
-        push(full);
-        if let Some(last) = camel_words.last()
-            && last.len() > 4
-        {
-            let mut truncated: String = camel_words[..camel_words.len() - 1]
-                .iter()
-                .map(|w| title_case(w))
-                .collect();
-            let trunc_last: String = last.chars().take(4).collect();
-            truncated.push_str(&title_case(&trunc_last));
-            push(truncated);
-        }
-    }
-
-    patterns
-}
-
 fn fan_out_depth(unique_hits: usize) -> usize {
     match unique_hits {
         0 => 0,
@@ -99,9 +39,17 @@ fn fan_out_depth(unique_hits: usize) -> usize {
     }
 }
 
+/// Below this NAME-field coverage, the query's terms never hit a symbol name on
+/// the top result — only incidental body/path tokens (sutra/371).
+const WEAK_STRONG_COVERAGE: f64 = 0.34;
+/// Below this any-field coverage, the query's terms barely overlap the top
+/// result at all.
+const WEAK_COVERAGE: f64 = 0.5;
+
 fn select_strategy(
     scores: &[f64],
-    total_grep_hits: usize,
+    coverage: f64,
+    coverage_strong: f64,
     comp_counts: &[(String, usize)],
     compact: bool,
 ) -> Value {
@@ -128,11 +76,14 @@ fn select_strategy(
         });
     }
 
-    if total_grep_hits >= 10 && scores[0] < 0.4 {
-        let mut rationale = format!(
-            "{} hits with no strong match — query is too broad.",
-            total_grep_hits
-        );
+    // No strong match: the query's rare, discriminating terms only weakly
+    // overlap the top result — it landed on incidental body tokens, not a
+    // symbol name. Suggest narrowing instead of trusting a lexical collision.
+    // This is the coverage-driven replacement for the old grep-count heuristic
+    // (sutra/371); the thresholds are retuned alongside the final blend in 392.
+    if coverage_strong < WEAK_STRONG_COVERAGE && coverage < WEAK_COVERAGE {
+        let mut rationale =
+            "No strong match — the query's terms only weakly overlap the top result.".to_string();
         if !comp_counts.is_empty() {
             let suggestions: Vec<String> = comp_counts
                 .iter()
@@ -362,51 +313,31 @@ fn enrich_item(entry: &mut Value, sym: &SymbolRow, lines: i64, compact: bool) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cheap-win ranking (sutra/390)
-//
-// Provisional blend, NOT the final formula: sutra/371 (lexical seed) and
-// sutra/372 (graph re-rank) each replace a stage of this, and the
-// top-1 ≥60% / top-3 ≥85% acceptance gate lives on the downstream task.
-// What changed here vs. the original `0.5·density + 0.3·structural + 0.2·def`:
-//   - TIER dominates: exact short_name match (SearchTier::Exact, confidence
-//     1.0) outweighs an FTS5 prefix hit (Fts, 0.6). Previously the tier was
-//     discarded, so name-match quality never entered the score.
-//   - Structural term is now SYMBOL-SCOPED pagerank, not the file-level
-//     `fan_in_files + blast_radius` every symbol in a hub file inherited
-//     (why a one-liner in a hub file outranked the named definition).
-//   - lines ≤ 1 symbols (fields, trivial getters) are damped unless the name
-//     is an exact hit, so a same-named field can't shadow a real definition.
-const TIER_WEIGHT: f64 = 0.45;
-const MATCH_DENSITY_WEIGHT: f64 = 0.25;
-const PAGERANK_WEIGHT: f64 = 0.15;
-const DEF_PRIORITY_WEIGHT: f64 = 0.15;
-const TRIVIAL_LINE_PENALTY: f64 = 0.4;
+/// FTS candidates pulled before in-process re-ranking. Generous so the scorer
+/// sees enough recall for a broad query; the scored list is truncated to the
+/// caller's budget afterward.
+const CANDIDATE_LIMIT: i64 = 200;
 
-struct ScoreInputs {
-    /// Best search tier this symbol was matched under (Exact=1.0, Fts=0.6).
-    tier: SearchTier,
-    /// match_count / max_match_count over the candidate set.
-    match_density_norm: f64,
-    /// sym.pagerank / max_pagerank over the candidate set.
-    pagerank_norm: f64,
-    /// Whether the symbol's kind is a definition (function/struct/…).
-    is_definition: bool,
-    /// end_line - start_line + 1.
-    lines: i64,
-}
+/// Tokenize one symbol's fields for lexical scoring (sutra/371). `name` unions
+/// the short and qualified name tokens (the highest-weight field); `body` is
+/// signature + docstring — sutra stores no full body_text, so those are the
+/// only body tokens available.
+fn build_doc_fields(sym: &SymbolRow, path: &str) -> DocFields {
+    let mut name_tokens = explore_lexical::tokenize(&sym.short_name);
+    name_tokens.extend(explore_lexical::tokenize(&sym.qualified_name));
 
-fn score_hit(i: &ScoreInputs) -> f64 {
-    let is_exact_short_name = i.tier == SearchTier::Exact;
-    let def_priority = if i.is_definition { 1.0 } else { 0.0 };
-    let base = i.tier.confidence() * TIER_WEIGHT
-        + i.match_density_norm * MATCH_DENSITY_WEIGHT
-        + i.pagerank_norm * PAGERANK_WEIGHT
-        + def_priority * DEF_PRIORITY_WEIGHT;
-    if i.lines <= 1 && !is_exact_short_name {
-        base * TRIVIAL_LINE_PENALTY
-    } else {
-        base
+    let mut body_tokens = Vec::new();
+    if let Some(sig) = sym.signature.as_deref() {
+        body_tokens.extend(explore_lexical::tokenize(sig));
+    }
+    if let Some(doc) = sym.docstring.as_deref() {
+        body_tokens.extend(explore_lexical::tokenize(doc));
+    }
+
+    DocFields {
+        name: explore_lexical::counts(name_tokens),
+        path: explore_lexical::counts(explore_lexical::tokenize(path)),
+        body: explore_lexical::counts(body_tokens),
     }
 }
 
@@ -560,35 +491,35 @@ pub fn handle(
         }));
     }
 
-    let patterns = expand_patterns(query);
+    let budget = budget.max(1) as usize;
 
-    // Accumulate name-match hits, tracking per symbol both how many expanded
-    // patterns hit it (match density) and the best SearchTier it matched under
-    // (sutra/390: the tier was previously discarded at the `_tier` binding).
-    let mut hits: HashMap<i64, (crate::db::SymbolRow, usize, SearchTier)> = HashMap::new();
-    for pattern in &patterns {
-        let (symbols, tier) = db.find_symbols_by_name_tiered(pattern, None, 50)?;
-        for sym in symbols {
-            hits.entry(sym.id)
-                .and_modify(|(_, count, best)| {
-                    *count += 1;
-                    if tier.confidence() > best.confidence() {
-                        *best = tier;
-                    }
-                })
-                .or_insert((sym, 1, tier));
-        }
+    // ── Lexical stage (sutra/371) ──────────────────────────────────────────
+    // Tokenize the query and weight each distinct token by its IDF over the
+    // whole symbol corpus, so a token in nearly every symbol (`handle`, `new`)
+    // weighs ~0 and a rare, discriminating one dominates. An empty IDF map means
+    // the query had no searchable terms after tokenization (all stop words /
+    // single chars).
+    let corpus_n = db.symbol_count().unwrap_or(0);
+    let idf = explore_lexical::build_idf(query, corpus_n, |t| db.fts_doc_frequency(t).unwrap_or(0));
+    if idf.is_empty() {
+        return Ok(empty_lexical_result(query));
     }
 
-    let budget = budget.max(1) as usize;
-    let total_hits = hits.len();
+    // Candidate retrieval: a prefix OR over the query tokens against every FTS
+    // column (short_name, qualified_name, docstring, and — as of 0069 —
+    // signature), so a symbol findable only by its signature or docstring
+    // surfaces. This is a recall net; the IDF/BM25 scorer re-ranks it below.
+    let match_expr = idf
+        .keys()
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let candidates = db.fts_candidates(&match_expr, CANDIDATE_LIMIT)?;
 
-    // Fetch FileRows for path/component resolution (structural importance is
-    // no longer read from here — sutra/390 replaced the file-level term with
-    // symbol-scoped pagerank).
-    let unique_file_ids: Vec<i64> = hits
-        .values()
-        .map(|(s, _, _)| s.file_id)
+    // Fetch FileRows for path tokenization + component resolution.
+    let unique_file_ids: Vec<i64> = candidates
+        .iter()
+        .map(|s| s.file_id)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
@@ -597,11 +528,65 @@ pub fn handle(
         .filter_map(|&fid| db.file_by_id(fid).ok().flatten().map(|f| (fid, f)))
         .collect();
 
-    // Compute normalization maxima over the candidate set.
-    let max_match_density = hits.values().map(|(_, c, _)| *c).max().unwrap_or(1) as f64;
-    let max_pagerank = hits
-        .values()
-        .filter_map(|(sym, _, _)| sym.pagerank)
+    // Tokenize each candidate's fields once, and settle its query-aware test
+    // de-rank factor (a query that asks about tests keeps them at full weight).
+    let query_wants_tests = explore_lexical::wants_tests(query);
+    let docs: Vec<(SymbolRow, DocFields, f64)> = candidates
+        .into_iter()
+        .map(|sym| {
+            let path = file_map.get(&sym.file_id).map(|f| &*f.path).unwrap_or("");
+            let test_factor = if !query_wants_tests && any_language_is_test_path(path) {
+                explore_lexical::TEST_RANK_PENALTY
+            } else {
+                1.0
+            };
+            let fields = build_doc_fields(&sym, path);
+            (sym, fields, test_factor)
+        })
+        .collect();
+
+    // BM25 length prior: the corpus-average body length, approximated over the
+    // candidate set (a full-corpus average would cost a tokenize of every
+    // symbol per query). Relative ordering within candidates is what matters.
+    let avgdl = if docs.is_empty() {
+        1.0
+    } else {
+        docs.iter()
+            .map(|(_, f, _)| explore_lexical::body_len(f))
+            .sum::<f64>()
+            / docs.len() as f64
+    };
+
+    // Raw lexical pass: keep positive hits with their coverage + test factor.
+    struct RawHit {
+        sym: SymbolRow,
+        lexical: f64,
+        test_factor: f64,
+        coverage: f64,
+        coverage_strong: f64,
+    }
+    let mut raw: Vec<RawHit> = Vec::with_capacity(docs.len());
+    for (sym, fields, test_factor) in docs {
+        let s = explore_lexical::score_doc(&idf, &fields, avgdl);
+        if s.score > 0.0 {
+            raw.push(RawHit {
+                sym,
+                lexical: s.score,
+                test_factor,
+                coverage: s.coverage,
+                coverage_strong: s.coverage_strong,
+            });
+        }
+    }
+
+    // Normalization maxima over the candidate set, then blend the normalized
+    // lexical score with the structural (global pagerank) prior and apply the
+    // test de-rank to the blend (sutra/371; query-personalized re-rank is 372).
+    let max_lex = raw.iter().map(|h| h.lexical).fold(0.0_f64, f64::max);
+    let max_lex = if max_lex > 0.0 { max_lex } else { 1.0 };
+    let max_pagerank = raw
+        .iter()
+        .filter_map(|h| h.sym.pagerank)
         .fold(0.0_f64, f64::max);
     let max_pagerank = if max_pagerank > 0.0 {
         max_pagerank
@@ -609,21 +594,19 @@ pub fn handle(
         1.0
     };
 
-    // Score each hit with the cheap-win weighted formula (see score_hit).
-    let mut scored: Vec<(crate::db::SymbolRow, f64)> = hits
-        .into_values()
-        .map(|(sym, match_count, tier)| {
-            let score = score_hit(&ScoreInputs {
-                tier,
-                match_density_norm: match_count as f64 / max_match_density,
-                pagerank_norm: sym.pagerank.unwrap_or(0.0) / max_pagerank,
-                is_definition: DEFINITION_KINDS.contains(&&*sym.kind),
-                lines: sym.end_line - sym.start_line + 1,
-            });
-            (sym, score)
-        })
-        .collect();
+    let mut coverage_by_id: HashMap<i64, (f64, f64)> = HashMap::new();
+    let mut scored: Vec<(SymbolRow, f64)> = Vec::with_capacity(raw.len());
+    for h in raw {
+        let blended = explore_lexical::blend(
+            h.lexical / max_lex,
+            h.sym.pagerank.unwrap_or(0.0) / max_pagerank,
+            h.test_factor,
+        );
+        coverage_by_id.insert(h.sym.id, (h.coverage, h.coverage_strong));
+        scored.push((h.sym, blended));
+    }
 
+    let total_hits = scored.len();
     let direct_ids: HashSet<i64> = scored.iter().map(|(s, _)| s.id).collect();
     let depth = fan_out_depth(total_hits);
     let fan_out = collect_fan_out(db, &scored, depth);
@@ -634,6 +617,12 @@ pub fn handle(
             .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
     });
     scored.truncate(budget);
+
+    // Match-strength of the top hit — the signal the strategy hint reads.
+    let (top_coverage, top_coverage_strong) = scored
+        .first()
+        .and_then(|(s, _)| coverage_by_id.get(&s.id).copied())
+        .unwrap_or((0.0, 0.0));
 
     // Extend file_map with any new files from fan-out items
     for (sym, _) in &scored {
@@ -722,15 +711,41 @@ pub fn handle(
     Ok(json!({
         "items": items,
         "edges": edges,
-        "strategy": select_strategy(&scores, total_hits, &comp_counts, compact),
+        "strategy": select_strategy(&scores, top_coverage, top_coverage_strong, &comp_counts, compact),
         "summary": {
             "total_items": items.len(),
             "direct_matches": direct_count,
             "fan_out_items": fan_out_count,
             "components_touched": components_touched,
             "total_estimated_tokens": total_tokens,
+            "coverage": top_coverage,
+            "coverage_strong": top_coverage_strong,
         },
     }))
+}
+
+/// The empty result for a query that tokenizes to nothing searchable — same
+/// shape as a zero-hit lexical result, with the coverage signals at 0.
+fn empty_lexical_result(query: &str) -> Value {
+    json!({
+        "items": [],
+        "edges": [],
+        "strategy": {
+            "action": "narrow_query",
+            "rationale": format!(
+                "Query '{query}' has no searchable terms after tokenization — try a specific identifier or a longer word."
+            ),
+        },
+        "summary": {
+            "total_items": 0,
+            "direct_matches": 0,
+            "fan_out_items": 0,
+            "components_touched": 0,
+            "total_estimated_tokens": 0,
+            "coverage": 0.0,
+            "coverage_strong": 0.0,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -769,84 +784,14 @@ mod tests {
     }
 
     #[test]
-    fn expand_single_word() {
-        let patterns = expand_patterns("import");
-        assert_eq!(patterns, vec!["import"]);
-    }
-
-    #[test]
-    fn expand_multi_word() {
-        let patterns = expand_patterns("import parsing");
-        assert!(patterns.contains(&"import parsing".to_string()));
-        assert!(patterns.contains(&"import_parsing".to_string()));
-        assert!(patterns.contains(&"import".to_string()));
-        assert!(patterns.contains(&"parsing".to_string()));
-    }
-
-    #[test]
-    fn expand_snake_case_splits() {
-        let patterns = expand_patterns("parse_imports");
-        assert!(patterns.contains(&"parse_imports".to_string()));
-        assert!(patterns.contains(&"parse".to_string()));
-        assert!(patterns.contains(&"imports".to_string()));
-    }
-
-    #[test]
-    fn expand_skips_short_words() {
-        let patterns = expand_patterns("do it now");
-        assert!(patterns.contains(&"do it now".to_string()));
-        assert!(patterns.contains(&"do_it_now".to_string()));
-        assert!(patterns.contains(&"now".to_string()));
-        assert!(!patterns.contains(&"do".to_string()));
-        assert!(!patterns.contains(&"it".to_string()));
-    }
-
-    #[test]
-    fn expand_deduplicates() {
-        let patterns = expand_patterns("foo bar");
-        let count = patterns.iter().filter(|p| p.as_str() == "foo").count();
-        assert_eq!(count, 1, "no duplicates");
-    }
-
-    #[test]
-    fn expand_empty_string() {
-        let patterns = expand_patterns("");
-        assert_eq!(patterns, vec![""]);
-    }
-
-    #[test]
-    fn expand_camel_case_from_spaces() {
-        let patterns = expand_patterns("import parsing");
-        assert!(patterns.contains(&"ImportParsing".to_string()));
-        assert!(patterns.contains(&"ImportPars".to_string()));
-    }
-
-    #[test]
-    fn expand_camel_case_from_underscores() {
-        let patterns = expand_patterns("parse_imports");
-        assert!(patterns.contains(&"ParseImports".to_string()));
-        assert!(patterns.contains(&"ParseImpo".to_string()));
-    }
-
-    #[test]
-    fn expand_camel_case_no_truncation_for_short_last_word() {
-        let patterns = expand_patterns("get foo");
-        assert!(patterns.contains(&"GetFoo".to_string()));
-        // "foo" is only 3 chars, no truncated variant
-        assert!(!patterns.iter().any(|p| p.starts_with("Get")
-            && p != "GetFoo"
-            && p.chars().next().unwrap().is_uppercase()));
-    }
-
-    #[test]
     fn strategy_zero_items() {
-        let s = select_strategy(&[], 0, &[], false);
+        let s = select_strategy(&[], 0.0, 0.0, &[], false);
         assert_eq!(s["action"], "narrow_query");
     }
 
     #[test]
     fn strategy_read_all_few_items() {
-        let s = select_strategy(&[0.8, 0.5], 2, &[], false);
+        let s = select_strategy(&[0.8, 0.5], 0.9, 0.9, &[], false);
         assert_eq!(s["action"], "read_all");
         assert!(
             s["rationale"]
@@ -856,20 +801,22 @@ mod tests {
             "non-compact read_all should mention signature"
         );
         // compact mode strips signatures, so the rationale must not reference them
-        let sc = select_strategy(&[0.8, 0.5], 2, &[], true);
+        let sc = select_strategy(&[0.8, 0.5], 0.9, 0.9, &[], true);
         assert!(!sc["rationale"].as_str().unwrap().contains("signature"));
     }
 
     #[test]
-    fn strategy_narrow_query_diffuse() {
-        // 12 grep hits, weak top score, spread across components
-        let scores = vec![0.3, 0.28, 0.25, 0.2, 0.18];
+    fn strategy_narrow_on_weak_coverage() {
+        // sutra/371: the hint reads coverage, not a grep-count. Many strong-
+        // scoring hits, but the query's rare terms barely overlap the top result
+        // (coverage_strong 0.1, coverage 0.2) → narrow with component hints.
+        let scores = vec![0.9, 0.85, 0.8, 0.7, 0.6];
         let comps = vec![
             ("parser".to_string(), 2),
             ("db".to_string(), 2),
             ("tools".to_string(), 1),
         ];
-        let s = select_strategy(&scores, 12, &comps, false);
+        let s = select_strategy(&scores, 0.2, 0.1, &comps, false);
         assert_eq!(s["action"], "narrow_query");
         assert!(s["suggested_refinements"].is_array());
         let refs = s["suggested_refinements"].as_array().unwrap();
@@ -877,10 +824,19 @@ mod tests {
     }
 
     #[test]
+    fn strategy_strong_coverage_not_narrowed() {
+        // Same diffuse score shape, but a strong name-field match: the narrow
+        // branch is skipped — proof the decision consults coverage, not counts.
+        let scores = vec![0.9, 0.85, 0.8, 0.7, 0.6];
+        let s = select_strategy(&scores, 1.0, 1.0, &[], false);
+        assert_ne!(s["action"], "narrow_query");
+    }
+
+    #[test]
     fn strategy_read_top_1_dominant() {
-        // Top score > 2× second
+        // Top score > 2× second, with a strong match so coverage doesn't narrow.
         let scores = vec![0.9, 0.3, 0.2, 0.1];
-        let s = select_strategy(&scores, 5, &[], false);
+        let s = select_strategy(&scores, 1.0, 1.0, &[], false);
         assert_eq!(s["action"], "read_top_n");
         assert_eq!(s["n"], 1);
     }
@@ -890,7 +846,7 @@ mod tests {
         // 8 of 10 items in "parser" component → 80%
         let scores = vec![0.7, 0.6, 0.5, 0.5, 0.4, 0.4, 0.3, 0.3, 0.2, 0.2];
         let comps = vec![("parser".to_string(), 8), ("db".to_string(), 2)];
-        let s = select_strategy(&scores, 7, &comps, false);
+        let s = select_strategy(&scores, 1.0, 1.0, &comps, false);
         assert_eq!(s["action"], "explore_component");
         assert_eq!(s["component"], "parser");
     }
@@ -904,7 +860,7 @@ mod tests {
             ("db".to_string(), 2),
             ("parser".to_string(), 1),
         ];
-        let s = select_strategy(&scores, 5, &comps, false);
+        let s = select_strategy(&scores, 1.0, 1.0, &comps, false);
         assert_eq!(s["action"], "read_top_n");
         // 0.6 * 2 = 1.2 >= 0.8 ✓, 0.5 * 2 = 1.0 >= 0.8 ✓ → 3 within 2×
         assert_eq!(s["n"], 3);
@@ -915,7 +871,7 @@ mod tests {
                 .contains("Pick by signature")
         );
         // compact read_top_n drops the signature guidance
-        let sc = select_strategy(&scores, 5, &comps, true);
+        let sc = select_strategy(&scores, 1.0, 1.0, &comps, true);
         assert!(!sc["rationale"].as_str().unwrap().contains("signature"));
     }
 
@@ -923,7 +879,7 @@ mod tests {
     fn strategy_read_top_2_when_third_drops() {
         // Top 2 close, third drops off
         let scores = vec![0.8, 0.7, 0.3, 0.2];
-        let s = select_strategy(&scores, 4, &[], false);
+        let s = select_strategy(&scores, 1.0, 1.0, &[], false);
         assert_eq!(s["action"], "read_top_n");
         // 0.7 * 2 = 1.4 >= 0.8 ✓, 0.3 * 2 = 0.6 < 0.8 ✗ → 2 within 2×
         assert_eq!(s["n"], 2);
@@ -977,77 +933,5 @@ mod tests {
         let est = span_tokens(dir.path(), "missing.rs", Some((1, 10)));
         assert_eq!(est, (10 * FALLBACK_BYTES_PER_LINE / 4) as i64);
         assert!(est > 10 * 4);
-    }
-
-    #[test]
-    fn score_exact_short_name_beats_prefix_only() {
-        // sutra/390: an exact short_name match must outrank an FTS5 prefix-only
-        // match even when the prefix hit has higher match density and pagerank
-        // (the isEpheArtifact-outranks-BodySelection failure).
-        // Hold match density equal so the comparison isolates tier + the
-        // (down-weighted) structural term: the exact-named symbol lives in an
-        // ordinary file (low pagerank), the prefix hit rides a hub file's
-        // pagerank. Name relevance must still win.
-        let exact = score_hit(&ScoreInputs {
-            tier: SearchTier::Exact,
-            match_density_norm: 0.8,
-            pagerank_norm: 0.1,
-            is_definition: true,
-            lines: 15,
-        });
-        let prefix = score_hit(&ScoreInputs {
-            tier: SearchTier::Fts,
-            match_density_norm: 0.8,
-            pagerank_norm: 1.0,
-            is_definition: true,
-            lines: 20,
-        });
-        assert!(
-            exact > prefix,
-            "exact ({exact}) should beat prefix-only ({prefix})"
-        );
-    }
-
-    #[test]
-    fn score_penalizes_one_liner_unless_exact() {
-        // A single-line non-exact hit (trivial getter / field via prefix) is
-        // damped; an identical multi-line hit is not.
-        let one_liner = score_hit(&ScoreInputs {
-            tier: SearchTier::Fts,
-            match_density_norm: 1.0,
-            pagerank_norm: 0.5,
-            is_definition: false,
-            lines: 1,
-        });
-        let multi_line = score_hit(&ScoreInputs {
-            tier: SearchTier::Fts,
-            match_density_norm: 1.0,
-            pagerank_norm: 0.5,
-            is_definition: false,
-            lines: 12,
-        });
-        assert!(
-            one_liner < multi_line,
-            "one-liner ({one_liner}) should be penalized below multi-line ({multi_line})"
-        );
-        assert!((one_liner - multi_line * TRIVIAL_LINE_PENALTY).abs() < 1e-9);
-
-        // The penalty is waived for an exact short_name match, so a one-line
-        // exact hit keeps its full score.
-        let exact_one_liner = score_hit(&ScoreInputs {
-            tier: SearchTier::Exact,
-            match_density_norm: 1.0,
-            pagerank_norm: 0.5,
-            is_definition: false,
-            lines: 1,
-        });
-        let exact_multi_line = score_hit(&ScoreInputs {
-            tier: SearchTier::Exact,
-            match_density_norm: 1.0,
-            pagerank_norm: 0.5,
-            is_definition: false,
-            lines: 12,
-        });
-        assert!((exact_one_liner - exact_multi_line).abs() < 1e-9);
     }
 }
