@@ -655,8 +655,10 @@ impl SutraServer {
     #[tool(
         description = "Explore a topic in the codebase. Resolves aliases (.sutra/aliases.toml), \
         qualified names (Foo::bar), and fuzzy queries. Returns a ranked list of matching \
-        symbols with literal sutra_symbol fetch instructions and a strategy recommendation. \
-        One call replaces iterative map/outline/grep exploration."
+        symbols — each with its signature and first doc line so you can pick the right one \
+        without a follow-up fetch — plus literal sutra_symbol fetch instructions and a strategy \
+        recommendation. Pass compact=true for the lean shape (no signature/doc). One call \
+        replaces iterative map/outline/grep exploration."
     )]
     pub async fn sutra_explore(
         &self,
@@ -672,8 +674,10 @@ impl SutraServer {
             tracing::warn!("alias sync during explore failed: {e}");
         }
         let budget = args.budget.unwrap_or(10);
-        let result = tools::explore::handle(ctx.db(), ctx.workspace_root(), &args.query, budget)
-            .map_err(sutra_to_rmcp)?;
+        let compact = args.compact.unwrap_or(false);
+        let result =
+            tools::explore::handle(ctx.db(), ctx.workspace_root(), &args.query, budget, compact)
+                .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

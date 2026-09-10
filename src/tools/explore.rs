@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::db::Db;
+use crate::db::{Db, SymbolRow};
 use crate::error::Result;
 use crate::tools::context::{estimate_tokens, read_line_span};
+use crate::tools::outline;
 use crate::vocabulary;
 
 const DEFINITION_KINDS: &[&str] = &["function", "struct", "trait", "impl", "method", "enum"];
@@ -21,6 +22,12 @@ pub struct ExploreArgs {
     /// Max items to return (default 10)
     #[serde(default)]
     pub budget: Option<i64>,
+    /// Drop the per-item `signature` and `doc` fields, returning the leaner
+    /// pre-sutra/389 shape. Off by default: each item carries the symbol's
+    /// signature and first doc line so you can usually pick the right one
+    /// without a follow-up fetch.
+    #[serde(default)]
+    pub compact: Option<bool>,
 }
 
 fn expand_patterns(query: &str) -> Vec<String> {
@@ -109,7 +116,7 @@ fn select_strategy(
     if n < 3 {
         return json!({
             "action": "read_all",
-            "rationale": format!("Only {} items — read them all.", n)
+            "rationale": format!("Only {} items — pick by signature and read what fits.", n)
         });
     }
 
@@ -172,7 +179,10 @@ fn select_strategy(
     json!({
         "action": "read_top_n",
         "n": read_n,
-        "rationale": format!("{} items found. Start with the top {} matches.", n, read_n)
+        "rationale": format!(
+            "{} items found. Pick by signature — start with the top {} matches.",
+            n, read_n
+        )
     })
 }
 
@@ -298,7 +308,53 @@ fn span_tokens(workspace_root: &Path, rel_path: &str, span: Option<(i64, i64)>) 
     (lines * FALLBACK_BYTES_PER_LINE / 4) as i64
 }
 
-pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Result<Value> {
+/// First line of a docstring, trimmed and capped for compact display, with a
+/// trailing ellipsis when the line was truncated. Returns None when the
+/// docstring has no non-empty first line. Rust/Dart docstrings are stored with
+/// their summary on the first line (the joined `///` lines), so the first line
+/// is the natural one-glance description. sutra/389.
+fn doc_line(docstring: &str) -> Option<String> {
+    const MAX: usize = 120;
+    let first = docstring.lines().next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    if first.chars().count() <= MAX {
+        Some(first.to_string())
+    } else {
+        let cut: String = first.chars().take(MAX).collect();
+        Some(format!("{}…", cut.trim_end()))
+    }
+}
+
+/// Attach the `signature` and `doc` presentation fields to an explore item so
+/// an agent can pick the right symbol without a follow-up fetch (sutra/389).
+/// No-op when `compact`. `signature` is the exact string sutra_outline renders
+/// (shared via `outline::rendered_signature`) and is omitted for one-liners
+/// (`lines <= 1`, e.g. struct fields) where it adds nothing beyond the name.
+/// `doc` is the capped first line of the docstring, present only when the
+/// symbol is documented.
+fn enrich_item(entry: &mut Value, sym: &SymbolRow, lines: i64, compact: bool) {
+    if compact {
+        return;
+    }
+    if lines > 1
+        && let Some(sig) = outline::rendered_signature(sym)
+    {
+        entry["signature"] = json!(sig);
+    }
+    if let Some(doc) = sym.docstring.as_deref().and_then(doc_line) {
+        entry["doc"] = json!(doc);
+    }
+}
+
+pub fn handle(
+    db: &Db,
+    workspace_root: &Path,
+    query: &str,
+    budget: i64,
+    compact: bool,
+) -> Result<Value> {
     // Priority 0: alias resolution — check .sutra/aliases.toml, component names, anchor names
     // Filter out orphan matches (targets that no longer exist) and fall through if nothing valid
     let alias_matches = vocabulary::resolve(db, query).unwrap_or_default();
@@ -330,6 +386,13 @@ pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Resul
                 } else {
                     format!("sutra_outline(path='{}')", loc.path)
                 };
+                // No signature/doc enrichment here (sutra/389): a vocabulary
+                // match carries a bare `target_ref` — often a short name, a
+                // group, a component, or a doc path — with no SymbolRow, and no
+                // location-keyed symbol lookup to disambiguate a colliding
+                // short name against. An exact alias hit already ships a
+                // precise `fetch`, so the "which item answers my question?"
+                // problem the fields solve doesn't arise here.
                 items.push(json!({
                     "symbol": &m.target_ref,
                     "file": &loc.path,
@@ -406,17 +469,19 @@ pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Resul
             &file_path,
             Some((sym.start_line, sym.end_line)),
         );
+        let mut item = json!({
+            "symbol": sym.qualified_name,
+            "file": file_path,
+            "kind": sym.kind,
+            "lines": lines,
+            "component": component,
+            "reason": "direct_match",
+            "estimated_tokens": estimated_tokens,
+            "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
+        });
+        enrich_item(&mut item, sym, lines, compact);
         return Ok(json!({
-            "items": [{
-                "symbol": sym.qualified_name,
-                "file": file_path,
-                "kind": sym.kind,
-                "lines": lines,
-                "component": component,
-                "reason": "direct_match",
-                "estimated_tokens": estimated_tokens,
-                "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
-            }],
+            "items": [item],
             "edges": [],
             "strategy": {
                 "action": "read_top_n",
@@ -565,7 +630,7 @@ pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Resul
             } else {
                 "fan_out"
             };
-            json!({
+            let mut entry = json!({
                 "symbol": sym.qualified_name,
                 "file": file_path,
                 "kind": sym.kind,
@@ -574,7 +639,9 @@ pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Resul
                 "reason": reason,
                 "estimated_tokens": estimated_tokens,
                 "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
-            })
+            });
+            enrich_item(&mut entry, sym, lines, compact);
+            entry
         })
         .collect();
 
@@ -606,6 +673,37 @@ pub fn handle(db: &Db, workspace_root: &Path, query: &str, budget: i64) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doc_line_takes_first_line_only() {
+        assert_eq!(
+            doc_line("Summary line.\nSecond paragraph with more detail."),
+            Some("Summary line.".to_string())
+        );
+    }
+
+    #[test]
+    fn doc_line_trims_and_keeps_short_line_whole() {
+        assert_eq!(
+            doc_line("  Does the thing.  "),
+            Some("Does the thing.".to_string())
+        );
+    }
+
+    #[test]
+    fn doc_line_caps_long_first_line_with_ellipsis() {
+        let long = "x".repeat(200);
+        let out = doc_line(&long).unwrap();
+        // 120 chars kept + one ellipsis char.
+        assert_eq!(out.chars().count(), 121);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn doc_line_empty_or_blank_is_none() {
+        assert_eq!(doc_line(""), None);
+        assert_eq!(doc_line("   \n"), None);
+    }
 
     #[test]
     fn expand_single_word() {

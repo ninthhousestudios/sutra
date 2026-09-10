@@ -101,6 +101,19 @@ enum Commands {
         /// Symbol name
         symbol: String,
     },
+    /// Explore a topic — ranked symbols with fetch instructions (JSON output)
+    Explore {
+        /// Workspace id
+        workspace: String,
+        /// Topic to explore — symbol names, concepts, feature areas
+        query: String,
+        /// Max items to return (default 10)
+        #[arg(long)]
+        budget: Option<i64>,
+        /// Drop per-item signature/doc fields (lean, pre-sutra/389 shape)
+        #[arg(long)]
+        compact: bool,
+    },
     /// Check changed files for constraint violations (git hook / CI gate).
     ///
     /// Evaluates the workspace's rules over a diff scope and exits non-zero on
@@ -316,6 +329,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
             let ws_root = std::path::Path::new(&ws.root);
             let result = sutra::tools::impact::handle(&db, &symbol, false, None, ws_root)?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        Commands::Explore {
+            workspace: ws_id,
+            query,
+            budget,
+            compact,
+        } => {
+            let ws_config = load_validated_workspaces(&config)?;
+            let ws = workspace::resolve_workspace(&ws_config, &ws_id)?;
+            let db = sutra::db::Db::open_for_workspace(ws, &config.db_dir)?;
+            let ws_root = std::path::Path::new(&ws.root);
+            let result =
+                sutra::tools::explore::handle(&db, ws_root, &query, budget.unwrap_or(10), compact)?;
             println!("{}", serde_json::to_string(&result)?);
         }
         Commands::Workspaces(cmd) => match cmd {

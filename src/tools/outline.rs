@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Db;
+use crate::db::{Db, SymbolRow};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OutlineArgs {
@@ -49,6 +49,18 @@ impl OutlineDetail {
 
 use crate::error::{Result, SutraError};
 
+/// The signature sutra_outline renders at its default (Signatures) tier, or
+/// None when the symbol has none (many modules, consts, and some fields carry
+/// no signature). Source-formatting whitespace — the line breaks and
+/// indentation of a multi-line declaration — is collapsed to single spaces so
+/// the signature reads on one line in a JSON field or a symbol TOC, with no
+/// loss of meaning. Exposed so sutra_explore presents the identical string and
+/// the two tools can never drift apart (sutra/389).
+pub fn rendered_signature(sym: &SymbolRow) -> Option<String> {
+    let sig = sym.signature.as_deref()?;
+    Some(sig.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 pub fn handle(db: &Db, path: &str, detail: OutlineDetail) -> Result<serde_json::Value> {
     let file = db.file_by_path(path)?.ok_or_else(|| SutraError::NotFound {
         tool: "sutra_outline",
@@ -71,7 +83,7 @@ pub fn handle(db: &Db, path: &str, detail: OutlineDetail) -> Result<serde_json::
                 "visibility": s.visibility,
             });
             if detail >= OutlineDetail::Signatures {
-                entry["signature"] = json!(s.signature);
+                entry["signature"] = json!(rendered_signature(s));
             }
             if detail == OutlineDetail::Full {
                 entry["short_name"] = json!(s.short_name);

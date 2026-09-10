@@ -128,7 +128,9 @@ Similar composite score but includes volume signals and per-symbol risk breakdow
 ```
 sutra_explore(workspace=\"myproject\", query=\"Config\")
 ```
-Resolves aliases, qualified names, and fuzzy queries. Returns ranked matches with fetch instructions.
+Resolves aliases, qualified names, and fuzzy queries. Returns ranked matches — each with its \
+signature and first doc line — plus fetch instructions, so you can usually pick the right symbol \
+by signature without a follow-up fetch. Pass compact=true for the lean shape (no signature/doc).
 
 ## Look up symbols by name
 ```

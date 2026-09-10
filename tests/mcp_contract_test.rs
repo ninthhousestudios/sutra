@@ -806,7 +806,7 @@ fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
 #[test]
 fn test_explore_basic() {
     let (dir, db) = setup_explore_db();
-    let result = explore::handle(&db, dir.path(), "import", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "import", 10, false).unwrap();
 
     let items = result["items"].as_array().expect("items array");
     assert!(
@@ -840,7 +840,7 @@ fn test_explore_basic() {
 #[test]
 fn test_explore_zero_hits() {
     let (dir, db) = setup_explore_db();
-    let result = explore::handle(&db, dir.path(), "nonexistent_xyzzy", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "nonexistent_xyzzy", 10, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.is_empty());
@@ -853,7 +853,7 @@ fn test_explore_zero_hits() {
 #[test]
 fn test_explore_budget_limits_items() {
     let (dir, db) = setup_explore_db();
-    let result = explore::handle(&db, dir.path(), "parse_imports", 1).unwrap();
+    let result = explore::handle(&db, dir.path(), "parse_imports", 1, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "budget=1 should return at most 1 item");
@@ -862,7 +862,7 @@ fn test_explore_budget_limits_items() {
 #[test]
 fn test_explore_negative_budget_clamps() {
     let (dir, db) = setup_explore_db();
-    let result = explore::handle(&db, dir.path(), "parse_imports", -5).unwrap();
+    let result = explore::handle(&db, dir.path(), "parse_imports", -5, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     assert!(items.len() <= 1, "negative budget should clamp to 1");
@@ -871,7 +871,7 @@ fn test_explore_negative_budget_clamps() {
 #[test]
 fn test_explore_reason_field() {
     let (dir, db) = setup_explore_db();
-    let result = explore::handle(&db, dir.path(), "import", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "import", 10, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     for item in items {
@@ -884,12 +884,147 @@ fn test_explore_reason_field() {
 }
 
 #[test]
+fn test_explore_items_carry_signature() {
+    // sutra/389: multi-line symbols carry the signature outline renders, so an
+    // agent can pick without fetching. The fixture funcs span 20 lines and
+    // carry no docstring, so `signature` is present and `doc` absent.
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "import", 10, false).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    for item in items {
+        let sig = item["signature"]
+            .as_str()
+            .expect("multi-line item should carry a signature");
+        assert!(sig.starts_with("fn "), "unexpected signature: {sig}");
+        assert!(
+            item.get("doc").is_none(),
+            "undocumented symbol must not carry a doc field"
+        );
+    }
+}
+
+#[test]
+fn test_explore_compact_omits_signature_and_doc() {
+    // compact=true reproduces the pre-sutra/389 lean shape: no signature/doc.
+    let (dir, db) = setup_explore_db();
+    let result = explore::handle(&db, dir.path(), "import", 10, true).unwrap();
+
+    let items = result["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    for item in items {
+        assert!(
+            item.get("signature").is_none(),
+            "compact must drop signature"
+        );
+        assert!(item.get("doc").is_none(), "compact must drop doc");
+        // The lean structural fields are untouched.
+        assert!(item["symbol"].is_string());
+        assert!(item["fetch"].is_string());
+    }
+}
+
+#[test]
+fn test_explore_doc_line_present_and_one_liner_omits_signature() {
+    // sutra/389: a documented multi-line symbol carries both signature and the
+    // first line of its docstring; a one-line symbol (e.g. a struct field)
+    // still carries its doc but omits the signature, which adds nothing beyond
+    // the name.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_doc_test", dir.path()).unwrap();
+    db.upsert_file("src/widget.rs", "rust", "hash1", 60, true)
+        .unwrap();
+    let file = db.file_by_path("src/widget.rs").unwrap().unwrap();
+
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: file.id,
+        qualified_name: "render_widget",
+        short_name: "render_widget",
+        kind: "function",
+        signature: Some("fn render_widget(w: &Widget) -> Result<()>"),
+        signature_hash: None,
+        structural_hash: None,
+        visibility: Some("pub"),
+        start_line: 1,
+        start_col: 0,
+        end_line: 30,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: Some("Render the widget to the screen.\nHandles layout and paint."),
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap();
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: file.id,
+        qualified_name: "Widget::render_mode",
+        short_name: "render_mode",
+        kind: "field",
+        signature: Some("render_mode: bool"),
+        signature_hash: None,
+        structural_hash: None,
+        visibility: Some("pub"),
+        start_line: 5,
+        start_col: 0,
+        end_line: 5,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: Some("Whether the widget renders."),
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 2,
+        ..Default::default()
+    })
+    .unwrap();
+
+    let result = explore::handle(&db, dir.path(), "render", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+
+    let func = items
+        .iter()
+        .find(|i| i["symbol"] == "render_widget")
+        .expect("render_widget in results");
+    assert_eq!(
+        func["signature"], "fn render_widget(w: &Widget) -> Result<()>",
+        "multi-line function carries the outline signature"
+    );
+    assert_eq!(
+        func["doc"], "Render the widget to the screen.",
+        "doc is the first line of the docstring only"
+    );
+
+    let field = items
+        .iter()
+        .find(|i| i["symbol"] == "Widget::render_mode")
+        .expect("Widget::render_mode in results");
+    assert!(
+        field.get("signature").is_none(),
+        "a one-line symbol omits the signature"
+    );
+    assert_eq!(
+        field["doc"], "Whether the widget renders.",
+        "a documented one-liner still carries its doc"
+    );
+}
+
+#[test]
 fn test_explore_fan_out_few_hits() {
     // "build_ast" matches 1 symbol → 1-3 range → 2-hop fan-out
     // build_ast calls parse_imports, parse_imports calls resolve_imports
     // So fan-out should surface parse_imports (hop 1) and resolve_imports (hop 2)
     let (dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     let direct: Vec<_> = items
@@ -933,7 +1068,7 @@ fn test_explore_fan_out_few_hits() {
 fn test_explore_fan_out_score_decay() {
     // Fan-out items should rank below direct matches
     let (dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     // First item should be the direct match
@@ -947,7 +1082,7 @@ fn test_explore_fan_out_score_decay() {
 #[test]
 fn test_explore_edges() {
     let (dir, db) = setup_explore_db_with_calls();
-    let result = explore::handle(&db, dir.path(), "build_ast", 10).unwrap();
+    let result = explore::handle(&db, dir.path(), "build_ast", 10, false).unwrap();
 
     let edges = result["edges"]
         .as_array()
