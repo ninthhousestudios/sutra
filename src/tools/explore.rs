@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::db::{Db, SymbolRow};
+use crate::db::{Db, SearchTier, SymbolRow};
 use crate::error::Result;
 use crate::tools::context::{estimate_tokens, read_line_span};
 use crate::tools::outline;
@@ -362,6 +362,54 @@ fn enrich_item(entry: &mut Value, sym: &SymbolRow, lines: i64, compact: bool) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cheap-win ranking (sutra/390)
+//
+// Provisional blend, NOT the final formula: sutra/371 (lexical seed) and
+// sutra/372 (graph re-rank) each replace a stage of this, and the
+// top-1 ≥60% / top-3 ≥85% acceptance gate lives on the downstream task.
+// What changed here vs. the original `0.5·density + 0.3·structural + 0.2·def`:
+//   - TIER dominates: exact short_name match (SearchTier::Exact, confidence
+//     1.0) outweighs an FTS5 prefix hit (Fts, 0.6). Previously the tier was
+//     discarded, so name-match quality never entered the score.
+//   - Structural term is now SYMBOL-SCOPED pagerank, not the file-level
+//     `fan_in_files + blast_radius` every symbol in a hub file inherited
+//     (why a one-liner in a hub file outranked the named definition).
+//   - lines ≤ 1 symbols (fields, trivial getters) are damped unless the name
+//     is an exact hit, so a same-named field can't shadow a real definition.
+const TIER_WEIGHT: f64 = 0.45;
+const MATCH_DENSITY_WEIGHT: f64 = 0.25;
+const PAGERANK_WEIGHT: f64 = 0.15;
+const DEF_PRIORITY_WEIGHT: f64 = 0.15;
+const TRIVIAL_LINE_PENALTY: f64 = 0.4;
+
+struct ScoreInputs {
+    /// Best search tier this symbol was matched under (Exact=1.0, Fts=0.6).
+    tier: SearchTier,
+    /// match_count / max_match_count over the candidate set.
+    match_density_norm: f64,
+    /// sym.pagerank / max_pagerank over the candidate set.
+    pagerank_norm: f64,
+    /// Whether the symbol's kind is a definition (function/struct/…).
+    is_definition: bool,
+    /// end_line - start_line + 1.
+    lines: i64,
+}
+
+fn score_hit(i: &ScoreInputs) -> f64 {
+    let is_exact_short_name = i.tier == SearchTier::Exact;
+    let def_priority = if i.is_definition { 1.0 } else { 0.0 };
+    let base = i.tier.confidence() * TIER_WEIGHT
+        + i.match_density_norm * MATCH_DENSITY_WEIGHT
+        + i.pagerank_norm * PAGERANK_WEIGHT
+        + def_priority * DEF_PRIORITY_WEIGHT;
+    if i.lines <= 1 && !is_exact_short_name {
+        base * TRIVIAL_LINE_PENALTY
+    } else {
+        base
+    }
+}
+
 pub fn handle(
     db: &Db,
     workspace_root: &Path,
@@ -514,23 +562,33 @@ pub fn handle(
 
     let patterns = expand_patterns(query);
 
-    let mut hits: HashMap<i64, (crate::db::SymbolRow, usize)> = HashMap::new();
+    // Accumulate name-match hits, tracking per symbol both how many expanded
+    // patterns hit it (match density) and the best SearchTier it matched under
+    // (sutra/390: the tier was previously discarded at the `_tier` binding).
+    let mut hits: HashMap<i64, (crate::db::SymbolRow, usize, SearchTier)> = HashMap::new();
     for pattern in &patterns {
-        let (symbols, _tier) = db.find_symbols_by_name_tiered(pattern, None, 50)?;
+        let (symbols, tier) = db.find_symbols_by_name_tiered(pattern, None, 50)?;
         for sym in symbols {
             hits.entry(sym.id)
-                .and_modify(|(_, count)| *count += 1)
-                .or_insert((sym, 1));
+                .and_modify(|(_, count, best)| {
+                    *count += 1;
+                    if tier.confidence() > best.confidence() {
+                        *best = tier;
+                    }
+                })
+                .or_insert((sym, 1, tier));
         }
     }
 
     let budget = budget.max(1) as usize;
     let total_hits = hits.len();
 
-    // Fetch FileRows for structural importance signals
+    // Fetch FileRows for path/component resolution (structural importance is
+    // no longer read from here — sutra/390 replaced the file-level term with
+    // symbol-scoped pagerank).
     let unique_file_ids: Vec<i64> = hits
         .values()
-        .map(|(s, _)| s.file_id)
+        .map(|(s, _, _)| s.file_id)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
@@ -539,38 +597,29 @@ pub fn handle(
         .filter_map(|&fid| db.file_by_id(fid).ok().flatten().map(|f| (fid, f)))
         .collect();
 
-    // Compute normalization maxima
-    let max_match_density = hits.values().map(|(_, c)| *c).max().unwrap_or(1) as f64;
-    let max_structural: f64 = hits
+    // Compute normalization maxima over the candidate set.
+    let max_match_density = hits.values().map(|(_, c, _)| *c).max().unwrap_or(1) as f64;
+    let max_pagerank = hits
         .values()
-        .map(|(sym, _)| {
-            file_map
-                .get(&sym.file_id)
-                .map(|f| (f.fan_in_files + f.blast_radius) as f64)
-                .unwrap_or(0.0)
-        })
+        .filter_map(|(sym, _, _)| sym.pagerank)
         .fold(0.0_f64, f64::max);
-    let max_structural = if max_structural > 0.0 {
-        max_structural
+    let max_pagerank = if max_pagerank > 0.0 {
+        max_pagerank
     } else {
         1.0
     };
 
-    // Score each hit with the 3-signal weighted formula
+    // Score each hit with the cheap-win weighted formula (see score_hit).
     let mut scored: Vec<(crate::db::SymbolRow, f64)> = hits
         .into_values()
-        .map(|(sym, match_count)| {
-            let match_density_norm = match_count as f64 / max_match_density;
-            let structural_norm = file_map
-                .get(&sym.file_id)
-                .map(|f| (f.fan_in_files + f.blast_radius) as f64 / max_structural)
-                .unwrap_or(0.0);
-            let def_priority = if DEFINITION_KINDS.contains(&&*sym.kind) {
-                1.0
-            } else {
-                0.0
-            };
-            let score = match_density_norm * 0.5 + structural_norm * 0.3 + def_priority * 0.2;
+        .map(|(sym, match_count, tier)| {
+            let score = score_hit(&ScoreInputs {
+                tier,
+                match_density_norm: match_count as f64 / max_match_density,
+                pagerank_norm: sym.pagerank.unwrap_or(0.0) / max_pagerank,
+                is_definition: DEFINITION_KINDS.contains(&&*sym.kind),
+                lines: sym.end_line - sym.start_line + 1,
+            });
             (sym, score)
         })
         .collect();
@@ -928,5 +977,77 @@ mod tests {
         let est = span_tokens(dir.path(), "missing.rs", Some((1, 10)));
         assert_eq!(est, (10 * FALLBACK_BYTES_PER_LINE / 4) as i64);
         assert!(est > 10 * 4);
+    }
+
+    #[test]
+    fn score_exact_short_name_beats_prefix_only() {
+        // sutra/390: an exact short_name match must outrank an FTS5 prefix-only
+        // match even when the prefix hit has higher match density and pagerank
+        // (the isEpheArtifact-outranks-BodySelection failure).
+        // Hold match density equal so the comparison isolates tier + the
+        // (down-weighted) structural term: the exact-named symbol lives in an
+        // ordinary file (low pagerank), the prefix hit rides a hub file's
+        // pagerank. Name relevance must still win.
+        let exact = score_hit(&ScoreInputs {
+            tier: SearchTier::Exact,
+            match_density_norm: 0.8,
+            pagerank_norm: 0.1,
+            is_definition: true,
+            lines: 15,
+        });
+        let prefix = score_hit(&ScoreInputs {
+            tier: SearchTier::Fts,
+            match_density_norm: 0.8,
+            pagerank_norm: 1.0,
+            is_definition: true,
+            lines: 20,
+        });
+        assert!(
+            exact > prefix,
+            "exact ({exact}) should beat prefix-only ({prefix})"
+        );
+    }
+
+    #[test]
+    fn score_penalizes_one_liner_unless_exact() {
+        // A single-line non-exact hit (trivial getter / field via prefix) is
+        // damped; an identical multi-line hit is not.
+        let one_liner = score_hit(&ScoreInputs {
+            tier: SearchTier::Fts,
+            match_density_norm: 1.0,
+            pagerank_norm: 0.5,
+            is_definition: false,
+            lines: 1,
+        });
+        let multi_line = score_hit(&ScoreInputs {
+            tier: SearchTier::Fts,
+            match_density_norm: 1.0,
+            pagerank_norm: 0.5,
+            is_definition: false,
+            lines: 12,
+        });
+        assert!(
+            one_liner < multi_line,
+            "one-liner ({one_liner}) should be penalized below multi-line ({multi_line})"
+        );
+        assert!((one_liner - multi_line * TRIVIAL_LINE_PENALTY).abs() < 1e-9);
+
+        // The penalty is waived for an exact short_name match, so a one-line
+        // exact hit keeps its full score.
+        let exact_one_liner = score_hit(&ScoreInputs {
+            tier: SearchTier::Exact,
+            match_density_norm: 1.0,
+            pagerank_norm: 0.5,
+            is_definition: false,
+            lines: 1,
+        });
+        let exact_multi_line = score_hit(&ScoreInputs {
+            tier: SearchTier::Exact,
+            match_density_norm: 1.0,
+            pagerank_norm: 0.5,
+            is_definition: false,
+            lines: 12,
+        });
+        assert!((exact_one_liner - exact_multi_line).abs() < 1e-9);
     }
 }
