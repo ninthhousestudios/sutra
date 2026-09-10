@@ -103,8 +103,16 @@ fn select_strategy(
     scores: &[f64],
     total_grep_hits: usize,
     comp_counts: &[(String, usize)],
+    compact: bool,
 ) -> Value {
     let n = scores.len();
+    // `compact` responses strip the per-item `signature`/`doc` fields, so the
+    // guidance must not tell the agent to "pick by signature" it can't see.
+    let pick_by_sig = if compact {
+        ""
+    } else {
+        "pick by signature and "
+    };
 
     if n == 0 {
         return json!({
@@ -116,7 +124,7 @@ fn select_strategy(
     if n < 3 {
         return json!({
             "action": "read_all",
-            "rationale": format!("Only {} items — pick by signature and read what fits.", n)
+            "rationale": format!("Only {} items — {}read what fits.", n, pick_by_sig)
         });
     }
 
@@ -176,13 +184,18 @@ fn select_strategy(
         .take_while(|&&s| s * 2.0 >= scores[0])
         .count();
     let read_n = within_2x.min(3);
-    json!({
-        "action": "read_top_n",
-        "n": read_n,
-        "rationale": format!(
+    let rationale = if compact {
+        format!("{} items found. Start with the top {} matches.", n, read_n)
+    } else {
+        format!(
             "{} items found. Pick by signature — start with the top {} matches.",
             n, read_n
         )
+    };
+    json!({
+        "action": "read_top_n",
+        "n": read_n,
+        "rationale": rationale
     })
 }
 
@@ -330,18 +343,19 @@ fn doc_line(docstring: &str) -> Option<String> {
 /// Attach the `signature` and `doc` presentation fields to an explore item so
 /// an agent can pick the right symbol without a follow-up fetch (sutra/389).
 /// No-op when `compact`. `signature` is the exact string sutra_outline renders
-/// (shared via `outline::rendered_signature`) and is omitted for one-liners
-/// (`lines <= 1`, e.g. struct fields) where it adds nothing beyond the name.
-/// `doc` is the capped first line of the docstring, present only when the
-/// symbol is documented.
+/// (shared via `outline::rendered_signature`). It is present on every multi-line
+/// item (`lines > 1`) — carrying explicit `null` for declaration kinds the index
+/// stores no signature for (e.g. structs, classes) so a missing signature is
+/// distinguishable from `compact` mode, where the field is absent entirely. It is
+/// omitted for one-liners (`lines <= 1`, e.g. struct fields) where it adds nothing
+/// beyond the name. `doc` is the capped first line of the docstring, present only
+/// when the symbol is documented.
 fn enrich_item(entry: &mut Value, sym: &SymbolRow, lines: i64, compact: bool) {
     if compact {
         return;
     }
-    if lines > 1
-        && let Some(sig) = outline::rendered_signature(sym)
-    {
-        entry["signature"] = json!(sig);
+    if lines > 1 {
+        entry["signature"] = json!(outline::rendered_signature(sym));
     }
     if let Some(doc) = sym.docstring.as_deref().and_then(doc_line) {
         entry["doc"] = json!(doc);
@@ -659,7 +673,7 @@ pub fn handle(
     Ok(json!({
         "items": items,
         "edges": edges,
-        "strategy": select_strategy(&scores, total_hits, &comp_counts),
+        "strategy": select_strategy(&scores, total_hits, &comp_counts, compact),
         "summary": {
             "total_items": items.len(),
             "direct_matches": direct_count,
@@ -777,14 +791,24 @@ mod tests {
 
     #[test]
     fn strategy_zero_items() {
-        let s = select_strategy(&[], 0, &[]);
+        let s = select_strategy(&[], 0, &[], false);
         assert_eq!(s["action"], "narrow_query");
     }
 
     #[test]
     fn strategy_read_all_few_items() {
-        let s = select_strategy(&[0.8, 0.5], 2, &[]);
+        let s = select_strategy(&[0.8, 0.5], 2, &[], false);
         assert_eq!(s["action"], "read_all");
+        assert!(
+            s["rationale"]
+                .as_str()
+                .unwrap()
+                .contains("pick by signature"),
+            "non-compact read_all should mention signature"
+        );
+        // compact mode strips signatures, so the rationale must not reference them
+        let sc = select_strategy(&[0.8, 0.5], 2, &[], true);
+        assert!(!sc["rationale"].as_str().unwrap().contains("signature"));
     }
 
     #[test]
@@ -796,7 +820,7 @@ mod tests {
             ("db".to_string(), 2),
             ("tools".to_string(), 1),
         ];
-        let s = select_strategy(&scores, 12, &comps);
+        let s = select_strategy(&scores, 12, &comps, false);
         assert_eq!(s["action"], "narrow_query");
         assert!(s["suggested_refinements"].is_array());
         let refs = s["suggested_refinements"].as_array().unwrap();
@@ -807,7 +831,7 @@ mod tests {
     fn strategy_read_top_1_dominant() {
         // Top score > 2× second
         let scores = vec![0.9, 0.3, 0.2, 0.1];
-        let s = select_strategy(&scores, 5, &[]);
+        let s = select_strategy(&scores, 5, &[], false);
         assert_eq!(s["action"], "read_top_n");
         assert_eq!(s["n"], 1);
     }
@@ -817,7 +841,7 @@ mod tests {
         // 8 of 10 items in "parser" component → 80%
         let scores = vec![0.7, 0.6, 0.5, 0.5, 0.4, 0.4, 0.3, 0.3, 0.2, 0.2];
         let comps = vec![("parser".to_string(), 8), ("db".to_string(), 2)];
-        let s = select_strategy(&scores, 7, &comps);
+        let s = select_strategy(&scores, 7, &comps, false);
         assert_eq!(s["action"], "explore_component");
         assert_eq!(s["component"], "parser");
     }
@@ -831,17 +855,26 @@ mod tests {
             ("db".to_string(), 2),
             ("parser".to_string(), 1),
         ];
-        let s = select_strategy(&scores, 5, &comps);
+        let s = select_strategy(&scores, 5, &comps, false);
         assert_eq!(s["action"], "read_top_n");
         // 0.6 * 2 = 1.2 >= 0.8 ✓, 0.5 * 2 = 1.0 >= 0.8 ✓ → 3 within 2×
         assert_eq!(s["n"], 3);
+        assert!(
+            s["rationale"]
+                .as_str()
+                .unwrap()
+                .contains("Pick by signature")
+        );
+        // compact read_top_n drops the signature guidance
+        let sc = select_strategy(&scores, 5, &comps, true);
+        assert!(!sc["rationale"].as_str().unwrap().contains("signature"));
     }
 
     #[test]
     fn strategy_read_top_2_when_third_drops() {
         // Top 2 close, third drops off
         let scores = vec![0.8, 0.7, 0.3, 0.2];
-        let s = select_strategy(&scores, 4, &[]);
+        let s = select_strategy(&scores, 4, &[], false);
         assert_eq!(s["action"], "read_top_n");
         // 0.7 * 2 = 1.4 >= 0.8 ✓, 0.3 * 2 = 0.6 < 0.8 ✗ → 2 within 2×
         assert_eq!(s["n"], 2);

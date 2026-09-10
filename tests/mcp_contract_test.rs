@@ -1019,6 +1019,78 @@ fn test_explore_doc_line_present_and_one_liner_omits_signature() {
 }
 
 #[test]
+fn test_explore_multiline_without_signature_carries_null() {
+    // sutra/389 F1: some multi-line declaration kinds (structs, classes) carry
+    // no stored signature. Such items must still carry the `signature` field as
+    // explicit null — so a missing signature is distinguishable from compact
+    // mode, where the field is absent entirely.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_nullsig_test", dir.path()).unwrap();
+    db.upsert_file("src/model.rs", "rust", "hash1", 40, true)
+        .unwrap();
+    let file = db.file_by_path("src/model.rs").unwrap().unwrap();
+
+    db.insert_symbol(&InsertSymbolParams {
+        file_id: file.id,
+        qualified_name: "ChartData",
+        short_name: "ChartData",
+        kind: "struct",
+        signature: None,
+        signature_hash: None,
+        structural_hash: None,
+        visibility: Some("pub"),
+        start_line: 1,
+        start_col: 0,
+        end_line: 12,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: None,
+        cognitive: None,
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 1,
+        ..Default::default()
+    })
+    .unwrap();
+
+    // Non-compact: field present, value is JSON null.
+    let result = explore::handle(&db, dir.path(), "ChartData", 10, false).unwrap();
+    let item = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["symbol"] == "ChartData")
+        .expect("ChartData in results");
+    assert!(
+        item.get("signature").is_some(),
+        "multi-line item must carry the signature field"
+    );
+    assert!(
+        item["signature"].is_null(),
+        "a signature-less multi-line item carries explicit null"
+    );
+
+    // Compact: field absent entirely — the distinction the null preserves.
+    let compact = explore::handle(&db, dir.path(), "ChartData", 10, true).unwrap();
+    let citem = compact["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["symbol"] == "ChartData")
+        .expect("ChartData in compact results");
+    assert!(
+        citem.get("signature").is_none(),
+        "compact drops the signature field entirely"
+    );
+}
+
+#[test]
 fn test_explore_fan_out_few_hits() {
     // "build_ast" matches 1 symbol → 1-3 range → 2-hop fan-out
     // build_ast calls parse_imports, parse_imports calls resolve_imports
