@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use sutra::db::ConstraintRatchetRow;
 use sutra::db::{
     Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
     SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,

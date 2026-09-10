@@ -6,6 +6,10 @@ use crate::error::Result;
 
 use super::Db;
 
+/// One co-changed entity, keyed to a target symbol:
+/// (qualified_name, file_path, jaccard, confidence, shared_commit_count).
+pub type EntityCochangeRow = (String, String, f64, f64, i64);
+
 pub struct EntityChangeRow {
     pub qualified_name: String,
     pub kind: String,
@@ -79,7 +83,7 @@ impl Db {
         &self,
         qualified_name: &str,
         threshold: f64,
-    ) -> Result<Vec<(String, String, f64, f64, i64)>> {
+    ) -> Result<Vec<EntityCochangeRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "WITH target_names AS (
@@ -127,7 +131,7 @@ impl Db {
               AND c.shared_cnt >= 2
             ORDER BY jaccard DESC",
         )?;
-        let rows: rusqlite::Result<Vec<(String, String, f64, f64, i64)>> = stmt
+        let rows: rusqlite::Result<Vec<EntityCochangeRow>> = stmt
             .query_map(params![qualified_name, threshold], |row| {
                 let name: String = row.get(0)?;
                 let file: String = row.get(1)?;

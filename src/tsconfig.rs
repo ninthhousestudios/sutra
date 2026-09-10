@@ -4,6 +4,11 @@ use std::path::Path;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+/// Resolves a candidate module path to an interned file id, given the current
+/// path-to-id map. Supplied by the caller so tsconfig resolution stays decoupled
+/// from the import graph.
+type ResolveFn<'a> = dyn Fn(&str, &HashMap<&str, i64>) -> Option<i64> + 'a;
+
 #[derive(Debug, Default)]
 pub struct TsConfig {
     pub base_url: Option<String>,
@@ -99,7 +104,7 @@ impl TsConfig {
         &self,
         specifier: &str,
         path_to_id: &HashMap<&str, i64>,
-        try_resolve: &dyn Fn(&str, &HashMap<&str, i64>) -> Option<i64>,
+        try_resolve: &ResolveFn,
     ) -> Option<i64> {
         for (pattern, targets) in self.paths.iter() {
             if let Some(captured) = match_pattern(pattern, specifier) {

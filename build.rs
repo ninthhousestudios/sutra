@@ -99,14 +99,12 @@ fn main() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("name = \"") {
             pending_name = rest.strip_suffix('"').map(str::to_string);
-        } else if let Some(rest) = line.strip_prefix("version = \"") {
-            if let Some(name) = pending_name.take() {
-                if name.starts_with("tree-sitter") {
-                    if let Some(ver) = rest.strip_suffix('"') {
-                        grammars.push((name, ver.to_string()));
-                    }
-                }
-            }
+        } else if let Some(rest) = line.strip_prefix("version = \"")
+            && let Some(name) = pending_name.take()
+            && name.starts_with("tree-sitter")
+            && let Some(ver) = rest.strip_suffix('"')
+        {
+            grammars.push((name, ver.to_string()));
         }
     }
     grammars.sort();

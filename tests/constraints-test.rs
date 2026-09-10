@@ -2860,7 +2860,9 @@ fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting()
         // read landing in a remint window returns an empty-but-Ok outcome; with
         // it, that window is retried or reported as an error — never clean.
         for i in 0..120 {
-            match evaluate(
+            // An Err here is a reparse committing across every retry attempt: a
+            // legitimate not-evaluated result, explicit rather than silently clean.
+            if let Ok(outcome) = evaluate(
                 &FactsSource::DdBacked {
                     db: &db,
                     dd_engine: Some(&engine),
@@ -2869,17 +2871,12 @@ fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting()
                 EvalScope::Workspace,
                 &registry,
             ) {
-                Ok(outcome) => {
-                    let kinds = dep_kinds(&outcome);
-                    assert!(
-                        kinds.contains(&"forbidden_dep".to_string()),
-                        "iteration {i}: forbidden_dep vanished with the edge present — \
-                         a coherent snapshot must report it (got {kinds:?})"
-                    );
-                }
-                // A reparse committing across every retry attempt is a
-                // legitimate not-evaluated result: explicit, not silently clean.
-                Err(_) => {}
+                let kinds = dep_kinds(&outcome);
+                assert!(
+                    kinds.contains(&"forbidden_dep".to_string()),
+                    "iteration {i}: forbidden_dep vanished with the edge present — \
+                     a coherent snapshot must report it (got {kinds:?})"
+                );
             }
         }
         stop.store(true, Ordering::Relaxed);

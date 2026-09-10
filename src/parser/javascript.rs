@@ -290,11 +290,13 @@ pub(super) fn extract_method(
         node,
         src,
         &name,
-        is_async,
-        is_generator,
-        is_getter,
-        is_setter,
-        is_static,
+        MethodModifiers {
+            is_async,
+            is_generator,
+            is_getter,
+            is_setter,
+            is_static,
+        },
     );
     let sig_hash = sig
         .as_ref()
@@ -846,32 +848,38 @@ pub(super) fn build_arrow_signature(
     Some(sig)
 }
 
-fn build_method_signature(
-    node: Node,
-    src: &[u8],
-    name: &str,
+/// The modifier keywords a method declaration can carry, decoded from the node.
+#[derive(Clone, Copy, Default)]
+struct MethodModifiers {
     is_async: bool,
     is_generator: bool,
     is_getter: bool,
     is_setter: bool,
     is_static: bool,
+}
+
+fn build_method_signature(
+    node: Node,
+    src: &[u8],
+    name: &str,
+    modifiers: MethodModifiers,
 ) -> Option<String> {
     let params = node.child_by_field_name("parameters")?;
     let params_text = params.utf8_text(src).ok()?;
     let mut sig = String::new();
-    if is_static {
+    if modifiers.is_static {
         sig.push_str("static ");
     }
-    if is_async {
+    if modifiers.is_async {
         sig.push_str("async ");
     }
-    if is_getter {
+    if modifiers.is_getter {
         sig.push_str("get ");
     }
-    if is_setter {
+    if modifiers.is_setter {
         sig.push_str("set ");
     }
-    if is_generator {
+    if modifiers.is_generator {
         sig.push('*');
     }
     sig.push_str(name);

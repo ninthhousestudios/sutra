@@ -1038,7 +1038,7 @@ fn test_explore_fan_out_few_hits() {
 
     assert_eq!(direct.len(), 1, "build_ast is the only direct match");
     assert!(
-        fan_out.len() >= 1,
+        !fan_out.is_empty(),
         "should have at least 1 fan-out item, got {}",
         fan_out.len()
     );

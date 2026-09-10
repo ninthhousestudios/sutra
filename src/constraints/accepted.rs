@@ -665,11 +665,13 @@ mod tests {
     #[test]
     fn notes_survive_mutation_but_raw_comments_do_not() {
         let dir = tempfile::tempdir().unwrap();
-        let mut f = AcceptedFile::default();
-        f.notes = vec![
-            "no-clone-driven-dev waivers below triaged for vidya/52:".to_string(),
-            "  generated code — clone is intrinsic, not a smell".to_string(),
-        ];
+        let mut f = AcceptedFile {
+            notes: vec![
+                "no-clone-driven-dev waivers below triaged for vidya/52:".to_string(),
+                "  generated code — clone is intrinsic, not a smell".to_string(),
+            ],
+            ..Default::default()
+        };
         f.waivers.push(waiver("no-loops", "src/a.rs"));
         write_accepted_file(dir.path(), &mut f).unwrap();
 

@@ -182,8 +182,9 @@ fn walk_cognitive(node: Node, src: &[u8], lang: &str, nesting: u32, score: &mut 
             "javascript" | "typescript" => Some("if_statement"),
             _ => None,
         };
-        if child.kind() == "else_clause" && else_if_inner.is_some() {
-            let if_kind = else_if_inner.unwrap();
+        if child.kind() == "else_clause"
+            && let Some(if_kind) = else_if_inner
+        {
             *score += 1;
             let mut inner_cursor = child.walk();
             for grandchild in child.children(&mut inner_cursor) {
@@ -280,8 +281,9 @@ fn walk_nesting(node: Node, _src: &[u8], lang: &str, current_depth: u32, max_dep
             "javascript" | "typescript" => Some("if_statement"),
             _ => None,
         };
-        if child.kind() == "else_clause" && else_if_inner.is_some() {
-            let if_kind = else_if_inner.unwrap();
+        if child.kind() == "else_clause"
+            && let Some(if_kind) = else_if_inner
+        {
             let mut inner_cursor = child.walk();
             for grandchild in child.children(&mut inner_cursor) {
                 if grandchild.kind() == if_kind {
