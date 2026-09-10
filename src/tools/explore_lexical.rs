@@ -237,23 +237,22 @@ pub(crate) fn score_doc(idf: &IdfMap, fields: &DocFields, avgdl: f64) -> Scored 
     }
 }
 
-/// Structural prior weight: how much a symbol's normalized global pagerank can
-/// lift its normalized lexical score. Deliberately gentle (≈ the old cheap-win
-/// formula's 0.15 structural share), NOT graft's 0.5 — graft's 0.5 weights a
-/// QUERY-PERSONALIZED pagerank, whereas this global pagerank is query-
-/// independent. The query-personalized re-rank that will supersede this global
-/// prior with a query-relevant one is sutra/372; the seed keeps global pagerank
-/// as the structural prior so dropping the old formula's structural term
-/// doesn't sink ranking (eval confirms 0.5 beats a gentler 0.15 here).
+/// Structural prior weight: how much a symbol's normalized graph score can lift
+/// its normalized lexical score. Since sutra/372 the graph axis is the
+/// QUERY-PERSONALIZED PageRank (`graph::SymbolGraph::personalized_pagerank`,
+/// seeded by the lexical hits), not the query-independent global pagerank it
+/// replaced — so this takes graft's 0.5 directly: enough to reorder near-ties
+/// and separate a connected hit from an isolated same-word collision, without
+/// letting structure override a clear lexical winner.
 pub(crate) const GRAPH_WEIGHT: f64 = 0.5;
 
 /// Blend a symbol's normalized lexical score (0..1 over the candidate set) with
-/// its normalized structural prior (global pagerank, 0..1), then apply the
-/// test-path de-rank. `test_factor` multiplies the BLEND rather than the raw
+/// its normalized graph score (query-personalized PageRank, 0..1), then apply
+/// the test-path de-rank. `test_factor` multiplies the BLEND rather than the raw
 /// lexical, so a test that is the strongest raw match isn't restored to the top
 /// once lexical is renormalized to the candidate max (graft's observation).
-pub(crate) fn blend(lexical_norm: f64, pagerank_norm: f64, test_factor: f64) -> f64 {
-    (lexical_norm + GRAPH_WEIGHT * pagerank_norm) * test_factor
+pub(crate) fn blend(lexical_norm: f64, graph_norm: f64, test_factor: f64) -> f64 {
+    (lexical_norm + GRAPH_WEIGHT * graph_norm) * test_factor
 }
 
 /// A query that ASKS about tests wants test files on top, so it gets no

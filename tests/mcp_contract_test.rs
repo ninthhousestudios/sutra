@@ -1321,9 +1321,11 @@ fn test_explore_multiline_without_signature_carries_null() {
 
 #[test]
 fn test_explore_fan_out_few_hits() {
-    // "build_ast" matches 1 symbol → 1-3 range → 2-hop fan-out
-    // build_ast calls parse_imports, parse_imports calls resolve_imports
-    // So fan-out should surface parse_imports (hop 1) and resolve_imports (hop 2)
+    // "build_ast" matches 1 symbol → seeds the personalized-PageRank walk
+    // (sutra/372). build_ast calls parse_imports, parse_imports calls
+    // resolve_imports, so the walk spreads mass across build_ast—parse_imports—
+    // resolve_imports. parse_imports (the seed's direct neighbour) clears
+    // RESCUE_FLOOR and surfaces as a `reason: graph` fan-out item.
     let (dir, db) = setup_explore_db_with_calls();
     let result = explore::handle(&db, dir.path(), "build_ast", 10, false).unwrap();
 
@@ -1332,25 +1334,22 @@ fn test_explore_fan_out_few_hits() {
         .iter()
         .filter(|i| i["reason"].as_str() == Some("direct_match"))
         .collect();
-    let fan_out: Vec<_> = items
+    let graph: Vec<_> = items
         .iter()
-        .filter(|i| i["reason"].as_str() == Some("fan_out"))
+        .filter(|i| i["reason"].as_str() == Some("graph"))
         .collect();
 
     assert_eq!(direct.len(), 1, "build_ast is the only direct match");
     assert!(
-        !fan_out.is_empty(),
-        "should have at least 1 fan-out item, got {}",
-        fan_out.len()
+        !graph.is_empty(),
+        "should have at least 1 graph fan-out item, got {}",
+        graph.len()
     );
 
-    let fan_out_names: Vec<&str> = fan_out
-        .iter()
-        .filter_map(|i| i["symbol"].as_str())
-        .collect();
+    let graph_names: Vec<&str> = graph.iter().filter_map(|i| i["symbol"].as_str()).collect();
     assert!(
-        fan_out_names.contains(&"parse_imports"),
-        "parse_imports should be a fan-out item (callee of build_ast), got: {fan_out_names:?}"
+        graph_names.contains(&"parse_imports"),
+        "parse_imports should be a graph fan-out item (neighbour of build_ast), got: {graph_names:?}"
     );
 
     let summary = &result["summary"];
@@ -1365,18 +1364,110 @@ fn test_explore_fan_out_few_hits() {
     );
 }
 
+/// Three symbols that all match the query word "render"; `render_view` and
+/// `render_panel` are wired to each other (a call edge between two lexical
+/// hits), `render_orphan` is structurally isolated. Their lexical scores are
+/// ~equal (shared "render" token, unique single-use suffixes), so the
+/// personalized-PageRank re-rank (sutra/372) is what separates them.
+fn setup_explore_db_wired_vs_isolated() -> (tempfile::TempDir, Db) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_wired_test", dir.path()).unwrap();
+
+    db.upsert_file("src/render.rs", "rust", "hash1", 100, true)
+        .unwrap();
+    let file = db.file_by_path("src/render.rs").unwrap().unwrap();
+
+    let syms: Vec<(&str, &str, i64, i64)> = vec![
+        ("render_view", "render_view", 1, 20),
+        ("render_panel", "render_panel", 25, 50),
+        ("render_orphan", "render_orphan", 55, 80),
+    ];
+    let mut ids = Vec::new();
+    for (qn, sn, start, end) in &syms {
+        let id = db
+            .insert_symbol(&InsertSymbolParams {
+                file_id: file.id,
+                qualified_name: qn,
+                short_name: sn,
+                kind: "function",
+                signature: Some(&format!("fn {sn}()")),
+                signature_hash: None,
+                structural_hash: None,
+                visibility: Some("pub"),
+                start_line: *start,
+                start_col: 0,
+                end_line: *end,
+                end_col: 0,
+                parent_symbol_id: None,
+                docstring: None,
+                cyclomatic: None,
+                cognitive: None,
+                max_nesting: None,
+                flags: 0,
+                language_attrs: None,
+            })
+            .unwrap();
+        ids.push(id);
+    }
+
+    // render_view (lines 1-20) calls render_panel — a call edge between two
+    // lexical hits. render_orphan has no edges.
+    db.insert_ref(file.id, Some(ids[1]), None, 10, 4, "call")
+        .unwrap();
+
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: 1,
+        symbols_extracted: 3,
+        refs_extracted: 1,
+        parse_errors: 0,
+        duration_ms: 100,
+        ..Default::default()
+    })
+    .unwrap();
+
+    (dir, db)
+}
+
 #[test]
-fn test_explore_fan_out_score_decay() {
-    // Fan-out items should rank below direct matches
+fn test_explore_wired_hit_outranks_isolated_collision() {
+    // AC1 (sutra/372): a lexically-matched but structurally isolated symbol must
+    // not outrank an equally-matched symbol wired into the cluster the query
+    // touches. render_view/render_panel (wired) outrank render_orphan (isolated).
+    let (dir, db) = setup_explore_db_wired_vs_isolated();
+    let result = explore::handle(&db, dir.path(), "render", 10, false).unwrap();
+
+    let order: Vec<&str> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["symbol"].as_str())
+        .collect();
+
+    let pos = |name: &str| order.iter().position(|s| *s == name);
+    let view = pos("render_view").expect("render_view present");
+    let panel = pos("render_panel").expect("render_panel present");
+    let orphan = pos("render_orphan").expect("render_orphan present");
+
+    assert!(
+        view < orphan && panel < orphan,
+        "wired hits (view={view}, panel={panel}) must outrank isolated collision (orphan={orphan}); order: {order:?}"
+    );
+}
+
+#[test]
+fn test_explore_graph_fan_out_ranks_below_direct() {
+    // Graph (PPR-rescued) items rank below the lexical direct match: with a
+    // single seed the direct hit normalizes to the top blend and the rescued
+    // neighbours carry only the graph term.
     let (dir, db) = setup_explore_db_with_calls();
     let result = explore::handle(&db, dir.path(), "build_ast", 10, false).unwrap();
 
     let items = result["items"].as_array().unwrap();
     // First item should be the direct match
     assert_eq!(items[0]["reason"].as_str().unwrap(), "direct_match");
-    // All subsequent should be fan_out
+    // All subsequent are graph fan-out items
     for item in &items[1..] {
-        assert_eq!(item["reason"].as_str().unwrap(), "fan_out");
+        assert_eq!(item["reason"].as_str().unwrap(), "graph");
     }
 }
 

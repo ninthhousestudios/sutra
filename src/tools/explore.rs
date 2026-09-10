@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,14 +30,11 @@ pub struct ExploreArgs {
     pub compact: Option<bool>,
 }
 
-fn fan_out_depth(unique_hits: usize) -> usize {
-    match unique_hits {
-        0 => 0,
-        1..=3 => 2,
-        4..=9 => 1,
-        _ => 0,
-    }
-}
+/// A symbol the query never word-matched is pulled into the results (as a
+/// `reason: graph` fan-out item) only if the personalized-PageRank walk gives it
+/// at least this share of the top node's mass — i.e. it is genuinely central to
+/// the matched cluster, not incidentally reachable. Graft's `RESCUE_FLOOR`.
+const RESCUE_FLOOR: f64 = 0.15;
 
 /// Below this NAME-field coverage, the query's terms never hit a symbol name on
 /// the top result — only incidental body/path tokens (sutra/371).
@@ -148,76 +145,6 @@ fn select_strategy(
         "n": read_n,
         "rationale": rationale
     })
-}
-
-fn collect_fan_out(
-    db: &Db,
-    direct_hits: &[(crate::db::SymbolRow, f64)],
-    max_depth: usize,
-) -> Vec<(crate::db::SymbolRow, f64)> {
-    if max_depth == 0 {
-        return vec![];
-    }
-
-    let direct_ids: HashSet<i64> = direct_hits.iter().map(|(s, _)| s.id).collect();
-    let mut visited = direct_ids.clone();
-    let mut queue: VecDeque<(i64, i64, i64, i64, f64, usize)> = VecDeque::new();
-    let mut fan_out_items: Vec<(crate::db::SymbolRow, f64)> = Vec::new();
-
-    for (sym, score) in direct_hits {
-        queue.push_back((sym.id, sym.file_id, sym.start_line, sym.end_line, *score, 0));
-    }
-
-    while let Some((sid, file_id, start, end, parent_score, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let decayed = parent_score * 0.5;
-
-        if let Ok(refs) = db.find_refs_to_symbol(sid) {
-            for r in refs.iter().filter(|r| r.context_kind == "call") {
-                if let Ok(Some(caller)) = db.find_enclosing_symbol(r.file_id, r.line)
-                    && visited.insert(caller.id)
-                {
-                    let next = (
-                        caller.id,
-                        caller.file_id,
-                        caller.start_line,
-                        caller.end_line,
-                        decayed,
-                        depth + 1,
-                    );
-                    fan_out_items.push((caller, decayed));
-                    queue.push_back(next);
-                }
-            }
-        }
-
-        if let Ok(refs) = db.find_refs_in_file(file_id) {
-            for r in refs
-                .iter()
-                .filter(|r| r.context_kind == "call" && r.line >= start && r.line <= end)
-            {
-                if let Some(target_id) = r.target_symbol_id
-                    && let Ok(Some(callee)) = db.symbol_by_id(target_id)
-                    && visited.insert(callee.id)
-                {
-                    let next = (
-                        callee.id,
-                        callee.file_id,
-                        callee.start_line,
-                        callee.end_line,
-                        decayed,
-                        depth + 1,
-                    );
-                    fan_out_items.push((callee, decayed));
-                    queue.push_back(next);
-                }
-            }
-        }
-    }
-
-    fan_out_items
 }
 
 fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
@@ -563,38 +490,58 @@ pub fn handle(
         }
     }
 
-    // Normalization maxima over the candidate set, then blend the normalized
-    // lexical score with the structural (global pagerank) prior and apply the
-    // test de-rank to the blend (sutra/371; query-personalized re-rank is 372).
+    // ── Structural re-rank: personalized PageRank (sutra/372) ──────────────
+    // Seed a random-walk-with-restart over the symbol wiring graph with each
+    // hit's raw lexical score. Mass concentrates on hits wired into the cluster
+    // the query touches; a lexically-matched but structurally isolated symbol
+    // keeps only its restart mass and sinks. "Lexical proposes, graph disposes."
+    // This query-personalized score replaces sutra/371's global-pagerank prior.
     let max_lex = raw.iter().map(|h| h.lexical).fold(0.0_f64, f64::max);
     let max_lex = if max_lex > 0.0 { max_lex } else { 1.0 };
-    let max_pagerank = raw
-        .iter()
-        .filter_map(|h| h.sym.pagerank)
-        .fold(0.0_f64, f64::max);
-    let max_pagerank = if max_pagerank > 0.0 {
-        max_pagerank
-    } else {
-        1.0
-    };
 
+    let seeds: Vec<(i64, f64)> = raw.iter().map(|h| (h.sym.id, h.lexical)).collect();
+    let ppr = db
+        .symbol_graph()
+        .map(|g| g.personalized_pagerank(&seeds, crate::graph::PPR_ALPHA, crate::graph::PPR_ITERS))
+        .unwrap_or_default();
+
+    let direct_ids: HashSet<i64> = raw.iter().map(|h| h.sym.id).collect();
     let mut coverage_by_id: HashMap<i64, (f64, f64)> = HashMap::new();
     let mut scored: Vec<(SymbolRow, f64)> = Vec::with_capacity(raw.len());
     for h in raw {
-        let blended = explore_lexical::blend(
-            h.lexical / max_lex,
-            h.sym.pagerank.unwrap_or(0.0) / max_pagerank,
-            h.test_factor,
-        );
+        let graph_norm = ppr.get(&h.sym.id).copied().unwrap_or(0.0);
+        let blended = explore_lexical::blend(h.lexical / max_lex, graph_norm, h.test_factor);
         coverage_by_id.insert(h.sym.id, (h.coverage, h.coverage_strong));
         scored.push((h.sym, blended));
     }
 
-    let total_hits = scored.len();
-    let direct_ids: HashSet<i64> = scored.iter().map(|(s, _)| s.id).collect();
-    let depth = fan_out_depth(total_hits);
-    let fan_out = collect_fan_out(db, &scored, depth);
-    scored.extend(fan_out);
+    // Fan-out is now the PPR rescue set (replaces the decay-BFS `collect_fan_out`):
+    // symbols the walk found central to the matched cluster (mass ≥ RESCUE_FLOOR
+    // of the top node) that the query never word-matched — the config/helper a
+    // task depends on but didn't name. Scored on the graph axis alone (no lexical
+    // term) and tagged `reason: graph`.
+    for (&id, &mass) in &ppr {
+        if mass < RESCUE_FLOOR || direct_ids.contains(&id) {
+            continue;
+        }
+        let Ok(Some(sym)) = db.symbol_by_id(id) else {
+            continue;
+        };
+        let is_test_path = !query_wants_tests
+            && db
+                .file_by_id(sym.file_id)
+                .ok()
+                .flatten()
+                .is_some_and(|f| any_language_is_test_path(&f.path));
+        let test_factor = if is_test_path {
+            explore_lexical::TEST_RANK_PENALTY
+        } else {
+            1.0
+        };
+        let score = explore_lexical::blend(0.0, mass, test_factor);
+        scored.push((sym, score));
+    }
+
     scored.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -664,7 +611,7 @@ pub fn handle(
             let reason = if direct_ids.contains(&sym.id) {
                 "direct_match"
             } else {
-                "fan_out"
+                "graph"
             };
             let mut entry = json!({
                 "symbol": sym.qualified_name,
@@ -960,17 +907,6 @@ mod tests {
         assert_eq!(s["action"], "read_top_n");
         // 0.7 * 2 = 1.4 >= 0.8 ✓, 0.3 * 2 = 0.6 < 0.8 ✗ → 2 within 2×
         assert_eq!(s["n"], 2);
-    }
-
-    #[test]
-    fn fan_out_depth_thresholds() {
-        assert_eq!(fan_out_depth(0), 0);
-        assert_eq!(fan_out_depth(1), 2);
-        assert_eq!(fan_out_depth(3), 2);
-        assert_eq!(fan_out_depth(4), 1);
-        assert_eq!(fan_out_depth(9), 1);
-        assert_eq!(fan_out_depth(10), 0);
-        assert_eq!(fan_out_depth(100), 0);
     }
 
     #[test]

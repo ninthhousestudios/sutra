@@ -510,6 +510,13 @@ pub enum ResolveResult {
 pub struct Db {
     conn: Mutex<Connection>,
     workspace_id: String,
+    /// Cached query-time symbol wiring graph (sutra/372), tagged with the
+    /// `data_generation` it was built at. Rebuilt lazily when the generation
+    /// moves — `replace_file_data` bumps it on every write (full or
+    /// incremental), so an edit that changes symbols/refs invalidates the graph
+    /// without a snapshot (incremental reparse records none; see
+    /// docs/freshness-map.md).
+    symbol_graph: Mutex<Option<(i64, Arc<crate::graph::SymbolGraph>)>>,
 }
 
 impl Db {
@@ -554,6 +561,7 @@ impl Db {
         let db = Self {
             conn: Mutex::new(conn),
             workspace_id: workspace_id.to_string(),
+            symbol_graph: Mutex::new(None),
         };
         db.run_migrations()?;
         let healed = db.heal_duplicate_symbols()?;
@@ -1810,6 +1818,36 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(data_gen)
+    }
+
+    /// The query-time symbol wiring graph (sutra/372), built once per workspace
+    /// and cached on the handle. Rebuilt when `data_generation` moves — the same
+    /// counter `replace_file_data` bumps on every write, so an incremental
+    /// reparse (which records no snapshot) still invalidates it. The build is
+    /// two lean queries plus enclosing-symbol attribution; the cache keeps the
+    /// per-explore-query cost to the PageRank walk alone.
+    pub fn symbol_graph(&self) -> Result<Arc<crate::graph::SymbolGraph>> {
+        let generation = self.get_data_generation()?;
+        {
+            let cache = self.symbol_graph.lock();
+            if let Some((cached_gen, graph)) = cache.as_ref()
+                && *cached_gen == generation
+            {
+                return Ok(Arc::clone(graph));
+            }
+        }
+
+        let spans = self.symbol_spans_by_file()?;
+        let ref_edges = self.resolved_ref_edges()?;
+        let graph = Arc::new(crate::graph::SymbolGraph::build(
+            &spans,
+            &ref_edges,
+            &crate::graph::SymbolGraph::default_walk_kinds(),
+        ));
+
+        let mut cache = self.symbol_graph.lock();
+        *cache = Some((generation, Arc::clone(&graph)));
+        Ok(graph)
     }
 
     /// The extractor-identity stamp recorded at the last full parse, or `None`

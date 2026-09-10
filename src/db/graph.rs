@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::params;
 
 use crate::error::Result;
@@ -124,6 +126,50 @@ impl Db {
         )?;
         let rows: rusqlite::Result<Vec<(i64, i64, String)>> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect();
+        Ok(rows?)
+    }
+
+    /// Lean per-file symbol spans for enclosing-symbol resolution: file_id ->
+    /// [(symbol_id, start_line, end_line)] ordered by start_line. Lighter than
+    /// `all_symbols_by_file`, which loads full `SymbolRow`s — the symbol-graph
+    /// build (sutra/372) only needs spans to attribute a ref site to its
+    /// enclosing symbol.
+    pub fn symbol_spans_by_file(&self) -> Result<crate::graph::SymbolSpansByFile> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, id, start_line, end_line FROM symbols ORDER BY file_id, start_line",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut grouped: crate::graph::SymbolSpansByFile = HashMap::new();
+        for r in rows {
+            let (file_id, id, start, end) = r?;
+            grouped.entry(file_id).or_default().push((id, start, end));
+        }
+        Ok(grouped)
+    }
+
+    /// Resolved ref sites with their line and kind, for building the symbol-level
+    /// wiring graph (sutra/372): (file_id, line, target_symbol_id, context_kind).
+    /// Unlike `all_resolved_refs`, this keeps the ref's `line` so the build can
+    /// attribute the site to its enclosing (source) symbol.
+    pub fn resolved_ref_edges(&self) -> Result<Vec<(i64, i64, i64, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, line, target_symbol_id, context_kind \
+             FROM refs WHERE target_symbol_id IS NOT NULL",
+        )?;
+        let rows: rusqlite::Result<Vec<(i64, i64, i64, String)>> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect();
         Ok(rows?)
     }

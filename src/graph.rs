@@ -5,6 +5,12 @@ use crate::error::Result;
 
 pub type FileGraph = HashMap<i64, HashSet<i64>>;
 
+/// Per-file symbol spans keyed by file_id: each entry is `(symbol_id,
+/// start_line, end_line)`, ordered by start_line. The lean shape the symbol
+/// graph build (sutra/372) needs to attribute a ref site to its enclosing
+/// symbol, without loading full `SymbolRow`s.
+pub type SymbolSpansByFile = HashMap<i64, Vec<(i64, i64, i64)>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
     Call,
@@ -67,6 +73,185 @@ impl GraphData {
             import_edges,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Query-time symbol wiring graph (sutra/372)
+// ---------------------------------------------------------------------------
+
+/// Restart probability for personalized PageRank: the share of mass that
+/// teleports back to the seed set every step. Higher keeps the walk closer to
+/// the seeds. 0.25 is graft's standard value (graphrank.ts).
+pub const PPR_ALPHA: f64 = 0.25;
+/// Power-iteration count. 25 converges on graphs this size (graft).
+pub const PPR_ITERS: usize = 25;
+
+/// Undirected symbol-level wiring graph used to re-rank explore's lexical hits
+/// by structural centrality (sutra/372, "lexical proposes, graph disposes").
+///
+/// Nodes are symbol ids. An edge joins a ref's target symbol to the *narrowest*
+/// symbol enclosing the ref site, so the graph is genuine symbol-to-symbol
+/// dependency wiring — never a file acting as a hub over every symbol it
+/// contains. Treated undirected: for "understand this area" a callee is as
+/// relevant as a caller.
+///
+/// File-level imports are deliberately NOT lifted into this graph: sutra's
+/// `imports` resolve file→file, so mapping them to symbols would connect every
+/// symbol in the importing file to every symbol in the imported one — the same
+/// file-as-hub explosion graft excludes `contains` to avoid. The symbol wiring
+/// the resolved refs already carry (call/type_use/construction/…) is the
+/// structural signal (sutra/372 decision).
+pub struct SymbolGraph {
+    /// symbol_id -> distinct neighbour symbol ids (undirected).
+    adjacency: HashMap<i64, Vec<i64>>,
+}
+
+impl SymbolGraph {
+    /// Dependency edge kinds worth walking. Every resolved-ref kind counts — they
+    /// are all genuine wiring — so this is future-proof if the parser starts
+    /// emitting field_access / reference / symbol-level import refs.
+    pub fn default_walk_kinds() -> HashSet<EdgeKind> {
+        [
+            EdgeKind::Call,
+            EdgeKind::Import,
+            EdgeKind::TypeUse,
+            EdgeKind::FieldAccess,
+            EdgeKind::Reference,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Build the undirected adjacency from per-file symbol spans and resolved ref
+    /// edges. `spans_by_file` maps file_id -> (sym_id, start_line, end_line);
+    /// `ref_edges` are (file_id, line, target_sym_id, context_kind). A ref whose
+    /// kind is not in `walk`, whose site falls in no symbol, or that resolves to
+    /// a self-loop is dropped. Pure over its inputs so it is unit-testable
+    /// without a Db.
+    pub fn build(
+        spans_by_file: &SymbolSpansByFile,
+        ref_edges: &[(i64, i64, i64, String)],
+        walk: &HashSet<EdgeKind>,
+    ) -> Self {
+        let mut edge_set: HashSet<(i64, i64)> = HashSet::new();
+        for (file_id, line, target, kind) in ref_edges {
+            if !walk.contains(&EdgeKind::from_context_kind(kind)) {
+                continue;
+            }
+            let Some(src) = enclosing_symbol(spans_by_file.get(file_id), *line) else {
+                continue;
+            };
+            if src == *target {
+                continue;
+            }
+            let edge = if src < *target {
+                (src, *target)
+            } else {
+                (*target, src)
+            };
+            edge_set.insert(edge);
+        }
+
+        let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (a, b) in edge_set {
+            adjacency.entry(a).or_default().push(b);
+            adjacency.entry(b).or_default().push(a);
+        }
+        Self { adjacency }
+    }
+
+    /// Symbol nodes with at least one edge — the walkable node count, for cost
+    /// reporting.
+    pub fn node_count(&self) -> usize {
+        self.adjacency.len()
+    }
+
+    /// Personalized PageRank (random-walk-with-restart) seeded by lexical scores.
+    /// `seeds` maps symbol_id -> restart weight (only positive weights count);
+    /// the graph is treated as undirected. Returns a score per touched symbol
+    /// normalized so the top node is 1.0; symbols the walk never reaches are
+    /// absent. A seed with no edges is dangling: it keeps only its restart mass
+    /// and sinks relative to seeds wired into the matched cluster. Mirrors
+    /// graft's `personalizedPageRank` (graphrank.ts).
+    pub fn personalized_pagerank(
+        &self,
+        seeds: &[(i64, f64)],
+        alpha: f64,
+        iters: usize,
+    ) -> HashMap<i64, f64> {
+        // Restart distribution: positive seed weights, normalized to sum 1.
+        let seed_total: f64 = seeds
+            .iter()
+            .filter(|(_, w)| *w > 0.0)
+            .map(|(_, w)| *w)
+            .sum();
+        if seed_total <= 0.0 {
+            return HashMap::new();
+        }
+        let mut restart: HashMap<i64, f64> = HashMap::new();
+        for &(id, w) in seeds {
+            if w > 0.0 {
+                *restart.entry(id).or_insert(0.0) += w / seed_total;
+            }
+        }
+
+        // Rank starts at the restart distribution (a fresh map — `restart` is
+        // read every iteration, so both must live).
+        let mut rank: HashMap<i64, f64> = restart.iter().map(|(&k, &v)| (k, v)).collect();
+        for _ in 0..iters {
+            let mut next: HashMap<i64, f64> = HashMap::with_capacity(rank.len());
+            // Teleport: alpha of the mass returns to the seed set every step.
+            for (&id, &r) in &restart {
+                next.insert(id, alpha * r);
+            }
+            // Spread the rest along edges; pool the mass sitting on dangling
+            // (edgeless) nodes and return it to the seeds once per iteration —
+            // same math as redistributing per node, O(nodes + seeds) not
+            // O(dangling × seeds).
+            let mut dangling = 0.0;
+            for (&id, &mass) in &rank {
+                match self.adjacency.get(&id) {
+                    Some(nbrs) if !nbrs.is_empty() => {
+                        let share = (1.0 - alpha) * mass / nbrs.len() as f64;
+                        for &nb in nbrs {
+                            *next.entry(nb).or_insert(0.0) += share;
+                        }
+                    }
+                    _ => dangling += mass,
+                }
+            }
+            if dangling > 0.0 {
+                let dm = (1.0 - alpha) * dangling;
+                for (&sid, &r) in &restart {
+                    *next.entry(sid).or_insert(0.0) += dm * r;
+                }
+            }
+            rank = next;
+        }
+
+        let max = rank.values().copied().fold(0.0_f64, f64::max);
+        if max <= 0.0 {
+            return HashMap::new();
+        }
+        rank.into_iter().map(|(id, v)| (id, v / max)).collect()
+    }
+}
+
+/// The narrowest symbol whose span contains `line`, among a file's spans.
+/// Mirrors `Db::find_enclosing_symbol` (innermost wins, first-seen kept on a
+/// width tie) over the lean (id, start, end) tuples the graph build loads.
+fn enclosing_symbol(spans: Option<&Vec<(i64, i64, i64)>>, line: i64) -> Option<i64> {
+    let spans = spans?;
+    let mut best: Option<(i64, i64)> = None; // (id, width)
+    for &(id, start, end) in spans {
+        if start <= line && line <= end {
+            let width = end - start;
+            if best.is_none_or(|(_, bw)| width < bw) {
+                best = Some((id, width));
+            }
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 pub fn build_file_adjacency(
@@ -472,5 +657,95 @@ mod scc_tests {
         let sccs = find_import_sccs(&edges);
         assert_eq!(sccs.len(), 1);
         assert_eq!(sccs[0], vec![2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod symbol_graph_tests {
+    use super::{EdgeKind, PPR_ALPHA, PPR_ITERS, SymbolGraph, SymbolSpansByFile};
+    use std::collections::HashMap;
+
+    /// (sym_id, start_line, end_line)
+    type Span = (i64, i64, i64);
+
+    /// file_id -> [(sym_id, start, end)]
+    fn spans(entries: &[(i64, &[Span])]) -> SymbolSpansByFile {
+        entries
+            .iter()
+            .map(|(fid, syms)| (*fid, syms.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn enclosing_symbol_picks_narrowest() {
+        // outer (1) spans the file; inner (2) nests inside it.
+        let by_file = spans(&[(1, &[(1, 1, 100), (2, 10, 20)])]);
+        assert_eq!(super::enclosing_symbol(by_file.get(&1), 15), Some(2));
+        assert_eq!(super::enclosing_symbol(by_file.get(&1), 5), Some(1));
+        assert_eq!(super::enclosing_symbol(by_file.get(&1), 200), None);
+    }
+
+    #[test]
+    fn build_attributes_ref_to_enclosing_source_and_dedups() {
+        // sym 1 (lines 1-10) calls sym 2 twice; edge is undirected + deduped.
+        let by_file = spans(&[(1, &[(1, 1, 10), (2, 20, 30)])]);
+        let edges = vec![(1, 5, 2, "call".to_string()), (1, 6, 2, "call".to_string())];
+        let g = SymbolGraph::build(&by_file, &edges, &SymbolGraph::default_walk_kinds());
+        assert_eq!(g.node_count(), 2, "both endpoints are nodes, edge deduped");
+    }
+
+    #[test]
+    fn build_drops_out_of_walk_kinds_and_self_loops() {
+        let by_file = spans(&[(1, &[(1, 1, 10), (2, 20, 30)])]);
+        // A type_use ref, excluded when walking calls only.
+        let edges = vec![(1, 5, 2, "type_use".to_string())];
+        let walk = [EdgeKind::Call].into_iter().collect();
+        let g = SymbolGraph::build(&by_file, &edges, &walk);
+        assert_eq!(g.node_count(), 0, "type_use excluded from a call-only walk");
+
+        // A ref whose enclosing symbol IS its target is a self-loop, dropped.
+        let self_edges = vec![(1, 5, 1, "call".to_string())];
+        let g = SymbolGraph::build(&by_file, &self_edges, &SymbolGraph::default_walk_kinds());
+        assert_eq!(g.node_count(), 0, "self-loop dropped");
+    }
+
+    #[test]
+    fn wired_seed_outranks_isolated_seed() {
+        // AC1: two symbols share a query word (both seeded with equal weight);
+        // A is wired to a third matched symbol B, C is structurally isolated.
+        // The walk lifts A above C, and rescues the never-word-matched B.
+        //   A(1) —call→ B(2);   C(3) isolated
+        let by_file = spans(&[(1, &[(1, 1, 10), (2, 20, 30), (3, 40, 50)])]);
+        let edges = vec![(1, 5, 2, "call".to_string())];
+        let g = SymbolGraph::build(&by_file, &edges, &SymbolGraph::default_walk_kinds());
+
+        let ppr = g.personalized_pagerank(&[(1, 1.0), (3, 1.0)], PPR_ALPHA, PPR_ITERS);
+        let a = ppr.get(&1).copied().unwrap_or(0.0);
+        let b = ppr.get(&2).copied().unwrap_or(0.0);
+        let c = ppr.get(&3).copied().unwrap_or(0.0);
+
+        assert!(
+            a > c,
+            "wired seed A ({a}) must outrank isolated seed C ({c})"
+        );
+        assert!(b > 0.0, "non-seed neighbour B ({b}) is rescued by the walk");
+        assert!(
+            (a - 1.0).abs() < 1e-9,
+            "top node normalizes to 1.0, got {a}"
+        );
+    }
+
+    #[test]
+    fn empty_seeds_or_graph_returns_empty() {
+        let g = SymbolGraph::build(&HashMap::new(), &[], &SymbolGraph::default_walk_kinds());
+        assert!(
+            g.personalized_pagerank(&[], PPR_ALPHA, PPR_ITERS)
+                .is_empty()
+        );
+        assert!(
+            g.personalized_pagerank(&[(1, 0.0)], PPR_ALPHA, PPR_ITERS)
+                .is_empty(),
+            "non-positive seed weight contributes nothing"
+        );
     }
 }
