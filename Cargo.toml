@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "sutra-guard"
 path = "src/bin/guard.rs"
 
+[[bin]]
+name = "sutra-explore-eval"
+path = "src/bin/explore-eval.rs"
+
 [lib]
 name = "sutra"
 path = "src/lib.rs"
