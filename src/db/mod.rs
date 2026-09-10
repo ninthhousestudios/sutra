@@ -31,7 +31,33 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::error::{Result, SutraError};
+use crate::lexical_tokenize::tokenize;
 use crate::workspace::{self, WorkspaceEntry};
+
+/// The `symbols_fts.lex_tokens` content for one symbol: the shared lexical
+/// tokenizer applied to every searchable field, space-joined. This is the
+/// index-time half of the single-tokenizer invariant (sutra/371) — the query
+/// side (`explore`) calls the same `tokenize`. Unlike the raw `short_name` /
+/// `qualified_name` / `docstring` / `signature` columns (which SQLite's
+/// `unicode61` tokenizer stores without splitting camelCase), pre-splitting here
+/// lets a prefix query for an interior component like `context` reach
+/// `RequestContext` (sutra/394).
+fn lex_tokens_blob(
+    short_name: &str,
+    qualified_name: &str,
+    docstring: Option<&str>,
+    signature: Option<&str>,
+) -> String {
+    let mut toks = tokenize(short_name);
+    toks.extend(tokenize(qualified_name));
+    if let Some(d) = docstring {
+        toks.extend(tokenize(d));
+    }
+    if let Some(s) = signature {
+        toks.extend(tokenize(s));
+    }
+    toks.join(" ")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SearchTier {
@@ -538,7 +564,77 @@ impl Db {
                 "healed duplicate symbol rows at startup"
             );
         }
+        let rebuilt = db.rebuild_symbols_fts_if_stale()?;
+        if rebuilt > 0 {
+            tracing::info!(
+                workspace_id,
+                rebuilt,
+                "repopulated symbols_fts (lex_tokens) after schema upgrade"
+            );
+        }
         Ok(db)
+    }
+
+    /// After a schema migration recreates the (ephemeral) `symbols_fts` table
+    /// empty — as 0071 does to add the `lex_tokens` column — repopulate it from
+    /// the durable `symbols` rows, including the Rust-tokenized `lex_tokens`
+    /// blob that pure SQL can't compute (sutra/394). Gated on a row-count
+    /// mismatch so it fires exactly once after the upgrade and is a no-op on a
+    /// healthy index or a fresh/reindexed one (where symbols is empty at open
+    /// time and the parse-time insert sites fill every column). This is strictly
+    /// cheaper than the `content_hash=''` forced reparse of 0054/0055: it reads
+    /// only the symbols table — no file I/O, no re-parse — because every
+    /// `lex_tokens` input already lives durably in `symbols`.
+    fn rebuild_symbols_fts_if_stale(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let symbol_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+        let fts_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM symbols_fts", [], |row| row.get(0))?;
+        if symbol_count == fts_count {
+            return Ok(0);
+        }
+
+        let tx = conn.unchecked_transaction()?;
+        conn.execute("DELETE FROM symbols_fts", [])?;
+        {
+            let mut select = conn.prepare(
+                "SELECT id, short_name, qualified_name, docstring, signature FROM symbols",
+            )?;
+            let mut insert = conn.prepare(
+                "INSERT INTO symbols_fts \
+                 (symbol_id, short_name, qualified_name, docstring, signature, lex_tokens) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            let rows = select.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, short_name, qualified_name, docstring, signature) = row?;
+                let blob = lex_tokens_blob(
+                    &short_name,
+                    &qualified_name,
+                    docstring.as_deref(),
+                    signature.as_deref(),
+                );
+                insert.execute(params![
+                    id,
+                    short_name,
+                    qualified_name,
+                    docstring,
+                    signature,
+                    blob
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok((symbol_count - fts_count).max(0) as usize)
     }
 
     fn heal_duplicate_symbols(&self) -> Result<usize> {
@@ -944,10 +1040,17 @@ impl Db {
             conn.prepare_cached("DELETE FROM symbols_fts WHERE symbol_id = ?1")?
                 .execute(params![id])?;
             conn.prepare_cached(
-                "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature, lex_tokens)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
-            .execute(params![id, p.short_name, p.qualified_name, p.docstring, p.signature])?;
+            .execute(params![
+                id,
+                p.short_name,
+                p.qualified_name,
+                p.docstring,
+                p.signature,
+                lex_tokens_blob(p.short_name, p.qualified_name, p.docstring, p.signature),
+            ])?;
         }
 
         // Insert imports.
@@ -1052,9 +1155,16 @@ impl Db {
 
         conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![id])?;
         conn.execute(
-            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, p.short_name, p.qualified_name, p.docstring, p.signature],
+            "INSERT INTO symbols_fts (symbol_id, short_name, qualified_name, docstring, signature, lex_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                p.short_name,
+                p.qualified_name,
+                p.docstring,
+                p.signature,
+                lex_tokens_blob(p.short_name, p.qualified_name, p.docstring, p.signature),
+            ],
         )?;
 
         Ok(id)
@@ -1226,7 +1336,11 @@ impl Db {
     pub fn fts_doc_frequency(&self, token: &str) -> Result<i64> {
         let conn = self.conn.lock();
         let escaped = token.replace('"', "\"\"");
-        let match_expr = format!("\"{escaped}\"*");
+        // Scope to lex_tokens — the camelCase/snake-split field explore retrieves
+        // from — so the df matches what fts_candidates actually finds. Counting
+        // the raw unicode61 columns would understate df for an interior token
+        // (e.g. `context` in `RequestContext`), inflating its IDF (sutra/394).
+        let match_expr = format!("{{lex_tokens}} : \"{escaped}\"*");
         Ok(conn.query_row(
             "SELECT count(*) FROM symbols_fts WHERE symbols_fts MATCH ?1",
             params![match_expr],

@@ -24,6 +24,11 @@
 
 use std::collections::HashMap;
 
+// Re-export the shared tokenizer so `explore_lexical::tokenize` still resolves
+// for this module and `explore::handle`. The definition lives at the crate root
+// (`db` also indexes with it, and `db-no-tools` forbids a `tools` home).
+pub(crate) use crate::lexical_tokenize::tokenize;
+
 /// A token → term-frequency bag for one field.
 pub(crate) type Bag = HashMap<String, u32>;
 
@@ -32,14 +37,6 @@ pub(crate) type Bag = HashMap<String, u32>;
 /// token is present, including corpus-absent ones (which take the df=0 weight),
 /// so the scorers never need a fallback default.
 pub(crate) type IdfMap = HashMap<String, f64>;
-
-/// Words too common/short to carry query intent — dropped before scoring.
-/// Mirrors graft's STOP set.
-const STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "of", "to", "in", "is", "are", "how", "does", "do", "what", "where", "which",
-    "that", "this", "it", "for", "on", "and", "or", "with", "i", "we", "get", "set", "use", "used",
-    "using", "when", "why", "can",
-];
 
 /// Field weights: a name match is worth 3× a body match, a path match 2×
 /// (graft's blend). The body field carries no extra multiplier — its BM25 score
@@ -64,36 +61,6 @@ const BM25_B: f64 = 0.75;
 /// tests. Tests still appear (they matter for "where are the tests"), just
 /// below the definition they exercise. Graft's `TEST_RANK_PENALTY`.
 pub(crate) const TEST_RANK_PENALTY: f64 = 0.35;
-
-/// Split prose + identifiers into lowercased subword tokens (camelCase, snake,
-/// kebab). The single source of truth for tokenization — the same function
-/// tokenizes a symbol's fields for scoring and the incoming query, so the two
-/// halves can never disagree on what a "token" is. camelCase is split only at a
-/// lower/digit → upper boundary (matching graft's `([a-z0-9])([A-Z])`), so
-/// `parseImports` → `parse imports` but a run of capitals like `HTMLParser`
-/// stays one token. Tokens shorter than two chars and stop words are dropped.
-pub(crate) fn tokenize(text: &str) -> Vec<String> {
-    // Insert a boundary before an uppercase that follows a lowercase/digit, so
-    // the split below separates camelCase segments.
-    let mut spaced = String::with_capacity(text.len() + 8);
-    let mut prev: Option<char> = None;
-    for c in text.chars() {
-        if let Some(p) = prev
-            && (p.is_ascii_lowercase() || p.is_ascii_digit())
-            && c.is_ascii_uppercase()
-        {
-            spaced.push(' ');
-        }
-        spaced.push(c);
-        prev = Some(c);
-    }
-    spaced
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_lowercase())
-        .filter(|s| s.chars().count() > 1 && !STOP_WORDS.contains(&s.as_str()))
-        .collect()
-}
 
 /// Term-frequency bag for a field's tokens. Consumes the token vec, moving each
 /// string into the map key (no allocation beyond the map itself).
@@ -326,28 +293,6 @@ mod tests {
     /// An IDF map doubling as the query term set — keys are the query tokens.
     fn idf_of(pairs: &[(&str, f64)]) -> IdfMap {
         pairs.iter().map(|(t, w)| (t.to_string(), *w)).collect()
-    }
-
-    #[test]
-    fn tokenize_splits_camel_snake_kebab() {
-        assert_eq!(tokenize("parseImports"), vec!["parse", "imports"]);
-        assert_eq!(tokenize("parse_imports"), vec!["parse", "imports"]);
-        assert_eq!(tokenize("parse-imports"), vec!["parse", "imports"]);
-        assert_eq!(tokenize("workspace_root"), vec!["workspace", "root"]);
-    }
-
-    #[test]
-    fn tokenize_lowercases_and_drops_short_and_stopwords() {
-        // "The"/"of" are stop words; "a" is < 2 chars and a stop word.
-        assert_eq!(tokenize("The Config of a Handle"), vec!["config", "handle"]);
-        // single-char tokens dropped.
-        assert_eq!(tokenize("x y ab"), vec!["ab"]);
-    }
-
-    #[test]
-    fn tokenize_keeps_capital_run_together() {
-        // No lower/digit → upper boundary inside a run of capitals.
-        assert_eq!(tokenize("HTMLParser"), vec!["htmlparser"]);
     }
 
     #[test]

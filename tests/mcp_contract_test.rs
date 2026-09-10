@@ -968,6 +968,70 @@ fn test_explore_finds_docstring_only_match() {
 }
 
 #[test]
+fn test_explore_finds_camelcase_suffix_signature_match() {
+    // sutra/394: a query term that is a NON-LEADING camelCase component of a
+    // signature type (`context` in `RequestContext`) must surface the symbol.
+    // Pre-fix, symbols_fts used the default unicode61 tokenizer, which stored
+    // `requestcontext` whole, so the `context*` prefix never matched — only a
+    // LEADING component like `request` did. The lex_tokens column (camelCase-
+    // split at index time) makes the interior component independently findable.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_camel_suffix_test", dir.path()).unwrap();
+    db.upsert_file("src/dispatch.rs", "rust", "h", 40, true)
+        .unwrap();
+    let file = db.file_by_path("src/dispatch.rs").unwrap().unwrap();
+    // `context` appears only as the trailing component of `RequestContext` in
+    // dispatch's signature — never in a name or docstring.
+    insert_named_symbol(
+        &db,
+        file.id,
+        "dispatch",
+        Some("fn dispatch(cx: RequestContext) -> Result<()>"),
+        None,
+        1,
+        15,
+    );
+    insert_named_symbol(
+        &db,
+        file.id,
+        "helper",
+        Some("fn helper(x: i64)"),
+        None,
+        20,
+        30,
+    );
+
+    let result = explore::handle(&db, dir.path(), "context", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["symbol"] == "dispatch"),
+        "camelCase-suffix 'context' match should surface `dispatch`, got {items:?}"
+    );
+}
+
+#[test]
+fn test_explore_bare_stopword_name_falls_back_to_exact() {
+    // sutra/394: `get`/`set`/`use` are stop words, so a bare query for one
+    // tokenizes to nothing and the lexical stage can't run. A symbol named
+    // exactly that must still be findable via the exact-name fallback — the
+    // pre-sutra/371 recall that removing expand_patterns dropped.
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("explore_stopword_name_test", dir.path()).unwrap();
+    db.upsert_file("src/accessor.rs", "rust", "h", 40, true)
+        .unwrap();
+    let file = db.file_by_path("src/accessor.rs").unwrap().unwrap();
+    insert_named_symbol(&db, file.id, "get", Some("fn get() -> Value"), None, 1, 15);
+    insert_named_symbol(&db, file.id, "compute", Some("fn compute()"), None, 20, 30);
+
+    let result = explore::handle(&db, dir.path(), "get", 10, false).unwrap();
+    let items = result["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["symbol"] == "get"),
+        "bare stop-word query 'get' should surface the symbol named `get`, got {items:?}"
+    );
+}
+
+#[test]
 fn test_explore_test_path_ranks_below_definition() {
     // sutra/371 AC4: on a name tie, the test-path symbol ranks below the real
     // definition it mirrors (the multiplicative test de-rank).

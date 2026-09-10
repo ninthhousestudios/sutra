@@ -14,6 +14,7 @@ pub mod guard;
 pub mod health;
 pub mod js_imports;
 pub mod lessons;
+pub mod lexical_tokenize;
 pub mod mcp;
 pub mod parser;
 pub mod pipeline;

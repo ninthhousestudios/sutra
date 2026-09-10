@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::db::{Db, SymbolRow};
+use crate::db::{Db, SearchTier, SymbolRow};
 use crate::error::Result;
 use crate::parser::adapter::any_language_is_test_path;
 use crate::tools::context::{estimate_tokens, read_line_span};
@@ -445,34 +445,7 @@ pub fn handle(
             }));
         }
         let sym = &symbols[0];
-        let file_path = db
-            .file_by_id(sym.file_id)
-            .ok()
-            .flatten()
-            .map(|f| Arc::clone(&f.path))
-            .unwrap_or_default();
-        let file_ids = vec![sym.file_id];
-        let component_map = db
-            .component_names_by_file_ids(&file_ids)
-            .unwrap_or_default();
-        let component = component_map.get(&sym.file_id);
-        let lines = sym.end_line - sym.start_line + 1;
-        let estimated_tokens = span_tokens(
-            workspace_root,
-            &file_path,
-            Some((sym.start_line, sym.end_line)),
-        );
-        let mut item = json!({
-            "symbol": sym.qualified_name,
-            "file": file_path,
-            "kind": sym.kind,
-            "lines": lines,
-            "component": component,
-            "reason": "direct_match",
-            "estimated_tokens": estimated_tokens,
-            "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
-        });
-        enrich_item(&mut item, sym, lines, compact);
+        let (item, estimated_tokens) = direct_match_item(db, workspace_root, sym, compact);
         return Ok(json!({
             "items": [item],
             "edges": [],
@@ -502,18 +475,29 @@ pub fn handle(
     let corpus_n = db.symbol_count().unwrap_or(0);
     let idf = explore_lexical::build_idf(query, corpus_n, |t| db.fts_doc_frequency(t).unwrap_or(0));
     if idf.is_empty() {
-        return Ok(empty_lexical_result(query));
+        // The query tokenized to nothing searchable — every term was a stop word
+        // or single char (e.g. a bare `get` / `set`). The lexical stage can't
+        // run, but a symbol *named* exactly that should still surface, as it did
+        // before sutra/371 removed expand_patterns. Fall back to the exact
+        // short/qualified-name tier only — never the FTS prefix tier — so a
+        // stop-word query can't flood with getFoo/setBar (sutra/394).
+        return exact_name_fallback(db, workspace_root, query, budget, compact);
     }
 
-    // Candidate retrieval: a prefix OR over the query tokens against every FTS
-    // column (short_name, qualified_name, docstring, and — as of 0069 —
-    // signature), so a symbol findable only by its signature or docstring
-    // surfaces. This is a recall net; the IDF/BM25 scorer re-ranks it below.
-    let match_expr = idf
+    // Candidate retrieval: a prefix OR over the query tokens, scoped to the
+    // lex_tokens column. lex_tokens holds every searchable field (name,
+    // qualified name, docstring, signature) pre-split by the shared tokenizer,
+    // so an interior camelCase component like `context` in `RequestContext` is
+    // reachable — SQLite's unicode61 stores such names whole in the raw columns,
+    // where a `context*` prefix never matches (sutra/394). Scoping to lex_tokens
+    // also leaves find/lookup (which query the raw name columns) untouched. This
+    // is a recall net; the IDF/BM25 scorer re-ranks it below.
+    let inner = idf
         .keys()
         .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ");
+    let match_expr = format!("{{lex_tokens}} : ({inner})");
     let candidates = db.fts_candidates(&match_expr, CANDIDATE_LIMIT)?;
 
     // Fetch FileRows for path tokenization + component resolution.
@@ -720,6 +704,99 @@ pub fn handle(
             "total_estimated_tokens": total_tokens,
             "coverage": top_coverage,
             "coverage_strong": top_coverage_strong,
+        },
+    }))
+}
+
+/// Build a single "direct match" item (symbol, file, span, token cost, fetch
+/// hint) from a resolved `SymbolRow`, enriched per `compact`. Shared by the
+/// qualified-name (`::`) lookup and the stop-word exact-name fallback so both
+/// emit an identical item shape. Returns the item and its estimated token cost.
+fn direct_match_item(
+    db: &Db,
+    workspace_root: &Path,
+    sym: &SymbolRow,
+    compact: bool,
+) -> (Value, i64) {
+    let file_path = db
+        .file_by_id(sym.file_id)
+        .ok()
+        .flatten()
+        .map(|f| Arc::clone(&f.path))
+        .unwrap_or_default();
+    let component_map = db
+        .component_names_by_file_ids(&[sym.file_id])
+        .unwrap_or_default();
+    let component = component_map.get(&sym.file_id);
+    let lines = sym.end_line - sym.start_line + 1;
+    let estimated_tokens = span_tokens(
+        workspace_root,
+        &file_path,
+        Some((sym.start_line, sym.end_line)),
+    );
+    let mut item = json!({
+        "symbol": sym.qualified_name,
+        "file": file_path,
+        "kind": sym.kind,
+        "lines": lines,
+        "component": component,
+        "reason": "direct_match",
+        "estimated_tokens": estimated_tokens,
+        "fetch": format!("sutra_symbol(symbol='{}')", sym.qualified_name),
+    });
+    enrich_item(&mut item, sym, lines, compact);
+    (item, estimated_tokens)
+}
+
+/// Exact short/qualified-name lookup for a query the lexical stage can't handle
+/// because it tokenized to nothing (all stop words or single chars, e.g. a bare
+/// `get` / `set`). Returns items for symbols named exactly `query`, or the empty
+/// lexical result when there is no exact match. Takes only the Exact tier — never
+/// the FTS prefix tier — so a stop-word query can't flood with `getFoo`/`setBar`.
+/// Restores the pre-sutra/371 recall for bare identifier queries without
+/// resurrecting `expand_patterns` (sutra/394).
+fn exact_name_fallback(
+    db: &Db,
+    workspace_root: &Path,
+    query: &str,
+    budget: usize,
+    compact: bool,
+) -> Result<Value> {
+    let (symbols, tier) = db.find_symbols_by_name_tiered(query, None, budget as i64)?;
+    if tier != SearchTier::Exact || symbols.is_empty() {
+        return Ok(empty_lexical_result(query));
+    }
+    let mut items = Vec::with_capacity(symbols.len().min(budget));
+    let mut total_tokens = 0i64;
+    for sym in symbols.iter().take(budget) {
+        let (item, est) = direct_match_item(db, workspace_root, sym, compact);
+        total_tokens += est;
+        items.push(item);
+    }
+    let n = items.len();
+    let components_touched = items
+        .iter()
+        .filter_map(|i| i["component"].as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    Ok(json!({
+        "items": items,
+        "edges": [],
+        "strategy": {
+            "action": if n <= 3 { "read_all" } else { "read_top_n" },
+            "n": n.min(3),
+            "rationale": format!(
+                "Exact name match for '{query}' — {n} symbol(s) named that ('{query}' is too short/common to search lexically)."
+            ),
+        },
+        "summary": {
+            "total_items": n,
+            "direct_matches": n,
+            "fan_out_items": 0,
+            "components_touched": components_touched,
+            "total_estimated_tokens": total_tokens,
+            "coverage": 1.0,
+            "coverage_strong": 1.0,
         },
     }))
 }

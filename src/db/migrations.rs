@@ -385,6 +385,17 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0069_symbols_fts_signature.sql"),
         true,
     ),
+    // Add symbols_fts.lex_tokens (Rust-tokenized, camelCase-split) so explore's
+    // lexical retrieval reaches interior name/signature components that unicode61
+    // stores whole (sutra/394). ephemeral_only: symbols_fts is Ephemeral, so this
+    // must replay after reindex recreates the base table (same as 0069). Left
+    // empty here — Db::open_unchecked's rebuild_symbols_fts_if_stale repopulates
+    // lex_tokens from the symbols table (SQL can't run the tokenizer).
+    (
+        "0070_symbols_fts_lex_tokens",
+        include_str!("../../migrations/0070_symbols_fts_lex_tokens.sql"),
+        true,
+    ),
 ];
 
 impl Db {
