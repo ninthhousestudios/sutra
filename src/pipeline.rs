@@ -12,9 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{
-    Db, ResolvedRefRow, SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
-};
+use crate::db::{Db, ResolvedRefRow, SnapshotComponentRow, SnapshotFileRow, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;

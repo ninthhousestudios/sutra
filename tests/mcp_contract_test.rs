@@ -957,15 +957,7 @@ fn test_explore_finds_docstring_only_match() {
         1,
         15,
     );
-    insert_named_symbol(
-        &db,
-        file.id,
-        "reset",
-        Some("fn reset()"),
-        None,
-        20,
-        30,
-    );
+    insert_named_symbol(&db, file.id, "reset", Some("fn reset()"), None, 20, 30);
 
     let result = explore::handle(&db, dir.path(), "backoff", 10, false).unwrap();
     let items = result["items"].as_array().unwrap();
