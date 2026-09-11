@@ -1109,6 +1109,10 @@ impl Db {
     // symbols
     // -----------------------------------------------------------------------
 
+    /// Test-only fixture primitive (no live callers): live symbol writes go
+    /// through `replace_file_data`, so this deliberately does not bump
+    /// `data_generation` (the `symbol_graph` cache token, sutra/396). Wiring it
+    /// into a live path would need that bump added — in a transaction.
     pub fn insert_symbol(&self, p: &InsertSymbolParams<'_>) -> Result<i64> {
         let conn = self.conn.lock();
         let id: i64 = conn.query_row(
@@ -1646,6 +1650,10 @@ impl Db {
     // -----------------------------------------------------------------------
 
     /// Insert a reference row. Returns the new row id.
+    ///
+    /// Test-only fixture primitive (no live callers): live ref writes go through
+    /// `replace_file_data` / `replace_refs_and_clear_resolution`, so this does
+    /// not bump `data_generation` (the `symbol_graph` cache token, sutra/396).
     pub fn insert_ref(
         &self,
         file_id: i64,
@@ -1696,6 +1704,10 @@ impl Db {
     }
 
     /// Delete all refs belonging to a given file.
+    ///
+    /// Test-only fixture primitive (no live callers): the live delete path is
+    /// `delete_file_cascade`, which bumps `data_generation`. This does not (it
+    /// would need to, in a transaction, if ever promoted to a live path — sutra/396).
     pub fn delete_refs_by_file(&self, file_id: i64) -> Result<()> {
         self.conn
             .lock()
@@ -1766,6 +1778,16 @@ impl Db {
             "UPDATE files SET needs_resolution = 0 WHERE id = ?1",
             params![file_id],
         )?;
+        // Resolution rewrites the resolved ref edges the symbol wiring graph
+        // (sutra/372) is built from, so it must move the staleness token that
+        // `symbol_graph`'s cache keys on. `replace_file_data` inserts refs
+        // UNRESOLVED (target_symbol_id = NULL); the edges only appear here.
+        // Without this bump, a graph cached during the resolve window is served
+        // stale until an unrelated parse advances the counter (sutra/396).
+        conn.execute(
+            "UPDATE index_meta SET data_generation = data_generation + 1 WHERE id = 1",
+            [],
+        )?;
         if let Some(tx) = tx {
             tx.commit()?;
         }
@@ -1773,6 +1795,10 @@ impl Db {
     }
 
     /// Mark files as needing ref resolution (e.g. after their referenced symbols were deleted).
+    ///
+    /// Only flips the `needs_resolution` flag; it does not touch symbols or
+    /// resolved ref edges, so it correctly leaves `data_generation` unchanged —
+    /// the subsequent `replace_refs_and_clear_resolution` bumps it (sutra/396).
     pub fn mark_needs_resolution(&self, file_ids: &[i64]) -> Result<()> {
         if file_ids.is_empty() {
             return Ok(());
@@ -1845,8 +1871,17 @@ impl Db {
             &crate::graph::SymbolGraph::default_walk_kinds(),
         ));
 
-        let mut cache = self.symbol_graph.lock();
-        *cache = Some((generation, Arc::clone(&graph)));
+        // spans and edges are read under separate lock acquisitions, so a write
+        // committing mid-build could have advanced the generation between them.
+        // Only publish to the cache if the generation still matches what we
+        // built against — otherwise this handle would serve a superseded (and
+        // possibly mixed-generation) snapshot until the next bump. On a race we
+        // return the freshly built graph but leave the cache for the next call
+        // to rebuild from a consistent generation (sutra/396).
+        if self.get_data_generation()? == generation {
+            let mut cache = self.symbol_graph.lock();
+            *cache = Some((generation, Arc::clone(&graph)));
+        }
         Ok(graph)
     }
 

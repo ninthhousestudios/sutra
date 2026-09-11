@@ -500,10 +500,16 @@ pub fn handle(
     let max_lex = if max_lex > 0.0 { max_lex } else { 1.0 };
 
     let seeds: Vec<(i64, f64)> = raw.iter().map(|h| (h.sym.id, h.lexical)).collect();
-    let ppr = db
-        .symbol_graph()
-        .map(|g| g.personalized_pagerank(&seeds, crate::graph::PPR_ALPHA, crate::graph::PPR_ITERS))
-        .unwrap_or_default();
+    // A graph build/query failure is a real error, not "no structural signal" —
+    // propagate it rather than silently collapsing to a lexical-only ranking
+    // (sutra/396; lesson 019ed6cd-4e71). A legitimately empty graph is already
+    // handled correctly: personalized_pagerank over it returns an empty map, so
+    // isolated hits still fall back to their lexical score without swallowing errors.
+    let ppr = db.symbol_graph()?.personalized_pagerank(
+        &seeds,
+        crate::graph::PPR_ALPHA,
+        crate::graph::PPR_ITERS,
+    );
 
     let direct_ids: HashSet<i64> = raw.iter().map(|h| h.sym.id).collect();
     let mut coverage_by_id: HashMap<i64, (f64, f64)> = HashMap::new();

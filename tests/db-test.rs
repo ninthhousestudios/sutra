@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use sutra::db::{
-    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, SnapshotComponentRow,
-    SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
+    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
+    SnapshotComponentRow, SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
 
@@ -480,6 +480,55 @@ fn test_delete_refs_by_file() {
 
     db.delete_refs_by_file(fid).unwrap();
     assert!(db.find_refs_in_file(fid).unwrap().is_empty());
+}
+
+#[test]
+fn test_symbol_graph_cache_invalidates_after_ref_resolution() {
+    // Regression for sutra/396. The query-time SymbolGraph cache keys on
+    // data_generation, and the graph is built from *resolved* ref edges.
+    // replace_file_data inserts refs unresolved (target_symbol_id = NULL); the
+    // edges only appear once resolution runs via replace_refs_and_clear_resolution.
+    // If that path didn't bump the generation, a graph cached during the resolve
+    // window (built while refs were still unresolved) would be served stale.
+    let (_dir, db) = setup_db();
+    let fa = seed_file(&db, "a.rs");
+    let fb = seed_file(&db, "b.rs");
+    let _caller = seed_symbol(&db, fa, "a::caller", "caller", "function");
+    let callee = seed_symbol(&db, fb, "b::callee", "callee", "function");
+
+    // Before resolution there are no resolved refs, so the wiring graph is empty.
+    // This call also populates the cache at the current generation.
+    assert_eq!(
+        db.symbol_graph().unwrap().node_count(),
+        0,
+        "no resolved refs => empty wiring graph"
+    );
+
+    // Resolve a call edge caller -> callee via the live resolution write path.
+    // The ref site (line 5) falls inside caller's span (1..=10, from seed_symbol),
+    // so it attributes to caller; the target is callee.
+    db.replace_refs_and_clear_resolution(
+        fa,
+        &[ResolvedRefRow {
+            target_symbol_id: Some(callee),
+            unresolved_name: None,
+            line: 5,
+            col: 0,
+            context_kind: "call",
+            resolution_method: None,
+            resolved_local_target: None,
+            receiver: None,
+        }],
+    )
+    .unwrap();
+
+    // The cache must observe the new edge, not serve the stale empty graph.
+    assert_eq!(
+        db.symbol_graph().unwrap().node_count(),
+        2,
+        "symbol_graph cache must invalidate after resolution bumps data_generation \
+         (sutra/396); a stale cache would still report 0 nodes"
+    );
 }
 
 #[test]
