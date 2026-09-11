@@ -84,9 +84,18 @@ pub(crate) fn normalize_ident(s: &str) -> String {
 
 /// The query's whitespace-delimited terms, each folded via [`normalize_ident`]
 /// and de-duplicated — the set an exact whole-name match is tested against.
+///
+/// A term is eligible only if it survives the scored tokenizer ([`tokenize`]):
+/// stop words and sub-2-char terms are dropped, so they can't grant the
+/// exact-name boost to a symbol whose name happens to equal a word that was
+/// never scored (a symbol named `get` on a query where `get` is a stop word —
+/// sutra/401). Eligibility uses `tokenize`'s rules; the identity KEY stays the
+/// whole normalized term (`asteroid_id` → `asteroidid`), not its split tokens,
+/// so whole-name identity matching is preserved.
 pub(crate) fn query_idents(query: &str) -> HashSet<String> {
     query
         .split_whitespace()
+        .filter(|term| !tokenize(term).is_empty())
         .map(normalize_ident)
         .filter(|s| !s.is_empty())
         .collect()
@@ -331,11 +340,20 @@ pub(crate) struct Scored {
 /// (pagerank) prior, and applies the test-path de-rank to the blend (see
 /// `explore::handle`), so a strong test can't be lifted back to the top by
 /// normalization the way a pre-normalization penalty would allow.
-pub(crate) fn score_doc(idf: &IdfMap, fields: &DocFields, avgdl: f64) -> Scored {
+///
+/// `name_boost` is the name-precision multiplier the caller settles per hit
+/// (`EXACT_NAME_MULT` for a whole-name identity match, `TYPE_DEF_MULT` /
+/// `TYPE_INTENT_MULT` for a type definition). It is applied to the NAME
+/// component ONLY, never the aggregate: the boost is name evidence, so lifting a
+/// symbol's incidental path/body matches with it (as multiplying the whole score
+/// once did) let a type matching one query word on its path outrank the member
+/// that owns the discriminating terms in its name (sutra/401). Pass `1.0` for
+/// an unboosted score.
+pub(crate) fn score_doc(idf: &IdfMap, fields: &DocFields, avgdl: f64, name_boost: f64) -> Scored {
     // A tighter name match (the query covers more of the name) lifts the name
     // component, so `parse` ranks the symbol named `parse` above `parse_imports`.
     let name_tightness = 1.0 + EXACT_NAME_BONUS * covered_fraction(&fields.name, idf);
-    let lexical = idf_overlap(idf, &fields.name) * NAME_WEIGHT * name_tightness
+    let lexical = idf_overlap(idf, &fields.name) * NAME_WEIGHT * name_tightness * name_boost
         + idf_overlap(idf, &fields.qual) * QUAL_WEIGHT
         + idf_overlap(idf, &fields.path) * PATH_WEIGHT
         + bm25(idf, &fields.body, field_len(&fields.body), avgdl);
@@ -462,8 +480,8 @@ mod tests {
             body: bag(&["config", "loader"]),
         };
 
-        let common = score_doc(&idf, &matches_common, avgdl);
-        let rare = score_doc(&idf, &matches_rare, avgdl);
+        let common = score_doc(&idf, &matches_common, avgdl, 1.0);
+        let rare = score_doc(&idf, &matches_rare, avgdl, 1.0);
         assert!(
             rare.score > common.score,
             "rare-token match {} should beat common-token match {}",
@@ -501,7 +519,7 @@ mod tests {
             path: Bag::new(),
             body: bag(&["builds", "widget", "tree"]),
         };
-        let scored = score_doc(&idf, &fields, 4.0);
+        let scored = score_doc(&idf, &fields, 4.0, 1.0);
         assert!(scored.coverage > 0.0);
         assert_eq!(scored.coverage_strong, 0.0);
     }
@@ -515,7 +533,7 @@ mod tests {
             path: Bag::new(),
             body: Bag::new(),
         };
-        let scored = score_doc(&idf, &fields, 1.0);
+        let scored = score_doc(&idf, &fields, 1.0, 1.0);
         assert!((scored.coverage - 1.0).abs() < 1e-9);
         assert!((scored.coverage_strong - 1.0).abs() < 1e-9);
     }
@@ -529,9 +547,72 @@ mod tests {
             path: Bag::new(),
             body: bag(&["misc"]),
         };
-        let scored = score_doc(&idf, &fields, 2.0);
+        let scored = score_doc(&idf, &fields, 2.0, 1.0);
         assert_eq!(scored.coverage, 0.0);
         assert_eq!(scored.coverage_strong, 0.0);
+    }
+
+    #[test]
+    fn name_boost_lifts_name_only_not_incidental_evidence() {
+        // sutra/401: the name-precision boost must lift a hit's NAME component,
+        // never its incidental path/body evidence. A type whose short name
+        // matches one common query term ("svc") but carries the rare,
+        // discriminating terms only on its path/body gets the full 6× name boost
+        // (EXACT_NAME_MULT × TYPE_INTENT_MULT); a member whose OWN name owns the
+        // rare terms gets none. The member must still win.
+        //
+        // Under the old aggregate multiply (score_doc · 6) the type's path+body
+        // were inflated 6× and it won; scoping the boost to the name term fixes it.
+        let idf = idf_of(&[("svc", 0.3), ("ephemeris", 6.0), ("planet", 5.0)]);
+        let avgdl = 3.0;
+
+        let type_hit = DocFields {
+            name: bag(&["svc"]), // matches only the common term
+            qual: Bag::new(),
+            path: bag(&["ephemeris"]), // rare terms are incidental here…
+            body: bag(&["ephemeris", "planet"]),
+        };
+        let member_hit = DocFields {
+            name: bag(&["ephemeris", "planet"]), // …but the member owns them in its name
+            qual: Bag::new(),
+            path: Bag::new(),
+            body: Bag::new(),
+        };
+
+        // 6× = EXACT_NAME_MULT (3) × TYPE_INTENT_MULT (2), the strongest boost a
+        // type can receive; the member is unboosted.
+        let boosted_type = score_doc(&idf, &type_hit, avgdl, EXACT_NAME_MULT * TYPE_INTENT_MULT);
+        let member = score_doc(&idf, &member_hit, avgdl, 1.0);
+        assert!(
+            member.score > boosted_type.score,
+            "member owning the rare terms ({}) must outrank a 6×-boosted type \
+             matching them only incidentally ({})",
+            member.score,
+            boosted_type.score,
+        );
+    }
+
+    #[test]
+    fn query_idents_drops_stop_words_and_short_terms() {
+        // sutra/401: boost eligibility must run through the scored tokenizer, so a
+        // term that was never scored can't grant an exact-name boost. "get" is a
+        // stop word and "x" is sub-2-char — both dropped by `tokenize`, so a
+        // symbol literally named `get` or `x` gets no boost. "ephemeris_id"
+        // survives and keeps its whole-name identity key ("ephemerisid"), not its
+        // split tokens.
+        let idents = query_idents("get x ephemeris_id");
+        assert!(
+            !idents.contains("get"),
+            "stop word must not be boost-eligible"
+        );
+        assert!(
+            !idents.contains("x"),
+            "sub-2-char term must not be boost-eligible"
+        );
+        assert!(
+            idents.contains("ephemerisid"),
+            "a real term keeps its whole-name identity key: {idents:?}"
+        );
     }
 
     #[test]
@@ -560,8 +641,8 @@ mod tests {
             path: Bag::new(),
             body: counts(vec!["token".to_string(); 8]),
         };
-        let s1 = score_doc(&idf, &once, 4.0).score;
-        let s8 = score_doc(&idf, &many, 4.0).score;
+        let s1 = score_doc(&idf, &once, 4.0, 1.0).score;
+        let s8 = score_doc(&idf, &many, 4.0, 1.0).score;
         assert!(s8 > s1, "more occurrences still score higher");
         assert!(s8 < s1 * 8.0, "but sub-linearly (BM25 saturation)");
     }

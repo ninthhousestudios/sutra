@@ -330,8 +330,14 @@ fn build_doc_fields(sym: &SymbolRow, path: &str) -> DocFields {
 /// score = (lexical_norm + GRAPH_WEIGHT · graph_norm) · test_factor
 ///   lexical_norm = (boosted_lexical / max_lexical)        // name/qual/path/body relevance
 ///   graph_norm   = ppr_mass / max_ppr_mass                // query-personalized PageRank
-///   boosted_lexical = score_doc · EXACT_NAME_MULT? · (TYPE_INTENT_MULT | TYPE_DEF_MULT)?
+///   boosted_lexical = score_doc(name_boost)              // boost hits the NAME term only
+///   name_boost = EXACT_NAME_MULT? · (TYPE_INTENT_MULT | TYPE_DEF_MULT)?
 /// ```
+///
+/// `name_boost` multiplies the NAME component alone, never the aggregate: it is
+/// name evidence, and once multiplying the whole `score_doc` let a type matching
+/// one query word on its path/body outrank the member owning the discriminating
+/// terms in its name (sutra/401).
 ///
 /// **Why the structural axis is demoted below name relevance.** `GRAPH_WEIGHT`
 /// is 0.5: the graph term can lift a lexical score by at most half, so it
@@ -571,23 +577,25 @@ pub fn handle(
     }
     let mut raw: Vec<RawHit> = Vec::with_capacity(docs.len());
     for (sym, fields, test_factor) in docs {
-        let s = explore_lexical::score_doc(&idf, &fields, avgdl);
+        // Name-precision boost, applied to the NAME component inside `score_doc`
+        // (not the aggregate — see its doc and sutra/401): an exact whole-name
+        // identity, then a type-definition preference over its members.
+        let mut name_boost = 1.0;
+        if query_idents.contains(&explore_lexical::normalize_ident(&sym.short_name)) {
+            name_boost *= explore_lexical::EXACT_NAME_MULT;
+        }
+        if explore_lexical::is_type_def_kind(&sym.kind) {
+            name_boost *= if wants_type_def {
+                explore_lexical::TYPE_INTENT_MULT
+            } else {
+                explore_lexical::TYPE_DEF_MULT
+            };
+        }
+        let s = explore_lexical::score_doc(&idf, &fields, avgdl, name_boost);
         if s.score > 0.0 {
-            let mut boost = 1.0;
-            if query_idents.contains(&explore_lexical::normalize_ident(&sym.short_name)) {
-                boost *= explore_lexical::EXACT_NAME_MULT;
-            }
-            if explore_lexical::is_type_def_kind(&sym.kind) {
-                boost *= if wants_type_def {
-                    explore_lexical::TYPE_INTENT_MULT
-                } else {
-                    explore_lexical::TYPE_DEF_MULT
-                };
-            }
-            let lexical = s.score * boost;
             raw.push(RawHit {
                 sym,
-                lexical,
+                lexical: s.score,
                 test_factor,
                 coverage: s.coverage,
                 coverage_strong: s.coverage_strong,
@@ -1081,6 +1089,27 @@ mod tests {
         // A genuinely weak top hit (identity coverage 0.10) still narrows.
         let weak = select_strategy(&scores, 0.30, 0.10, &[], false);
         assert_eq!(weak["action"], "narrow_query");
+    }
+
+    #[test]
+    fn strategy_weak_coverage_floor_boundary() {
+        // sutra/401: pin the WEAK_COVERAGE (0.35) floor. The narrow branch needs
+        // BOTH coverage_strong < WEAK_STRONG_COVERAGE (0.20) AND coverage <
+        // WEAK_COVERAGE (0.35); hold coverage_strong low (0.10) so only the
+        // overall-coverage floor decides, then sweep across the boundary. Every
+        // other narrow test uses coverage <= 0.30, so a regression of
+        // WEAK_COVERAGE (e.g. 0.35 -> 0.5) would otherwise go undetected.
+        let scores = vec![0.9, 0.85, 0.8, 0.7, 0.6];
+        // Above the floor: trusted. This is the assertion that fails if the floor
+        // is accidentally raised back toward 0.5.
+        let above = select_strategy(&scores, 0.40, 0.10, &[], false);
+        assert_ne!(above["action"], "narrow_query");
+        // Exactly at the floor: the comparison is strict `<`, so 0.35 is trusted.
+        let at = select_strategy(&scores, 0.35, 0.10, &[], false);
+        assert_ne!(at["action"], "narrow_query");
+        // Just below the floor: narrows.
+        let below = select_strategy(&scores, 0.34, 0.10, &[], false);
+        assert_eq!(below["action"], "narrow_query");
     }
 
     #[test]
