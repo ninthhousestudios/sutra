@@ -36,12 +36,22 @@ pub struct ExploreArgs {
 /// the matched cluster, not incidentally reachable. Graft's `RESCUE_FLOOR`.
 const RESCUE_FLOOR: f64 = 0.15;
 
-/// Below this NAME-field coverage, the query's terms never hit a symbol name on
-/// the top result — only incidental body/path tokens (sutra/371).
-const WEAK_STRONG_COVERAGE: f64 = 0.34;
-/// Below this any-field coverage, the query's terms barely overlap the top
-/// result at all.
-const WEAK_COVERAGE: f64 = 0.5;
+/// Below this identity-field (name + qualified prefix) coverage AND below
+/// [`WEAK_COVERAGE`] overall, the top result is a weak match — the query's terms
+/// barely land on its name, so `select_strategy` suggests narrowing instead of
+/// trusting the hit.
+///
+/// Retuned down from 0.34 → 0.20 for the post-371/372/392 distribution
+/// (sutra/392). On the eval-replay set the 0.34/0.5 pair fired `narrow_query`
+/// 279×, but the fetched target was already in the top 3 in 116 of those — a
+/// 42% wasteful-narrow rate, because a multi-term "enumerate the cluster" query
+/// has low coverage even when its top hit is exactly right. 0.20/0.35 cuts the
+/// wasteful narrows to 34 (68% of narrows now land on a genuinely weak/absent
+/// top hit) while keeping the body-only-collision case it was built for.
+const WEAK_STRONG_COVERAGE: f64 = 0.20;
+/// Companion any-field-coverage floor to [`WEAK_STRONG_COVERAGE`]; retuned
+/// 0.5 → 0.35 in the same pass (sutra/392).
+const WEAK_COVERAGE: f64 = 0.35;
 
 fn select_strategy(
     scores: &[f64],
@@ -77,7 +87,9 @@ fn select_strategy(
     // overlap the top result — it landed on incidental body tokens, not a
     // symbol name. Suggest narrowing instead of trusting a lexical collision.
     // This is the coverage-driven replacement for the old grep-count heuristic
-    // (sutra/371); the thresholds are retuned alongside the final blend in 392.
+    // (sutra/371); the thresholds were retuned against the post-371/372/392
+    // score distribution (see WEAK_STRONG_COVERAGE) to stop over-narrowing
+    // multi-term queries whose top hit is actually correct (sutra/392).
     if coverage_strong < WEAK_STRONG_COVERAGE && coverage < WEAK_COVERAGE {
         let mut rationale =
             "No strong match — the query's terms only weakly overlap the top result.".to_string();
@@ -104,6 +116,11 @@ fn select_strategy(
         });
     }
 
+    // Dominant top result. The 2.0× gap fired only 4/669 times on the pre-371
+    // distribution (its scores were near-flat); on the post-392 blend it fires
+    // ~91× with the fetched target at rank 0 in 76% of them, so the threshold is
+    // left at 2.0× — the new distribution validates it rather than demanding a
+    // retune (sutra/392).
     if n >= 2 && scores[0] > 2.0 * scores[1] {
         return json!({
             "action": "read_top_n",
@@ -145,6 +162,30 @@ fn select_strategy(
         "n": read_n,
         "rationale": rationale
     })
+}
+
+/// Merge the direct-hit band and the graph-only rescue band into one ranking:
+/// each band sorted by descending score (ties broken by `tiebreak`), then ALL
+/// direct hits placed ahead of ALL rescue nodes. Placing the whole direct band
+/// first is the structural half of the F2 guarantee (sutra/372 review): when the
+/// caller truncates the result to budget, a rescue node can neither outrank nor
+/// evict a retained direct lexical hit, regardless of how the blend scored them.
+/// Generic over the payload so the ordering invariant is unit-testable without a
+/// `SymbolRow`/DB (sutra/392).
+fn merge_bands<T>(
+    mut direct: Vec<(T, f64)>,
+    mut rescue: Vec<(T, f64)>,
+    tiebreak: impl Fn(&T, &T) -> std::cmp::Ordering,
+) -> Vec<(T, f64)> {
+    let by_score = |a: &(T, f64), b: &(T, f64)| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| tiebreak(&a.0, &b.0))
+    };
+    direct.sort_by(&by_score);
+    rescue.sort_by(&by_score);
+    direct.extend(rescue);
+    direct
 }
 
 fn collect_edges(db: &Db, items: &[(crate::db::SymbolRow, f64)]) -> Vec<Value> {
@@ -245,13 +286,21 @@ fn enrich_item(entry: &mut Value, sym: &SymbolRow, lines: i64, compact: bool) {
 /// caller's budget afterward.
 const CANDIDATE_LIMIT: i64 = 200;
 
-/// Tokenize one symbol's fields for lexical scoring (sutra/371). `name` unions
-/// the short and qualified name tokens (the highest-weight field); `body` is
-/// signature + docstring — sutra stores no full body_text, so those are the
-/// only body tokens available.
+/// Tokenize one symbol's fields for lexical scoring (sutra/371). `name` is the
+/// short-name tokens (the symbol's own name); `qual` is the qualified-name
+/// PREFIX — the parent/module tokens beyond the short name, scored well below
+/// the name so a member can't out-score its own parent type by inheriting the
+/// parent's tokens (sutra/392). `body` is signature + docstring — sutra stores
+/// no full body_text, so those are the only body tokens available.
 fn build_doc_fields(sym: &SymbolRow, path: &str) -> DocFields {
-    let mut name_tokens = explore_lexical::tokenize(&sym.short_name);
-    name_tokens.extend(explore_lexical::tokenize(&sym.qualified_name));
+    let name_tokens = explore_lexical::tokenize(&sym.short_name);
+    let name_set: HashSet<&str> = name_tokens.iter().map(String::as_str).collect();
+    // Qualified-name tokens that aren't part of the short name — the enclosing
+    // scope (parent type, module) that a member inherits but doesn't own.
+    let qual_tokens: Vec<String> = explore_lexical::tokenize(&sym.qualified_name)
+        .into_iter()
+        .filter(|t| !name_set.contains(t.as_str()))
+        .collect();
 
     let mut body_tokens = Vec::new();
     if let Some(sig) = sym.signature.as_deref() {
@@ -263,11 +312,47 @@ fn build_doc_fields(sym: &SymbolRow, path: &str) -> DocFields {
 
     DocFields {
         name: explore_lexical::counts(name_tokens),
+        qual: explore_lexical::counts(qual_tokens),
         path: explore_lexical::counts(explore_lexical::tokenize(path)),
         body: explore_lexical::counts(body_tokens),
     }
 }
 
+/// Resolve an `explore` query to a ranked symbol list.
+///
+/// ## Final scoring formula (sutra/392)
+///
+/// After alias (`.sutra/aliases.toml`), qualified-name (`::`), and stop-word
+/// exact-name shortcuts, a symbol's rank is a blend of a lexical axis and a
+/// structural axis, both normalized to `[0,1]` over the candidate set:
+///
+/// ```text
+/// score = (lexical_norm + GRAPH_WEIGHT · graph_norm) · test_factor
+///   lexical_norm = (boosted_lexical / max_lexical)        // name/qual/path/body relevance
+///   graph_norm   = ppr_mass / max_ppr_mass                // query-personalized PageRank
+///   boosted_lexical = score_doc · EXACT_NAME_MULT? · (TYPE_INTENT_MULT | TYPE_DEF_MULT)?
+/// ```
+///
+/// **Why the structural axis is demoted below name relevance.** `GRAPH_WEIGHT`
+/// is 0.5: the graph term can lift a lexical score by at most half, so it
+/// reorders near-ties and separates a wired-in hit from an isolated same-word
+/// collision, but never overturns a clear lexical winner. It has to sit below
+/// name relevance because the eval is unambiguous that the failures were
+/// name-precision, not connectivity: a member (`Type::field`) that inherits its
+/// parent's tokens through the qualified name would out-score the bare type the
+/// user named. `score_doc` therefore weights a symbol's OWN short name (3×) far
+/// above the qualified-name prefix it merely lives under (`QUAL_WEIGHT` 0.5),
+/// and `handle` multiplies in the strongest evidence there is — an exact
+/// whole-name identity (`EXACT_NAME_MULT`) and a gentle type-definition
+/// preference (`TYPE_DEF_MULT`, or `TYPE_INTENT_MULT` when the query says
+/// `struct`/`enum`/…). On the sutra/390 replay this moved top-1 41→~57% and
+/// MRR up ~0.05; the graph axis alone was near-neutral, confirming the weight.
+///
+/// Direct lexical hits and graph-only "rescue" fan-out nodes are ranked in
+/// separate bands (directs first, then rescues) so a rescue node can neither
+/// outrank nor evict a retained direct hit (F2) — a reserved-slot guarantee,
+/// not a consequence of the weights. Candidates sharing an exact qualified name
+/// are then collapsed to one.
 pub fn handle(
     db: &Db,
     workspace_root: &Path,
@@ -468,6 +553,14 @@ pub fn handle(
             / docs.len() as f64
     };
 
+    // Exact whole-name identity set: the query's terms an unqualified symbol
+    // name can match outright. Lifts a hit the user named exactly over a
+    // longer member that merely inherits the queried type's tokens (sutra/392).
+    let query_idents = explore_lexical::query_idents(query);
+    // Does the query explicitly ask for a type definition (`struct`/`enum`/…)?
+    // If so, a matching type-def symbol is boosted over its members below.
+    let wants_type_def = explore_lexical::wants_type_def(query);
+
     // Raw lexical pass: keep positive hits with their coverage + test factor.
     struct RawHit {
         sym: SymbolRow,
@@ -480,9 +573,21 @@ pub fn handle(
     for (sym, fields, test_factor) in docs {
         let s = explore_lexical::score_doc(&idf, &fields, avgdl);
         if s.score > 0.0 {
+            let mut boost = 1.0;
+            if query_idents.contains(&explore_lexical::normalize_ident(&sym.short_name)) {
+                boost *= explore_lexical::EXACT_NAME_MULT;
+            }
+            if explore_lexical::is_type_def_kind(&sym.kind) {
+                boost *= if wants_type_def {
+                    explore_lexical::TYPE_INTENT_MULT
+                } else {
+                    explore_lexical::TYPE_DEF_MULT
+                };
+            }
+            let lexical = s.score * boost;
             raw.push(RawHit {
                 sym,
-                lexical: s.score,
+                lexical,
                 test_factor,
                 coverage: s.coverage,
                 coverage_strong: s.coverage_strong,
@@ -512,13 +617,29 @@ pub fn handle(
     );
 
     let direct_ids: HashSet<i64> = raw.iter().map(|h| h.sym.id).collect();
+
+    // Normalize the graph axis to the top PPR mass, so the structural signal
+    // lands on the same [0,1] scale as `lexical / max_lex`. Personalized-
+    // PageRank mass is a probability that sums to 1 over the walk, so its top
+    // value is a small fraction (a few %); feeding it to the blend un-normalized
+    // left the structural term effectively inert — the query-personalized graph
+    // could not reorder even a dead tie (sutra/392).
+    let max_ppr = ppr.values().copied().fold(0.0_f64, f64::max);
+    let graph_norm_of = |id: i64| -> f64 {
+        if max_ppr > 0.0 {
+            ppr.get(&id).copied().unwrap_or(0.0) / max_ppr
+        } else {
+            0.0
+        }
+    };
+
     let mut coverage_by_id: HashMap<i64, (f64, f64)> = HashMap::new();
-    let mut scored: Vec<(SymbolRow, f64)> = Vec::with_capacity(raw.len());
+    let mut direct_scored: Vec<(SymbolRow, f64)> = Vec::with_capacity(raw.len());
     for h in raw {
-        let graph_norm = ppr.get(&h.sym.id).copied().unwrap_or(0.0);
-        let blended = explore_lexical::blend(h.lexical / max_lex, graph_norm, h.test_factor);
+        let blended =
+            explore_lexical::blend(h.lexical / max_lex, graph_norm_of(h.sym.id), h.test_factor);
         coverage_by_id.insert(h.sym.id, (h.coverage, h.coverage_strong));
-        scored.push((h.sym, blended));
+        direct_scored.push((h.sym, blended));
     }
 
     // Fan-out is now the PPR rescue set (replaces the decay-BFS `collect_fan_out`):
@@ -547,16 +668,13 @@ pub fn handle(
     });
     rescue_ids.truncate(budget);
 
+    let mut rescue_scored: Vec<(SymbolRow, f64)> = Vec::new();
     if !rescue_ids.is_empty() {
-        let mass_by_id: HashMap<i64, f64> = rescue_ids.iter().copied().collect();
         let ids: Vec<i64> = rescue_ids.iter().map(|(id, _)| *id).collect();
         let sym_rows = db.symbol_rows_by_ids(&ids)?;
         let file_ids: Vec<i64> = sym_rows.iter().map(|s| s.file_id).collect();
         let file_rows = db.files_by_ids(&file_ids)?;
         for sym in sym_rows {
-            let Some(&mass) = mass_by_id.get(&sym.id) else {
-                continue;
-            };
             let is_test_path = !query_wants_tests
                 && file_rows
                     .get(&sym.file_id)
@@ -566,8 +684,8 @@ pub fn handle(
             } else {
                 1.0
             };
-            let score = explore_lexical::blend(0.0, mass, test_factor);
-            scored.push((sym, score));
+            let score = explore_lexical::blend(0.0, graph_norm_of(sym.id), test_factor);
+            rescue_scored.push((sym, score));
         }
         // Move the hydrated file rows into file_map so the population loop below
         // finds the rescue survivors without re-querying file_by_id.
@@ -576,11 +694,18 @@ pub fn handle(
         }
     }
 
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.qualified_name.cmp(&b.0.qualified_name))
-    });
+    // Merge the two bands: each sorted by score, then ALL direct hits placed
+    // ahead of ALL graph-only rescue nodes. A rescue node — scored on the graph
+    // axis alone — can therefore neither outrank NOR evict a retained direct
+    // lexical hit once the list is truncated below: direct hits fill the budget
+    // first (F2, sutra/372 review). A reserved-slot guarantee, structural rather
+    // than a byproduct of the blend weights (a weak direct hit can score below a
+    // central rescue node yet still ranks above it and survives truncation).
+    let mut scored = merge_bands(
+        direct_scored,
+        rescue_scored,
+        |a: &SymbolRow, b: &SymbolRow| a.qualified_name.cmp(&b.qualified_name),
+    );
     scored.truncate(budget);
 
     // Match-strength of the top hit — the signal the strategy hint reads.
@@ -941,6 +1066,55 @@ mod tests {
         assert_eq!(s["action"], "read_top_n");
         // 0.7 * 2 = 1.4 >= 0.8 ✓, 0.3 * 2 = 0.6 < 0.8 ✗ → 2 within 2×
         assert_eq!(s["n"], 2);
+    }
+
+    #[test]
+    fn strategy_moderate_coverage_not_narrowed_after_retune() {
+        // sutra/392 retune: on a diffuse multi-term query, a top hit with
+        // MODERATE identity coverage (coverage_strong 0.25) used to fall under
+        // the old 0.34 floor and narrow — even though its top hit was correct.
+        // It now clears the retuned 0.20 floor and is trusted. Guards against
+        // regressing to the 42%-wasteful over-narrowing.
+        let scores = vec![0.9, 0.85, 0.8, 0.7, 0.6];
+        let s = select_strategy(&scores, 0.30, 0.25, &[], false);
+        assert_ne!(s["action"], "narrow_query");
+        // A genuinely weak top hit (identity coverage 0.10) still narrows.
+        let weak = select_strategy(&scores, 0.30, 0.10, &[], false);
+        assert_eq!(weak["action"], "narrow_query");
+    }
+
+    #[test]
+    fn merge_bands_weak_direct_hit_outranks_and_survives_graph_neighbour() {
+        // Adversarial F2 fixture (sutra/372 review): a strong connected seed
+        // (direct hit), that seed's central non-hit NEIGHBOUR pulled in as a
+        // graph-only rescue node, and a WEAK isolated direct lexical hit. By raw
+        // score the rescue neighbour (0.50) beats the weak direct hit (0.02), so
+        // a single score-sorted list would rank it above — and at budget 2,
+        // evict — the weak direct. The band merge must not: every direct
+        // outranks every rescue, structurally.
+        // The rescue neighbour's score (0.50) deliberately exceeds the weak
+        // direct hit's (0.02): a single score-sorted list would rank it first.
+        let direct = || vec![("strong_seed", 1.40), ("weak_isolated_hit", 0.02)];
+        let rescue = || vec![("strong_neighbour", 0.50)];
+
+        let merged = merge_bands(direct(), rescue(), |a: &&str, b: &&str| a.cmp(b));
+        let order: Vec<&str> = merged.iter().map(|(s, _)| *s).collect();
+        assert_eq!(
+            order,
+            vec!["strong_seed", "weak_isolated_hit", "strong_neighbour"],
+            "the weak direct hit must rank above the higher-scored graph neighbour"
+        );
+
+        // Truncating to budget 2 (as `handle` does) keeps the weak direct and
+        // drops the higher-scored rescue neighbour — the "cannot evict" half.
+        let mut budgeted = merge_bands(direct(), rescue(), |a: &&str, b: &&str| a.cmp(b));
+        budgeted.truncate(2);
+        let kept: Vec<&str> = budgeted.iter().map(|(s, _)| *s).collect();
+        assert!(kept.contains(&"weak_isolated_hit"), "weak direct evicted");
+        assert!(
+            !kept.contains(&"strong_neighbour"),
+            "rescue node not evicted"
+        );
     }
 
     #[test]

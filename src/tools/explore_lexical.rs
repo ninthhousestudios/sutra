@@ -22,7 +22,7 @@
 //! `fts_doc_frequency` and `symbol_count`) and the tokenized fields, so the
 //! whole module is unit-testable without an index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // Re-export the shared tokenizer so `explore_lexical::tokenize` still resolves
 // for this module and `explore::handle`. The definition lives at the crate root
@@ -43,6 +43,13 @@ pub(crate) type IdfMap = HashMap<String, f64>;
 /// already sits on a comparable scale.
 const NAME_WEIGHT: f64 = 3.0;
 const PATH_WEIGHT: f64 = 2.0;
+/// Weight of the qualified-name PREFIX field (parent type / module context). Far
+/// below `NAME_WEIGHT`: a query token that matches only through a symbol's
+/// enclosing scope (a member inheriting its parent type's name) is weak
+/// evidence for that member, and crediting it at full name weight is exactly
+/// what let members bury the bare parent type they belong to (sutra/392). Above
+/// zero because the prefix is still a real, if secondary, relevance signal.
+const QUAL_WEIGHT: f64 = 0.5;
 
 /// How much a tight name match — the query accounts for most of the symbol's
 /// name, not just a fragment of it — lifts the name component. This restores
@@ -51,6 +58,100 @@ const PATH_WEIGHT: f64 = 2.0;
 /// `parse_imports` that merely contains the token. At the max (the query covers
 /// the whole name) the name component roughly doubles.
 const EXACT_NAME_BONUS: f64 = 1.0;
+
+/// Multiplier applied to a hit whose `short_name` matches one of the query's
+/// whole terms EXACTLY (separator-insensitive identity, e.g. query term
+/// `AsteroidId`/`asteroid_id` ↔ symbol `AsteroidId`). This is the signal the
+/// token-bag score alone misses: a member `Ephemeris::planet_files` inherits the
+/// queried type's `ephemeris` token through its qualified name and matches more
+/// query terms than the bare `Ephemeris`, so it buries the type the user named
+/// (sutra/392). An exact whole-name identity is the strongest relevance
+/// evidence there is — you typed the symbol's name — so it lifts the whole
+/// lexical axis for that hit, staying on-scale (a multiplier, not a band offset,
+/// so `select_strategy`'s score-ratio logic still reads meaningful gaps).
+pub(crate) const EXACT_NAME_MULT: f64 = 3.0;
+
+/// Fold an identifier or query term to a separator-free lowercase key: strip
+/// every non-alphanumeric char and lowercase the rest. Folds `calcUt`,
+/// `calc_ut`, and `CalcUt` to one key, so an exact whole-name match survives a
+/// camelCase-vs-snake_case spelling difference between query and symbol.
+pub(crate) fn normalize_ident(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// The query's whitespace-delimited terms, each folded via [`normalize_ident`]
+/// and de-duplicated — the set an exact whole-name match is tested against.
+pub(crate) fn query_idents(query: &str) -> HashSet<String> {
+    query
+        .split_whitespace()
+        .map(normalize_ident)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Query words that declare a type-definition intent — the user wants the
+/// struct/enum/class itself, not one of its members. Matched as whole tokens.
+const TYPE_INTENT_WORDS: &[&str] = &[
+    "struct",
+    "enum",
+    "class",
+    "trait",
+    "interface",
+    "mixin",
+    "typedef",
+    "union",
+];
+
+/// Symbol kinds that ARE a type definition — the target a `wants_type_def` query
+/// asks for. Members (method/field/getter/…) and free functions are excluded so
+/// the boost lifts the container over its members (sutra/392).
+const TYPE_DEF_KINDS: &[&str] = &[
+    "struct",
+    "enum",
+    "class",
+    "trait",
+    "interface",
+    "mixin",
+    "extension",
+    "type_alias",
+    "typedef",
+    "union",
+    "record",
+    "protocol",
+];
+
+/// Multiplier for a type-definition symbol when the query explicitly asks for a
+/// type (`Ephemeris struct …`, `Body enum …`). This is the decisive signal for
+/// the query pattern that most often buried the target: a type described by
+/// enumerating its members, where every member matches more query terms than
+/// the bare type and would otherwise outrank it (sutra/392).
+pub(crate) const TYPE_INTENT_MULT: f64 = 2.0;
+
+/// Small always-on preference for a type definition over a same-named member.
+/// A query for `AppliedGlobals` ties the class against its own constructor
+/// `AppliedGlobals::AppliedGlobals` (identical name tokens) and against
+/// `AppliedGlobals::field` members on lexical score; the user almost always
+/// wants the type, so this breaks the tie toward it without needing a `struct`
+/// keyword. Deliberately gentle — it tips near-ties, never overturns a member
+/// that genuinely out-matches the type on the query's terms (sutra/392).
+pub(crate) const TYPE_DEF_MULT: f64 = 1.2;
+
+/// Whether the query explicitly asks for a type definition (contains a word like
+/// `struct`/`enum`/`class`). Checked against the query's own tokens, so it fires
+/// on the word, not as a substring of an unrelated identifier.
+pub(crate) fn wants_type_def(query: &str) -> bool {
+    tokenize(query)
+        .iter()
+        .any(|t| TYPE_INTENT_WORDS.contains(&t.as_str()))
+}
+
+/// Whether a symbol kind is a type definition (the target of a type-intent query).
+pub(crate) fn is_type_def_kind(kind: &str) -> bool {
+    TYPE_DEF_KINDS.contains(&kind)
+}
 
 /// Standard BM25 params. `k1` saturates repeated occurrences, `b` controls
 /// length normalization against the corpus-average field length.
@@ -195,8 +296,14 @@ fn matched_idf_share(idf: &IdfMap, fields: &[&Bag]) -> f64 {
 
 /// One symbol's tokenized fields.
 pub(crate) struct DocFields {
-    /// short_name ∪ qualified_name tokens — the highest-weight field.
+    /// short_name tokens — the symbol's OWN name, the highest-weight field.
     pub name: Bag,
+    /// Qualified-name PREFIX tokens: the parent/module context in the qualified
+    /// name that is NOT part of the short name (e.g. `ephemeris` for
+    /// `Ephemeris::planet_files`). Scored at [`QUAL_WEIGHT`], well below the name
+    /// field, so a member does not out-score its own parent type by claiming the
+    /// parent's tokens at full name weight (sutra/392).
+    pub qual: Bag,
     /// File path tokens.
     pub path: Bag,
     /// signature + docstring tokens — the length-normalized body field.
@@ -206,13 +313,14 @@ pub(crate) struct DocFields {
 /// Result of scoring one symbol against a query.
 pub(crate) struct Scored {
     pub score: f64,
-    /// IDF-weighted share of query terms matched across name + path + body — a
-    /// relevance signal for the caller ("did the query's words land at all?").
+    /// IDF-weighted share of query terms matched across name + qual + path +
+    /// body — a relevance signal for the caller ("did the query's words land at
+    /// all?").
     pub coverage: f64,
-    /// IDF-weighted share matched in the NAME field ONLY — a match-STRENGTH
-    /// signal ("did the query hit a high-value field, or only incidental body
-    /// tokens?"). A body-only collision has `coverage_strong == 0` while
-    /// `coverage` can still look respectable.
+    /// IDF-weighted share matched in the identity fields (name + qualified-name
+    /// prefix) — a match-STRENGTH signal ("did the query hit a high-value field,
+    /// or only incidental body/path tokens?"). A body/path-only collision has
+    /// `coverage_strong == 0` while `coverage` can still look respectable.
     pub coverage_strong: f64,
 }
 
@@ -228,12 +336,16 @@ pub(crate) fn score_doc(idf: &IdfMap, fields: &DocFields, avgdl: f64) -> Scored 
     // component, so `parse` ranks the symbol named `parse` above `parse_imports`.
     let name_tightness = 1.0 + EXACT_NAME_BONUS * covered_fraction(&fields.name, idf);
     let lexical = idf_overlap(idf, &fields.name) * NAME_WEIGHT * name_tightness
+        + idf_overlap(idf, &fields.qual) * QUAL_WEIGHT
         + idf_overlap(idf, &fields.path) * PATH_WEIGHT
         + bm25(idf, &fields.body, field_len(&fields.body), avgdl);
     Scored {
         score: lexical,
-        coverage: matched_idf_share(idf, &[&fields.name, &fields.path, &fields.body]),
-        coverage_strong: matched_idf_share(idf, &[&fields.name]),
+        coverage: matched_idf_share(
+            idf,
+            &[&fields.name, &fields.qual, &fields.path, &fields.body],
+        ),
+        coverage_strong: matched_idf_share(idf, &[&fields.name, &fields.qual]),
     }
 }
 
@@ -243,12 +355,20 @@ pub(crate) fn score_doc(idf: &IdfMap, fields: &DocFields, avgdl: f64) -> Scored 
 /// seeded by the lexical hits), not the query-independent global pagerank it
 /// replaced — so this takes graft's 0.5 directly: enough to reorder near-ties
 /// and separate a connected hit from an isolated same-word collision, without
-/// letting structure override a clear lexical winner.
+/// letting structure override a clear lexical winner. Kept at 0.5 in the final
+/// blend (sutra/392): on the eval it edged top-1 up (54.8→56.8%) and MRR
+/// (0.651→0.664) over a lexical-only ranking, so the structural axis earns its
+/// place, but the failures it can't touch are name-precision, not connectivity,
+/// which is why it stays demoted below the name signal.
 pub(crate) const GRAPH_WEIGHT: f64 = 0.5;
 
-/// Blend a symbol's normalized lexical score (0..1 over the candidate set) with
-/// its normalized graph score (query-personalized PageRank, 0..1), then apply
-/// the test-path de-rank. `test_factor` multiplies the BLEND rather than the raw
+/// Blend a symbol's normalized lexical score with its normalized graph score,
+/// then apply the test-path de-rank. Both inputs are `[0,1]` over the candidate
+/// set: `lexical_norm` is `boosted_lexical / max_lexical` and `graph_norm` is
+/// `ppr_mass / max_ppr_mass` — the caller (`explore::handle`) normalizes the raw
+/// PageRank mass to its top value so the two axes are commensurate (before
+/// sutra/392 the raw mass was passed un-normalized and the structural term was
+/// effectively inert). `test_factor` multiplies the BLEND rather than the raw
 /// lexical, so a test that is the strongest raw match isn't restored to the top
 /// once lexical is renormalized to the candidate max (graft's observation).
 pub(crate) fn blend(lexical_norm: f64, graph_norm: f64, test_factor: f64) -> f64 {
@@ -331,11 +451,13 @@ mod tests {
 
         let matches_common = DocFields {
             name: bag(&["handle", "request"]),
+            qual: Bag::new(),
             path: Bag::new(),
             body: bag(&["handle", "request"]),
         };
         let matches_rare = DocFields {
             name: bag(&["config", "loader"]),
+            qual: Bag::new(),
             path: Bag::new(),
             body: bag(&["config", "loader"]),
         };
@@ -375,6 +497,7 @@ mod tests {
         let idf = idf_of(&[("widget", 3.0)]);
         let fields = DocFields {
             name: bag(&["render", "loop"]),
+            qual: Bag::new(),
             path: Bag::new(),
             body: bag(&["builds", "widget", "tree"]),
         };
@@ -388,6 +511,7 @@ mod tests {
         let idf = idf_of(&[("parse", 3.0), ("imports", 4.0)]);
         let fields = DocFields {
             name: bag(&["parse", "imports"]),
+            qual: Bag::new(),
             path: Bag::new(),
             body: Bag::new(),
         };
@@ -401,6 +525,7 @@ mod tests {
         let idf = idf_of(&[("absent", 5.0)]);
         let fields = DocFields {
             name: bag(&["other"]),
+            qual: Bag::new(),
             path: Bag::new(),
             body: bag(&["misc"]),
         };
@@ -425,11 +550,13 @@ mod tests {
         let idf = idf_of(&[("token", 3.0)]);
         let once = DocFields {
             name: Bag::new(),
+            qual: Bag::new(),
             path: Bag::new(),
             body: bag(&["token"]),
         };
         let many = DocFields {
             name: Bag::new(),
+            qual: Bag::new(),
             path: Bag::new(),
             body: counts(vec!["token".to_string(); 8]),
         };
