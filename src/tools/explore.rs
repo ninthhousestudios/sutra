@@ -526,26 +526,54 @@ pub fn handle(
     // of the top node) that the query never word-matched — the config/helper a
     // task depends on but didn't name. Scored on the graph axis alone (no lexical
     // term) and tagged `reason: graph`.
-    for (&id, &mass) in &ppr {
-        if mass < RESCUE_FLOOR || direct_ids.contains(&id) {
-            continue;
+    //
+    // Bound the candidate set BEFORE hydration (sutra/395): at most `budget`
+    // rescue nodes can survive the final truncate, so rank by PPR mass and keep
+    // the top `budget`. The rescue score is `0.5 * mass * test_factor`, monotone
+    // in mass except for the fixed test-path demotion (which only lowers), so
+    // mass-ranking is a sound bound — a high-mass test-path helper may edge out a
+    // lower-mass non-test one right at the boundary, which is acceptable (final
+    // ordering is sutra/392's remit). Then hydrate the kept ids in two bulk
+    // queries instead of a per-node point query over every node above the floor.
+    let mut rescue_ids: Vec<(i64, f64)> = ppr
+        .iter()
+        .map(|(&id, &mass)| (id, mass))
+        .filter(|&(id, mass)| mass >= RESCUE_FLOOR && !direct_ids.contains(&id))
+        .collect();
+    rescue_ids.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    rescue_ids.truncate(budget);
+
+    if !rescue_ids.is_empty() {
+        let mass_by_id: HashMap<i64, f64> = rescue_ids.iter().copied().collect();
+        let ids: Vec<i64> = rescue_ids.iter().map(|(id, _)| *id).collect();
+        let sym_rows = db.symbol_rows_by_ids(&ids)?;
+        let file_ids: Vec<i64> = sym_rows.iter().map(|s| s.file_id).collect();
+        let file_rows = db.files_by_ids(&file_ids)?;
+        for sym in sym_rows {
+            let Some(&mass) = mass_by_id.get(&sym.id) else {
+                continue;
+            };
+            let is_test_path = !query_wants_tests
+                && file_rows
+                    .get(&sym.file_id)
+                    .is_some_and(|f| any_language_is_test_path(&f.path));
+            let test_factor = if is_test_path {
+                explore_lexical::TEST_RANK_PENALTY
+            } else {
+                1.0
+            };
+            let score = explore_lexical::blend(0.0, mass, test_factor);
+            scored.push((sym, score));
         }
-        let Ok(Some(sym)) = db.symbol_by_id(id) else {
-            continue;
-        };
-        let is_test_path = !query_wants_tests
-            && db
-                .file_by_id(sym.file_id)
-                .ok()
-                .flatten()
-                .is_some_and(|f| any_language_is_test_path(&f.path));
-        let test_factor = if is_test_path {
-            explore_lexical::TEST_RANK_PENALTY
-        } else {
-            1.0
-        };
-        let score = explore_lexical::blend(0.0, mass, test_factor);
-        scored.push((sym, score));
+        // Move the hydrated file rows into file_map so the population loop below
+        // finds the rescue survivors without re-querying file_by_id.
+        for (id, f) in file_rows {
+            file_map.entry(id).or_insert(f);
+        }
     }
 
     scored.sort_by(|a, b| {

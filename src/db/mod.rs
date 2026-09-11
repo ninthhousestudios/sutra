@@ -800,6 +800,31 @@ impl Db {
         }
     }
 
+    /// Bulk-fetch file rows for a set of ids in a single query, keyed by id.
+    /// Ids with no matching row are absent from the map. Lets callers hydrate a
+    /// bounded candidate set in one round trip instead of a per-node `file_by_id`
+    /// fan-out (sutra/395).
+    pub fn files_by_ids(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, FileRow>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let conn = self.conn.lock();
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, path, language, content_hash, line_count, parsed_ok,
+                    last_parsed, fan_in_files, blast_radius, pagerank, mtime_ns, size_bytes
+             FROM files WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_file_row)?;
+        let mut out = std::collections::HashMap::with_capacity(ids.len());
+        for r in rows {
+            let f = r?;
+            out.insert(f.id, f);
+        }
+        Ok(out)
+    }
+
     /// Fetch a single file row by path.
     pub fn file_by_path(&self, path: &str) -> Result<Option<FileRow>> {
         let conn = self.conn.lock();
@@ -1199,6 +1224,32 @@ impl Db {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(SutraError::Db(e)),
         }
+    }
+
+    /// Bulk-fetch full symbol rows for a set of ids in a single query. Ids with
+    /// no matching row are omitted; result order is unspecified. Lets callers
+    /// hydrate a bounded candidate set in one round trip instead of a per-node
+    /// `symbol_by_id` fan-out (sutra/395). Distinct from `symbols_by_ids`, which
+    /// returns lightweight `SymbolSummary` rows for the similarity path.
+    pub fn symbol_rows_by_ids(&self, ids: &[i64]) -> Result<Vec<SymbolRow>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, file_id, qualified_name, short_name, kind,
+                    signature, signature_hash, structural_hash, visibility,
+                    start_line, start_col, end_line, end_col,
+                    parent_symbol_id, docstring, pagerank,
+                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+             FROM symbols WHERE id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), map_symbol_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Fetch a symbol by its fully qualified name.
