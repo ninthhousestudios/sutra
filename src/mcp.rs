@@ -1258,16 +1258,30 @@ impl SutraServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SutraServer {
     fn get_info(&self) -> ServerInfo {
-        let mut tool_names: Vec<&str> = self.tool_router.map.keys().map(|k| k.as_ref()).collect();
-        tool_names.sort_unstable();
-        let roster = tool_names.join(", ");
+        // This string is the one piece of sutra prose that survives MCP tool
+        // deferral: when a host withholds tool schemas and sends bare names, the
+        // `instructions` field still lands whole. So it carries a batch-load line
+        // (defuse the deferral tax) and a decision rule per core tool — not a
+        // roster of names the agent already has. Keep it under ~1000 chars; the
+        // full reference is sutra_help(). See sutra/367.
         let instructions = format!(
-            "sutra v{version} — code intelligence for manas. \
-             {count} tools: {roster}. \
-             Call sutra_help() for workflow recipes. \
-             All responses include as_of timestamp and is_stale indicator.",
+            "sutra v{version} — code intelligence for manas: a symbol graph — callers, callees, \
+             file:line spans. Prefer it over grep/read.\n\n\
+             If deferred (names shown, schemas withheld), load the core set in ONE lookup, \
+             never one at a time: ToolSearch \"select:mcp__sutra__sutra_explore,\
+             mcp__sutra__sutra_symbol,mcp__sutra__sutra_outline,mcp__sutra__sutra_refs,\
+             mcp__sutra__sutra_map,mcp__sutra__sutra_impact\".\n\n\
+             - sutra_explore: start here for any symbol/topic; resolves .sutra/aliases.toml \
+             terms first, then ranks hits with a strategy hint (sutra_lookup for an exact name; \
+             rg for file text).\n\
+             - sutra_symbol: read one symbol's source by name, not a whole file.\n\
+             - sutra_outline: a file's symbol table of contents.\n\
+             - sutra_refs: every usage or call site, before a rename.\n\
+             - sutra_map: discover files instead of find/ls.\n\
+             - sutra_impact: blast radius before editing a hot file.\n\n\
+             Edits pass a house-rules guard. Responses carry as_of + is_stale; \
+             the graph refreshes before each query. sutra_help() is the long-form reference.",
             version = env!("CARGO_PKG_VERSION"),
-            count = tool_names.len(),
         );
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(instructions)
