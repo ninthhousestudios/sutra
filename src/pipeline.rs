@@ -1381,7 +1381,7 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
         }
     }
 
-    let workspace = scoring::score_workspace(db, false)?;
+    let workspace = scoring::score_workspace(db)?;
     let file_score_map: HashMap<i64, &scoring::ScoredFile> = workspace
         .file_scores
         .iter()

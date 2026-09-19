@@ -164,6 +164,21 @@ pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
+/// Component-level instability penalty applied to a component's NLOC-weighted
+/// score. Instability (Martin's I = Ce/(Ca+Ce), 0..1) is a crude fragility
+/// proxy: higher I means the component depends outward on more than depends on
+/// it. The deduction follows the finding formula (Informational severity × the
+/// ComponentInstability weight) scaled by I, capped at the coupling cap. The
+/// weight is deliberately low (uncalibrated); a future repowise pass can raise
+/// it. Applied identically in the snapshot and file_health paths so component
+/// scores never diverge between them.
+pub fn instability_penalty(instability: f64) -> f64 {
+    let raw = HealthSeverity::Informational.weight()
+        * BiomarkerKind::ComponentInstability.default_weight()
+        * instability.clamp(0.0, 1.0);
+    raw.min(HealthCategory::Coupling.cap())
+}
+
 #[derive(Debug)]
 pub struct ScoredFile {
     pub file_id: i64,
@@ -189,7 +204,7 @@ pub struct WorkspaceHealth {
     pub comp_file_ids: HashMap<String, Vec<i64>>,
 }
 
-pub fn score_workspace(db: &Db, include_instability: bool) -> Result<WorkspaceHealth> {
+pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
     let all_with_waivers = db.get_health_findings_with_waiver_status()?;
 
     let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
@@ -219,11 +234,9 @@ pub fn score_workspace(db: &Db, include_instability: bool) -> Result<WorkspaceHe
 
     let components = db.all_components()?;
     let memberships = db.component_members_with_line_count()?;
-    let instability_map = if include_instability {
-        instability::compute_component_instability(db).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    // Instability is always computed: it feeds the component score (not just
+    // decorative metadata), so the snapshot and file_health paths must agree.
+    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
 
     let file_score_map: HashMap<i64, f64> = file_scores
         .iter()
@@ -253,14 +266,21 @@ pub fn score_workspace(db: &Db, include_instability: bool) -> Result<WorkspaceHe
             .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&BASE_SCORE), lc))
             .collect();
         let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();
-        let comp_score = score_component(&pairs);
+        let base = score_component(&pairs);
+        let instability = instability_map.get(&comp.id).cloned();
+        let comp_score = match &instability {
+            Some(inst) => {
+                (base - instability_penalty(inst.instability)).clamp(MIN_SCORE, MAX_SCORE)
+            }
+            None => base,
+        };
         component_scores.push(ScoredComponent {
             component_id: comp.id.clone(),
             component_name: comp.name.clone(),
             score: comp_score,
             member_count: members.len(),
             total_nloc,
-            instability: instability_map.get(&comp.id).cloned(),
+            instability,
         });
     }
 

@@ -299,7 +299,7 @@ fn handle_inner(
 }
 
 fn build_component_scores(db: &Db) -> Result<Vec<serde_json::Value>> {
-    let workspace = scoring::score_workspace(db, true)?;
+    let workspace = scoring::score_workspace(db)?;
 
     let mut comp_results: Vec<serde_json::Value> = workspace
         .component_scores

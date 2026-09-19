@@ -1962,6 +1962,29 @@ fn file_health_component_instability() {
     assert_eq!(inst["ce"].as_u64().unwrap(), 1);
     assert_eq!(inst["ca"].as_u64().unwrap(), 0);
     assert!((inst["value"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+
+    // Alpha is fully unstable (I=1.0) and takes the instability penalty even
+    // with no findings; Beta is fully stable (I=0.0) and stays at 10.0.
+    let alpha_score = alpha["health_score"].as_f64().unwrap();
+    assert!(
+        (alpha_score - (10.0 - sutra::health::scoring::instability_penalty(1.0))).abs() < 1e-9,
+        "alpha score {alpha_score} should reflect the instability penalty"
+    );
+    let beta = components
+        .iter()
+        .find(|c| c["name"].as_str().unwrap() == "Beta")
+        .unwrap();
+    assert!((beta["health_score"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+}
+
+#[test]
+fn instability_penalty_is_monotonic_and_bounded() {
+    use sutra::health::scoring::instability_penalty;
+    assert_eq!(instability_penalty(0.0), 0.0);
+    assert!(instability_penalty(0.5) > 0.0);
+    assert!(instability_penalty(1.0) > instability_penalty(0.5));
+    // Clamped inputs never exceed the input=1.0 penalty.
+    assert_eq!(instability_penalty(5.0), instability_penalty(1.0));
 }
 
 // --- ImportCycle biomarker ---
