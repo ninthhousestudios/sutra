@@ -45,6 +45,25 @@ pub enum BiomarkerKind {
 }
 
 impl BiomarkerKind {
+    /// Every variant, for exhaustive iteration (e.g. the scoring contract's
+    /// "which biomarkers should have run" sweep). Kept adjacent to the enum so
+    /// a new variant is added here too.
+    pub const ALL: [BiomarkerKind; 13] = [
+        Self::NestedComplexity,
+        Self::CoChangeScatter,
+        Self::ChangeEntropy,
+        Self::OwnershipRisk,
+        Self::FunctionHotspot,
+        Self::HiddenCoupling,
+        Self::BlastRadiusChurn,
+        Self::DeadCodeRatio,
+        Self::CodeAgeVolatility,
+        Self::CoverageGradient,
+        Self::ComponentInstability,
+        Self::HrrShapeChange,
+        Self::ImportCycle,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::NestedComplexity => "nested_complexity",

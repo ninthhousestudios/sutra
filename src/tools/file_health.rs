@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::db::{Db, FileRow, HealthFindingRow};
 use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
+use crate::health::findings::BiomarkerKind;
 use crate::health::scoring;
 use crate::tools::scoring::round3;
 
@@ -73,6 +74,8 @@ fn handle_inner(
     let limit = limit.unwrap_or(20) as usize;
     let mode = mode.unwrap_or("actionable");
 
+    let facts = scoring::WorkspaceFacts::detect(db)?;
+
     let all_with_waivers = db.get_health_findings_with_waiver_status()?;
     let active: Vec<HealthFindingRow> = all_with_waivers
         .into_iter()
@@ -119,6 +122,7 @@ fn handle_inner(
         finding_deductions: Vec<f64>,
         finding_raw_deductions: Vec<f64>,
         category_raw_totals: HashMap<&'static str, f64>,
+        missing: Vec<scoring::MissingDeduction>,
     }
 
     let in_scope = |f: &FileRow| -> bool {
@@ -153,7 +157,7 @@ fn handle_inner(
                 .map(|refs| refs.iter().map(|r| (*r).clone()).collect())
                 .unwrap_or_default();
 
-            let result = scoring::score_file(&file_findings);
+            let result = scoring::score_file(&file_findings, &facts);
 
             let mut cat_totals: HashMap<&'static str, f64> = HashMap::new();
             let mut cat_raw_totals: HashMap<&'static str, f64> = HashMap::new();
@@ -167,6 +171,11 @@ fn handle_inner(
                     finding_raw_deductions[pos] = d.raw_deduction;
                 }
             }
+            // Worst-cased missing biomarkers count toward the category totals so
+            // the breakdown sums to the score drop.
+            for m in &result.missing {
+                *cat_totals.entry(m.category.as_str()).or_default() += m.scaled_deduction;
+            }
 
             let refs = findings_by_file.get(&file.id).cloned().unwrap_or_default();
 
@@ -178,6 +187,7 @@ fn handle_inner(
                 finding_deductions,
                 finding_raw_deductions,
                 category_raw_totals: cat_raw_totals,
+                missing: result.missing,
             }
         })
         .collect();
@@ -222,6 +232,17 @@ fn handle_inner(
                     "category_deductions": cat_json,
                     "findings": findings_json,
                 });
+                if !s.missing.is_empty() {
+                    // "missing analysis is never zero debt": this score was
+                    // computed from incomplete analysis and worst-cased.
+                    entry["partial"] = json!(true);
+                    entry["missing_biomarkers"] = json!(
+                        s.missing
+                            .iter()
+                            .map(|m| m.biomarker.as_str())
+                            .collect::<Vec<_>>()
+                    );
+                }
                 if explain {
                     use crate::health::scoring::HealthCategory;
                     let categories_explain: serde_json::Value = [
@@ -283,6 +304,22 @@ fn handle_inner(
         "total_files": items.len(),
         "mode": mode,
     });
+
+    // Surface dimensions that are structurally unmeasurable in this workspace
+    // (data source absent) rather than silently omitting them — an unsupported
+    // biomarker is excluded from scoring, not scored as zero debt.
+    let unsupported: Vec<serde_json::Value> = BiomarkerKind::ALL
+        .iter()
+        .filter_map(|k| match k.file_scoring_support(&facts) {
+            Some(scoring::BiomarkerSupport::Unsupported(reason)) => {
+                Some(json!({ "biomarker": k.as_str(), "reason": reason }))
+            }
+            _ => None,
+        })
+        .collect();
+    if !unsupported.is_empty() {
+        result["unsupported_biomarkers"] = json!(unsupported);
+    }
 
     if path.is_none()
         && component.is_none()

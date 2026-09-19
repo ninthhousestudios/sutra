@@ -88,6 +88,76 @@ impl HealthSeverity {
     }
 }
 
+/// Workspace-scoped facts that decide whether a biomarker's data source exists
+/// at all. Detected once per scoring pass.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceFacts {
+    /// True when the commit history has been ingested (git-organizational and
+    /// churn biomarkers have nothing to measure without it).
+    pub has_git: bool,
+}
+
+impl WorkspaceFacts {
+    pub fn detect(db: &Db) -> Result<Self> {
+        Ok(Self {
+            has_git: db.commit_file_count()? > 0,
+        })
+    }
+}
+
+/// Whether a biomarker contributes to a file's score, and if not, why. This is
+/// the "missing analysis is never zero debt" contract: a biomarker that should
+/// have run but didn't must lower the score, not silently pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiomarkerSupport {
+    /// Producer wired and its data source present in this workspace.
+    Scored,
+    /// Data source structurally absent at workspace scope (no git history, no
+    /// coverage ingestion). Excluded from scoring and surfaced as a note —
+    /// worst-casing every file on a dimension that can never run is noise.
+    Unsupported(&'static str),
+    /// Present in the weight table but no producer emits it. Worst-cased at full
+    /// weight and flags the file `partial`.
+    Unwired,
+}
+
+impl BiomarkerKind {
+    /// Classify a biomarker for FILE-LEVEL parse-time scoring. `None` means it
+    /// is scored elsewhere (review-time on-demand, or component-scoped) and is
+    /// not part of the per-file worst-case contract. Single exhaustive source of
+    /// truth: adding a variant forces a decision here, so a new biomarker can
+    /// never silently score as zero debt.
+    pub fn file_scoring_support(&self, facts: &WorkspaceFacts) -> Option<BiomarkerSupport> {
+        let git = || {
+            if facts.has_git {
+                BiomarkerSupport::Scored
+            } else {
+                BiomarkerSupport::Unsupported("no git history in workspace")
+            }
+        };
+        match self {
+            Self::NestedComplexity | Self::ImportCycle | Self::DeadCodeRatio => {
+                Some(BiomarkerSupport::Scored)
+            }
+            Self::CoChangeScatter
+            | Self::ChangeEntropy
+            | Self::OwnershipRisk
+            | Self::HiddenCoupling
+            | Self::BlastRadiusChurn => Some(git()),
+            Self::CoverageGradient => {
+                Some(BiomarkerSupport::Unsupported("no coverage data source"))
+            }
+            // Review-time on-demand (function_hotspot, code_age_volatility,
+            // hrr_shape_change) and component-scoped (component_instability) are
+            // scored in their own paths, not per-file at parse time.
+            Self::FunctionHotspot
+            | Self::CodeAgeVolatility
+            | Self::HrrShapeChange
+            | Self::ComponentInstability => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FindingDeduction {
     pub finding_id: i64,
@@ -96,15 +166,34 @@ pub struct FindingDeduction {
     pub category: HealthCategory,
 }
 
+/// A worst-case deduction for a file-scored biomarker that had no producer
+/// (Unwired). Not tied to a finding — it exists precisely because no finding
+/// was emitted — but it lowers the score and flags the file `partial`.
+#[derive(Debug, Clone)]
+pub struct MissingDeduction {
+    pub biomarker: BiomarkerKind,
+    pub category: HealthCategory,
+    pub scaled_deduction: f64,
+}
+
 #[derive(Debug)]
 pub struct FileHealthScore {
     pub score: f64,
     pub deductions: Vec<FindingDeduction>,
+    /// Worst-cased biomarkers whose producer never ran. Non-empty ⇒ the score is
+    /// `partial`: an apparently clean number computed from incomplete analysis.
+    pub missing: Vec<MissingDeduction>,
 }
 
-pub fn score_file(findings: &[HealthFindingRow]) -> FileHealthScore {
-    let mut by_category: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
+impl FileHealthScore {
+    pub fn partial(&self) -> bool {
+        !self.missing.is_empty()
+    }
+}
 
+pub fn score_file(findings: &[HealthFindingRow], facts: &WorkspaceFacts) -> FileHealthScore {
+    // Present findings: real debt the producers actually measured.
+    let mut present: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
     for (i, f) in findings.iter().enumerate() {
         let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
             continue;
@@ -113,30 +202,61 @@ pub fn score_file(findings: &[HealthFindingRow]) -> FileHealthScore {
             continue;
         };
         let raw = severity.weight() * kind.default_weight();
-        by_category
-            .entry(kind.category())
-            .or_default()
-            .push((i, raw));
+        present.entry(kind.category()).or_default().push((i, raw));
+    }
+
+    // Missing analysis is never zero debt: any file-scored biomarker with no
+    // producer (Unwired) is worst-cased at its full weight. Unsupported ones
+    // (data source absent at workspace scope) are excluded, not worst-cased.
+    let mut missing_raw: HashMap<HealthCategory, Vec<(BiomarkerKind, f64)>> = HashMap::new();
+    for kind in BiomarkerKind::ALL {
+        if kind.file_scoring_support(facts) == Some(BiomarkerSupport::Unwired) {
+            let raw = kind.default_severity().weight() * kind.default_weight();
+            missing_raw
+                .entry(kind.category())
+                .or_default()
+                .push((kind, raw));
+        }
     }
 
     let mut deductions = Vec::new();
+    let mut missing = Vec::new();
     let mut total_deduction = 0.0;
 
-    for (cat, items) in &by_category {
-        let raw_total: f64 = items.iter().map(|(_, r)| r).sum();
+    let mut categories: Vec<HealthCategory> = present.keys().copied().collect();
+    for cat in missing_raw.keys() {
+        if !categories.contains(cat) {
+            categories.push(*cat);
+        }
+    }
+
+    for cat in categories {
+        let present_items = present.get(&cat).map(Vec::as_slice).unwrap_or(&[]);
+        let missing_items = missing_raw.get(&cat).map(Vec::as_slice).unwrap_or(&[]);
+        let raw_total: f64 = present_items.iter().map(|(_, r)| r).sum::<f64>()
+            + missing_items.iter().map(|(_, r)| r).sum::<f64>();
         let scale = if raw_total > cat.cap() {
             cat.cap() / raw_total
         } else {
             1.0
         };
 
-        for &(idx, raw) in items {
+        for &(idx, raw) in present_items {
             let scaled = raw * scale;
             deductions.push(FindingDeduction {
                 finding_id: findings[idx].id,
                 raw_deduction: raw,
                 scaled_deduction: scaled,
-                category: *cat,
+                category: cat,
+            });
+            total_deduction += scaled;
+        }
+        for &(kind, raw) in missing_items {
+            let scaled = raw * scale;
+            missing.push(MissingDeduction {
+                biomarker: kind,
+                category: cat,
+                scaled_deduction: scaled,
             });
             total_deduction += scaled;
         }
@@ -145,6 +265,7 @@ pub fn score_file(findings: &[HealthFindingRow]) -> FileHealthScore {
     FileHealthScore {
         score: (BASE_SCORE - total_deduction).clamp(MIN_SCORE, MAX_SCORE),
         deductions,
+        missing,
     }
 }
 
@@ -184,7 +305,11 @@ pub struct ScoredFile {
     pub file_id: i64,
     pub score: f64,
     pub deductions: Vec<FindingDeduction>,
+    /// Per-category scaled deduction totals, including worst-cased `missing`
+    /// biomarkers so the breakdown always sums to `BASE_SCORE - score`.
     pub category_totals: HashMap<HealthCategory, f64>,
+    /// Worst-cased biomarkers whose producer never ran (non-empty ⇒ partial).
+    pub missing: Vec<MissingDeduction>,
 }
 
 #[derive(Debug)]
@@ -217,18 +342,23 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
         }
     }
 
+    let facts = WorkspaceFacts::detect(db)?;
     let mut file_scores = Vec::new();
     for (&file_id, findings) in &findings_by_file {
-        let result = score_file(findings);
+        let result = score_file(findings, &facts);
         let mut category_totals: HashMap<HealthCategory, f64> = HashMap::new();
         for d in &result.deductions {
             *category_totals.entry(d.category).or_default() += d.scaled_deduction;
+        }
+        for m in &result.missing {
+            *category_totals.entry(m.category).or_default() += m.scaled_deduction;
         }
         file_scores.push(ScoredFile {
             file_id,
             score: result.score,
             deductions: result.deductions,
             category_totals,
+            missing: result.missing,
         });
     }
 

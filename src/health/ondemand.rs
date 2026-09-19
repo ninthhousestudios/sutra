@@ -252,6 +252,7 @@ pub fn compute_health_delta(
         HashMap::new()
     };
 
+    let facts = scoring::WorkspaceFacts::detect(db)?;
     let mut degraded = Vec::new();
     let mut improved = Vec::new();
 
@@ -274,7 +275,7 @@ pub fn compute_health_delta(
         let mut all_findings = stored;
         all_findings.extend(ondemand_rows.clone());
 
-        let health = scoring::score_file(&all_findings);
+        let health = scoring::score_file(&all_findings, &facts);
         let delta = health.score - prev_score;
 
         if delta.abs() < 0.005 {

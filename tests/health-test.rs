@@ -397,6 +397,10 @@ fn reconcile_orphaned_health_waivers_symbol_scoped() {
 
 // --- Scoring ---
 
+fn test_facts() -> sutra::health::scoring::WorkspaceFacts {
+    sutra::health::scoring::WorkspaceFacts { has_git: true }
+}
+
 fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {
     HealthFindingRow {
         id,
@@ -414,15 +418,96 @@ fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> Healt
 
 #[test]
 fn scoring_no_findings_yields_perfect_score() {
-    let result = score_file(&[]);
+    let result = score_file(&[], &test_facts());
     assert_eq!(result.score, 10.0);
     assert!(result.deductions.is_empty());
+    // A clean file with all producers wired is not partial.
+    assert!(!result.partial());
+    assert!(result.missing.is_empty());
+}
+
+// --- "missing analysis is never zero debt" contract ---
+
+#[test]
+fn contract_no_file_scored_biomarker_is_unwired() {
+    use sutra::health::scoring::BiomarkerSupport;
+    // The gap this task closed: every biomarker in the file-level weight table
+    // has a producer (or is explicitly Unsupported). If a new BiomarkerKind is
+    // added without wiring a producer, this fails — forcing a decision instead
+    // of silently scoring it as zero debt.
+    let facts = test_facts();
+    for kind in BiomarkerKind::ALL {
+        if let Some(support) = kind.file_scoring_support(&facts) {
+            assert_ne!(
+                support,
+                BiomarkerSupport::Unwired,
+                "{} is file-scored but has no producer",
+                kind.as_str()
+            );
+        }
+    }
+}
+
+#[test]
+fn contract_coverage_gradient_is_unsupported() {
+    use sutra::health::scoring::{BiomarkerSupport, WorkspaceFacts};
+    // No coverage ingestion exists → excluded from scoring with a reason, in
+    // both git and non-git workspaces.
+    for has_git in [true, false] {
+        let support =
+            BiomarkerKind::CoverageGradient.file_scoring_support(&WorkspaceFacts { has_git });
+        assert!(matches!(support, Some(BiomarkerSupport::Unsupported(_))));
+    }
+}
+
+#[test]
+fn contract_git_biomarkers_unsupported_without_git() {
+    use sutra::health::scoring::{BiomarkerSupport, WorkspaceFacts};
+    let no_git = WorkspaceFacts { has_git: false };
+    for kind in [
+        BiomarkerKind::CoChangeScatter,
+        BiomarkerKind::ChangeEntropy,
+        BiomarkerKind::OwnershipRisk,
+        BiomarkerKind::HiddenCoupling,
+        BiomarkerKind::BlastRadiusChurn,
+    ] {
+        assert!(
+            matches!(
+                kind.file_scoring_support(&no_git),
+                Some(BiomarkerSupport::Unsupported(_))
+            ),
+            "{} should be unsupported without git",
+            kind.as_str()
+        );
+        assert_eq!(
+            kind.file_scoring_support(&WorkspaceFacts { has_git: true }),
+            Some(BiomarkerSupport::Scored)
+        );
+    }
+}
+
+#[test]
+fn contract_review_and_component_biomarkers_are_not_file_scored() {
+    let facts = test_facts();
+    for kind in [
+        BiomarkerKind::FunctionHotspot,
+        BiomarkerKind::CodeAgeVolatility,
+        BiomarkerKind::HrrShapeChange,
+        BiomarkerKind::ComponentInstability,
+    ] {
+        assert_eq!(
+            kind.file_scoring_support(&facts),
+            None,
+            "{} is scored elsewhere, not per-file",
+            kind.as_str()
+        );
+    }
 }
 
 #[test]
 fn scoring_single_advisory_finding() {
     let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
-    let result = score_file(&findings);
+    let result = score_file(&findings, &test_facts());
     // advisory weight 1.0 × biomarker weight 1.34 = 1.34 deduction
     assert!((result.score - 8.66).abs() < 0.01);
     assert_eq!(result.deductions.len(), 1);
@@ -433,7 +518,7 @@ fn scoring_single_advisory_finding() {
 #[test]
 fn scoring_informational_deducts_less() {
     let findings = [make_finding(1, 1, "dead_code_ratio", "informational")];
-    let result = score_file(&findings);
+    let result = score_file(&findings, &test_facts());
     // informational weight 0.5 × biomarker weight 0.80 = 0.40 deduction
     assert!((result.score - 9.60).abs() < 0.01);
 }
@@ -447,7 +532,7 @@ fn scoring_category_cap_with_proportional_scaling() {
         make_finding(2, 1, "nested_complexity", "advisory"),
         make_finding(3, 1, "nested_complexity", "advisory"),
     ];
-    let result = score_file(&findings);
+    let result = score_file(&findings, &test_facts());
     // Total structural deduction capped at 2.5 → score = 7.5
     assert!((result.score - 7.5).abs() < 0.01);
     // All three scaled deductions should be equal and sum to 2.5
@@ -487,7 +572,7 @@ fn scoring_all_categories_maxed_yields_minimum() {
         make_finding(17, 1, "dead_code_ratio", "informational"),
         make_finding(18, 1, "dead_code_ratio", "informational"),
     ];
-    let result = score_file(&findings);
+    let result = score_file(&findings, &test_facts());
     assert!((result.score - 1.0).abs() < 0.01);
 }
 
