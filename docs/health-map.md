@@ -4,9 +4,12 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-09-19 (sutra/402: "missing analysis is never zero debt"
-contract — wired DeadCodeRatio/BlastRadiusChurn/HrrShapeChange producers,
-ComponentInstability as a deduction, CoverageGradient marked unsupported)
+Last updated: 2026-09-19 (sutra/408: made the "missing analysis is never zero
+debt" contract actually fire — per-file health_coverage stamp so incrementally
+reparsed / finding-free files are worst-cased not floored, GitAvailability axis
+separating NotARepo from NoHistory, snapshot partial/missing_biomarkers columns.
+Prior: sutra/402 landed the contract — producers, ComponentInstability
+deduction, CoverageGradient unsupported)
 
 ## Module layout
 
@@ -40,14 +43,19 @@ src/health/
                       FunctionBlameStats, HealthDelta, HealthDeltaEntry.
   scoring.rs        — HealthCategory (5 variants), category caps, biomarker
                       weights (repowise calibrated), severity weights,
-                      WorkspaceFacts{has_git} + detect, BiomarkerSupport
+                      WorkspaceFacts{git: GitAvailability} + detect (reads
+                      persisted index_meta.git_availability, falls back to
+                      commit-count), GitAvailability
+                      (Available/NoHistory/NotARepo), BiomarkerSupport
                       (Scored/Unsupported/Unwired),
                       BiomarkerKind::file_scoring_support (single source of
-                      truth), score_file(findings, facts) — category capping +
-                      proportional scaling + worst-cases Unwired biomarkers
+                      truth), score_file(findings, facts, covered) — category
+                      capping + proportional scaling + worst-cases Unwired
+                      biomarkers AND (when !covered) Scored ones
                       (MissingDeduction, FileHealthScore.missing/partial()),
                       instability_penalty, score_component (NLOC-weighted),
-                      score_workspace(db) (instability always computed +
+                      score_workspace(db) (scores every file via
+                      health_coverage_map; instability always computed +
                       applied), FileHealthScore, FindingDeduction
 
 src/parser/
@@ -70,14 +78,20 @@ src/db/
                       Also: cochange_pairs_above_threshold, static_file_edges
                       (both used by hidden_coupling).
   health.rs         — HealthFindingRow, HealthWaiverRow, NestingExceedRow.
-                      Db methods: symbols_exceeding_nesting, replace_health_findings,
-                      get_health_findings (optional file_id + biomarker_kind filters),
-                      get_health_waivers, create_health_waiver (upsert),
-                      delete_health_waiver, get_health_findings_with_waiver_status.
+                      Db methods: symbols_exceeding_nesting, replace_health_findings
+                      (also stamps health_coverage for all files),
+                      health_coverage_map, get_health_findings (optional file_id +
+                      biomarker_kind filters), get_health_waivers,
+                      create_health_waiver (upsert), delete_health_waiver,
+                      get_health_findings_with_waiver_status.
   mod.rs            — TABLE_REGISTRY entries: health_findings (Ephemeral),
-                      health_waivers (Durable). SymbolRow.max_nesting field.
-                      InsertSymbolParams.max_nesting field.
-  migrations.rs     — 0027 (ephemeral), 0028 (durable)
+                      health_coverage (Ephemeral), health_waivers (Durable).
+                      git_availability / set_git_availability (index_meta).
+                      SnapshotFileRow.partial + .missing_biomarkers.
+                      SymbolRow.max_nesting field. InsertSymbolParams.max_nesting.
+  migrations.rs     — 0027 (ephemeral), 0028 (durable), 0071 git_availability
+                      (durable ALTER on index_meta), 0072 health_coverage
+                      (ephemeral), 0073 snapshot completeness (ephemeral ALTER)
 
 src/similarity/
   hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
@@ -174,21 +188,50 @@ returns repowise-calibrated weight (or moderate/uncalibrated default).
 `file_scoring_support(facts)` (in scoring.rs) is the single source of truth
 for the "missing analysis is never zero debt" contract — see below.
 
-### The zero-debt contract (scoring.rs, sutra/402)
+### The zero-debt contract (scoring.rs, sutra/402 + sutra/408)
 Findings are positive-only (emitted only on a problem), so absence used to be
 indistinguishable between "clean", "not applicable", and "check never ran" —
 all scored as zero debt. `file_scoring_support(&WorkspaceFacts)` classifies
 each biomarker for file-level parse-time scoring:
-- `Scored` — producer wired + data source present.
-- `Unsupported(reason)` — data source absent at workspace scope (no git; no
-  coverage). Excluded from scoring, surfaced as `unsupported_biomarkers`.
-- `Unwired` — in the weight table but no producer. `score_file` worst-cases it
-  at full weight (within category caps) and sets `FileHealthScore.missing` /
-  `partial()`; `file_health` surfaces per-file `partial` + `missing_biomarkers`.
+- `Scored` — producer wired + data source present. Worst-cased anyway when the
+  file's analysis is not current (see coverage below).
+- `Unsupported(reason)` — data source **structurally** absent (not a git repo;
+  no coverage ingestion). Excluded from scoring, surfaced as
+  `unsupported_biomarkers`.
+- `Unwired` — should be scored but has no data this run: no producer, or a git
+  data source that was unavailable (empty commit window / `git log` failure).
+  `score_file` worst-cases it at full weight (within category caps) and sets
+  `FileHealthScore.missing` / `partial()`; `file_health` surfaces per-file
+  `partial` + `missing_biomarkers`.
 - `None` — scored elsewhere (review-time on-demand or component-scoped).
-The match is exhaustive, so a new variant forces a decision; a guard test
-(`contract_no_file_scored_biomarker_is_unwired`) fails if any file-scored
-biomarker lacks a producer.
+The match is exhaustive, so a new variant forces a decision.
+
+**Per-file coverage (sutra/408).** Workspace-scope "producer wired" is not
+per-file "producer ran for THIS file's current content." The `health_coverage`
+table records the `content_hash` each file's findings were computed for,
+stamped atomically inside `replace_health_findings` (which runs only after a
+full `compute_all_health_findings` over every file). `score_workspace` scores
+**every** indexed file — not just files with findings — and passes
+`covered = coverage[file_id] == file.content_hash` to `score_file`. When
+`!covered` (an incrementally-reparsed file whose findings were never recomputed,
+or a newly-added file with none), the stale present findings are ignored and
+every `Scored`/`Unwired` file-scored biomarker is worst-cased. This is what
+makes the contract fire on the live query path: `parse_incremental` never
+recomputes health findings, so without coverage a drifted file would float back
+to a clean 10.0.
+
+**Git availability axis (sutra/408).** `WorkspaceFacts.git: GitAvailability`
+(`Available` | `NoHistory` | `NotARepo`) replaces the old `has_git` bool and is
+persisted on `index_meta.git_availability` at parse time (where the git outcome
+is observed; `detect` only has the `Db`). Only `NotARepo` (true structural
+absence) → `Unsupported`; `NoHistory` (empty window or a transient `git log`
+failure) → `Unwired` (worst-cased). A `git log` failure no longer clears
+`commit_files`, so health cannot improve by losing evidence. `detect` falls back
+to the `commit_file_count` heuristic on indexes predating the column.
+
+Snapshots persist `partial` + `missing_biomarkers` per file
+(`health_snapshot_files`), so `trend` can tell partial analysis from real
+degradation.
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the
@@ -355,7 +398,7 @@ a single review invocation.
 | Biomarker | Produced by | Notes |
 |---|---|---|
 | nested_complexity | findings.rs (parse) | |
-| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | Unsupported without git history |
+| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | git-gated: NotARepo → Unsupported (excluded); NoHistory (empty window / `git log` failure) → Unwired (worst-cased) |
 | import_cycle | findings.rs (parse) | |
 | dead_code_ratio | findings.rs compute_dead_code_ratio (parse) | provisional threshold 0.15 (uncalibrated) |
 | blast_radius_churn | git_metrics.rs compute_blast_radius_churn (parse) | provisional: blast_radius ≥ 10 AND churn ≥ 5 (uncalibrated) |
@@ -384,12 +427,16 @@ Component scores: NLOC-weighted average of member file scores, minus
 at the coupling cap). Instability is always computed so snapshot and file_health
 component scores agree. Final clamp [1.0, 10.0].
 
-Worst-casing (sutra/402): `score_file(findings, facts)` also deducts for any
-`Unwired` file-scored biomarker (no producer) at full weight within the category
-cap, recording it in `FileHealthScore.missing` and flipping `partial()`. In the
-current wiring nothing is Unwired, so this is dormant/defensive; the live effect
-is that `Unsupported` dimensions (coverage_gradient always; git biomarkers when
-no history) are excluded and surfaced rather than scored as zero debt.
+Worst-casing (sutra/402 + sutra/408): `score_file(findings, facts, covered)`
+deducts at full weight (within the category cap) for any file-scored biomarker
+that is `Unwired` (no producer, or git NoHistory), OR `Scored` when the file's
+analysis is not current (`!covered` — see the coverage section above), recording
+each in `FileHealthScore.missing` and flipping `partial()`. This is live, not
+dormant: any incrementally-reparsed or newly-added file is worst-cased until a
+full parse recomputes its findings, and a git NoHistory workspace worst-cases
+its git biomarkers. `Unsupported` dimensions (coverage_gradient always; git
+biomarkers only when NotARepo) remain excluded and surfaced rather than scored
+as zero debt.
 
 Calibrated biomarker weights (from repowise T0-protocol corpus):
 co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,

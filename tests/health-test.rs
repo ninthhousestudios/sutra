@@ -2271,3 +2271,171 @@ fn import_cycle_roundtrips_through_db() {
         assert_eq!(row.severity, "informational");
     }
 }
+
+// --- sutra/408: per-file coverage worst-casing ---
+
+/// The health score `score_workspace` assigns to one file.
+fn workspace_file_score(db: &Db, file_id: i64) -> f64 {
+    sutra::health::scoring::score_workspace(db)
+        .unwrap()
+        .file_scores
+        .iter()
+        .find(|s| s.file_id == file_id)
+        .unwrap_or_else(|| panic!("file {file_id} missing from workspace scores"))
+        .score
+}
+
+#[test]
+fn score_workspace_scores_covered_finding_free_file_as_clean() {
+    // A file the producers analyzed and found nothing is genuinely clean: 10.0,
+    // not partial. replace_health_findings stamps coverage at the current hash.
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/clean.rs");
+    db.replace_health_findings(&[]).unwrap();
+
+    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
+    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
+    assert_eq!(sf.score, 10.0);
+    assert!(
+        sf.missing.is_empty(),
+        "an analyzed clean file is not partial"
+    );
+}
+
+#[test]
+fn score_workspace_worst_cases_file_without_coverage() {
+    // A finding-free file that was never analyzed (no coverage stamp) must be
+    // worst-cased, not floored at a clean 10.0 — the central sutra/408 gap.
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/unknown.rs");
+    // No replace_health_findings → no coverage stamp for this file.
+
+    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
+    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
+    assert!(
+        sf.score < 10.0,
+        "uncovered file must not score a clean 10.0"
+    );
+    assert!(!sf.missing.is_empty(), "uncovered file is partial");
+}
+
+#[test]
+fn score_workspace_worst_cases_file_after_incremental_change() {
+    // Findings computed at one revision; the file is then reparsed with new
+    // content but findings are NOT recomputed (the query-path incremental
+    // reparse never runs compute_all_health_findings). The stale analysis must
+    // not be trusted — the drifted file is worst-cased.
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/changed.rs"); // content_hash "abc123"
+    db.replace_health_findings(&[]).unwrap(); // covered at "abc123"
+    assert_eq!(workspace_file_score(&db, fid), 10.0);
+
+    // Simulate incremental reparse: content changed, findings untouched.
+    db.upsert_file("src/changed.rs", "rust", "def456", 120, true)
+        .unwrap();
+
+    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
+    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
+    assert!(
+        sf.score < 10.0,
+        "changed-but-not-reanalyzed file must be worst-cased"
+    );
+    assert!(!sf.missing.is_empty());
+}
+
+#[test]
+fn git_availability_round_trips_through_detect() {
+    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
+    let (_dir, db) = setup_db();
+
+    for state in [
+        GitAvailability::Available,
+        GitAvailability::NoHistory,
+        GitAvailability::NotARepo,
+    ] {
+        db.set_git_availability(state.as_str()).unwrap();
+        assert_eq!(WorkspaceFacts::detect(&db).unwrap().git, state);
+    }
+}
+
+#[test]
+fn detect_falls_back_to_commit_count_when_git_availability_unset() {
+    // Indexes predating sutra/408 have no persisted git_availability: an empty
+    // commit table reads as NotARepo (the old "no git" → excluded behavior).
+    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
+    let (_dir, db) = setup_db();
+    assert_eq!(
+        WorkspaceFacts::detect(&db).unwrap().git,
+        GitAvailability::NotARepo
+    );
+}
+
+#[test]
+fn no_history_worst_cases_rather_than_improving_by_excluding_git() {
+    // Regression for the git-conflation harm: a real repo whose history was
+    // unavailable this run (NoHistory) must worst-case the git biomarkers, so
+    // health cannot improve by "losing" evidence. NoHistory therefore scores
+    // strictly below NotARepo, which legitimately excludes the git dimension.
+    use sutra::health::scoring::GitAvailability;
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/x.rs");
+    db.replace_health_findings(&[]).unwrap(); // covered, finding-free
+
+    db.set_git_availability(GitAvailability::NotARepo.as_str())
+        .unwrap();
+    let excluded = workspace_file_score(&db, fid);
+
+    db.set_git_availability(GitAvailability::NoHistory.as_str())
+        .unwrap();
+    let worst_cased = workspace_file_score(&db, fid);
+
+    assert_eq!(excluded, 10.0, "not a git repo → git excluded → clean");
+    assert!(
+        worst_cased < excluded,
+        "NoHistory must worst-case ({worst_cased}), not improve to clean ({excluded})"
+    );
+}
+
+#[test]
+fn snapshot_file_completeness_round_trips() {
+    // sutra/408: `partial` + `missing_biomarkers` survive the snapshot so trend
+    // can tell partial analysis from real degradation.
+    let (_dir, db) = setup_db();
+    let snap_id = insert_snapshot(&db, 5.0);
+    let files = vec![
+        SnapshotFileRow {
+            file_id: 1,
+            file_path: "src/partial.rs".into(),
+            score: 5.0,
+            category_scores: "{}".into(),
+            partial: true,
+            missing_biomarkers: vec!["nested_complexity".into(), "import_cycle".into()],
+        },
+        SnapshotFileRow {
+            file_id: 2,
+            file_path: "src/whole.rs".into(),
+            score: 9.0,
+            category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
+        },
+    ];
+    db.insert_snapshot_files(snap_id, &files).unwrap();
+
+    let loaded = db.snapshot_file_scores(snap_id).unwrap();
+    let partial = loaded
+        .iter()
+        .find(|f| f.file_path == "src/partial.rs")
+        .unwrap();
+    assert!(partial.partial);
+    assert_eq!(
+        partial.missing_biomarkers,
+        vec!["nested_complexity", "import_cycle"]
+    );
+    let whole = loaded
+        .iter()
+        .find(|f| f.file_path == "src/whole.rs")
+        .unwrap();
+    assert!(!whole.partial);
+    assert!(whole.missing_biomarkers.is_empty());
+}
