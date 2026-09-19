@@ -237,16 +237,43 @@ pub struct HealthDelta {
     pub improved: Vec<HealthDeltaEntry>,
 }
 
+/// The file-scored biomarkers that are *unconditionally* `Scored` — worst-cased
+/// only when a file's analysis is stale, never for a missing data source. Their
+/// presence in a snapshot's `missing_biomarkers` is the precise signal that the
+/// file was uncovered at snapshot time (git-dependent kinds can also appear
+/// there for `NoHistory`, which is not a coverage problem, so those are
+/// excluded). The delta path uses this to mirror the snapshot's coverage
+/// decision (sutra/409).
+fn is_file_scored_biomarker(name: &str) -> bool {
+    matches!(
+        BiomarkerKind::parse(name),
+        Some(BiomarkerKind::NestedComplexity)
+            | Some(BiomarkerKind::ImportCycle)
+            | Some(BiomarkerKind::DeadCodeRatio)
+    )
+}
+
 pub fn compute_health_delta(
     db: &Db,
     changed_paths: &[String],
     ondemand_findings: &[HealthFinding],
 ) -> Result<HealthDelta> {
+    // The comparison snapshot is always written from exactly the findings still
+    // stored (every parse snapshots after replace_health_findings; NoChanges
+    // copies scores forward — see pipeline::record_snapshot). So for a file with
+    // no on-demand findings, scoring the stored set the same way the snapshot
+    // scored it reproduces prev_score exactly, and the delta isolates on-demand
+    // debt. To keep that wash honest we mirror the snapshot's per-file coverage
+    // decision below rather than re-deriving it from live coverage: a changed
+    // file is uncovered *now* (its content hash moved) but was covered *then*,
+    // so a live-coverage check would worst-case current against a non-worst-
+    // cased prev and manufacture a spurious degradation (sutra/409).
     let snapshots = db.latest_snapshots(1)?;
-    let snapshot_scores: HashMap<String, f64> = if let Some(snap) = snapshots.first() {
+    let snapshot_files: HashMap<String, (f64, Vec<String>)> = if let Some(snap) = snapshots.first()
+    {
         db.snapshot_file_scores(snap.id)?
             .into_iter()
-            .map(|f| (f.file_path, f.score))
+            .map(|f| (f.file_path, (f.score, f.missing_biomarkers)))
             .collect()
     } else {
         HashMap::new()
@@ -262,7 +289,19 @@ pub fn compute_health_delta(
             _ => continue,
         };
 
-        let prev_score = snapshot_scores.get(path).copied().unwrap_or(10.0);
+        let snapshot_file = snapshot_files.get(path);
+        let prev_score = snapshot_file.map(|(s, _)| *s).unwrap_or(10.0);
+        // Reproduce the snapshot's coverage decision for the structural axis. If
+        // the snapshot worst-cased any file-scored biomarker for this file (it
+        // was skipped/stale at snapshot time, so prev_score is worst-cased low),
+        // current must worst-case it too — otherwise trusting the stale stored
+        // findings floats current up and reports a spurious improvement, the
+        // same failure class sutra/408 fixed for the snapshot path. Files absent
+        // from the snapshot inherit the optimistic prev_score default (10.0), so
+        // covered=true keeps current on the same footing.
+        let covered = snapshot_file
+            .map(|(_, missing)| !missing.iter().any(|m| is_file_scored_biomarker(m)))
+            .unwrap_or(true);
 
         let stored = db.get_health_findings(Some(file_row.id), None)?;
         let ondemand_rows: Vec<HealthFindingRow> = ondemand_findings
@@ -275,12 +314,7 @@ pub fn compute_health_delta(
         let mut all_findings = stored;
         all_findings.extend(ondemand_rows.clone());
 
-        // The review-delta path builds `all_findings` by merging the stored
-        // file-scored findings with freshly recomputed on-demand ones for this
-        // changed file, so it deliberately treats the analysis as current for
-        // the delta (covered=true). Coverage-based worst-casing (sutra/408)
-        // governs the absolute snapshot/file_health scores, not this delta.
-        let health = scoring::score_file(&all_findings, &facts, true);
+        let health = scoring::score_file(&all_findings, &facts, covered);
         let delta = health.score - prev_score;
 
         if delta.abs() < 0.005 {

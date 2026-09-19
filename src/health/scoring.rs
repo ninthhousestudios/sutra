@@ -242,33 +242,43 @@ impl FileHealthScore {
     }
 }
 
-/// Score one file. `covered` is whether this file's findings are valid for its
-/// *current* content (sutra/408): its health_coverage stamp matches its
-/// content_hash. When false — an incrementally reparsed file whose findings
-/// were never recomputed, or a newly added file with none — the present
-/// findings describe stale content and are ignored; every file-scored biomarker
-/// that could run is worst-cased instead, so a not-yet-analyzed file can never
-/// float up to a clean 10.0.
+/// Score one file. `covered` is whether this file's *file-scored* findings are
+/// valid for its current content (sutra/408): its health_coverage stamp matches
+/// its content_hash. When false — an incrementally reparsed file whose findings
+/// were never recomputed, or a newly added file with none — those stale
+/// file-scored findings are ignored and every file-scored biomarker that could
+/// run is worst-cased instead, so a not-yet-analyzed file can never float up to
+/// a clean 10.0.
+///
+/// Coverage is per-axis (sutra/409): `covered` governs only the file-scored
+/// biomarkers (`file_scoring_support` is `Some`). Findings whose biomarker is
+/// review-time on-demand or component-scoped (`file_scoring_support` is `None`)
+/// are always trusted, because the caller recomputes them fresh every run — so
+/// the review-delta path can worst-case a stale structural axis while still
+/// crediting fresh on-demand debt in the same (cap-sharing) score.
 pub fn score_file(
     findings: &[HealthFindingRow],
     facts: &WorkspaceFacts,
     covered: bool,
 ) -> FileHealthScore {
-    // Present findings: real debt the producers actually measured. Only trusted
-    // when the analysis is current for this file's content; otherwise the file
-    // is worst-cased wholesale below.
+    // Present findings: real debt the producers actually measured. A file-scored
+    // finding is trusted only when the analysis is current for this file's
+    // content (`covered`); a non-file-scored (on-demand / component) finding is
+    // always trusted since it is recomputed fresh. Untrusted file-scored kinds
+    // are dropped here and worst-cased in the missing loop below.
     let mut present: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
-    if covered {
-        for (i, f) in findings.iter().enumerate() {
-            let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
-                continue;
-            };
-            let Some(severity) = HealthSeverity::parse(&f.severity) else {
-                continue;
-            };
-            let raw = severity.weight() * kind.default_weight();
-            present.entry(kind.category()).or_default().push((i, raw));
+    for (i, f) in findings.iter().enumerate() {
+        let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
+            continue;
+        };
+        if !covered && kind.file_scoring_support(facts).is_some() {
+            continue;
         }
+        let Some(severity) = HealthSeverity::parse(&f.severity) else {
+            continue;
+        };
+        let raw = severity.weight() * kind.default_weight();
+        present.entry(kind.category()).or_default().push((i, raw));
     }
 
     // Missing analysis is never zero debt. A file-scored biomarker is worst-

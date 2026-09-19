@@ -1949,6 +1949,104 @@ fn test_health_delta_with_ondemand_findings() {
     assert_eq!(entry.driving_findings[0].biomarker_kind, "function_hotspot");
 }
 
+// sutra/409: a file worst-cased in the comparison snapshot (skipped/stale, so
+// prev_score is low and its file-scored biomarkers are in missing_biomarkers)
+// must NOT float up to a spurious improvement just because its stale stored
+// findings happen to be light. The delta mirrors the snapshot's coverage
+// decision, so `current` is worst-cased the same way `prev` was and the delta is
+// a wash. Without the fix (covered=true), `current` would be a clean 10.0 and
+// this file would report a large improvement it never earned.
+#[test]
+fn test_health_delta_no_spurious_improvement_for_partial_snapshot_file() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/skipped.rs");
+    seed_fn(&db, fid, "skipped::run", "run", Some(2));
+
+    // The worst-case floor the delta path will compute for an uncovered file,
+    // under the same facts it uses. Deriving it (rather than hardcoding) keeps
+    // the wash exact regardless of biomarker weight calibration.
+    let facts = sutra::health::scoring::WorkspaceFacts::detect(&db).unwrap();
+    let floor = score_file(&[], &facts, false).score;
+
+    // Snapshot worst-cased this file: low score, structural biomarker missing.
+    let snap_id = insert_snapshot(&db, floor);
+    db.insert_snapshot_files(
+        snap_id,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/skipped.rs".into(),
+            score: floor,
+            category_scores: "{}".into(),
+            partial: true,
+            missing_biomarkers: vec!["nested_complexity".into()],
+        }],
+    )
+    .unwrap();
+
+    // No stored findings (stale/absent) and no on-demand debt.
+    let delta =
+        sutra::health::ondemand::compute_health_delta(&db, &["src/skipped.rs".to_string()], &[])
+            .unwrap();
+
+    assert!(
+        delta.improved.is_empty(),
+        "worst-cased snapshot file must not report a spurious improvement"
+    );
+    assert!(delta.degraded.is_empty(), "delta should be a wash");
+}
+
+// sutra/409: coverage is per-axis. Even when a file was partial in the snapshot
+// (structural axis worst-cased), a freshly recomputed on-demand finding is still
+// credited, so genuine new debt on the changed file still registers as a
+// degradation attributed to the on-demand finding.
+#[test]
+fn test_health_delta_credits_ondemand_debt_on_partial_snapshot_file() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/skipped.rs");
+    seed_fn(&db, fid, "skipped::handle", "handle", Some(2));
+
+    let facts = sutra::health::scoring::WorkspaceFacts::detect(&db).unwrap();
+    let floor = score_file(&[], &facts, false).score;
+
+    let snap_id = insert_snapshot(&db, floor);
+    db.insert_snapshot_files(
+        snap_id,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/skipped.rs".into(),
+            score: floor,
+            category_scores: "{}".into(),
+            partial: true,
+            missing_biomarkers: vec!["nested_complexity".into()],
+        }],
+    )
+    .unwrap();
+
+    let ondemand = vec![HealthFinding {
+        file_id: fid,
+        symbol_id: Some(1),
+        biomarker_kind: BiomarkerKind::FunctionHotspot,
+        severity: HealthSeverity::Advisory,
+        confidence: 1.0,
+        provenance: "on-demand:blame".into(),
+        metric_value: 12.0,
+        threshold: 5.0,
+        detail: "skipped::handle: 12 distinct commits".into(),
+    }];
+
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/skipped.rs".to_string()],
+        &ondemand,
+    )
+    .unwrap();
+
+    assert_eq!(delta.degraded.len(), 1);
+    let entry = &delta.degraded[0];
+    assert!(entry.delta < 0.0);
+    assert_eq!(entry.driving_findings[0].biomarker_kind, "function_hotspot");
+}
+
 // ---------------------------------------------------------------------------
 // Component instability (Martin's Ce/(Ca+Ce))
 // ---------------------------------------------------------------------------

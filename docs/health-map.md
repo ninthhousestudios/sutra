@@ -220,6 +220,15 @@ makes the contract fire on the live query path: `parse_incremental` never
 recomputes health findings, so without coverage a drifted file would float back
 to a clean 10.0.
 
+**Per-axis coverage (sutra/409).** `covered` in `score_file` governs only the
+*file-scored* biomarkers (`file_scoring_support` is `Some`). A present finding
+whose biomarker is review-time on-demand or component-scoped (`None`) is trusted
+regardless of `covered`, because the caller recomputes it fresh every run. This
+lets one `score_file` call worst-case a stale structural axis while still
+crediting fresh on-demand debt in the same (cap-sharing) score — required by the
+delta path below. `score_workspace`/`file_health` pass uniform per-file coverage,
+so their behavior is unchanged.
+
 **Git availability axis (sutra/408).** `WorkspaceFacts.git: GitAvailability`
 (`Available` | `NoHistory` | `NotARepo`) replaces the old `has_git` bool and is
 persisted on `index_meta.git_availability` at parse time (where the git outcome
@@ -374,6 +383,18 @@ a single review invocation.
   current per-file scores (stored findings + on-demand) vs latest snapshot
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
+- Coverage for the current score **mirrors the snapshot's** per-file decision,
+  not live coverage (sutra/409): `covered = false` iff the snapshot's
+  `missing_biomarkers` names an unconditionally-`Scored` file biomarker
+  (nested_complexity / import_cycle / dead_code_ratio), i.e. the file was
+  worst-cased at snapshot time. A changed file is always uncovered *now* (its
+  content hash moved) but was covered *then*; keying on live coverage would
+  worst-case `current` against a non-worst-cased `prev` and manufacture a
+  spurious degradation. Because every parse snapshots from exactly the findings
+  still stored (`record_snapshot` runs after `replace_health_findings`), a file
+  with no on-demand debt scores identically to `prev` → the delta isolates
+  on-demand attribution, and a worst-cased-in-snapshot file can no longer float
+  up to a spurious improvement.
 - Review output ordering: constraint_violations → deviations →
   health_findings → hrr_shape_changes → health_delta
 
