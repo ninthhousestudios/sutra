@@ -4,17 +4,20 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-07-08 (sutra/232: remove drift, template, waiver subsystems)
+Last updated: 2026-09-19 (sutra/402: "missing analysis is never zero debt"
+contract — wired DeadCodeRatio/BlastRadiusChurn/HrrShapeChange producers,
+ComponentInstability as a deduction, CoverageGradient marked unsupported)
 
 ## Module layout
 
 ```
 src/health/
   mod.rs            — re-exports from findings, git_metrics, and scoring
-  findings.rs       — HealthFinding, BiomarkerKind (12 variants + from_str),
+  findings.rs       — HealthFinding, BiomarkerKind (13 variants + ALL + from_str),
                       HealthSeverity (Advisory, Informational — never Blocking,
                       + from_str), compute_nested_complexity,
-                      compute_all_health_findings(db, workspace_root)
+                      compute_dead_code_ratio, compute_all_health_findings(db,
+                      workspace_root)
   instability.rs    — Component instability (Martin's Ce/(Ca+Ce)).
                       ComponentInstability{ce, ca, instability},
                       compute_component_instability(db). Uses import_edges
@@ -30,14 +33,22 @@ src/health/
                       blame (too expensive for parse-time pipeline).
                       BlameCache (in-memory per-review dedup),
                       compute_ondemand_findings (function_hotspot +
-                      code_age_volatility), compute_health_delta (per-file
-                      score comparison vs latest snapshot with attribution).
+                      code_age_volatility), compute_shape_change_findings
+                      (SubtleStructural ShapeChange → HrrShapeChange finding),
+                      compute_health_delta (per-file score comparison vs latest
+                      snapshot with attribution).
                       FunctionBlameStats, HealthDelta, HealthDeltaEntry.
   scoring.rs        — HealthCategory (5 variants), category caps, biomarker
                       weights (repowise calibrated), severity weights,
-                      score_file (category capping + proportional scaling),
-                      score_component (NLOC-weighted average),
-                      FileHealthScore, FindingDeduction
+                      WorkspaceFacts{has_git} + detect, BiomarkerSupport
+                      (Scored/Unsupported/Unwired),
+                      BiomarkerKind::file_scoring_support (single source of
+                      truth), score_file(findings, facts) — category capping +
+                      proportional scaling + worst-cases Unwired biomarkers
+                      (MissingDeduction, FileHealthScore.missing/partial()),
+                      instability_penalty, score_component (NLOC-weighted),
+                      score_workspace(db) (instability always computed +
+                      applied), FileHealthScore, FindingDeduction
 
 src/parser/
   complexity.rs     — cyclomatic, cognitive, max_nesting_depth (all take
@@ -84,11 +95,14 @@ src/similarity/
   diff.rs           — Semantic diff: four-quadrant classification of
                       text-Δ vs HRR-Δ per function. detect_shape_changes
                       re-parses old source from git, encodes strip vectors,
-                      compares against current. ShapeChangeConfig thresholds
-                      (text_delta: 0.15, hrr_delta: 0.40). Produces
-                      HealthFinding with BiomarkerKind::HrrShapeChange for
-                      SubtleStructural quadrant. Integrated into sutra_review
-                      as "hrr_shape_changes" output section.
+                      compares against current. Returns Vec<ShapeChange>
+                      (file_id/symbol_id resolved). ShapeChangeConfig
+                      thresholds (text_delta: 0.15, hrr_delta: 0.15).
+                      Integrated into sutra_review as "hrr_shape_changes"
+                      output. The SubtleStructural quadrant is converted to a
+                      HrrShapeChange HealthFinding by
+                      ondemand::compute_shape_change_findings (sutra/402) so it
+                      feeds the health delta — diff.rs itself emits no findings.
   duplicates.rs     — find_pattern_families: union-find clustering over
                       strip vectors. Used by sutra_duplicates tool.
   search.rs         — find_similar: cosine-similarity ranked search.
@@ -143,19 +157,38 @@ Core finding struct all biomarkers produce. Fields: `file_id: i64`,
 `metric_value: f64`, `threshold: f64`, `detail: String`.
 
 ### BiomarkerKind (health/findings.rs)
-Enum with 12 variants. Parse-time: `NestedComplexity`, `CoChangeScatter`,
-`ChangeEntropy`, `OwnershipRisk`, `HiddenCoupling`, `ImportCycle`.
-On-demand (review-time via git blame): `FunctionHotspot`,
-`CodeAgeVolatility`. Shape-diff (review-time): `HrrShapeChange`.
-Component instability: `ComponentInstability` (computed via
-`health/instability.rs`, surfaced as component-level metric in
-sutra_file_health, not as a per-file HealthFinding).
-Stubs for future: `BlastRadiusChurn`, `DeadCodeRatio`, `CoverageGradient`.
+Enum with 13 variants (`ALL` const enumerates them for the scoring contract).
+Parse-time file-level: `NestedComplexity`, `CoChangeScatter`, `ChangeEntropy`,
+`OwnershipRisk`, `HiddenCoupling`, `ImportCycle`, `DeadCodeRatio`,
+`BlastRadiusChurn`. On-demand (review-time): `FunctionHotspot`,
+`CodeAgeVolatility` (git blame), `HrrShapeChange` (shape-diff, converted from
+ShapeChange). Component-scoped: `ComponentInstability` (computed via
+`health/instability.rs`, applied as a component-score deduction via
+`instability_penalty`, not a per-file HealthFinding). Unsupported:
+`CoverageGradient` (no coverage ingestion exists anywhere in the repo).
 
 `as_str()` returns snake_case DB representation. `from_str()` roundtrips.
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
 Informational. `category()` returns HealthCategory. `default_weight()`
 returns repowise-calibrated weight (or moderate/uncalibrated default).
+`file_scoring_support(facts)` (in scoring.rs) is the single source of truth
+for the "missing analysis is never zero debt" contract — see below.
+
+### The zero-debt contract (scoring.rs, sutra/402)
+Findings are positive-only (emitted only on a problem), so absence used to be
+indistinguishable between "clean", "not applicable", and "check never ran" —
+all scored as zero debt. `file_scoring_support(&WorkspaceFacts)` classifies
+each biomarker for file-level parse-time scoring:
+- `Scored` — producer wired + data source present.
+- `Unsupported(reason)` — data source absent at workspace scope (no git; no
+  coverage). Excluded from scoring, surfaced as `unsupported_biomarkers`.
+- `Unwired` — in the weight table but no producer. `score_file` worst-cases it
+  at full weight (within category caps) and sets `FileHealthScore.missing` /
+  `partial()`; `file_health` surfaces per-file `partial` + `missing_biomarkers`.
+- `None` — scored elsewhere (review-time on-demand or component-scoped).
+The match is exhaustive, so a new variant forces a decision; a guard test
+(`contract_no_file_scored_biomarker_is_unwired`) fails if any file-scored
+biomarker lacks a producer.
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the
@@ -214,6 +247,8 @@ parse_workspace / parse_changed_files
               └── compute_ownership_risk: file_author_commits + owners.toml aliases
               └── compute_hidden_coupling: cochange_pairs - static_file_edges
               └── compute_import_cycle_membership: import_edges → Tarjan SCC
+              └── compute_dead_code_ratio: dead_code_ratio_by_file query
+              └── compute_blast_radius_churn: files.blast_radius + per-file churn
         └── replace_health_findings(findings) — DELETE + INSERT all
   └── record_snapshot
         └── compute_snapshot_health: scores all files via scoring::score_file
@@ -315,6 +350,20 @@ a single review invocation.
 | 3 | Informational | dead_code_ratio, code_age_volatility, coverage_gradient | repowise weak |
 | Sutra | Informational | component_instability, hrr_shape_change, import_cycle | uncalibrated |
 
+### Producer status (verified sutra/402)
+
+| Biomarker | Produced by | Notes |
+|---|---|---|
+| nested_complexity | findings.rs (parse) | |
+| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | Unsupported without git history |
+| import_cycle | findings.rs (parse) | |
+| dead_code_ratio | findings.rs compute_dead_code_ratio (parse) | provisional threshold 0.15 (uncalibrated) |
+| blast_radius_churn | git_metrics.rs compute_blast_radius_churn (parse) | provisional: blast_radius ≥ 10 AND churn ≥ 5 (uncalibrated) |
+| function_hotspot / code_age_volatility | ondemand.rs (review, blame) | |
+| hrr_shape_change | ondemand.rs compute_shape_change_findings (review) | from SubtleStructural ShapeChange |
+| component_instability | scoring.rs instability_penalty (component) | not a per-file finding |
+| coverage_gradient | none | Unsupported — no coverage ingestion in repo |
+
 ### Health scoring (sutra/85, implemented)
 
 `health/scoring.rs`: base 10.0, deductions per finding
@@ -330,8 +379,17 @@ a single review invocation.
 
 Severity weights: Advisory = 1.0, Informational = 0.5.
 Proportional scaling within category when sum exceeds cap.
-Component scores: NLOC-weighted average of member file scores.
-Final clamp [1.0, 10.0].
+Component scores: NLOC-weighted average of member file scores, minus
+`instability_penalty` (Informational × ComponentInstability weight × I, capped
+at the coupling cap). Instability is always computed so snapshot and file_health
+component scores agree. Final clamp [1.0, 10.0].
+
+Worst-casing (sutra/402): `score_file(findings, facts)` also deducts for any
+`Unwired` file-scored biomarker (no producer) at full weight within the category
+cap, recording it in `FileHealthScore.missing` and flipping `partial()`. In the
+current wiring nothing is Unwired, so this is dormant/defensive; the live effect
+is that `Unsupported` dimensions (coverage_gradient always; git biomarkers when
+no history) are excluded and surfaced rather than scored as zero debt.
 
 Calibrated biomarker weights (from repowise T0-protocol corpus):
 co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,
