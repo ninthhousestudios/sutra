@@ -5,10 +5,10 @@ use sutra::db::{
 use sutra::git::parse_blame_porcelain;
 use sutra::health::findings::HealthFinding;
 use sutra::health::{
-    BiomarkerKind, HealthSeverity, compute_all_health_findings, compute_change_entropy,
-    compute_co_change_scatter, compute_hidden_coupling, compute_nested_complexity,
-    compute_ownership_risk, instability::compute_component_instability, score_component,
-    score_file,
+    BiomarkerKind, HealthSeverity, compute_all_health_findings, compute_blast_radius_churn,
+    compute_change_entropy, compute_co_change_scatter, compute_hidden_coupling,
+    compute_nested_complexity, compute_ownership_risk, instability::compute_component_instability,
+    score_component, score_file,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -1133,6 +1133,131 @@ fn hidden_coupling_severity_escalation() {
     let high_finding = findings.iter().find(|f| f.file_id == f_high).unwrap();
     assert_eq!(low_finding.severity, HealthSeverity::Informational);
     assert_eq!(high_finding.severity, HealthSeverity::Advisory);
+}
+
+// --- dead_code_ratio biomarker ---
+
+fn seed_priv_fn(db: &Db, file_id: i64, qn: &str, sn: &str) -> i64 {
+    db.insert_symbol(&InsertSymbolParams {
+        file_id,
+        qualified_name: qn,
+        short_name: sn,
+        kind: "function",
+        signature: None,
+        signature_hash: None,
+        structural_hash: None,
+        visibility: None,
+        start_line: 1,
+        start_col: 0,
+        end_line: 10,
+        end_col: 0,
+        parent_symbol_id: None,
+        docstring: None,
+        cyclomatic: Some(1),
+        cognitive: Some(0),
+        max_nesting: None,
+        flags: 0,
+        language_attrs: None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn dead_code_ratio_fires_above_threshold() {
+    let (_dir, db) = setup_db();
+    let file = seed_file(&db, "src/dead.rs");
+    // 4 symbols, 3 unreferenced → ratio 0.75, well above 0.15.
+    let used = seed_priv_fn(&db, file, "used", "used");
+    seed_priv_fn(&db, file, "dead_a", "dead_a");
+    seed_priv_fn(&db, file, "dead_b", "dead_b");
+    seed_priv_fn(&db, file, "dead_c", "dead_c");
+    // A ref targeting `used` keeps it alive → dead 3/4 = 0.75.
+    db.insert_ref(file, Some(used), None, 5, 0, "call").unwrap();
+
+    let findings = sutra::health::findings::compute_dead_code_ratio(&db).unwrap();
+    let f = findings.iter().find(|f| f.file_id == file).unwrap();
+    assert_eq!(f.biomarker_kind, BiomarkerKind::DeadCodeRatio);
+    assert_eq!(f.symbol_id, None);
+    assert!(
+        f.metric_value >= 0.15,
+        "ratio {} below threshold",
+        f.metric_value
+    );
+    assert!(f.detail.contains("unreferenced"));
+}
+
+#[test]
+fn dead_code_ratio_silent_when_all_referenced() {
+    let (_dir, db) = setup_db();
+    let file = seed_file(&db, "src/live.rs");
+    let a = seed_priv_fn(&db, file, "a", "a");
+    let b = seed_priv_fn(&db, file, "b", "b");
+    // a → b, b → a: both referenced.
+    db.insert_ref(file, Some(b), None, 2, 0, "call").unwrap();
+    db.insert_ref(file, Some(a), None, 3, 0, "call").unwrap();
+
+    let findings = sutra::health::findings::compute_dead_code_ratio(&db).unwrap();
+    assert!(findings.iter().all(|f| f.file_id != file));
+}
+
+// --- blast_radius_churn biomarker ---
+
+#[test]
+fn blast_radius_churn_fires_when_hub_churns() {
+    let (_dir, db) = setup_db();
+    let hub = seed_file(&db, "src/hub.rs");
+    let quiet = seed_file(&db, "src/quiet.rs");
+    // hub: wide blast radius, many commits; quiet: wide blast radius, no churn.
+    db.update_rollups(hub, 3, 20).unwrap();
+    db.update_rollups(quiet, 3, 20).unwrap();
+
+    let now = 1_700_000_000i64;
+    let mut commits = Vec::new();
+    let mut pairs = Vec::new();
+    for i in 0..6 {
+        let hash = format!("bc_{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: now + i * 86400,
+            author: "dev@x".into(),
+        });
+        pairs.push((hash, hub));
+    }
+    seed_commits(&db, &commits, &pairs);
+
+    let findings = compute_blast_radius_churn(&db).unwrap();
+    let hub_f = findings.iter().find(|f| f.file_id == hub).unwrap();
+    assert_eq!(hub_f.biomarker_kind, BiomarkerKind::BlastRadiusChurn);
+    assert_eq!(hub_f.severity, HealthSeverity::Advisory);
+    assert!(hub_f.metric_value >= 10.0);
+    assert!(
+        findings.iter().all(|f| f.file_id != quiet),
+        "quiet file has no churn, should not fire"
+    );
+}
+
+#[test]
+fn blast_radius_churn_silent_when_narrow() {
+    let (_dir, db) = setup_db();
+    let leaf = seed_file(&db, "src/leaf.rs");
+    // Churns a lot but nothing depends on it.
+    db.update_rollups(leaf, 0, 1).unwrap();
+    let now = 1_700_000_000i64;
+    let mut commits = Vec::new();
+    let mut pairs = Vec::new();
+    for i in 0..8 {
+        let hash = format!("lf_{i}");
+        commits.push(CommitRow {
+            hash: hash.clone(),
+            committed_at: now + i * 86400,
+            author: "dev@x".into(),
+        });
+        pairs.push((hash, leaf));
+    }
+    seed_commits(&db, &commits, &pairs);
+
+    let findings = compute_blast_radius_churn(&db).unwrap();
+    assert!(findings.iter().all(|f| f.file_id != leaf));
 }
 
 // --- Snapshot storage ---

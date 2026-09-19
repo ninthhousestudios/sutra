@@ -19,6 +19,12 @@ const OWNERSHIP_MINOR_THRESHOLD: f64 = 0.05;
 const OWNERSHIP_MINOR_COUNT: usize = 3;
 const HIDDEN_COUPLING_MIN: f64 = 0.50;
 const HIDDEN_COUPLING_HIGH: f64 = 0.65;
+// blast_radius_churn: a file that many things transitively depend on AND that
+// changes often is a structural risk (every edit ripples widely). PROVISIONAL
+// absolute thresholds — not repowise-calibrated (corpus unavailable in this
+// repo). Weight 1.00 (moderate), Advisory (structural category).
+const BLAST_RADIUS_THRESHOLD: i64 = 10;
+const BLAST_CHURN_THRESHOLD: i64 = 5;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct OwnersConfig {
@@ -217,5 +223,41 @@ pub fn compute_hidden_coupling(db: &Db) -> Result<Vec<HealthFinding>> {
             });
         }
     }
+    Ok(findings)
+}
+
+pub fn compute_blast_radius_churn(db: &Db) -> Result<Vec<HealthFinding>> {
+    // Churn = distinct commits touching the file, summed across authors.
+    let mut churn: HashMap<i64, i64> = HashMap::new();
+    for (file_id, _author, count) in db.file_author_commits()? {
+        *churn.entry(file_id).or_default() += count;
+    }
+    if churn.is_empty() {
+        return Ok(vec![]);
+    }
+    let findings = db
+        .all_files()?
+        .into_iter()
+        .filter_map(|f| {
+            let commits = churn.get(&f.id).copied().unwrap_or(0);
+            if f.blast_radius < BLAST_RADIUS_THRESHOLD || commits < BLAST_CHURN_THRESHOLD {
+                return None;
+            }
+            Some(HealthFinding {
+                file_id: f.id,
+                symbol_id: None,
+                biomarker_kind: BiomarkerKind::BlastRadiusChurn,
+                severity: BiomarkerKind::BlastRadiusChurn.default_severity(),
+                confidence: 1.0,
+                provenance: "computed".into(),
+                metric_value: f.blast_radius as f64,
+                threshold: BLAST_RADIUS_THRESHOLD as f64,
+                detail: format!(
+                    "{} transitive dependents and {commits} commits (high-churn, widely depended on)",
+                    f.blast_radius
+                ),
+            })
+        })
+        .collect();
     Ok(findings)
 }

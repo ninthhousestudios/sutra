@@ -159,6 +159,44 @@ pub fn compute_all_health_findings(db: &Db, workspace_root: &Path) -> Result<Vec
     )?);
     findings.extend(super::git_metrics::compute_hidden_coupling(db)?);
     findings.extend(compute_import_cycle_membership(db)?);
+    findings.extend(compute_dead_code_ratio(db)?);
+    findings.extend(super::git_metrics::compute_blast_radius_churn(db)?);
+    Ok(findings)
+}
+
+/// Fraction of a file's local (non-pub, non-test) symbols that nothing
+/// references. PROVISIONAL threshold (0.15): not repowise-calibrated — the
+/// corpus is not available in this repo. Weight 0.80 (moderate), Informational.
+const DEAD_CODE_RATIO_THRESHOLD: f64 = 0.15;
+
+pub fn compute_dead_code_ratio(db: &Db) -> Result<Vec<HealthFinding>> {
+    let rows = db.dead_code_ratio_by_file()?;
+    let findings = rows
+        .into_iter()
+        .filter_map(|(file_id, dead, total)| {
+            if total == 0 {
+                return None;
+            }
+            let ratio = dead as f64 / total as f64;
+            if ratio < DEAD_CODE_RATIO_THRESHOLD {
+                return None;
+            }
+            Some(HealthFinding {
+                file_id,
+                symbol_id: None,
+                biomarker_kind: BiomarkerKind::DeadCodeRatio,
+                severity: BiomarkerKind::DeadCodeRatio.default_severity(),
+                confidence: 1.0,
+                provenance: "computed".into(),
+                metric_value: ratio,
+                threshold: DEAD_CODE_RATIO_THRESHOLD,
+                detail: format!(
+                    "{dead} of {total} local symbols are unreferenced ({:.0}%)",
+                    ratio * 100.0
+                ),
+            })
+        })
+        .collect();
     Ok(findings)
 }
 
