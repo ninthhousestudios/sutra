@@ -1987,6 +1987,52 @@ fn instability_penalty_is_monotonic_and_bounded() {
     assert_eq!(instability_penalty(5.0), instability_penalty(1.0));
 }
 
+// --- hrr_shape_change finding conversion ---
+
+#[test]
+fn shape_change_findings_only_subtle_structural_with_file_id() {
+    use sutra::similarity::diff::{DiffQuadrant, ShapeChange};
+    let changes = vec![
+        // Qualifies: subtle-structural with a resolved file_id.
+        ShapeChange {
+            file_path: "src/a.rs".into(),
+            symbol_name: "foo".into(),
+            symbol_id: Some(7),
+            file_id: Some(3),
+            text_delta: 0.05,
+            hrr_delta: 0.6,
+            quadrant: DiffQuadrant::SubtleStructural,
+        },
+        // Wrong quadrant.
+        ShapeChange {
+            file_path: "src/b.rs".into(),
+            symbol_name: "bar".into(),
+            symbol_id: Some(8),
+            file_id: Some(4),
+            text_delta: 0.5,
+            hrr_delta: 0.6,
+            quadrant: DiffQuadrant::MajorRewrite,
+        },
+        // Subtle-structural but unresolved file_id → skipped.
+        ShapeChange {
+            file_path: "src/c.rs".into(),
+            symbol_name: "baz".into(),
+            symbol_id: None,
+            file_id: None,
+            text_delta: 0.05,
+            hrr_delta: 0.6,
+            quadrant: DiffQuadrant::SubtleStructural,
+        },
+    ];
+    let findings = sutra::health::ondemand::compute_shape_change_findings(&changes, 0.15);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].file_id, 3);
+    assert_eq!(findings[0].symbol_id, Some(7));
+    assert_eq!(findings[0].biomarker_kind, BiomarkerKind::HrrShapeChange);
+    assert_eq!(findings[0].provenance, "on-demand:hrr");
+    assert_eq!(findings[0].metric_value, 0.6);
+}
+
 // --- ImportCycle biomarker ---
 
 #[test]

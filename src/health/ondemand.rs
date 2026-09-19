@@ -188,6 +188,40 @@ fn is_function_kind(kind: &str) -> bool {
     )
 }
 
+/// Convert subtle-structural shape changes into HealthFindings so they feed the
+/// health delta and scoring, not just the review's display list. Only the
+/// SubtleStructural quadrant is debt (text barely changed but the structural
+/// shape moved a lot — an easy-to-miss rewrite); other quadrants stay display-only.
+pub fn compute_shape_change_findings(
+    shape_changes: &[crate::similarity::diff::ShapeChange],
+    hrr_threshold: f64,
+) -> Vec<HealthFinding> {
+    use crate::similarity::diff::DiffQuadrant;
+    shape_changes
+        .iter()
+        .filter(|c| c.quadrant == DiffQuadrant::SubtleStructural)
+        .filter_map(|c| {
+            let file_id = c.file_id?;
+            Some(HealthFinding {
+                file_id,
+                symbol_id: c.symbol_id,
+                biomarker_kind: BiomarkerKind::HrrShapeChange,
+                severity: BiomarkerKind::HrrShapeChange.default_severity(),
+                confidence: 1.0,
+                provenance: "on-demand:hrr".into(),
+                metric_value: c.hrr_delta,
+                threshold: hrr_threshold,
+                detail: format!(
+                    "{}: text changed {:.0}% but structural shape changed {:.0}%",
+                    c.symbol_name,
+                    c.text_delta * 100.0,
+                    c.hrr_delta * 100.0
+                ),
+            })
+        })
+        .collect()
+}
+
 // --- Health delta ---
 
 pub struct HealthDeltaEntry {

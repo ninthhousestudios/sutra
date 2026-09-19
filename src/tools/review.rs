@@ -94,6 +94,7 @@ pub fn handle(
         Err(e) => (ReviewFindings::default(), Some(e.to_string())),
     };
 
+    let shape_config = crate::similarity::diff::ShapeChangeConfig::default();
     let shape_changes = crate::similarity::diff::detect_shape_changes(
         db,
         workspace_root,
@@ -101,11 +102,17 @@ pub fn handle(
         &base_revision,
         head_revision.as_deref(),
         &registry,
-        &crate::similarity::diff::ShapeChangeConfig::default(),
+        &shape_config,
     );
 
-    let ondemand_findings =
+    let mut ondemand_findings =
         crate::health::ondemand::compute_ondemand_findings(db, workspace_root, &changed_paths);
+    // Subtle-structural shape changes are debt too: fold them into the on-demand
+    // findings so they drive the health delta, not just the display list.
+    ondemand_findings.extend(crate::health::ondemand::compute_shape_change_findings(
+        &shape_changes,
+        shape_config.hrr_delta_threshold,
+    ));
 
     let health_delta =
         crate::health::ondemand::compute_health_delta(db, &changed_paths, &ondemand_findings).ok();
