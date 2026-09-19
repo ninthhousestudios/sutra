@@ -264,6 +264,20 @@ pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result
     Ok(results)
 }
 
+/// Whether `workspace_root` is inside a git working tree. Used to tell a true
+/// structural absence (not a repo → git biomarkers excluded) from a transient
+/// `git log` failure in a real repo (→ worst-cased, not excluded) — sutra/408.
+/// A failure to spawn git, or any non-success exit, reads as "not a repo".
+pub fn is_git_repo(workspace_root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Return all (commit_hash, timestamp, author, file_path) tuples from git
 /// history within the given window. One entry per file per commit.
 pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<CommitFile>> {

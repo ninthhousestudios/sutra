@@ -1118,44 +1118,64 @@ fn post_parse_sequence(
         let cochange_window = components::load_config(workspace_root)?
             .cochange_window_days
             .unwrap_or(90);
-        let churn_map = match crate::git::git_commit_files(workspace_root, cochange_window) {
-            Ok(commit_file_data) if !commit_file_data.is_empty() => {
-                let churn = crate::git::churn_from_commit_files(&commit_file_data);
-                let path_to_id: std::collections::HashMap<&str, i64> =
-                    files.iter().map(|f| (&*f.path, f.id)).collect();
-                let mut seen_hashes: std::collections::HashSet<&str> =
-                    std::collections::HashSet::new();
-                let mut commit_rows = Vec::new();
-                for cf in &commit_file_data {
-                    if seen_hashes.insert(cf.hash.as_str()) {
-                        commit_rows.push(crate::db::CommitRow {
-                            hash: cf.hash.clone(),
-                            committed_at: cf.timestamp,
-                            author: cf.author.clone(),
-                        });
+        // Resolve git availability as its own axis, separate from the ingestion
+        // outcome (sutra/408): a transient `git log` failure must not be read as
+        // structural absence, and must not destroy prior commit evidence.
+        use crate::health::scoring::GitAvailability;
+        let (churn_map, git_availability) =
+            match crate::git::git_commit_files(workspace_root, cochange_window) {
+                Ok(commit_file_data) if !commit_file_data.is_empty() => {
+                    let churn = crate::git::churn_from_commit_files(&commit_file_data);
+                    let path_to_id: std::collections::HashMap<&str, i64> =
+                        files.iter().map(|f| (&*f.path, f.id)).collect();
+                    let mut seen_hashes: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
+                    let mut commit_rows = Vec::new();
+                    for cf in &commit_file_data {
+                        if seen_hashes.insert(cf.hash.as_str()) {
+                            commit_rows.push(crate::db::CommitRow {
+                                hash: cf.hash.clone(),
+                                committed_at: cf.timestamp,
+                                author: cf.author.clone(),
+                            });
+                        }
                     }
+                    let db_pairs: Vec<(String, i64)> = commit_file_data
+                        .iter()
+                        .filter_map(|cf| {
+                            path_to_id
+                                .get(cf.path.as_str())
+                                .map(|&id| (cf.hash.clone(), id))
+                        })
+                        .collect();
+                    db.replace_commit_files(&commit_rows, &db_pairs)?;
+                    (churn, GitAvailability::Available)
                 }
-                let db_pairs: Vec<(String, i64)> = commit_file_data
-                    .iter()
-                    .filter_map(|cf| {
-                        path_to_id
-                            .get(cf.path.as_str())
-                            .map(|&id| (cf.hash.clone(), id))
-                    })
-                    .collect();
-                db.replace_commit_files(&commit_rows, &db_pairs)?;
-                churn
-            }
-            Ok(_) => {
-                db.replace_commit_files(&[], &[])?;
-                HashMap::new()
-            }
-            Err(e) => {
-                warn!("git commit-file history unavailable: {e}");
-                db.replace_commit_files(&[], &[])?;
-                HashMap::new()
-            }
-        };
+                Ok(_) => {
+                    // `git log` succeeded but the window holds no commits: a real
+                    // observation about a real repo, not a repo problem. No churn
+                    // data to score from → NoHistory (worst-cased), not excluded.
+                    db.replace_commit_files(&[], &[])?;
+                    (HashMap::new(), GitAvailability::NoHistory)
+                }
+                Err(e) => {
+                    warn!("git commit-file history unavailable: {e}");
+                    // Do NOT clear commit_files: a transient failure must not
+                    // destroy prior evidence, or health could improve by losing
+                    // data. If we still have commit data, score from it
+                    // (Available); otherwise distinguish a real repo (NoHistory)
+                    // from a non-repo (NotARepo) so only the latter is excluded.
+                    let availability = if db.commit_file_count()? > 0 {
+                        GitAvailability::Available
+                    } else if crate::git::is_git_repo(workspace_root) {
+                        GitAvailability::NoHistory
+                    } else {
+                        GitAvailability::NotARepo
+                    };
+                    (HashMap::new(), availability)
+                }
+            };
+        db.set_git_availability(git_availability.as_str())?;
         log_phase_rss("post_parse:cochange_done");
 
         match entity_change_walk(db, workspace_root, 500) {
@@ -1392,7 +1412,7 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
     let mut health_sum = 0.0;
 
     for f in &files {
-        let (score, cat_json) = match file_score_map.get(&f.id) {
+        let (score, cat_json, partial, missing_biomarkers) = match file_score_map.get(&f.id) {
             Some(sf) => {
                 let cat_totals: HashMap<&str, f64> = sf
                     .category_totals
@@ -1400,9 +1420,16 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
                     .map(|(cat, &v)| (cat.as_str(), v))
                     .collect();
                 let json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
-                (sf.score, json)
+                // Carry completeness through the snapshot (sutra/408) so trend
+                // can tell a worst-cased partial score from real degradation.
+                let missing: Vec<String> = sf
+                    .missing
+                    .iter()
+                    .map(|m| m.biomarker.as_str().to_string())
+                    .collect();
+                (sf.score, json, !missing.is_empty(), missing)
             }
-            None => (10.0, "{}".into()),
+            None => (10.0, "{}".into(), false, Vec::new()),
         };
 
         file_scores.push(SnapshotFileRow {
@@ -1410,6 +1437,8 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
             file_path: f.path.to_string(),
             score,
             category_scores: cat_json,
+            partial,
+            missing_biomarkers,
         });
         health_sum += score;
     }

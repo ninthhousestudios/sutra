@@ -398,7 +398,10 @@ fn reconcile_orphaned_health_waivers_symbol_scoped() {
 // --- Scoring ---
 
 fn test_facts() -> sutra::health::scoring::WorkspaceFacts {
-    sutra::health::scoring::WorkspaceFacts { has_git: true }
+    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
+    WorkspaceFacts {
+        git: GitAvailability::Available,
+    }
 }
 
 fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> HealthFindingRow {
@@ -418,7 +421,7 @@ fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> Healt
 
 #[test]
 fn scoring_no_findings_yields_perfect_score() {
-    let result = score_file(&[], &test_facts());
+    let result = score_file(&[], &test_facts(), true);
     assert_eq!(result.score, 10.0);
     assert!(result.deductions.is_empty());
     // A clean file with all producers wired is not partial.
@@ -450,37 +453,75 @@ fn contract_no_file_scored_biomarker_is_unwired() {
 
 #[test]
 fn contract_coverage_gradient_is_unsupported() {
-    use sutra::health::scoring::{BiomarkerSupport, WorkspaceFacts};
-    // No coverage ingestion exists → excluded from scoring with a reason, in
-    // both git and non-git workspaces.
-    for has_git in [true, false] {
-        let support =
-            BiomarkerKind::CoverageGradient.file_scoring_support(&WorkspaceFacts { has_git });
+    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
+    // No coverage ingestion exists → excluded from scoring with a reason,
+    // regardless of git availability.
+    for git in [
+        GitAvailability::Available,
+        GitAvailability::NoHistory,
+        GitAvailability::NotARepo,
+    ] {
+        let support = BiomarkerKind::CoverageGradient.file_scoring_support(&WorkspaceFacts { git });
         assert!(matches!(support, Some(BiomarkerSupport::Unsupported(_))));
     }
 }
 
+const GIT_BIOMARKERS: [BiomarkerKind; 5] = [
+    BiomarkerKind::CoChangeScatter,
+    BiomarkerKind::ChangeEntropy,
+    BiomarkerKind::OwnershipRisk,
+    BiomarkerKind::HiddenCoupling,
+    BiomarkerKind::BlastRadiusChurn,
+];
+
 #[test]
-fn contract_git_biomarkers_unsupported_without_git() {
-    use sutra::health::scoring::{BiomarkerSupport, WorkspaceFacts};
-    let no_git = WorkspaceFacts { has_git: false };
-    for kind in [
-        BiomarkerKind::CoChangeScatter,
-        BiomarkerKind::ChangeEntropy,
-        BiomarkerKind::OwnershipRisk,
-        BiomarkerKind::HiddenCoupling,
-        BiomarkerKind::BlastRadiusChurn,
-    ] {
+fn contract_git_biomarkers_excluded_when_not_a_repo() {
+    // A true structural absence: not a git repo → excluded (Unsupported), never
+    // worst-cased. Worst-casing a dimension that can never run here is noise.
+    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
+    let facts = WorkspaceFacts {
+        git: GitAvailability::NotARepo,
+    };
+    for kind in GIT_BIOMARKERS {
         assert!(
             matches!(
-                kind.file_scoring_support(&no_git),
+                kind.file_scoring_support(&facts),
                 Some(BiomarkerSupport::Unsupported(_))
             ),
-            "{} should be unsupported without git",
+            "{} should be Unsupported when not a git repo",
             kind.as_str()
         );
+    }
+}
+
+#[test]
+fn contract_git_biomarkers_worst_cased_on_no_history() {
+    // sutra/408: a real repo whose history was unavailable this run (empty
+    // window or a transient `git log` failure) must be worst-cased (Unwired),
+    // not excluded — else a failure removes debt and health improves.
+    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
+    let facts = WorkspaceFacts {
+        git: GitAvailability::NoHistory,
+    };
+    for kind in GIT_BIOMARKERS {
         assert_eq!(
-            kind.file_scoring_support(&WorkspaceFacts { has_git: true }),
+            kind.file_scoring_support(&facts),
+            Some(BiomarkerSupport::Unwired),
+            "{} should be worst-cased (Unwired) on NoHistory",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
+fn contract_git_biomarkers_scored_when_available() {
+    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
+    let facts = WorkspaceFacts {
+        git: GitAvailability::Available,
+    };
+    for kind in GIT_BIOMARKERS {
+        assert_eq!(
+            kind.file_scoring_support(&facts),
             Some(BiomarkerSupport::Scored)
         );
     }
@@ -507,7 +548,7 @@ fn contract_review_and_component_biomarkers_are_not_file_scored() {
 #[test]
 fn scoring_single_advisory_finding() {
     let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
-    let result = score_file(&findings, &test_facts());
+    let result = score_file(&findings, &test_facts(), true);
     // advisory weight 1.0 × biomarker weight 1.34 = 1.34 deduction
     assert!((result.score - 8.66).abs() < 0.01);
     assert_eq!(result.deductions.len(), 1);
@@ -518,7 +559,7 @@ fn scoring_single_advisory_finding() {
 #[test]
 fn scoring_informational_deducts_less() {
     let findings = [make_finding(1, 1, "dead_code_ratio", "informational")];
-    let result = score_file(&findings, &test_facts());
+    let result = score_file(&findings, &test_facts(), true);
     // informational weight 0.5 × biomarker weight 0.80 = 0.40 deduction
     assert!((result.score - 9.60).abs() < 0.01);
 }
@@ -532,7 +573,7 @@ fn scoring_category_cap_with_proportional_scaling() {
         make_finding(2, 1, "nested_complexity", "advisory"),
         make_finding(3, 1, "nested_complexity", "advisory"),
     ];
-    let result = score_file(&findings, &test_facts());
+    let result = score_file(&findings, &test_facts(), true);
     // Total structural deduction capped at 2.5 → score = 7.5
     assert!((result.score - 7.5).abs() < 0.01);
     // All three scaled deductions should be equal and sum to 2.5
@@ -572,7 +613,7 @@ fn scoring_all_categories_maxed_yields_minimum() {
         make_finding(17, 1, "dead_code_ratio", "informational"),
         make_finding(18, 1, "dead_code_ratio", "informational"),
     ];
-    let result = score_file(&findings, &test_facts());
+    let result = score_file(&findings, &test_facts(), true);
     assert!((result.score - 1.0).abs() < 0.01);
 }
 
@@ -1375,12 +1416,16 @@ fn test_snapshot_stores_per_file_health() {
             file_path: "src/foo.rs".into(),
             score: 9.2,
             category_scores: r#"{"structural":0.8}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         },
         SnapshotFileRow {
             file_id: 2,
             file_path: "src/bar.rs".into(),
             score: 6.1,
             category_scores: r#"{"organizational":2.5,"structural":1.4}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         },
     ];
     db.insert_snapshot_files(snap_id, &files).unwrap();
@@ -1444,6 +1489,8 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 7.5,
             category_scores: r#"{"structural":1.0}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1456,6 +1503,8 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 8.2,
             category_scores: r#"{"structural":0.5}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1468,6 +1517,8 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 9.1,
             category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1512,12 +1563,16 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/a.rs".into(),
                 score: 8.0,
                 category_scores: r#"{"structural":1.0}"#.into(),
+                partial: false,
+                missing_biomarkers: Vec::new(),
             },
             SnapshotFileRow {
                 file_id: 2,
                 file_path: "src/b.rs".into(),
                 score: 6.0,
                 category_scores: r#"{"organizational":2.0}"#.into(),
+                partial: false,
+                missing_biomarkers: Vec::new(),
             },
         ],
     )
@@ -1532,12 +1587,16 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/a.rs".into(),
                 score: 9.0,
                 category_scores: r#"{"structural":0.5}"#.into(),
+                partial: false,
+                missing_biomarkers: Vec::new(),
             },
             SnapshotFileRow {
                 file_id: 2,
                 file_path: "src/b.rs".into(),
                 score: 5.0,
                 category_scores: r#"{"organizational":3.0}"#.into(),
+                partial: false,
+                missing_biomarkers: Vec::new(),
             },
         ],
     )
@@ -1587,6 +1646,8 @@ fn test_trend_file_history_mode() {
             file_path: "src/x.rs".into(),
             score: 7.0,
             category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1599,6 +1660,8 @@ fn test_trend_file_history_mode() {
             file_path: "src/x.rs".into(),
             score: 9.5,
             category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1756,6 +1819,8 @@ fn test_health_delta_degradation() {
             file_path: "src/hotfile.rs".into(),
             score: 9.0,
             category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1802,6 +1867,8 @@ fn test_health_delta_improvement() {
             file_path: "src/cleaned.rs".into(),
             score: 6.0,
             category_scores: r#"{"structural":2.0}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -1849,6 +1916,8 @@ fn test_health_delta_with_ondemand_findings() {
             file_path: "src/volatile.rs".into(),
             score: 9.5,
             category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
         }],
     )
     .unwrap();
@@ -2033,6 +2102,11 @@ fn file_health_component_instability() {
 
     db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use", None)
         .unwrap();
+
+    // Stamp coverage as a full parse would: these files were analyzed and are
+    // genuinely finding-free, so they score a clean 10.0 rather than being
+    // worst-cased as not-yet-analyzed (sutra/408).
+    db.replace_health_findings(&[]).unwrap();
 
     let result =
         sutra::tools::file_health::handle(&db, None, None, Some("all"), None, false).unwrap();

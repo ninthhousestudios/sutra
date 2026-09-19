@@ -197,6 +197,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
+        name: "health_coverage",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
         name: "health_waivers",
         partition: TablePartition::Durable,
         is_virtual: false,
@@ -484,6 +489,12 @@ pub struct SnapshotFileRow {
     pub file_path: String,
     pub score: f64,
     pub category_scores: String,
+    /// True when this score was computed from incomplete analysis — some
+    /// file-scored biomarker was worst-cased rather than measured (sutra/408).
+    /// Lets trend tell partial analysis apart from real degradation.
+    pub partial: bool,
+    /// Names of the worst-cased biomarkers behind a `partial` score.
+    pub missing_biomarkers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1990,6 +2001,30 @@ impl Db {
         Ok(())
     }
 
+    /// The persisted git-availability state recorded at the last full parse
+    /// ("available" | "no_history" | "not_a_repo"), or `None` on an index
+    /// predating sutra/408. `None` reads as "unknown" — the caller falls back
+    /// to the commit-count heuristic (see `WorkspaceFacts::detect`).
+    pub fn git_availability(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let value: Option<String> = conn.query_row(
+            "SELECT git_availability FROM index_meta WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(value)
+    }
+
+    /// Record the git-availability state resolved during a full parse, where
+    /// both the workspace root and the git-command outcome are in hand.
+    pub fn set_git_availability(&self, value: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE index_meta SET git_availability = ?1 WHERE id = 1",
+            params![value],
+        )?;
+        Ok(())
+    }
+
     /// Mark derived data as complete up to the given generation.
     pub fn set_derived_complete(&self, generation: i64) -> Result<()> {
         self.conn.lock().execute(
@@ -2488,16 +2523,20 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "INSERT INTO health_snapshot_files
-             (snapshot_id, file_id, file_path, score, category_scores)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (snapshot_id, file_id, file_path, score, category_scores, partial, missing_biomarkers)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         for f in files {
+            let missing_json =
+                serde_json::to_string(&f.missing_biomarkers).unwrap_or_else(|_| "[]".to_string());
             stmt.execute(params![
                 snapshot_id,
                 f.file_id,
                 f.file_path,
                 f.score,
-                f.category_scores
+                f.category_scores,
+                f.partial as i64,
+                missing_json,
             ])?;
         }
         Ok(())
@@ -2530,16 +2569,21 @@ impl Db {
     pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT file_id, file_path, score, category_scores
+            "SELECT file_id, file_path, score, category_scores, partial, missing_biomarkers
              FROM health_snapshot_files WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![snapshot_id], |row| {
+                let missing_json: String = row.get(5)?;
+                let missing_biomarkers: Vec<String> =
+                    serde_json::from_str(&missing_json).unwrap_or_default();
                 Ok(SnapshotFileRow {
                     file_id: row.get(0)?,
                     file_path: row.get(1)?,
                     score: row.get(2)?,
                     category_scores: row.get(3)?,
+                    partial: row.get::<_, i64>(4)? != 0,
+                    missing_biomarkers,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

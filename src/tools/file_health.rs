@@ -85,6 +85,10 @@ fn handle_inner(
 
     let files = db.all_files()?;
     let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
+    // Coverage: which files' findings are current for their content (sutra/408).
+    // A file whose stamp is absent or mismatched is worst-cased, matching the
+    // snapshot path, so file_health and trend agree on completeness.
+    let coverage = db.health_coverage_map()?;
 
     // Resolve component filter to a set of file IDs
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
@@ -157,7 +161,10 @@ fn handle_inner(
                 .map(|refs| refs.iter().map(|r| (*r).clone()).collect())
                 .unwrap_or_default();
 
-            let result = scoring::score_file(&file_findings, &facts);
+            let covered = coverage
+                .get(&file.id)
+                .is_some_and(|stamp| *stamp == file.content_hash);
+            let result = scoring::score_file(&file_findings, &facts, covered);
 
             let mut cat_totals: HashMap<&'static str, f64> = HashMap::new();
             let mut cat_raw_totals: HashMap<&'static str, f64> = HashMap::new();

@@ -88,20 +88,69 @@ impl HealthSeverity {
     }
 }
 
+/// Whether git history is available to the git-organizational and churn
+/// biomarkers, and if not, *why*. The distinction is load-bearing (sutra/408):
+/// a non-git project can never run these producers (exclude them), but a git
+/// project whose history we merely failed to read this run must be worst-cased,
+/// not excluded — otherwise a transient `git log` failure removes debt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitAvailability {
+    /// Git history ingested — the git biomarkers ran against real data.
+    Available,
+    /// A git repo, but no usable history this run (empty commit window or a
+    /// git-command failure). The producers should have run but had no data →
+    /// their dimensions are worst-cased, not excluded.
+    NoHistory,
+    /// Not a git repository at all — a true structural absence. The git
+    /// biomarkers can never run here and are excluded (Unsupported).
+    NotARepo,
+}
+
+impl GitAvailability {
+    fn from_persisted(s: &str) -> Option<Self> {
+        match s {
+            "available" => Some(Self::Available),
+            "no_history" => Some(Self::NoHistory),
+            "not_a_repo" => Some(Self::NotARepo),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::NoHistory => "no_history",
+            Self::NotARepo => "not_a_repo",
+        }
+    }
+}
+
 /// Workspace-scoped facts that decide whether a biomarker's data source exists
 /// at all. Detected once per scoring pass.
 #[derive(Debug, Clone, Copy)]
 pub struct WorkspaceFacts {
-    /// True when the commit history has been ingested (git-organizational and
-    /// churn biomarkers have nothing to measure without it).
-    pub has_git: bool,
+    /// Git availability for the git-organizational and churn biomarkers.
+    pub git: GitAvailability,
 }
 
 impl WorkspaceFacts {
     pub fn detect(db: &Db) -> Result<Self> {
-        Ok(Self {
-            has_git: db.commit_file_count()? > 0,
-        })
+        // Prefer the state persisted at the last full parse (where the git
+        // outcome was actually observed). Fall back to the pre-sutra/408
+        // commit-count heuristic for indexes that predate the column: a
+        // populated commit table reads as Available, an empty one as NotARepo
+        // (the old "no git" → Unsupported behavior).
+        let git = match db.git_availability()? {
+            Some(s) => GitAvailability::from_persisted(&s).unwrap_or(GitAvailability::NotARepo),
+            None => {
+                if db.commit_file_count()? > 0 {
+                    GitAvailability::Available
+                } else {
+                    GitAvailability::NotARepo
+                }
+            }
+        };
+        Ok(Self { git })
     }
 }
 
@@ -116,8 +165,10 @@ pub enum BiomarkerSupport {
     /// coverage ingestion). Excluded from scoring and surfaced as a note —
     /// worst-casing every file on a dimension that can never run is noise.
     Unsupported(&'static str),
-    /// Present in the weight table but no producer emits it. Worst-cased at full
-    /// weight and flags the file `partial`.
+    /// The biomarker should be scored for this workspace but has no data to
+    /// score from this run — either no producer emits it, or its data source
+    /// exists but was unavailable (git history that failed to load or an empty
+    /// commit window). Worst-cased at full weight and flags the file `partial`.
     Unwired,
 }
 
@@ -128,12 +179,12 @@ impl BiomarkerKind {
     /// truth: adding a variant forces a decision here, so a new biomarker can
     /// never silently score as zero debt.
     pub fn file_scoring_support(&self, facts: &WorkspaceFacts) -> Option<BiomarkerSupport> {
-        let git = || {
-            if facts.has_git {
-                BiomarkerSupport::Scored
-            } else {
-                BiomarkerSupport::Unsupported("no git history in workspace")
-            }
+        let git = || match facts.git {
+            GitAvailability::Available => BiomarkerSupport::Scored,
+            // Repo exists but no history this run → worst-case, don't exclude.
+            GitAvailability::NoHistory => BiomarkerSupport::Unwired,
+            // Not a git repo → the producer can never run here → exclude.
+            GitAvailability::NotARepo => BiomarkerSupport::Unsupported("not a git repository"),
         };
         match self {
             Self::NestedComplexity | Self::ImportCycle | Self::DeadCodeRatio => {
@@ -191,26 +242,49 @@ impl FileHealthScore {
     }
 }
 
-pub fn score_file(findings: &[HealthFindingRow], facts: &WorkspaceFacts) -> FileHealthScore {
-    // Present findings: real debt the producers actually measured.
+/// Score one file. `covered` is whether this file's findings are valid for its
+/// *current* content (sutra/408): its health_coverage stamp matches its
+/// content_hash. When false — an incrementally reparsed file whose findings
+/// were never recomputed, or a newly added file with none — the present
+/// findings describe stale content and are ignored; every file-scored biomarker
+/// that could run is worst-cased instead, so a not-yet-analyzed file can never
+/// float up to a clean 10.0.
+pub fn score_file(
+    findings: &[HealthFindingRow],
+    facts: &WorkspaceFacts,
+    covered: bool,
+) -> FileHealthScore {
+    // Present findings: real debt the producers actually measured. Only trusted
+    // when the analysis is current for this file's content; otherwise the file
+    // is worst-cased wholesale below.
     let mut present: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
-    for (i, f) in findings.iter().enumerate() {
-        let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
-            continue;
-        };
-        let Some(severity) = HealthSeverity::parse(&f.severity) else {
-            continue;
-        };
-        let raw = severity.weight() * kind.default_weight();
-        present.entry(kind.category()).or_default().push((i, raw));
+    if covered {
+        for (i, f) in findings.iter().enumerate() {
+            let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
+                continue;
+            };
+            let Some(severity) = HealthSeverity::parse(&f.severity) else {
+                continue;
+            };
+            let raw = severity.weight() * kind.default_weight();
+            present.entry(kind.category()).or_default().push((i, raw));
+        }
     }
 
-    // Missing analysis is never zero debt: any file-scored biomarker with no
-    // producer (Unwired) is worst-cased at its full weight. Unsupported ones
-    // (data source absent at workspace scope) are excluded, not worst-cased.
+    // Missing analysis is never zero debt. A file-scored biomarker is worst-
+    // cased at full weight when it is Unwired (no producer, or its data source
+    // was unavailable this run), or when it is Scored but this file's analysis
+    // is not current (`!covered`). Unsupported ones (data source structurally
+    // absent — not a git repo, no coverage ingestion) are excluded, not worst-
+    // cased: worst-casing a dimension that can never run is noise.
     let mut missing_raw: HashMap<HealthCategory, Vec<(BiomarkerKind, f64)>> = HashMap::new();
     for kind in BiomarkerKind::ALL {
-        if kind.file_scoring_support(facts) == Some(BiomarkerSupport::Unwired) {
+        let worst_case = match kind.file_scoring_support(facts) {
+            Some(BiomarkerSupport::Unwired) => true,
+            Some(BiomarkerSupport::Scored) => !covered,
+            Some(BiomarkerSupport::Unsupported(_)) | None => false,
+        };
+        if worst_case {
             let raw = kind.default_severity().weight() * kind.default_weight();
             missing_raw
                 .entry(kind.category())
@@ -343,9 +417,21 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
     }
 
     let facts = WorkspaceFacts::detect(db)?;
+    // Score EVERY indexed file, not just files that happen to have findings
+    // (sutra/408). A finding-free file that was genuinely analyzed scores a
+    // clean 10.0; a file whose analysis is stale or absent is worst-cased via
+    // `covered=false` — the old loop skipped it entirely and it floored at
+    // BASE_SCORE, silently reading incomplete analysis as zero debt.
+    let coverage = db.health_coverage_map()?;
+    let all_files = db.all_files()?;
+    let empty_findings: Vec<HealthFindingRow> = Vec::new();
     let mut file_scores = Vec::new();
-    for (&file_id, findings) in &findings_by_file {
-        let result = score_file(findings, &facts);
+    for file in &all_files {
+        let findings = findings_by_file.get(&file.id).unwrap_or(&empty_findings);
+        let covered = coverage
+            .get(&file.id)
+            .is_some_and(|stamp| *stamp == file.content_hash);
+        let result = score_file(findings, &facts, covered);
         let mut category_totals: HashMap<HealthCategory, f64> = HashMap::new();
         for d in &result.deductions {
             *category_totals.entry(d.category).or_default() += d.scaled_deduction;
@@ -354,7 +440,7 @@ pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
             *category_totals.entry(m.category).or_default() += m.scaled_deduction;
         }
         file_scores.push(ScoredFile {
-            file_id,
+            file_id: file.id,
             score: result.score,
             deductions: result.deductions,
             category_totals,

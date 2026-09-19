@@ -396,6 +396,31 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0070_symbols_fts_lex_tokens.sql"),
         true,
     ),
+    // Git availability axis for health scoring (sutra/408). NOT ephemeral_only:
+    // index_meta is Durable and reindex does not drop it, so a replayed ADD
+    // COLUMN would fail with a duplicate column (same reasoning as 0068).
+    (
+        "0071_git_availability",
+        include_str!("../../migrations/0071_git_availability.sql"),
+        false,
+    ),
+    // Per-file health-findings coverage stamp (sutra/408). ephemeral_only:
+    // health_coverage is Ephemeral (pairs with health_findings), dropped on
+    // reindex, so this CREATE must replay to recreate it.
+    (
+        "0072_health_coverage",
+        include_str!("../../migrations/0072_health_coverage.sql"),
+        true,
+    ),
+    // Per-file completeness columns on health snapshots (sutra/408).
+    // ephemeral_only: health_snapshot_files is Ephemeral; reindex drops it and
+    // 0033 recreates the base shape, so this ALTER must replay to re-add the
+    // columns (same reasoning as the 0069 symbols_fts ALTER).
+    (
+        "0073_snapshot_file_completeness",
+        include_str!("../../migrations/0073_snapshot_file_completeness.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -571,6 +596,11 @@ impl Db {
             "0063_file_mtime" => Self::column_exists(conn, "files", "mtime_ns"),
             "0067_file_size" => Self::column_exists(conn, "files", "size_bytes"),
             "0068_parser_stamp" => Self::column_exists(conn, "index_meta", "parser_stamp"),
+            "0071_git_availability" => Self::column_exists(conn, "index_meta", "git_availability"),
+            "0073_snapshot_file_completeness" => {
+                Self::column_exists(conn, "health_snapshot_files", "partial")
+                    && Self::column_exists(conn, "health_snapshot_files", "missing_biomarkers")
+            }
             "0005_conventions" => {
                 let exists: bool = conn
                     .query_row(

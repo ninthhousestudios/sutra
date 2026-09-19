@@ -1,0 +1,19 @@
+-- Git availability axis for health scoring (sutra/408).
+--
+-- Health scoring previously derived "does this workspace have git" from
+-- commit_file_count > 0 (WorkspaceFacts::has_git). That conflated three
+-- distinct states: (a) not a git repository at all, (b) a git repo whose
+-- history could not be ingested this run (empty window or a transient
+-- git-command failure), and (c) a git repo with history ingested. State (a)
+-- is a true structural absence — the git biomarkers can never run, so they
+-- are excluded (Unsupported). State (b) means the producers *should* have run
+-- but had no data, which must be worst-cased, not excluded — otherwise a
+-- transient `git log` failure removes debt and health improves after losing
+-- evidence.
+--
+-- This column persists the resolved GitAvailability ("available" | "no_history"
+-- | "not_a_repo") computed at the last full parse, where workspace_root and the
+-- git result are both in hand. WorkspaceFacts::detect reads it at scoring time
+-- (which has only the Db). NULL on indexes predating sutra/408 → detect falls
+-- back to the old commit_file_count heuristic.
+ALTER TABLE index_meta ADD COLUMN git_availability TEXT;

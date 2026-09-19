@@ -1542,6 +1542,8 @@ fn test_snapshot_pruning() {
                     file_path: "a.rs".into(),
                     score: i as f64,
                     category_scores: "{}".into(),
+                    partial: false,
+                    missing_biomarkers: Vec::new(),
                 }],
                 &[SnapshotComponentRow {
                     component_id: "comp".into(),

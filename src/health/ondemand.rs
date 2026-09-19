@@ -275,7 +275,12 @@ pub fn compute_health_delta(
         let mut all_findings = stored;
         all_findings.extend(ondemand_rows.clone());
 
-        let health = scoring::score_file(&all_findings, &facts);
+        // The review-delta path builds `all_findings` by merging the stored
+        // file-scored findings with freshly recomputed on-demand ones for this
+        // changed file, so it deliberately treats the analysis as current for
+        // the delta (covered=true). Coverage-based worst-casing (sutra/408)
+        // governs the absolute snapshot/file_health scores, not this delta.
+        let health = scoring::score_file(&all_findings, &facts, true);
         let delta = health.score - prev_score;
 
         if delta.abs() < 0.005 {
