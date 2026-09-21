@@ -5,10 +5,10 @@ index is stale, and how it refreshes before answering a query. Read this before
 touching `src/freshness.rs`, the refresh path in `src/mcp.rs`, or the incremental
 parse in `src/pipeline.rs`.
 
-Health freshness has a separate proposed contract in
-[health evidence contract](health-evidence-contract.md) (sutra/412, awaiting human
-review). Session-start reparse remains enabled. The proposal does not change the
-current implementation described below.
+Health freshness has a separate approved contract in
+[health evidence contract](health-evidence-contract.md) (sutra/412, approved
+2026-09-21; implementation in 413–418). Session-start reparse remains enabled.
+The design approval does not change the current implementation described below.
 
 ## Staleness is content, not time
 

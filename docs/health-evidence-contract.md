@@ -1,6 +1,7 @@
 # Health evidence contract
 
-Status: proposed for human review, sutra/412. No production implementation.
+Status: approved by Josh on 2026-09-21, sutra/412. Implementation is assigned to
+sutra/413–418; this artifact contains no production implementation.
 This contract replaces the two-axis proposal in sutra/411 and the snapshot
 mirroring rationale in sutra/409. Session-start reparse remains enabled.
 

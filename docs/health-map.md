@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
-Proposed replacement contract (sutra/412, awaiting human review):
+Approved replacement contract (sutra/412, 2026-09-21; implementation in 413–418):
 [health evidence contract](health-evidence-contract.md). It includes the checked
 type skeleton and downstream boundaries; it is not implemented behavior.
 
