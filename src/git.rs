@@ -293,6 +293,20 @@ pub fn probe_git_repo(workspace_root: &Path) -> RepoProbe {
             .arg("-C")
             .arg(workspace_root)
             .args(["rev-parse", "--is-inside-work-tree"])
+            // Neutralize ambient repository selection so discovery is purely
+            // path-based from `-C workspace_root` (sutra/417). An inherited
+            // `GIT_DIR` (common inside git hooks/CI) that points at a missing or
+            // wrong repo would otherwise answer the wrong question or, when it
+            // fails to resolve, fabricate a "not a git repository: '<dir>'"
+            // fatal that reads as confirmed absence. `GIT_CEILING_DIRECTORIES`
+            // could likewise truncate the upward walk into a false absence.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_CEILING_DIRECTORIES")
+            // Deterministic English diagnostics so the absence match below is
+            // locale-independent.
+            .env("LC_ALL", "C")
             .output(),
     )
 }
@@ -302,7 +316,7 @@ pub fn probe_git_repo(workspace_root: &Path) -> RepoProbe {
 /// command output — an injected command seam, not a process-global PATH mutation
 /// (sutra/417). Inspects stdout as well as exit status: a success is trusted
 /// only when git actually reports a work-tree boolean; a nonzero exit confirms
-/// absence only for git's own "not a git repository" fatal (exit 128).
+/// absence only for git's own *discovery-walk* fatal (exit 128).
 fn classify_repo_probe(result: std::io::Result<Output>) -> RepoProbe {
     let Ok(output) = result else {
         // Spawn failure — git missing or not executable. Indeterminate.
@@ -317,11 +331,15 @@ fn classify_repo_probe(result: std::io::Result<Output>) -> RepoProbe {
             _ => RepoProbe::Unknown,
         };
     }
-    // Nonzero exit. Only git's own "not a git repository" fatal confirms
-    // absence; a permission error, broken repo or any other failure is
-    // indeterminate and must not be read as structural absence.
+    // Nonzero exit. Confirm absence only for the parenthetical discovery-walk
+    // fatal — `not a git repository (or any parent ...)` — which git emits when
+    // it walks up from the path and finds nothing. The colon form
+    // `not a git repository: '<dir>'` reports a specific git-dir that failed to
+    // resolve (a broken/overriding GIT_DIR or --git-dir), NOT structural
+    // absence, so it must stay Unknown. A permission error, broken objects or
+    // any other failure is likewise indeterminate (sutra/417).
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.code() == Some(128) && stderr.contains("not a git repository") {
+    if output.status.code() == Some(128) && stderr.contains("not a git repository (") {
         RepoProbe::ConfirmedAbsent
     } else {
         RepoProbe::Unknown
@@ -607,11 +625,28 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_absent_only_for_not_a_repo_fatal() {
-        let stderr = "fatal: not a git repository (or any of the parent directories): .git\n";
+    fn confirmed_absent_for_discovery_walk_fatal() {
+        // Both known phrasings of the walk-up fatal are parenthetical.
+        for stderr in [
+            "fatal: not a git repository (or any of the parent directories): .git\n",
+            "fatal: not a git repository (or any parent up to mount point /)\n",
+        ] {
+            assert_eq!(
+                classify_repo_probe(done(128, "", stderr)),
+                RepoProbe::ConfirmedAbsent
+            );
+        }
+    }
+
+    #[test]
+    fn broken_git_dir_is_unknown_not_absent() {
+        // The colon form names a specific git-dir that failed to resolve (a
+        // broken/overriding GIT_DIR), not structural absence. Must stay Unknown
+        // so failed repository resolution never excludes git debt (sutra/417).
+        let stderr = "fatal: not a git repository: '/definitely-missing-git-dir'\n";
         assert_eq!(
             classify_repo_probe(done(128, "", stderr)),
-            RepoProbe::ConfirmedAbsent
+            RepoProbe::Unknown
         );
     }
 
