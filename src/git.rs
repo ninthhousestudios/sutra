@@ -402,6 +402,196 @@ pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<C
     Ok(results)
 }
 
+/// Pin the repository HEAD. `Ok(Some(sha))` is a resolved commit; `Ok(None)` is
+/// a present repository with an unborn HEAD (a fresh repo with no commits yet);
+/// `Err` is an indeterminate probe failure (git missing, access error, broken
+/// objects) that must NOT be read as an unborn branch. The health input contract
+/// (sutra/415) requires selecting history against a pinned HEAD, so this is the
+/// identity every subsequent `git_commit_files_since` call is anchored to.
+pub fn head_commit(workspace_root: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git rev-parse HEAD failed: {e}")))?;
+    if output.status.success() {
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if sha.is_empty() {
+            return Err(SutraError::Internal(
+                "git rev-parse HEAD returned empty output".into(),
+            ));
+        }
+        return Ok(Some(sha));
+    }
+    // `--verify --quiet` exits 1 with no stderr specifically when the ref cannot
+    // be resolved. Confirm this is an unborn HEAD (repo present, zero commits)
+    // rather than a broken repository before reporting `None`: an unresolved
+    // HEAD in a genuine work tree is unborn; anything else is indeterminate.
+    if output.status.code() == Some(1) && output.stderr.is_empty() {
+        return match probe_git_repo(workspace_root) {
+            RepoProbe::Present => Ok(None),
+            RepoProbe::ConfirmedAbsent => Err(SutraError::Internal(
+                "git rev-parse HEAD: not a git repository".into(),
+            )),
+            RepoProbe::Unknown => Err(SutraError::Internal(
+                "git rev-parse HEAD: indeterminate repository state".into(),
+            )),
+        };
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(SutraError::Internal(format!(
+        "git rev-parse HEAD: {stderr}"
+    )))
+}
+
+/// A stable identity for the repository/worktree backing `workspace_root` — the
+/// absolute git directory. Recorded so a health run cannot be reused after the
+/// worktree is pointed at a different repository (sutra/415).
+pub fn repo_identity(workspace_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .map_err(|e| {
+            SutraError::Internal(format!("git rev-parse --absolute-git-dir failed: {e}"))
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!(
+            "git rev-parse --absolute-git-dir: {stderr}"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// A fingerprint of the history boundary: shallow state plus any grafts/replace
+/// refs that truncate or rewrite reachable history. History reachable from a
+/// pinned HEAD is only "complete for the requested range" if these boundaries
+/// are unchanged; a repository that becomes (un)shallow or gains a replace ref
+/// can expose or hide qualifying commits without HEAD moving (sutra/415).
+pub fn history_boundaries(workspace_root: &Path) -> Result<String> {
+    let shallow = {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()
+            .map_err(|e| SutraError::Internal(format!("git rev-parse --is-shallow: {e}")))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(SutraError::Internal(format!(
+                "git rev-parse --is-shallow-repository: {stderr}"
+            )));
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // Replace refs rewrite the object a commit resolves to; grafts (via replace
+    // refs in modern git) truncate ancestry. `refs/replace` is empty in the
+    // common case, so the fingerprint reduces to just the shallow flag.
+    let replace = {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args([
+                "for-each-ref",
+                "--format=%(objectname) %(refname)",
+                "refs/replace",
+            ])
+            .output()
+            .map_err(|e| SutraError::Internal(format!("git for-each-ref refs/replace: {e}")))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(SutraError::Internal(format!(
+                "git for-each-ref refs/replace: {stderr}"
+            )));
+        }
+        let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        lines.sort();
+        lines.join(",")
+    };
+    Ok(format!("shallow={shallow};replace={replace}"))
+}
+
+/// Ingest commit-file history reachable from a pinned `head_sha` whose committer
+/// timestamp is `>= cutoff_unix`. Replaces the relative `--since "N days ago"`
+/// selection (which cannot be reproduced from a stored HEAD) with the absolute
+/// committer-time cutoff the health contract requires (sutra/415).
+///
+/// There is no upper timestamp bound: future-dated commits reachable from HEAD
+/// are included. The cutoff is applied in Rust on the raw committer timestamp
+/// (`%ct`), NOT via git's `--since`: `--since` early-stops traversal at the
+/// first commit older than the cutoff and would drop a qualifying commit that
+/// sits behind an out-of-order (nonmonotonic) committer date. A full traversal
+/// from the pinned HEAD followed by an explicit `>= cutoff` filter is immune to
+/// that, and avoids depending on git's date-string parsing. `--since-as-filter`
+/// traverses the whole history too (it filters instead of stopping), so it
+/// would save no traversal work — only the choice of where the filter runs.
+pub fn git_commit_files_since(
+    workspace_root: &Path,
+    head_sha: &str,
+    cutoff_unix: i64,
+) -> Result<Vec<CommitFile>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "log",
+            head_sha,
+            "--format=COMMIT_SEP %H %ct %ae",
+            "--name-only",
+            "--no-renames",
+        ])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git log failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git log: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut results = Vec::new();
+    let mut current_hash = String::new();
+    let mut current_ts: i64 = 0;
+    let mut current_author = String::new();
+    let mut include_current = false;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("COMMIT_SEP ") {
+            let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+            if parts.len() == 3 {
+                current_hash = parts[0].to_string();
+                current_ts = parts[1].parse().unwrap_or(0);
+                current_author = parts[2].to_string();
+                include_current = current_ts >= cutoff_unix;
+            }
+            continue;
+        }
+        if include_current && !current_hash.is_empty() {
+            // One owned row per file line; a commit header's hash/author are
+            // shared across all its file lines, so each row copies the current
+            // borrowed slices into fresh owned strings.
+            results.push(CommitFile {
+                hash: String::from(current_hash.as_str()),
+                timestamp: current_ts,
+                author: String::from(current_author.as_str()),
+                path: line.to_string(),
+            });
+        }
+    }
+
+    Ok(results)
+}
+
 pub fn churn_from_commit_files(commit_files: &[CommitFile]) -> HashMap<String, u32> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
