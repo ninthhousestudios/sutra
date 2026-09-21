@@ -4,7 +4,13 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
-Last updated: 2026-09-19 (sutra/408: made the "missing analysis is never zero
+Review correction: 2026-09-21 — [sutra/411 evidence lifecycle review](reviews/2026-09-21-health-evidence-lifecycle.md)
+confirms incremental parsing deletes findings/history and falsifies the
+snapshot-mirroring rationale below. The recorded two-axis fix also needs revision:
+hidden coupling depends on the current graph, and graph validity is not per-file
+content validity. Session-start reparse removal is not a requirement.
+
+Last implementation update: 2026-09-19 (sutra/408: made the "missing analysis is never zero
 debt" contract actually fire — per-file health_coverage stamp so incrementally
 reparsed / finding-free files are worst-cased not floored, GitAvailability axis
 separating NotARepo from NoHistory, snapshot partial/missing_biomarkers columns.
@@ -383,18 +389,13 @@ a single review invocation.
   current per-file scores (stored findings + on-demand) vs latest snapshot
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
-- Coverage for the current score **mirrors the snapshot's** per-file decision,
-  not live coverage (sutra/409): `covered = false` iff the snapshot's
-  `missing_biomarkers` names an unconditionally-`Scored` file biomarker
-  (nested_complexity / import_cycle / dead_code_ratio), i.e. the file was
-  worst-cased at snapshot time. A changed file is always uncovered *now* (its
-  content hash moved) but was covered *then*; keying on live coverage would
-  worst-case `current` against a non-worst-cased `prev` and manufacture a
-  spurious degradation. Because every parse snapshots from exactly the findings
-  still stored (`record_snapshot` runs after `replace_health_findings`), a file
-  with no on-demand debt scores identically to `prev` → the delta isolates
-  on-demand attribution, and a worst-cased-in-snapshot file can no longer float
-  up to a spurious improvement.
+- **Known bug (sutra/411):** current coverage mirrors the snapshot's per-file
+  decision (sutra/409), but incremental parsing deletes current findings and
+  coverage without recording a snapshot. A formerly complete, unhealthy file
+  can therefore be scored clean after a comment-only edit. The old rationale
+  that every parse snapshots and preserves the same findings is false. Current
+  evidence must establish current completeness; missing analysis must not be
+  presented as measured improvement or degradation. See the review linked above.
 - Review output ordering: constraint_violations → deviations →
   health_findings → hrr_shape_changes → health_delta
 
