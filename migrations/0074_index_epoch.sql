@@ -1,0 +1,13 @@
+-- Index epoch for health evidence (sutra/414).
+--
+-- Identifies one lifetime of the index. A full reindex mints a fresh epoch, so
+-- retained numeric IDs from a prior epoch are never re-resolved against
+-- replacement extraction (health evidence contract, sutra/412). NULL means "not
+-- yet minted" — Db::ensure_index_epoch mints one lazily, and Db::reindex resets
+-- this to NULL so the next mint is fresh.
+--
+-- NOT ephemeral_only: index_meta is a Durable table that reindex does not drop,
+-- so a replayed ADD COLUMN would fail with a duplicate column (same reasoning as
+-- 0068_parser_stamp and 0071_git_availability). The column survives reindex with
+-- the table; reindex NULLs it in code.
+ALTER TABLE index_meta ADD COLUMN index_epoch TEXT;

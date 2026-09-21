@@ -421,6 +421,23 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0073_snapshot_file_completeness.sql"),
         true,
     ),
+    // Index epoch on index_meta for health evidence (sutra/414). NOT
+    // ephemeral_only: index_meta is Durable and reindex does not drop it, so a
+    // replayed ADD COLUMN would fail with a duplicate column (same reasoning as
+    // 0068/0071). reindex NULLs the column in code so the next mint is fresh.
+    (
+        "0074_index_epoch",
+        include_str!("../../migrations/0074_index_epoch.sql"),
+        false,
+    ),
+    // Immutable health evidence runs + current pointer (sutra/414).
+    // ephemeral_only: these pair with health_findings/coverage and are rebuilt by
+    // a full parse; reindex drops them, so the CREATEs must replay to recreate.
+    (
+        "0075_health_evidence_runs",
+        include_str!("../../migrations/0075_health_evidence_runs.sql"),
+        true,
+    ),
 ];
 
 impl Db {

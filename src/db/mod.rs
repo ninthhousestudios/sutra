@@ -10,6 +10,7 @@ mod conventions;
 pub mod entity_changes;
 mod graph;
 mod health;
+mod health_evidence;
 mod migrations;
 mod similarity;
 
@@ -233,6 +234,16 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "health_snapshot_components",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_runs",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "health_current",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
     },
@@ -744,9 +755,15 @@ impl Db {
 
         self.run_migrations()?;
 
-        // Reset generation counters — all ephemeral data was wiped.
+        // Reset generation counters — all ephemeral data was wiped. Also clear
+        // the index epoch (sutra/414): a full reindex is a new index lifetime, so
+        // the next Db::ensure_index_epoch mints a fresh epoch and prior retained
+        // evidence (already dropped with health_runs) is never re-resolved against
+        // the replacement extraction.
         self.conn.lock().execute(
-            "UPDATE index_meta SET data_generation = 0, derived_complete_generation = 0 WHERE id = 1",
+            "UPDATE index_meta
+             SET data_generation = 0, derived_complete_generation = 0, index_epoch = NULL
+             WHERE id = 1",
             [],
         )?;
 
