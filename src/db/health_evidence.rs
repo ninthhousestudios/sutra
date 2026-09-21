@@ -85,18 +85,54 @@ impl Db {
         let created_at = chrono::Utc::now().to_rfc3339();
         let epoch_hex = run.index_epoch.0.to_hex();
 
+        // Payload self-consistency: the run must be assembled at a single index
+        // identity. A stamp whose declared generation or epoch disagrees with the
+        // generation being published is a caller bug — reject loudly rather than
+        // persist evidence mislabeled with an identity it wasn't computed against.
+        if run.graph_generation != expected_generation {
+            return Err(invalid(
+                "publish_health_run",
+                format!(
+                    "run graph_generation {} disagrees with expected generation {}",
+                    run.graph_generation.0, expected_generation.0
+                ),
+            ));
+        }
+        if run.inputs.graph.generation != expected_generation {
+            return Err(invalid(
+                "publish_health_run",
+                format!(
+                    "input-stamp graph generation {} disagrees with expected generation {}",
+                    run.inputs.graph.generation.0, expected_generation.0
+                ),
+            ));
+        }
+        if run.inputs.graph.epoch != run.index_epoch {
+            return Err(invalid(
+                "publish_health_run",
+                "input-stamp graph epoch disagrees with the run's index_epoch",
+            ));
+        }
+
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
 
-        // Re-check the input generation under the write lock. If it moved, drop
-        // the transaction (rollback) and report the race — no run row, no pointer
-        // move, so a reader can never observe a mixed-generation complete stamp.
-        let current: i64 = conn.query_row(
-            "SELECT data_generation FROM index_meta WHERE id = 1",
+        // Re-check the live index identity under the write lock. A reindex resets
+        // the generation counter AND remints the epoch, so both must still match:
+        // a run staged before a reindex must never publish just because the
+        // counter counted back up to the same value in a new epoch. If either
+        // moved, drop the transaction (rollback) and report the race — no run row,
+        // no pointer move, so a reader can never observe a mixed-generation or
+        // mixed-epoch complete stamp.
+        let (current_generation, current_epoch): (i64, Option<String>) = conn.query_row(
+            "SELECT data_generation, index_epoch FROM index_meta WHERE id = 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        if current != expected_generation.0 {
+        if current_generation != expected_generation.0 {
+            return Ok(None);
+        }
+        if current_epoch.as_deref() != Some(epoch_hex.as_str()) {
             return Ok(None);
         }
 

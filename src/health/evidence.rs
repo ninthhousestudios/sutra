@@ -52,7 +52,11 @@ impl Digest {
     }
 
     pub fn from_hex(s: &str) -> Option<Self> {
-        if s.len() != 64 {
+        // Require 64 ASCII bytes before slicing: `s.len()` counts bytes, so a
+        // 64-byte value carrying a multi-byte UTF-8 char would slice across a
+        // char boundary and panic. Persisted digests are always ASCII hex;
+        // anything else is malformed and returns None (recoverable), not a panic.
+        if s.len() != 64 || !s.is_ascii() {
             return None;
         }
         let mut out = [0u8; 32];
@@ -338,6 +342,14 @@ fn history_validity(
     recorded: &HistoryObservation,
     observed: &HistoryObservation,
 ) -> Option<MissingReason> {
+    // A failed probe *now* is never a basis for reuse, even when the recorded
+    // stamp captured the identical failure: we cannot confirm the current
+    // inputs, so we must refresh (conservative-on-unknown, health-evidence
+    // contract). Check the observed failure before the equality short-circuit,
+    // otherwise two matching `Unknown` stamps would validate as Current.
+    if let HistoryObservation::Unknown(failure) = observed {
+        return Some(MissingReason::Failed(*failure));
+    }
     if recorded == observed {
         return None;
     }
@@ -360,6 +372,12 @@ fn result_validity<T: PartialEq>(
     recorded: &Result<T, InputFailure>,
     observed: &Result<T, InputFailure>,
 ) -> Option<MissingReason> {
+    // A current probe failure never supports reuse, even if the recorded stamp
+    // held the identical error (conservative-on-unknown). Check before the
+    // equality short-circuit so two matching `Err` stamps don't pass as Current.
+    if let Err(failure) = observed {
+        return Some(MissingReason::Failed(*failure));
+    }
     if recorded == observed {
         return None;
     }
@@ -546,5 +564,50 @@ mod tests {
         let json = serde_json::to_string(&stamp).expect("serialize");
         let back: InputStamp = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(stamp, back);
+    }
+
+    #[test]
+    fn repeated_history_probe_failure_is_not_current() {
+        // Recorded and observed carry the *same* failed history probe. Equality
+        // must not license reuse: an unavailable prerequisite forces refresh
+        // (conservative-on-unknown), so validate(stamp, stamp) is Stale.
+        let mut stamp = base();
+        stamp.history = HistoryObservation::Unknown(InputFailure::ProbeFailed);
+        assert_eq!(
+            validate(&stamp, &stamp),
+            Validity::Stale(MissingReason::Failed(InputFailure::ProbeFailed))
+        );
+    }
+
+    #[test]
+    fn repeated_owners_failure_is_not_current() {
+        let mut stamp = base();
+        stamp.owners = Err(InputFailure::ConfigUnreadable);
+        assert_eq!(
+            validate(&stamp, &stamp),
+            Validity::Stale(MissingReason::Failed(InputFailure::ConfigUnreadable))
+        );
+    }
+
+    #[test]
+    fn repeated_rollup_failure_is_not_current() {
+        let mut stamp = base();
+        stamp.rollups = Err(InputFailure::ResolutionIncomplete);
+        assert_eq!(
+            validate(&stamp, &stamp),
+            Validity::Stale(MissingReason::Failed(InputFailure::ResolutionIncomplete))
+        );
+    }
+
+    #[test]
+    fn from_hex_rejects_non_ascii_without_panicking() {
+        // A 64-*byte* value that is not ASCII must return None, never panic by
+        // slicing across a UTF-8 char boundary. "€" is 3 bytes; one plus 61
+        // ASCII zeros is 64 bytes but 62 chars, so the old byte-offset slicing
+        // would split the multi-byte char.
+        let malformed = format!("€{}", "0".repeat(61));
+        assert_eq!(malformed.len(), 64);
+        assert!(!malformed.is_ascii());
+        assert_eq!(Digest::from_hex(&malformed), None);
     }
 }

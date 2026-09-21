@@ -216,3 +216,65 @@ fn reindex_mints_a_fresh_epoch_and_clears_runs() {
     assert_ne!(new_epoch, epoch);
     assert!(db.load_current_health_run().unwrap().is_none());
 }
+
+#[test]
+fn run_from_a_prior_epoch_cannot_publish_after_reindex() {
+    // A run staged before a reindex must never publish, even when the generation
+    // counter has counted back up to the same value in the new epoch. The epoch
+    // guard — not just the generation guard — rejects it, so a stale staged run
+    // can never replace the current pointer under a fresh index identity.
+    let (_dir, db) = setup_db();
+    let old_epoch = db.ensure_index_epoch().unwrap();
+
+    db.reindex().unwrap();
+    let new_epoch = db.ensure_index_epoch().unwrap();
+    assert_ne!(new_epoch, old_epoch);
+    let live = Generation(db.get_data_generation().unwrap());
+
+    // Stamped with the *old* epoch but at the *current* live generation, so the
+    // generation re-check passes and only the epoch guard can reject it.
+    let staged = sample_run(old_epoch, live);
+    let result = db.publish_health_run(live, &staged).unwrap();
+    assert!(
+        result.is_none(),
+        "a run from a prior epoch must not publish even at a matching generation"
+    );
+    assert!(db.load_current_health_run().unwrap().is_none());
+}
+
+#[test]
+fn payload_generation_disagreeing_with_expected_is_rejected() {
+    // The run is stamped at a different generation than the one it is published
+    // at: a mis-assembled payload. Reject loudly rather than persist evidence
+    // mislabeled with an identity it was never computed against.
+    let (_dir, db) = setup_db();
+    let epoch = db.ensure_index_epoch().unwrap();
+    let generation = Generation(db.get_data_generation().unwrap());
+    let run = sample_run(epoch, Generation(generation.0 + 1));
+
+    let err = db.publish_health_run(generation, &run).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("disagrees with expected generation"),
+        "unexpected error: {err}"
+    );
+    assert!(db.load_current_health_run().unwrap().is_none());
+}
+
+#[test]
+fn payload_epoch_disagreeing_with_run_epoch_is_rejected() {
+    // The input stamp's graph epoch drifts from the run's declared epoch — an
+    // internally inconsistent payload that must not be stored.
+    let (_dir, db) = setup_db();
+    let epoch = db.ensure_index_epoch().unwrap();
+    let generation = Generation(db.get_data_generation().unwrap());
+    let mut run = sample_run(epoch, generation);
+    run.inputs.graph.epoch = IndexEpoch(d("some-other-epoch"));
+
+    let err = db.publish_health_run(generation, &run).unwrap_err();
+    assert!(
+        err.to_string().contains("epoch disagrees"),
+        "unexpected error: {err}"
+    );
+    assert!(db.load_current_health_run().unwrap().is_none());
+}
