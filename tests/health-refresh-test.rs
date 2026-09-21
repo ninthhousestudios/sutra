@@ -9,10 +9,14 @@
 //! a checkpoint or replaces the review baseline.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 use sutra::config::Config;
 use sutra::db::Db;
+use sutra::git::head_commit;
+use sutra::health::BiomarkerKind;
+use sutra::health::evidence::ProducerOutcome;
 use sutra::health::refresh::{DemandOutcome, RefreshResult, refresh_acquiring};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
@@ -118,6 +122,108 @@ fn finding_count(db: &Db, rel: &str) -> usize {
 
 fn total_blast_radius(db: &Db) -> i64 {
     db.all_files().unwrap().iter().map(|f| f.blast_radius).sum()
+}
+
+// --- git-history fixture + outcome helpers (git-history real-path suite) ---
+
+/// Run a git command in `root`, optionally pinning committer+author date to a
+/// fixed unix timestamp, and assert success.
+fn git(root: &Path, args: &[&str], date: Option<i64>) {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(args);
+    if let Some(ts) = date {
+        let val = format!("@{ts} +0000");
+        cmd.env("GIT_COMMITTER_DATE", &val)
+            .env("GIT_AUTHOR_DATE", &val);
+    }
+    let out = cmd.output().expect("git spawn");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn git_init(root: &Path) {
+    git(root, &["init", "-q"], None);
+    git(root, &["config", "user.email", "test@example.com"], None);
+    git(root, &["config", "user.name", "Test"], None);
+    // Deterministic default branch regardless of the host git's init.defaultBranch.
+    git(root, &["symbolic-ref", "HEAD", "refs/heads/main"], None);
+}
+
+/// Stage everything and commit with a pinned committer timestamp.
+fn git_commit(root: &Path, ts: i64) {
+    git(root, &["add", "-A"], None);
+    // --no-verify: skip any inherited pre-commit hook (e.g. a global rustfmt
+    // gate) — these seed files are fixtures, not project source.
+    git(
+        root,
+        &["commit", "-q", "--no-verify", "-m", "seed"],
+        Some(ts),
+    );
+}
+
+fn head_sha(root: &Path) -> String {
+    head_commit(root).unwrap().expect("resolved HEAD")
+}
+
+/// A `fixture` whose workspace root is a real git repo with the given files
+/// committed in two passes, each touching every file, so any indexed pair
+/// co-changes with jaccard 1.0. Committer timestamps sit comfortably inside the
+/// trailing 90-day window, so history ingests as `Loaded`.
+fn git_fixture(id: &str, files: &[(&str, &str)]) -> Fixture {
+    let fx = fixture(id, files);
+    git_init(&fx.ws.root);
+    let now = chrono::Utc::now().timestamp();
+    git_commit(&fx.ws.root, now - 7200);
+    // A second pass touching every file, so the history is plural and the
+    // co-change signal survives the eligible-commit fan-out filter cleanly.
+    for (rel, _) in files {
+        let p = fx.ws.root.join(rel);
+        let mut src = std::fs::read_to_string(&p).unwrap();
+        src.push_str("// seed touch\n");
+        std::fs::write(&p, src).unwrap();
+    }
+    git_commit(&fx.ws.root, now - 3600);
+    fx
+}
+
+/// The published run's outcomes for one producer, across all files.
+fn producer_outcomes(db: &Db, producer: BiomarkerKind) -> Vec<ProducerOutcome> {
+    let run = db
+        .load_current_health_run()
+        .unwrap()
+        .expect("a published health run");
+    run.outcomes
+        .iter()
+        .filter(|o| o.producer == producer)
+        .map(|o| o.outcome)
+        .collect()
+}
+
+/// Assert every per-file outcome for `producer` is `Complete` — i.e. the git
+/// producer saw `Loaded` history, not `Missing(NoHistory)`/`Unsupported`.
+fn assert_all_complete(db: &Db, producer: BiomarkerKind) {
+    let outcomes = producer_outcomes(db, producer);
+    assert!(!outcomes.is_empty(), "{producer:?} must stage an outcome");
+    for outcome in &outcomes {
+        assert!(
+            matches!(outcome, ProducerOutcome::Complete { .. }),
+            "{producer:?} must be Complete with Loaded history, got {outcome:?}"
+        );
+    }
+}
+
+/// Total staged finding count across files for one producer.
+fn producer_finding_total(db: &Db, producer: BiomarkerKind) -> usize {
+    producer_outcomes(db, producer)
+        .iter()
+        .map(|o| match o {
+            ProducerOutcome::Complete { finding_count } => *finding_count,
+            _ => 0,
+        })
+        .sum()
 }
 
 // --- AC1 + AC6: reuse after a full parse; refresh records no checkpoint ---
@@ -272,5 +378,121 @@ fn full_reparse_repairs_a_stale_health_run() {
     assert!(
         matches!(out, DemandOutcome::Refreshed(RefreshResult::Reused(_))),
         "a full reparse must leave the run current, got {out:?}"
+    );
+}
+
+// --- Git-history real path: git producers recompute on demand refresh ---
+//
+// The tests above use non-git temp workspaces, so history ingests as
+// Empty/Unsupported and every git producer is Missing(NoHistory). These drive a
+// real repo through the same full parse → edit → incremental → demand refresh
+// path, closing the git-history observational gap the health-evidence contract
+// enumerates: HiddenCoupling/BlastRadiusChurn depend on Loaded history, and
+// HiddenCoupling additionally on the current static graph edges.
+
+/// The pair of indexed files every git test co-changes. They start with no
+/// cross-file reference, so the co-change lacks a static edge → HiddenCoupling
+/// fires. Mirrors the resolving import construct proven by the rollups test.
+const GIT_FILES: [(&str, &str); 2] = [
+    ("src/lib.rs", "pub fn hello() -> i32 { 1 }\n"),
+    ("src/util.rs", "pub fn greet() -> i32 { 2 }\n"),
+];
+
+// --- AC1: a full parse WITH history marks the git producers Complete ---
+
+#[test]
+fn full_parse_with_history_marks_git_producers_complete() {
+    let fx = git_fixture("git-complete", &GIT_FILES);
+    full_parse(&fx);
+
+    // Loaded history reaches every git producer: Complete, not Missing(NoHistory)
+    // as it would be in the non-git workspaces the sibling tests use.
+    assert_all_complete(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert_all_complete(&fx.db, BiomarkerKind::BlastRadiusChurn);
+    assert_all_complete(&fx.db, BiomarkerKind::CoChangeScatter);
+    assert_all_complete(&fx.db, BiomarkerKind::ChangeEntropy);
+
+    // lib/util co-change with no static edge → HiddenCoupling actually fires,
+    // proving the ingested history reached the producer (Complete { n>0 }).
+    assert!(
+        producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling) > 0,
+        "co-changing files with no import edge must yield a hidden-coupling finding"
+    );
+}
+
+// --- AC2: comment edit at unchanged HEAD re-ingests history, still Complete ---
+
+#[test]
+fn comment_edit_at_unchanged_head_keeps_git_producers_complete() {
+    let fx = git_fixture("git-comment", &GIT_FILES);
+    full_parse(&fx);
+    let head = head_sha(&fx.ws.root);
+    let coupling0 = producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert!(coupling0 > 0, "baseline hidden coupling must be present");
+
+    // A comment-only, UNCOMMITTED edit: HEAD (and the commit set) is unchanged.
+    let mut src = std::fs::read_to_string(fx.ws.root.join("src/util.rs")).unwrap();
+    src.push_str("// trailing comment, no semantic or history change\n");
+    std::fs::write(fx.ws.root.join("src/util.rs"), &src).unwrap();
+
+    // Generation bump → the demand refresh must rebuild and re-ingest history
+    // against the same pinned HEAD + absolute cutoff, then republish.
+    incremental_reparse(&fx);
+    let out = demand_refresh(&fx);
+    assert!(
+        matches!(out, DemandOutcome::Refreshed(RefreshResult::Published(_))),
+        "a generation bump must force a rebuild+republish, got {out:?}"
+    );
+
+    // HEAD really did not move: the refresh re-ingested against the SAME commit.
+    assert_eq!(head_sha(&fx.ws.root), head, "HEAD must be unchanged");
+
+    // Git producers stay Complete (not spuriously NoHistory/Missing), and with
+    // both history and edges unchanged the hidden-coupling signal is identical.
+    assert_all_complete(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert_all_complete(&fx.db, BiomarkerKind::BlastRadiusChurn);
+    assert_eq!(
+        producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling),
+        coupling0,
+        "comment-only edit changes no history and no static edges"
+    );
+}
+
+// --- AC3: a static-edge change at unchanged HEAD flips HiddenCoupling ---
+
+#[test]
+fn static_edge_change_at_unchanged_head_flips_hidden_coupling() {
+    let fx = git_fixture("git-edge", &GIT_FILES);
+    full_parse(&fx);
+    let head = head_sha(&fx.ws.root);
+    assert!(
+        producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling) > 0,
+        "baseline: hidden coupling present (co-change, no static edge)"
+    );
+
+    // Introduce an import edge util -> lib in the WORKING TREE only (HEAD
+    // unchanged), so the static graph now explains the co-change.
+    std::fs::write(
+        fx.ws.root.join("src/util.rs"),
+        "use crate::hello;\npub fn greet() -> i32 { hello() + 2 }\n",
+    )
+    .unwrap();
+
+    incremental_reparse(&fx);
+    let out = demand_refresh(&fx);
+    assert!(
+        matches!(out, DemandOutcome::Refreshed(RefreshResult::Published(_))),
+        "a graph-edge change must force a rebuild+republish, got {out:?}"
+    );
+    assert_eq!(head_sha(&fx.ws.root), head, "HEAD must be unchanged");
+
+    // HiddenCoupling depends on history AND current edges: the same commit
+    // history still ingests as Loaded (producer Complete), but the new static
+    // edge over the co-changing pair suppresses the finding.
+    assert_all_complete(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert_eq!(
+        producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling),
+        0,
+        "a static edge over the co-changing pair must clear the hidden-coupling finding"
     );
 }
