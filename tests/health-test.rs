@@ -2555,3 +2555,114 @@ fn snapshot_file_completeness_round_trips() {
     assert!(!whole.partial);
     assert!(whole.missing_biomarkers.is_empty());
 }
+
+// --- review baseline pinning (sutra/421 Wave D) ---
+
+#[test]
+fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/x.rs");
+
+    // An OLDER baseline where the file scored 6.0, then a NEWER snapshot where it
+    // scored a clean 10.0. `sutra_review` pins the pre-request baseline; the
+    // wrong behaviour would silently compare against the latest.
+    let baseline = insert_snapshot(&db, 6.0);
+    db.insert_snapshot_files(
+        baseline,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/x.rs".into(),
+            score: 6.0,
+            category_scores: r#"{"structural":4.0}"#.into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
+        }],
+    )
+    .unwrap();
+
+    let latest = insert_snapshot(&db, 10.0);
+    db.insert_snapshot_files(
+        latest,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/x.rs".into(),
+            score: 10.0,
+            category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
+        }],
+    )
+    .unwrap();
+
+    // The file has no stored or on-demand findings → current score is a clean 10.0.
+    let changed = ["src/x.rs".to_string()];
+
+    // None → latest snapshot (10.0): no measured change.
+    let against_latest =
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], None).unwrap();
+    assert!(
+        against_latest.degraded.is_empty() && against_latest.improved.is_empty(),
+        "vs latest (10.0) there is no delta"
+    );
+
+    // Some(baseline) → the pinned older snapshot (6.0): a +4 improvement.
+    let against_pinned =
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    assert_eq!(against_pinned.degraded.len(), 0);
+    assert_eq!(
+        against_pinned.improved.len(),
+        1,
+        "vs the pinned 6.0 baseline the file improved to 10.0"
+    );
+    assert_eq!(against_pinned.improved[0].path, "src/x.rs");
+    assert!((against_pinned.improved[0].previous_score - 6.0).abs() < 1e-6);
+}
+
+#[test]
+fn compute_health_delta_excludes_waived_findings_like_file_health() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/w.rs");
+    seed_fn(&db, fid, "w::deep", "deep", Some(7)); // nesting 7 > 4 → a finding
+
+    let findings = compute_nested_complexity(&db).unwrap();
+    assert_eq!(findings.len(), 1);
+    db.replace_health_findings(&findings).unwrap();
+
+    // Baseline where the file scored a clean 10.0 — score_workspace excludes
+    // waived findings, so a waived finding never lowered the stored baseline.
+    let baseline = insert_snapshot(&db, 10.0);
+    db.insert_snapshot_files(
+        baseline,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/w.rs".into(),
+            score: 10.0,
+            category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
+        }],
+    )
+    .unwrap();
+
+    let changed = ["src/w.rs".to_string()];
+
+    // Active finding lowers the current score → a degradation vs the clean baseline.
+    let unwaived =
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    assert_eq!(
+        unwaived.degraded.len(),
+        1,
+        "the active finding degrades vs a clean baseline"
+    );
+
+    // Waiving it must exclude it from the current side too (same policy as file
+    // health), so no spurious degradation against the waiver-free baseline.
+    db.create_health_waiver("nested_complexity", "src/w.rs", None, "accepted", "josh")
+        .unwrap();
+    let waived =
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    assert!(
+        waived.degraded.is_empty() && waived.improved.is_empty(),
+        "a waived finding must not manufacture a delta"
+    );
+}

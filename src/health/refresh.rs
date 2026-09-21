@@ -183,6 +183,40 @@ pub fn refresh(
     publish_run(session, db, workspace_root, graph, ingestion.observation)
 }
 
+/// Acquire the cross-process parse flock (nonblocking) and run a demand
+/// [`refresh`]. This is the reusable core of every *acquiring* health consumer:
+/// the MCP demand adapter (which additionally holds the in-process coordinator
+/// across a `spawn_blocking`), the review path (which already holds the
+/// coordinator), and integration tests. On flock contention it returns
+/// [`DemandOutcome::Deferred`] rather than blocking; the caller maps a refresh
+/// `Err` to [`DemandOutcome::Failed`].
+///
+/// It never locks the in-process coordinator — that is the caller's concern (the
+/// flock alone is the cross-process writer exclusion the contract requires here).
+pub fn refresh_acquiring(
+    config: &crate::config::Config,
+    workspace_id: &str,
+    db: &Db,
+    workspace_root: &Path,
+    now_unix: i64,
+) -> Result<DemandOutcome> {
+    let flock = match crate::pipeline::try_acquire_parse_flock(config, workspace_id)? {
+        Some(f) => f,
+        None => {
+            return Ok(DemandOutcome::Deferred(
+                crate::health::evidence::DeferReason::LockBusy,
+            ));
+        }
+    };
+    let session = HealthSession::from_held_flock(&flock);
+    Ok(DemandOutcome::Refreshed(refresh(
+        &session,
+        db,
+        workspace_root,
+        now_unix,
+    )?))
+}
+
 /// Rebuild file rollups (blast radius) over the current resolved graph. A no-op
 /// on an empty index. Recomputes all files (no dirty hint): the demand path
 /// cannot cheaply know which rollups a resolution change invalidated.

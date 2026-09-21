@@ -535,20 +535,11 @@ impl SutraServer {
         let ws_lock_id = entry.id;
         let now = chrono::Utc::now().timestamp();
         let result = tokio::task::spawn_blocking(move || {
-            // Hold the coordinator guard for the whole write; then take the flock.
+            // Hold the coordinator guard for the whole write; refresh_acquiring
+            // takes the nonblocking cross-process flock and drives the core.
             let _guard = guard;
-            // Cross-process exclusion: nonblocking. Contention => defer, never wait.
-            let flock = match crate::pipeline::try_acquire_parse_flock(&config, &ws_lock_id) {
-                Ok(Some(f)) => f,
-                Ok(None) => return DemandOutcome::Deferred(DeferReason::LockBusy),
-                Err(e) => {
-                    tracing::warn!("health: parse flock attempt failed: {e}");
-                    return DemandOutcome::Failed;
-                }
-            };
-            let session = crate::health::refresh::HealthSession::from_held_flock(&flock);
-            match crate::health::refresh::refresh(&session, &db, &root, now) {
-                Ok(r) => DemandOutcome::Refreshed(r),
+            match crate::health::refresh::refresh_acquiring(&config, &ws_lock_id, &db, &root, now) {
+                Ok(o) => o,
                 Err(e) => {
                     tracing::warn!("health: demand refresh failed: {e}");
                     DemandOutcome::Failed
@@ -579,20 +570,11 @@ impl SutraServer {
         root: &Path,
         ws_id: &str,
     ) -> crate::health::refresh::DemandOutcome {
-        use crate::health::evidence::DeferReason;
         use crate::health::refresh::DemandOutcome;
         let canonical = self.canonical_ws_id(ws_id);
-        let flock = match crate::pipeline::try_acquire_parse_flock(&self.config, &canonical) {
-            Ok(Some(f)) => f,
-            Ok(None) => return DemandOutcome::Deferred(DeferReason::LockBusy),
-            Err(e) => {
-                tracing::warn!("review: health flock attempt failed: {e}");
-                return DemandOutcome::Failed;
-            }
-        };
-        let session = crate::health::refresh::HealthSession::from_held_flock(&flock);
-        match crate::health::refresh::refresh(&session, db, root, chrono::Utc::now().timestamp()) {
-            Ok(r) => DemandOutcome::Refreshed(r),
+        let now = chrono::Utc::now().timestamp();
+        match crate::health::refresh::refresh_acquiring(&self.config, &canonical, db, root, now) {
+            Ok(o) => o,
             Err(e) => {
                 tracing::warn!("review: health refresh failed: {e}");
                 DemandOutcome::Failed
