@@ -975,7 +975,8 @@ fn ownership_risk_top_owner_below_40() {
     let pairs: Vec<(String, i64)> = commits.iter().map(|c| (c.hash.clone(), fid)).collect();
     seed_commits(&db, &commits, &pairs);
 
-    let findings = compute_ownership_risk(&db, dir.path()).unwrap();
+    let owners = sutra::health::probe::probe_owners(dir.path()).config;
+    let findings = compute_ownership_risk(&db, &owners).unwrap();
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].biomarker_kind, BiomarkerKind::OwnershipRisk);
     assert!(findings[0].detail.contains("top owner"));
@@ -1011,7 +1012,8 @@ fn ownership_risk_minor_contributors() {
     }
     seed_commits(&db, &commits, &pairs);
 
-    let findings = compute_ownership_risk(&db, dir.path()).unwrap();
+    let owners = sutra::health::probe::probe_owners(dir.path()).config;
+    let findings = compute_ownership_risk(&db, &owners).unwrap();
     assert_eq!(findings.len(), 1);
     assert!(findings[0].detail.contains("minor contributors"));
 }
@@ -1062,7 +1064,8 @@ fn ownership_risk_with_alias_merging() {
     }
     seed_commits(&db, &commits, &pairs);
 
-    let findings = compute_ownership_risk(&db, dir.path()).unwrap();
+    let owners = sutra::health::probe::probe_owners(dir.path()).config;
+    let findings = compute_ownership_risk(&db, &owners).unwrap();
     // After aliasing: alice@dev = 10, bob@dev = 10 → 50% each, top owner = 50% >= 40%
     // Only 2 authors, no minor contributors → no finding should fire
     assert!(
@@ -1109,7 +1112,8 @@ fn ownership_risk_no_alias_file_conservative() {
     }
     seed_commits(&db, &commits, &pairs);
 
-    let findings = compute_ownership_risk(&db, dir.path()).unwrap();
+    let owners = sutra::health::probe::probe_owners(dir.path()).config;
+    let findings = compute_ownership_risk(&db, &owners).unwrap();
     assert_eq!(findings.len(), 1, "3 authors at 33% each → top < 40%");
     assert!(findings[0].detail.contains("top owner"));
 }

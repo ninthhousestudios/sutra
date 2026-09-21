@@ -189,10 +189,18 @@ pub fn compute_all_health_findings(db: &Db, workspace_root: &Path) -> Result<Vec
     let mut findings = compute_nested_complexity(db)?;
     findings.extend(super::git_metrics::compute_co_change_scatter(db)?);
     findings.extend(super::git_metrics::compute_change_entropy(db)?);
-    findings.extend(super::git_metrics::compute_ownership_risk(
-        db,
-        workspace_root,
-    )?);
+    // Probe owners once (contract: a malformed/unreadable owners file is a
+    // recorded failure, not a silent empty default). Only score ownership when
+    // the config was successfully observed; a failed stamp means the ownership
+    // producer emits no findings, and the locked refresh core (sutra/415) stages
+    // its outcome as Missing(Failed(..)) rather than a clean zero-debt result.
+    let owners_probe = super::probe::probe_owners(workspace_root);
+    if owners_probe.stamp.is_ok() {
+        findings.extend(super::git_metrics::compute_ownership_risk(
+            db,
+            &owners_probe.config,
+        )?);
+    }
     findings.extend(super::git_metrics::compute_hidden_coupling(db)?);
     findings.extend(compute_import_cycle_membership(db)?);
     findings.extend(compute_dead_code_ratio(db)?);

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -30,14 +29,6 @@ const BLAST_CHURN_THRESHOLD: i64 = 5;
 pub struct OwnersConfig {
     #[serde(default)]
     pub aliases: HashMap<String, String>,
-}
-
-pub fn load_owners_config(workspace_root: &Path) -> OwnersConfig {
-    let path = workspace_root.join(".sutra/owners.toml");
-    match std::fs::read_to_string(&path) {
-        Ok(content) => toml::from_str(&content).unwrap_or_default(),
-        Err(_) => OwnersConfig::default(),
-    }
 }
 
 fn file_path_map(db: &Db) -> Result<HashMap<i64, Arc<str>>> {
@@ -117,9 +108,13 @@ pub fn compute_change_entropy(db: &Db) -> Result<Vec<HealthFinding>> {
     Ok(findings)
 }
 
-pub fn compute_ownership_risk(db: &Db, workspace_root: &Path) -> Result<Vec<HealthFinding>> {
+/// Ownership-risk findings from the observed author distribution, merged through
+/// the caller-supplied owners aliases. The config is *probed* by the caller
+/// ([`crate::health::probe::probe_owners`]) so a malformed/unreadable owners file
+/// is a recorded failure the caller declines to score from, never silently
+/// treated as an empty default (health-evidence contract, sutra/415).
+pub fn compute_ownership_risk(db: &Db, owners_config: &OwnersConfig) -> Result<Vec<HealthFinding>> {
     let raw = db.file_author_commits()?;
-    let owners_config = load_owners_config(workspace_root);
     let mut by_file: HashMap<i64, HashMap<String, i64>> = HashMap::new();
     for (file_id, author, count) in raw {
         let canonical = owners_config
