@@ -3,7 +3,7 @@ use rusqlite::params;
 use super::Db;
 use crate::error::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HealthFindingRow {
     pub id: i64,
     pub file_id: i64,

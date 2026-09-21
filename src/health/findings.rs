@@ -114,6 +114,23 @@ impl BiomarkerKind {
     }
 }
 
+// Serialize through the canonical snake_case `as_str`/`parse` vocabulary so the
+// persisted health-evidence blobs (sutra/414) share one biomarker spelling with
+// the `health_findings` table, rather than the PascalCase a derive would emit.
+impl serde::Serialize for BiomarkerKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BiomarkerKind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = <String as serde::Deserialize>::deserialize(d)?;
+        BiomarkerKind::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown biomarker kind `{s}`")))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HealthFinding {
     pub file_id: i64,
