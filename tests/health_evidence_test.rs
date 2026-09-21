@@ -180,6 +180,26 @@ fn current_pointer_advances_and_old_run_is_retained_for_diagnostics() {
 }
 
 #[test]
+fn publishing_health_does_not_advance_derived_completion() {
+    // Health publication has its own sequence; it must never mark the global
+    // derived tier complete (that stays the job of full parse / HRR / components).
+    let (_dir, db) = setup_db();
+    let epoch = db.ensure_index_epoch().unwrap();
+    let generation = Generation(db.get_data_generation().unwrap());
+    let before = db.get_derived_complete_generation().unwrap();
+
+    db.publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        db.get_derived_complete_generation().unwrap(),
+        before,
+        "publishing health evidence must not touch derived_complete_generation"
+    );
+}
+
+#[test]
 fn reindex_mints_a_fresh_epoch_and_clears_runs() {
     let (_dir, db) = setup_db();
     let epoch = db.ensure_index_epoch().unwrap();

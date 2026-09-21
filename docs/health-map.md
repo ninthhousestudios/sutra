@@ -275,9 +275,37 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
 | health_snapshot_files | Ephemeral | 0033 | Per-file health scores at each snapshot |
 | health_snapshot_components | Ephemeral | 0033 | Per-component aggregated scores at each snapshot |
+| index_meta (index_epoch col) | Durable | 0074 | ALTER adds index_epoch TEXT; minted lazily, NULLed+reminted on reindex (sutra/414) |
+| health_runs | Ephemeral | 0075 | Immutable, insert-only health evidence runs (FK-free JSON blobs: input_stamp, outcomes, findings) |
+| health_current | Ephemeral | 0075 | Single-row atomic pointer to the current health_runs.run_id |
 
 Dropped in 0045: convention_snapshots (previously stored FCA conformance
 and HRR coherence metrics for drift trending).
+
+### Health evidence storage (sutra/414)
+
+The health-evidence contract (sutra/412) validity/storage layer:
+- `src/health/evidence.rs` — owned value types (`Digest`, `IndexEpoch`,
+  `Generation`(i64), `RunId`(i64), repository/history/owners/graph stamps,
+  `InputStamp`, `ProducerOutcome`, `StoredRun`/`PublishRun`) + the conservative
+  `validate(recorded, observed) -> Validity`. Any diverging input axis is
+  `Stale`; an observed probe failure is `Failed(..)` not a clean/empty
+  observation. Serializes biomarkers through the canonical snake_case
+  vocabulary. Scoring/comparison (416) and the locked-refresh staging trait
+  (415) are intentionally NOT here.
+- `src/db/health_evidence.rs` — `index_epoch`/`ensure_index_epoch`,
+  `publish_health_run` (atomic run + pointer; aborts `Ok(None)` if
+  `data_generation` moved since the inputs were observed — the mixed-generation
+  guard), `load_current_health_run` / `load_health_run` (retained diagnostics).
+  `get_derived_complete_generation` is the reader partner to
+  `set_derived_complete`; health publication never advances it.
+- Legacy indexes have zero runs → readers return `None` (LegacyUnknown); no
+  backfill from content hash / HEAD / snapshot completeness.
+- Tests: `tests/health_evidence_test.rs` (migration/round-trip/invalidation/
+  stale-generation/reindex) + unit tests in `evidence.rs`.
+- Remaining slices consume this: 415 (locked refresh, input probing, consumer
+  adapters), 416 (scoring/comparison/attribution), 417 (fallible repo probe),
+  418 (snapshot/trend completeness).
 
 Migration 0027 is `ephemeral_only: true` — on reindex, symbols table is
 dropped and recreated by 0001, then 0027 re-runs the ALTER TABLE.
