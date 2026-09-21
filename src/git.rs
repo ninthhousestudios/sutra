@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::error::{Result, SutraError};
 
@@ -266,16 +266,66 @@ pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result
 
 /// Whether `workspace_root` is inside a git working tree. Used to tell a true
 /// structural absence (not a repo → git biomarkers excluded) from a transient
-/// `git log` failure in a real repo (→ worst-cased, not excluded) — sutra/408.
-/// A failure to spawn git, or any non-success exit, reads as "not a repo".
-pub fn is_git_repo(workspace_root: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Outcome of probing whether `workspace_root` is a git repository. The three
+/// states are deliberately distinct (sutra/417): only a *positively confirmed*
+/// non-repository may exclude the git biomarkers. A missing git executable, a
+/// spawn failure, an access error or any unrecognized nonzero exit is
+/// [`RepoProbe::Unknown`] — indeterminate, not structural absence — and must be
+/// worst-cased (retain prior evidence, do not exclude), never read as absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoProbe {
+    /// git resolved a repository context at `workspace_root`.
+    Present,
+    /// git positively reported that `workspace_root` is not in any repository.
+    ConfirmedAbsent,
+    /// The probe could not determine repository state (git missing, spawn
+    /// failure, access error, or any unrecognized failure).
+    Unknown,
+}
+
+/// Probe whether `workspace_root` is inside a git working tree, distinguishing a
+/// confirmed non-repository from an indeterminate failure (sutra/417). A real
+/// `git log` failure in a git repo must still be worst-cased, not excluded
+/// (sutra/408); only [`RepoProbe::ConfirmedAbsent`] licenses exclusion.
+pub fn probe_git_repo(workspace_root: &Path) -> RepoProbe {
+    classify_repo_probe(
+        Command::new("git")
+            .arg("-C")
+            .arg(workspace_root)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .output(),
+    )
+}
+
+/// Classify a `git rev-parse --is-inside-work-tree` invocation into a tri-state
+/// [`RepoProbe`]. Split from the spawn so it is unit-testable with synthetic
+/// command output — an injected command seam, not a process-global PATH mutation
+/// (sutra/417). Inspects stdout as well as exit status: a success is trusted
+/// only when git actually reports a work-tree boolean; a nonzero exit confirms
+/// absence only for git's own "not a git repository" fatal (exit 128).
+fn classify_repo_probe(result: std::io::Result<Output>) -> RepoProbe {
+    let Ok(output) = result else {
+        // Spawn failure — git missing or not executable. Indeterminate.
+        return RepoProbe::Unknown;
+    };
+    if output.status.success() {
+        // `--is-inside-work-tree` prints `true` in a work tree and `false`
+        // inside a bare/git dir; both mean git resolved a repository context.
+        // Any other successful output is unrecognized — don't claim presence.
+        return match String::from_utf8_lossy(&output.stdout).trim() {
+            "true" | "false" => RepoProbe::Present,
+            _ => RepoProbe::Unknown,
+        };
+    }
+    // Nonzero exit. Only git's own "not a git repository" fatal confirms
+    // absence; a permission error, broken repo or any other failure is
+    // indeterminate and must not be read as structural absence.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() == Some(128) && stderr.contains("not a git repository") {
+        RepoProbe::ConfirmedAbsent
+    } else {
+        RepoProbe::Unknown
+    }
 }
 
 /// Return all (commit_hash, timestamp, author, file_path) tuples from git
@@ -518,4 +568,86 @@ pub fn git_commit_changed_files(
         }
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    /// Build a synthetic `git` invocation result — the injected command seam
+    /// that lets us exercise every probe outcome without spawning git or
+    /// mutating a process-global PATH (sutra/417). On unix the raw wait status
+    /// is `code << 8`, so `code` is the exit code and `0` means success.
+    fn done(code: i32, stdout: &str, stderr: &str) -> std::io::Result<Output> {
+        Ok(Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    #[test]
+    fn present_inside_work_tree() {
+        assert_eq!(
+            classify_repo_probe(done(0, "true\n", "")),
+            RepoProbe::Present
+        );
+    }
+
+    #[test]
+    fn present_inside_git_dir_not_work_tree() {
+        // `--is-inside-work-tree` prints `false` (exit 0) inside a bare/git dir:
+        // still a repository context, so Present, never ConfirmedAbsent.
+        assert_eq!(
+            classify_repo_probe(done(0, "false\n", "")),
+            RepoProbe::Present
+        );
+    }
+
+    #[test]
+    fn confirmed_absent_only_for_not_a_repo_fatal() {
+        let stderr = "fatal: not a git repository (or any of the parent directories): .git\n";
+        assert_eq!(
+            classify_repo_probe(done(128, "", stderr)),
+            RepoProbe::ConfirmedAbsent
+        );
+    }
+
+    #[test]
+    fn spawn_failure_is_unknown() {
+        let err = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no git"));
+        assert_eq!(classify_repo_probe(err), RepoProbe::Unknown);
+    }
+
+    #[test]
+    fn access_error_is_unknown_not_absent() {
+        // git exits 128 but the fatal is not "not a git repository": an
+        // inaccessible repo must stay indeterminate, never structural absence.
+        let stderr = "fatal: unable to read current working directory: Permission denied\n";
+        assert_eq!(
+            classify_repo_probe(done(128, "", stderr)),
+            RepoProbe::Unknown
+        );
+    }
+
+    #[test]
+    fn arbitrary_nonzero_exit_is_unknown() {
+        assert_eq!(
+            classify_repo_probe(done(1, "", "fatal: something else\n")),
+            RepoProbe::Unknown
+        );
+    }
+
+    #[test]
+    fn unrecognized_success_output_is_unknown() {
+        // A success exit with output git would never emit must not be
+        // over-claimed as Present.
+        assert_eq!(classify_repo_probe(done(0, "", "")), RepoProbe::Unknown);
+        assert_eq!(
+            classify_repo_probe(done(0, "maybe\n", "")),
+            RepoProbe::Unknown
+        );
+    }
 }

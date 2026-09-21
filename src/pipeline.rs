@@ -1163,14 +1163,19 @@ fn post_parse_sequence(
                     // Do NOT clear commit_files: a transient failure must not
                     // destroy prior evidence, or health could improve by losing
                     // data. If we still have commit data, score from it
-                    // (Available); otherwise distinguish a real repo (NoHistory)
-                    // from a non-repo (NotARepo) so only the latter is excluded.
+                    // (Available); otherwise a *confirmed* non-repo is the only
+                    // structural absence (NotARepo, excluded). An indeterminate
+                    // probe — git missing, access error, arbitrary failure —
+                    // must be worst-cased as NoHistory, not excluded (sutra/417).
                     let availability = if db.commit_file_count()? > 0 {
                         GitAvailability::Available
-                    } else if crate::git::is_git_repo(workspace_root) {
-                        GitAvailability::NoHistory
                     } else {
-                        GitAvailability::NotARepo
+                        match crate::git::probe_git_repo(workspace_root) {
+                            crate::git::RepoProbe::ConfirmedAbsent => GitAvailability::NotARepo,
+                            crate::git::RepoProbe::Present | crate::git::RepoProbe::Unknown => {
+                                GitAvailability::NoHistory
+                            }
+                        }
                     };
                     (HashMap::new(), availability)
                 }
