@@ -2840,9 +2840,12 @@ fn edge_derived_violations_are_never_silently_clean_under_concurrent_reminting()
     let stop = AtomicBool::new(false);
 
     std::thread::scope(|s| {
-        // A concurrent reparse: continuously delete and re-insert both files,
-        // reminting their ids exactly as `replace_file_data` does, so the
-        // foreground evaluations straddle a committing reparse. Each
+        // A concurrent reparse: continuously delete and re-insert both files
+        // via `delete_file_cascade`, reminting their ids, so the foreground
+        // evaluations straddle a committing reparse. (Note: `replace_file_data`
+        // itself now preserves file identity across a content edit, sutra/413;
+        // this fixture drives id churn through the delete path deliberately.)
+        // Each
         // `delete_file_cascade` bumps `data_generation`, which is the signal the
         // guard keys on.
         s.spawn(|| {

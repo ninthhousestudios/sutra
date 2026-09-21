@@ -475,6 +475,108 @@ async fn test_incremental_refresh_inbound_ref_unresolves_on_rename() {
     );
 }
 
+/// sutra/413: the real full-parse -> edit -> incremental-parse path must keep
+/// both the edited and the unchanged file's raw commit history, mint no new file
+/// id for the edit, and leave no stale/duplicate extraction rows. The old
+/// `replace_file_data` deleted the files row, cascading `commit_files` away and
+/// reassigning the id on every incremental reparse.
+#[tokio::test]
+async fn test_incremental_refresh_preserves_commit_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("edited.rs"), "pub fn keep() {}\n").unwrap();
+    std::fs::write(src.join("stable.rs"), "pub fn other() {}\n").unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("inc_history", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+    }
+
+    let edited = db.file_by_path("src/edited.rs").unwrap().unwrap();
+    let stable = db.file_by_path("src/stable.rs").unwrap().unwrap();
+    let edited_id_before = edited.id;
+
+    // Seed raw commit history for both files (as git ingestion would).
+    db.replace_commit_files(
+        &[
+            sutra::db::CommitRow {
+                hash: "aaa111".to_string(),
+                committed_at: 1_700_000_000,
+                author: "t".to_string(),
+            },
+            sutra::db::CommitRow {
+                hash: "bbb222".to_string(),
+                committed_at: 1_700_000_100,
+                author: "t".to_string(),
+            },
+        ],
+        &[
+            ("aaa111".to_string(), edited.id),
+            ("bbb222".to_string(), edited.id),
+            ("aaa111".to_string(), stable.id),
+        ],
+    )
+    .unwrap();
+
+    let commit_links = |file_id: i64| -> i64 {
+        let conn = db.conn_for_test();
+        conn.query_row(
+            "SELECT COUNT(*) FROM commit_files WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(commit_links(edited.id), 2);
+    assert_eq!(commit_links(stable.id), 1);
+
+    // Edit only edited.rs, then incrementally refresh.
+    std::fs::write(
+        src.join("edited.rs"),
+        "pub fn keep() {}\npub fn added() {}\n",
+    )
+    .unwrap();
+    let snap = refresh(&ws, &db, &config);
+    assert_eq!(snap.files_parsed, 1, "only the edited file is reparsed");
+
+    // Identity is stable across the content edit.
+    let edited_after = db.file_by_path("src/edited.rs").unwrap().unwrap();
+    assert_eq!(
+        edited_after.id, edited_id_before,
+        "the edited file must keep its id across an incremental reparse"
+    );
+
+    // Raw history for BOTH files survives.
+    assert_eq!(
+        commit_links(edited.id),
+        2,
+        "the edited file's commit history must survive its reparse"
+    );
+    assert_eq!(
+        commit_links(stable.id),
+        1,
+        "the unchanged file's commit history must be untouched"
+    );
+
+    // Extraction is fresh and not duplicated: `added` is queryable, `keep`
+    // appears exactly once.
+    let syms = db.find_symbols_by_file(edited_after.id).unwrap();
+    let keep_count = syms.iter().filter(|s| &*s.short_name == "keep").count();
+    let added_count = syms.iter().filter(|s| &*s.short_name == "added").count();
+    assert_eq!(
+        keep_count, 1,
+        "no duplicate/stale symbol rows after reparse"
+    );
+    assert_eq!(added_count, 1, "the new symbol must be extracted");
+}
+
 /// Not a correctness test — measures query-path refresh latency for a one-file
 /// edit on the sutra repo itself (sutra/363 acceptance criterion 3). Run:
 /// `cargo test --test workspace_lifecycle_test measure_incremental_refresh -- --ignored --nocapture`.

@@ -914,8 +914,13 @@ impl Db {
         Ok(())
     }
 
-    /// Atomically replace all data for a file: delete old cascade, upsert file
-    /// row, insert symbols/imports/refs in a single transaction.
+    /// Atomically replace all data for a file in a single transaction: keep the
+    /// existing `files` row (stable id) when the path is already indexed,
+    /// replace its extraction children (symbols/imports/refs/FTS), invalidate
+    /// its extraction-derived analysis, and re-insert the new symbols/imports/
+    /// refs. Raw history (`commit_files`) and immutable snapshots are preserved
+    /// across a content edit; only `delete_file_cascade` removes a file. See the
+    /// child-table lifecycle audit inline below (sutra/413).
     /// Returns `(file_id, symbols_inserted)`.
     #[allow(clippy::too_many_arguments)]
     pub fn replace_file_data(
@@ -947,7 +952,30 @@ impl Db {
             Err(e) => return Err(SutraError::Db(e)),
         };
         if let Some(old_id) = old_file_id {
-            // Mark dependent files before cascade deletes destroy the evidence.
+            // Content replacement, NOT deletion: keep this `files` row (and its
+            // stable id) so raw history and other file-keyed immutable evidence
+            // survive the edit. Replace the extraction children, invalidate the
+            // extraction-derived analysis, and leave `commit_files` untouched.
+            // Deleting the row instead cascaded away `commit_files` (raw git
+            // history) and churned the id, orphaning history and derived
+            // evidence on every incremental reparse (sutra/413). Actual file
+            // removal stays in `delete_file_cascade`.
+            //
+            // Child-table lifecycle audit (every table FK'd to files/symbols):
+            //   REPLACE (extraction):  symbols, refs (outgoing), imports,
+            //                          symbols_fts.
+            //   INVALIDATE (derived):  health_findings, health_coverage,
+            //                          component_membership, hrr_file_hashes,
+            //                          plus hrr_vectors and pattern_family_members
+            //                          (cascade off the symbols delete).
+            //   PRESERVE (raw/history): commit_files, and health_snapshot_files
+            //                          (no FK; immutable path-keyed snapshots).
+            //   RE-RESOLVE (resolution): inbound refs from other files (detached
+            //                          below); inbound import edges keep their
+            //                          resolved_file_id — path identity is stable
+            //                          so those edges remain correct.
+
+            // Mark dependent files before the symbol replace destroys the evidence.
             conn.execute(
                 "UPDATE files SET needs_resolution = 1
                  WHERE id != ?1 AND id IN (
@@ -957,16 +985,16 @@ impl Db {
                 params![old_id],
             )?;
 
-            // Detach inbound references from OTHER files before the cascade
-            // delete removes this file's symbols. A resolved ref stores no
-            // call-site name (unresolved_name is cleared on resolution), so
-            // recover it from the target symbol's short_name; nulling the target
-            // keeps the row alive through `refs.target_symbol_id ON DELETE
-            // CASCADE` so post-parse resolution can re-link it to this file's
-            // new symbols. Without this an edit to this file silently drops
-            // resolved inbound edges from unchanged caller files (sutra/378).
-            // SQLite evaluates every SET expression against the pre-update row,
-            // so the COALESCE subquery still sees the old target_symbol_id.
+            // Detach inbound references from OTHER files before deleting this
+            // file's symbols. A resolved ref stores no call-site name
+            // (unresolved_name is cleared on resolution), so recover it from the
+            // target symbol's short_name; nulling the target keeps the row alive
+            // through `refs.target_symbol_id ON DELETE CASCADE` so post-parse
+            // resolution can re-link it to this file's new symbols. Without this
+            // an edit to this file silently drops resolved inbound edges from
+            // unchanged caller files (sutra/378). SQLite evaluates every SET
+            // expression against the pre-update row, so the COALESCE subquery
+            // still sees the old target_symbol_id.
             conn.execute(
                 "UPDATE refs
                     SET unresolved_name = COALESCE(
@@ -979,6 +1007,8 @@ impl Db {
                 params![old_id],
             )?;
 
+            // Manual FTS5 sync: drop this file's symbol FTS rows before the
+            // symbols themselves go (symbols_fts has no FK to cascade).
             let symbol_ids: Vec<i64> = {
                 let mut stmt = conn.prepare("SELECT id FROM symbols WHERE file_id = ?1")?;
                 let ids: rusqlite::Result<Vec<i64>> =
@@ -988,11 +1018,35 @@ impl Db {
             for sid in &symbol_ids {
                 conn.execute("DELETE FROM symbols_fts WHERE symbol_id = ?1", params![sid])?;
             }
+
+            // Replace extraction children. Deleting the symbols cascades their
+            // dependent derived rows (hrr_vectors, pattern_family_members, and
+            // symbol-level health_findings). Refs and imports are keyed by
+            // file_id and replaced directly.
+            conn.execute("DELETE FROM symbols WHERE file_id = ?1", params![old_id])?;
+            conn.execute("DELETE FROM refs WHERE file_id = ?1", params![old_id])?;
+            conn.execute("DELETE FROM imports WHERE file_id = ?1", params![old_id])?;
+
+            // Invalidate extraction-derived analysis that is keyed by file_id and
+            // therefore survives the symbol cascade. Preserving the file id must
+            // not let stale findings/coverage/membership/similarity claim they
+            // reflect the new content (health-evidence contract, sutra/412).
             conn.execute(
-                "UPDATE imports SET resolved_file_id = NULL WHERE resolved_file_id = ?1",
+                "DELETE FROM health_findings WHERE file_id = ?1",
                 params![old_id],
             )?;
-            conn.execute("DELETE FROM files WHERE id = ?1", params![old_id])?;
+            conn.execute(
+                "DELETE FROM health_coverage WHERE file_id = ?1",
+                params![old_id],
+            )?;
+            conn.execute(
+                "DELETE FROM component_membership WHERE file_id = ?1",
+                params![old_id],
+            )?;
+            conn.execute(
+                "DELETE FROM hrr_file_hashes WHERE file_id = ?1",
+                params![old_id],
+            )?;
         }
 
         // Upsert the file row (marks needs_resolution for post-parse ref resolution).

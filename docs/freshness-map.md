@@ -155,6 +155,33 @@ by `replace_file_data`), so the next drift probe reads clean without a snapshot,
 and `data_generation` legitimately stays ahead of `derived_complete_generation`
 (the derived tier really is behind).
 
+### `replace_file_data` child-table lifecycle (sutra/413)
+
+A content edit is **not** a deletion. When the path is already indexed,
+`replace_file_data` keeps the existing `files` row (and its id) and treats every
+table FK'd to `files`/`symbols` in one of three ways. Deleting the `files` row —
+the pre-413 behavior — cascaded raw history away and reassigned the id on every
+incremental reparse, orphaning `commit_files` and derived evidence.
+
+| Child table | Class | Handling on content edit |
+|---|---|---|
+| `symbols` (+ `symbols_fts`) | extraction | replaced (delete by `file_id`, re-insert) |
+| `refs` (outgoing) | extraction | replaced (delete by `file_id`, re-insert) |
+| `imports` (outgoing) | extraction | replaced (delete by `file_id`, re-insert) |
+| inbound `refs` (other files → this file's symbols) | resolution | detached (`target_symbol_id=NULL`, call-site name recovered) then re-resolved (sutra/378) |
+| inbound `imports.resolved_file_id` (other files → this file) | resolution | **kept** — path identity is stable, so the edge stays correct |
+| `health_findings`, `health_coverage` | derived | invalidated (delete by `file_id`) |
+| `component_membership` | derived | invalidated (delete by `file_id`) |
+| `hrr_file_hashes` | derived | invalidated (delete by `file_id`) |
+| `hrr_vectors`, `pattern_family_members` | derived | invalidated (cascade off the `symbols` delete) |
+| `commit_files` | raw history | **preserved** — never touched by a content edit |
+| `health_snapshot_files` | immutable snapshot | **preserved** — no FK; path-keyed historical evidence |
+
+Preserving the id must never let stale derived rows claim they reflect the new
+content: extraction-derived analysis is invalidated independently of the raw
+history it is preserved alongside (health-evidence contract, sutra/412). Actual
+file removal stays in `delete_file_cascade`, which still deletes the row.
+
 Shared helper: `resolve_references` (the resolution + import-edge tier) is called
 by both the full parse (`post_parse_sequence`, which reuses the returned dirty set
 for its graph rollups) and the incremental refresh.

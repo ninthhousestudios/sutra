@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use sutra::db::{
-    Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
+    CommitRow, Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
     SnapshotComponentRow, SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
@@ -1461,9 +1461,166 @@ fn test_replace_file_data_atomic() {
         .unwrap();
     assert!(file_id2 > 0);
     assert_eq!(sym_count2, 1);
+    assert_eq!(
+        file_id2, file_id,
+        "content replacement must preserve the file's identity (sutra/413)"
+    );
 
     let all_syms = db.find_symbols_by_file(file_id2).unwrap();
     assert_eq!(all_syms.len(), 1, "no duplicate symbols after re-replace");
+}
+
+/// sutra/413: a content edit replaces extraction and invalidates derived
+/// analysis, but must NOT reassign the file's identity or destroy its raw
+/// history. Deleting the `files` row (the old behavior) cascaded `commit_files`
+/// away and minted a new id on every incremental reparse.
+#[test]
+fn test_replace_file_data_preserves_history_invalidates_derived() {
+    let (_dir, db) = setup_db();
+
+    let mk_symbols = |name: &'static str| {
+        vec![InsertSymbolParams {
+            file_id: 0,
+            qualified_name: name,
+            short_name: name,
+            kind: "function",
+            signature: None,
+            signature_hash: None,
+            structural_hash: None,
+            visibility: None,
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            parent_symbol_id: None,
+            docstring: None,
+            cyclomatic: None,
+            cognitive: None,
+            max_nesting: None,
+            flags: 0,
+            language_attrs: None,
+        }]
+    };
+    let parents = vec![None];
+    let no_imports: Vec<InsertImportParams> = vec![];
+    let no_refs: Vec<InsertRefParams> = vec![];
+
+    // First extraction: one symbol `alpha`.
+    let (file_id, _) = db
+        .replace_file_data(
+            "m.rs",
+            "rust",
+            "hash1",
+            5,
+            true,
+            None,
+            None,
+            &mk_symbols("alpha"),
+            &parents,
+            &no_imports,
+            &no_refs,
+        )
+        .unwrap();
+
+    // Seed the derived and history state that a later edit must handle. Raw
+    // history via the production path; derived rows directly, keyed by file_id.
+    db.replace_commit_files(
+        &[CommitRow {
+            hash: "c0ffee".to_string(),
+            committed_at: 1_700_000_000,
+            author: "tester".to_string(),
+        }],
+        &[("c0ffee".to_string(), file_id)],
+    )
+    .unwrap();
+    {
+        let conn = db.conn_for_test();
+        conn.execute(
+            "INSERT INTO health_findings
+             (file_id, symbol_id, biomarker_kind, severity, confidence, provenance,
+              metric_value, threshold, detail)
+             VALUES (?1, NULL, 'nested_complexity', 'warning', 1.0, 'test', 9.0, 5.0, 'deep')",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO health_coverage (file_id, content_hash) VALUES (?1, 'hash1')",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO components (id, name) VALUES ('comp1', 'Comp One')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO component_membership (component_id, file_id) VALUES ('comp1', ?1)",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hrr_file_hashes (file_id, content_hash) VALUES (?1, 'hash1')",
+            rusqlite::params![file_id],
+        )
+        .unwrap();
+    }
+
+    // Content edit: `alpha` renamed to `beta`, new content hash.
+    let (file_id2, sym_count2) = db
+        .replace_file_data(
+            "m.rs",
+            "rust",
+            "hash2",
+            6,
+            true,
+            None,
+            None,
+            &mk_symbols("beta"),
+            &parents,
+            &no_imports,
+            &no_refs,
+        )
+        .unwrap();
+
+    // Identity is stable.
+    assert_eq!(file_id2, file_id, "file id must survive a content edit");
+    assert_eq!(sym_count2, 1);
+
+    // Extraction is replaced, not duplicated: only `beta` remains.
+    let syms = db.find_symbols_by_file(file_id).unwrap();
+    assert_eq!(syms.len(), 1, "stale symbol `alpha` must be gone");
+    assert_eq!(&*syms[0].short_name, "beta");
+
+    let conn = db.conn_for_test();
+    // Raw history is PRESERVED.
+    let commit_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM commit_files WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        commit_links, 1,
+        "commit history must survive a content edit"
+    );
+
+    // Derived analysis is INVALIDATED (cannot claim currentness on new content).
+    for (table, label) in [
+        ("health_findings", "health findings"),
+        ("health_coverage", "health coverage"),
+        ("component_membership", "component membership"),
+        ("hrr_file_hashes", "hrr file hashes"),
+    ] {
+        let n: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE file_id = ?1"),
+                rusqlite::params![file_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "stale {label} must be invalidated on content edit");
+    }
 }
 
 #[test]
