@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::Db;
 use crate::error::Result;
@@ -145,6 +145,27 @@ impl Db {
             })?
             .collect::<rusqlite::Result<std::collections::HashMap<i64, String>>>()?;
         Ok(rows)
+    }
+
+    /// Qualified names for the given symbol ids, for labelling retained health
+    /// findings (sutra/415). Missing ids are simply absent from the map — a
+    /// finding whose symbol was since deleted keeps its captured label elsewhere.
+    pub fn symbol_labels(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, String>> {
+        let mut map = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(map);
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT qualified_name FROM symbols WHERE id = ?1")?;
+        for &id in ids {
+            if let Some(name) = stmt
+                .query_row(params![id], |r| r.get::<_, String>(0))
+                .optional()?
+            {
+                map.insert(id, name);
+            }
+        }
+        Ok(map)
     }
 
     pub fn get_health_findings(

@@ -584,7 +584,10 @@ pub fn parse_workspace(
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
-    let _flock = acquire_parse_flock(config, &workspace.id)?;
+    let flock = acquire_parse_flock(config, &workspace.id)?;
+    // The full parse holds the coordinator (its caller) + this flock, so it is
+    // the already-locked health publisher (sutra/415).
+    let health_session = crate::health::refresh::HealthSession::from_held_flock(&flock);
     let head_commit = crate::git::head_commit_hash(&workspace.root);
     let parse_started_at = chrono::Utc::now().to_rfc3339();
     let start = Instant::now();
@@ -715,6 +718,7 @@ pub fn parse_workspace(
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
+            &health_session,
         )?;
         Ok(PostParseResult::Full {
             resolved_count,
@@ -1097,6 +1101,7 @@ fn post_parse_sequence(
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
     registry: &LanguageRegistry,
+    health_session: &crate::health::refresh::HealthSession<'_>,
 ) -> Result<(i64, i64, i64)> {
     let (resolved_count, unresolved_count, skipped_count, resolution_set) =
         resolve_references(db, workspace_root)?;
@@ -1115,72 +1120,27 @@ fn post_parse_sequence(
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency, &gd)?;
         log_phase_rss("post_parse:pagerank_done");
 
-        let cochange_window = components::load_config(workspace_root)?
-            .cochange_window_days
-            .unwrap_or(90);
-        // Resolve git availability as its own axis, separate from the ingestion
-        // outcome (sutra/408): a transient `git log` failure must not be read as
-        // structural absence, and must not destroy prior commit evidence.
-        use crate::health::scoring::GitAvailability;
-        let (churn_map, git_availability) =
-            match crate::git::git_commit_files(workspace_root, cochange_window) {
-                Ok(commit_file_data) if !commit_file_data.is_empty() => {
-                    let churn = crate::git::churn_from_commit_files(&commit_file_data);
-                    let path_to_id: std::collections::HashMap<&str, i64> =
-                        files.iter().map(|f| (&*f.path, f.id)).collect();
-                    let mut seen_hashes: std::collections::HashSet<&str> =
-                        std::collections::HashSet::new();
-                    let mut commit_rows = Vec::new();
-                    for cf in &commit_file_data {
-                        if seen_hashes.insert(cf.hash.as_str()) {
-                            commit_rows.push(crate::db::CommitRow {
-                                hash: cf.hash.clone(),
-                                committed_at: cf.timestamp,
-                                author: cf.author.clone(),
-                            });
-                        }
-                    }
-                    let db_pairs: Vec<(String, i64)> = commit_file_data
-                        .iter()
-                        .filter_map(|cf| {
-                            path_to_id
-                                .get(cf.path.as_str())
-                                .map(|&id| (cf.hash.clone(), id))
-                        })
-                        .collect();
-                    db.replace_commit_files(&commit_rows, &db_pairs)?;
-                    (churn, GitAvailability::Available)
-                }
-                Ok(_) => {
-                    // `git log` succeeded but the window holds no commits: a real
-                    // observation about a real repo, not a repo problem. No churn
-                    // data to score from → NoHistory (worst-cased), not excluded.
-                    db.replace_commit_files(&[], &[])?;
-                    (HashMap::new(), GitAvailability::NoHistory)
-                }
-                Err(e) => {
-                    warn!("git commit-file history unavailable: {e}");
-                    // Do NOT clear commit_files: a transient failure must not
-                    // destroy prior evidence, or health could improve by losing
-                    // data. If we still have commit data, score from it
-                    // (Available); otherwise a *confirmed* non-repo is the only
-                    // structural absence (NotARepo, excluded). An indeterminate
-                    // probe — git missing, access error, arbitrary failure —
-                    // must be worst-cased as NoHistory, not excluded (sutra/417).
-                    let availability = if db.commit_file_count()? > 0 {
-                        GitAvailability::Available
-                    } else {
-                        match crate::git::probe_git_repo(workspace_root) {
-                            crate::git::RepoProbe::ConfirmedAbsent => GitAvailability::NotARepo,
-                            crate::git::RepoProbe::Present | crate::git::RepoProbe::Unknown => {
-                                GitAvailability::NoHistory
-                            }
-                        }
-                    };
-                    (HashMap::new(), availability)
-                }
-            };
-        db.set_git_availability(git_availability.as_str())?;
+        // Ingest commit-file history against the pinned HEAD and the absolute
+        // day-quantized cutoff the health contract requires (sutra/415), through
+        // the shared refresh core so full parse and on-demand health select
+        // history identically. This also resolves the git-availability axis
+        // (sutra/408: a transient failure is NoHistory-worst-cased, never
+        // structural absence) and the churn map semantic anchors consume.
+        let health_day = crate::health::probe::utc_day(chrono::Utc::now().timestamp());
+        let health_window = crate::health::refresh::window_days(workspace_root);
+        let graph_stamp = crate::health::probe::probe_graph_stamp(db)?;
+        let ingestion = crate::health::refresh::ingest_history(
+            health_session,
+            db,
+            workspace_root,
+            health_day,
+            health_window,
+            graph_stamp.generation,
+            graph_stamp.indexed_paths,
+        )?;
+        db.set_git_availability(ingestion.availability.as_str())?;
+        let churn_map = ingestion.churn;
+        let health_history = ingestion.observation;
         log_phase_rss("post_parse:cochange_done");
 
         match entity_change_walk(db, workspace_root, 500) {
@@ -1227,11 +1187,23 @@ fn post_parse_sequence(
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
         }
 
-        let findings = crate::health::compute_all_health_findings(db, workspace_root)?;
-        if !findings.is_empty() {
-            info!(count = findings.len(), "computed health findings");
+        // Publish an immutable health run through the shared refresh core so full
+        // parse and on-demand agree on findings/completeness (sutra/415, AC3).
+        // This also refreshes the live health_findings/health_coverage tables the
+        // legacy scoring path reads. Nothing bumps data_generation between the
+        // graph probe above and here, so the run publishes at that generation.
+        match crate::health::refresh::publish_run(
+            health_session,
+            db,
+            workspace_root,
+            graph_stamp,
+            health_history,
+        )? {
+            crate::health::refresh::RefreshResult::Published(_) => {}
+            other => {
+                warn!(?other, "health run not published on full parse");
+            }
         }
-        db.replace_health_findings(&findings)?;
         log_phase_rss("post_parse:health_done");
 
         if hrr_changed {

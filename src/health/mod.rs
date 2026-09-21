@@ -4,6 +4,7 @@ pub mod git_metrics;
 pub mod instability;
 pub mod ondemand;
 pub mod probe;
+pub mod refresh;
 pub mod scoring;
 
 pub use findings::*;
