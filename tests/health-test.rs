@@ -1843,9 +1843,13 @@ fn test_health_delta_degradation() {
     }])
     .unwrap();
 
-    let delta =
-        sutra::health::ondemand::compute_health_delta(&db, &["src/hotfile.rs".to_string()], &[])
-            .unwrap();
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/hotfile.rs".to_string()],
+        &[],
+        None,
+    )
+    .unwrap();
 
     assert_eq!(delta.degraded.len(), 1);
     assert!(delta.improved.is_empty());
@@ -1878,9 +1882,13 @@ fn test_health_delta_improvement() {
     .unwrap();
 
     // No findings → current score = 10.0 (base)
-    let delta =
-        sutra::health::ondemand::compute_health_delta(&db, &["src/cleaned.rs".to_string()], &[])
-            .unwrap();
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/cleaned.rs".to_string()],
+        &[],
+        None,
+    )
+    .unwrap();
 
     assert!(delta.degraded.is_empty());
     assert_eq!(delta.improved.len(), 1);
@@ -1898,7 +1906,7 @@ fn test_health_delta_no_snapshot_uses_base_10() {
     // No snapshot exists → previous defaults to 10.0
     // No findings → current = 10.0 → no delta
     let delta =
-        sutra::health::ondemand::compute_health_delta(&db, &["src/new.rs".to_string()], &[])
+        sutra::health::ondemand::compute_health_delta(&db, &["src/new.rs".to_string()], &[], None)
             .unwrap();
 
     assert!(delta.degraded.is_empty());
@@ -1943,6 +1951,7 @@ fn test_health_delta_with_ondemand_findings() {
         &db,
         &["src/volatile.rs".to_string()],
         &ondemand,
+        None,
     )
     .unwrap();
 
@@ -1988,9 +1997,13 @@ fn test_health_delta_no_spurious_improvement_for_partial_snapshot_file() {
     .unwrap();
 
     // No stored findings (stale/absent) and no on-demand debt.
-    let delta =
-        sutra::health::ondemand::compute_health_delta(&db, &["src/skipped.rs".to_string()], &[])
-            .unwrap();
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/skipped.rs".to_string()],
+        &[],
+        None,
+    )
+    .unwrap();
 
     assert!(
         delta.improved.is_empty(),
@@ -2042,6 +2055,7 @@ fn test_health_delta_credits_ondemand_debt_on_partial_snapshot_file() {
         &db,
         &["src/skipped.rs".to_string()],
         &ondemand,
+        None,
     )
     .unwrap();
 

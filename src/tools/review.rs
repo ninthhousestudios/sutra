@@ -67,6 +67,9 @@ pub fn handle(
     workspace_root: &Path,
     diff_mode: Option<&str>,
     dd_engine: Option<&DdEngine>,
+    // Baseline checkpoint pinned by the caller BEFORE `tool_context` could
+    // full-parse and record a newer snapshot (sutra/415). `None` = latest.
+    baseline_snapshot_id: Option<i64>,
     explain: bool,
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
@@ -114,8 +117,17 @@ pub fn handle(
         shape_config.hrr_delta_threshold,
     ));
 
-    let health_delta =
-        crate::health::ondemand::compute_health_delta(db, &changed_paths, &ondemand_findings).ok();
+    // Do NOT swallow a health-delta failure via `.ok()` (contract): surface it so
+    // a missing delta is visibly an error, not silently "no change".
+    let (health_delta, health_delta_error) = match crate::health::ondemand::compute_health_delta(
+        db,
+        &changed_paths,
+        &ondemand_findings,
+        baseline_snapshot_id,
+    ) {
+        Ok(d) => (Some(d), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
 
     let mut result = compute(
         db,
@@ -174,6 +186,10 @@ pub fn handle(
             .collect();
         if !shape_out.is_empty() {
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
+        }
+
+        if let Some(err) = health_delta_error {
+            obj.insert("health_delta_error".into(), json!(err));
         }
 
         if let Some(delta) = health_delta {

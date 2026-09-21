@@ -257,6 +257,11 @@ pub fn compute_health_delta(
     db: &Db,
     changed_paths: &[String],
     ondemand_findings: &[HealthFinding],
+    // The baseline checkpoint to compare against, pinned by the caller BEFORE any
+    // query-path full-parse could record a newer snapshot (sutra/415: review pins
+    // it in `sutra_review` before `tool_context`). `None` falls back to the latest
+    // checkpoint (the pre-pinning behaviour, retained for non-review callers).
+    baseline_snapshot_id: Option<i64>,
 ) -> Result<HealthDelta> {
     // The comparison snapshot is always written from exactly the findings still
     // stored (every parse snapshots after replace_health_findings; NoChanges
@@ -268,16 +273,33 @@ pub fn compute_health_delta(
     // file is uncovered *now* (its content hash moved) but was covered *then*,
     // so a live-coverage check would worst-case current against a non-worst-
     // cased prev and manufacture a spurious degradation (sutra/409).
-    let snapshots = db.latest_snapshots(1)?;
-    let snapshot_files: HashMap<String, (f64, Vec<String>)> = if let Some(snap) = snapshots.first()
-    {
-        db.snapshot_file_scores(snap.id)?
+    let baseline_id = match baseline_snapshot_id {
+        Some(id) => Some(id),
+        None => db.latest_snapshots(1)?.first().map(|s| s.id),
+    };
+    let snapshot_files: HashMap<String, (f64, Vec<String>)> = match baseline_id {
+        Some(id) => db
+            .snapshot_file_scores(id)?
             .into_iter()
             .map(|f| (f.file_path, (f.score, f.missing_biomarkers)))
-            .collect()
-    } else {
-        HashMap::new()
+            .collect(),
+        None => HashMap::new(),
     };
+
+    // Apply the same waiver policy as file health and the snapshot scorer
+    // (`score_workspace` drops waived findings): the baseline `prev_score` was
+    // computed without waived findings, so the current side must exclude them too
+    // — otherwise a waived finding inflates current debt against a waiver-free
+    // baseline and manufactures a spurious degradation (sutra/415 review wiring).
+    let mut active_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
+    for (finding, waived) in db.get_health_findings_with_waiver_status()? {
+        if !waived {
+            active_by_file
+                .entry(finding.file_id)
+                .or_default()
+                .push(finding);
+        }
+    }
 
     let facts = scoring::WorkspaceFacts::detect(db)?;
     let mut degraded = Vec::new();
@@ -303,7 +325,9 @@ pub fn compute_health_delta(
             .map(|(_, missing)| !missing.iter().any(|m| is_file_scored_biomarker(m)))
             .unwrap_or(true);
 
-        let stored = db.get_health_findings(Some(file_row.id), None)?;
+        // Move the file's waiver-filtered findings out of the map (no clone; each
+        // changed path is scored once).
+        let stored = active_by_file.remove(&file_row.id).unwrap_or_default();
         let ondemand_rows: Vec<HealthFindingRow> = ondemand_findings
             .iter()
             .filter(|f| f.file_id == file_row.id)

@@ -84,7 +84,11 @@ impl ParseCoordinator {
     }
 }
 
-fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::File> {
+/// Open (creating if needed) the per-workspace `parse.lock` file *without*
+/// acquiring the flock. Both the blocking [`acquire_parse_flock`] and the
+/// nonblocking [`try_acquire_parse_flock`] share this so they open the identical
+/// descriptor and only differ in how they take the OS lock.
+fn open_parse_lock_file(config: &Config, workspace_id: &str) -> Result<std::fs::File> {
     let lock_dir = config.db_dir.join(workspace_id);
     std::fs::create_dir_all(&lock_dir).map_err(|e| {
         crate::error::SutraError::Internal(format!(
@@ -92,18 +96,45 @@ fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::F
             lock_dir.display()
         ))
     })?;
-    let lock_file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(lock_dir.join("parse.lock"))
         .map_err(|e| {
             crate::error::SutraError::Internal(format!("could not open parse lock file: {e}"))
-        })?;
+        })
+}
+
+/// Acquire the cross-process parse flock, *blocking* until it is free. Owned by
+/// full and incremental parse — the writers that may wait for a peer to finish.
+fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::File> {
+    let lock_file = open_parse_lock_file(config, workspace_id)?;
     lock_file.lock_exclusive().map_err(|e| {
         crate::error::SutraError::Internal(format!("could not acquire parse lock: {e}"))
     })?;
     Ok(lock_file)
+}
+
+/// Try to acquire the cross-process parse flock *without blocking*. Returns
+/// `Ok(None)` when another process already holds it (the caller must defer rather
+/// than wait). Used by the demand health refresh, which the contract requires to
+/// report `LockBusy` on contention instead of blocking a health query behind a
+/// peer's write (`docs/health-evidence-contract.md`, "Publication and consumers").
+pub fn try_acquire_parse_flock(
+    config: &Config,
+    workspace_id: &str,
+) -> Result<Option<std::fs::File>> {
+    let lock_file = open_parse_lock_file(config, workspace_id)?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(lock_file)),
+        // Contention (another process holds the flock) is not an error here — the
+        // caller defers. Any other error is a real filesystem/lock failure.
+        Err(e) if e.kind() == fs2::lock_contended_error().kind() => Ok(None),
+        Err(e) => Err(crate::error::SutraError::Internal(format!(
+            "could not attempt parse lock: {e}"
+        ))),
+    }
 }
 
 /// Summary of a parse pipeline run.

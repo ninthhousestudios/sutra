@@ -490,6 +490,116 @@ impl SutraServer {
         Ok(lock.lock_owned().await)
     }
 
+    /// Demand health refresh (sutra/415 Wave C): the *acquiring* adapter for
+    /// health consumers (file health, workspace summaries). Acquires the parse
+    /// coordinator with the same bounded wait as the query path, then a
+    /// *nonblocking* cross-process flock, and drives the shared refresh core.
+    /// It never blocks a health query behind a peer's write (contention defers),
+    /// and only health consumers call it — ordinary symbol queries must NOT
+    /// rebuild health. Review does not use this adapter: it already holds the
+    /// coordinator and would deadlock re-acquiring it; it calls the locked core.
+    ///
+    /// The coordinator guard and the flock live inside `spawn_blocking` so a
+    /// dropped future (HTTP disconnect) cannot release them mid-write, exactly as
+    /// `refresh_before_answer` does for the incremental reparse (sutra/380).
+    async fn refresh_health(&self, ws_id: &str) -> crate::health::refresh::DemandOutcome {
+        use crate::health::evidence::DeferReason;
+        use crate::health::refresh::DemandOutcome;
+
+        let entry = match self.resolve_workspace(ws_id) {
+            Ok(e) => e,
+            Err(_) => return DemandOutcome::Failed,
+        };
+        // A frozen index is immutable: it can serve retained evidence but must not
+        // assert current filesystem health without validation (contract).
+        if entry.frozen {
+            return DemandOutcome::Deferred(DeferReason::Frozen);
+        }
+        let db = match self.get_db(ws_id) {
+            Ok(d) => d,
+            Err(_) => return DemandOutcome::Failed,
+        };
+
+        // In-process serialization: the same bounded wait the query path uses. A
+        // parse holding it past the deadline means defer rather than block.
+        let lock = self.parse_coord.lock_for(&entry.id);
+        let guard = match tokio::time::timeout(Self::REFRESH_LOCK_WAIT, lock.lock_owned()).await {
+            Ok(g) => g,
+            Err(_) => return DemandOutcome::Deferred(DeferReason::LockBusy),
+        };
+
+        let config = Arc::clone(&self.config);
+        // Move the owned entry fields into the worker (no clone): `entry` is a
+        // local and its id was only borrowed above to key the coordinator lock.
+        let root = entry.root;
+        let ws_lock_id = entry.id;
+        let now = chrono::Utc::now().timestamp();
+        let result = tokio::task::spawn_blocking(move || {
+            // Hold the coordinator guard for the whole write; then take the flock.
+            let _guard = guard;
+            // Cross-process exclusion: nonblocking. Contention => defer, never wait.
+            let flock = match crate::pipeline::try_acquire_parse_flock(&config, &ws_lock_id) {
+                Ok(Some(f)) => f,
+                Ok(None) => return DemandOutcome::Deferred(DeferReason::LockBusy),
+                Err(e) => {
+                    tracing::warn!("health: parse flock attempt failed: {e}");
+                    return DemandOutcome::Failed;
+                }
+            };
+            let session = crate::health::refresh::HealthSession::from_held_flock(&flock);
+            match crate::health::refresh::refresh(&session, &db, &root, now) {
+                Ok(r) => DemandOutcome::Refreshed(r),
+                Err(e) => {
+                    tracing::warn!("health: demand refresh failed: {e}");
+                    DemandOutcome::Failed
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                tracing::warn!("health: demand refresh worker panicked: {e}");
+                DemandOutcome::Failed
+            }
+        }
+    }
+
+    /// Refresh persistent health under an ALREADY-HELD coordinator lock (the
+    /// review DD path). Uses the shared locked core directly — never the acquiring
+    /// [`Self::refresh_health`], which would re-lock the coordinator and deadlock.
+    /// Takes only the nonblocking cross-process flock; on contention or error the
+    /// prior run stands. Best-effort and synchronous: the caller runs the DD
+    /// evaluation inline under the same guard with no await in between, so this
+    /// cannot be cancelled mid-write.
+    fn refresh_health_locked(
+        &self,
+        db: &Db,
+        root: &Path,
+        ws_id: &str,
+    ) -> crate::health::refresh::DemandOutcome {
+        use crate::health::evidence::DeferReason;
+        use crate::health::refresh::DemandOutcome;
+        let canonical = self.canonical_ws_id(ws_id);
+        let flock = match crate::pipeline::try_acquire_parse_flock(&self.config, &canonical) {
+            Ok(Some(f)) => f,
+            Ok(None) => return DemandOutcome::Deferred(DeferReason::LockBusy),
+            Err(e) => {
+                tracing::warn!("review: health flock attempt failed: {e}");
+                return DemandOutcome::Failed;
+            }
+        };
+        let session = crate::health::refresh::HealthSession::from_held_flock(&flock);
+        match crate::health::refresh::refresh(&session, db, root, chrono::Utc::now().timestamp()) {
+            Ok(r) => DemandOutcome::Refreshed(r),
+            Err(e) => {
+                tracing::warn!("review: health refresh failed: {e}");
+                DemandOutcome::Failed
+            }
+        }
+    }
+
     fn wrap_response(
         &self,
         db: &Db,
@@ -993,6 +1103,16 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
+        // Pin the baseline snapshot BEFORE tool_context can full-parse (stamp
+        // heal) and record a newer checkpoint — otherwise the health delta would
+        // compare current against a snapshot written by THIS request and hide real
+        // debt (sutra/415 contract). A read-only peek at the latest checkpoint id.
+        let baseline_snapshot_id = self
+            .get_db(&args.workspace)
+            .ok()
+            .and_then(|db| db.latest_snapshots(1).ok())
+            .and_then(|snaps| snaps.first().map(|s| s.id));
+
         // tool_context first: it refreshes the index (query-path incremental
         // reparse, sutra/363) and releases the parse lock before returning.
         let ctx = self.tool_context(&args.workspace).await?;
@@ -1001,12 +1121,18 @@ impl SutraServer {
         // This subsumes the previous await_parse, which only waited for an
         // in-flight parse and then released before evaluation ran.
         let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
+        // Refresh persistent health within the held coordinator lock so the delta's
+        // persistent side reflects the current index (an incremental reparse above
+        // does not recompute health). Uses the locked core, not the acquiring
+        // adapter, to avoid re-locking the coordinator. Best-effort.
+        let _ = self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::review::handle(
             ctx.db(),
             ctx.workspace_root(),
             args.diff.as_deref(),
             Some(&dd),
+            baseline_snapshot_id,
             args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
@@ -1055,7 +1181,12 @@ impl SutraServer {
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::file_health::handle_ctx(
+        // Demand-refresh persistent health evidence, then read the coherent run
+        // (sutra/415 Wave D): the refresh republishes the live health tables the
+        // scoring below reads, and its outcome tells us whether those scores are
+        // current, deferred, or partial.
+        let refresh_outcome = self.refresh_health(&args.workspace).await;
+        let mut result = tools::file_health::handle_ctx(
             &ctx,
             args.path.as_deref(),
             args.limit,
@@ -1064,6 +1195,8 @@ impl SutraServer {
             args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
+        tools::file_health::attach_health_evidence(ctx.db(), &mut result, refresh_outcome)
+            .map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

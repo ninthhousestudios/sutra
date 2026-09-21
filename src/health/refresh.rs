@@ -70,6 +70,22 @@ pub enum RefreshResult {
     InputsChanged,
 }
 
+/// Outcome of the demand-refresh *adapter* (Wave C): the acquiring adapter wraps
+/// the core [`RefreshResult`] with the two states only it can produce — a
+/// `Deferred` when a lock (coordinator or flock) was busy, and a `Failed` when the
+/// refresh itself errored. In both non-`Refreshed` cases the retained run is still
+/// readable; consumers surface it with explicit staleness rather than blocking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemandOutcome {
+    /// The core ran under both locks and reused or republished a run.
+    Refreshed(RefreshResult),
+    /// A lock was busy (coordinator wait timed out, flock held by another
+    /// process, or a frozen index that cannot assert current filesystem health).
+    Deferred(crate::health::evidence::DeferReason),
+    /// The refresh errored under the lock; the prior run remains as evidence.
+    Failed,
+}
+
 /// The result of ingesting commit-file history, shared by the full parse (which
 /// also needs `churn` for semantic anchors and `availability` for the legacy
 /// scoring axis) and the demand refresh.

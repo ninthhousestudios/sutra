@@ -62,6 +62,68 @@ pub fn handle_ctx(
     )
 }
 
+/// Attach a `health_evidence` block summarising the demand-refresh outcome and
+/// the coherent published run's validity/partiality (sutra/415 Wave D). Consumers
+/// call this after `SutraServer::refresh_health` so the report states whether the
+/// scores it just read are current, deferred, or partial — rather than presenting
+/// possibly-stale numbers as authoritative. The scores themselves come from the
+/// live tables `publish_run` just refreshed; this only annotates their provenance.
+pub fn attach_health_evidence(
+    db: &Db,
+    result: &mut serde_json::Value,
+    outcome: crate::health::refresh::DemandOutcome,
+) -> Result<()> {
+    use crate::health::evidence::{DeferReason, ProducerOutcome};
+    use crate::health::refresh::{DemandOutcome, RefreshResult};
+
+    let validity = match outcome {
+        DemandOutcome::Refreshed(RefreshResult::Reused(_) | RefreshResult::Published(_)) => {
+            "current"
+        }
+        // A race republished nothing; the retained run may not reflect current inputs.
+        DemandOutcome::Refreshed(RefreshResult::InputsChanged) => "stale:inputs_changed",
+        DemandOutcome::Deferred(DeferReason::LockBusy) => "deferred:lock_busy",
+        DemandOutcome::Deferred(DeferReason::Frozen) => "deferred:frozen",
+        DemandOutcome::Failed => "unavailable",
+    };
+
+    let mut evidence = json!({ "validity": validity });
+    match db.load_current_health_run()? {
+        Some(run) => {
+            evidence["run_id"] = json!(run.id.0);
+            // Distinct producers whose current evidence is Missing => partial run.
+            // Unsupported (structurally N/A) and Complete are not partiality.
+            let mut seen: HashSet<&'static str> = HashSet::new();
+            let mut missing: Vec<serde_json::Value> = Vec::new();
+            for o in &run.outcomes {
+                if let ProducerOutcome::Missing(reason) = &o.outcome
+                    && seen.insert(o.producer.as_str())
+                {
+                    missing.push(json!({
+                        "producer": o.producer.as_str(),
+                        "reason": serde_json::to_value(reason).unwrap_or(serde_json::Value::Null),
+                    }));
+                }
+            }
+            evidence["partial"] = json!(!missing.is_empty());
+            if !missing.is_empty() {
+                evidence["missing_producers"] = json!(missing);
+            }
+        }
+        None => {
+            // No run has ever been published: the scores are legacy/live-table
+            // reads with no evidence stamp — never claim completeness.
+            evidence["run_id"] = serde_json::Value::Null;
+            evidence["partial"] = json!(true);
+        }
+    }
+
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("health_evidence".into(), evidence);
+    }
+    Ok(())
+}
+
 fn handle_inner(
     db: &Db,
     path: Option<&str>,
