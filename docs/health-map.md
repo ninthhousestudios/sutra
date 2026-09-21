@@ -4,6 +4,10 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
+Proposed replacement contract (sutra/412, awaiting human review):
+[health evidence contract](health-evidence-contract.md). It includes the checked
+type skeleton and downstream boundaries; it is not implemented behavior.
+
 Review correction: 2026-09-21 — [sutra/411 evidence lifecycle review](reviews/2026-09-21-health-evidence-lifecycle.md)
 confirms incremental parsing deletes findings/history and falsifies the
 snapshot-mirroring rationale below. The recorded two-axis fix also needs revision:
