@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::params;
 
@@ -284,6 +284,15 @@ impl Db {
     pub fn commit_file_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
         Ok(conn.query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))?)
+    }
+
+    /// Ids of indexed files with at least one ingested (in-window) commit — the
+    /// per-file history population the git producers actually observed.
+    pub fn history_file_ids(&self) -> Result<HashSet<i64>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT DISTINCT file_id FROM commit_files")?;
+        let ids: rusqlite::Result<HashSet<i64>> = stmt.query_map([], |r| r.get(0))?.collect();
+        Ok(ids?)
     }
 
     pub fn newest_commit_at(&self) -> Result<i64> {

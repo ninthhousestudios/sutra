@@ -774,3 +774,105 @@ fn unchanged_parse_recomputes_an_unknown_completeness_snapshot() {
     assert_ne!(latest, legacy, "unchanged parse records a checkpoint");
     assert_snapshot_completeness_matches_scorer(&fx.db, latest);
 }
+
+// --- sutra/423: per-file history granularity ---
+
+/// The git-history producers the run stages per file.
+const GIT_PRODUCERS: [BiomarkerKind; 5] = [
+    BiomarkerKind::CoChangeScatter,
+    BiomarkerKind::ChangeEntropy,
+    BiomarkerKind::OwnershipRisk,
+    BiomarkerKind::HiddenCoupling,
+    BiomarkerKind::BlastRadiusChurn,
+];
+
+/// The published run's outcome for one (file, producer).
+fn file_outcome(db: &Db, rel: &str, producer: BiomarkerKind) -> ProducerOutcome {
+    let run = db
+        .load_current_health_run()
+        .unwrap()
+        .expect("a published health run");
+    run.outcomes
+        .iter()
+        .find(|o| o.file_path == rel && o.producer == producer)
+        .unwrap_or_else(|| panic!("no staged outcome for {rel} / {producer:?}"))
+        .outcome
+}
+
+#[test]
+fn file_without_in_window_commits_is_missing_not_complete_under_loaded_history() {
+    let fx = fixture(
+        "per-file-history",
+        &[
+            ("src/touched.rs", DEEP_SRC),
+            ("src/untouched.rs", "pub fn u() {}\n"),
+        ],
+    );
+    git_init(&fx.ws.root);
+    let now = chrono::Utc::now().timestamp();
+    // Both files enter history 200 days ago — outside the 90-day window.
+    git_commit(&fx.ws.root, now - 200 * 86_400);
+    // Only `touched.rs` changes inside the window, so workspace history is
+    // Loaded while `untouched.rs` has no usable history observations.
+    let p = fx.ws.root.join("src/touched.rs");
+    let mut src = std::fs::read_to_string(&p).unwrap();
+    src.push_str("// in-window touch\n");
+    std::fs::write(&p, src).unwrap();
+    git_commit(&fx.ws.root, now - 3600);
+
+    full_parse(&fx);
+
+    for producer in GIT_PRODUCERS {
+        assert!(
+            matches!(
+                file_outcome(&fx.db, "src/touched.rs", producer),
+                ProducerOutcome::Complete { .. }
+            ),
+            "{producer:?}: a file with in-window commits is measured under Loaded history"
+        );
+        assert_eq!(
+            file_outcome(&fx.db, "src/untouched.rs", producer),
+            ProducerOutcome::Missing(MissingReason::NoHistory),
+            "{producer:?}: a file with no in-window commits must be Missing(NoHistory), \
+             not a measured-clean Complete {{ 0 }}"
+        );
+    }
+
+    // The demand path stages identically and reuses the run.
+    assert!(matches!(
+        demand_refresh(&fx),
+        DemandOutcome::Refreshed(RefreshResult::Reused(_))
+    ));
+}
+
+#[test]
+fn history_touching_only_unindexed_paths_is_not_loaded() {
+    let fx = fixture("unindexed-history", &[("src/lib.rs", DEEP_SRC)]);
+    git_init(&fx.ws.root);
+    // The only in-window commit touches a non-indexed path; the indexed source
+    // file is never committed.
+    std::fs::write(fx.ws.root.join("README.md"), "readme\n").unwrap();
+    git(&fx.ws.root, &["add", "README.md"], None);
+    git(
+        &fx.ws.root,
+        &["commit", "-q", "--no-verify", "-m", "readme"],
+        Some(chrono::Utc::now().timestamp() - 3600),
+    );
+
+    full_parse(&fx);
+
+    for producer in GIT_PRODUCERS {
+        assert_eq!(
+            file_outcome(&fx.db, "src/lib.rs", producer),
+            ProducerOutcome::Missing(MissingReason::NoHistory),
+            "{producer:?}: history of only unindexed paths must not prove Loaded"
+        );
+    }
+
+    // The cheap reuse probe classifies the same state (no indexed commit rows →
+    // Empty) and agrees with the stored observation, so a clean request reuses.
+    assert!(matches!(
+        demand_refresh(&fx),
+        DemandOutcome::Refreshed(RefreshResult::Reused(_))
+    ));
+}

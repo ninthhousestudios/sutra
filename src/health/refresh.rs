@@ -378,12 +378,21 @@ fn ingest_present(
 
     match git::git_commit_files_since(workspace_root, &head_sha, cutoff) {
         Ok(commit_files) if !commit_files.is_empty() => {
-            let churn = git::churn_from_commit_files(&commit_files);
-            write_commit_files(db, &commit_files)?;
+            // Loaded means an *indexed* file has in-window history: a window
+            // touching only unindexed paths observed nothing for the files the
+            // producers score, so it is Empty, not Loaded (sutra/423).
+            if write_commit_files(db, &commit_files)? == 0 {
+                db.replace_commit_files(&[], &[])?;
+                return Ok(HistoryIngestion {
+                    observation: HistoryObservation::Empty(stamp),
+                    availability: GitAvailability::NoHistory,
+                    churn: HashMap::new(),
+                });
+            }
             Ok(HistoryIngestion {
                 observation: HistoryObservation::Loaded(stamp),
                 availability: GitAvailability::Available,
-                churn,
+                churn: git::churn_from_commit_files(&commit_files),
             })
         }
         Ok(_) => {
@@ -472,7 +481,23 @@ pub fn publish_run(
 
     // Stage outcomes while we still borrow the rows; then consume the rows into
     // retained findings (moving each row, no clone).
-    let outcomes = stage_outcomes(&files, &rows, &path_by_id, &history, &owners.stamp);
+    // Per-file history granularity (contract "repository/clock policy"): a
+    // workspace-level Loaded does not prove history for every file. The
+    // `commit_files` rows ingestion just wrote under this lock are exactly the
+    // indexed files with in-window commits; the rest stage Missing(NoHistory).
+    let history_files = if history_loaded {
+        db.history_file_ids()?
+    } else {
+        HashSet::new()
+    };
+    let outcomes = stage_outcomes(
+        &files,
+        &rows,
+        &path_by_id,
+        &history,
+        &history_files,
+        &owners.stamp,
+    );
     let stored_findings: Vec<StoredFinding> = rows
         .into_iter()
         .map(|row| StoredFinding {
@@ -562,12 +587,15 @@ fn repository_moved(history: &HistoryObservation, workspace_root: &Path) -> bool
 /// Stage one explicit [`StoredOutcome`] per (file, producer): `Complete { n }`
 /// (with `n` the retained findings for that file+producer), `Missing(reason)`, or
 /// `Unsupported`. A successful empty producer is `Complete { 0 }`, explicitly
-/// distinct from a missing one.
+/// distinct from a missing one. `history_files` holds the ids of files with
+/// in-window commits; under `Loaded` history a file outside it has no usable
+/// history observations, so its git producers are `Missing(NoHistory)`.
 fn stage_outcomes(
     files: &[crate::db::FileRow],
     rows: &[HealthFindingRow],
     path_by_id: &HashMap<i64, String>,
     history: &HistoryObservation,
+    history_files: &HashSet<i64>,
     owners: &std::result::Result<ConfigStamp, InputFailure>,
 ) -> Vec<StoredOutcome> {
     // Per (file_id, producer) finding counts from the retained rows.
@@ -585,20 +613,23 @@ fn stage_outcomes(
         };
         for kind in RUN_PRODUCERS {
             let count = counts.get(&(file.id, kind)).copied().unwrap_or(0);
+            let has_history = history_files.contains(&file.id);
             outcomes.push(StoredOutcome {
                 file_path: path.to_string(),
                 producer: kind,
-                outcome: producer_outcome(kind, history, owners, count),
+                outcome: producer_outcome(kind, history, has_history, owners, count),
             });
         }
     }
     outcomes
 }
 
-/// The outcome for one producer given the observed history and owners config.
+/// The outcome for one producer given the observed history (workspace-level,
+/// plus whether this file has in-window commits) and owners config.
 fn producer_outcome(
     kind: BiomarkerKind,
     history: &HistoryObservation,
+    has_history: bool,
     owners: &std::result::Result<ConfigStamp, InputFailure>,
     count: usize,
 ) -> ProducerOutcome {
@@ -615,7 +646,7 @@ fn producer_outcome(
         }
         // Ownership additionally needs a successfully-parsed owners config: an
         // Err stamp is a failure the producer must not paper over with a default.
-        BiomarkerKind::OwnershipRisk => match git_outcome(history, count) {
+        BiomarkerKind::OwnershipRisk => match git_outcome(history, has_history, count) {
             ProducerOutcome::Complete { .. } => match owners {
                 Err(failure) => ProducerOutcome::Missing(MissingReason::Failed(*failure)),
                 Ok(_) => ProducerOutcome::Complete {
@@ -625,16 +656,20 @@ fn producer_outcome(
             other => other,
         },
         // The remaining git-organizational / churn producers.
-        _ => git_outcome(history, count),
+        _ => git_outcome(history, has_history, count),
     }
 }
 
-/// Map a history observation to a git-producer outcome.
-fn git_outcome(history: &HistoryObservation, count: usize) -> ProducerOutcome {
+/// Map a history observation to a git-producer outcome for one file. Workspace
+/// `Loaded` is necessary but not sufficient: a file with no in-window commits has
+/// no usable history observations, which is `Missing(NoHistory)` — never a
+/// measured-clean `Complete { 0 }` (sutra/423).
+fn git_outcome(history: &HistoryObservation, has_history: bool, count: usize) -> ProducerOutcome {
     match history {
-        HistoryObservation::Loaded(_) => ProducerOutcome::Complete {
+        HistoryObservation::Loaded(_) if has_history => ProducerOutcome::Complete {
             finding_count: count,
         },
+        HistoryObservation::Loaded(_) => ProducerOutcome::Missing(MissingReason::NoHistory),
         HistoryObservation::Empty(_) => ProducerOutcome::Missing(MissingReason::NoHistory),
         HistoryObservation::Unsupported { .. } => {
             ProducerOutcome::Unsupported(UnsupportedReason::ConfirmedNonRepository)
