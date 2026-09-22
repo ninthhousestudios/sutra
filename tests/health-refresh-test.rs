@@ -937,3 +937,345 @@ fn commit_wider_than_cochange_fanout_leaves_hidden_coupling_missing() {
         &[BiomarkerKind::ChangeEntropy, BiomarkerKind::HiddenCoupling],
     );
 }
+
+// --- sutra/416: validated comparison through the real review path ---
+
+fn review(fx: &Fixture, baseline: Option<i64>, refresh: DemandOutcome) -> serde_json::Value {
+    sutra::tools::review::handle(
+        &fx.db,
+        &fx.ws.root,
+        Some("unstaged"),
+        None,
+        sutra::health::compare::BaselineSelector::Pinned(baseline),
+        refresh,
+        false,
+    )
+    .unwrap()
+}
+
+fn latest_snapshot(db: &Db) -> i64 {
+    db.latest_snapshots(1).unwrap()[0].id
+}
+
+/// The review `health_delta.files` entry for `path`, if reported.
+fn review_entry<'a>(out: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    assert!(
+        out.get("health_delta_error").is_none(),
+        "review health failed: {}",
+        out["health_delta_error"]
+    );
+    out["health_delta"]["files"]
+        .as_array()
+        .expect("health_delta.files")
+        .iter()
+        .find(|e| e["path"] == path)
+}
+
+/// A git fixture whose single deep function was edited in `commits` separate
+/// in-window commits, so blame sees that many distinct commits inside it.
+fn churned_deep_fixture(id: &str, commits: i64) -> Fixture {
+    let fx = fixture(id, &[("src/deep.rs", DEEP_SRC)]);
+    git_init(&fx.ws.root);
+    let now = chrono::Utc::now().timestamp();
+    git_commit(&fx.ws.root, now - 86_400);
+    // Blame attributes each line to its last commit, so every commit adds its own
+    // line inside the function body.
+    let mut lets = String::new();
+    for k in 1..commits {
+        lets.push_str(&format!("    let _v{k} = {k};\n"));
+        let src = DEEP_SRC.replacen(
+            "pub fn deep(x: i32) -> i32 {\n",
+            &format!("pub fn deep(x: i32) -> i32 {{\n{lets}"),
+            1,
+        );
+        std::fs::write(fx.ws.root.join("src/deep.rs"), src).unwrap();
+        git_commit(&fx.ws.root, now - 86_400 + k * 60);
+    }
+    fx
+}
+
+fn append_comment(fx: &Fixture, rel: &str) {
+    let p = fx.ws.root.join(rel);
+    let mut src = std::fs::read_to_string(&p).unwrap();
+    src.push_str("// a trailing comment, no semantic change\n");
+    std::fs::write(&p, src).unwrap();
+}
+
+#[test]
+fn comment_edit_after_full_parse_reports_no_spurious_improvement() {
+    // The main sutra/411 defect: a formerly complete, unhealthy file edited with a
+    // comment was scored clean after the incremental parse deleted its findings.
+    let fx = git_fixture("review-comment", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let baseline = latest_snapshot(&fx.db);
+    let base_row = fx.db.snapshot_file_scores(baseline).unwrap().remove(0);
+    assert_eq!(
+        base_row.completeness,
+        sutra::db::SnapshotCompleteness::Complete,
+        "committed history + current run → complete baseline"
+    );
+    assert!(base_row.score < 10.0, "the file carries nested debt");
+
+    append_comment(&fx, "src/deep.rs");
+    incremental_reparse(&fx);
+    let refresh = demand_refresh(&fx);
+    assert!(matches!(
+        refresh,
+        DemandOutcome::Refreshed(RefreshResult::Published(_))
+    ));
+
+    let out = review(&fx, Some(baseline), refresh);
+    assert_eq!(out["health_delta"]["persistent_validity"], "current");
+    if let Some(e) = review_entry(&out, "src/deep.rs") {
+        let t = &e["temporal"];
+        assert_eq!(t["measured"], true, "{e}");
+        assert!(
+            t["delta"].as_f64().unwrap().abs() < 0.005,
+            "comment edit must not move persistent health: {e}"
+        );
+    }
+    // Directly: the current observation reproduces the baseline measurement.
+    let ev = sutra::health::assess::PersistentEvidence::load(&fx.db, refresh.persistent_validity())
+        .unwrap();
+    let cur = ev.file("src/deep.rs").unwrap();
+    assert_eq!(cur.score().value.lower(), base_row.score);
+    assert_eq!(base_row.score_basis.unwrap(), cur.basis.to_hex());
+}
+
+#[test]
+fn stale_refresh_after_comment_edit_is_incomparable_not_improved() {
+    // Same edit, but the refresh could not run (lock busy): the retained run is
+    // stale, so its findings are not current debt and the file's current side is
+    // partial — reported incomparable, never as a clean improvement.
+    let fx = git_fixture("review-stale", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let baseline = latest_snapshot(&fx.db);
+    append_comment(&fx, "src/deep.rs");
+    incremental_reparse(&fx);
+
+    let deferred = DemandOutcome::Deferred(sutra::health::evidence::DeferReason::LockBusy);
+    let out = review(&fx, Some(baseline), deferred);
+    assert_eq!(
+        out["health_delta"]["persistent_validity"],
+        "deferred:lock_busy"
+    );
+    let e = review_entry(&out, "src/deep.rs").expect("a completeness transition is reported");
+    assert_eq!(e["temporal"]["measured"], false);
+    assert_eq!(e["temporal"]["reason"], "partial");
+    assert!(e["temporal"]["to"]["health_score"].is_null());
+    assert!(e["temporal"]["to"]["score_bounds"].is_object());
+}
+
+#[test]
+fn debt_removing_edit_reports_a_measured_improvement() {
+    let fx = git_fixture("review-fix", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let baseline = latest_snapshot(&fx.db);
+
+    std::fs::write(
+        fx.ws.root.join("src/deep.rs"),
+        "pub fn deep(x: i32) -> i32 {\n    if x > 4 {\n        return x;\n    }\n    0\n}\n",
+    )
+    .unwrap();
+    incremental_reparse(&fx);
+    let refresh = demand_refresh(&fx);
+    let out = review(&fx, Some(baseline), refresh);
+    let e = review_entry(&out, "src/deep.rs").expect("an improvement is reported");
+    assert_eq!(e["temporal"]["measured"], true, "{e}");
+    assert!(
+        e["temporal"]["delta"].as_f64().unwrap() > 1.0,
+        "removing the nested finding is a supported improvement: {e}"
+    );
+}
+
+#[test]
+fn missing_baseline_is_incomparable_but_on_demand_still_attributed() {
+    let fx = git_fixture("review-nobase", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    append_comment(&fx, "src/deep.rs");
+    incremental_reparse(&fx);
+    let refresh = demand_refresh(&fx);
+    let out = review(&fx, None, refresh);
+    assert_eq!(
+        out["health_delta"]["temporal_incomparable"],
+        "missing_baseline"
+    );
+    assert!(out["health_delta"]["baseline_snapshot_id"].is_null());
+}
+
+#[test]
+fn legacy_baseline_rows_are_incomparable_not_measured() {
+    // Rows written before completeness (0076) or basis (0077) were recorded.
+    let fx = git_fixture("review-legacy", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let baseline = latest_snapshot(&fx.db);
+    fx.db
+        .conn_for_test()
+        .execute(
+            "UPDATE health_snapshot_files SET score_basis = NULL, score = 9.99
+             WHERE snapshot_id = ?1",
+            [baseline],
+        )
+        .unwrap();
+    append_comment(&fx, "src/deep.rs");
+    incremental_reparse(&fx);
+    let refresh = demand_refresh(&fx);
+    let out = review(&fx, Some(baseline), refresh);
+    let e = review_entry(&out, "src/deep.rs").expect("legacy baseline reported");
+    assert_eq!(e["temporal"]["reason"], "unknown_basis");
+    assert!(e["temporal"]["from"]["legacy_score"].is_number());
+
+    fx.db
+        .conn_for_test()
+        .execute(
+            "UPDATE health_snapshot_files SET partial = 0, completeness_recorded = 0
+             WHERE snapshot_id = ?1",
+            [baseline],
+        )
+        .unwrap();
+    let out = review(&fx, Some(baseline), refresh);
+    let e = review_entry(&out, "src/deep.rs").expect("legacy baseline reported");
+    assert_eq!(e["temporal"]["reason"], "unknown_completeness");
+}
+
+#[test]
+fn on_demand_debt_is_attributed_under_shared_caps_not_as_temporal_change() {
+    // Six in-window commits inside one nested function: blame fires
+    // function_hotspot on review. Its cost is attribution against the current
+    // run (structural cap shared with the persistent nested finding), not a
+    // temporal degradation — the parse-time baseline has no blame evidence.
+    let fx = churned_deep_fixture("review-ondemand", 6);
+    full_parse(&fx);
+    let baseline = latest_snapshot(&fx.db);
+    append_comment(&fx, "src/deep.rs");
+    incremental_reparse(&fx);
+    let refresh = demand_refresh(&fx);
+    let out = review(&fx, Some(baseline), refresh);
+
+    let e = review_entry(&out, "src/deep.rs").expect("on-demand debt reported");
+    let od = &e["on_demand"];
+    let hotspot = od["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["biomarker"] == "function_hotspot")
+        .unwrap_or_else(|| panic!("function_hotspot attributed: {od}"));
+    assert!((hotspot["raw_deduction"].as_f64().unwrap() - 1.16).abs() < 1e-3);
+    // Structural: nested 1.34 + hotspot 1.16 = 2.50 = cap, so exact effect -1.16.
+    assert_eq!(od["effect"]["kind"], "exact", "{od}");
+    assert!((od["effect"]["value"].as_f64().unwrap() + 1.16).abs() < 1e-3);
+    // Temporal compares persistent evidence only: unchanged.
+    assert_eq!(e["temporal"]["measured"], true);
+    assert!(e["temporal"]["delta"].as_f64().unwrap().abs() < 0.005);
+}
+
+#[test]
+fn changed_file_keeps_git_debt_and_unhistoried_file_is_not_clean() {
+    // Two committed files co-change with no static edge → hidden coupling on
+    // both. After a comment edit + refresh, the changed file keeps that git debt
+    // (it is recomputed, not lost), and a new uncommitted file — no in-window
+    // history although the workspace has plenty — is partial, never
+    // "available and clean".
+    let fx = git_fixture(
+        "history-granularity",
+        &[
+            ("src/a.rs", "pub fn a() {}\n"),
+            ("src/b.rs", "pub fn b() {}\n"),
+        ],
+    );
+    full_parse(&fx);
+    let coupled = |db: &Db, rel: &str| {
+        let ev = sutra::health::assess::PersistentEvidence::load(
+            db,
+            sutra::health::evidence::Validity::Current,
+        )
+        .unwrap();
+        let f = ev.file(rel).unwrap();
+        (
+            f.findings
+                .iter()
+                .any(|x| x.biomarker_kind == "hidden_coupling"),
+            f.score(),
+        )
+    };
+    assert!(coupled(&fx.db, "src/a.rs").0, "fixture must couple a/b");
+
+    append_comment(&fx, "src/a.rs");
+    std::fs::write(fx.ws.root.join("src/c.rs"), "pub fn c() {}\n").unwrap();
+    incremental_reparse(&fx);
+    assert!(matches!(
+        demand_refresh(&fx),
+        DemandOutcome::Refreshed(RefreshResult::Published(_))
+    ));
+
+    for rel in ["src/a.rs", "src/b.rs"] {
+        let (has_debt, score) = coupled(&fx.db, rel);
+        assert!(has_debt, "{rel} must keep its hidden-coupling debt");
+        assert!(score.value.is_measured(), "{rel}: {:?}", score.value);
+        assert!(score.value.upper() < 10.0);
+    }
+    let (_, c) = coupled(&fx.db, "src/c.rs");
+    assert!(c.partial(), "no per-file history is missing analysis");
+    assert!(
+        c.missing
+            .iter()
+            .all(|m| m.reason == MissingReason::NoHistory)
+    );
+    assert!(c.value.lower() < c.value.upper());
+}
+
+#[test]
+fn waiver_between_parses_is_a_basis_change_not_a_measured_improvement() {
+    // AC (sutra/418 round 2): two otherwise identical full parses with a waiver
+    // added between them must not report a measured improvement.
+    let fx = fixture("waiver-basis", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let first = latest_snapshot(&fx.db);
+    fx.db
+        .create_health_waiver("nested_complexity", "src/deep.rs", None, "accepted", "test")
+        .unwrap();
+    full_parse(&fx);
+    let second = latest_snapshot(&fx.db);
+    assert_ne!(first, second);
+    let rows = fx.db.snapshot_file_scores(second).unwrap();
+    assert_eq!(
+        rows[0].score, 10.0,
+        "the waiver was applied, not copied past"
+    );
+
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert!(cmp["files"]["improved"].as_array().unwrap().is_empty());
+    let inc = &cmp["files"]["incomparable"].as_array().unwrap()[0];
+    assert_eq!(inc["reason"], "score_basis_changed");
+    assert_eq!(inc["basis_changed"], true);
+    assert_eq!(cmp["aggregate_comparison"]["measured"], false);
+    assert_eq!(cmp["aggregate_comparison"]["reason"], "score_basis_changed");
+
+    // A third unchanged parse copies forward under the same basis: no change.
+    full_parse(&fx);
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    for bucket in ["improved", "degraded", "incomparable"] {
+        assert!(cmp["files"][bucket].as_array().unwrap().is_empty(), "{cmp}");
+    }
+    assert_eq!(cmp["aggregate_comparison"]["measured"], true);
+}

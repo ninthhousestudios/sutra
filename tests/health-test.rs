@@ -1,6 +1,6 @@
 #[path = "support/health_run.rs"]
 mod health_run;
-use health_run::publish_seeded_run;
+use health_run::{publish_run_with, publish_seeded_run};
 use sutra::db::{
     CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotCompleteness,
     SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
@@ -2689,4 +2689,113 @@ fn trend_aggregates_are_incomparable_when_the_population_changes() {
     assert_eq!(structural["to"], 2.0);
     assert!(structural["delta"].is_null());
     assert!(result["files"]["improved"].as_array().unwrap().is_empty());
+}
+
+// --- sutra/416: component deltas and partial reports ---
+
+fn comp_row(
+    id: &str,
+    score: f64,
+    completeness: SnapshotCompleteness,
+    basis: Option<&str>,
+) -> SnapshotComponentRow {
+    SnapshotComponentRow {
+        component_id: id.into(),
+        component_name: id.to_uppercase(),
+        score,
+        member_count: 2,
+        total_nloc: 100,
+        completeness,
+        score_basis: basis.map(Into::into),
+    }
+}
+
+#[test]
+fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
+    use SnapshotCompleteness::{Complete, Partial, Unknown};
+    let (_dir, db) = setup_db();
+    let from = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_components(
+        from,
+        &[
+            comp_row("same", 8.0, Complete, Some("m1")),
+            comp_row("moved", 8.0, Complete, Some("m1")),
+            comp_row("legacy", 8.0, Unknown, None),
+            comp_row("half", 8.0, Complete, Some("m1")),
+            comp_row("gone", 8.0, Complete, Some("m1")),
+        ],
+    )
+    .unwrap();
+    let to = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_components(
+        to,
+        &[
+            comp_row("same", 7.0, Complete, Some("m1")),
+            comp_row("moved", 9.5, Complete, Some("m2")),
+            comp_row("legacy", 9.0, Complete, Some("m1")),
+            comp_row("half", 9.0, Partial, Some("m1")),
+            comp_row("fresh", 6.0, Complete, Some("m1")),
+        ],
+    )
+    .unwrap();
+
+    let out = trend(&db, None);
+    let comps = out["components"].as_array().unwrap();
+    let get = |id: &str| {
+        comps
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed: {out}"))
+    };
+    let same = get("same");
+    assert_eq!(same["measured"], true);
+    assert_eq!(same["delta"], -1.0);
+    for (id, reason) in [
+        ("moved", "score_basis_changed"),
+        ("legacy", "unknown_completeness"),
+        ("half", "partial"),
+        ("fresh", "new_component"),
+        ("gone", "removed_component"),
+    ] {
+        let c = get(id);
+        assert_eq!(c["measured"], false, "{id}");
+        assert_eq!(c["reason"], reason, "{id}");
+        assert!(c["delta"].is_null(), "{id}: no delta without a measurement");
+    }
+    assert!(
+        get("fresh")["from"].is_null(),
+        "a new component has no fallback baseline of 10.0"
+    );
+}
+
+#[test]
+fn file_health_reports_bounds_not_a_point_score_for_partial_files() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_run_with(&db, |_, kind| {
+        (kind == BiomarkerKind::ChangeEntropy)
+            .then_some(ProducerOutcome::Missing(MissingReason::NoHistory))
+    });
+    let out = sutra::tools::file_health::handle(
+        &db,
+        Validity::Current,
+        None,
+        None,
+        Some("all"),
+        None,
+        false,
+    )
+    .unwrap();
+    let f = &out["files"][0];
+    assert!(f["health_score"].is_null(), "{f}");
+    assert_eq!(f["partial"], true);
+    assert!((f["score_bounds"]["upper"].as_f64().unwrap() - 8.66).abs() < 0.01);
+    // Organizational saturated at its cap (3.5) on top of the known 1.34.
+    assert!((f["score_bounds"]["lower"].as_f64().unwrap() - 5.16).abs() < 0.01);
+    assert_eq!(
+        f["missing_biomarkers"],
+        serde_json::json!(["change_entropy"])
+    );
+    assert_eq!(f["missing"][0]["reason"], "NoHistory");
 }

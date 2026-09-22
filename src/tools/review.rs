@@ -80,9 +80,10 @@ pub fn handle(
     // full-parse and record a newer snapshot (sutra/415). `Pinned(None)` is a
     // genuinely-missing baseline → incomparable (sutra/424 F5).
     baseline: BaselineSelector,
-    // Validity of the persistent health refresh performed under the caller's DD
-    // lock. Only a `"current"` outcome certifies the persistent side of the
-    // temporal comparison; anything else makes the delta incomparable (F3).
+    // Outcome of the persistent health refresh performed under the caller's DD
+    // lock. Only a reuse/publication certifies the current run; otherwise its
+    // outcomes read as Missing, so the temporal side is partial (never a
+    // measured change) and attribution is only conditional (sutra/416).
     health_refresh: DemandOutcome,
     explain: bool,
 ) -> Result<serde_json::Value> {
