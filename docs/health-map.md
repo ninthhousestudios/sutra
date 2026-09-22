@@ -291,6 +291,13 @@ Additive output fields (existing fields keep their meaning):
   side is partial/unknown) | `population_changed` (file sets differ). Parse
   counters in `deltas` (`files_parsed`, `total_complexity`, ...) are exact and
   always reported.
+- **Scope of "measured" (known gap).** `measured` / `improved` / `degraded`
+  today prove only complete evidence over the same file population. They do
+  **not** prove a matching scoring basis: snapshots record no waiver policy,
+  scoring/analysis version or biomarker set, so adding a waiver (or a scoring
+  change) between two otherwise identical parses still reports a measured
+  improvement. This falls short of the contract's matching-basis rule and is
+  tracked on sutra/416 (persist a scoring-basis identity per snapshot).
 - NoChanges copy-forward (`record_unchanged_snapshot`) recomputes instead of
   copying when any prior row is `Unknown`, so an upgraded index gains recorded
   completeness on its next parse. Validating other health inputs before

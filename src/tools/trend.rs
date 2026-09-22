@@ -116,6 +116,10 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
 /// both sides is complete, and the file population is the same — otherwise the
 /// aggregate moves with missing analysis or with membership, not code quality
 /// (health-evidence-contract.md § Comparison and scoring).
+///
+/// Not checked: scoring-basis compatibility (waiver policy, scoring version,
+/// biomarker set). Snapshots do not record it, so a waiver change between two
+/// otherwise identical parses still reads as measured — tracked on sutra/416.
 fn aggregate_incomparable_reason(
     from: &[SnapshotFileRow],
     to: &[SnapshotFileRow],
@@ -151,7 +155,8 @@ fn sorted_paths(files: &[SnapshotFileRow]) -> Vec<&str> {
 /// both observations preserved — no fallback baseline of 10.0, and no
 /// improved/degraded label on a change the evidence cannot support. An
 /// incomparable pair is still reported at equal scores when its completeness
-/// changed, so a completeness transition is never hidden.
+/// changed, so a completeness transition is never hidden. Like the aggregate
+/// gate, this does not check scoring-basis compatibility (sutra/416).
 fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serde_json::Value {
     let from_map: HashMap<&str, &SnapshotFileRow> =
         from.iter().map(|f| (f.file_path.as_str(), f)).collect();
