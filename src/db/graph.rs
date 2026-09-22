@@ -13,7 +13,7 @@ use super::{CommitRow, Db};
 /// jaccard 1.0 and OOM-killed the process at ~12.5 GB (sutra/324). Capping
 /// per-commit fan-out bounds both the SQLite join intermediate and the result
 /// Vec by the largest *genuine* co-edit commit.
-const MAX_COCHANGE_COMMIT_FANOUT: i64 = 50;
+pub(crate) const MAX_COCHANGE_COMMIT_FANOUT: i64 = 50;
 
 impl Db {
     pub fn update_rollups(&self, file_id: i64, fan_in: i64, blast_radius: i64) -> Result<()> {
@@ -286,12 +286,22 @@ impl Db {
         Ok(conn.query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))?)
     }
 
-    /// Ids of indexed files with at least one ingested (in-window) commit — the
-    /// per-file history population the git producers actually observed.
-    pub fn history_file_ids(&self) -> Result<HashSet<i64>> {
+    /// Ids of indexed files with at least one ingested (in-window) commit that
+    /// touches at most `max_commit_width` indexed files (`None` = no width limit)
+    /// — the per-file history population a git producer with that commit filter
+    /// actually observes.
+    pub fn history_file_ids(&self, max_commit_width: Option<i64>) -> Result<HashSet<i64>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT DISTINCT file_id FROM commit_files")?;
-        let ids: rusqlite::Result<HashSet<i64>> = stmt.query_map([], |r| r.get(0))?.collect();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT file_id FROM commit_files
+             WHERE commit_hash IN (
+                 SELECT commit_hash FROM commit_files
+                 GROUP BY commit_hash HAVING COUNT(*) <= ?1
+             )",
+        )?;
+        let ids: rusqlite::Result<HashSet<i64>> = stmt
+            .query_map([max_commit_width.unwrap_or(i64::MAX)], |r| r.get(0))?
+            .collect();
         Ok(ids?)
     }
 

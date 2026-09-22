@@ -31,6 +31,19 @@ pub struct OwnersConfig {
     pub aliases: HashMap<String, String>,
 }
 
+/// The widest commit (in indexed files touched) a git producer consumes; wider
+/// commits are discarded as carrying no co-edit signal. A file whose only
+/// in-window commits exceed its producer's limit has no usable history for that
+/// producer, so the run stages it Missing(NoHistory) (sutra/423). `None` = the
+/// producer applies no width filter.
+pub(crate) fn max_observed_commit_width(kind: BiomarkerKind) -> Option<i64> {
+    match kind {
+        BiomarkerKind::ChangeEntropy => Some(MAX_COMMIT_WIDTH),
+        BiomarkerKind::HiddenCoupling => Some(crate::db::MAX_COCHANGE_COMMIT_FANOUT),
+        _ => None,
+    }
+}
+
 fn file_path_map(db: &Db) -> Result<HashMap<i64, Arc<str>>> {
     Ok(db
         .all_files()?

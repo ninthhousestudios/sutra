@@ -25,12 +25,12 @@ use super::git_metrics::OwnersConfig;
 /// scoring/finding logic changes what findings are emitted for identical inputs.
 /// Recorded in every stamp so a version change invalidates retained runs even at
 /// an unchanged graph/history (contract: "parser stamp alone does not" suffice).
-pub const HEALTH_ANALYSIS_VERSION: &str = "health-analysis-v1";
+pub const HEALTH_ANALYSIS_VERSION: &str = "health-analysis-v2";
 
 /// Identity of the raw-history ingestion mapping (selection window semantics,
 /// committer-time cutoff, path mapping). Bump when ingestion changes what the
 /// same repository yields, independent of HEAD.
-pub const HISTORY_INGESTION_VERSION: &str = "history-ingestion-v1";
+pub const HISTORY_INGESTION_VERSION: &str = "history-ingestion-v2";
 
 /// Identity of the reference resolver. Bump when resolution changes the import
 /// graph / resolved edges for identical extraction. There is no build-time

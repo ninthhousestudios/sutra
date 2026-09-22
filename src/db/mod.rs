@@ -9,6 +9,7 @@ mod constraints;
 mod conventions;
 pub mod entity_changes;
 mod graph;
+pub(crate) use graph::MAX_COCHANGE_COMMIT_FANOUT;
 mod health;
 mod health_evidence;
 mod migrations;

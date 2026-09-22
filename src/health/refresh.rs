@@ -484,11 +484,19 @@ pub fn publish_run(
     // Per-file history granularity (contract "repository/clock policy"): a
     // workspace-level Loaded does not prove history for every file. The
     // `commit_files` rows ingestion just wrote under this lock are exactly the
-    // indexed files with in-window commits; the rest stage Missing(NoHistory).
-    let history_files = if history_loaded {
-        db.history_file_ids()?
+    // indexed files with in-window commits; a file outside a producer's usable
+    // subset (its commit-width filter applied) stages Missing(NoHistory).
+    let history_files: HashMap<BiomarkerKind, HashSet<i64>> = if history_loaded {
+        RUN_PRODUCERS
+            .into_iter()
+            .filter(|&kind| needs_history(kind))
+            .map(|kind| {
+                let width = crate::health::git_metrics::max_observed_commit_width(kind);
+                Ok((kind, db.history_file_ids(width)?))
+            })
+            .collect::<Result<_>>()?
     } else {
-        HashSet::new()
+        HashMap::new()
     };
     let outcomes = stage_outcomes(
         &files,
@@ -587,15 +595,16 @@ fn repository_moved(history: &HistoryObservation, workspace_root: &Path) -> bool
 /// Stage one explicit [`StoredOutcome`] per (file, producer): `Complete { n }`
 /// (with `n` the retained findings for that file+producer), `Missing(reason)`, or
 /// `Unsupported`. A successful empty producer is `Complete { 0 }`, explicitly
-/// distinct from a missing one. `history_files` holds the ids of files with
-/// in-window commits; under `Loaded` history a file outside it has no usable
-/// history observations, so its git producers are `Missing(NoHistory)`.
+/// distinct from a missing one. `history_files` holds, per git producer, the ids
+/// of files with in-window commits that producer consumes; under `Loaded`
+/// history a file outside its producer's set has no usable history
+/// observations, so that producer is `Missing(NoHistory)`.
 fn stage_outcomes(
     files: &[crate::db::FileRow],
     rows: &[HealthFindingRow],
     path_by_id: &HashMap<i64, String>,
     history: &HistoryObservation,
-    history_files: &HashSet<i64>,
+    history_files: &HashMap<BiomarkerKind, HashSet<i64>>,
     owners: &std::result::Result<ConfigStamp, InputFailure>,
 ) -> Vec<StoredOutcome> {
     // Per (file_id, producer) finding counts from the retained rows.
@@ -613,7 +622,9 @@ fn stage_outcomes(
         };
         for kind in RUN_PRODUCERS {
             let count = counts.get(&(file.id, kind)).copied().unwrap_or(0);
-            let has_history = history_files.contains(&file.id);
+            let has_history = history_files
+                .get(&kind)
+                .is_some_and(|ids| ids.contains(&file.id));
             outcomes.push(StoredOutcome {
                 file_path: path.to_string(),
                 producer: kind,

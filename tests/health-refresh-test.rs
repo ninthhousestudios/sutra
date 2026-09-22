@@ -876,3 +876,59 @@ fn history_touching_only_unindexed_paths_is_not_loaded() {
         DemandOutcome::Refreshed(RefreshResult::Reused(_))
     ));
 }
+
+/// A git fixture of `n` indexed files whose only in-window commit touches all of
+/// them at once — a single commit `n` files wide.
+fn wide_commit_fixture(id: &str, n: usize) -> Fixture {
+    let owned: Vec<(String, String)> = (0..n)
+        .map(|i| (format!("src/f{i}.rs"), format!("pub fn f{i}() {{}}\n")))
+        .collect();
+    let files: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = fixture(id, &files);
+    git_init(&fx.ws.root);
+    git_commit(&fx.ws.root, chrono::Utc::now().timestamp() - 3600);
+    fx
+}
+
+/// Assert `src/f0.rs`'s outcome per git producer: Missing(NoHistory) for the
+/// producers in `unobserved`, Complete for the rest.
+fn assert_wide_commit_outcomes(db: &Db, unobserved: &[BiomarkerKind]) {
+    for producer in GIT_PRODUCERS {
+        let outcome = file_outcome(db, "src/f0.rs", producer);
+        if unobserved.contains(&producer) {
+            assert_eq!(
+                outcome,
+                ProducerOutcome::Missing(MissingReason::NoHistory),
+                "{producer:?} discards the file's only commit as too wide, so it has \
+                 no usable history — not a measured-clean Complete {{ 0 }}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, ProducerOutcome::Complete { .. }),
+                "{producer:?} consumes the wide commit, got {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn commit_wider_than_entropy_limit_leaves_change_entropy_missing() {
+    // 31 files: over ChangeEntropy's 30-file width, within co-change's 50.
+    let fx = wide_commit_fixture("wide-31", 31);
+    full_parse(&fx);
+    assert_wide_commit_outcomes(&fx.db, &[BiomarkerKind::ChangeEntropy]);
+}
+
+#[test]
+fn commit_wider_than_cochange_fanout_leaves_hidden_coupling_missing() {
+    // 51 files: over both ChangeEntropy's and HiddenCoupling's width limits.
+    let fx = wide_commit_fixture("wide-51", 51);
+    full_parse(&fx);
+    assert_wide_commit_outcomes(
+        &fx.db,
+        &[BiomarkerKind::ChangeEntropy, BiomarkerKind::HiddenCoupling],
+    );
+}
