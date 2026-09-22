@@ -154,9 +154,11 @@ src/tools/
                       { reason: "stale_membership" } block, distinct from the
                       current per-file evidence. Full parse re-clusters and repairs.
   trend.rs          — MCP tool: sutra_trend. Comparison mode diffs two
-                      snapshots with per-file deltas (improved/degraded),
-                      per-component deltas, category breakdown. History
-                      mode returns per-file score time series.
+                      snapshots with per-file deltas (improved/degraded/
+                      incomparable), per-component deltas, category
+                      breakdown. History mode returns per-file score time
+                      series. Both carry per-file completeness (sutra/418;
+                      see "Trend completeness contract" below).
   similar.rs        — MCP tool: sutra_similar(symbol, mode, limit, threshold).
                       Resolves symbol → HRR vector, linear scan cosine
                       similarity, returns ranked matches with file locations.
@@ -259,6 +261,38 @@ to the `commit_file_count` heuristic on indexes predating the column.
 Snapshots persist `partial` + `missing_biomarkers` per file
 (`health_snapshot_files`), so `trend` can tell partial analysis from real
 degradation.
+
+**Trend completeness contract (sutra/418).** `SnapshotFileRow.completeness`
+is `Complete | Partial | Unknown`, stored as `partial` + `completeness_recorded`
+(migration 0076). `Unknown` = the row never recorded completeness: pre-0073 rows
+and every row the production writer (`insert_snapshot_atomic`) wrote before
+sutra/418, which silently dropped both columns. A defaulted `partial = 0` is
+never read as complete and is not backfilled. Both snapshot inserts share one
+row writer (`insert_snapshot_file_rows`); `missing_biomarkers` is stored sorted
+(the scorer's order is unstable) and compared as a set.
+
+Additive output fields (existing fields keep their meaning):
+- Every completeness object is `{completeness: "complete"|"partial"|"unknown",
+  partial: bool | null, missing_biomarkers: [..]}`; `partial` is `null` for
+  Unknown.
+- History entries carry those three keys flat, next to `health_score`.
+- Comparison `files.improved`/`files.degraded` entries add `from_completeness`
+  and `to_completeness`. They now contain **only** complete→complete pairs.
+- Comparison `files.incomparable`: `{path, from, to, from_completeness,
+  to_completeness, completeness_changed, reason}`, no `delta`. `reason` is
+  `new_file` | `removed_file` | `unknown_completeness` | `partial`. A pair is
+  listed when its score or its completeness changed — so equal-score
+  completeness transitions stay visible.
+- Top-level `completeness: {from, to}` counts files per status on each side,
+  so readers of the aggregate `deltas`/`categories` see how much was measured.
+
+Behaviour changes that are not additive, per health-evidence-contract.md
+§ Comparison: new files no longer compare against a fallback 10.0 (they were
+listed as improved/degraded), and removed files moved from `degraded`
+(`delta: "removed"`) to `incomparable`. Not in scope: component deltas still
+use a 10.0 fallback for new components and have no membership-compatibility
+check, and workspace/category aggregates still sum partial files — the top-level
+counts expose that rather than suppress it.
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the

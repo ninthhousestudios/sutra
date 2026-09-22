@@ -1195,7 +1195,9 @@ impl SutraServer {
         description = "Compare two parse snapshots with per-file and per-component health deltas, \
         or query a single file's health history over time. \
         Defaults to comparing the two most recent snapshots. \
-        Set 'path' to get a per-file time series instead of a comparison."
+        Set 'path' to get a per-file time series instead of a comparison. \
+        Only complete-vs-complete file pairs are measured improved/degraded; \
+        partial, unknown-completeness, new and removed files are 'incomparable'."
     )]
     pub async fn sutra_trend(
         &self,

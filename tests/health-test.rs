@@ -1,6 +1,6 @@
 use sutra::db::{
-    CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotComponentRow, SnapshotFileRow,
-    SnapshotParams,
+    CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotCompleteness,
+    SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use sutra::git::parse_blame_porcelain;
 use sutra::health::findings::HealthFinding;
@@ -1421,7 +1421,7 @@ fn test_snapshot_stores_per_file_health() {
             file_path: "src/foo.rs".into(),
             score: 9.2,
             category_scores: r#"{"structural":0.8}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         },
         SnapshotFileRow {
@@ -1429,7 +1429,7 @@ fn test_snapshot_stores_per_file_health() {
             file_path: "src/bar.rs".into(),
             score: 6.1,
             category_scores: r#"{"organizational":2.5,"structural":1.4}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         },
     ];
@@ -1494,7 +1494,7 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 7.5,
             category_scores: r#"{"structural":1.0}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1508,7 +1508,7 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 8.2,
             category_scores: r#"{"structural":0.5}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1522,7 +1522,7 @@ fn test_file_health_history() {
             file_path: "src/main.rs".into(),
             score: 9.1,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1531,9 +1531,9 @@ fn test_file_health_history() {
     let history = db.file_health_history("src/main.rs", 10).unwrap();
     assert_eq!(history.len(), 3);
     // Newest first
-    assert!((history[0].1 - 9.1).abs() < 0.01);
-    assert!((history[1].1 - 8.2).abs() < 0.01);
-    assert!((history[2].1 - 7.5).abs() < 0.01);
+    assert!((history[0].score - 9.1).abs() < 0.01);
+    assert!((history[1].score - 8.2).abs() < 0.01);
+    assert!((history[2].score - 7.5).abs() < 0.01);
 
     // Limit works
     let limited = db.file_health_history("src/main.rs", 2).unwrap();
@@ -1568,7 +1568,7 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/a.rs".into(),
                 score: 8.0,
                 category_scores: r#"{"structural":1.0}"#.into(),
-                partial: false,
+                completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
             },
             SnapshotFileRow {
@@ -1576,7 +1576,7 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/b.rs".into(),
                 score: 6.0,
                 category_scores: r#"{"organizational":2.0}"#.into(),
-                partial: false,
+                completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
             },
         ],
@@ -1592,7 +1592,7 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/a.rs".into(),
                 score: 9.0,
                 category_scores: r#"{"structural":0.5}"#.into(),
-                partial: false,
+                completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
             },
             SnapshotFileRow {
@@ -1600,7 +1600,7 @@ fn test_trend_comparison_with_file_deltas() {
                 file_path: "src/b.rs".into(),
                 score: 5.0,
                 category_scores: r#"{"organizational":3.0}"#.into(),
-                partial: false,
+                completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
             },
         ],
@@ -1651,7 +1651,7 @@ fn test_trend_file_history_mode() {
             file_path: "src/x.rs".into(),
             score: 7.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1665,7 +1665,7 @@ fn test_trend_file_history_mode() {
             file_path: "src/x.rs".into(),
             score: 9.5,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1824,7 +1824,7 @@ fn test_health_delta_degradation() {
             file_path: "src/hotfile.rs".into(),
             score: 9.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1878,7 +1878,7 @@ fn test_health_delta_improvement() {
             file_path: "src/cleaned.rs".into(),
             score: 6.0,
             category_scores: r#"{"structural":2.0}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -1939,7 +1939,7 @@ fn test_health_delta_with_ondemand_findings() {
             file_path: "src/volatile.rs".into(),
             score: 9.5,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -2003,7 +2003,7 @@ fn test_health_delta_no_spurious_improvement_for_partial_snapshot_file() {
             file_path: "src/skipped.rs".into(),
             score: floor,
             category_scores: "{}".into(),
-            partial: true,
+            completeness: SnapshotCompleteness::Partial,
             missing_biomarkers: vec!["nested_complexity".into()],
         }],
     )
@@ -2048,7 +2048,7 @@ fn test_health_delta_credits_ondemand_debt_on_partial_snapshot_file() {
             file_path: "src/skipped.rs".into(),
             score: floor,
             category_scores: "{}".into(),
-            partial: true,
+            completeness: SnapshotCompleteness::Partial,
             missing_biomarkers: vec!["nested_complexity".into()],
         }],
     )
@@ -2581,7 +2581,7 @@ fn snapshot_file_completeness_round_trips() {
             file_path: "src/partial.rs".into(),
             score: 5.0,
             category_scores: "{}".into(),
-            partial: true,
+            completeness: SnapshotCompleteness::Partial,
             missing_biomarkers: vec!["nested_complexity".into(), "import_cycle".into()],
         },
         SnapshotFileRow {
@@ -2589,7 +2589,7 @@ fn snapshot_file_completeness_round_trips() {
             file_path: "src/whole.rs".into(),
             score: 9.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         },
     ];
@@ -2600,7 +2600,7 @@ fn snapshot_file_completeness_round_trips() {
         .iter()
         .find(|f| f.file_path == "src/partial.rs")
         .unwrap();
-    assert!(partial.partial);
+    assert_eq!(partial.completeness, SnapshotCompleteness::Partial);
     assert_eq!(
         partial.missing_biomarkers,
         vec!["nested_complexity", "import_cycle"]
@@ -2609,7 +2609,7 @@ fn snapshot_file_completeness_round_trips() {
         .iter()
         .find(|f| f.file_path == "src/whole.rs")
         .unwrap();
-    assert!(!whole.partial);
+    assert_eq!(whole.completeness, SnapshotCompleteness::Complete);
     assert!(whole.missing_biomarkers.is_empty());
 }
 
@@ -2631,7 +2631,7 @@ fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
             file_path: "src/x.rs".into(),
             score: 6.0,
             category_scores: r#"{"structural":4.0}"#.into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -2645,7 +2645,7 @@ fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
             file_path: "src/x.rs".into(),
             score: 10.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -2705,7 +2705,7 @@ fn compute_health_delta_pinned_missing_baseline_is_incomparable() {
             file_path: "src/x.rs".into(),
             score: 10.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -2761,7 +2761,7 @@ fn compute_health_delta_excludes_waived_findings_like_file_health() {
             file_path: "src/w.rs".into(),
             score: 10.0,
             category_scores: "{}".into(),
-            partial: false,
+            completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
         }],
     )
@@ -2802,4 +2802,227 @@ fn compute_health_delta_excludes_waived_findings_like_file_health() {
         waived.degraded.is_empty() && waived.improved.is_empty(),
         "a waived finding must not manufacture a delta"
     );
+}
+
+// --- sutra/418: trend completeness fidelity ---
+
+fn snap_row(
+    file_id: i64,
+    path: &str,
+    score: f64,
+    completeness: SnapshotCompleteness,
+    missing: &[&str],
+) -> SnapshotFileRow {
+    SnapshotFileRow {
+        file_id,
+        file_path: path.into(),
+        score,
+        category_scores: "{}".into(),
+        completeness,
+        missing_biomarkers: missing.iter().map(|m| m.to_string()).collect(),
+    }
+}
+
+fn trend(db: &Db, path: Option<&str>) -> serde_json::Value {
+    sutra::tools::trend::handle(
+        db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: path.map(Into::into),
+            limit: None,
+        },
+    )
+    .unwrap()
+}
+
+fn entry<'a>(bucket: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    bucket
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == path)
+}
+
+#[test]
+fn trend_comparison_measures_only_complete_pairs_and_surfaces_the_rest() {
+    use SnapshotCompleteness::{Complete, Partial, Unknown};
+    let (_dir, db) = setup_db();
+
+    let from = insert_snapshot(&db, 7.0);
+    db.insert_snapshot_files(
+        from,
+        &[
+            snap_row(1, "src/a.rs", 8.0, Complete, &[]),
+            snap_row(2, "src/b.rs", 6.0, Complete, &[]),
+            snap_row(3, "src/c.rs", 5.0, Partial, &["import_cycle"]),
+            snap_row(4, "src/d.rs", 7.0, Unknown, &[]),
+            snap_row(6, "src/f.rs", 9.0, Complete, &[]),
+            snap_row(
+                7,
+                "src/g.rs",
+                5.0,
+                Partial,
+                &["import_cycle", "hidden_coupling"],
+            ),
+        ],
+    )
+    .unwrap();
+    let to = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        to,
+        &[
+            // Complete → complete, score up: the only measured change.
+            snap_row(1, "src/a.rs", 9.0, Complete, &[]),
+            // Equal score, complete → partial: a completeness transition.
+            snap_row(2, "src/b.rs", 6.0, Partial, &["dead_code_ratio"]),
+            // Partial → complete, score up: NOT a measured improvement.
+            snap_row(3, "src/c.rs", 8.0, Complete, &[]),
+            // Legacy unknown → complete: NOT a measured improvement.
+            snap_row(4, "src/d.rs", 9.0, Complete, &[]),
+            // New file: no fallback baseline of 10.
+            snap_row(5, "src/e.rs", 4.0, Complete, &[]),
+            // Same partial observation (missing set reordered): no change.
+            snap_row(
+                7,
+                "src/g.rs",
+                5.0,
+                Partial,
+                &["hidden_coupling", "import_cycle"],
+            ),
+        ],
+    )
+    .unwrap();
+
+    let result = trend(&db, None);
+    let files = &result["files"];
+
+    let improved = files["improved"].as_array().unwrap();
+    assert_eq!(improved.len(), 1, "{improved:?}");
+    assert_eq!(improved[0]["path"], "src/a.rs");
+    assert_eq!(improved[0]["from_completeness"]["completeness"], "complete");
+    assert_eq!(improved[0]["to_completeness"]["partial"], false);
+    assert!(files["degraded"].as_array().unwrap().is_empty());
+
+    let inc = &files["incomparable"];
+    assert_eq!(inc.as_array().unwrap().len(), 5, "{inc}");
+
+    let b = entry(inc, "src/b.rs").expect("equal-score transition is visible");
+    assert_eq!(b["reason"], "partial");
+    assert_eq!(b["completeness_changed"], true);
+    assert_eq!(b["from"], 6.0);
+    assert_eq!(b["to"], 6.0);
+    assert!(b.get("delta").is_none(), "incomparable carries no delta");
+    assert_eq!(b["from_completeness"]["partial"], false);
+    assert_eq!(b["to_completeness"]["partial"], true);
+    assert_eq!(
+        b["to_completeness"]["missing_biomarkers"],
+        serde_json::json!(["dead_code_ratio"])
+    );
+
+    let c = entry(inc, "src/c.rs").unwrap();
+    assert_eq!(c["reason"], "partial");
+    assert_eq!(
+        c["from_completeness"]["missing_biomarkers"],
+        serde_json::json!(["import_cycle"])
+    );
+
+    let d = entry(inc, "src/d.rs").unwrap();
+    assert_eq!(d["reason"], "unknown_completeness");
+    assert_eq!(d["from_completeness"]["completeness"], "unknown");
+    assert!(
+        d["from_completeness"]["partial"].is_null(),
+        "legacy cannot prove completeness"
+    );
+
+    let e = entry(inc, "src/e.rs").unwrap();
+    assert_eq!(e["reason"], "new_file");
+    assert!(e["from"].is_null() && e["from_completeness"].is_null());
+
+    let f = entry(inc, "src/f.rs").unwrap();
+    assert_eq!(f["reason"], "removed_file");
+    assert!(f["to"].is_null());
+
+    assert!(
+        entry(inc, "src/g.rs").is_none(),
+        "unchanged partial observation"
+    );
+
+    assert_eq!(result["completeness"]["from"]["partial"], 2);
+    assert_eq!(result["completeness"]["from"]["unknown"], 1);
+    assert_eq!(result["completeness"]["to"]["complete"], 4);
+    assert_eq!(result["completeness"]["to"]["partial"], 2);
+}
+
+#[test]
+fn trend_history_exposes_completeness_on_every_entry() {
+    let (_dir, db) = setup_db();
+    for (score, completeness, missing) in [
+        (7.0, SnapshotCompleteness::Unknown, &[][..]),
+        (5.0, SnapshotCompleteness::Partial, &["import_cycle"][..]),
+        (9.0, SnapshotCompleteness::Complete, &[][..]),
+    ] {
+        let id = insert_snapshot(&db, score);
+        db.insert_snapshot_files(id, &[snap_row(1, "src/x.rs", score, completeness, missing)])
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let result = trend(&db, Some("src/x.rs"));
+    let entries = result["snapshots"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    // Newest first.
+    assert_eq!(entries[0]["completeness"], "complete");
+    assert_eq!(entries[0]["partial"], false);
+    assert_eq!(entries[1]["completeness"], "partial");
+    assert_eq!(entries[1]["partial"], true);
+    assert_eq!(
+        entries[1]["missing_biomarkers"],
+        serde_json::json!(["import_cycle"])
+    );
+    assert_eq!(entries[2]["completeness"], "unknown");
+    assert!(entries[2]["partial"].is_null());
+    for e in entries {
+        assert!(e["missing_biomarkers"].is_array());
+        assert!(e["health_score"].is_number());
+    }
+}
+
+#[test]
+fn legacy_snapshot_rows_read_as_unknown_not_complete() {
+    // A row written without completeness columns — pre-0073 data, or the
+    // pre-sutra/418 atomic writer — carries only the column defaults.
+    let (_dir, db) = setup_db();
+    let from = insert_snapshot(&db, 6.0);
+    db.conn_for_test()
+        .execute(
+            "INSERT INTO health_snapshot_files
+             (snapshot_id, file_id, file_path, score, category_scores)
+             VALUES (?1, 1, 'src/old.rs', 6.0, '{}')",
+            [from],
+        )
+        .unwrap();
+    let to = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        to,
+        &[snap_row(
+            1,
+            "src/old.rs",
+            8.0,
+            SnapshotCompleteness::Complete,
+            &[],
+        )],
+    )
+    .unwrap();
+
+    let rows = db.snapshot_file_scores(from).unwrap();
+    assert_eq!(rows[0].completeness, SnapshotCompleteness::Unknown);
+
+    let result = trend(&db, None);
+    assert!(result["files"]["improved"].as_array().unwrap().is_empty());
+    let old = entry(&result["files"]["incomparable"], "src/old.rs").unwrap();
+    assert_eq!(old["reason"], "unknown_completeness");
+    assert_eq!(old["from"], 6.0);
+    assert_eq!(old["to"], 8.0);
 }

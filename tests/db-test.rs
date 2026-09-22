@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use sutra::db::{
     CommitRow, Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
-    SnapshotComponentRow, SnapshotFileRow, SnapshotParams, TABLE_REGISTRY, TablePartition,
+    SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotParams, TABLE_REGISTRY,
+    TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
 
@@ -1699,7 +1700,7 @@ fn test_snapshot_pruning() {
                     file_path: "a.rs".into(),
                     score: i as f64,
                     category_scores: "{}".into(),
-                    partial: false,
+                    completeness: SnapshotCompleteness::Complete,
                     missing_biomarkers: Vec::new(),
                 }],
                 &[SnapshotComponentRow {

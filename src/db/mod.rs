@@ -500,11 +500,66 @@ pub struct SnapshotFileRow {
     pub file_path: String,
     pub score: f64,
     pub category_scores: String,
-    /// True when this score was computed from incomplete analysis — some
-    /// file-scored biomarker was worst-cased rather than measured (sutra/408).
+    /// Whether this score was computed from complete analysis (sutra/408), or
+    /// whether that is unknown because the row predates recording it (sutra/418).
     /// Lets trend tell partial analysis apart from real degradation.
-    pub partial: bool,
-    /// Names of the worst-cased biomarkers behind a `partial` score.
+    pub completeness: SnapshotCompleteness,
+    /// Names of the worst-cased biomarkers behind a `Partial` score.
+    pub missing_biomarkers: Vec<String>,
+}
+
+/// Persisted completeness of one per-file snapshot score.
+///
+/// Stored as `partial` + `completeness_recorded` on `health_snapshot_files`.
+/// `Unknown` is a first-class state, not a synonym for `Complete`: rows written
+/// before completeness was recorded carry a defaulted `partial = 0` that proves
+/// nothing (health-evidence-contract.md § Migration), so they read as `Unknown`
+/// and are never backfilled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotCompleteness {
+    /// Every file-scored biomarker was measured.
+    Complete,
+    /// Some biomarker was worst-cased (see `missing_biomarkers`).
+    Partial,
+    /// Completeness was never recorded for this row (legacy observation).
+    Unknown,
+}
+
+impl SnapshotCompleteness {
+    /// Wire name used in tool output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// `(partial, completeness_recorded)` column values.
+    fn to_columns(self) -> (i64, i64) {
+        match self {
+            Self::Complete => (0, 1),
+            Self::Partial => (1, 1),
+            Self::Unknown => (0, 0),
+        }
+    }
+
+    fn from_columns(partial: i64, recorded: i64) -> Self {
+        match (recorded != 0, partial != 0) {
+            (false, _) => Self::Unknown,
+            (true, true) => Self::Partial,
+            (true, false) => Self::Complete,
+        }
+    }
+}
+
+/// One entry of a file's snapshot history, newest-first (`Db::file_health_history`).
+#[derive(Debug, Clone)]
+pub struct FileHealthHistoryRow {
+    pub timestamp: String,
+    pub score: f64,
+    pub category_scores: String,
+    pub completeness: SnapshotCompleteness,
     pub missing_biomarkers: Vec<String>,
 }
 
@@ -2434,20 +2489,7 @@ impl Db {
             )?;
             let snapshot_id = conn.last_insert_rowid();
 
-            let mut file_stmt = conn.prepare(
-                "INSERT INTO health_snapshot_files
-                 (snapshot_id, file_id, file_path, score, category_scores)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for f in files {
-                file_stmt.execute(params![
-                    snapshot_id,
-                    f.file_id,
-                    f.file_path,
-                    f.score,
-                    f.category_scores
-                ])?;
-            }
+            insert_snapshot_file_rows(&conn, snapshot_id, files)?;
 
             let mut comp_stmt = conn.prepare(
                 "INSERT INTO health_snapshot_components
@@ -2606,25 +2648,7 @@ impl Db {
 
     pub fn insert_snapshot_files(&self, snapshot_id: i64, files: &[SnapshotFileRow]) -> Result<()> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "INSERT INTO health_snapshot_files
-             (snapshot_id, file_id, file_path, score, category_scores, partial, missing_biomarkers)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )?;
-        for f in files {
-            let missing_json =
-                serde_json::to_string(&f.missing_biomarkers).unwrap_or_else(|_| "[]".to_string());
-            stmt.execute(params![
-                snapshot_id,
-                f.file_id,
-                f.file_path,
-                f.score,
-                f.category_scores,
-                f.partial as i64,
-                missing_json,
-            ])?;
-        }
-        Ok(())
+        insert_snapshot_file_rows(&conn, snapshot_id, files)
     }
 
     pub fn insert_snapshot_components(
@@ -2654,20 +2678,19 @@ impl Db {
     pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT file_id, file_path, score, category_scores, partial, missing_biomarkers
+            "SELECT file_id, file_path, score, category_scores,
+                    partial, completeness_recorded, missing_biomarkers
              FROM health_snapshot_files WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![snapshot_id], |row| {
-                let missing_json: String = row.get(5)?;
-                let missing_biomarkers: Vec<String> =
-                    serde_json::from_str(&missing_json).unwrap_or_default();
+                let (completeness, missing_biomarkers) = map_snapshot_completeness(row, 4)?;
                 Ok(SnapshotFileRow {
                     file_id: row.get(0)?,
                     file_path: row.get(1)?,
                     score: row.get(2)?,
                     category_scores: row.get(3)?,
-                    partial: row.get::<_, i64>(4)? != 0,
+                    completeness,
                     missing_biomarkers,
                 })
             })?
@@ -2699,10 +2722,11 @@ impl Db {
         &self,
         file_path: &str,
         limit: usize,
-    ) -> Result<Vec<(String, f64, String)>> {
+    ) -> Result<Vec<FileHealthHistoryRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT s.timestamp, hsf.score, hsf.category_scores
+            "SELECT s.timestamp, hsf.score, hsf.category_scores,
+                    hsf.partial, hsf.completeness_recorded, hsf.missing_biomarkers
              FROM health_snapshot_files hsf
              JOIN snapshots s ON s.id = hsf.snapshot_id
              WHERE hsf.file_path = ?1
@@ -2710,7 +2734,14 @@ impl Db {
         )?;
         let rows = stmt
             .query_map(params![file_path, limit as i64], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                let (completeness, missing_biomarkers) = map_snapshot_completeness(row, 3)?;
+                Ok(FileHealthHistoryRow {
+                    timestamp: row.get(0)?,
+                    score: row.get(1)?,
+                    category_scores: row.get(2)?,
+                    completeness,
+                    missing_biomarkers,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -2730,6 +2761,51 @@ fn batch_aware_transaction(conn: &Connection) -> Result<Option<rusqlite::Transac
     } else {
         Ok(None)
     }
+}
+
+/// The single writer for `health_snapshot_files` rows. Both snapshot insert
+/// paths go through it so completeness cannot be dropped by one of them again
+/// (sutra/418: the atomic production writer omitted `partial` and
+/// `missing_biomarkers` while the standalone one stored them).
+fn insert_snapshot_file_rows(
+    conn: &Connection,
+    snapshot_id: i64,
+    files: &[SnapshotFileRow],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO health_snapshot_files
+         (snapshot_id, file_id, file_path, score, category_scores,
+          partial, completeness_recorded, missing_biomarkers)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    for f in files {
+        let (partial, recorded) = f.completeness.to_columns();
+        let missing_json =
+            serde_json::to_string(&f.missing_biomarkers).unwrap_or_else(|_| "[]".to_string());
+        stmt.execute(params![
+            snapshot_id,
+            f.file_id,
+            f.file_path,
+            f.score,
+            f.category_scores,
+            partial,
+            recorded,
+            missing_json,
+        ])?;
+    }
+    Ok(())
+}
+
+/// Read `(partial, completeness_recorded, missing_biomarkers)` starting at
+/// column `first`.
+fn map_snapshot_completeness(
+    row: &rusqlite::Row<'_>,
+    first: usize,
+) -> rusqlite::Result<(SnapshotCompleteness, Vec<String>)> {
+    let completeness = SnapshotCompleteness::from_columns(row.get(first)?, row.get(first + 1)?);
+    let missing_json: String = row.get(first + 2)?;
+    let missing_biomarkers: Vec<String> = serde_json::from_str(&missing_json).unwrap_or_default();
+    Ok((completeness, missing_biomarkers))
 }
 
 fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {

@@ -438,6 +438,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0075_health_evidence_runs.sql"),
         true,
     ),
+    // Recorded-vs-defaulted snapshot completeness (sutra/418). ephemeral_only:
+    // same reasoning as 0073 — health_snapshot_files is Ephemeral, so the ALTER
+    // must replay after 0033 recreates the base shape on reindex.
+    (
+        "0076_snapshot_completeness_recorded",
+        include_str!("../../migrations/0076_snapshot_completeness_recorded.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -617,6 +625,9 @@ impl Db {
             "0073_snapshot_file_completeness" => {
                 Self::column_exists(conn, "health_snapshot_files", "partial")
                     && Self::column_exists(conn, "health_snapshot_files", "missing_biomarkers")
+            }
+            "0076_snapshot_completeness_recorded" => {
+                Self::column_exists(conn, "health_snapshot_files", "completeness_recorded")
             }
             "0005_conventions" => {
                 let exists: bool = conn

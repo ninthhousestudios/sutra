@@ -12,7 +12,9 @@ use tracing::{debug, info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{Db, ResolvedRefRow, SnapshotComponentRow, SnapshotFileRow, SnapshotParams};
+use crate::db::{
+    Db, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
+};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
@@ -1448,7 +1450,7 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
     let mut health_sum = 0.0;
 
     for f in &files {
-        let (score, cat_json, partial, missing_biomarkers) = match file_score_map.get(&f.id) {
+        let (score, cat_json, completeness, missing_biomarkers) = match file_score_map.get(&f.id) {
             Some(sf) => {
                 let cat_totals: HashMap<&str, f64> = sf
                     .category_totals
@@ -1458,14 +1460,24 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
                 let json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
                 // Carry completeness through the snapshot (sutra/408) so trend
                 // can tell a worst-cased partial score from real degradation.
-                let missing: Vec<String> = sf
+                // Sorted: the scorer's order is not stable across runs, and trend
+                // compares these sets between snapshots (sutra/418).
+                let mut missing: Vec<String> = sf
                     .missing
                     .iter()
                     .map(|m| m.biomarker.as_str().to_string())
                     .collect();
-                (sf.score, json, !missing.is_empty(), missing)
+                missing.sort_unstable();
+                let completeness = if missing.is_empty() {
+                    SnapshotCompleteness::Complete
+                } else {
+                    SnapshotCompleteness::Partial
+                };
+                (sf.score, json, completeness, missing)
             }
-            None => (10.0, "{}".into(), false, Vec::new()),
+            // Unscored file: the 10.0 is a placeholder, not a measurement, so
+            // its completeness is not claimed (sutra/418).
+            None => (10.0, "{}".into(), SnapshotCompleteness::Unknown, Vec::new()),
         };
 
         file_scores.push(SnapshotFileRow {
@@ -1473,7 +1485,7 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
             file_path: f.path.to_string(),
             score,
             category_scores: cat_json,
-            partial,
+            completeness,
             missing_biomarkers,
         });
         health_sum += score;

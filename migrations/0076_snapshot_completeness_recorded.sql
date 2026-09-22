@@ -1,0 +1,14 @@
+-- Distinguish recorded snapshot completeness from a column default (sutra/418).
+--
+-- 0073 added `partial INTEGER NOT NULL DEFAULT 0`, so a row that never had its
+-- completeness written reads as `partial = 0` — indistinguishable from a score
+-- that was genuinely computed from complete analysis. Two populations carry that
+-- unproven 0: rows written before 0073, and every row written by the production
+-- snapshot writer (Db::insert_snapshot_atomic) before sutra/418, which omitted
+-- both completeness columns. `completeness_recorded` is 1 only when the writer
+-- actually stored `partial`/`missing_biomarkers`; 0 means the completeness is
+-- Unknown and must never be read as complete (health-evidence-contract.md:
+-- "Old stamps are Unknown, including old `partial=false` defaults").
+-- Ephemeral ALTER (health_snapshot_files is dropped and recreated on reindex by
+-- 0033) — replays after 0033 to re-add the column.
+ALTER TABLE health_snapshot_files ADD COLUMN completeness_recorded INTEGER NOT NULL DEFAULT 0;

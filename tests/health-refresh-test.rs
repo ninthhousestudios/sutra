@@ -632,3 +632,113 @@ fn deepening_a_shallow_clone_at_unchanged_head_re_ingests() {
     // the range is still incomplete — partial, not silently healed to Complete.
     assert_all_history_incomplete(&fx.db, BiomarkerKind::HiddenCoupling);
 }
+
+// --- sutra/418: snapshot completeness through the production writer ---
+
+/// Assert every row of `snapshot_id` recorded its completeness (never the
+/// legacy `Unknown`) and that it matches what the scorer computed for the file.
+fn assert_snapshot_completeness_matches_scorer(db: &Db, snapshot_id: i64) {
+    use sutra::db::SnapshotCompleteness;
+    let scored = sutra::health::scoring::score_workspace(db).unwrap();
+    let rows = db.snapshot_file_scores(snapshot_id).unwrap();
+    assert!(!rows.is_empty(), "snapshot must carry per-file rows");
+    for row in &rows {
+        let sf = scored
+            .file_scores
+            .iter()
+            .find(|s| s.file_id == row.file_id)
+            .expect("every indexed file is scored");
+        let mut expected_missing: Vec<String> = sf
+            .missing
+            .iter()
+            .map(|m| m.biomarker.as_str().to_string())
+            .collect();
+        // The writer stores the set sorted; the scorer's order is unstable.
+        expected_missing.sort_unstable();
+        let expected = if expected_missing.is_empty() {
+            SnapshotCompleteness::Complete
+        } else {
+            SnapshotCompleteness::Partial
+        };
+        assert_eq!(
+            row.completeness, expected,
+            "{}: completeness",
+            row.file_path
+        );
+        assert_eq!(
+            row.missing_biomarkers, expected_missing,
+            "{}: missing",
+            row.file_path
+        );
+    }
+}
+
+#[test]
+fn full_parse_snapshot_round_trips_completeness_through_trend() {
+    // A git repo with no commits → NoHistory → git biomarkers are worst-cased,
+    // so the production writer must persist a genuinely partial score.
+    let fx = fixture("snap-completeness", &[("src/deep.rs", DEEP_SRC)]);
+    git_init(&fx.ws.root);
+
+    full_parse(&fx);
+    let first = fx.db.latest_snapshots(1).unwrap()[0].id;
+    assert_snapshot_completeness_matches_scorer(&fx.db, first);
+    let row = &fx.db.snapshot_file_scores(first).unwrap()[0];
+    assert_eq!(
+        row.completeness,
+        sutra::db::SnapshotCompleteness::Partial,
+        "NoHistory must worst-case git biomarkers into a partial score"
+    );
+
+    // Unchanged second parse → NoChanges copy-forward, the other production path.
+    full_parse(&fx);
+    let snaps = fx.db.latest_snapshots(2).unwrap();
+    assert_eq!(snaps.len(), 2, "second parse records a checkpoint");
+    assert_ne!(snaps[0].id, first);
+    assert_snapshot_completeness_matches_scorer(&fx.db, snaps[0].id);
+
+    // History exposes completeness on every entry.
+    let history = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: Some("src/deep.rs".into()),
+            limit: None,
+        },
+    )
+    .unwrap();
+    let entries = history["snapshots"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for e in entries {
+        assert_eq!(e["completeness"], "partial");
+        assert_eq!(e["partial"], true);
+        assert_eq!(
+            e["missing_biomarkers"],
+            serde_json::json!(row.missing_biomarkers)
+        );
+    }
+
+    // Comparison: identical partial observations are no change, not incomparable.
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    for bucket in ["improved", "degraded", "incomparable"] {
+        assert!(
+            cmp["files"][bucket].as_array().unwrap().is_empty(),
+            "{bucket}: {}",
+            cmp["files"][bucket]
+        );
+    }
+    assert_eq!(cmp["completeness"]["to"]["partial"], 1);
+    assert_eq!(cmp["completeness"]["to"]["unknown"], 0);
+}

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Db, SnapshotFileRow, SnapshotRow};
+use crate::db::{Db, SnapshotCompleteness, SnapshotFileRow, SnapshotRow};
 use crate::error::Result;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -39,13 +39,15 @@ fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value
     let history = db.file_health_history(path, limit)?;
     let snapshots: Vec<_> = history
         .iter()
-        .map(|(ts, score, cats)| {
-            json!({
-                "timestamp": ts,
-                "health_score": round2(*score),
-                "category_deductions": serde_json::from_str::<serde_json::Value>(cats)
-                    .unwrap_or(json!({})),
-            })
+        .map(|h| {
+            let mut entry = completeness_json(h.completeness, &h.missing_biomarkers);
+            entry.insert("timestamp".into(), json!(h.timestamp));
+            entry.insert("health_score".into(), json!(round2(h.score)));
+            entry.insert(
+                "category_deductions".into(),
+                serde_json::from_str::<serde_json::Value>(&h.category_scores).unwrap_or(json!({})),
+            );
+            serde_json::Value::Object(entry)
         })
         .collect();
     Ok(json!({
@@ -85,6 +87,10 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
     Ok(json!({
         "from": snapshot_to_json(&snap_from),
         "to": snapshot_to_json(&snap_to),
+        "completeness": {
+            "from": completeness_counts(&from_files),
+            "to": completeness_counts(&to_files),
+        },
         "deltas": deltas,
         "files": file_deltas,
         "components": component_deltas,
@@ -92,55 +98,170 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
     }))
 }
 
+/// Per-file comparison (health-evidence-contract.md § Comparison and scoring).
+///
+/// Only two complete observations of the same file yield a measured delta
+/// (`improved`/`degraded`). A new or removed file, or a pair where either side
+/// is partial or has unknown (legacy) completeness, goes to `incomparable` with
+/// both observations preserved — no fallback baseline of 10.0, and no
+/// improved/degraded label on a change the evidence cannot support. An
+/// incomparable pair is still reported at equal scores when its completeness
+/// changed, so a completeness transition is never hidden.
 fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serde_json::Value {
-    let from_map: HashMap<&str, f64> = from
-        .iter()
-        .map(|f| (f.file_path.as_str(), f.score))
-        .collect();
-    let to_map: HashMap<&str, f64> = to.iter().map(|f| (f.file_path.as_str(), f.score)).collect();
+    let from_map: HashMap<&str, &SnapshotFileRow> =
+        from.iter().map(|f| (f.file_path.as_str(), f)).collect();
+    let to_map: HashMap<&str, &SnapshotFileRow> =
+        to.iter().map(|f| (f.file_path.as_str(), f)).collect();
 
     let mut improved = Vec::new();
     let mut degraded = Vec::new();
+    let mut incomparable = Vec::new();
 
     for f in to {
-        let prev = from_map.get(f.file_path.as_str()).copied().unwrap_or(10.0);
-        let delta = f.score - prev;
-        if delta.abs() < 0.005 {
+        let Some(prev) = from_map.get(f.file_path.as_str()).copied() else {
+            incomparable.push(incomparable_entry(&f.file_path, None, Some(f), "new_file"));
+            continue;
+        };
+        let delta = f.score - prev.score;
+        let score_changed = delta.abs() >= 0.005;
+        let both_complete = prev.completeness == SnapshotCompleteness::Complete
+            && f.completeness == SnapshotCompleteness::Complete;
+        if both_complete {
+            if !score_changed {
+                continue;
+            }
+            let mut entry = json!({
+                "path": f.file_path,
+                "from": round2(prev.score),
+                "to": round2(f.score),
+                "delta": round2(delta),
+            });
+            entry["from_completeness"] = serde_json::Value::Object(completeness_json(
+                prev.completeness,
+                &prev.missing_biomarkers,
+            ));
+            entry["to_completeness"] =
+                serde_json::Value::Object(completeness_json(f.completeness, &f.missing_biomarkers));
+            if delta > 0.0 {
+                improved.push((delta, entry));
+            } else {
+                degraded.push((delta, entry));
+            }
             continue;
         }
-        let entry = json!({
-            "path": f.file_path,
-            "from": round2(prev),
-            "to": round2(f.score),
-            "delta": round2(delta),
-        });
-        if delta > 0.0 {
-            improved.push((delta, entry));
-        } else {
-            degraded.push((delta, entry));
+        let completeness_changed = completeness_differs(prev, f);
+        if !score_changed && !completeness_changed {
+            continue;
         }
+        let reason = if prev.completeness == SnapshotCompleteness::Unknown
+            || f.completeness == SnapshotCompleteness::Unknown
+        {
+            "unknown_completeness"
+        } else {
+            "partial"
+        };
+        incomparable.push(incomparable_entry(
+            &f.file_path,
+            Some(prev),
+            Some(f),
+            reason,
+        ));
     }
 
     for f in from {
         if !to_map.contains_key(f.file_path.as_str()) {
-            degraded.push((
-                -f.score,
-                json!({
-                    "path": f.file_path,
-                    "from": round2(f.score),
-                    "to": null,
-                    "delta": "removed",
-                }),
+            incomparable.push(incomparable_entry(
+                &f.file_path,
+                Some(f),
+                None,
+                "removed_file",
             ));
         }
     }
 
     improved.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     degraded.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    incomparable.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
 
     json!({
         "improved": improved.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
         "degraded": degraded.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+        "incomparable": incomparable,
+    })
+}
+
+/// An incomparable file pair: both observations (either may be absent), no
+/// `delta`, and the reason a measured delta is unsupported.
+fn incomparable_entry(
+    path: &str,
+    from: Option<&SnapshotFileRow>,
+    to: Option<&SnapshotFileRow>,
+    reason: &str,
+) -> serde_json::Value {
+    let side = |f: Option<&SnapshotFileRow>| match f {
+        Some(f) => (
+            json!(round2(f.score)),
+            serde_json::Value::Object(completeness_json(f.completeness, &f.missing_biomarkers)),
+        ),
+        None => (serde_json::Value::Null, serde_json::Value::Null),
+    };
+    let (from_score, from_completeness) = side(from);
+    let (to_score, to_completeness) = side(to);
+    let completeness_changed = match (from, to) {
+        (Some(a), Some(b)) => completeness_differs(a, b),
+        _ => false,
+    };
+    json!({
+        "path": path,
+        "from": from_score,
+        "to": to_score,
+        "from_completeness": from_completeness,
+        "to_completeness": to_completeness,
+        "completeness_changed": completeness_changed,
+        "reason": reason,
+    })
+}
+
+/// Completeness status or the *set* of missing biomarkers differs. Order-
+/// insensitive: legacy rows may hold the scorer's unstable order.
+fn completeness_differs(a: &SnapshotFileRow, b: &SnapshotFileRow) -> bool {
+    a.completeness != b.completeness
+        || sorted_names(&a.missing_biomarkers) != sorted_names(&b.missing_biomarkers)
+}
+
+fn sorted_names(names: &[String]) -> Vec<&str> {
+    let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted
+}
+
+/// Shared completeness serialization for history entries and comparison sides.
+/// `partial` is `null` when completeness was never recorded — a legacy default
+/// cannot prove the score complete.
+fn completeness_json(
+    completeness: SnapshotCompleteness,
+    missing_biomarkers: &[String],
+) -> serde_json::Map<String, serde_json::Value> {
+    let partial = match completeness {
+        SnapshotCompleteness::Complete => json!(false),
+        SnapshotCompleteness::Partial => json!(true),
+        SnapshotCompleteness::Unknown => serde_json::Value::Null,
+    };
+    let mut map = serde_json::Map::new();
+    map.insert("completeness".into(), json!(completeness.as_str()));
+    map.insert("partial".into(), partial);
+    map.insert("missing_biomarkers".into(), json!(missing_biomarkers));
+    map
+}
+
+/// Per-side count of file observations by completeness, so readers of the
+/// aggregate `deltas`/`categories` can see how much of each side was measured.
+fn completeness_counts(files: &[SnapshotFileRow]) -> serde_json::Value {
+    let count = |c: SnapshotCompleteness| files.iter().filter(|f| f.completeness == c).count();
+    json!({
+        "complete": count(SnapshotCompleteness::Complete),
+        "partial": count(SnapshotCompleteness::Partial),
+        "unknown": count(SnapshotCompleteness::Unknown),
     })
 }
 
