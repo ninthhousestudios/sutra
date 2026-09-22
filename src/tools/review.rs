@@ -13,6 +13,8 @@ use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
+use crate::health::ondemand::{BaselineSelector, HealthDeltaOutcome};
+use crate::health::refresh::DemandOutcome;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
 use crate::tools::change_signals::{self, ChurnMap};
@@ -68,8 +70,13 @@ pub fn handle(
     diff_mode: Option<&str>,
     dd_engine: Option<&DdEngine>,
     // Baseline checkpoint pinned by the caller BEFORE `tool_context` could
-    // full-parse and record a newer snapshot (sutra/415). `None` = latest.
-    baseline_snapshot_id: Option<i64>,
+    // full-parse and record a newer snapshot (sutra/415). `Pinned(None)` is a
+    // genuinely-missing baseline → incomparable (sutra/424 F5).
+    baseline: BaselineSelector,
+    // Validity of the persistent health refresh performed under the caller's DD
+    // lock. Only a `"current"` outcome certifies the persistent side of the
+    // temporal comparison; anything else makes the delta incomparable (F3).
+    health_refresh: DemandOutcome,
     explain: bool,
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
@@ -117,16 +124,30 @@ pub fn handle(
         shape_config.hrr_delta_threshold,
     ));
 
-    // Do NOT swallow a health-delta failure via `.ok()` (contract): surface it so
-    // a missing delta is visibly an error, not silently "no change".
-    let (health_delta, health_delta_error) = match crate::health::ondemand::compute_health_delta(
-        db,
-        &changed_paths,
-        &ondemand_findings,
-        baseline_snapshot_id,
-    ) {
-        Ok(d) => (Some(d), None),
-        Err(e) => (None, Some(e.to_string())),
+    // Gate the temporal delta on the refresh validity (sutra/424 F3): if the
+    // persistent health refresh did not publish current evidence, the persistent
+    // side of the comparison is unverified, so measuring fresh on-demand findings
+    // against it could report a spurious improvement/degradation. Report the delta
+    // as incomparable instead. Otherwise compute it, and do NOT swallow a failure
+    // via `.ok()` (contract): surface it so a missing delta is visibly an error,
+    // not silently "no change". `Incomparable` (a genuinely-missing baseline, F5)
+    // is likewise surfaced with its reason rather than a measured delta.
+    let refresh_validity = health_refresh.validity();
+    let (health_delta, health_delta_incomparable, health_delta_error) = if refresh_validity
+        != "current"
+    {
+        (None, Some(refresh_validity.to_string()), None)
+    } else {
+        match crate::health::ondemand::compute_health_delta(
+            db,
+            &changed_paths,
+            &ondemand_findings,
+            baseline,
+        ) {
+            Ok(HealthDeltaOutcome::Measured(d)) => (Some(d), None, None),
+            Ok(HealthDeltaOutcome::Incomparable(r)) => (None, Some(r.as_str().to_string()), None),
+            Err(e) => (None, None, Some(e.to_string())),
+        }
     };
 
     let mut result = compute(
@@ -190,6 +211,16 @@ pub fn handle(
 
         if let Some(err) = health_delta_error {
             obj.insert("health_delta_error".into(), json!(err));
+        }
+
+        // An explicitly incomparable delta (refresh not current, F3; or a
+        // genuinely-missing baseline, F5). Carries the stable reason token so the
+        // consumer never reads absence as "no change".
+        if let Some(reason) = health_delta_incomparable {
+            obj.insert(
+                "health_delta_incomparable".into(),
+                json!({ "reason": reason }),
+            );
         }
 
         if let Some(delta) = health_delta {

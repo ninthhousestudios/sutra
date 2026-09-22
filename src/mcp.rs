@@ -1089,11 +1089,15 @@ impl SutraServer {
         // heal) and record a newer checkpoint — otherwise the health delta would
         // compare current against a snapshot written by THIS request and hide real
         // debt (sutra/415 contract). A read-only peek at the latest checkpoint id.
-        let baseline_snapshot_id = self
-            .get_db(&args.workspace)
-            .ok()
-            .and_then(|db| db.latest_snapshots(1).ok())
-            .and_then(|snaps| snaps.first().map(|s| s.id));
+        // A genuinely-missing baseline (no checkpoint at pin time) is pinned as
+        // `Pinned(None)` and must stay missing → incomparable (sutra/424 F5), not
+        // healed into the fresh snapshot the reparse below may write.
+        let baseline = crate::health::ondemand::BaselineSelector::Pinned(
+            self.get_db(&args.workspace)
+                .ok()
+                .and_then(|db| db.latest_snapshots(1).ok())
+                .and_then(|snaps| snaps.first().map(|s| s.id)),
+        );
 
         // tool_context first: it refreshes the index (query-path incremental
         // reparse, sutra/363) and releases the parse lock before returning.
@@ -1107,14 +1111,19 @@ impl SutraServer {
         // persistent side reflects the current index (an incremental reparse above
         // does not recompute health). Uses the locked core, not the acquiring
         // adapter, to avoid re-locking the coordinator. Best-effort.
-        let _ = self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);
+        // Capture the refresh outcome: a Deferred/Failed/stale refresh means the
+        // persistent health tables are not verified current, so review must report
+        // the delta as incomparable rather than measure against them (sutra/424 F3).
+        let refresh_outcome =
+            self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::review::handle(
             ctx.db(),
             ctx.workspace_root(),
             args.diff.as_deref(),
             Some(&dd),
-            baseline_snapshot_id,
+            baseline,
+            refresh_outcome,
             args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;

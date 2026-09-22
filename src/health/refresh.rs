@@ -86,6 +86,28 @@ pub enum DemandOutcome {
     Failed,
 }
 
+impl DemandOutcome {
+    /// Stable validity token for this outcome, shared by the file-health evidence
+    /// stamp (`file_health::attach_health_evidence`) and the review delta gate
+    /// (`review::handle`, sutra/424 F3). Only `"current"` certifies that the live
+    /// health tables reflect current inputs; every other token means a consumer
+    /// must not present those numbers as verified-current — review reports the
+    /// delta as incomparable rather than measuring on-demand debt against them.
+    pub fn validity(&self) -> &'static str {
+        use crate::health::evidence::DeferReason;
+        match self {
+            DemandOutcome::Refreshed(RefreshResult::Reused(_) | RefreshResult::Published(_)) => {
+                "current"
+            }
+            // A race republished nothing; the retained run may not reflect current inputs.
+            DemandOutcome::Refreshed(RefreshResult::InputsChanged) => "stale:inputs_changed",
+            DemandOutcome::Deferred(DeferReason::LockBusy) => "deferred:lock_busy",
+            DemandOutcome::Deferred(DeferReason::Frozen) => "deferred:frozen",
+            DemandOutcome::Failed => "unavailable",
+        }
+    }
+}
+
 /// The result of ingesting commit-file history, shared by the full parse (which
 /// also needs `churn` for semantic anchors and `availability` for the legacy
 /// scoring axis) and the demand refresh.
@@ -605,5 +627,39 @@ fn observe_history(
                 Ok(HistoryObservation::Empty(stamp))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::evidence::{DeferReason, RunId};
+
+    // The validity token is the single contract seam shared by the file-health
+    // evidence stamp and the review delta gate (sutra/424 F3); only "current"
+    // may certify the live tables. Lock the mapping so neither consumer drifts.
+    #[test]
+    fn demand_outcome_validity_tokens() {
+        assert_eq!(
+            DemandOutcome::Refreshed(RefreshResult::Reused(RunId(1))).validity(),
+            "current"
+        );
+        assert_eq!(
+            DemandOutcome::Refreshed(RefreshResult::Published(RunId(2))).validity(),
+            "current"
+        );
+        assert_eq!(
+            DemandOutcome::Refreshed(RefreshResult::InputsChanged).validity(),
+            "stale:inputs_changed"
+        );
+        assert_eq!(
+            DemandOutcome::Deferred(DeferReason::LockBusy).validity(),
+            "deferred:lock_busy"
+        );
+        assert_eq!(
+            DemandOutcome::Deferred(DeferReason::Frozen).validity(),
+            "deferred:frozen"
+        );
+        assert_eq!(DemandOutcome::Failed.validity(), "unavailable");
     }
 }

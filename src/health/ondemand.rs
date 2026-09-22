@@ -224,6 +224,7 @@ pub fn compute_shape_change_findings(
 
 // --- Health delta ---
 
+#[derive(Debug)]
 pub struct HealthDeltaEntry {
     pub path: String,
     pub previous_score: f64,
@@ -232,9 +233,65 @@ pub struct HealthDeltaEntry {
     pub driving_findings: Vec<HealthFindingRow>,
 }
 
+#[derive(Debug)]
 pub struct HealthDelta {
     pub degraded: Vec<HealthDeltaEntry>,
     pub improved: Vec<HealthDeltaEntry>,
+}
+
+/// How a health-delta caller selects the baseline checkpoint to compare against.
+///
+/// The distinction exists for one contract requirement (sutra/424 F5): review
+/// pins its baseline *before* `tool_context` can heal the index and record a
+/// newer snapshot, and a genuinely-missing baseline (no checkpoint at pin time)
+/// must stay missing rather than silently comparing against this request's own
+/// fresh snapshot. Non-review callers never pin, so they keep the pre-pinning
+/// latest-checkpoint fallback (sutra/421 kept `None => latest` for them).
+#[derive(Debug, Clone, Copy)]
+pub enum BaselineSelector {
+    /// Fall back to the latest checkpoint at compute time. A missing checkpoint
+    /// yields the optimistic base-10.0 comparison, as before. Non-review callers.
+    Latest,
+    /// A baseline pinned by the caller before any query-path full-parse could
+    /// record a newer snapshot. `Pinned(None)` is a genuinely-missing baseline:
+    /// the comparison is incomparable, never healed into a fresh snapshot.
+    Pinned(Option<i64>),
+}
+
+/// Why a health delta could not be measured. Surfaced as a stable token so the
+/// review consumer reports an explicitly incomparable result rather than a
+/// spurious numeric change (health-evidence-contract "Comparison and scoring").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncomparableReason {
+    /// The caller pinned a genuinely-missing baseline — no checkpoint existed at
+    /// pin time, and healing this request must not manufacture one (sutra/424 F5).
+    MissingBaseline,
+}
+
+impl IncomparableReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IncomparableReason::MissingBaseline => "missing_baseline",
+        }
+    }
+}
+
+/// Outcome of a health-delta computation: either a measured per-file delta over
+/// two comparable observations, or an explicitly incomparable result.
+#[derive(Debug)]
+pub enum HealthDeltaOutcome {
+    Measured(HealthDelta),
+    Incomparable(IncomparableReason),
+}
+
+impl HealthDeltaOutcome {
+    /// The measured delta, or `None` when the result is incomparable.
+    pub fn into_measured(self) -> Option<HealthDelta> {
+        match self {
+            HealthDeltaOutcome::Measured(d) => Some(d),
+            HealthDeltaOutcome::Incomparable(_) => None,
+        }
+    }
 }
 
 /// The file-scored biomarkers that are *unconditionally* `Scored` — worst-cased
@@ -257,12 +314,14 @@ pub fn compute_health_delta(
     db: &Db,
     changed_paths: &[String],
     ondemand_findings: &[HealthFinding],
-    // The baseline checkpoint to compare against, pinned by the caller BEFORE any
-    // query-path full-parse could record a newer snapshot (sutra/415: review pins
-    // it in `sutra_review` before `tool_context`). `None` falls back to the latest
-    // checkpoint (the pre-pinning behaviour, retained for non-review callers).
-    baseline_snapshot_id: Option<i64>,
-) -> Result<HealthDelta> {
+    // How to select the baseline checkpoint. `Latest` falls back to the latest
+    // checkpoint at compute time (pre-pinning behaviour, non-review callers);
+    // `Pinned` carries a baseline the caller fixed BEFORE any query-path
+    // full-parse could record a newer snapshot (review). `Pinned(None)` is a
+    // genuinely-missing baseline → incomparable, never healed into a fresh
+    // snapshot (sutra/424 F5).
+    baseline: BaselineSelector,
+) -> Result<HealthDeltaOutcome> {
     // The comparison snapshot is always written from exactly the findings still
     // stored (every parse snapshots after replace_health_findings; NoChanges
     // copies scores forward — see pipeline::record_snapshot). So for a file with
@@ -273,9 +332,18 @@ pub fn compute_health_delta(
     // file is uncovered *now* (its content hash moved) but was covered *then*,
     // so a live-coverage check would worst-case current against a non-worst-
     // cased prev and manufacture a spurious degradation (sutra/409).
-    let baseline_id = match baseline_snapshot_id {
-        Some(id) => Some(id),
-        None => db.latest_snapshots(1)?.first().map(|s| s.id),
+    // A genuinely-missing pinned baseline stays missing: comparing against a
+    // snapshot healed into being during THIS request would manufacture a false
+    // delta (sutra/424 F5). Only `Latest` (non-review callers) falls back to the
+    // latest checkpoint.
+    let baseline_id = match baseline {
+        BaselineSelector::Pinned(None) => {
+            return Ok(HealthDeltaOutcome::Incomparable(
+                IncomparableReason::MissingBaseline,
+            ));
+        }
+        BaselineSelector::Pinned(Some(id)) => Some(id),
+        BaselineSelector::Latest => db.latest_snapshots(1)?.first().map(|s| s.id),
     };
     let snapshot_files: HashMap<String, (f64, Vec<String>)> = match baseline_id {
         Some(id) => db
@@ -373,5 +441,8 @@ pub fn compute_health_delta(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    Ok(HealthDelta { degraded, improved })
+    Ok(HealthDeltaOutcome::Measured(HealthDelta {
+        degraded,
+        improved,
+    }))
 }

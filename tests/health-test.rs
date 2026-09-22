@@ -4,6 +4,7 @@ use sutra::db::{
 };
 use sutra::git::parse_blame_porcelain;
 use sutra::health::findings::HealthFinding;
+use sutra::health::ondemand::{BaselineSelector, HealthDeltaOutcome, IncomparableReason};
 use sutra::health::{
     BiomarkerKind, HealthSeverity, compute_all_health_findings, compute_blast_radius_churn,
     compute_change_entropy, compute_co_change_scatter, compute_hidden_coupling,
@@ -1847,9 +1848,11 @@ fn test_health_delta_degradation() {
         &db,
         &["src/hotfile.rs".to_string()],
         &[],
-        None,
+        BaselineSelector::Latest,
     )
-    .unwrap();
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert_eq!(delta.degraded.len(), 1);
     assert!(delta.improved.is_empty());
@@ -1886,9 +1889,11 @@ fn test_health_delta_improvement() {
         &db,
         &["src/cleaned.rs".to_string()],
         &[],
-        None,
+        BaselineSelector::Latest,
     )
-    .unwrap();
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert!(delta.degraded.is_empty());
     assert_eq!(delta.improved.len(), 1);
@@ -1905,9 +1910,15 @@ fn test_health_delta_no_snapshot_uses_base_10() {
 
     // No snapshot exists → previous defaults to 10.0
     // No findings → current = 10.0 → no delta
-    let delta =
-        sutra::health::ondemand::compute_health_delta(&db, &["src/new.rs".to_string()], &[], None)
-            .unwrap();
+    let delta = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &["src/new.rs".to_string()],
+        &[],
+        BaselineSelector::Latest,
+    )
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert!(delta.degraded.is_empty());
     assert!(delta.improved.is_empty());
@@ -1951,9 +1962,11 @@ fn test_health_delta_with_ondemand_findings() {
         &db,
         &["src/volatile.rs".to_string()],
         &ondemand,
-        None,
+        BaselineSelector::Latest,
     )
-    .unwrap();
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert_eq!(delta.degraded.len(), 1);
     let entry = &delta.degraded[0];
@@ -2001,9 +2014,11 @@ fn test_health_delta_no_spurious_improvement_for_partial_snapshot_file() {
         &db,
         &["src/skipped.rs".to_string()],
         &[],
-        None,
+        BaselineSelector::Latest,
     )
-    .unwrap();
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert!(
         delta.improved.is_empty(),
@@ -2055,9 +2070,11 @@ fn test_health_delta_credits_ondemand_debt_on_partial_snapshot_file() {
         &db,
         &["src/skipped.rs".to_string()],
         &ondemand,
-        None,
+        BaselineSelector::Latest,
     )
-    .unwrap();
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
 
     assert_eq!(delta.degraded.len(), 1);
     let entry = &delta.degraded[0];
@@ -2597,17 +2614,27 @@ fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
     // The file has no stored or on-demand findings → current score is a clean 10.0.
     let changed = ["src/x.rs".to_string()];
 
-    // None → latest snapshot (10.0): no measured change.
+    // Latest → latest snapshot (10.0): no measured change.
     let against_latest =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], None).unwrap();
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], BaselineSelector::Latest)
+            .unwrap()
+            .into_measured()
+            .expect("measured delta");
     assert!(
         against_latest.degraded.is_empty() && against_latest.improved.is_empty(),
         "vs latest (10.0) there is no delta"
     );
 
-    // Some(baseline) → the pinned older snapshot (6.0): a +4 improvement.
-    let against_pinned =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    // Pinned(Some(baseline)) → the pinned older snapshot (6.0): a +4 improvement.
+    let against_pinned = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &changed,
+        &[],
+        BaselineSelector::Pinned(Some(baseline)),
+    )
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
     assert_eq!(against_pinned.degraded.len(), 0);
     assert_eq!(
         against_pinned.improved.len(),
@@ -2616,6 +2643,62 @@ fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
     );
     assert_eq!(against_pinned.improved[0].path, "src/x.rs");
     assert!((against_pinned.improved[0].previous_score - 6.0).abs() < 1e-6);
+}
+
+// sutra/424 F5: a genuinely-missing baseline (no checkpoint existed when review
+// pinned it) must stay missing → incomparable, even after parser healing writes
+// a fresh snapshot DURING the request. `Pinned(None)` must NOT fall back to the
+// latest checkpoint the way `Latest` does — otherwise review compares current
+// against its own just-healed snapshot and manufactures a no-change delta.
+#[test]
+fn compute_health_delta_pinned_missing_baseline_is_incomparable() {
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/x.rs");
+
+    // Simulate tool_context's parser healing writing a fresh snapshot mid-request,
+    // AFTER the (empty) baseline was pinned: a latest checkpoint now exists.
+    let healed = insert_snapshot(&db, 10.0);
+    db.insert_snapshot_files(
+        healed,
+        &[SnapshotFileRow {
+            file_id: fid,
+            file_path: "src/x.rs".into(),
+            score: 10.0,
+            category_scores: "{}".into(),
+            partial: false,
+            missing_biomarkers: Vec::new(),
+        }],
+    )
+    .unwrap();
+
+    let changed = ["src/x.rs".to_string()];
+
+    // Pinned(None) — the baseline was absent at pin time. Despite the healed
+    // snapshot now being the latest, the result is incomparable, not a delta.
+    let outcome = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &changed,
+        &[],
+        BaselineSelector::Pinned(None),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            HealthDeltaOutcome::Incomparable(IncomparableReason::MissingBaseline)
+        ),
+        "a pinned-missing baseline must be incomparable, not healed into the latest snapshot"
+    );
+
+    // Latest, by contrast, deliberately DOES fall back to the healed snapshot
+    // (non-review callers keep the pre-pinning behaviour — sutra/421).
+    let via_latest =
+        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], BaselineSelector::Latest)
+            .unwrap();
+    assert!(
+        matches!(via_latest, HealthDeltaOutcome::Measured(_)),
+        "Latest still resolves to the newest checkpoint for non-review callers"
+    );
 }
 
 #[test]
@@ -2647,8 +2730,15 @@ fn compute_health_delta_excludes_waived_findings_like_file_health() {
     let changed = ["src/w.rs".to_string()];
 
     // Active finding lowers the current score → a degradation vs the clean baseline.
-    let unwaived =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    let unwaived = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &changed,
+        &[],
+        BaselineSelector::Pinned(Some(baseline)),
+    )
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
     assert_eq!(
         unwaived.degraded.len(),
         1,
@@ -2659,8 +2749,15 @@ fn compute_health_delta_excludes_waived_findings_like_file_health() {
     // health), so no spurious degradation against the waiver-free baseline.
     db.create_health_waiver("nested_complexity", "src/w.rs", None, "accepted", "josh")
         .unwrap();
-    let waived =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], Some(baseline)).unwrap();
+    let waived = sutra::health::ondemand::compute_health_delta(
+        &db,
+        &changed,
+        &[],
+        BaselineSelector::Pinned(Some(baseline)),
+    )
+    .unwrap()
+    .into_measured()
+    .expect("measured delta");
     assert!(
         waived.degraded.is_empty() && waived.improved.is_empty(),
         "a waived finding must not manufacture a delta"

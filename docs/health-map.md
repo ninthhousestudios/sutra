@@ -417,8 +417,21 @@ a single review invocation.
 - Provenance: `on-demand:blame`
 
 ### Health delta (review integration)
-- `compute_health_delta(db, changed_paths, ondemand_findings)` compares
-  current per-file scores (stored findings + on-demand) vs latest snapshot
+- `compute_health_delta(db, changed_paths, ondemand_findings, baseline: BaselineSelector)`
+  compares current per-file scores (stored findings + on-demand) against a
+  baseline snapshot. Returns `HealthDeltaOutcome` — `Measured(HealthDelta)` or
+  `Incomparable(IncomparableReason)`.
+- `BaselineSelector` (sutra/424 F5): `Latest` falls back to the newest
+  checkpoint at compute time (non-review callers, pre-pinning behaviour);
+  `Pinned(Some(id))` uses the caller's pre-request baseline; `Pinned(None)` is a
+  genuinely-missing baseline → `Incomparable(MissingBaseline)`, so review does
+  not compare against a snapshot healed into being during its own request.
+- Review gates the delta on refresh validity (sutra/424 F3): `sutra_review`
+  captures the `DemandOutcome` from `refresh_health_locked` and passes it to
+  `review::handle`; when `DemandOutcome::validity() != "current"` the persistent
+  side is unverified, so review emits `health_delta_incomparable { reason: <token> }`
+  (the validity token) instead of a measured delta. `validity()` lives on
+  `DemandOutcome` and is the shared seam with `file_health::attach_health_evidence`.
 - Degraded files include `driving_findings` showing which on-demand
   biomarkers contributed to the decline
 - **Known bug (sutra/411):** current coverage mirrors the snapshot's per-file
@@ -429,7 +442,8 @@ a single review invocation.
   evidence must establish current completeness; missing analysis must not be
   presented as measured improvement or degradation. See the review linked above.
 - Review output ordering: constraint_violations → deviations →
-  health_findings → hrr_shape_changes → health_delta
+  health_findings → hrr_shape_changes → health_delta (or
+  health_delta_incomparable / health_delta_error)
 
 ## PRD and arc context
 

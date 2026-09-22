@@ -73,19 +73,11 @@ pub fn attach_health_evidence(
     result: &mut serde_json::Value,
     outcome: crate::health::refresh::DemandOutcome,
 ) -> Result<()> {
-    use crate::health::evidence::{DeferReason, ProducerOutcome};
-    use crate::health::refresh::{DemandOutcome, RefreshResult};
+    use crate::health::evidence::ProducerOutcome;
 
-    let validity = match outcome {
-        DemandOutcome::Refreshed(RefreshResult::Reused(_) | RefreshResult::Published(_)) => {
-            "current"
-        }
-        // A race republished nothing; the retained run may not reflect current inputs.
-        DemandOutcome::Refreshed(RefreshResult::InputsChanged) => "stale:inputs_changed",
-        DemandOutcome::Deferred(DeferReason::LockBusy) => "deferred:lock_busy",
-        DemandOutcome::Deferred(DeferReason::Frozen) => "deferred:frozen",
-        DemandOutcome::Failed => "unavailable",
-    };
+    // Shared validity mapping (single source of truth on DemandOutcome) so the
+    // file-health evidence stamp and the review delta gate agree token-for-token.
+    let validity = outcome.validity();
 
     let mut evidence = json!({ "validity": validity });
     match db.load_current_health_run()? {
