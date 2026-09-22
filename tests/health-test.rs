@@ -7,7 +7,7 @@ use sutra::db::{
 };
 use sutra::git::parse_blame_porcelain;
 use sutra::health::compare::BaselineSelector;
-use sutra::health::evidence::{MissingReason, ProducerOutcome, UnsupportedReason, Validity};
+use sutra::health::evidence::{MissingReason, ProducerOutcome, UnsupportedReason};
 use sutra::health::findings::HealthFinding;
 use sutra::health::scoring::{
     BiomarkerScope, EvidencePart, PERSISTENT_PRODUCERS, ProducerResult, ScoreValue,
@@ -1873,7 +1873,7 @@ fn evidence_scores_the_current_run_as_measured() {
     db.replace_health_findings(&[nested_finding(fid)]).unwrap();
     publish_seeded_run(&db);
 
-    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     let s = ev.file("src/hot.rs").unwrap().score();
     assert!(matches!(s.value, ScoreValue::Measured(v) if (v - 8.66).abs() < 0.01));
 }
@@ -1886,7 +1886,11 @@ fn evidence_from_a_stale_run_never_counts_its_findings_as_current_debt() {
     db.replace_health_findings(&[nested_finding(fid)]).unwrap();
     publish_seeded_run(&db);
 
-    let ev = PersistentEvidence::load(&db, Validity::Stale(MissingReason::InputsChanged)).unwrap();
+    let ev = PersistentEvidence::load(
+        &db,
+        sutra::health::assess::RunVerdict::stale(MissingReason::InputsChanged),
+    )
+    .unwrap();
     let f = ev.file("src/hot.rs").unwrap();
     assert_eq!(f.findings.len(), 1, "stale findings stay visible");
     let s = f.score();
@@ -1906,7 +1910,7 @@ fn evidence_without_any_run_is_legacy_partial_not_clean() {
     let (_dir, db) = setup_db();
     seed_file(&db, "src/a.rs");
     db.replace_health_findings(&[]).unwrap();
-    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     let s = ev.file("src/a.rs").unwrap().score();
     assert!(s.partial());
     assert!(
@@ -1926,7 +1930,7 @@ fn evidence_marks_a_file_added_after_the_run_never_computed() {
     seed_file(&db, "src/new.rs");
     // Validity is the caller's claim; even a (wrongly) current claim cannot make
     // a file the run never saw complete.
-    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     assert!(ev.file("src/a.rs").unwrap().score().value.is_measured());
     let new = ev.file("src/new.rs").unwrap().score();
     assert!(new.partial());
@@ -1944,12 +1948,12 @@ fn evidence_applies_waivers_and_records_them_in_the_basis() {
     let fid = seed_file(&db, "src/hot.rs");
     db.replace_health_findings(&[nested_finding(fid)]).unwrap();
     publish_seeded_run(&db);
-    let before = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let before = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     let before_basis = before.file("src/hot.rs").unwrap().basis;
 
     db.create_health_waiver("nested_complexity", "src/hot.rs", None, "accepted", "test")
         .unwrap();
-    let after = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let after = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     let f = after.file("src/hot.rs").unwrap();
     assert!(f.findings.is_empty());
     assert_eq!(f.waived.len(), 1);
@@ -2093,9 +2097,16 @@ fn file_health_component_filter() {
     publish_seeded_run(&db);
 
     // Without filter: both files + component summary
-    let all =
-        sutra::tools::file_health::handle(&db, Validity::Current, None, None, None, None, false)
-            .unwrap();
+    let all = sutra::tools::file_health::handle(
+        &db,
+        health_run::current_verdict(&db),
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
     assert_eq!(all["total_files"].as_u64().unwrap(), 2);
     assert!(
         all.get("components").is_some(),
@@ -2105,7 +2116,7 @@ fn file_health_component_filter() {
     // With component filter: only Alpha's file, no component summary
     let filtered = sutra::tools::file_health::handle(
         &db,
-        Validity::Current,
+        health_run::current_verdict(&db),
         None,
         None,
         None,
@@ -2198,7 +2209,7 @@ fn file_health_component_instability() {
 
     let result = sutra::tools::file_health::handle(
         &db,
-        Validity::Current,
+        health_run::current_verdict(&db),
         None,
         None,
         Some("all"),
@@ -2779,7 +2790,7 @@ fn file_health_reports_bounds_not_a_point_score_for_partial_files() {
     });
     let out = sutra::tools::file_health::handle(
         &db,
-        Validity::Current,
+        health_run::current_verdict(&db),
         None,
         None,
         Some("all"),
@@ -2798,4 +2809,68 @@ fn file_health_reports_bounds_not_a_point_score_for_partial_files() {
         serde_json::json!(["change_entropy"])
     );
     assert_eq!(f["missing"][0]["reason"], "NoHistory");
+}
+
+// --- sutra/416 review fixes ---
+
+#[test]
+fn a_verdict_for_one_run_does_not_vouch_for_a_newer_one() {
+    use sutra::health::assess::PersistentEvidence;
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_seeded_run(&db);
+    let vouched = health_run::current_verdict(&db);
+    // A concurrent refresh publishes another run before the reader loads.
+    publish_seeded_run(&db);
+    let ev = PersistentEvidence::load(&db, vouched).unwrap();
+    let s = ev.file("src/hot.rs").unwrap().score();
+    assert!(s.partial(), "the loaded run was never validated");
+    assert!(
+        s.missing
+            .iter()
+            .all(|m| m.reason == MissingReason::InputsChanged)
+    );
+}
+
+#[test]
+fn a_complete_outcome_disagreeing_with_retained_findings_is_invalid_evidence() {
+    use sutra::health::assess::PersistentEvidence;
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_run_with(&db, |_, kind| {
+        (kind == BiomarkerKind::NestedComplexity)
+            .then_some(ProducerOutcome::Complete { finding_count: 3 })
+    });
+    let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
+    let s = ev.file("src/hot.rs").unwrap().score();
+    let m = s
+        .missing
+        .iter()
+        .find(|m| m.biomarker == BiomarkerKind::NestedComplexity)
+        .expect("inconsistent producer is missing");
+    assert_eq!(m.reason, MissingReason::InvalidEvidence);
+    assert!(s.deductions.is_empty());
+}
+
+#[test]
+fn stale_component_membership_is_never_measured() {
+    use sutra::health::assess::{PersistentEvidence, score_workspace};
+    let (_dir, db) = setup_db();
+    let fa = seed_file(&db, "src/alpha/a.rs");
+    db.insert_component("alpha", "Alpha").unwrap();
+    db.batch_insert_membership(&[("alpha".into(), fa)]).unwrap();
+    db.replace_health_findings(&[]).unwrap();
+    publish_seeded_run(&db);
+    let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
+
+    let current = score_workspace(&db, &ev, true).unwrap();
+    assert!(current.components[0].value.is_measured());
+    let stale = score_workspace(&db, &ev, false).unwrap();
+    assert!(
+        !stale.components[0].value.is_measured(),
+        "stale membership keeps bounds but is never a measurement"
+    );
+    assert_eq!(current.components[0].basis, stale.components[0].basis);
 }

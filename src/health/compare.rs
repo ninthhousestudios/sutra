@@ -16,6 +16,7 @@ use std::collections::HashSet;
 
 use crate::db::{Db, SnapshotCompleteness};
 use crate::error::Result;
+use crate::health::evidence::{HistoryObservation, HistoryStamp, InputStamp, RunId};
 use crate::health::scoring::{
     EvidencePart, FileHealthScore, HealthCategory, MissingProducer, ScoreValue, scenario_score,
     score_file,
@@ -121,6 +122,78 @@ pub fn temporal_blocker(
         (Some(_), Some(_)) => Some(IncomparableReason::BasisChanged),
         _ => Some(IncomparableReason::UnknownBasis),
     }
+}
+
+/// Which input axes differ between the runs two observations were scored from —
+/// the explanation the contract asks temporal results to carry ("explain
+/// history/window/config changes"; a measured change does not by itself prove
+/// the source edit caused it). Tokens, in axis order: `reindexed`,
+/// `graph_rules` (parser/resolver identity), `graph`, `indexed_paths`,
+/// `analysis_version`, `history_head`, `history_window`, `history_day`,
+/// `history_state` (loaded/empty/unsupported/unknown changed), `owners_config`,
+/// `rollups`.
+pub fn input_changes(from: &InputStamp, to: &InputStamp) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if from.graph.epoch != to.graph.epoch {
+        out.push("reindexed");
+    }
+    if from.graph.parser != to.graph.parser || from.graph.resolver != to.graph.resolver {
+        out.push("graph_rules");
+    }
+    if from.graph.generation != to.graph.generation {
+        out.push("graph");
+    }
+    if from.graph.indexed_paths != to.graph.indexed_paths {
+        out.push("indexed_paths");
+    }
+    if from.analysis_version != to.analysis_version {
+        out.push("analysis_version");
+    }
+    if let (Some(a), Some(b)) = (history_stamp(&from.history), history_stamp(&to.history)) {
+        if a.repository != b.repository {
+            out.push("history_head");
+        }
+        if a.window_days != b.window_days {
+            out.push("history_window");
+        }
+        if a.day != b.day {
+            out.push("history_day");
+        }
+    }
+    if std::mem::discriminant(&from.history) != std::mem::discriminant(&to.history) {
+        out.push("history_state");
+    }
+    if from.owners != to.owners {
+        out.push("owners_config");
+    }
+    if from.rollups != to.rollups {
+        out.push("rollups");
+    }
+    out
+}
+
+fn history_stamp(h: &HistoryObservation) -> Option<&HistoryStamp> {
+    match h {
+        HistoryObservation::Loaded(s) | HistoryObservation::Empty(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// `input_changes` between two optional run ids, as JSON: `null` when either
+/// side has no recorded run (legacy provenance) or its run is not retained.
+pub fn input_changes_json(
+    db: &Db,
+    from: Option<i64>,
+    to: Option<i64>,
+) -> Result<serde_json::Value> {
+    let (Some(a), Some(b)) = (from, to) else {
+        return Ok(serde_json::Value::Null);
+    };
+    let (Some(ra), Some(rb)) = (db.load_health_run(RunId(a))?, db.load_health_run(RunId(b))?)
+    else {
+        return Ok(serde_json::Value::Null);
+    };
+    Ok(serde_json::json!(input_changes(&ra.inputs, &rb.inputs)))
 }
 
 /// The marginal score effect of on-demand evidence.

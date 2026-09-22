@@ -146,7 +146,11 @@ src/tools/
                       demand refresh outcome), builds per-file + per-component
                       JSON. Partial entries: health_score null + score_bounds +
                       missing[{biomarker, reason}]; findings of a non-Complete
-                      producer are listed `stale` with deduction 0. Sorted by
+                      producer are listed `stale` with deduction 0;
+                      `waived_findings` counts waiver-excluded findings.
+                      `category_deductions` is known (capped) debt only — the
+                      saturated caps behind a partial lower bound appear under
+                      `_explain.categories.*.pessimistic_deduction`. Sorted by
                       upper bound. Accepts optional `component` filter (by name).
                       Component scores include instability metrics.
                       handle_ctx gates the component block on
@@ -184,8 +188,11 @@ src/pipeline.rs     — post_parse_sequence tail: refresh::publish_run (runs aft
                       validates the current run (refresh::current_run_validity),
                       scores PersistentEvidence via assess::score_workspace and
                       stores lower bound / upper bound / completeness / basis per
-                      file and per component. copyable_snapshot gates NoChanges
-                      copy-forward on matching basis + current validity.
+                      file and per component, plus the scored run id on the
+                      checkpoint (`snapshots.health_run_id`). A NoChanges parse
+                      first runs the locked `refresh::refresh`, then copies only
+                      the parse-derived aggregates forward and always rescores
+                      health (`record_unchanged_snapshot`).
 ```
 
 ## Key types
@@ -220,15 +227,20 @@ Findings are positive-only, so their absence proves nothing. Every consumer
 therefore scores **outcomes**, not finding presence: the published run stages one
 `ProducerOutcome` per (file, persistent producer) — `Complete{n}`,
 `Missing(reason)`, or `Unsupported(reason)` — and `assess::PersistentEvidence`
-loads them for every indexed file under a caller-supplied `Validity`:
-- `Current` — outcomes as staged. The demand refresh establishes it
-  (`DemandOutcome::persistent_validity`: Reused/Published → Current;
-  InputsChanged, Deferred(..), Failed → Stale(reason)); the snapshot writer uses
-  `refresh::current_run_validity` (probe + `evidence::validate`, no mutation).
+loads them for every indexed file under a caller-supplied `assess::RunVerdict { run, validity }` — a verdict about one specific run:
+- `Current` — outcomes as staged, **only if the current pointer still names
+  `run`**; if another run was published since, it reads `Stale(InputsChanged)`
+  (and no run at all reads `Stale(LegacyUnknown)`). The demand refresh
+  establishes it (`DemandOutcome::verdict`: Reused/Published(id) → Current for
+  id; InputsChanged, Deferred(..), Failed → Stale(reason)); the snapshot writer
+  uses `refresh::current_run_validity` (probe + `evidence::validate`, no
+  mutation).
 - `Stale(reason)` — every `Complete` and every repository-dependent `Unsupported`
   becomes `Missing(reason)`; only `NoCoverageIngestion` stays unsupported.
 - No run at all → `Missing(LegacyUnknown)`; a file the run lacks →
   `Missing(NeverComputed)`.
+- A `Complete{n}` whose run did not retain exactly `n` parseable findings for
+  that (file, producer) → `Missing(InvalidEvidence)` (never trusted as clean).
 
 `score_file(&[EvidencePart])`: a finding counts only when **its own part**
 recorded its producer `Complete` (a stale or unauthorized finding is never known
@@ -246,7 +258,8 @@ lower bound — such files report bounds, not a point score. That is the approve
 contract decision ("missing per-file history stays partial"), not a bug.
 
 **Score basis.** `scoring::file_score_basis` digests SCORING_VERSION,
-HEALTH_ANALYSIS_VERSION, every persistent producer's severity weight, weight,
+HEALTH_ANALYSIS_VERSION, every severity's weight, every persistent producer's
+default-severity weight, weight,
 category and cap, the file's applicability (which producers are Unsupported and
 why) and the waiver policy for the path (sorted `(biomarker, symbol)` of its
 waivers). A `Missing` producer is still applicable, so completeness transitions do
@@ -261,8 +274,10 @@ policy to on-demand findings. Waived findings stay visible (`FileEvidence.waived
 
 Snapshots persist completeness + `missing_biomarkers` + `score_upper` +
 `score_basis` per file (`health_snapshot_files`; `score` is the conservative lower
-bound), and completeness + basis per component, so `trend` can tell partial
-analysis and rule changes from real change.
+bound; `category_scores` holds the pessimistic per-category deductions), and
+completeness + basis per component (lower bound only — component upper bounds
+are not persisted). The snapshot-level `health_score` is the mean of file lower
+bounds and is only a measured aggregate when `aggregate_comparison.measured`.
 
 **Trend completeness contract (sutra/418).** `SnapshotFileRow.completeness`
 is `Complete | Partial | Unknown`, stored as `partial` + `completeness_recorded`
@@ -309,12 +324,18 @@ Additive output fields (existing fields keep their meaning):
   incomparable entries by name.
 - History entries add `score_bounds {lower, upper}` for partial rows written
   since 0077.
-- NoChanges copy-forward (`pipeline::copyable_snapshot`) copies only when every
-  prior file/component row has recorded completeness and a basis, the current run
-  validates `Current`, the indexed file set is unchanged, and every file's current
-  basis equals its stored one (a waiver added between no-change parses forces a
-  recompute). Validating remaining health inputs (sutra/429) is subsumed by the
-  `Current` check for the persistent run; component-membership currency is not.
+- NoChanges parses no longer copy health forward (sutra/416 review H1/H2): they
+  refresh health under the held lock (republishing after a crossed midnight,
+  HEAD move or config edit), copy only parse-derived aggregates, and rescore
+  every health row from the validated run. This also covers sutra/429 for the
+  persistent run.
+- Provenance: snapshot JSON carries `health_run_id`; comparison adds top-level
+  `input_changes` — the input axes that moved between the two checkpoints' runs
+  (`compare::input_changes`: reindexed, graph_rules, graph, indexed_paths,
+  analysis_version, history_head, history_window, history_day, history_state,
+  owners_config, rollups), or `null` when a side is legacy.
+- Incomparable file entries add `from_bounds` / `to_bounds` (`{lower, upper}` for
+  partial rows written since 0077, else `null`); `from`/`to` hold the lower bound.
 
 Behaviour changes that are not additive, per health-evidence-contract.md
 § Comparison: new files no longer compare against a fallback 10.0 (they were
@@ -511,6 +532,10 @@ a single review invocation.
 - A file is listed when its measured delta moved, its incomparable pair changed
   (score, completeness or basis), or it has on-demand findings/missing evidence.
 - `health_findings` (display) lists on-demand findings with a `waived` flag.
+- Provenance: `baseline_run_id`, `current_run_id` and `input_changes` (same
+  tokens as trend) explain what moved besides the diff.
+- A storage error while pinning the baseline fails the tool rather than reading
+  as `missing_baseline`.
 - Any failure (blame/storage/scoring) surfaces as `health_delta_error`; nothing
   is swallowed with `.ok()`.
 
@@ -562,9 +587,11 @@ Proportional scaling within category when sum exceeds cap.
 Component scores: NLOC-weighted average of member file scores, minus
 `instability_penalty` (Informational × ComponentInstability weight × I, capped
 at the coupling cap), computed on member lower and upper bounds; measured only
-when every member is measured. Instability is always computed (a failure now
-propagates) so snapshot and file_health component scores agree. Final clamp
-[1.0, 10.0].
+when every member is measured, membership is current
+(`components::membership_current`; the snapshot writer passes it, file_health's
+ctx path replaces stale components with `components_unavailable`) and
+instability computed. An instability failure is not fatal: the penalty becomes
+unknown and the lower bound drops by the maximum penalty. Final clamp [1.0, 10.0].
 
 Missing analysis (sutra/416): see "Scoring over validated evidence" — a missing
 producer saturates its category cap in the lower bound; the score is an interval,

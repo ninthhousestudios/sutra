@@ -248,7 +248,7 @@ async fn test_parse_snapshot_stored() {
 }
 
 #[tokio::test]
-async fn test_unchanged_parse_copies_previous_snapshot_metrics() {
+async fn test_unchanged_parse_copies_parse_metrics_and_rescores_health() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -262,36 +262,39 @@ async fn test_unchanged_parse_copies_previous_snapshot_metrics() {
     let registry = default_registry();
 
     pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
-    // Copy-forward requires the prior checkpoint's per-file rows to carry the
-    // completeness and score basis the current evidence would record (sutra/416),
-    // so the synthetic checkpoint reuses the real one's rows.
-    let real = db.latest_snapshots(1).unwrap().pop().unwrap().id;
-    let rows = db.snapshot_file_scores(real).unwrap();
-    let components = db.snapshot_component_scores(real).unwrap();
-    let synthetic = db
-        .insert_snapshot(&SnapshotParams {
-            total_complexity: 12_345,
-            dead_symbol_count: 234,
-            hotspot_count: 56,
-            health_score: 7.25,
-            pattern_family_count: 8,
-            ..SnapshotParams::default()
-        })
-        .unwrap();
-    db.insert_snapshot_files(synthetic, &rows).unwrap();
-    db.insert_snapshot_components(synthetic, &components)
-        .unwrap();
+    let real = db.latest_snapshots(1).unwrap().pop().unwrap();
+    db.insert_snapshot(&SnapshotParams {
+        total_complexity: 12_345,
+        dead_symbol_count: 234,
+        hotspot_count: 56,
+        health_score: 7.25,
+        pattern_family_count: 8,
+        ..SnapshotParams::default()
+    })
+    .unwrap();
 
     let snap = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
     assert_eq!(snap.files_parsed, 0);
 
+    // Parse-derived aggregates copy forward from the previous checkpoint…
     let latest = db.latest_snapshots(1).unwrap().pop().unwrap();
     assert_eq!(latest.files_parsed, 0);
     assert_eq!(latest.total_complexity, 12_345);
     assert_eq!(latest.dead_symbol_count, 234);
     assert_eq!(latest.hotspot_count, 56);
-    assert_eq!(latest.health_score, 7.25);
     assert_eq!(latest.pattern_family_count, 8);
+    // …but health is always rescored from the current validated run (sutra/416):
+    // health inputs move independently of source bytes, so a copied health
+    // score could present an older run's evidence as current.
+    assert_eq!(latest.health_score, real.health_score);
+    assert_eq!(
+        latest.health_run_id,
+        db.load_current_health_run().unwrap().map(|r| r.id.0)
+    );
+    assert_eq!(
+        db.snapshot_file_scores(latest.id).unwrap().len(),
+        db.snapshot_file_scores(real.id).unwrap().len()
+    );
 }
 
 #[tokio::test]

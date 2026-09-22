@@ -469,6 +469,9 @@ pub struct SnapshotRow {
     pub hotspot_count: i64,
     pub health_score: f64,
     pub pattern_family_count: i64,
+    /// The health run this checkpoint's health rows were scored from
+    /// (sutra/416). `None` on legacy checkpoints.
+    pub health_run_id: Option<i64>,
 }
 
 pub struct CommitRow {
@@ -493,6 +496,8 @@ pub struct SnapshotParams {
     /// Pre-parse timestamp for freshness watermark. When set, used instead
     /// of insert-time so edits during parsing aren't hidden.
     pub timestamp: Option<String>,
+    /// Provenance: the health run the checkpoint was scored from.
+    pub health_run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -2421,8 +2426,8 @@ impl Db {
                                     refs_extracted, parse_errors, duration_ms,
                                     total_complexity, dead_symbol_count,
                                     hotspot_count, health_score,
-                                    pattern_family_count, head_commit)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                    pattern_family_count, head_commit, health_run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 ts,
                 p.files_parsed,
@@ -2436,6 +2441,7 @@ impl Db {
                 p.health_score,
                 p.pattern_family_count,
                 p.head_commit,
+                p.health_run_id,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -2461,8 +2467,8 @@ impl Db {
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
                                         hotspot_count, health_score,
-                                        pattern_family_count, head_commit)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                        pattern_family_count, head_commit, health_run_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     ts,
                     p.files_parsed,
@@ -2476,6 +2482,7 @@ impl Db {
                     p.health_score,
                     p.pattern_family_count,
                     p.head_commit,
+                    p.health_run_id,
                 ],
             )?;
             let snapshot_id = conn.last_insert_rowid();
@@ -2593,13 +2600,31 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count
+                    hotspot_count, health_score, pattern_family_count, health_run_id
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
             .query_map(params![limit], map_snapshot_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// The health run a checkpoint was scored from (`None` for legacy
+    /// checkpoints or an unknown id).
+    pub fn snapshot_health_run_id(&self, snapshot_id: i64) -> Result<Option<i64>> {
+        let conn = self.conn.lock();
+        let run: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT health_run_id FROM snapshots WHERE id = ?1",
+                params![snapshot_id],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(run.flatten())
     }
 
     /// Return all snapshots whose timestamp falls within [from, to], ordered oldest-first.
@@ -2609,7 +2634,7 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count
+                    hotspot_count, health_score, pattern_family_count, health_run_id
              FROM snapshots WHERE timestamp >= ?1 AND timestamp <= ?2
              ORDER BY timestamp ASC",
         )?;
@@ -2895,5 +2920,6 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         hotspot_count: row.get(9)?,
         health_score: row.get(10)?,
         pattern_family_count: row.get(11)?,
+        health_run_id: row.get(12)?,
     })
 }

@@ -1035,8 +1035,7 @@ fn comment_edit_after_full_parse_reports_no_spurious_improvement() {
         );
     }
     // Directly: the current observation reproduces the baseline measurement.
-    let ev = sutra::health::assess::PersistentEvidence::load(&fx.db, refresh.persistent_validity())
-        .unwrap();
+    let ev = sutra::health::assess::PersistentEvidence::load(&fx.db, refresh.verdict()).unwrap();
     let cur = ev.file("src/deep.rs").unwrap();
     assert_eq!(cur.score().value.lower(), base_row.score);
     assert_eq!(base_row.score_basis.unwrap(), cur.basis.to_hex());
@@ -1187,7 +1186,10 @@ fn changed_file_keeps_git_debt_and_unhistoried_file_is_not_clean() {
     let coupled = |db: &Db, rel: &str| {
         let ev = sutra::health::assess::PersistentEvidence::load(
             db,
-            sutra::health::evidence::Validity::Current,
+            sutra::health::assess::RunVerdict {
+                run: db.load_current_health_run().unwrap().map(|r| r.id),
+                validity: sutra::health::evidence::Validity::Current,
+            },
         )
         .unwrap();
         let f = ev.file(rel).unwrap();
@@ -1278,4 +1280,52 @@ fn waiver_between_parses_is_a_basis_change_not_a_measured_improvement() {
         assert!(cmp["files"][bucket].as_array().unwrap().is_empty(), "{cmp}");
     }
     assert_eq!(cmp["aggregate_comparison"]["measured"], true);
+}
+
+#[test]
+fn unchanged_parse_after_head_move_republishes_and_records_provenance() {
+    // Review H1/H2: a no-change parse must not checkpoint rows from an older run
+    // nor a stale (all-partial) run. HEAD moves via a commit touching only an
+    // unindexed file; the next parse sees no source change, refreshes health
+    // under its lock, and scores the checkpoint from the republished run.
+    let fx = git_fixture("nochange-head", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let first = fx.db.latest_snapshots(1).unwrap().remove(0);
+    let first_run = first.health_run_id.expect("checkpoint records its run");
+
+    std::fs::write(fx.ws.root.join("NOTES.md"), "notes\n").unwrap();
+    git_commit(&fx.ws.root, chrono::Utc::now().timestamp() - 60);
+    let snap = full_parse(&fx);
+    assert_eq!(snap.files_parsed, 0, "no indexed source changed");
+
+    let second = fx.db.latest_snapshots(1).unwrap().remove(0);
+    assert_ne!(second.id, first.id);
+    let current = fx.db.load_current_health_run().unwrap().unwrap().id.0;
+    assert_ne!(current, first_run, "the HEAD move republished");
+    assert_eq!(second.health_run_id, Some(current));
+    for row in fx.db.snapshot_file_scores(second.id).unwrap() {
+        assert_eq!(
+            row.completeness,
+            sutra::db::SnapshotCompleteness::Complete,
+            "{}: the refreshed run is current, not stale-partial",
+            row.file_path
+        );
+    }
+
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    let changes = cmp["input_changes"].as_array().expect("both runs retained");
+    assert!(
+        changes.iter().any(|c| c == "history_head"),
+        "trend explains the history move: {changes:?}"
+    );
 }

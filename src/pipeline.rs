@@ -793,34 +793,33 @@ pub fn parse_workspace(
         Ok(_) => parse_errors,
         Err(_) => parse_errors.max(1),
     };
+    let meta = CheckpointMeta {
+        head_commit,
+        timestamp: Some(parse_started_at),
+        files_parsed,
+        symbols_extracted,
+        refs_extracted,
+        parse_errors: recorded_errors,
+        duration_ms,
+    };
     match &inner {
         Ok(PostParseResult::NoChanges) => {
-            if let Err(e) = record_unchanged_snapshot(
-                db,
-                &workspace.root,
-                head_commit.clone(),
-                Some(parse_started_at.clone()),
-                files_parsed,
-                symbols_extracted,
-                refs_extracted,
-                recorded_errors,
-                duration_ms,
-            ) {
+            // Checkpoint only after publication (health-evidence contract): an
+            // unchanged-source parse still refreshes health under the held lock,
+            // so a crossed midnight / HEAD move / config edit republishes rather
+            // than checkpointing a stale (all-partial) run.
+            let now = chrono::Utc::now().timestamp();
+            if let Err(e) =
+                crate::health::refresh::refresh(&health_session, db, &workspace.root, now)
+            {
+                warn!(workspace = %workspace.id, "health refresh failed on unchanged parse: {e}");
+            }
+            if let Err(e) = record_unchanged_snapshot(db, &workspace.root, meta) {
                 warn!(workspace = %workspace.id, "failed to record unchanged snapshot after parse: {e}");
             }
         }
         Ok(PostParseResult::Full { .. }) => {
-            if let Err(e) = record_snapshot(
-                db,
-                &workspace.root,
-                head_commit.clone(),
-                Some(parse_started_at.clone()),
-                files_parsed,
-                symbols_extracted,
-                refs_extracted,
-                recorded_errors,
-                duration_ms,
-            ) {
+            if let Err(e) = record_snapshot(db, &workspace.root, meta) {
                 warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
             } else if let Err(e) = db
                 .get_data_generation()
@@ -830,17 +829,7 @@ pub fn parse_workspace(
             }
         }
         Err(_) => {
-            if let Err(e) = record_snapshot(
-                db,
-                &workspace.root,
-                head_commit,
-                Some(parse_started_at),
-                files_parsed,
-                symbols_extracted,
-                refs_extracted,
-                recorded_errors,
-                duration_ms,
-            ) {
+            if let Err(e) = record_snapshot(db, &workspace.root, meta) {
                 warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
             }
         }
@@ -1279,10 +1268,8 @@ fn post_parse_sequence(
     Ok((resolved_count, unresolved_count, skipped_count))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn record_snapshot(
-    db: &Db,
-    workspace_root: &Path,
+/// Per-parse facts recorded on every checkpoint.
+struct CheckpointMeta {
     head_commit: Option<String>,
     timestamp: Option<String>,
     files_parsed: i64,
@@ -1290,116 +1277,67 @@ fn record_snapshot(
     refs_extracted: i64,
     parse_errors: i64,
     duration_ms: i64,
+}
+
+/// Parse-derived workspace metrics (not health).
+struct ParseAggregates {
+    total_complexity: i64,
+    dead_symbol_count: i64,
+    hotspot_count: i64,
+    pattern_family_count: i64,
+}
+
+fn record_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMeta) -> Result<()> {
+    let aggregates = compute_parse_aggregates(db)?;
+    write_checkpoint(db, workspace_root, meta, aggregates)
+}
+
+/// A no-change parse copies the parse-derived aggregates forward (the source is
+/// unchanged), but always rescores health from the current validated run: health
+/// inputs (history day/HEAD, owners, waivers) move independently of source bytes,
+/// so copying the previous checkpoint's health rows could present evidence from
+/// an older run as current (health-evidence-contract.md § Publication and
+/// consumers: copy-forward only for unchanged health inputs and score basis).
+fn record_unchanged_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMeta) -> Result<()> {
+    let aggregates = match db.latest_snapshots(1)?.into_iter().next() {
+        Some(previous) => ParseAggregates {
+            total_complexity: previous.total_complexity,
+            dead_symbol_count: previous.dead_symbol_count,
+            hotspot_count: previous.hotspot_count,
+            pattern_family_count: previous.pattern_family_count,
+        },
+        None => compute_parse_aggregates(db)?,
+    };
+    write_checkpoint(db, workspace_root, meta, aggregates)
+}
+
+fn write_checkpoint(
+    db: &Db,
+    workspace_root: &Path,
+    meta: CheckpointMeta,
+    aggregates: ParseAggregates,
 ) -> Result<()> {
     let health = compute_snapshot_health(db, workspace_root)?;
     db.insert_snapshot_atomic(
         &SnapshotParams {
-            files_parsed,
-            symbols_extracted,
-            refs_extracted,
-            parse_errors,
-            duration_ms,
-            total_complexity: health.total_complexity,
-            dead_symbol_count: health.dead_symbol_count,
-            hotspot_count: health.hotspot_count,
+            files_parsed: meta.files_parsed,
+            symbols_extracted: meta.symbols_extracted,
+            refs_extracted: meta.refs_extracted,
+            parse_errors: meta.parse_errors,
+            duration_ms: meta.duration_ms,
+            total_complexity: aggregates.total_complexity,
+            dead_symbol_count: aggregates.dead_symbol_count,
+            hotspot_count: aggregates.hotspot_count,
             health_score: health.health_score,
-            pattern_family_count: health.pattern_family_count,
-            head_commit,
-            timestamp,
+            pattern_family_count: aggregates.pattern_family_count,
+            head_commit: meta.head_commit,
+            timestamp: meta.timestamp,
+            health_run_id: health.run_id,
         },
         &health.file_scores,
         &health.component_scores,
     )?;
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_unchanged_snapshot(
-    db: &Db,
-    workspace_root: &Path,
-    head_commit: Option<String>,
-    timestamp: Option<String>,
-    files_parsed: i64,
-    symbols_extracted: i64,
-    refs_extracted: i64,
-    parse_errors: i64,
-    duration_ms: i64,
-) -> Result<()> {
-    let Some((previous, file_scores, component_scores)) = copyable_snapshot(db, workspace_root)?
-    else {
-        return record_snapshot(
-            db,
-            workspace_root,
-            head_commit,
-            timestamp,
-            files_parsed,
-            symbols_extracted,
-            refs_extracted,
-            parse_errors,
-            duration_ms,
-        );
-    };
-    db.insert_snapshot_atomic(
-        &SnapshotParams {
-            files_parsed,
-            symbols_extracted,
-            refs_extracted,
-            parse_errors,
-            duration_ms,
-            total_complexity: previous.total_complexity,
-            dead_symbol_count: previous.dead_symbol_count,
-            hotspot_count: previous.hotspot_count,
-            health_score: previous.health_score,
-            pattern_family_count: previous.pattern_family_count,
-            head_commit,
-            timestamp,
-        },
-        &file_scores,
-        &component_scores,
-    )?;
-    Ok(())
-}
-
-/// The latest checkpoint and its rows when they may be copied forward by a
-/// no-change parse, else `None` (recompute). Unchanged source bytes are not
-/// enough: the copy must carry the completeness and score basis the current
-/// evidence would record (health-evidence-contract.md § Publication and
-/// consumers). Recompute when a prior row is legacy (Unknown completeness / no
-/// basis), when the current run no longer validates, or when any file's basis
-/// or the indexed file set moved (e.g. a waiver added between two no-change
-/// parses) — otherwise a copied row would present an old basis as current.
-/// A checkpoint plus its per-file and per-component rows.
-type CheckpointRows = (
-    crate::db::SnapshotRow,
-    Vec<SnapshotFileRow>,
-    Vec<SnapshotComponentRow>,
-);
-
-fn copyable_snapshot(db: &Db, workspace_root: &Path) -> Result<Option<CheckpointRows>> {
-    let Some(previous) = db.latest_snapshots(1)?.into_iter().next() else {
-        return Ok(None);
-    };
-    let file_scores = db.snapshot_file_scores(previous.id)?;
-    let component_scores = db.snapshot_component_scores(previous.id)?;
-    let legacy = file_scores
-        .iter()
-        .any(|f| f.completeness == SnapshotCompleteness::Unknown || f.score_basis.is_none())
-        || component_scores
-            .iter()
-            .any(|c| c.completeness == SnapshotCompleteness::Unknown || c.score_basis.is_none());
-    if legacy {
-        return Ok(None);
-    }
-    let evidence =
-        crate::health::assess::PersistentEvidence::load(db, snapshot_validity(db, workspace_root))?;
-    let unchanged_basis = evidence.validity == crate::health::evidence::Validity::Current
-        && evidence.files.len() == file_scores.len()
-        && file_scores.iter().all(|row| {
-            evidence
-                .file(&row.file_path)
-                .is_some_and(|e| row.score_basis.as_deref() == Some(e.basis.to_hex().as_str()))
-        });
-    Ok(unchanged_basis.then_some((previous, file_scores, component_scores)))
 }
 
 /// Recursively walk `root` and collect files with matching extensions, also
@@ -1452,19 +1390,39 @@ pub(crate) fn walk_source_files(
 }
 
 struct SnapshotHealthData {
-    total_complexity: i64,
-    dead_symbol_count: i64,
-    hotspot_count: i64,
     health_score: f64,
-    pattern_family_count: i64,
+    run_id: Option<i64>,
     file_scores: Vec<SnapshotFileRow>,
     component_scores: Vec<SnapshotComponentRow>,
 }
 
-/// Validity of the current health run for a snapshot. A failed probe records
-/// the snapshot as stale-partial rather than dropping the checkpoint.
-fn snapshot_validity(db: &Db, workspace_root: &Path) -> crate::health::evidence::Validity {
-    use crate::health::evidence::{InputFailure, MissingReason, Validity};
+fn compute_parse_aggregates(db: &Db) -> Result<ParseAggregates> {
+    let files = db.all_files()?;
+    let complexity = db.complexity_by_file()?;
+    let total_complexity: i64 = complexity
+        .values()
+        .map(|&(_, avg_cog)| avg_cog as i64)
+        .sum();
+    let dead_symbol_count = db.find_dead_symbols(false, None)?.len() as i64;
+    let hotspot_count = files
+        .iter()
+        .filter(|f| {
+            let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
+            f.blast_radius >= 5 && avg_cog >= 5.0
+        })
+        .count() as i64;
+    Ok(ParseAggregates {
+        total_complexity,
+        dead_symbol_count,
+        hotspot_count,
+        pattern_family_count: db.pattern_family_count()?,
+    })
+}
+
+/// The verdict on the current health run for a checkpoint. A failed probe
+/// records the checkpoint as stale-partial rather than dropping it.
+fn snapshot_verdict(db: &Db, workspace_root: &Path) -> crate::health::assess::RunVerdict {
+    use crate::health::evidence::{InputFailure, MissingReason};
     match crate::health::refresh::current_run_validity(
         db,
         workspace_root,
@@ -1473,38 +1431,30 @@ fn snapshot_validity(db: &Db, workspace_root: &Path) -> crate::health::evidence:
         Ok(v) => v,
         Err(e) => {
             warn!("snapshot: health validity probe failed: {e}");
-            Validity::Stale(MissingReason::Failed(InputFailure::ProbeFailed))
+            crate::health::assess::RunVerdict::stale(MissingReason::Failed(
+                InputFailure::ProbeFailed,
+            ))
         }
     }
 }
 
 fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHealthData> {
     use crate::health::assess::{self, PersistentEvidence};
-
-    let files = db.all_files()?;
-    let complexity = db.complexity_by_file()?;
-
-    let total_complexity: i64 = complexity
-        .values()
-        .map(|&(_, avg_cog)| avg_cog as i64)
-        .sum();
-
-    let dead_symbols = db.find_dead_symbols(false, None)?;
-    let dead_symbol_count = dead_symbols.len() as i64;
-
-    let mut hotspot_count: i64 = 0;
-    for f in &files {
-        let (_, avg_cog) = complexity.get(&f.id).copied().unwrap_or((0, 0.0));
-        if f.blast_radius >= 5 && avg_cog >= 5.0 {
-            hotspot_count += 1;
-        }
-    }
+    use crate::health::scoring::ScoreValue;
 
     // Score from the validated current run (sutra/416): the checkpoint records
     // exactly what the evidence supports — measured scores, or conservative
-    // bounds with the missing producers — plus the basis they were scored under.
-    let evidence = PersistentEvidence::load(db, snapshot_validity(db, workspace_root))?;
-    let workspace = assess::score_workspace(db, &evidence)?;
+    // bounds with the missing producers — plus the basis they were scored under
+    // and the run they came from.
+    let evidence = PersistentEvidence::load(db, snapshot_verdict(db, workspace_root))?;
+    // Component clustering is only rebuilt by a full parse; a stale grouping is
+    // recorded partial, never measured (a probe failure reads as stale).
+    let membership_current = crate::components::membership_current(db, workspace_root)
+        .unwrap_or_else(|e| {
+            warn!("snapshot: component membership probe failed: {e}");
+            false
+        });
+    let workspace = assess::score_workspace(db, &evidence, membership_current)?;
 
     let mut file_scores = Vec::with_capacity(workspace.files.len());
     let mut health_sum = 0.0;
@@ -1517,12 +1467,8 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
             .collect();
         let category_scores = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
         let (completeness, score_upper) = match sf.score.value {
-            crate::health::scoring::ScoreValue::Measured(_) => {
-                (SnapshotCompleteness::Complete, None)
-            }
-            crate::health::scoring::ScoreValue::Partial { upper, .. } => {
-                (SnapshotCompleteness::Partial, Some(upper))
-            }
+            ScoreValue::Measured(_) => (SnapshotCompleteness::Complete, None),
+            ScoreValue::Partial { upper, .. } => (SnapshotCompleteness::Partial, Some(upper)),
         };
         let score = sf.score.value.lower();
         health_sum += score;
@@ -1562,14 +1508,9 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
         })
         .collect();
 
-    let pattern_family_count = db.pattern_family_count()?;
-
     Ok(SnapshotHealthData {
-        total_complexity,
-        dead_symbol_count,
-        hotspot_count,
         health_score,
-        pattern_family_count,
+        run_id: evidence.run_id.map(|r| r.0),
         file_scores,
         component_scores,
     })

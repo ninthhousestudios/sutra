@@ -213,7 +213,7 @@ fn review_health(
     let mut ondemand =
         crate::health::ondemand::compute_ondemand_findings(db, workspace_root, changed_paths)?;
     ondemand.add_shape_diff(shape_diff, hrr_threshold);
-    let evidence = PersistentEvidence::load(db, health_refresh.persistent_validity())?;
+    let evidence = PersistentEvidence::load(db, health_refresh.verdict())?;
     let baseline_id = baseline.resolve(db)?;
     let baseline_rows = match baseline_id {
         Some(id) => db.snapshot_file_scores(id)?,
@@ -342,10 +342,20 @@ fn review_health(
         }
     }
 
+    let baseline_run = match baseline_id {
+        Some(id) => db.snapshot_health_run_id(id)?,
+        None => None,
+    };
+    let current_run = evidence.run_id.map(|r| r.0);
     Ok(ReviewHealth {
         findings: findings_out,
         delta: json!({
             "baseline_snapshot_id": baseline_id,
+            "baseline_run_id": baseline_run,
+            "current_run_id": current_run,
+            // Input axes that moved between the baseline's run and the current
+            // run; a measured delta is not by itself caused by the diff.
+            "input_changes": compare::input_changes_json(db, baseline_run, current_run)?,
             "persistent_validity": health_refresh.validity(),
             "temporal_incomparable": baseline_id.is_none().then_some("missing_baseline"),
             "files": files,

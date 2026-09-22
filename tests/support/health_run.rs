@@ -5,7 +5,8 @@
 
 use sutra::db::Db;
 use sutra::health::BiomarkerKind;
-use sutra::health::evidence::{ProducerOutcome, UnsupportedReason};
+use sutra::health::assess::RunVerdict;
+use sutra::health::evidence::{ProducerOutcome, UnsupportedReason, Validity};
 use sutra::health::scoring::PERSISTENT_PRODUCERS;
 
 /// Publish the live `health_findings` as a current run in which every persistent
@@ -90,4 +91,13 @@ pub fn publish_run_with(
 
 pub fn publish_seeded_run(db: &Db) {
     publish_run_with(db, |_, _| None);
+}
+
+/// A `Current` verdict for whichever run is current now — what a successful
+/// refresh would vouch for.
+pub fn current_verdict(db: &Db) -> RunVerdict {
+    RunVerdict {
+        run: db.load_current_health_run().unwrap().map(|r| r.id),
+        validity: Validity::Current,
+    }
 }

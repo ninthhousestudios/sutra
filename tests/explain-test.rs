@@ -241,7 +241,7 @@ fn file_health_explain_true_has_categories_and_findings() {
 
     let result = file_health::handle(
         &db,
-        sutra::health::evidence::Validity::Current,
+        health_run::current_verdict(&db),
         None,
         None,
         None,
@@ -273,7 +273,7 @@ fn file_health_explain_false_has_no_explain_key() {
     let (_dir, db) = setup_db();
     let result = file_health::handle(
         &db,
-        sutra::health::evidence::Validity::Current,
+        health_run::current_verdict(&db),
         None,
         None,
         Some("all"),

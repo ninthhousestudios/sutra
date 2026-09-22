@@ -208,6 +208,10 @@ pub enum MissingReason {
     /// The demand refresh itself errored; retained evidence is unverified.
     /// Consumer-side only — never staged into a persisted run.
     RefreshFailed,
+    /// The retained run is internally inconsistent for this producer (its staged
+    /// finding count disagrees with its retained findings, or a finding does not
+    /// parse). Consumer-side only.
+    InvalidEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,8 +7,8 @@ use serde_json::json;
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
+use crate::health::assess::RunVerdict;
 use crate::health::assess::{self, FileEvidence, PersistentEvidence};
-use crate::health::evidence::Validity;
 use crate::health::scoring::{self, FileHealthScore, MissingProducer, ScoreValue};
 use crate::tools::scoring::round3;
 
@@ -34,18 +34,18 @@ pub struct FileHealthArgs {
 }
 
 /// File health over the current run, read under the caller-established
-/// `validity` (sutra/416). Callers that did not just refresh should pass the
+/// `verdict` (sutra/416). Callers that did not just refresh should pass the
 /// result of `refresh::current_run_validity`.
 pub fn handle(
     db: &Db,
-    validity: Validity,
+    verdict: RunVerdict,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
     component: Option<&str>,
     explain: bool,
 ) -> Result<serde_json::Value> {
-    handle_inner(db, validity, path, limit, mode, component, None, explain)
+    handle_inner(db, verdict, path, limit, mode, component, None, explain)
 }
 
 pub fn handle_ctx(
@@ -59,7 +59,7 @@ pub fn handle_ctx(
 ) -> Result<serde_json::Value> {
     let mut result = handle_inner(
         ctx.db(),
-        refresh.persistent_validity(),
+        refresh.verdict(),
         path,
         limit,
         mode,
@@ -186,7 +186,7 @@ pub(crate) fn missing_json(missing: &[MissingProducer]) -> serde_json::Value {
 )]
 fn handle_inner(
     db: &Db,
-    validity: Validity,
+    verdict: RunVerdict,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
@@ -197,7 +197,7 @@ fn handle_inner(
     let limit = limit.unwrap_or(20) as usize;
     let mode = mode.unwrap_or("actionable");
 
-    let evidence = PersistentEvidence::load(db, validity)?;
+    let evidence = PersistentEvidence::load(db, verdict)?;
 
     // Resolve component filter to a set of file IDs
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
@@ -348,6 +348,10 @@ fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde
         entry.insert("missing_biomarkers".into(), json!(score.missing_names()));
         entry.insert("missing".into(), missing_json(&score.missing));
     }
+    if !f.waived.is_empty() {
+        // Waived findings are excluded from the score, not hidden.
+        entry.insert("waived_findings".into(), json!(f.waived.len()));
+    }
     if explain {
         let categories_explain: serde_json::Map<String, serde_json::Value> = score
             .categories
@@ -396,7 +400,9 @@ fn build_component_scores(
     db: &Db,
     evidence: &PersistentEvidence,
 ) -> Result<Vec<serde_json::Value>> {
-    let workspace = assess::score_workspace(db, evidence)?;
+    // Membership currency is enforced by `handle_ctx`, which replaces the whole
+    // block with `components_unavailable` when clustering is stale (sutra/426).
+    let workspace = assess::score_workspace(db, evidence, true)?;
 
     let mut comp_results: Vec<(f64, serde_json::Value)> = workspace
         .components

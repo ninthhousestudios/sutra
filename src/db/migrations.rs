@@ -640,6 +640,7 @@ impl Db {
             "0077_snapshot_score_basis" => {
                 Self::column_exists(conn, "health_snapshot_files", "score_basis")
                     && Self::column_exists(conn, "health_snapshot_components", "score_basis")
+                    && Self::column_exists(conn, "snapshots", "health_run_id")
             }
             "0005_conventions" => {
                 let exists: bool = conn

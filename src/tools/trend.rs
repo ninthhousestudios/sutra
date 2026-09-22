@@ -107,6 +107,15 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
             "to": completeness_counts(&to_files),
         },
         "deltas": deltas,
+        // Input axes that moved between the two checkpoints' health runs (history
+        // HEAD/day/window, owners, graph, versions): a measured change is a
+        // temporal observation, not proof the source edit caused it. `null` when
+        // either checkpoint has no recorded run (legacy).
+        "input_changes": compare::input_changes_json(
+            db,
+            snap_from.health_run_id,
+            snap_to.health_run_id,
+        )?,
         "aggregate_comparison": {
             "measured": aggregate_blocker.is_none(),
             "reason": aggregate_blocker,
@@ -280,11 +289,19 @@ fn incomparable_entry(
         Some(f) => (
             json!(round2(f.score)),
             serde_json::Value::Object(completeness_json(f.completeness, &f.missing_biomarkers)),
+            f.score_upper.map_or(
+                serde_json::Value::Null,
+                |upper| json!({ "lower": round2(f.score), "upper": round2(upper) }),
+            ),
         ),
-        None => (serde_json::Value::Null, serde_json::Value::Null),
+        None => (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
     };
-    let (from_score, from_completeness) = side(from);
-    let (to_score, to_completeness) = side(to);
+    let (from_score, from_completeness, from_bounds) = side(from);
+    let (to_score, to_completeness, to_bounds) = side(to);
     let (completeness_changed, basis_changed) = match (from, to) {
         (Some(a), Some(b)) => (completeness_differs(a, b), a.score_basis != b.score_basis),
         _ => (false, false),
@@ -295,6 +312,10 @@ fn incomparable_entry(
         "to": to_score,
         "from_completeness": from_completeness,
         "to_completeness": to_completeness,
+        // `from`/`to` hold the conservative lower bound of a partial score; the
+        // bounds (sutra/416 rows) carry the full interval.
+        "from_bounds": from_bounds,
+        "to_bounds": to_bounds,
         "completeness_changed": completeness_changed,
         "basis_changed": basis_changed,
         "reason": reason,
@@ -521,6 +542,7 @@ fn snapshot_to_json(s: &SnapshotRow) -> serde_json::Value {
         "hotspot_count": s.hotspot_count,
         "health_score": round2(s.health_score),
         "pattern_family_count": s.pattern_family_count,
+        "health_run_id": s.health_run_id,
     })
 }
 

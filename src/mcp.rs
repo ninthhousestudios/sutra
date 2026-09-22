@@ -1096,11 +1096,13 @@ impl SutraServer {
         // A genuinely-missing baseline (no checkpoint at pin time) is pinned as
         // `Pinned(None)` and must stay missing → incomparable (sutra/424 F5), not
         // healed into the fresh snapshot the reparse below may write.
+        // A storage error here is an error, not a missing baseline (sutra/416).
         let baseline = crate::health::compare::BaselineSelector::Pinned(
-            self.get_db(&args.workspace)
-                .ok()
-                .and_then(|db| db.latest_snapshots(1).ok())
-                .and_then(|snaps| snaps.first().map(|s| s.id)),
+            self.get_db(&args.workspace)?
+                .latest_snapshots(1)
+                .map_err(sutra_to_rmcp)?
+                .first()
+                .map(|s| s.id),
         );
 
         // tool_context first: it refreshes the index (query-path incremental

@@ -25,6 +25,7 @@ use crate::db::{CommitRow, Db, HealthFindingRow};
 use crate::error::Result;
 use crate::git;
 use crate::graph;
+use crate::health::assess::RunVerdict;
 use crate::health::evidence::{
     ConfigStamp, Digest, Generation, GraphStamp, Head, HistoryObservation, HistoryStamp,
     InputFailure, InputStamp, MissingReason, ProducerOutcome, PublishRun, RepositoryObservation,
@@ -107,20 +108,23 @@ impl DemandOutcome {
         }
     }
 
-    /// The [`Validity`] this outcome establishes for the current run, for
+    /// The run this outcome vouches for and its [`Validity`], for
     /// [`crate::health::assess::PersistentEvidence::load`]. Only a reuse or a
-    /// publication under the lock vouches for the run; anything else leaves its
-    /// evidence stale with the matching reason.
-    pub fn persistent_validity(&self) -> Validity {
+    /// publication under the lock vouches for a run (and only for that run id);
+    /// anything else leaves the retained evidence stale with the matching reason.
+    pub fn verdict(&self) -> RunVerdict {
         match self {
-            DemandOutcome::Refreshed(RefreshResult::Reused(_) | RefreshResult::Published(_)) => {
-                Validity::Current
+            DemandOutcome::Refreshed(RefreshResult::Reused(id) | RefreshResult::Published(id)) => {
+                RunVerdict {
+                    run: Some(*id),
+                    validity: Validity::Current,
+                }
             }
             DemandOutcome::Refreshed(RefreshResult::InputsChanged) => {
-                Validity::Stale(MissingReason::InputsChanged)
+                RunVerdict::stale(MissingReason::InputsChanged)
             }
-            DemandOutcome::Deferred(reason) => Validity::Stale(MissingReason::Deferred(*reason)),
-            DemandOutcome::Failed => Validity::Stale(MissingReason::RefreshFailed),
+            DemandOutcome::Deferred(reason) => RunVerdict::stale(MissingReason::Deferred(*reason)),
+            DemandOutcome::Failed => RunVerdict::stale(MissingReason::RefreshFailed),
         }
     }
 }
@@ -128,9 +132,9 @@ impl DemandOutcome {
 /// Validate the current run against freshly probed inputs without mutating
 /// anything — for readers that did not just refresh (the snapshot writer). No
 /// run is `Stale(LegacyUnknown)`.
-pub fn current_run_validity(db: &Db, workspace_root: &Path, now_unix: i64) -> Result<Validity> {
+pub fn current_run_validity(db: &Db, workspace_root: &Path, now_unix: i64) -> Result<RunVerdict> {
     let Some(run) = db.load_current_health_run()? else {
-        return Ok(Validity::Stale(MissingReason::LegacyUnknown));
+        return Ok(RunVerdict::stale(MissingReason::LegacyUnknown));
     };
     let observed = observe_inputs(
         db,
@@ -138,7 +142,10 @@ pub fn current_run_validity(db: &Db, workspace_root: &Path, now_unix: i64) -> Re
         utc_day(now_unix),
         window_days(workspace_root),
     )?;
-    Ok(validate(&run.inputs, &observed))
+    Ok(RunVerdict {
+        run: Some(run.id),
+        validity: validate(&run.inputs, &observed),
+    })
 }
 
 /// The result of ingesting commit-file history, shared by the full parse (which

@@ -8,11 +8,13 @@
 //! consumers: "consume validated observations, not a raw coverage bool; no
 //! finding-count escape hatch").
 //!
-//! The caller supplies the run's [`Validity`] — established by the demand refresh
-//! it just performed, or by [`crate::health::refresh::current_run_validity`]. A
-//! stale run is still loaded (its findings stay visible) but every outcome that
-//! depends on the moved inputs becomes `Missing`, so stale findings can never be
-//! counted as known current debt.
+//! The caller supplies a [`RunVerdict`] — the validity of one *specific* run,
+//! established by the demand refresh it just performed or by
+//! [`crate::health::refresh::current_run_validity`]. If the current pointer has
+//! moved to a different run since, the verdict does not transfer and the loaded
+//! run reads as stale. A stale run is still loaded (its findings stay visible)
+//! but every outcome that depends on the moved inputs becomes `Missing`, so
+//! stale findings can never be counted as known current debt.
 
 use std::collections::HashMap;
 
@@ -21,7 +23,7 @@ use crate::error::Result;
 use crate::health::evidence::{
     Digest, MissingReason, ProducerOutcome, RunId, UnsupportedReason, Validity,
 };
-use crate::health::findings::BiomarkerKind;
+use crate::health::findings::{BiomarkerKind, HealthSeverity};
 use crate::health::instability::{self, ComponentInstability};
 use crate::health::scoring::{
     self, EvidencePart, FileHealthScore, PERSISTENT_PRODUCERS, ProducerResult, ScoreValue,
@@ -31,6 +33,23 @@ use crate::waivers::{self, ResolvedHealthFinding};
 /// Component-aggregation identity folded into every component basis. Bump when
 /// the aggregation rule (NLOC weighting, instability penalty form) changes.
 const COMPONENT_SCORING_VERSION: &str = "component-scoring-v1-nloc-instability";
+
+/// A validity verdict about one specific run. `Current` vouches only for `run`;
+/// it never transfers to whichever run the pointer names at load time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunVerdict {
+    pub run: Option<RunId>,
+    pub validity: Validity,
+}
+
+impl RunVerdict {
+    pub fn stale(reason: MissingReason) -> Self {
+        RunVerdict {
+            run: None,
+            validity: Validity::Stale(reason),
+        }
+    }
+}
 
 /// The persistent evidence for one currently indexed file.
 #[derive(Debug)]
@@ -75,10 +94,20 @@ pub struct PersistentEvidence {
 }
 
 impl PersistentEvidence {
-    pub fn load(db: &Db, validity: Validity) -> Result<Self> {
+    pub fn load(db: &Db, verdict: RunVerdict) -> Result<Self> {
         let run = db.load_current_health_run()?;
         let waivers = db.get_health_waivers()?;
         let indexed = db.all_files()?;
+
+        // A `Current` verdict vouches for the run it was established against.
+        // If the pointer moved since (a concurrent refresh published another
+        // run), that run is unverified here.
+        let validity = match (verdict.validity, &run) {
+            (Validity::Current, Some(r)) if verdict.run == Some(r.id) => Validity::Current,
+            (Validity::Current, Some(_)) => Validity::Stale(MissingReason::InputsChanged),
+            (Validity::Current, None) => Validity::Stale(MissingReason::LegacyUnknown),
+            (stale, _) => stale,
+        };
 
         let (run_id, stored_outcomes, stored_findings) = match run {
             Some(run) => (Some(run.id), run.outcomes, run.findings),
@@ -131,6 +160,8 @@ impl PersistentEvidence {
         for file in &indexed {
             let path: &str = &file.path;
             let recorded = outcomes_by_path.remove(path).unwrap_or_default();
+            let findings = active_by_path.remove(path).unwrap_or_default();
+            let waived = waived_by_path.remove(path).unwrap_or_default();
             let outcomes: Vec<ProducerResult> = PERSISTENT_PRODUCERS
                 .iter()
                 .map(|&kind| {
@@ -139,6 +170,7 @@ impl PersistentEvidence {
                         .find(|(k, _)| *k == kind)
                         .map(|(_, o)| *o)
                         .unwrap_or(ProducerOutcome::Missing(absent));
+                    let stored = check_retained(stored, kind, &findings, &waived);
                     (kind, apply_validity(stored, validity))
                 })
                 .collect();
@@ -150,8 +182,8 @@ impl PersistentEvidence {
                 path: path.to_string(),
                 file_id: file.id,
                 outcomes,
-                findings: active_by_path.remove(path).unwrap_or_default(),
-                waived: waived_by_path.remove(path).unwrap_or_default(),
+                findings,
+                waived,
                 basis,
             });
         }
@@ -186,6 +218,35 @@ impl PersistentEvidence {
             }
         }
         out
+    }
+}
+
+/// A `Complete` outcome is trusted only when the run actually retained that
+/// many findings for the producer (active + waived) and every one parses;
+/// otherwise the run is internally inconsistent for it: `Missing(InvalidEvidence)`.
+fn check_retained(
+    outcome: ProducerOutcome,
+    kind: BiomarkerKind,
+    active: &[HealthFindingRow],
+    waived: &[HealthFindingRow],
+) -> ProducerOutcome {
+    let ProducerOutcome::Complete { finding_count } = outcome else {
+        return outcome;
+    };
+    let mut count = 0;
+    for f in active.iter().chain(waived) {
+        if BiomarkerKind::parse(&f.biomarker_kind) != Some(kind) {
+            continue;
+        }
+        if HealthSeverity::parse(&f.severity).is_none() {
+            return ProducerOutcome::Missing(MissingReason::InvalidEvidence);
+        }
+        count += 1;
+    }
+    if count == finding_count {
+        outcome
+    } else {
+        ProducerOutcome::Missing(MissingReason::InvalidEvidence)
     }
 }
 
@@ -232,9 +293,17 @@ pub struct WorkspaceHealth<'e> {
 }
 
 /// Score every indexed file and every live component from validated evidence.
+///
+/// Components are measured only when their prerequisites are current:
+/// `membership_current` (the clustering matches the live graph/history/config —
+/// a health-only refresh never re-clusters) and a successful instability
+/// computation. Otherwise the component is `Partial`: stale membership keeps its
+/// bounds but is never measured; an instability failure widens the lower bound by
+/// the maximum penalty rather than failing the whole report.
 pub fn score_workspace<'e>(
     db: &Db,
     evidence: &'e PersistentEvidence,
+    membership_current: bool,
 ) -> Result<WorkspaceHealth<'e>> {
     let files: Vec<ScoredFile<'e>> = evidence
         .files
@@ -248,9 +317,15 @@ pub fn score_workspace<'e>(
         files.iter().map(|f| (f.evidence.file_id, f)).collect();
 
     let memberships = db.component_members_with_line_count()?;
-    // Instability feeds the component score, so a failure is surfaced rather
-    // than silently dropping the penalty.
-    let mut instability_map = instability::compute_component_instability(db)?;
+    // Instability feeds the component score. A failure is not silently a zero
+    // penalty: it leaves the penalty unknown, which `score_members` bounds.
+    let mut instability_map = match instability::compute_component_instability(db) {
+        Ok(map) => Some(map),
+        Err(e) => {
+            tracing::warn!("health: component instability unavailable: {e}");
+            None
+        }
+    };
 
     let mut members_of: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
     for (comp_id, file_id, line_count) in &memberships {
@@ -265,8 +340,15 @@ pub fn score_workspace<'e>(
         let Some(members) = members_of.get(comp.id.as_str()) else {
             continue;
         };
-        let instability = instability_map.remove(&comp.id);
-        let (value, basis) = score_members(members, &by_id, instability.as_ref());
+        let instability = instability_map
+            .as_mut()
+            .map(|m| Penalty::Known(m.remove(&comp.id)))
+            .unwrap_or(Penalty::Unknown);
+        let (value, basis) = score_members(members, &by_id, &instability, membership_current);
+        let instability = match instability {
+            Penalty::Known(i) => i,
+            Penalty::Unknown => None,
+        };
         components.push(ScoredComponent {
             component_id: comp.id,
             component_name: comp.name,
@@ -281,11 +363,19 @@ pub fn score_workspace<'e>(
     Ok(WorkspaceHealth { files, components })
 }
 
+/// A component's instability penalty input: known (possibly no instability
+/// entry → no penalty), or unknown because the computation failed.
+enum Penalty {
+    Known(Option<ComponentInstability>),
+    Unknown,
+}
+
 /// Aggregate member scores into a component value and its basis digest.
 fn score_members(
     members: &[(i64, i64)],
     by_id: &HashMap<i64, &ScoredFile<'_>>,
-    instability: Option<&ComponentInstability>,
+    instability: &Penalty,
+    membership_current: bool,
 ) -> (ScoreValue, Digest) {
     let mut lower_pairs = Vec::with_capacity(members.len());
     let mut upper_pairs = Vec::with_capacity(members.len());
@@ -307,10 +397,23 @@ fn score_members(
             }
         }
     }
-    let penalty = instability.map_or(0.0, |i| scoring::instability_penalty(i.instability));
-    let adjust = |base: f64| (base - penalty).clamp(scoring::MIN_SCORE, scoring::MAX_SCORE);
-    let lower = adjust(scoring::score_component(&lower_pairs));
-    let upper = adjust(scoring::score_component(&upper_pairs));
+    // (least, most) penalty: exact when instability is known, else [0, max].
+    let (min_penalty, max_penalty) = match instability {
+        Penalty::Known(i) => {
+            let p = i
+                .as_ref()
+                .map_or(0.0, |i| scoring::instability_penalty(i.instability));
+            (p, p)
+        }
+        Penalty::Unknown => {
+            complete = false;
+            (0.0, scoring::instability_penalty(1.0))
+        }
+    };
+    complete &= membership_current;
+    let clamp = |v: f64| v.clamp(scoring::MIN_SCORE, scoring::MAX_SCORE);
+    let lower = clamp(scoring::score_component(&lower_pairs) - max_penalty);
+    let upper = clamp(scoring::score_component(&upper_pairs) - min_penalty);
     let value = if complete {
         ScoreValue::Measured(upper)
     } else {
@@ -332,6 +435,38 @@ fn score_members(
 mod tests {
     use super::*;
     use crate::health::evidence::DeferReason;
+
+    #[test]
+    fn unknown_instability_widens_the_component_lower_bound_instead_of_failing() {
+        let evidence = FileEvidence {
+            path: "src/a.rs".into(),
+            file_id: 1,
+            outcomes: PERSISTENT_PRODUCERS
+                .iter()
+                .map(|&k| (k, ProducerOutcome::Complete { finding_count: 0 }))
+                .collect(),
+            findings: Vec::new(),
+            waived: Vec::new(),
+            basis: Digest::of(b"b"),
+        };
+        let scored = ScoredFile {
+            evidence: &evidence,
+            score: evidence.score(),
+        };
+        let by_id: HashMap<i64, &ScoredFile<'_>> = [(1, &scored)].into_iter().collect();
+        let members = [(1, 100)];
+
+        let (known, _) = score_members(&members, &by_id, &Penalty::Known(None), true);
+        assert_eq!(known, ScoreValue::Measured(10.0));
+        let (unknown, _) = score_members(&members, &by_id, &Penalty::Unknown, true);
+        assert_eq!(
+            unknown,
+            ScoreValue::Partial {
+                lower: 10.0 - scoring::instability_penalty(1.0),
+                upper: 10.0
+            }
+        );
+    }
 
     #[test]
     fn stale_validity_turns_complete_and_repo_unsupported_into_missing() {

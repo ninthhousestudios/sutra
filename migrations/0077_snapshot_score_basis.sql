@@ -20,10 +20,15 @@
 --   score_basis  digest over membership, member bases and the aggregation rule.
 --                NULL = Unknown (legacy), so a component delta is never measured
 --                against a row that recorded no membership.
--- Ephemeral ALTERs (both tables are dropped and recreated on reindex by 0033) —
--- replay after 0033 to re-add the columns.
+-- snapshots:
+--   health_run_id  the health run the checkpoint was scored from (provenance:
+--                trend/review explain input changes between two checkpoints by
+--                diffing their runs' input stamps). NULL = legacy/unknown.
+-- Ephemeral ALTERs (all three tables are dropped and recreated on reindex) —
+-- replay to re-add the columns.
 ALTER TABLE health_snapshot_files ADD COLUMN score_upper REAL;
 ALTER TABLE health_snapshot_files ADD COLUMN score_basis TEXT;
 ALTER TABLE health_snapshot_components ADD COLUMN partial INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE health_snapshot_components ADD COLUMN completeness_recorded INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE health_snapshot_components ADD COLUMN score_basis TEXT;
+ALTER TABLE snapshots ADD COLUMN health_run_id INTEGER;

@@ -149,7 +149,8 @@ pub const PERSISTENT_PRODUCERS: [BiomarkerKind; 9] = [
 
 /// Scoring-algorithm identity folded into every [`ScoreBasis`]. Bump when the
 /// scoring *rules* change (bound semantics, clamping, which findings count);
-/// weights, severities and caps are digested directly so they need no bump.
+/// biomarker weights, default severities, every severity weight and category
+/// caps are digested directly so they need no bump.
 pub const SCORING_VERSION: &str = "health-scoring-v2-interval";
 
 impl UnsupportedReason {
@@ -450,6 +451,11 @@ pub fn file_score_basis(
     buf.push('\n');
     buf.push_str(crate::health::probe::HEALTH_ANALYSIS_VERSION);
     buf.push('\n');
+    // Every severity weight, not just the defaults: a finding is weighted by its
+    // recorded severity, which some producers escalate (hidden_coupling).
+    for sev in [HealthSeverity::Advisory, HealthSeverity::Informational] {
+        buf.push_str(&format!("severity|{}|{}\n", sev.as_str(), sev.weight()));
+    }
     for kind in PERSISTENT_PRODUCERS {
         let applicability = match outcomes.iter().find(|(k, _)| *k == kind) {
             Some((_, ProducerOutcome::Unsupported(r))) => r.as_str(),
