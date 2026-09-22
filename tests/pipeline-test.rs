@@ -262,15 +262,25 @@ async fn test_unchanged_parse_copies_previous_snapshot_metrics() {
     let registry = default_registry();
 
     pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
-    db.insert_snapshot(&SnapshotParams {
-        total_complexity: 12_345,
-        dead_symbol_count: 234,
-        hotspot_count: 56,
-        health_score: 7.25,
-        pattern_family_count: 8,
-        ..SnapshotParams::default()
-    })
-    .unwrap();
+    // Copy-forward requires the prior checkpoint's per-file rows to carry the
+    // completeness and score basis the current evidence would record (sutra/416),
+    // so the synthetic checkpoint reuses the real one's rows.
+    let real = db.latest_snapshots(1).unwrap().pop().unwrap().id;
+    let rows = db.snapshot_file_scores(real).unwrap();
+    let components = db.snapshot_component_scores(real).unwrap();
+    let synthetic = db
+        .insert_snapshot(&SnapshotParams {
+            total_complexity: 12_345,
+            dead_symbol_count: 234,
+            hotspot_count: 56,
+            health_score: 7.25,
+            pattern_family_count: 8,
+            ..SnapshotParams::default()
+        })
+        .unwrap();
+    db.insert_snapshot_files(synthetic, &rows).unwrap();
+    db.insert_snapshot_components(synthetic, &components)
+        .unwrap();
 
     let snap = pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
     assert_eq!(snap.files_parsed, 0);

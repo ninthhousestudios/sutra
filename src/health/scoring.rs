@@ -1,13 +1,12 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
-use crate::db::{Db, HealthFindingRow};
-use crate::error::Result;
+use crate::db::HealthFindingRow;
+use crate::health::evidence::{Digest, MissingReason, ProducerOutcome, UnsupportedReason};
 use crate::health::findings::{BiomarkerKind, HealthSeverity};
-use crate::health::instability::{self, ComponentInstability};
 
 const BASE_SCORE: f64 = 10.0;
-const MIN_SCORE: f64 = 1.0;
-const MAX_SCORE: f64 = 10.0;
+pub(crate) const MIN_SCORE: f64 = 1.0;
+pub(crate) const MAX_SCORE: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HealthCategory {
@@ -19,6 +18,14 @@ pub enum HealthCategory {
 }
 
 impl HealthCategory {
+    pub const ALL: [HealthCategory; 5] = [
+        Self::Organizational,
+        Self::Structural,
+        Self::Coupling,
+        Self::Freshness,
+        Self::Coverage,
+    ];
+
     pub fn cap(&self) -> f64 {
         match self {
             Self::Organizational => 3.5,
@@ -88,269 +95,392 @@ impl HealthSeverity {
     }
 }
 
-/// Whether git history is available to the git-organizational and churn
-/// biomarkers, and if not, *why*. The distinction is load-bearing (sutra/408):
-/// a non-git project can never run these producers (exclude them), but a git
-/// project whose history we merely failed to read this run must be worst-cased,
-/// not excluded — otherwise a transient `git log` failure removes debt.
+/// Where a biomarker is produced and therefore which observation scores it.
+/// Single exhaustive source of truth: a new variant forces a decision here, so a
+/// biomarker can never silently drop out of the "missing analysis is never zero
+/// debt" contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitAvailability {
-    /// Git history ingested — the git biomarkers ran against real data.
-    Available,
-    /// A git repo, but no usable history this run (empty commit window or a
-    /// git-command failure). The producers should have run but had no data →
-    /// their dimensions are worst-cased, not excluded.
-    NoHistory,
-    /// Not a git repository at all — a true structural absence. The git
-    /// biomarkers can never run here and are excluded (Unsupported).
-    NotARepo,
-}
-
-impl GitAvailability {
-    fn from_persisted(s: &str) -> Option<Self> {
-        match s {
-            "available" => Some(Self::Available),
-            "no_history" => Some(Self::NoHistory),
-            "not_a_repo" => Some(Self::NotARepo),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::NoHistory => "no_history",
-            Self::NotARepo => "not_a_repo",
-        }
-    }
-}
-
-/// Workspace-scoped facts that decide whether a biomarker's data source exists
-/// at all. Detected once per scoring pass.
-#[derive(Debug, Clone, Copy)]
-pub struct WorkspaceFacts {
-    /// Git availability for the git-organizational and churn biomarkers.
-    pub git: GitAvailability,
-}
-
-impl WorkspaceFacts {
-    pub fn detect(db: &Db) -> Result<Self> {
-        // Prefer the state persisted at the last full parse (where the git
-        // outcome was actually observed). Fall back to the pre-sutra/408
-        // commit-count heuristic for indexes that predate the column: a
-        // populated commit table reads as Available, an empty one as NotARepo
-        // (the old "no git" → Unsupported behavior).
-        let git = match db.git_availability()? {
-            Some(s) => GitAvailability::from_persisted(&s).unwrap_or(GitAvailability::NotARepo),
-            None => {
-                if db.commit_file_count()? > 0 {
-                    GitAvailability::Available
-                } else {
-                    GitAvailability::NotARepo
-                }
-            }
-        };
-        Ok(Self { git })
-    }
-}
-
-/// Whether a biomarker contributes to a file's score, and if not, why. This is
-/// the "missing analysis is never zero debt" contract: a biomarker that should
-/// have run but didn't must lower the score, not silently pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BiomarkerSupport {
-    /// Producer wired and its data source present in this workspace.
-    Scored,
-    /// Data source structurally absent at workspace scope (no git history, no
-    /// coverage ingestion). Excluded from scoring and surfaced as a note —
-    /// worst-casing every file on a dimension that can never run is noise.
-    Unsupported(&'static str),
-    /// The biomarker should be scored for this workspace but has no data to
-    /// score from this run — either no producer emits it, or its data source
-    /// exists but was unavailable (git history that failed to load or an empty
-    /// commit window). Worst-cased at full weight and flags the file `partial`.
-    Unwired,
+pub enum BiomarkerScope {
+    /// Parse-time, per-file, persisted in a health run with an explicit outcome
+    /// per file (`health_runs`). Temporal comparison uses only these.
+    Persistent,
+    /// Computed fresh at review time (blame, shape diff); never persisted, never
+    /// part of a temporal delta — only of on-demand attribution.
+    OnDemand,
+    /// Component-scoped (instability), applied to component scores only.
+    Component,
 }
 
 impl BiomarkerKind {
-    /// Classify a biomarker for FILE-LEVEL parse-time scoring. `None` means it
-    /// is scored elsewhere (review-time on-demand, or component-scoped) and is
-    /// not part of the per-file worst-case contract. Single exhaustive source of
-    /// truth: adding a variant forces a decision here, so a new biomarker can
-    /// never silently score as zero debt.
-    pub fn file_scoring_support(&self, facts: &WorkspaceFacts) -> Option<BiomarkerSupport> {
-        let git = || match facts.git {
-            GitAvailability::Available => BiomarkerSupport::Scored,
-            // Repo exists but no history this run → worst-case, don't exclude.
-            GitAvailability::NoHistory => BiomarkerSupport::Unwired,
-            // Not a git repo → the producer can never run here → exclude.
-            GitAvailability::NotARepo => BiomarkerSupport::Unsupported("not a git repository"),
-        };
+    pub fn scope(&self) -> BiomarkerScope {
         match self {
-            Self::NestedComplexity | Self::ImportCycle | Self::DeadCodeRatio => {
-                Some(BiomarkerSupport::Scored)
-            }
-            Self::CoChangeScatter
+            Self::NestedComplexity
+            | Self::CoChangeScatter
             | Self::ChangeEntropy
             | Self::OwnershipRisk
             | Self::HiddenCoupling
-            | Self::BlastRadiusChurn => Some(git()),
-            Self::CoverageGradient => {
-                Some(BiomarkerSupport::Unsupported("no coverage data source"))
+            | Self::BlastRadiusChurn
+            | Self::DeadCodeRatio
+            | Self::ImportCycle
+            | Self::CoverageGradient => BiomarkerScope::Persistent,
+            Self::FunctionHotspot | Self::CodeAgeVolatility | Self::HrrShapeChange => {
+                BiomarkerScope::OnDemand
             }
-            // Review-time on-demand (function_hotspot, code_age_volatility,
-            // hrr_shape_change) and component-scoped (component_instability) are
-            // scored in their own paths, not per-file at parse time.
-            Self::FunctionHotspot
-            | Self::CodeAgeVolatility
-            | Self::HrrShapeChange
-            | Self::ComponentInstability => None,
+            Self::ComponentInstability => BiomarkerScope::Component,
         }
+    }
+}
+
+/// The persistent per-file producers, in canonical order. Every health run stages
+/// exactly one outcome per (file, producer) in this list; readers treat a
+/// producer without an outcome as missing. Must equal the `Persistent` scope
+/// (unit-tested).
+pub const PERSISTENT_PRODUCERS: [BiomarkerKind; 9] = [
+    BiomarkerKind::NestedComplexity,
+    BiomarkerKind::CoChangeScatter,
+    BiomarkerKind::ChangeEntropy,
+    BiomarkerKind::OwnershipRisk,
+    BiomarkerKind::HiddenCoupling,
+    BiomarkerKind::BlastRadiusChurn,
+    BiomarkerKind::DeadCodeRatio,
+    BiomarkerKind::ImportCycle,
+    BiomarkerKind::CoverageGradient,
+];
+
+/// Scoring-algorithm identity folded into every [`ScoreBasis`]. Bump when the
+/// scoring *rules* change (bound semantics, clamping, which findings count);
+/// weights, severities and caps are digested directly so they need no bump.
+pub const SCORING_VERSION: &str = "health-scoring-v2-interval";
+
+impl UnsupportedReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UnsupportedReason::ConfirmedNonRepository => "not a git repository",
+            UnsupportedReason::NoCoverageIngestion => "no coverage data source",
+        }
+    }
+}
+
+/// One producer's outcome for one file, as consumed by scoring.
+pub type ProducerResult = (BiomarkerKind, ProducerOutcome);
+
+/// A slice of validated evidence for one file: the producers it observed and
+/// their findings. Scoring takes several parts so the persistent run and fresh
+/// on-demand evidence share category caps without being merged (and without a
+/// finding from one part being authorized by an outcome from the other — each
+/// finding counts only when *its own part* recorded its producer `Complete`).
+#[derive(Debug, Clone, Copy)]
+pub struct EvidencePart<'a> {
+    pub outcomes: &'a [ProducerResult],
+    /// Active (non-waived) findings. A finding whose producer is not `Complete`
+    /// in this part is stale or unauthorized and never counts as known debt.
+    pub findings: &'a [HealthFindingRow],
+}
+
+impl EvidencePart<'_> {
+    fn outcome(&self, kind: BiomarkerKind) -> Option<&ProducerOutcome> {
+        self.outcomes
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, o)| o)
+    }
+
+    /// Categories in which this part has an applicable producer without current
+    /// evidence — the categories its pessimistic bound saturates.
+    pub fn missing_categories(&self) -> HashSet<HealthCategory> {
+        self.outcomes
+            .iter()
+            .filter(|(_, o)| matches!(o, ProducerOutcome::Missing(_)))
+            .map(|(k, _)| k.category())
+            .collect()
+    }
+}
+
+/// A file score. `Measured` only when every applicable producer in every part
+/// is `Complete`; otherwise an interval — never a point value dressed up as a
+/// measurement (health-evidence-contract.md § Comparison and scoring).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScoreValue {
+    Measured(f64),
+    /// `upper` counts only known current debt; `lower` saturates every category
+    /// with a missing producer at its cap. A conservative bound, not a proved
+    /// worst case of any particular finding set.
+    Partial {
+        lower: f64,
+        upper: f64,
+    },
+}
+
+impl ScoreValue {
+    pub fn lower(&self) -> f64 {
+        match *self {
+            ScoreValue::Measured(s) => s,
+            ScoreValue::Partial { lower, .. } => lower,
+        }
+    }
+
+    pub fn upper(&self) -> f64 {
+        match *self {
+            ScoreValue::Measured(s) => s,
+            ScoreValue::Partial { upper, .. } => upper,
+        }
+    }
+
+    pub fn is_measured(&self) -> bool {
+        matches!(self, ScoreValue::Measured(_))
     }
 }
 
 #[derive(Debug)]
 pub struct FindingDeduction {
+    /// Which [`EvidencePart`] and which finding within it.
+    pub part: usize,
+    pub index: usize,
     pub finding_id: i64,
     pub raw_deduction: f64,
+    /// Share of the category's *known* (capped) deduction.
     pub scaled_deduction: f64,
     pub category: HealthCategory,
 }
 
-/// A worst-case deduction for a file-scored biomarker that had no producer
-/// (Unwired). Not tied to a finding — it exists precisely because no finding
-/// was emitted — but it lowers the score and flags the file `partial`.
-#[derive(Debug, Clone)]
-pub struct MissingDeduction {
-    pub biomarker: BiomarkerKind,
+/// Per-category deduction bounds.
+#[derive(Debug, Clone, Copy)]
+pub struct CategoryDeduction {
     pub category: HealthCategory,
-    pub scaled_deduction: f64,
+    /// Sum of raw known-finding deductions before capping.
+    pub known_raw: f64,
+    /// Known debt, capped: the optimistic deduction.
+    pub known: f64,
+    /// The cap when a producer in this category is missing, else `known`.
+    pub pessimistic: f64,
+}
+
+/// A producer with no current evidence for the file.
+#[derive(Debug, Clone, Copy)]
+pub struct MissingProducer {
+    pub biomarker: BiomarkerKind,
+    pub reason: MissingReason,
 }
 
 #[derive(Debug)]
 pub struct FileHealthScore {
-    pub score: f64,
+    pub value: ScoreValue,
     pub deductions: Vec<FindingDeduction>,
-    /// Worst-cased biomarkers whose producer never ran. Non-empty ⇒ the score is
-    /// `partial`: an apparently clean number computed from incomplete analysis.
-    pub missing: Vec<MissingDeduction>,
+    /// Every category with known debt or a missing producer, in
+    /// [`HealthCategory::ALL`] order.
+    pub categories: Vec<CategoryDeduction>,
+    pub missing: Vec<MissingProducer>,
+    /// Structurally inapplicable producers, excluded from the score.
+    pub unsupported: Vec<(BiomarkerKind, UnsupportedReason)>,
 }
 
 impl FileHealthScore {
     pub fn partial(&self) -> bool {
-        !self.missing.is_empty()
+        !self.value.is_measured()
+    }
+
+    /// Missing biomarker names, sorted and deduplicated — the persisted
+    /// `missing_biomarkers` vocabulary.
+    pub fn missing_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .missing
+            .iter()
+            .map(|m| m.biomarker.as_str().to_string())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 }
 
-/// Score one file. `covered` is whether this file's *file-scored* findings are
-/// valid for its current content (sutra/408): its health_coverage stamp matches
-/// its content_hash. When false — an incrementally reparsed file whose findings
-/// were never recomputed, or a newly added file with none — those stale
-/// file-scored findings are ignored and every file-scored biomarker that could
-/// run is worst-cased instead, so a not-yet-analyzed file can never float up to
-/// a clean 10.0.
-///
-/// Coverage is per-axis (sutra/409): `covered` governs only the file-scored
-/// biomarkers (`file_scoring_support` is `Some`). Findings whose biomarker is
-/// review-time on-demand or component-scoped (`file_scoring_support` is `None`)
-/// are always trusted, because the caller recomputes them fresh every run — so
-/// the review-delta path can worst-case a stale structural axis while still
-/// crediting fresh on-demand debt in the same (cap-sharing) score.
-pub fn score_file(
-    findings: &[HealthFindingRow],
-    facts: &WorkspaceFacts,
-    covered: bool,
-) -> FileHealthScore {
-    // Present findings: real debt the producers actually measured. A file-scored
-    // finding is trusted only when the analysis is current for this file's
-    // content (`covered`); a non-file-scored (on-demand / component) finding is
-    // always trusted since it is recomputed fresh. Untrusted file-scored kinds
-    // are dropped here and worst-cased in the missing loop below.
-    let mut present: HashMap<HealthCategory, Vec<(usize, f64)>> = HashMap::new();
-    for (i, f) in findings.iter().enumerate() {
-        let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
-            continue;
-        };
-        if !covered && kind.file_scoring_support(facts).is_some() {
-            continue;
+/// Known raw deductions per category: every finding whose producer its own part
+/// recorded `Complete`. Returns `(part, index, category, raw)`.
+fn known_findings(parts: &[EvidencePart<'_>]) -> Vec<(usize, usize, HealthCategory, f64)> {
+    let mut known = Vec::new();
+    for (p, part) in parts.iter().enumerate() {
+        for (i, f) in part.findings.iter().enumerate() {
+            let Some(kind) = BiomarkerKind::parse(&f.biomarker_kind) else {
+                continue;
+            };
+            if !matches!(part.outcome(kind), Some(ProducerOutcome::Complete { .. })) {
+                continue;
+            }
+            let Some(severity) = HealthSeverity::parse(&f.severity) else {
+                continue;
+            };
+            known.push((
+                p,
+                i,
+                kind.category(),
+                severity.weight() * kind.default_weight(),
+            ));
         }
-        let Some(severity) = HealthSeverity::parse(&f.severity) else {
-            continue;
-        };
-        let raw = severity.weight() * kind.default_weight();
-        present.entry(kind.category()).or_default().push((i, raw));
     }
+    known
+}
 
-    // Missing analysis is never zero debt. A file-scored biomarker is worst-
-    // cased at full weight when it is Unwired (no producer, or its data source
-    // was unavailable this run), or when it is Scored but this file's analysis
-    // is not current (`!covered`). Unsupported ones (data source structurally
-    // absent — not a git repo, no coverage ingestion) are excluded, not worst-
-    // cased: worst-casing a dimension that can never run is noise.
-    let mut missing_raw: HashMap<HealthCategory, Vec<(BiomarkerKind, f64)>> = HashMap::new();
-    for kind in BiomarkerKind::ALL {
-        let worst_case = match kind.file_scoring_support(facts) {
-            Some(BiomarkerSupport::Unwired) => true,
-            Some(BiomarkerSupport::Scored) => !covered,
-            Some(BiomarkerSupport::Unsupported(_)) | None => false,
-        };
-        if worst_case {
-            let raw = kind.default_severity().weight() * kind.default_weight();
-            missing_raw
-                .entry(kind.category())
-                .or_default()
-                .push((kind, raw));
+/// Score under one scenario: every category in `saturate` deducts its full cap;
+/// the rest deduct their capped known debt. The shared primitive behind the
+/// score bounds and the on-demand attribution bounds, so both apply the same
+/// category caps and global clamp.
+pub fn scenario_score(parts: &[EvidencePart<'_>], saturate: &HashSet<HealthCategory>) -> f64 {
+    let known = known_findings(parts);
+    let total: f64 = HealthCategory::ALL
+        .iter()
+        .map(|&cat| {
+            if saturate.contains(&cat) {
+                cat.cap()
+            } else {
+                let raw: f64 = known
+                    .iter()
+                    .filter(|(_, _, c, _)| *c == cat)
+                    .map(|(_, _, _, r)| r)
+                    .sum();
+                raw.min(cat.cap())
+            }
+        })
+        .sum();
+    clamp_score(BASE_SCORE - total)
+}
+
+fn clamp_score(s: f64) -> f64 {
+    s.clamp(MIN_SCORE, MAX_SCORE)
+}
+
+/// Score one file from validated evidence (health-evidence-contract.md §
+/// Comparison and scoring). Findings count only when their producer is
+/// `Complete` in their own part — stale findings never become known debt. A
+/// `Missing` producer saturates its category in the lower bound; `Unsupported`
+/// producers are excluded and reported. A producer with no outcome in any part
+/// was not observed by this caller and is not part of the score.
+pub fn score_file(parts: &[EvidencePart<'_>]) -> FileHealthScore {
+    let known = known_findings(parts);
+
+    let mut missing = Vec::new();
+    let mut unsupported = Vec::new();
+    for part in parts {
+        for &(kind, outcome) in part.outcomes {
+            match outcome {
+                ProducerOutcome::Complete { .. } => {}
+                ProducerOutcome::Missing(reason) => missing.push(MissingProducer {
+                    biomarker: kind,
+                    reason,
+                }),
+                ProducerOutcome::Unsupported(reason) => unsupported.push((kind, reason)),
+            }
         }
     }
+    let saturated: HashSet<HealthCategory> =
+        missing.iter().map(|m| m.biomarker.category()).collect();
 
     let mut deductions = Vec::new();
-    let mut missing = Vec::new();
-    let mut total_deduction = 0.0;
-
-    let mut categories: Vec<HealthCategory> = present.keys().copied().collect();
-    for cat in missing_raw.keys() {
-        if !categories.contains(cat) {
-            categories.push(*cat);
-        }
-    }
-
-    for cat in categories {
-        let present_items = present.get(&cat).map(Vec::as_slice).unwrap_or(&[]);
-        let missing_items = missing_raw.get(&cat).map(Vec::as_slice).unwrap_or(&[]);
-        let raw_total: f64 = present_items.iter().map(|(_, r)| r).sum::<f64>()
-            + missing_items.iter().map(|(_, r)| r).sum::<f64>();
-        let scale = if raw_total > cat.cap() {
-            cat.cap() / raw_total
+    let mut categories = Vec::new();
+    let mut optimistic = 0.0;
+    let mut pessimistic = 0.0;
+    for cat in HealthCategory::ALL {
+        let items: Vec<&(usize, usize, HealthCategory, f64)> =
+            known.iter().filter(|(_, _, c, _)| *c == cat).collect();
+        let known_raw: f64 = items.iter().map(|(_, _, _, r)| r).sum();
+        let scale = if known_raw > cat.cap() {
+            cat.cap() / known_raw
         } else {
             1.0
         };
-
-        for &(idx, raw) in present_items {
-            let scaled = raw * scale;
+        for &&(part, index, category, raw) in &items {
             deductions.push(FindingDeduction {
-                finding_id: findings[idx].id,
+                part,
+                index,
+                finding_id: parts[part].findings[index].id,
                 raw_deduction: raw,
-                scaled_deduction: scaled,
-                category: cat,
+                scaled_deduction: raw * scale,
+                category,
             });
-            total_deduction += scaled;
         }
-        for &(kind, raw) in missing_items {
-            let scaled = raw * scale;
-            missing.push(MissingDeduction {
-                biomarker: kind,
+        let known_capped = known_raw.min(cat.cap());
+        let is_saturated = saturated.contains(&cat);
+        let pess = if is_saturated {
+            cat.cap()
+        } else {
+            known_capped
+        };
+        optimistic += known_capped;
+        pessimistic += pess;
+        if known_raw > 0.0 || is_saturated {
+            categories.push(CategoryDeduction {
                 category: cat,
-                scaled_deduction: scaled,
+                known_raw,
+                known: known_capped,
+                pessimistic: pess,
             });
-            total_deduction += scaled;
         }
     }
 
+    let upper = clamp_score(BASE_SCORE - optimistic);
+    let value = if missing.is_empty() {
+        ScoreValue::Measured(upper)
+    } else {
+        ScoreValue::Partial {
+            lower: clamp_score(BASE_SCORE - pessimistic),
+            upper,
+        }
+    };
     FileHealthScore {
-        score: (BASE_SCORE - total_deduction).clamp(MIN_SCORE, MAX_SCORE),
+        value,
         deductions,
+        categories,
         missing,
+        unsupported,
     }
+}
+
+/// The scoring basis of a persistent file observation: the identity two
+/// observations must share before a temporal delta between them is a measured
+/// change rather than a change of rules (health-evidence-contract.md §
+/// Comparison and scoring). Covers the scoring version, producer/analysis
+/// version, every producer's weight/severity/category/cap, which producers are
+/// applicable to this file, and the waiver policy that applies to it. Input
+/// generations and history windows are deliberately *not* part of it — those
+/// move between temporal observations by design.
+pub fn file_score_basis(
+    outcomes: &[ProducerResult],
+    waivers: &[&crate::db::HealthWaiverRow],
+) -> Digest {
+    let mut buf = String::new();
+    buf.push_str(SCORING_VERSION);
+    buf.push('\n');
+    buf.push_str(crate::health::probe::HEALTH_ANALYSIS_VERSION);
+    buf.push('\n');
+    for kind in PERSISTENT_PRODUCERS {
+        let applicability = match outcomes.iter().find(|(k, _)| *k == kind) {
+            Some((_, ProducerOutcome::Unsupported(r))) => r.as_str(),
+            _ => "applicable",
+        };
+        let cat = kind.category();
+        buf.push_str(&format!(
+            "{}|{}|{}|{}|{}|{}\n",
+            kind.as_str(),
+            kind.default_severity().weight(),
+            kind.default_weight(),
+            cat.as_str(),
+            cat.cap(),
+            applicability,
+        ));
+    }
+    let mut policy: Vec<(&str, &str)> = waivers
+        .iter()
+        .map(|w| {
+            (
+                w.biomarker_kind.as_str(),
+                w.symbol_qualified_name.as_deref().unwrap_or(""),
+            )
+        })
+        .collect();
+    policy.sort_unstable();
+    policy.dedup();
+    for (kind, symbol) in policy {
+        buf.push_str(&format!("waiver|{kind}|{symbol}\n"));
+    }
+    Digest::of(buf.as_bytes())
 }
 
 pub fn score_component(file_scores: &[(f64, i64)]) -> f64 {
@@ -384,135 +514,197 @@ pub fn instability_penalty(instability: f64) -> f64 {
     raw.min(HealthCategory::Coupling.cap())
 }
 
-#[derive(Debug)]
-pub struct ScoredFile {
-    pub file_id: i64,
-    pub score: f64,
-    pub deductions: Vec<FindingDeduction>,
-    /// Per-category scaled deduction totals, including worst-cased `missing`
-    /// biomarkers so the breakdown always sums to `BASE_SCORE - score`.
-    pub category_totals: HashMap<HealthCategory, f64>,
-    /// Worst-cased biomarkers whose producer never ran (non-empty ⇒ partial).
-    pub missing: Vec<MissingDeduction>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::evidence::InputFailure;
 
-#[derive(Debug)]
-pub struct ScoredComponent {
-    pub component_id: String,
-    pub component_name: String,
-    pub score: f64,
-    pub member_count: usize,
-    pub total_nloc: i64,
-    pub instability: Option<ComponentInstability>,
-}
-
-#[derive(Debug)]
-pub struct WorkspaceHealth {
-    pub file_scores: Vec<ScoredFile>,
-    pub component_scores: Vec<ScoredComponent>,
-    pub comp_file_ids: HashMap<String, Vec<i64>>,
-}
-
-pub fn score_workspace(db: &Db) -> Result<WorkspaceHealth> {
-    let all_with_waivers = db.get_health_findings_with_waiver_status()?;
-
-    let mut findings_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
-    for (finding, waived) in all_with_waivers {
-        if !waived {
-            findings_by_file
-                .entry(finding.file_id)
-                .or_default()
-                .push(finding);
+    fn row(id: i64, kind: BiomarkerKind) -> HealthFindingRow {
+        HealthFindingRow {
+            id,
+            file_id: 1,
+            symbol_id: None,
+            biomarker_kind: kind.as_str().to_string(),
+            severity: kind.default_severity().as_str().to_string(),
+            confidence: 1.0,
+            provenance: "test".into(),
+            metric_value: 1.0,
+            threshold: 1.0,
+            detail: String::new(),
         }
     }
 
-    let facts = WorkspaceFacts::detect(db)?;
-    // Score EVERY indexed file, not just files that happen to have findings
-    // (sutra/408). A finding-free file that was genuinely analyzed scores a
-    // clean 10.0; a file whose analysis is stale or absent is worst-cased via
-    // `covered=false` — the old loop skipped it entirely and it floored at
-    // BASE_SCORE, silently reading incomplete analysis as zero debt.
-    let coverage = db.health_coverage_map()?;
-    let all_files = db.all_files()?;
-    let empty_findings: Vec<HealthFindingRow> = Vec::new();
-    let mut file_scores = Vec::new();
-    for file in &all_files {
-        let findings = findings_by_file.get(&file.id).unwrap_or(&empty_findings);
-        let covered = coverage
-            .get(&file.id)
-            .is_some_and(|stamp| *stamp == file.content_hash);
-        let result = score_file(findings, &facts, covered);
-        let mut category_totals: HashMap<HealthCategory, f64> = HashMap::new();
-        for d in &result.deductions {
-            *category_totals.entry(d.category).or_default() += d.scaled_deduction;
-        }
-        for m in &result.missing {
-            *category_totals.entry(m.category).or_default() += m.scaled_deduction;
-        }
-        file_scores.push(ScoredFile {
-            file_id: file.id,
-            score: result.score,
-            deductions: result.deductions,
-            category_totals,
-            missing: result.missing,
-        });
-    }
-
-    let components = db.all_components()?;
-    let memberships = db.component_members_with_line_count()?;
-    // Instability is always computed: it feeds the component score (not just
-    // decorative metadata), so the snapshot and file_health paths must agree.
-    let instability_map = instability::compute_component_instability(db).unwrap_or_default();
-
-    let file_score_map: HashMap<i64, f64> = file_scores
-        .iter()
-        .map(|fs| (fs.file_id, fs.score))
-        .collect();
-
-    let mut comp_files: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
-    let mut comp_file_ids: HashMap<String, Vec<i64>> = HashMap::new();
-    for (comp_id, file_id, line_count) in &memberships {
-        comp_files
-            .entry(comp_id.as_str())
-            .or_default()
-            .push((*file_id, *line_count));
-        comp_file_ids
-            .entry(comp_id.clone())
-            .or_default()
-            .push(*file_id);
-    }
-
-    let mut component_scores = Vec::new();
-    for comp in &components {
-        let Some(members) = comp_files.get(comp.id.as_str()) else {
-            continue;
-        };
-        let pairs: Vec<(f64, i64)> = members
+    fn complete_all() -> Vec<ProducerResult> {
+        PERSISTENT_PRODUCERS
             .iter()
-            .map(|&(fid, lc)| (*file_score_map.get(&fid).unwrap_or(&BASE_SCORE), lc))
-            .collect();
-        let total_nloc: i64 = pairs.iter().map(|(_, n)| n).sum();
-        let base = score_component(&pairs);
-        let instability = instability_map.get(&comp.id).cloned();
-        let comp_score = match &instability {
-            Some(inst) => {
-                (base - instability_penalty(inst.instability)).clamp(MIN_SCORE, MAX_SCORE)
-            }
-            None => base,
-        };
-        component_scores.push(ScoredComponent {
-            component_id: comp.id.clone(),
-            component_name: comp.name.clone(),
-            score: comp_score,
-            member_count: members.len(),
-            total_nloc,
-            instability,
-        });
+            .map(|&k| {
+                let o = if k == BiomarkerKind::CoverageGradient {
+                    ProducerOutcome::Unsupported(UnsupportedReason::NoCoverageIngestion)
+                } else {
+                    ProducerOutcome::Complete { finding_count: 0 }
+                };
+                (k, o)
+            })
+            .collect()
     }
 
-    Ok(WorkspaceHealth {
-        file_scores,
-        component_scores,
-        comp_file_ids,
-    })
+    fn set(outcomes: &mut [ProducerResult], kind: BiomarkerKind, o: ProducerOutcome) {
+        for (k, out) in outcomes.iter_mut() {
+            if *k == kind {
+                *out = o;
+            }
+        }
+    }
+
+    #[test]
+    fn persistent_producers_match_scope() {
+        let mut scoped: Vec<&str> = BiomarkerKind::ALL
+            .into_iter()
+            .filter(|k| k.scope() == BiomarkerScope::Persistent)
+            .map(|k| k.as_str())
+            .collect();
+        let mut listed: Vec<&str> = PERSISTENT_PRODUCERS.iter().map(|k| k.as_str()).collect();
+        scoped.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(scoped, listed);
+    }
+
+    #[test]
+    fn complete_clean_file_is_measured_ten() {
+        let outcomes = complete_all();
+        let s = score_file(&[EvidencePart {
+            outcomes: &outcomes,
+            findings: &[],
+        }]);
+        assert_eq!(s.value, ScoreValue::Measured(10.0));
+        assert_eq!(s.unsupported.len(), 1);
+    }
+
+    #[test]
+    fn missing_producer_saturates_its_category_in_the_lower_bound() {
+        let mut outcomes = complete_all();
+        set(
+            &mut outcomes,
+            BiomarkerKind::ChangeEntropy,
+            ProducerOutcome::Missing(MissingReason::NoHistory),
+        );
+        let s = score_file(&[EvidencePart {
+            outcomes: &outcomes,
+            findings: &[],
+        }]);
+        // Organizational cap 3.5 — not one finding's weight (1.51).
+        assert_eq!(
+            s.value,
+            ScoreValue::Partial {
+                lower: 6.5,
+                upper: 10.0
+            }
+        );
+    }
+
+    #[test]
+    fn findings_of_a_missing_producer_never_count_as_known_debt() {
+        let mut outcomes = complete_all();
+        set(
+            &mut outcomes,
+            BiomarkerKind::NestedComplexity,
+            ProducerOutcome::Missing(MissingReason::InputsChanged),
+        );
+        let findings = [row(1, BiomarkerKind::NestedComplexity)];
+        let s = score_file(&[EvidencePart {
+            outcomes: &outcomes,
+            findings: &findings,
+        }]);
+        assert!(
+            s.deductions.is_empty(),
+            "a stale finding is not current debt"
+        );
+        assert_eq!(s.value.upper(), 10.0);
+        assert_eq!(s.value.lower(), 7.5);
+    }
+
+    #[test]
+    fn a_part_cannot_authorize_another_parts_findings() {
+        // On-demand findings with no on-demand outcome are unobserved, even though
+        // the persistent part is complete.
+        let outcomes = complete_all();
+        let ondemand = [row(-1, BiomarkerKind::FunctionHotspot)];
+        let s = score_file(&[
+            EvidencePart {
+                outcomes: &outcomes,
+                findings: &[],
+            },
+            EvidencePart {
+                outcomes: &[],
+                findings: &ondemand,
+            },
+        ]);
+        assert_eq!(s.value, ScoreValue::Measured(10.0));
+    }
+
+    #[test]
+    fn failed_probe_is_missing_with_its_reason() {
+        let mut outcomes = complete_all();
+        set(
+            &mut outcomes,
+            BiomarkerKind::OwnershipRisk,
+            ProducerOutcome::Missing(MissingReason::Failed(InputFailure::ConfigInvalid)),
+        );
+        let s = score_file(&[EvidencePart {
+            outcomes: &outcomes,
+            findings: &[],
+        }]);
+        assert_eq!(s.missing.len(), 1);
+        assert_eq!(s.missing_names(), vec!["ownership_risk".to_string()]);
+    }
+
+    #[test]
+    fn known_debt_is_capped_and_scaled() {
+        let outcomes = complete_all();
+        let findings = [
+            row(1, BiomarkerKind::CoChangeScatter),
+            row(2, BiomarkerKind::ChangeEntropy),
+            row(3, BiomarkerKind::OwnershipRisk),
+        ];
+        let s = score_file(&[EvidencePart {
+            outcomes: &outcomes,
+            findings: &findings,
+        }]);
+        // 1.80 + 1.51 + 1.38 = 4.69 raw, capped at 3.5.
+        assert!((s.value.upper() - 6.5).abs() < 1e-9);
+        let scaled: f64 = s.deductions.iter().map(|d| d.scaled_deduction).sum();
+        assert!((scaled - 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn basis_changes_with_waiver_policy_and_applicability() {
+        let outcomes = complete_all();
+        let base = file_score_basis(&outcomes, &[]);
+        let waiver = crate::db::HealthWaiverRow {
+            id: 1,
+            biomarker_kind: "nested_complexity".into(),
+            file_path: "a.rs".into(),
+            symbol_qualified_name: None,
+            rationale: "r".into(),
+            waived_by: "w".into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        assert_ne!(base, file_score_basis(&outcomes, &[&waiver]));
+        let mut no_repo = complete_all();
+        set(
+            &mut no_repo,
+            BiomarkerKind::ChangeEntropy,
+            ProducerOutcome::Unsupported(UnsupportedReason::ConfirmedNonRepository),
+        );
+        assert_ne!(base, file_score_basis(&no_repo, &[]));
+        // A missing producer is still applicable: same basis as complete.
+        let mut missing = complete_all();
+        set(
+            &mut missing,
+            BiomarkerKind::ChangeEntropy,
+            ProducerOutcome::Missing(MissingReason::NoHistory),
+        );
+        assert_eq!(base, file_score_basis(&missing, &[]));
+    }
 }

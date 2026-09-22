@@ -205,6 +205,9 @@ pub enum MissingReason {
     NoHistory,
     Failed(InputFailure),
     Deferred(DeferReason),
+    /// The demand refresh itself errored; retained evidence is unverified.
+    /// Consumer-side only — never staged into a persisted run.
+    RefreshFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

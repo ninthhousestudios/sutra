@@ -1092,7 +1092,7 @@ impl SutraServer {
         // A genuinely-missing baseline (no checkpoint at pin time) is pinned as
         // `Pinned(None)` and must stay missing → incomparable (sutra/424 F5), not
         // healed into the fresh snapshot the reparse below may write.
-        let baseline = crate::health::ondemand::BaselineSelector::Pinned(
+        let baseline = crate::health::compare::BaselineSelector::Pinned(
             self.get_db(&args.workspace)
                 .ok()
                 .and_then(|db| db.latest_snapshots(1).ok())
@@ -1179,6 +1179,7 @@ impl SutraServer {
         let refresh_outcome = self.refresh_health(&args.workspace).await;
         let mut result = tools::file_health::handle_ctx(
             &ctx,
+            refresh_outcome,
             args.path.as_deref(),
             args.limit,
             args.mode.as_deref(),

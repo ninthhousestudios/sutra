@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::db::{Db, HealthFindingRow};
+use crate::db::Db;
 use crate::error::Result;
 use crate::git::{self, BlameLine};
+use crate::health::evidence::{InputFailure, MissingReason, ProducerOutcome};
 use crate::health::findings::{BiomarkerKind, HealthFinding};
-use crate::health::scoring;
+use crate::health::scoring::ProducerResult;
 
 const HOTSPOT_CCN_THRESHOLD: i64 = 10;
 const HOTSPOT_NESTING_THRESHOLD: i64 = 3;
@@ -54,11 +55,73 @@ struct FunctionBlameStats {
     recent_commits: usize,
 }
 
-pub fn compute_ondemand_findings(
+/// Review-time evidence: fresh findings plus an explicit outcome for every
+/// on-demand producer that applies to each indexed changed path. A path whose
+/// blame or shape analysis failed carries `Missing`, never an empty `Complete` —
+/// missing on-demand evidence is explicit (health-evidence-contract.md §
+/// Comparison and scoring).
+#[derive(Debug, Default)]
+pub struct OnDemandEvidence<'a> {
+    pub findings: Vec<HealthFinding>,
+    /// Keyed by changed path (borrowed from the caller's changed-path list).
+    pub outcomes: HashMap<&'a str, Vec<ProducerResult>>,
+}
+
+impl<'a> OnDemandEvidence<'a> {
+    fn record(&mut self, path: &'a str, kind: BiomarkerKind, outcome: ProducerOutcome) {
+        self.outcomes.entry(path).or_default().push((kind, outcome));
+    }
+
+    /// Outcomes recorded for `path` (empty when no on-demand producer applied).
+    pub fn outcomes_for(&self, path: &str) -> &[ProducerResult] {
+        self.outcomes.get(path).map_or(&[], Vec::as_slice)
+    }
+
+    /// Fold the shape diff in: subtle-structural changes become `HrrShapeChange`
+    /// findings, analyzed paths `Complete`, failed paths `Missing`.
+    pub fn add_shape_diff(
+        &mut self,
+        diff: &crate::similarity::diff::ShapeDiff<'a>,
+        hrr_threshold: f64,
+    ) {
+        let findings = compute_shape_change_findings(&diff.changes, hrr_threshold);
+        for &path in &diff.analyzed {
+            let count = diff
+                .changes
+                .iter()
+                .filter(|c| {
+                    c.file_path == path
+                        && c.file_id.is_some()
+                        && c.quadrant == crate::similarity::diff::DiffQuadrant::SubtleStructural
+                })
+                .count();
+            self.record(
+                path,
+                BiomarkerKind::HrrShapeChange,
+                ProducerOutcome::Complete {
+                    finding_count: count,
+                },
+            );
+        }
+        for &path in &diff.failed {
+            self.record(
+                path,
+                BiomarkerKind::HrrShapeChange,
+                ProducerOutcome::Missing(MissingReason::Failed(InputFailure::ProbeFailed)),
+            );
+        }
+        self.findings.extend(findings);
+    }
+}
+
+/// Blame-derived on-demand findings (function_hotspot, code_age_volatility) for
+/// the changed paths. Storage errors propagate; a per-path blame failure is
+/// recorded as `Missing` for both blame producers rather than skipped.
+pub fn compute_ondemand_findings<'a>(
     db: &Db,
     workspace_root: &Path,
-    changed_paths: &[String],
-) -> Vec<HealthFinding> {
+    changed_paths: &'a [String],
+) -> Result<OnDemandEvidence<'a>> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -66,23 +129,37 @@ pub fn compute_ondemand_findings(
 
     let mut blame_cache = BlameCache::new();
     let mut all_stats: Vec<FunctionBlameStats> = Vec::new();
+    let mut evidence = OnDemandEvidence::default();
+    // Indexed paths whose blame succeeded, keyed by file id for the counts below.
+    let mut blamed: Vec<(&str, i64)> = Vec::new();
 
     for path in changed_paths {
+        // Unindexed (deleted/ignored) paths have no file to score.
+        let Some(file_row) = db.file_by_path(path)? else {
+            continue;
+        };
         let blame_lines = match blame_cache.get_or_compute(workspace_root, path) {
             Ok(lines) => lines,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(path, "on-demand blame failed: {e}");
+                for kind in [
+                    BiomarkerKind::FunctionHotspot,
+                    BiomarkerKind::CodeAgeVolatility,
+                ] {
+                    evidence.record(
+                        path,
+                        kind,
+                        ProducerOutcome::Missing(MissingReason::Failed(InputFailure::ProbeFailed)),
+                    );
+                }
+                continue;
+            }
         };
+        blamed.push((path, file_row.id));
         if blame_lines.is_empty() {
             continue;
         }
-        let file_row = match db.file_by_path(path) {
-            Ok(Some(f)) => f,
-            _ => continue,
-        };
-        let symbols = match db.find_symbols_by_file(file_row.id) {
-            Ok(s) => s,
-            _ => continue,
-        };
+        let symbols = db.find_symbols_by_file(file_row.id)?;
 
         for sym in symbols.iter().filter(|s| is_function_kind(&s.kind)) {
             let fn_lines: Vec<&BlameLine> = blame_lines
@@ -178,7 +255,26 @@ pub fn compute_ondemand_findings(
         }
     }
 
-    findings
+    for (path, file_id) in blamed {
+        for kind in [
+            BiomarkerKind::FunctionHotspot,
+            BiomarkerKind::CodeAgeVolatility,
+        ] {
+            let count = findings
+                .iter()
+                .filter(|f| f.file_id == file_id && f.biomarker_kind == kind)
+                .count();
+            evidence.record(
+                path,
+                kind,
+                ProducerOutcome::Complete {
+                    finding_count: count,
+                },
+            );
+        }
+    }
+    evidence.findings = findings;
+    Ok(evidence)
 }
 
 fn is_function_kind(kind: &str) -> bool {
@@ -220,229 +316,4 @@ pub fn compute_shape_change_findings(
             })
         })
         .collect()
-}
-
-// --- Health delta ---
-
-#[derive(Debug)]
-pub struct HealthDeltaEntry {
-    pub path: String,
-    pub previous_score: f64,
-    pub current_score: f64,
-    pub delta: f64,
-    pub driving_findings: Vec<HealthFindingRow>,
-}
-
-#[derive(Debug)]
-pub struct HealthDelta {
-    pub degraded: Vec<HealthDeltaEntry>,
-    pub improved: Vec<HealthDeltaEntry>,
-}
-
-/// How a health-delta caller selects the baseline checkpoint to compare against.
-///
-/// The distinction exists for one contract requirement (sutra/424 F5): review
-/// pins its baseline *before* `tool_context` can heal the index and record a
-/// newer snapshot, and a genuinely-missing baseline (no checkpoint at pin time)
-/// must stay missing rather than silently comparing against this request's own
-/// fresh snapshot. Non-review callers never pin, so they keep the pre-pinning
-/// latest-checkpoint fallback (sutra/421 kept `None => latest` for them).
-#[derive(Debug, Clone, Copy)]
-pub enum BaselineSelector {
-    /// Fall back to the latest checkpoint at compute time. A missing checkpoint
-    /// yields the optimistic base-10.0 comparison, as before. Non-review callers.
-    Latest,
-    /// A baseline pinned by the caller before any query-path full-parse could
-    /// record a newer snapshot. `Pinned(None)` is a genuinely-missing baseline:
-    /// the comparison is incomparable, never healed into a fresh snapshot.
-    Pinned(Option<i64>),
-}
-
-/// Why a health delta could not be measured. Surfaced as a stable token so the
-/// review consumer reports an explicitly incomparable result rather than a
-/// spurious numeric change (health-evidence-contract "Comparison and scoring").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IncomparableReason {
-    /// The caller pinned a genuinely-missing baseline — no checkpoint existed at
-    /// pin time, and healing this request must not manufacture one (sutra/424 F5).
-    MissingBaseline,
-}
-
-impl IncomparableReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            IncomparableReason::MissingBaseline => "missing_baseline",
-        }
-    }
-}
-
-/// Outcome of a health-delta computation: either a measured per-file delta over
-/// two comparable observations, or an explicitly incomparable result.
-#[derive(Debug)]
-pub enum HealthDeltaOutcome {
-    Measured(HealthDelta),
-    Incomparable(IncomparableReason),
-}
-
-impl HealthDeltaOutcome {
-    /// The measured delta, or `None` when the result is incomparable.
-    pub fn into_measured(self) -> Option<HealthDelta> {
-        match self {
-            HealthDeltaOutcome::Measured(d) => Some(d),
-            HealthDeltaOutcome::Incomparable(_) => None,
-        }
-    }
-}
-
-/// The file-scored biomarkers that are *unconditionally* `Scored` — worst-cased
-/// only when a file's analysis is stale, never for a missing data source. Their
-/// presence in a snapshot's `missing_biomarkers` is the precise signal that the
-/// file was uncovered at snapshot time (git-dependent kinds can also appear
-/// there for `NoHistory`, which is not a coverage problem, so those are
-/// excluded). The delta path uses this to mirror the snapshot's coverage
-/// decision (sutra/409).
-fn is_file_scored_biomarker(name: &str) -> bool {
-    matches!(
-        BiomarkerKind::parse(name),
-        Some(BiomarkerKind::NestedComplexity)
-            | Some(BiomarkerKind::ImportCycle)
-            | Some(BiomarkerKind::DeadCodeRatio)
-    )
-}
-
-pub fn compute_health_delta(
-    db: &Db,
-    changed_paths: &[String],
-    ondemand_findings: &[HealthFinding],
-    // How to select the baseline checkpoint. `Latest` falls back to the latest
-    // checkpoint at compute time (pre-pinning behaviour, non-review callers);
-    // `Pinned` carries a baseline the caller fixed BEFORE any query-path
-    // full-parse could record a newer snapshot (review). `Pinned(None)` is a
-    // genuinely-missing baseline → incomparable, never healed into a fresh
-    // snapshot (sutra/424 F5).
-    baseline: BaselineSelector,
-) -> Result<HealthDeltaOutcome> {
-    // The comparison snapshot is always written from exactly the findings still
-    // stored (every parse snapshots after replace_health_findings; NoChanges
-    // copies scores forward — see pipeline::record_snapshot). So for a file with
-    // no on-demand findings, scoring the stored set the same way the snapshot
-    // scored it reproduces prev_score exactly, and the delta isolates on-demand
-    // debt. To keep that wash honest we mirror the snapshot's per-file coverage
-    // decision below rather than re-deriving it from live coverage: a changed
-    // file is uncovered *now* (its content hash moved) but was covered *then*,
-    // so a live-coverage check would worst-case current against a non-worst-
-    // cased prev and manufacture a spurious degradation (sutra/409).
-    // A genuinely-missing pinned baseline stays missing: comparing against a
-    // snapshot healed into being during THIS request would manufacture a false
-    // delta (sutra/424 F5). Only `Latest` (non-review callers) falls back to the
-    // latest checkpoint.
-    let baseline_id = match baseline {
-        BaselineSelector::Pinned(None) => {
-            return Ok(HealthDeltaOutcome::Incomparable(
-                IncomparableReason::MissingBaseline,
-            ));
-        }
-        BaselineSelector::Pinned(Some(id)) => Some(id),
-        BaselineSelector::Latest => db.latest_snapshots(1)?.first().map(|s| s.id),
-    };
-    let snapshot_files: HashMap<String, (f64, Vec<String>)> = match baseline_id {
-        Some(id) => db
-            .snapshot_file_scores(id)?
-            .into_iter()
-            .map(|f| (f.file_path, (f.score, f.missing_biomarkers)))
-            .collect(),
-        None => HashMap::new(),
-    };
-
-    // Apply the same waiver policy as file health and the snapshot scorer
-    // (`score_workspace` drops waived findings): the baseline `prev_score` was
-    // computed without waived findings, so the current side must exclude them too
-    // — otherwise a waived finding inflates current debt against a waiver-free
-    // baseline and manufactures a spurious degradation (sutra/415 review wiring).
-    let mut active_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
-    for (finding, waived) in db.get_health_findings_with_waiver_status()? {
-        if !waived {
-            active_by_file
-                .entry(finding.file_id)
-                .or_default()
-                .push(finding);
-        }
-    }
-
-    let facts = scoring::WorkspaceFacts::detect(db)?;
-    let mut degraded = Vec::new();
-    let mut improved = Vec::new();
-
-    for path in changed_paths {
-        let file_row = match db.file_by_path(path) {
-            Ok(Some(f)) => f,
-            _ => continue,
-        };
-
-        let snapshot_file = snapshot_files.get(path);
-        let prev_score = snapshot_file.map(|(s, _)| *s).unwrap_or(10.0);
-        // Reproduce the snapshot's coverage decision for the structural axis. If
-        // the snapshot worst-cased any file-scored biomarker for this file (it
-        // was skipped/stale at snapshot time, so prev_score is worst-cased low),
-        // current must worst-case it too — otherwise trusting the stale stored
-        // findings floats current up and reports a spurious improvement, the
-        // same failure class sutra/408 fixed for the snapshot path. Files absent
-        // from the snapshot inherit the optimistic prev_score default (10.0), so
-        // covered=true keeps current on the same footing.
-        let covered = snapshot_file
-            .map(|(_, missing)| !missing.iter().any(|m| is_file_scored_biomarker(m)))
-            .unwrap_or(true);
-
-        // Move the file's waiver-filtered findings out of the map (no clone; each
-        // changed path is scored once).
-        let stored = active_by_file.remove(&file_row.id).unwrap_or_default();
-        let ondemand_rows: Vec<HealthFindingRow> = ondemand_findings
-            .iter()
-            .filter(|f| f.file_id == file_row.id)
-            .enumerate()
-            .map(|(i, f)| f.to_row(-(i as i64) - 1))
-            .collect();
-
-        let mut all_findings = stored;
-        all_findings.extend(ondemand_rows.clone());
-
-        let health = scoring::score_file(&all_findings, &facts, covered);
-        let delta = health.score - prev_score;
-
-        if delta.abs() < 0.005 {
-            continue;
-        }
-
-        let driving = if delta < 0.0 { ondemand_rows } else { vec![] };
-
-        let entry = HealthDeltaEntry {
-            path: path.clone(),
-            previous_score: prev_score,
-            current_score: health.score,
-            delta,
-            driving_findings: driving,
-        };
-
-        if delta < 0.0 {
-            degraded.push(entry);
-        } else {
-            improved.push(entry);
-        }
-    }
-
-    degraded.sort_by(|a, b| {
-        a.delta
-            .partial_cmp(&b.delta)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    improved.sort_by(|a, b| {
-        b.delta
-            .partial_cmp(&a.delta)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    Ok(HealthDeltaOutcome::Measured(HealthDelta {
-        degraded,
-        improved,
-    }))
 }

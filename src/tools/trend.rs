@@ -4,8 +4,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Db, SnapshotCompleteness, SnapshotFileRow, SnapshotRow};
+use crate::db::{Db, SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotRow};
 use crate::error::Result;
+use crate::health::compare::{self, IncomparableReason, SideSummary};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TrendArgs {
@@ -43,6 +44,12 @@ fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value
             let mut entry = completeness_json(h.completeness, &h.missing_biomarkers);
             entry.insert("timestamp".into(), json!(h.timestamp));
             entry.insert("health_score".into(), json!(round2(h.score)));
+            if let Some(upper) = h.score_upper {
+                entry.insert(
+                    "score_bounds".into(),
+                    json!({ "lower": round2(h.score), "upper": round2(upper) }),
+                );
+            }
             entry.insert(
                 "category_deductions".into(),
                 serde_json::from_str::<serde_json::Value>(&h.category_scores).unwrap_or(json!({})),
@@ -113,13 +120,10 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
 /// Why the workspace/category health aggregates of two snapshots cannot be
 /// compared as a measured change, or `None` when they can. An aggregate is
 /// measured only when both sides carry per-file evidence, every observation on
-/// both sides is complete, and the file population is the same — otherwise the
-/// aggregate moves with missing analysis or with membership, not code quality
+/// both sides is complete, the file population is the same, and every file was
+/// scored under the same basis on both sides — otherwise the aggregate moves with
+/// missing analysis, membership or rules, not code quality
 /// (health-evidence-contract.md § Comparison and scoring).
-///
-/// Not checked: scoring-basis compatibility (waiver policy, scoring version,
-/// biomarker set). Snapshots do not record it, so a waiver change between two
-/// otherwise identical parses still reads as measured — tracked on sutra/416.
 fn aggregate_incomparable_reason(
     from: &[SnapshotFileRow],
     to: &[SnapshotFileRow],
@@ -138,6 +142,19 @@ fn aggregate_incomparable_reason(
     if sorted_paths(from) != sorted_paths(to) {
         return Some("population_changed");
     }
+    if from.iter().chain(to).any(|f| f.score_basis.is_none()) {
+        return Some(IncomparableReason::UnknownBasis.as_str());
+    }
+    let to_basis: HashMap<&str, Option<&str>> = to
+        .iter()
+        .map(|f| (f.file_path.as_str(), f.score_basis.as_deref()))
+        .collect();
+    if from
+        .iter()
+        .any(|f| to_basis.get(f.file_path.as_str()) != Some(&f.score_basis.as_deref()))
+    {
+        return Some(IncomparableReason::BasisChanged.as_str());
+    }
     None
 }
 
@@ -147,16 +164,24 @@ fn sorted_paths(files: &[SnapshotFileRow]) -> Vec<&str> {
     paths
 }
 
-/// Per-file comparison (health-evidence-contract.md § Comparison and scoring).
+fn file_side(f: &SnapshotFileRow) -> SideSummary<'_> {
+    SideSummary {
+        completeness: f.completeness,
+        basis: f.score_basis.as_deref(),
+    }
+}
+
+/// Per-file comparison (health-evidence-contract.md § Comparison and scoring),
+/// through the shared [`compare::temporal_blocker`] rule.
 ///
-/// Only two complete observations of the same file yield a measured delta
-/// (`improved`/`degraded`). A new or removed file, or a pair where either side
-/// is partial or has unknown (legacy) completeness, goes to `incomparable` with
-/// both observations preserved — no fallback baseline of 10.0, and no
-/// improved/degraded label on a change the evidence cannot support. An
-/// incomparable pair is still reported at equal scores when its completeness
-/// changed, so a completeness transition is never hidden. Like the aggregate
-/// gate, this does not check scoring-basis compatibility (sutra/416).
+/// Only two complete observations of the same file scored under the same basis
+/// yield a measured delta (`improved`/`degraded`). A new or removed file, a pair
+/// where either side is partial or legacy (unknown completeness or basis), or a
+/// pair whose basis changed (waiver policy, weights, applicability, versions)
+/// goes to `incomparable` with both observations preserved — no fallback
+/// baseline of 10.0, and no improved/degraded label on a change the evidence
+/// cannot support. An incomparable pair is still reported at equal scores when
+/// its completeness or basis changed, so a transition is never hidden.
 fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serde_json::Value {
     let from_map: HashMap<&str, &SnapshotFileRow> =
         from.iter().map(|f| (f.file_path.as_str(), f)).collect();
@@ -168,54 +193,57 @@ fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serd
     let mut incomparable = Vec::new();
 
     for f in to {
-        let Some(prev) = from_map.get(f.file_path.as_str()).copied() else {
-            incomparable.push(incomparable_entry(&f.file_path, None, Some(f), "new_file"));
+        let prev = from_map.get(f.file_path.as_str()).copied();
+        let blocker = compare::temporal_blocker(prev.map(file_side), Some(file_side(f)));
+        let Some(prev) = prev else {
+            incomparable.push(incomparable_entry(
+                &f.file_path,
+                None,
+                Some(f),
+                IncomparableReason::NewFile.as_str(),
+            ));
             continue;
         };
         let delta = f.score - prev.score;
         let score_changed = delta.abs() >= 0.005;
-        let both_complete = prev.completeness == SnapshotCompleteness::Complete
-            && f.completeness == SnapshotCompleteness::Complete;
-        if both_complete {
-            if !score_changed {
-                continue;
+        match blocker {
+            None => {
+                if !score_changed {
+                    continue;
+                }
+                let mut entry = json!({
+                    "path": f.file_path,
+                    "from": round2(prev.score),
+                    "to": round2(f.score),
+                    "delta": round2(delta),
+                });
+                entry["from_completeness"] = serde_json::Value::Object(completeness_json(
+                    prev.completeness,
+                    &prev.missing_biomarkers,
+                ));
+                entry["to_completeness"] = serde_json::Value::Object(completeness_json(
+                    f.completeness,
+                    &f.missing_biomarkers,
+                ));
+                if delta > 0.0 {
+                    improved.push((delta, entry));
+                } else {
+                    degraded.push((delta, entry));
+                }
             }
-            let mut entry = json!({
-                "path": f.file_path,
-                "from": round2(prev.score),
-                "to": round2(f.score),
-                "delta": round2(delta),
-            });
-            entry["from_completeness"] = serde_json::Value::Object(completeness_json(
-                prev.completeness,
-                &prev.missing_biomarkers,
-            ));
-            entry["to_completeness"] =
-                serde_json::Value::Object(completeness_json(f.completeness, &f.missing_biomarkers));
-            if delta > 0.0 {
-                improved.push((delta, entry));
-            } else {
-                degraded.push((delta, entry));
+            Some(reason) => {
+                let basis_changed = prev.score_basis != f.score_basis;
+                if !score_changed && !completeness_differs(prev, f) && !basis_changed {
+                    continue;
+                }
+                incomparable.push(incomparable_entry(
+                    &f.file_path,
+                    Some(prev),
+                    Some(f),
+                    reason.as_str(),
+                ));
             }
-            continue;
         }
-        let completeness_changed = completeness_differs(prev, f);
-        if !score_changed && !completeness_changed {
-            continue;
-        }
-        let reason = if prev.completeness == SnapshotCompleteness::Unknown
-            || f.completeness == SnapshotCompleteness::Unknown
-        {
-            "unknown_completeness"
-        } else {
-            "partial"
-        };
-        incomparable.push(incomparable_entry(
-            &f.file_path,
-            Some(prev),
-            Some(f),
-            reason,
-        ));
     }
 
     for f in from {
@@ -224,7 +252,7 @@ fn compute_file_deltas(from: &[SnapshotFileRow], to: &[SnapshotFileRow]) -> serd
                 &f.file_path,
                 Some(f),
                 None,
-                "removed_file",
+                IncomparableReason::RemovedFile.as_str(),
             ));
         }
     }
@@ -257,9 +285,9 @@ fn incomparable_entry(
     };
     let (from_score, from_completeness) = side(from);
     let (to_score, to_completeness) = side(to);
-    let completeness_changed = match (from, to) {
-        (Some(a), Some(b)) => completeness_differs(a, b),
-        _ => false,
+    let (completeness_changed, basis_changed) = match (from, to) {
+        (Some(a), Some(b)) => (completeness_differs(a, b), a.score_basis != b.score_basis),
+        _ => (false, false),
     };
     json!({
         "path": path,
@@ -268,6 +296,7 @@ fn incomparable_entry(
         "from_completeness": from_completeness,
         "to_completeness": to_completeness,
         "completeness_changed": completeness_changed,
+        "basis_changed": basis_changed,
         "reason": reason,
     })
 }
@@ -315,39 +344,89 @@ fn completeness_counts(files: &[SnapshotFileRow]) -> serde_json::Value {
     })
 }
 
+/// Per-component comparison. A component delta is measured only when both
+/// snapshots recorded the component as complete under the same basis — which
+/// covers its membership, its member files' bases and the aggregation rule.
+/// New components have no fallback baseline of 10.0 and removed components are
+/// listed; both, and every other unsupported pair, carry `measured: false` and
+/// a `reason` with `delta: null`. Sorted: measured deltas worst-first, then the
+/// incomparable entries by name.
+fn component_side(c: &SnapshotComponentRow) -> SideSummary<'_> {
+    SideSummary {
+        completeness: c.completeness,
+        basis: c.score_basis.as_deref(),
+    }
+}
+
 fn compute_component_deltas(
-    from: &[crate::db::SnapshotComponentRow],
-    to: &[crate::db::SnapshotComponentRow],
+    from: &[SnapshotComponentRow],
+    to: &[SnapshotComponentRow],
 ) -> Vec<serde_json::Value> {
-    let from_map: HashMap<&str, f64> = from
-        .iter()
-        .map(|c| (c.component_id.as_str(), c.score))
-        .collect();
+    let from_map: HashMap<&str, &SnapshotComponentRow> =
+        from.iter().map(|c| (c.component_id.as_str(), c)).collect();
+    let to_ids: std::collections::HashSet<&str> =
+        to.iter().map(|c| c.component_id.as_str()).collect();
 
-    let mut deltas: Vec<(f64, serde_json::Value)> = to
-        .iter()
-        .map(|c| {
-            let prev = from_map
-                .get(c.component_id.as_str())
-                .copied()
-                .unwrap_or(10.0);
-            let delta = c.score - prev;
-            (
-                delta,
-                json!({
-                    "id": c.component_id,
-                    "name": c.component_name,
-                    "from": round2(prev),
-                    "to": round2(c.score),
-                    "delta": round2(delta),
-                    "member_count": c.member_count,
-                }),
-            )
-        })
-        .collect();
+    let mut measured: Vec<(f64, serde_json::Value)> = Vec::new();
+    let mut incomparable: Vec<serde_json::Value> = Vec::new();
+    for c in to {
+        let prev = from_map.get(c.component_id.as_str()).copied();
+        let entry = |from: Option<f64>, delta: Option<f64>, reason: Option<&str>| {
+            json!({
+                "id": c.component_id,
+                "name": c.component_name,
+                "from": from.map(round2),
+                "to": round2(c.score),
+                "delta": delta.map(round2),
+                "measured": reason.is_none(),
+                "reason": reason,
+                "from_completeness": prev.map(|p| p.completeness.as_str()),
+                "to_completeness": c.completeness.as_str(),
+                "member_count": c.member_count,
+            })
+        };
+        match (
+            compare::temporal_blocker(prev.map(component_side), Some(component_side(c))),
+            prev,
+        ) {
+            (None, Some(p)) => {
+                let delta = c.score - p.score;
+                measured.push((delta, entry(Some(p.score), Some(delta), None)));
+            }
+            (reason, p) => {
+                let reason = reason.unwrap_or(IncomparableReason::NewFile);
+                let token = match reason {
+                    IncomparableReason::NewFile => "new_component",
+                    other => other.as_str(),
+                };
+                incomparable.push(entry(p.map(|p| p.score), None, Some(token)));
+            }
+        }
+    }
+    for p in from {
+        if !to_ids.contains(p.component_id.as_str()) {
+            incomparable.push(json!({
+                "id": p.component_id,
+                "name": p.component_name,
+                "from": round2(p.score),
+                "to": null,
+                "delta": null,
+                "measured": false,
+                "reason": "removed_component",
+                "from_completeness": p.completeness.as_str(),
+                "to_completeness": null,
+                "member_count": p.member_count,
+            }));
+        }
+    }
 
-    deltas.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    deltas.into_iter().map(|(_, v)| v).collect()
+    measured.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    incomparable.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    measured
+        .into_iter()
+        .map(|(_, v)| v)
+        .chain(incomparable)
+        .collect()
 }
 
 fn compute_category_deltas(

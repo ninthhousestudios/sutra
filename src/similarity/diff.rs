@@ -122,17 +122,30 @@ fn extract_functions(tree: &tree_sitter::Tree, source: &[u8], fn_kinds: &[&str])
     results
 }
 
-pub fn detect_shape_changes(
+/// The shape diff over a set of changed paths, with per-path analysis status so
+/// callers can tell "analyzed, no change" from "could not analyze".
+#[derive(Debug, Default)]
+pub struct ShapeDiff<'a> {
+    pub changes: Vec<ShapeChange>,
+    /// Paths whose old and new shapes were both parsed and compared.
+    pub analyzed: Vec<&'a str>,
+    /// Paths where analysis applied but failed (git/read/parse error).
+    pub failed: Vec<&'a str>,
+}
+
+pub fn detect_shape_changes<'a>(
     db: &Db,
     workspace_root: &Path,
-    changed_paths: &[String],
+    changed_paths: &'a [String],
     base_revision: &str,
     head_revision: Option<&str>,
     registry: &LanguageRegistry,
     config: &ShapeChangeConfig,
-) -> Vec<ShapeChange> {
+) -> ShapeDiff<'a> {
     let mut cb = Codebook::new();
     let mut results = Vec::new();
+    let mut analyzed = Vec::new();
+    let mut failed = Vec::new();
 
     for path in changed_paths {
         let ext = match Path::new(path).extension().and_then(|e| e.to_str()) {
@@ -166,7 +179,8 @@ pub fn detect_shape_changes(
                 continue;
             }
             Err(e) => {
-                debug!(path, err = %e, "shape_diff: skip — git error");
+                debug!(path, err = %e, "shape_diff: git error");
+                failed.push(path.as_str());
                 continue;
             }
         };
@@ -174,28 +188,41 @@ pub fn detect_shape_changes(
         let new_source = match head_revision {
             Some(rev) => match git::git_file_content_at(workspace_root, rev, path) {
                 Ok(Some(s)) => s,
-                Ok(None) | Err(_) => continue,
+                // Deleted at head: nothing to compare.
+                Ok(None) => continue,
+                Err(_) => {
+                    failed.push(path.as_str());
+                    continue;
+                }
             },
             None => match std::fs::read_to_string(workspace_root.join(path)) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    failed.push(path.as_str());
+                    continue;
+                }
             },
         };
 
         let grammar = adapter.grammar();
         let mut parser = tree_sitter::Parser::new();
         if parser.set_language(&grammar).is_err() {
+            failed.push(path.as_str());
             continue;
         }
 
-        let old_tree = match parser.parse(&old_source, None) {
-            Some(t) => t,
-            None => continue,
+        let (old_tree, new_tree) = match (
+            parser.parse(&old_source, None),
+            parser.parse(&new_source, None),
+        ) {
+            (Some(o), Some(n)) => (o, n),
+            _ => {
+                failed.push(path.as_str());
+                continue;
+            }
         };
-        let new_tree = match parser.parse(&new_source, None) {
-            Some(t) => t,
-            None => continue,
-        };
+        analyzed.push(path.as_str());
 
         let old_fns = extract_functions(&old_tree, old_source.as_bytes(), fn_kinds);
         let new_fns = extract_functions(&new_tree, new_source.as_bytes(), fn_kinds);
@@ -273,7 +300,11 @@ pub fn detect_shape_changes(
             });
         }
     }
-    results
+    ShapeDiff {
+        changes: results,
+        analyzed,
+        failed,
+    }
 }
 
 fn encode_fn_node(

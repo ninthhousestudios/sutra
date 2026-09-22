@@ -35,7 +35,7 @@ use crate::health::probe::{
     self, DEFAULT_WINDOW_DAYS, analysis_version_digest, ingestion_version_digest,
     probe_graph_stamp, probe_owners, probe_repository, utc_day,
 };
-use crate::health::scoring::GitAvailability;
+use crate::health::scoring::PERSISTENT_PRODUCERS;
 
 /// Witness that the caller holds the per-workspace parse coordinator (in-process
 /// serialisation) *and* the cross-process parse flock. Only a lock-holding
@@ -106,37 +106,50 @@ impl DemandOutcome {
             DemandOutcome::Failed => "unavailable",
         }
     }
+
+    /// The [`Validity`] this outcome establishes for the current run, for
+    /// [`crate::health::assess::PersistentEvidence::load`]. Only a reuse or a
+    /// publication under the lock vouches for the run; anything else leaves its
+    /// evidence stale with the matching reason.
+    pub fn persistent_validity(&self) -> Validity {
+        match self {
+            DemandOutcome::Refreshed(RefreshResult::Reused(_) | RefreshResult::Published(_)) => {
+                Validity::Current
+            }
+            DemandOutcome::Refreshed(RefreshResult::InputsChanged) => {
+                Validity::Stale(MissingReason::InputsChanged)
+            }
+            DemandOutcome::Deferred(reason) => Validity::Stale(MissingReason::Deferred(*reason)),
+            DemandOutcome::Failed => Validity::Stale(MissingReason::RefreshFailed),
+        }
+    }
+}
+
+/// Validate the current run against freshly probed inputs without mutating
+/// anything — for readers that did not just refresh (the snapshot writer). No
+/// run is `Stale(LegacyUnknown)`.
+pub fn current_run_validity(db: &Db, workspace_root: &Path, now_unix: i64) -> Result<Validity> {
+    let Some(run) = db.load_current_health_run()? else {
+        return Ok(Validity::Stale(MissingReason::LegacyUnknown));
+    };
+    let observed = observe_inputs(
+        db,
+        workspace_root,
+        utc_day(now_unix),
+        window_days(workspace_root),
+    )?;
+    Ok(validate(&run.inputs, &observed))
 }
 
 /// The result of ingesting commit-file history, shared by the full parse (which
-/// also needs `churn` for semantic anchors and `availability` for the legacy
-/// scoring axis) and the demand refresh.
+/// also needs `churn` for semantic anchors) and the demand refresh.
 pub struct HistoryIngestion {
     /// The authoritative observation for the run's `InputStamp` — derived from
     /// what ingestion actually did, never re-inferred from `commit_file_count`.
     pub observation: HistoryObservation,
-    /// Coarse git-availability axis persisted for the legacy `score_workspace`
-    /// path (`index_meta.git_availability`).
-    pub availability: GitAvailability,
     /// Per-path commit churn (only populated when history loaded).
     pub churn: HashMap<String, u32>,
 }
-
-/// File-scored parse-time producers a run stages an explicit per-file outcome for
-/// (exactly the biomarkers `BiomarkerKind::file_scoring_support` classifies as
-/// `Some`). On-demand and component-scoped biomarkers are scored in their own
-/// paths and are not part of the persisted run.
-const RUN_PRODUCERS: [BiomarkerKind; 9] = [
-    BiomarkerKind::NestedComplexity,
-    BiomarkerKind::CoChangeScatter,
-    BiomarkerKind::ChangeEntropy,
-    BiomarkerKind::OwnershipRisk,
-    BiomarkerKind::HiddenCoupling,
-    BiomarkerKind::BlastRadiusChurn,
-    BiomarkerKind::DeadCodeRatio,
-    BiomarkerKind::ImportCycle,
-    BiomarkerKind::CoverageGradient,
-];
 
 /// Whether a producer requires usable git history — the git-organizational and
 /// churn biomarkers. When history is not `Loaded`, these produce no current
@@ -199,7 +212,6 @@ pub fn refresh(
         graph.generation,
         graph.indexed_paths,
     )?;
-    db.set_git_availability(ingestion.availability.as_str())?;
 
     // (3) Compute, stage and publish.
     publish_run(session, db, workspace_root, graph, ingestion.observation)
@@ -258,7 +270,7 @@ fn rebuild_rollups(db: &Db) -> Result<()> {
 /// parse and the demand refresh so both select history identically against the
 /// absolute cutoff — never the relative `--since` the contract rejects as a
 /// persistence contract. Returns the authoritative history observation for the
-/// run stamp plus the coarse availability axis and the churn map.
+/// run stamp plus the churn map.
 pub fn ingest_history(
     _session: &HealthSession<'_>,
     db: &Db,
@@ -278,7 +290,6 @@ pub fn ingest_history(
                 observation: HistoryObservation::Unsupported {
                     absence_probe: probe,
                 },
-                availability: GitAvailability::NotARepo,
                 churn: HashMap::new(),
             })
         }
@@ -289,7 +300,6 @@ pub fn ingest_history(
             // while the coarse axis worst-cases as NoHistory.
             Ok(HistoryIngestion {
                 observation: HistoryObservation::Unknown(failure),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             })
         }
@@ -308,7 +318,6 @@ pub fn ingest_history(
                 db.replace_commit_files(&[], &[])?;
                 Ok(HistoryIngestion {
                     observation: HistoryObservation::Empty(stamp),
-                    availability: GitAvailability::NoHistory,
                     churn: HashMap::new(),
                 })
             } else {
@@ -335,7 +344,6 @@ fn ingest_present(
             db.replace_commit_files(&[], &[])?;
             return Ok(HistoryIngestion {
                 observation: HistoryObservation::Empty(stamp),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             });
         }
@@ -343,7 +351,6 @@ fn ingest_present(
             warn!("health: HEAD re-pin failed during history ingestion: {e}");
             return Ok(HistoryIngestion {
                 observation: HistoryObservation::Unknown(InputFailure::ProbeFailed),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             });
         }
@@ -361,7 +368,6 @@ fn ingest_present(
         Ok(true) => {
             return Ok(HistoryIngestion {
                 observation: HistoryObservation::Unknown(InputFailure::HistoryIncomplete),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             });
         }
@@ -370,7 +376,6 @@ fn ingest_present(
             warn!("health: shallow-repository probe failed during history ingestion: {e}");
             return Ok(HistoryIngestion {
                 observation: HistoryObservation::Unknown(InputFailure::ProbeFailed),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             });
         }
@@ -385,13 +390,11 @@ fn ingest_present(
                 db.replace_commit_files(&[], &[])?;
                 return Ok(HistoryIngestion {
                     observation: HistoryObservation::Empty(stamp),
-                    availability: GitAvailability::NoHistory,
                     churn: HashMap::new(),
                 });
             }
             Ok(HistoryIngestion {
                 observation: HistoryObservation::Loaded(stamp),
-                availability: GitAvailability::Available,
                 churn: git::churn_from_commit_files(&commit_files),
             })
         }
@@ -401,7 +404,6 @@ fn ingest_present(
             db.replace_commit_files(&[], &[])?;
             Ok(HistoryIngestion {
                 observation: HistoryObservation::Empty(stamp),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             })
         }
@@ -411,7 +413,6 @@ fn ingest_present(
             // is partial (Unknown), not a clean empty observation.
             Ok(HistoryIngestion {
                 observation: HistoryObservation::Unknown(InputFailure::IngestionFailed),
-                availability: GitAvailability::NoHistory,
                 churn: HashMap::new(),
             })
         }
@@ -449,8 +450,9 @@ fn write_commit_files(db: &Db, commit_files: &[git::CommitFile]) -> Result<usize
 /// state. Called by the full parse directly (it holds the flock and has already
 /// rebuilt rollups + ingested history) and by [`refresh`] after its rebuild. The
 /// `history` observation is the authoritative one from ingestion, never
-/// re-derived. Also refreshes the live `health_findings`/`health_coverage`
-/// tables the legacy scoring path reads, so full parse and demand agree.
+/// re-derived. Also replaces the live `health_findings` table (diagnostic
+/// listings; the assigned row ids are what the run retains). Scoring reads the
+/// published run, never the live table (sutra/416).
 pub fn publish_run(
     _session: &HealthSession<'_>,
     db: &Db,
@@ -487,7 +489,7 @@ pub fn publish_run(
     // indexed files with in-window commits; a file outside a producer's usable
     // subset (its commit-width filter applied) stages Missing(NoHistory).
     let history_files: HashMap<BiomarkerKind, HashSet<i64>> = if history_loaded {
-        RUN_PRODUCERS
+        PERSISTENT_PRODUCERS
             .into_iter()
             .filter(|&kind| needs_history(kind))
             .map(|kind| {
@@ -615,12 +617,12 @@ fn stage_outcomes(
         }
     }
 
-    let mut outcomes = Vec::with_capacity(files.len() * RUN_PRODUCERS.len());
+    let mut outcomes = Vec::with_capacity(files.len() * PERSISTENT_PRODUCERS.len());
     for file in files {
         let Some(path) = path_by_id.get(&file.id) else {
             continue;
         };
-        for kind in RUN_PRODUCERS {
+        for kind in PERSISTENT_PRODUCERS {
             let count = counts.get(&(file.id, kind)).copied().unwrap_or(0);
             let has_history = history_files
                 .get(&kind)

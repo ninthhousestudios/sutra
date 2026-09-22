@@ -1,3 +1,5 @@
+#[path = "support/health_run.rs"]
+mod health_run;
 use sutra::db::{Db, InsertSymbolParams};
 use sutra::health::findings::{BiomarkerKind, HealthFinding, HealthSeverity};
 use sutra::tools::review::ReviewFindings;
@@ -235,8 +237,18 @@ fn file_health_explain_true_has_categories_and_findings() {
         detail: "high nesting".to_string(),
     }];
     db.replace_health_findings(&findings).unwrap();
+    health_run::publish_seeded_run(&db);
 
-    let result = file_health::handle(&db, None, None, None, None, true).unwrap();
+    let result = file_health::handle(
+        &db,
+        sutra::health::evidence::Validity::Current,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )
+    .unwrap();
     let files = result["files"].as_array().unwrap();
     assert!(!files.is_empty());
 
@@ -259,7 +271,16 @@ fn file_health_explain_true_has_categories_and_findings() {
 #[test]
 fn file_health_explain_false_has_no_explain_key() {
     let (_dir, db) = setup_db();
-    let result = file_health::handle(&db, None, None, Some("all"), None, false).unwrap();
+    let result = file_health::handle(
+        &db,
+        sutra::health::evidence::Validity::Current,
+        None,
+        None,
+        Some("all"),
+        None,
+        false,
+    )
+    .unwrap();
     let files = result["files"].as_array().unwrap();
     if !files.is_empty() {
         assert!(files[0].get("_explain").is_none());

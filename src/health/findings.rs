@@ -145,6 +145,23 @@ pub struct HealthFinding {
 }
 
 impl HealthFinding {
+    /// Consume into a row with the given id (on-demand findings use negative ids:
+    /// they are never stored).
+    pub fn into_row(self, id: i64) -> crate::db::HealthFindingRow {
+        crate::db::HealthFindingRow {
+            id,
+            file_id: self.file_id,
+            symbol_id: self.symbol_id,
+            biomarker_kind: self.biomarker_kind.as_str().to_string(),
+            severity: self.severity.as_str().to_string(),
+            confidence: self.confidence,
+            provenance: self.provenance,
+            metric_value: self.metric_value,
+            threshold: self.threshold,
+            detail: self.detail,
+        }
+    }
+
     pub fn to_row(&self, id: i64) -> crate::db::HealthFindingRow {
         crate::db::HealthFindingRow {
             id,

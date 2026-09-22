@@ -1,14 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Db, FileRow, HealthFindingRow};
+use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
-use crate::health::findings::BiomarkerKind;
-use crate::health::scoring;
+use crate::health::assess::{self, FileEvidence, PersistentEvidence};
+use crate::health::evidence::Validity;
+use crate::health::scoring::{self, FileHealthScore, MissingProducer, ScoreValue};
 use crate::tools::scoring::round3;
 
 use super::ToolContext;
@@ -32,19 +33,24 @@ pub struct FileHealthArgs {
     pub explain: Option<bool>,
 }
 
+/// File health over the current run, read under the caller-established
+/// `validity` (sutra/416). Callers that did not just refresh should pass the
+/// result of `refresh::current_run_validity`.
 pub fn handle(
     db: &Db,
+    validity: Validity,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
     component: Option<&str>,
     explain: bool,
 ) -> Result<serde_json::Value> {
-    handle_inner(db, path, limit, mode, component, None, explain)
+    handle_inner(db, validity, path, limit, mode, component, None, explain)
 }
 
 pub fn handle_ctx(
     ctx: &ToolContext,
+    refresh: crate::health::refresh::DemandOutcome,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
@@ -53,6 +59,7 @@ pub fn handle_ctx(
 ) -> Result<serde_json::Value> {
     let mut result = handle_inner(
         ctx.db(),
+        refresh.persistent_validity(),
         path,
         limit,
         mode,
@@ -139,8 +146,47 @@ pub fn attach_health_evidence(
     Ok(())
 }
 
+/// Serialize a score value: a measured score is a number; a partial one has a
+/// `null` point score plus its bounds — never a point value presented as a
+/// measurement (health-evidence-contract.md § Comparison and scoring).
+pub(crate) fn score_value_json(value: &ScoreValue) -> serde_json::Map<String, serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    match *value {
+        ScoreValue::Measured(s) => {
+            map.insert("health_score".into(), json!(scoring::round2(s)));
+        }
+        ScoreValue::Partial { lower, upper } => {
+            map.insert("health_score".into(), serde_json::Value::Null);
+            map.insert(
+                "score_bounds".into(),
+                json!({ "lower": scoring::round2(lower), "upper": scoring::round2(upper) }),
+            );
+            map.insert("partial".into(), json!(true));
+        }
+    }
+    map
+}
+
+/// `[{biomarker, reason}]` for a score's missing producers.
+pub(crate) fn missing_json(missing: &[MissingProducer]) -> serde_json::Value {
+    json!(
+        missing
+            .iter()
+            .map(|m| json!({
+                "biomarker": m.biomarker.as_str(),
+                "reason": serde_json::to_value(m.reason).unwrap_or(serde_json::Value::Null),
+            }))
+            .collect::<Vec<_>>()
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private seam shared by the ctx and plain entry points; each argument is an independent filter"
+)]
 fn handle_inner(
     db: &Db,
+    validity: Validity,
     path: Option<&str>,
     limit: Option<i64>,
     mode: Option<&str>,
@@ -151,21 +197,7 @@ fn handle_inner(
     let limit = limit.unwrap_or(20) as usize;
     let mode = mode.unwrap_or("actionable");
 
-    let facts = scoring::WorkspaceFacts::detect(db)?;
-
-    let all_with_waivers = db.get_health_findings_with_waiver_status()?;
-    let active: Vec<HealthFindingRow> = all_with_waivers
-        .into_iter()
-        .filter(|(_, waived)| !waived)
-        .map(|(f, _)| f)
-        .collect();
-
-    let files = db.all_files()?;
-    let file_map: HashMap<i64, &FileRow> = files.iter().map(|f| (f.id, f)).collect();
-    // Coverage: which files' findings are current for their content (sutra/408).
-    // A file whose stamp is absent or mismatched is worst-cased, matching the
-    // snapshot path, so file_health and trend agree on completeness.
-    let coverage = db.health_coverage_map()?;
+    let evidence = PersistentEvidence::load(db, validity)?;
 
     // Resolve component filter to a set of file IDs
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
@@ -190,198 +222,49 @@ fn handle_inner(
         None
     };
 
-    let mut findings_by_file: HashMap<i64, Vec<&HealthFindingRow>> = HashMap::new();
-    for f in &active {
-        findings_by_file.entry(f.file_id).or_default().push(f);
-    }
-
-    struct ScoredFile<'a> {
-        file: &'a FileRow,
-        score: f64,
-        deductions: HashMap<&'static str, f64>,
-        findings: Vec<&'a HealthFindingRow>,
-        finding_deductions: Vec<f64>,
-        finding_raw_deductions: Vec<f64>,
-        category_raw_totals: HashMap<&'static str, f64>,
-        missing: Vec<scoring::MissingDeduction>,
-    }
-
-    let in_scope = |f: &FileRow| -> bool {
+    let in_scope = |f: &FileEvidence| -> bool {
         if let Some(p) = path
-            && &*f.path != p
+            && f.path != p
         {
             return false;
         }
         if let Some(ref ids) = component_file_ids
-            && !ids.contains(&f.id)
+            && !ids.contains(&f.file_id)
         {
             return false;
         }
         true
     };
 
-    let target_files: Vec<&FileRow> = if mode == "actionable" {
-        findings_by_file
-            .keys()
-            .filter_map(|fid| file_map.get(fid).copied())
-            .filter(|f| in_scope(f))
-            .collect()
-    } else {
-        files.iter().filter(|f| in_scope(f)).collect()
-    };
-
-    let mut scored: Vec<ScoredFile> = target_files
-        .into_iter()
-        .map(|file| {
-            let file_findings: Vec<HealthFindingRow> = findings_by_file
-                .get(&file.id)
-                .map(|refs| refs.iter().map(|r| (*r).clone()).collect())
-                .unwrap_or_default();
-
-            let covered = coverage
-                .get(&file.id)
-                .is_some_and(|stamp| *stamp == file.content_hash);
-            let result = scoring::score_file(&file_findings, &facts, covered);
-
-            let mut cat_totals: HashMap<&'static str, f64> = HashMap::new();
-            let mut cat_raw_totals: HashMap<&'static str, f64> = HashMap::new();
-            let mut finding_deductions = vec![0.0_f64; file_findings.len()];
-            let mut finding_raw_deductions = vec![0.0_f64; file_findings.len()];
-            for d in &result.deductions {
-                *cat_totals.entry(d.category.as_str()).or_default() += d.scaled_deduction;
-                *cat_raw_totals.entry(d.category.as_str()).or_default() += d.raw_deduction;
-                if let Some(pos) = file_findings.iter().position(|f| f.id == d.finding_id) {
-                    finding_deductions[pos] = d.scaled_deduction;
-                    finding_raw_deductions[pos] = d.raw_deduction;
-                }
-            }
-            // Worst-cased missing biomarkers count toward the category totals so
-            // the breakdown sums to the score drop.
-            for m in &result.missing {
-                *cat_totals.entry(m.category.as_str()).or_default() += m.scaled_deduction;
-            }
-
-            let refs = findings_by_file.get(&file.id).cloned().unwrap_or_default();
-
-            ScoredFile {
-                file,
-                score: result.score,
-                deductions: cat_totals,
-                findings: refs,
-                finding_deductions,
-                finding_raw_deductions,
-                category_raw_totals: cat_raw_totals,
-                missing: result.missing,
-            }
-        })
+    let mut scored: Vec<(&FileEvidence, FileHealthScore)> = evidence
+        .files
+        .iter()
+        .filter(|f| in_scope(f))
+        .filter(|f| mode != "actionable" || !f.findings.is_empty())
+        .map(|f| (f, f.score()))
         .collect();
 
+    // Worst known debt first, then the widest uncertainty.
     scored.sort_by(|a, b| {
-        a.score
-            .partial_cmp(&b.score)
+        let key = |s: &FileHealthScore| (s.value.upper(), s.value.lower());
+        key(&a.1)
+            .partial_cmp(&key(&b.1))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     scored.truncate(limit);
 
-    let items: Vec<_> =
-        scored
-            .iter()
-            .map(|s| {
-                let findings_json: Vec<_> = s
-                    .findings
-                    .iter()
-                    .zip(s.finding_deductions.iter())
-                    .map(|(f, &ded)| {
-                        json!({
-                            "biomarker": f.biomarker_kind,
-                            "severity": f.severity,
-                            "metric_value": f.metric_value,
-                            "threshold": f.threshold,
-                            "deduction": scoring::round2(ded),
-                            "detail": f.detail,
-                        })
-                    })
-                    .collect();
-
-                let cat_json: serde_json::Value = s
-                    .deductions
-                    .iter()
-                    .map(|(&k, &v)| (k.to_string(), json!(scoring::round2(v))))
-                    .collect::<serde_json::Map<String, serde_json::Value>>()
-                    .into();
-
-                let mut entry = json!({
-                    "path": s.file.path,
-                    "health_score": scoring::round2(s.score),
-                    "category_deductions": cat_json,
-                    "findings": findings_json,
-                });
-                if !s.missing.is_empty() {
-                    // "missing analysis is never zero debt": this score was
-                    // computed from incomplete analysis and worst-cased.
-                    entry["partial"] = json!(true);
-                    entry["missing_biomarkers"] = json!(
-                        s.missing
-                            .iter()
-                            .map(|m| m.biomarker.as_str())
-                            .collect::<Vec<_>>()
-                    );
-                }
-                if explain {
-                    use crate::health::scoring::HealthCategory;
-                    let categories_explain: serde_json::Value = [
-                    HealthCategory::Organizational,
-                    HealthCategory::Structural,
-                    HealthCategory::Coupling,
-                    HealthCategory::Freshness,
-                    HealthCategory::Coverage,
-                ]
-                .iter()
-                .filter_map(|c| {
-                    let raw = s.category_raw_totals.get(c.as_str()).copied().unwrap_or(0.0);
-                    if raw == 0.0 {
-                        return None;
-                    }
-                    Some((
-                        c.as_str().to_string(),
-                        json!({
-                            "cap": c.cap(),
-                            "raw_total": round3(raw),
-                            "capped": raw > c.cap(),
-                            "scale_factor": if raw > c.cap() { round3(c.cap() / raw) } else { 1.0 },
-                        }),
-                    ))
-                })
-                .collect::<serde_json::Map<String, serde_json::Value>>()
-                .into();
-
-                    let findings_explain: Vec<_> = s
-                        .findings
-                        .iter()
-                        .zip(s.finding_raw_deductions.iter())
-                        .zip(s.finding_deductions.iter())
-                        .map(|((f, &raw), &scaled)| {
-                            json!({
-                                "biomarker": f.biomarker_kind,
-                                "raw_deduction": round3(raw),
-                                "scaled_deduction": round3(scaled),
-                                "scale_factor": if raw > 0.0 { round3(scaled / raw) } else { 1.0 },
-                            })
-                        })
-                        .collect();
-
-                    entry["_explain"] = json!({
-                        "formula": "10.0 - sum(scaled_deductions), clamped to [1.0, 10.0]",
-                        "categories": categories_explain,
-                        "findings": findings_explain,
-                    });
-                }
-                if let Some(ref mut ann) = annotator {
-                    ann.annotate_file(&mut entry, &s.file.path, &s.file.last_parsed);
-                }
-                entry
-            })
-            .collect();
+    let items: Vec<_> = scored
+        .iter()
+        .map(|(f, score)| {
+            let mut entry = file_entry(f, score, explain);
+            if let Some(ref mut ann) = annotator
+                && let Some(row) = db.file_by_path(&f.path).ok().flatten()
+            {
+                ann.annotate_file(&mut entry, &f.path, &row.last_parsed);
+            }
+            entry
+        })
+        .collect();
 
     let mut result = json!({
         "files": items,
@@ -392,25 +275,19 @@ fn handle_inner(
     // Surface dimensions that are structurally unmeasurable in this workspace
     // (data source absent) rather than silently omitting them — an unsupported
     // biomarker is excluded from scoring, not scored as zero debt.
-    let unsupported: Vec<serde_json::Value> = BiomarkerKind::ALL
+    let unsupported: Vec<serde_json::Value> = evidence
+        .unsupported()
         .iter()
-        .filter_map(|k| match k.file_scoring_support(&facts) {
-            Some(scoring::BiomarkerSupport::Unsupported(reason)) => {
-                Some(json!({ "biomarker": k.as_str(), "reason": reason }))
-            }
-            _ => None,
-        })
+        .map(|(k, reason)| json!({ "biomarker": k.as_str(), "reason": reason.as_str() }))
         .collect();
     if !unsupported.is_empty() {
         result["unsupported_biomarkers"] = json!(unsupported);
     }
 
-    if path.is_none()
-        && component.is_none()
-        && let Ok(components) = build_component_scores(db)
-    {
-        result["components"] = json!(components);
+    if path.is_none() && component.is_none() {
+        let components = build_component_scores(db, &evidence)?;
         result["total_components"] = json!(components.len());
+        result["components"] = json!(components);
     }
 
     if let Some(ann) = annotator {
@@ -419,38 +296,131 @@ fn handle_inner(
     Ok(result)
 }
 
-fn build_component_scores(db: &Db) -> Result<Vec<serde_json::Value>> {
-    let workspace = scoring::score_workspace(db)?;
-
-    let mut comp_results: Vec<serde_json::Value> = workspace
-        .component_scores
+/// One file's report entry. Findings of a producer without current evidence are
+/// listed as `stale` with no deduction: retained for visibility, never counted.
+fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde_json::Value {
+    let deduction_of = |i: usize| {
+        score
+            .deductions
+            .iter()
+            .find(|d| d.part == 0 && d.index == i)
+    };
+    let findings_json: Vec<_> = f
+        .findings
         .iter()
-        .map(|cs| {
-            let mut entry = json!({
-                "id": cs.component_id,
-                "name": cs.component_name,
-                "health_score": scoring::round2(cs.score),
-                "member_count": cs.member_count,
-                "total_nloc": cs.total_nloc,
+        .enumerate()
+        .map(|(i, finding)| {
+            let mut j = json!({
+                "biomarker": finding.biomarker_kind,
+                "severity": finding.severity,
+                "metric_value": finding.metric_value,
+                "threshold": finding.threshold,
+                "detail": finding.detail,
             });
-
-            if let Some(inst) = &cs.instability {
-                entry["instability"] = json!({
-                    "ce": inst.ce,
-                    "ca": inst.ca,
-                    "value": scoring::round2(inst.instability),
-                });
+            match deduction_of(i) {
+                Some(d) => j["deduction"] = json!(scoring::round2(d.scaled_deduction)),
+                None => {
+                    j["deduction"] = json!(0.0);
+                    j["stale"] = json!(true);
+                }
             }
-
-            entry
+            j
         })
         .collect();
 
-    comp_results.sort_by(|a, b| {
-        let sa = a["health_score"].as_f64().unwrap_or(10.0);
-        let sb = b["health_score"].as_f64().unwrap_or(10.0);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let cat_json: serde_json::Map<String, serde_json::Value> = score
+        .categories
+        .iter()
+        .filter(|c| c.known > 0.0)
+        .map(|c| {
+            (
+                c.category.as_str().to_string(),
+                json!(scoring::round2(c.known)),
+            )
+        })
+        .collect();
 
-    Ok(comp_results)
+    let mut entry = score_value_json(&score.value);
+    entry.insert("path".into(), json!(f.path));
+    entry.insert("category_deductions".into(), cat_json.into());
+    entry.insert("findings".into(), json!(findings_json));
+    if !score.missing.is_empty() {
+        entry.insert("missing_biomarkers".into(), json!(score.missing_names()));
+        entry.insert("missing".into(), missing_json(&score.missing));
+    }
+    if explain {
+        let categories_explain: serde_json::Map<String, serde_json::Value> = score
+            .categories
+            .iter()
+            .map(|c| {
+                let cap = c.category.cap();
+                (
+                    c.category.as_str().to_string(),
+                    json!({
+                        "cap": cap,
+                        "raw_total": round3(c.known_raw),
+                        "capped": c.known_raw > cap,
+                        "scale_factor": if c.known_raw > cap { round3(cap / c.known_raw) } else { 1.0 },
+                        "pessimistic_deduction": round3(c.pessimistic),
+                    }),
+                )
+            })
+            .collect();
+        let findings_explain: Vec<_> = score
+            .deductions
+            .iter()
+            .filter(|d| d.part == 0)
+            .map(|d| {
+                json!({
+                    "biomarker": f.findings[d.index].biomarker_kind,
+                    "raw_deduction": round3(d.raw_deduction),
+                    "scaled_deduction": round3(d.scaled_deduction),
+                    "scale_factor": if d.raw_deduction > 0.0 { round3(d.scaled_deduction / d.raw_deduction) } else { 1.0 },
+                })
+            })
+            .collect();
+        entry.insert(
+            "_explain".into(),
+            json!({
+                "formula": "upper = 10.0 - sum(capped known deductions); lower additionally \
+                    saturates every category with a missing producer; clamped to [1.0, 10.0]",
+                "categories": categories_explain,
+                "findings": findings_explain,
+            }),
+        );
+    }
+    serde_json::Value::Object(entry)
+}
+
+fn build_component_scores(
+    db: &Db,
+    evidence: &PersistentEvidence,
+) -> Result<Vec<serde_json::Value>> {
+    let workspace = assess::score_workspace(db, evidence)?;
+
+    let mut comp_results: Vec<(f64, serde_json::Value)> = workspace
+        .components
+        .iter()
+        .map(|cs| {
+            let mut entry = score_value_json(&cs.value);
+            entry.insert("id".into(), json!(cs.component_id));
+            entry.insert("name".into(), json!(cs.component_name));
+            entry.insert("member_count".into(), json!(cs.member_count));
+            entry.insert("total_nloc".into(), json!(cs.total_nloc));
+            if let Some(inst) = &cs.instability {
+                entry.insert(
+                    "instability".into(),
+                    json!({
+                        "ce": inst.ce,
+                        "ca": inst.ca,
+                        "value": scoring::round2(inst.instability),
+                    }),
+                );
+            }
+            (cs.value.upper(), serde_json::Value::Object(entry))
+        })
+        .collect();
+
+    comp_results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(comp_results.into_iter().map(|(_, v)| v).collect())
 }

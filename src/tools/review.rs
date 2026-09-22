@@ -10,14 +10,21 @@ use crate::components;
 use crate::constraints::DdEngine;
 use crate::constraints::check::{self, ContentSource, EvalScope, FactsSource};
 use crate::db::Db;
+use crate::db::{HealthFindingRow, SnapshotCompleteness, SnapshotFileRow};
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
 use crate::git;
-use crate::health::ondemand::{BaselineSelector, HealthDeltaOutcome};
+use crate::health::assess::PersistentEvidence;
+use crate::health::compare::{
+    self, BaselineSelector, IncomparableReason, MarginalEffect, SideSummary,
+};
+use crate::health::ondemand::OnDemandEvidence;
 use crate::health::refresh::DemandOutcome;
+use crate::health::scoring::{EvidencePart, ScoreValue};
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
 use crate::tools::change_signals::{self, ChurnMap};
+use crate::tools::file_health::{missing_json, score_value_json};
 use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -105,7 +112,7 @@ pub fn handle(
     };
 
     let shape_config = crate::similarity::diff::ShapeChangeConfig::default();
-    let shape_changes = crate::similarity::diff::detect_shape_changes(
+    let shape_diff = crate::similarity::diff::detect_shape_changes(
         db,
         workspace_root,
         &changed_paths,
@@ -115,40 +122,21 @@ pub fn handle(
         &shape_config,
     );
 
-    let mut ondemand_findings =
-        crate::health::ondemand::compute_ondemand_findings(db, workspace_root, &changed_paths);
-    // Subtle-structural shape changes are debt too: fold them into the on-demand
-    // findings so they drive the health delta, not just the display list.
-    ondemand_findings.extend(crate::health::ondemand::compute_shape_change_findings(
-        &shape_changes,
+    // Health: temporal comparison of persistent evidence (baseline checkpoint vs
+    // the current run, validity from the refresh under our lock) and, separately,
+    // attribution of fresh on-demand evidence against that same current run
+    // (health-evidence-contract.md § Comparison and scoring). A failure is
+    // surfaced as `health_delta_error`, never swallowed into "no change".
+    let health = review_health(
+        db,
+        workspace_root,
+        &changed_paths,
+        &shape_diff,
         shape_config.hrr_delta_threshold,
-    ));
-
-    // Gate the temporal delta on the refresh validity (sutra/424 F3): if the
-    // persistent health refresh did not publish current evidence, the persistent
-    // side of the comparison is unverified, so measuring fresh on-demand findings
-    // against it could report a spurious improvement/degradation. Report the delta
-    // as incomparable instead. Otherwise compute it, and do NOT swallow a failure
-    // via `.ok()` (contract): surface it so a missing delta is visibly an error,
-    // not silently "no change". `Incomparable` (a genuinely-missing baseline, F5)
-    // is likewise surfaced with its reason rather than a measured delta.
-    let refresh_validity = health_refresh.validity();
-    let (health_delta, health_delta_incomparable, health_delta_error) = if refresh_validity
-        != "current"
-    {
-        (None, Some(refresh_validity.to_string()), None)
-    } else {
-        match crate::health::ondemand::compute_health_delta(
-            db,
-            &changed_paths,
-            &ondemand_findings,
-            baseline,
-        ) {
-            Ok(HealthDeltaOutcome::Measured(d)) => (Some(d), None, None),
-            Ok(HealthDeltaOutcome::Incomparable(r)) => (None, Some(r.as_str().to_string()), None),
-            Err(e) => (None, None, Some(e.to_string())),
-        }
-    };
+        baseline,
+        health_refresh,
+    );
+    let shape_changes = shape_diff.changes;
 
     let mut result = compute(
         db,
@@ -168,24 +156,6 @@ pub fn handle(
             obj.insert("findings_degraded".into(), json!(true));
             obj.insert("findings_error".into(), json!(err));
             obj.insert("risk_score".into(), json!(null));
-        }
-
-        if !ondemand_findings.is_empty() {
-            let health_out: Vec<_> = ondemand_findings
-                .iter()
-                .map(|f| {
-                    json!({
-                        "biomarker": f.biomarker_kind.as_str(),
-                        "severity": f.severity.as_str(),
-                        "file_id": f.file_id,
-                        "symbol_id": f.symbol_id,
-                        "metric_value": scoring::round3(f.metric_value),
-                        "threshold": scoring::round3(f.threshold),
-                        "detail": f.detail,
-                    })
-                })
-                .collect();
-            obj.insert("health_findings".into(), json!(health_out));
         }
 
         let shape_out: Vec<_> = shape_changes
@@ -209,68 +179,300 @@ pub fn handle(
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
         }
 
-        if let Some(err) = health_delta_error {
-            obj.insert("health_delta_error".into(), json!(err));
-        }
-
-        // An explicitly incomparable delta (refresh not current, F3; or a
-        // genuinely-missing baseline, F5). Carries the stable reason token so the
-        // consumer never reads absence as "no change".
-        if let Some(reason) = health_delta_incomparable {
-            obj.insert(
-                "health_delta_incomparable".into(),
-                json!({ "reason": reason }),
-            );
-        }
-
-        if let Some(delta) = health_delta {
-            let degraded_out: Vec<_> = delta
-                .degraded
-                .iter()
-                .map(|e| {
-                    let drivers: Vec<_> = e
-                        .driving_findings
-                        .iter()
-                        .map(|f| {
-                            json!({
-                                "biomarker": f.biomarker_kind,
-                                "detail": f.detail,
-                            })
-                        })
-                        .collect();
-                    json!({
-                        "path": e.path,
-                        "from": scoring::round3(e.previous_score),
-                        "to": scoring::round3(e.current_score),
-                        "delta": scoring::round3(e.delta),
-                        "driving_findings": drivers,
-                    })
-                })
-                .collect();
-            let improved_out: Vec<_> = delta
-                .improved
-                .iter()
-                .map(|e| {
-                    json!({
-                        "path": e.path,
-                        "from": scoring::round3(e.previous_score),
-                        "to": scoring::round3(e.current_score),
-                        "delta": scoring::round3(e.delta),
-                    })
-                })
-                .collect();
-            if !degraded_out.is_empty() || !improved_out.is_empty() {
-                obj.insert(
-                    "health_delta".into(),
-                    json!({
-                        "degraded": degraded_out,
-                        "improved": improved_out,
-                    }),
-                );
+        match health {
+            Ok(h) => {
+                if !h.findings.is_empty() {
+                    obj.insert("health_findings".into(), json!(h.findings));
+                }
+                obj.insert("health_delta".into(), h.delta);
+            }
+            Err(e) => {
+                obj.insert("health_delta_error".into(), json!(e.to_string()));
             }
         }
     }
     Ok(result)
+}
+
+struct ReviewHealth {
+    /// On-demand findings (display list), each flagged `waived`.
+    findings: Vec<serde_json::Value>,
+    delta: serde_json::Value,
+}
+
+fn review_health(
+    db: &Db,
+    workspace_root: &Path,
+    changed_paths: &[String],
+    shape_diff: &crate::similarity::diff::ShapeDiff<'_>,
+    hrr_threshold: f64,
+    baseline: BaselineSelector,
+    health_refresh: DemandOutcome,
+) -> Result<ReviewHealth> {
+    let mut ondemand =
+        crate::health::ondemand::compute_ondemand_findings(db, workspace_root, changed_paths)?;
+    ondemand.add_shape_diff(shape_diff, hrr_threshold);
+    let evidence = PersistentEvidence::load(db, health_refresh.persistent_validity())?;
+    let baseline_id = baseline.resolve(db)?;
+    let baseline_rows = match baseline_id {
+        Some(id) => db.snapshot_file_scores(id)?,
+        None => Vec::new(),
+    };
+    let OnDemandEvidence { findings, outcomes } = ondemand;
+    let (active, waived) = partition_ondemand(db, findings, &evidence)?;
+
+    let findings_out: Vec<serde_json::Value> = active
+        .iter()
+        .map(|f| (f, false))
+        .chain(waived.iter().map(|f| (f, true)))
+        .map(|(f, is_waived)| {
+            json!({
+                "biomarker": f.biomarker_kind,
+                "severity": f.severity,
+                "file_id": f.file_id,
+                "symbol_id": f.symbol_id,
+                "metric_value": scoring::round3(f.metric_value),
+                "threshold": scoring::round3(f.threshold),
+                "detail": f.detail,
+                "waived": is_waived,
+            })
+        })
+        .collect();
+
+    let mut active_by_file: HashMap<i64, Vec<HealthFindingRow>> = HashMap::new();
+    for f in active {
+        active_by_file.entry(f.file_id).or_default().push(f);
+    }
+
+    let base_by_path: HashMap<&str, &SnapshotFileRow> = baseline_rows
+        .iter()
+        .map(|r| (r.file_path.as_str(), r))
+        .collect();
+    let mut files = Vec::new();
+    for path in changed_paths {
+        let current = evidence.file(path);
+        let base = base_by_path.get(path.as_str()).copied();
+        if current.is_none() && base.is_none() {
+            continue;
+        }
+        let score = current.map(|e| e.score());
+        let basis = current.map(|e| e.basis.to_hex());
+        let current_side = score
+            .as_ref()
+            .zip(basis.as_deref())
+            .map(|(s, b)| SideSummary::of_score(s, b));
+        let base_side = base.map(|r| SideSummary {
+            completeness: r.completeness,
+            basis: r.score_basis.as_deref(),
+        });
+        let blocker = if baseline_id.is_none() {
+            Some(IncomparableReason::MissingBaseline)
+        } else {
+            compare::temporal_blocker(base_side, current_side)
+        };
+
+        let current_json = score.as_ref().map(|s| {
+            let mut m = score_value_json(&s.value);
+            m.insert(
+                "completeness".into(),
+                json!(if s.value.is_measured() {
+                    "complete"
+                } else {
+                    "partial"
+                }),
+            );
+            if !s.missing.is_empty() {
+                m.insert("missing_biomarkers".into(), json!(s.missing_names()));
+            }
+            serde_json::Value::Object(m)
+        });
+        let base_json = base.map(baseline_observation_json);
+        let (temporal, temporal_noteworthy) = match (blocker, &score, base) {
+            (None, Some(s), Some(b)) => {
+                let delta = s.value.upper() - b.score;
+                (
+                    json!({
+                        "measured": true,
+                        "delta": scoring::round3(delta),
+                        "from": base_json,
+                        "to": current_json,
+                    }),
+                    delta.abs() >= 0.005,
+                )
+            }
+            (reason, _, _) => {
+                let reason = reason.unwrap_or(IncomparableReason::NewFile);
+                let changed = match (&score, base) {
+                    (Some(s), Some(b)) => observation_changed(&s.value, b, basis.as_deref()),
+                    _ => true,
+                };
+                let noteworthy = reason != IncomparableReason::MissingBaseline && changed;
+                (
+                    json!({
+                        "measured": false,
+                        "reason": reason.as_str(),
+                        "from": base_json,
+                        "to": current_json,
+                    }),
+                    noteworthy,
+                )
+            }
+        };
+
+        let (on_demand, attribution_noteworthy) = match current {
+            Some(e) => {
+                let rows = active_by_file.remove(&e.file_id).unwrap_or_default();
+                let file_outcomes = outcomes.get(path.as_str()).map_or(&[][..], Vec::as_slice);
+                if file_outcomes.is_empty() && rows.is_empty() {
+                    (serde_json::Value::Null, false)
+                } else {
+                    attribution_json(e.part(), file_outcomes, &rows)
+                }
+            }
+            None => (serde_json::Value::Null, false),
+        };
+
+        if temporal_noteworthy || attribution_noteworthy {
+            let mut entry = json!({ "path": path, "temporal": temporal });
+            if !on_demand.is_null() {
+                entry["on_demand"] = on_demand;
+            }
+            files.push(entry);
+        }
+    }
+
+    Ok(ReviewHealth {
+        findings: findings_out,
+        delta: json!({
+            "baseline_snapshot_id": baseline_id,
+            "persistent_validity": health_refresh.validity(),
+            "temporal_incomparable": baseline_id.is_none().then_some("missing_baseline"),
+            "files": files,
+        }),
+    })
+}
+
+/// Waiver-partition the on-demand findings under the same policy as persistent
+/// findings (path + symbol label), returning `(active, waived)` rows.
+fn partition_ondemand(
+    db: &Db,
+    findings: Vec<crate::health::HealthFinding>,
+    evidence: &PersistentEvidence,
+) -> Result<(Vec<HealthFindingRow>, Vec<HealthFindingRow>)> {
+    use crate::waivers::{self, ResolvedHealthFinding};
+    let path_of: HashMap<i64, &str> = evidence
+        .files
+        .iter()
+        .map(|f| (f.file_id, f.path.as_str()))
+        .collect();
+    let symbol_ids: Vec<i64> = findings.iter().filter_map(|f| f.symbol_id).collect();
+    let mut labels = db.symbol_labels(&symbol_ids)?;
+    let resolved: Vec<ResolvedHealthFinding> = findings
+        .into_iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let row = f.into_row(-(i as i64) - 1);
+            ResolvedHealthFinding {
+                file_path: path_of
+                    .get(&row.file_id)
+                    .map_or_else(String::new, |p| p.to_string()),
+                symbol_name: row.symbol_id.and_then(|sid| labels.remove(&sid)),
+                finding: row,
+            }
+        })
+        .collect();
+    let (active, waived) = waivers::partition(resolved, evidence.waivers());
+    Ok((
+        active.into_iter().map(|r| r.finding).collect(),
+        waived.into_iter().map(|w| w.finding.finding).collect(),
+    ))
+}
+
+/// Whether a current observation differs from its baseline row in score,
+/// completeness or basis — an incomparable pair is still worth reporting then.
+fn observation_changed(current: &ScoreValue, base: &SnapshotFileRow, basis: Option<&str>) -> bool {
+    let completeness = if current.is_measured() {
+        SnapshotCompleteness::Complete
+    } else {
+        SnapshotCompleteness::Partial
+    };
+    (current.lower() - base.score).abs() >= 0.005
+        || completeness != base.completeness
+        || basis != base.score_basis.as_deref()
+}
+
+/// A baseline checkpoint observation. Rows without a recorded basis predate
+/// sutra/416: their score was computed under different rules, so it is shown as
+/// `legacy_score`, never as a bound.
+fn baseline_observation_json(r: &SnapshotFileRow) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    m.insert("completeness".into(), json!(r.completeness.as_str()));
+    match (r.completeness, r.score_basis.is_some(), r.score_upper) {
+        (SnapshotCompleteness::Complete, true, _) => {
+            m.insert("health_score".into(), json!(scoring::round3(r.score)));
+        }
+        (SnapshotCompleteness::Partial, true, Some(upper)) => {
+            m.insert("health_score".into(), serde_json::Value::Null);
+            m.insert(
+                "score_bounds".into(),
+                json!({ "lower": scoring::round3(r.score), "upper": scoring::round3(upper) }),
+            );
+        }
+        _ => {
+            m.insert("legacy_score".into(), json!(scoring::round3(r.score)));
+        }
+    }
+    if !r.missing_biomarkers.is_empty() {
+        m.insert("missing_biomarkers".into(), json!(r.missing_biomarkers));
+    }
+    serde_json::Value::Object(m)
+}
+
+/// On-demand attribution for one file, and whether it is worth reporting.
+fn attribution_json(
+    persistent: EvidencePart<'_>,
+    outcomes: &[crate::health::scoring::ProducerResult],
+    rows: &[HealthFindingRow],
+) -> (serde_json::Value, bool) {
+    let a = compare::attribute(
+        persistent,
+        EvidencePart {
+            outcomes,
+            findings: rows,
+        },
+    );
+    let effect = match a.effect {
+        MarginalEffect::Exact(v) => json!({ "kind": "exact", "value": scoring::round3(v) }),
+        MarginalEffect::Conditional { lower, upper } => json!({
+            "kind": "conditional",
+            "lower": scoring::round3(lower),
+            "upper": scoring::round3(upper),
+        }),
+    };
+    let findings: Vec<_> = a
+        .findings
+        .iter()
+        .map(|f| {
+            let row = &rows[f.index];
+            json!({
+                "biomarker": row.biomarker_kind,
+                "detail": row.detail,
+                "raw_deduction": scoring::round3(f.raw_deduction),
+                "scaled_deduction": scoring::round3(f.scaled_deduction),
+            })
+        })
+        .collect();
+    let noteworthy = !findings.is_empty() || !a.missing.is_empty();
+    let mut out = json!({
+        "without": serde_json::Value::Object(score_value_json(&a.without)),
+        "with": serde_json::Value::Object(score_value_json(&a.with)),
+        "effect": effect,
+        "findings": findings,
+    });
+    if !a.missing.is_empty() {
+        out["missing"] = missing_json(&a.missing);
+    }
+    (out, noteworthy)
 }
 
 /// Resolve a diff-mode string to `(changed_paths, base_revision, head_revision)`.

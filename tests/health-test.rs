@@ -1,15 +1,22 @@
+#[path = "support/health_run.rs"]
+mod health_run;
+use health_run::publish_seeded_run;
 use sutra::db::{
     CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotCompleteness,
     SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use sutra::git::parse_blame_porcelain;
+use sutra::health::compare::BaselineSelector;
+use sutra::health::evidence::{MissingReason, ProducerOutcome, UnsupportedReason, Validity};
 use sutra::health::findings::HealthFinding;
-use sutra::health::ondemand::{BaselineSelector, HealthDeltaOutcome, IncomparableReason};
+use sutra::health::scoring::{
+    BiomarkerScope, EvidencePart, PERSISTENT_PRODUCERS, ProducerResult, ScoreValue,
+};
 use sutra::health::{
-    BiomarkerKind, HealthSeverity, compute_all_health_findings, compute_blast_radius_churn,
-    compute_change_entropy, compute_co_change_scatter, compute_hidden_coupling,
-    compute_nested_complexity, compute_ownership_risk, instability::compute_component_instability,
-    score_component, score_file,
+    BiomarkerKind, FileHealthScore, HealthSeverity, compute_all_health_findings,
+    compute_blast_radius_churn, compute_change_entropy, compute_co_change_scatter,
+    compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk,
+    instability::compute_component_instability, score_component, score_file,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -398,10 +405,42 @@ fn reconcile_orphaned_health_waivers_symbol_scoped() {
 
 // --- Scoring ---
 
-fn test_facts() -> sutra::health::scoring::WorkspaceFacts {
-    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
-    WorkspaceFacts {
-        git: GitAvailability::Available,
+/// An outcome for every file-level biomarker (persistent and on-demand): all
+/// `Complete` except the structurally unsupported coverage gradient.
+fn complete_outcomes() -> Vec<ProducerResult> {
+    BiomarkerKind::ALL
+        .into_iter()
+        .filter(|k| k.scope() != BiomarkerScope::Component)
+        .map(|k| {
+            let o = if k == BiomarkerKind::CoverageGradient {
+                ProducerOutcome::Unsupported(UnsupportedReason::NoCoverageIngestion)
+            } else {
+                ProducerOutcome::Complete { finding_count: 0 }
+            };
+            (k, o)
+        })
+        .collect()
+}
+
+fn with_outcome(kinds: &[BiomarkerKind], outcome: ProducerOutcome) -> Vec<ProducerResult> {
+    let mut outcomes = complete_outcomes();
+    for (k, o) in outcomes.iter_mut() {
+        if kinds.contains(k) {
+            *o = outcome;
+        }
+    }
+    outcomes
+}
+
+fn score(outcomes: &[ProducerResult], findings: &[HealthFindingRow]) -> FileHealthScore {
+    score_file(&[EvidencePart { outcomes, findings }])
+}
+
+/// Score with every producer complete; the measured value.
+fn measured(findings: &[HealthFindingRow]) -> f64 {
+    match score(&complete_outcomes(), findings).value {
+        ScoreValue::Measured(s) => s,
+        other => panic!("expected a measured score, got {other:?}"),
     }
 }
 
@@ -422,10 +461,10 @@ fn make_finding(id: i64, file_id: i64, biomarker: &str, severity: &str) -> Healt
 
 #[test]
 fn scoring_no_findings_yields_perfect_score() {
-    let result = score_file(&[], &test_facts(), true);
-    assert_eq!(result.score, 10.0);
+    let result = score(&complete_outcomes(), &[]);
+    assert_eq!(result.value, ScoreValue::Measured(10.0));
     assert!(result.deductions.is_empty());
-    // A clean file with all producers wired is not partial.
+    // A clean file with every producer complete is not partial.
     assert!(!result.partial());
     assert!(result.missing.is_empty());
 }
@@ -433,38 +472,15 @@ fn scoring_no_findings_yields_perfect_score() {
 // --- "missing analysis is never zero debt" contract ---
 
 #[test]
-fn contract_no_file_scored_biomarker_is_unwired() {
-    use sutra::health::scoring::BiomarkerSupport;
-    // The gap this task closed: every biomarker in the file-level weight table
-    // has a producer (or is explicitly Unsupported). If a new BiomarkerKind is
-    // added without wiring a producer, this fails — forcing a decision instead
-    // of silently scoring it as zero debt.
-    let facts = test_facts();
-    for kind in BiomarkerKind::ALL {
-        if let Some(support) = kind.file_scoring_support(&facts) {
-            assert_ne!(
-                support,
-                BiomarkerSupport::Unwired,
-                "{} is file-scored but has no producer",
-                kind.as_str()
-            );
-        }
-    }
-}
-
-#[test]
-fn contract_coverage_gradient_is_unsupported() {
-    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
-    // No coverage ingestion exists → excluded from scoring with a reason,
-    // regardless of git availability.
-    for git in [
-        GitAvailability::Available,
-        GitAvailability::NoHistory,
-        GitAvailability::NotARepo,
-    ] {
-        let support = BiomarkerKind::CoverageGradient.file_scoring_support(&WorkspaceFacts { git });
-        assert!(matches!(support, Some(BiomarkerSupport::Unsupported(_))));
-    }
+fn contract_coverage_gradient_is_unsupported_and_surfaced() {
+    let result = score(&complete_outcomes(), &[]);
+    assert!(
+        result
+            .unsupported
+            .iter()
+            .any(|(k, _)| *k == BiomarkerKind::CoverageGradient),
+        "an unsupported producer is excluded but reported, not scored as zero debt"
+    );
 }
 
 const GIT_BIOMARKERS: [BiomarkerKind; 5] = [
@@ -477,81 +493,81 @@ const GIT_BIOMARKERS: [BiomarkerKind; 5] = [
 
 #[test]
 fn contract_git_biomarkers_excluded_when_not_a_repo() {
-    // A true structural absence: not a git repo → excluded (Unsupported), never
-    // worst-cased. Worst-casing a dimension that can never run here is noise.
-    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
-    let facts = WorkspaceFacts {
-        git: GitAvailability::NotARepo,
-    };
-    for kind in GIT_BIOMARKERS {
-        assert!(
-            matches!(
-                kind.file_scoring_support(&facts),
-                Some(BiomarkerSupport::Unsupported(_))
-            ),
-            "{} should be Unsupported when not a git repo",
-            kind.as_str()
-        );
+    // Only a confirmed non-repository makes git producers unsupported: excluded,
+    // never worst-cased.
+    let outcomes = with_outcome(
+        &GIT_BIOMARKERS,
+        ProducerOutcome::Unsupported(UnsupportedReason::ConfirmedNonRepository),
+    );
+    let result = score(&outcomes, &[]);
+    assert_eq!(result.value, ScoreValue::Measured(10.0));
+    assert_eq!(result.unsupported.len(), 1 + GIT_BIOMARKERS.len());
+}
+
+#[test]
+fn contract_git_biomarkers_bounded_by_category_caps_on_no_history() {
+    // No usable history is missing git analysis, not clean. The lower bound
+    // saturates every category a git producer lives in (organizational 3.5,
+    // structural 2.5 via blast_radius_churn, coupling 2.0 via hidden_coupling) —
+    // not one finding weight per missing producer.
+    let outcomes = with_outcome(
+        &GIT_BIOMARKERS,
+        ProducerOutcome::Missing(MissingReason::NoHistory),
+    );
+    let result = score(&outcomes, &[]);
+    match result.value {
+        ScoreValue::Partial { lower, upper } => {
+            assert!((lower - 2.0).abs() < 1e-9, "lower {lower}");
+            assert_eq!(upper, 10.0);
+        }
+        other => panic!("expected partial, got {other:?}"),
+    }
+    assert_eq!(result.missing.len(), GIT_BIOMARKERS.len());
+}
+
+#[test]
+fn contract_known_debt_narrows_the_bound_it_shares_a_category_with() {
+    // Known structural debt counts in the upper bound; the missing blast-radius
+    // producer still saturates structural in the lower bound.
+    let outcomes = with_outcome(
+        &[BiomarkerKind::BlastRadiusChurn],
+        ProducerOutcome::Missing(MissingReason::NoHistory),
+    );
+    let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
+    let result = score(&outcomes, &findings);
+    match result.value {
+        ScoreValue::Partial { lower, upper } => {
+            assert!((upper - 8.66).abs() < 0.01);
+            assert!((lower - 7.5).abs() < 1e-9);
+        }
+        other => panic!("expected partial, got {other:?}"),
     }
 }
 
 #[test]
-fn contract_git_biomarkers_worst_cased_on_no_history() {
-    // sutra/408: a real repo whose history was unavailable this run (empty
-    // window or a transient `git log` failure) must be worst-cased (Unwired),
-    // not excluded — else a failure removes debt and health improves.
-    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
-    let facts = WorkspaceFacts {
-        git: GitAvailability::NoHistory,
-    };
-    for kind in GIT_BIOMARKERS {
-        assert_eq!(
-            kind.file_scoring_support(&facts),
-            Some(BiomarkerSupport::Unwired),
-            "{} should be worst-cased (Unwired) on NoHistory",
-            kind.as_str()
-        );
-    }
-}
-
-#[test]
-fn contract_git_biomarkers_scored_when_available() {
-    use sutra::health::scoring::{BiomarkerSupport, GitAvailability, WorkspaceFacts};
-    let facts = WorkspaceFacts {
-        git: GitAvailability::Available,
-    };
-    for kind in GIT_BIOMARKERS {
-        assert_eq!(
-            kind.file_scoring_support(&facts),
-            Some(BiomarkerSupport::Scored)
-        );
-    }
-}
-
-#[test]
-fn contract_review_and_component_biomarkers_are_not_file_scored() {
-    let facts = test_facts();
+fn contract_review_and_component_biomarkers_are_not_persistent() {
     for kind in [
         BiomarkerKind::FunctionHotspot,
         BiomarkerKind::CodeAgeVolatility,
         BiomarkerKind::HrrShapeChange,
         BiomarkerKind::ComponentInstability,
     ] {
-        assert_eq!(
-            kind.file_scoring_support(&facts),
-            None,
-            "{} is scored elsewhere, not per-file",
+        assert_ne!(
+            kind.scope(),
+            BiomarkerScope::Persistent,
+            "{} is scored elsewhere, not per-file at parse time",
             kind.as_str()
         );
+        assert!(!PERSISTENT_PRODUCERS.contains(&kind));
     }
 }
 
 #[test]
 fn scoring_single_advisory_finding() {
     let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
-    let result = score_file(&findings, &test_facts(), true);
+    let result = score(&complete_outcomes(), &findings);
     // advisory weight 1.0 × biomarker weight 1.34 = 1.34 deduction
-    assert!((result.score - 8.66).abs() < 0.01);
+    assert!((result.value.upper() - 8.66).abs() < 0.01);
     assert_eq!(result.deductions.len(), 1);
     assert!((result.deductions[0].raw_deduction - 1.34).abs() < 0.01);
     assert!((result.deductions[0].scaled_deduction - 1.34).abs() < 0.01);
@@ -560,9 +576,8 @@ fn scoring_single_advisory_finding() {
 #[test]
 fn scoring_informational_deducts_less() {
     let findings = [make_finding(1, 1, "dead_code_ratio", "informational")];
-    let result = score_file(&findings, &test_facts(), true);
     // informational weight 0.5 × biomarker weight 0.80 = 0.40 deduction
-    assert!((result.score - 9.60).abs() < 0.01);
+    assert!((measured(&findings) - 9.60).abs() < 0.01);
 }
 
 #[test]
@@ -574,9 +589,9 @@ fn scoring_category_cap_with_proportional_scaling() {
         make_finding(2, 1, "nested_complexity", "advisory"),
         make_finding(3, 1, "nested_complexity", "advisory"),
     ];
-    let result = score_file(&findings, &test_facts(), true);
+    let result = score(&complete_outcomes(), &findings);
     // Total structural deduction capped at 2.5 → score = 7.5
-    assert!((result.score - 7.5).abs() < 0.01);
+    assert!((result.value.upper() - 7.5).abs() < 0.01);
     // All three scaled deductions should be equal and sum to 2.5
     let total: f64 = result.deductions.iter().map(|d| d.scaled_deduction).sum();
     assert!((total - 2.5).abs() < 0.01);
@@ -614,8 +629,7 @@ fn scoring_all_categories_maxed_yields_minimum() {
         make_finding(17, 1, "dead_code_ratio", "informational"),
         make_finding(18, 1, "dead_code_ratio", "informational"),
     ];
-    let result = score_file(&findings, &test_facts(), true);
-    assert!((result.score - 1.0).abs() < 0.01);
+    assert!((measured(&findings) - 1.0).abs() < 0.01);
 }
 
 #[test]
@@ -1423,6 +1437,8 @@ fn test_snapshot_stores_per_file_health() {
             category_scores: r#"{"structural":0.8}"#.into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         },
         SnapshotFileRow {
             file_id: 2,
@@ -1431,6 +1447,8 @@ fn test_snapshot_stores_per_file_health() {
             category_scores: r#"{"organizational":2.5,"structural":1.4}"#.into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         },
     ];
     db.insert_snapshot_files(snap_id, &files).unwrap();
@@ -1459,6 +1477,8 @@ fn test_snapshot_stores_per_component_health() {
             score: 8.3,
             member_count: 5,
             total_nloc: 1200,
+            completeness: SnapshotCompleteness::Complete,
+            score_basis: Some("comp-basis-v1".into()),
         },
         SnapshotComponentRow {
             component_id: "comp_b".into(),
@@ -1466,6 +1486,8 @@ fn test_snapshot_stores_per_component_health() {
             score: 6.9,
             member_count: 3,
             total_nloc: 800,
+            completeness: SnapshotCompleteness::Complete,
+            score_basis: Some("comp-basis-v1".into()),
         },
     ];
     db.insert_snapshot_components(snap_id, &comps).unwrap();
@@ -1496,6 +1518,8 @@ fn test_file_health_history() {
             category_scores: r#"{"structural":1.0}"#.into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         }],
     )
     .unwrap();
@@ -1510,6 +1534,8 @@ fn test_file_health_history() {
             category_scores: r#"{"structural":0.5}"#.into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         }],
     )
     .unwrap();
@@ -1524,6 +1550,8 @@ fn test_file_health_history() {
             category_scores: "{}".into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         }],
     )
     .unwrap();
@@ -1570,6 +1598,8 @@ fn test_trend_comparison_with_file_deltas() {
                 category_scores: r#"{"structural":1.0}"#.into(),
                 completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
+                score_upper: None,
+                score_basis: Some("basis-v1".into()),
             },
             SnapshotFileRow {
                 file_id: 2,
@@ -1578,6 +1608,8 @@ fn test_trend_comparison_with_file_deltas() {
                 category_scores: r#"{"organizational":2.0}"#.into(),
                 completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
+                score_upper: None,
+                score_basis: Some("basis-v1".into()),
             },
         ],
     )
@@ -1594,6 +1626,8 @@ fn test_trend_comparison_with_file_deltas() {
                 category_scores: r#"{"structural":0.5}"#.into(),
                 completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
+                score_upper: None,
+                score_basis: Some("basis-v1".into()),
             },
             SnapshotFileRow {
                 file_id: 2,
@@ -1602,6 +1636,8 @@ fn test_trend_comparison_with_file_deltas() {
                 category_scores: r#"{"organizational":3.0}"#.into(),
                 completeness: SnapshotCompleteness::Complete,
                 missing_biomarkers: Vec::new(),
+                score_upper: None,
+                score_basis: Some("basis-v1".into()),
             },
         ],
     )
@@ -1655,6 +1691,8 @@ fn test_trend_file_history_mode() {
             category_scores: "{}".into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         }],
     )
     .unwrap();
@@ -1669,6 +1707,8 @@ fn test_trend_file_history_mode() {
             category_scores: "{}".into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         }],
     )
     .unwrap();
@@ -1809,32 +1849,11 @@ fn test_health_finding_to_row() {
     assert_eq!(row.metric_value, 15.0);
 }
 
-// --- Health delta ---
+// --- Validated persistent evidence (sutra/416) ---
 
-#[test]
-fn test_health_delta_degradation() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/hotfile.rs");
-    seed_fn(&db, fid, "hotfile::process", "process", Some(5));
-
-    // Snapshot with good score
-    let snap_id = insert_snapshot(&db, 9.0);
-    db.insert_snapshot_files(
-        snap_id,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/hotfile.rs".into(),
-            score: 9.0,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    // Add a finding that degrades the score
-    db.replace_health_findings(&[HealthFinding {
-        file_id: fid,
+fn nested_finding(file_id: i64) -> HealthFinding {
+    HealthFinding {
+        file_id,
         symbol_id: None,
         biomarker_kind: BiomarkerKind::NestedComplexity,
         severity: HealthSeverity::Advisory,
@@ -1842,246 +1861,117 @@ fn test_health_delta_degradation() {
         provenance: "computed".into(),
         metric_value: 6.0,
         threshold: 4.0,
-        detail: "deep nesting".into(),
-    }])
-    .unwrap();
-
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/hotfile.rs".to_string()],
-        &[],
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
-    assert_eq!(delta.degraded.len(), 1);
-    assert!(delta.improved.is_empty());
-    let entry = &delta.degraded[0];
-    assert_eq!(entry.path, "src/hotfile.rs");
-    assert!((entry.previous_score - 9.0).abs() < 0.01);
-    assert!(entry.current_score < 9.0);
-    assert!(entry.delta < 0.0);
+        detail: "deep".into(),
+    }
 }
 
 #[test]
-fn test_health_delta_improvement() {
+fn evidence_scores_the_current_run_as_measured() {
+    use sutra::health::assess::PersistentEvidence;
     let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/cleaned.rs");
-    seed_fn(&db, fid, "cleaned::run", "run", Some(2));
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_seeded_run(&db);
 
-    // Snapshot with poor score
-    let snap_id = insert_snapshot(&db, 6.0);
-    db.insert_snapshot_files(
-        snap_id,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/cleaned.rs".into(),
-            score: 6.0,
-            category_scores: r#"{"structural":2.0}"#.into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    // No findings → current score = 10.0 (base)
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/cleaned.rs".to_string()],
-        &[],
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
-    assert!(delta.degraded.is_empty());
-    assert_eq!(delta.improved.len(), 1);
-    let entry = &delta.improved[0];
-    assert_eq!(entry.path, "src/cleaned.rs");
-    assert!(entry.delta > 0.0);
+    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let s = ev.file("src/hot.rs").unwrap().score();
+    assert!(matches!(s.value, ScoreValue::Measured(v) if (v - 8.66).abs() < 0.01));
 }
 
 #[test]
-fn test_health_delta_no_snapshot_uses_base_10() {
+fn evidence_from_a_stale_run_never_counts_its_findings_as_current_debt() {
+    use sutra::health::assess::PersistentEvidence;
     let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/new.rs");
-    seed_fn(&db, fid, "new::init", "init", Some(2));
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_seeded_run(&db);
 
-    // No snapshot exists → previous defaults to 10.0
-    // No findings → current = 10.0 → no delta
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/new.rs".to_string()],
-        &[],
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
-    assert!(delta.degraded.is_empty());
-    assert!(delta.improved.is_empty());
-}
-
-#[test]
-fn test_health_delta_with_ondemand_findings() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/volatile.rs");
-    seed_fn(&db, fid, "volatile::handle", "handle", Some(2));
-
-    // Snapshot with good score
-    let snap_id = insert_snapshot(&db, 9.5);
-    db.insert_snapshot_files(
-        snap_id,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/volatile.rs".into(),
-            score: 9.5,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    // On-demand finding
-    let ondemand = vec![HealthFinding {
-        file_id: fid,
-        symbol_id: Some(1),
-        biomarker_kind: BiomarkerKind::FunctionHotspot,
-        severity: HealthSeverity::Advisory,
-        confidence: 1.0,
-        provenance: "on-demand:blame".into(),
-        metric_value: 12.0,
-        threshold: 5.0,
-        detail: "volatile::handle: 12 distinct commits".into(),
-    }];
-
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/volatile.rs".to_string()],
-        &ondemand,
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
-    assert_eq!(delta.degraded.len(), 1);
-    let entry = &delta.degraded[0];
-    assert!(entry.delta < 0.0);
-    assert!(!entry.driving_findings.is_empty());
-    assert_eq!(entry.driving_findings[0].biomarker_kind, "function_hotspot");
-}
-
-// sutra/409: a file worst-cased in the comparison snapshot (skipped/stale, so
-// prev_score is low and its file-scored biomarkers are in missing_biomarkers)
-// must NOT float up to a spurious improvement just because its stale stored
-// findings happen to be light. The delta mirrors the snapshot's coverage
-// decision, so `current` is worst-cased the same way `prev` was and the delta is
-// a wash. Without the fix (covered=true), `current` would be a clean 10.0 and
-// this file would report a large improvement it never earned.
-#[test]
-fn test_health_delta_no_spurious_improvement_for_partial_snapshot_file() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/skipped.rs");
-    seed_fn(&db, fid, "skipped::run", "run", Some(2));
-
-    // The worst-case floor the delta path will compute for an uncovered file,
-    // under the same facts it uses. Deriving it (rather than hardcoding) keeps
-    // the wash exact regardless of biomarker weight calibration.
-    let facts = sutra::health::scoring::WorkspaceFacts::detect(&db).unwrap();
-    let floor = score_file(&[], &facts, false).score;
-
-    // Snapshot worst-cased this file: low score, structural biomarker missing.
-    let snap_id = insert_snapshot(&db, floor);
-    db.insert_snapshot_files(
-        snap_id,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/skipped.rs".into(),
-            score: floor,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Partial,
-            missing_biomarkers: vec!["nested_complexity".into()],
-        }],
-    )
-    .unwrap();
-
-    // No stored findings (stale/absent) and no on-demand debt.
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/skipped.rs".to_string()],
-        &[],
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
+    let ev = PersistentEvidence::load(&db, Validity::Stale(MissingReason::InputsChanged)).unwrap();
+    let f = ev.file("src/hot.rs").unwrap();
+    assert_eq!(f.findings.len(), 1, "stale findings stay visible");
+    let s = f.score();
+    assert!(s.deductions.is_empty(), "…but are not current debt");
+    assert_eq!(s.value.upper(), 10.0);
+    assert!(s.partial());
     assert!(
-        delta.improved.is_empty(),
-        "worst-cased snapshot file must not report a spurious improvement"
+        s.missing
+            .iter()
+            .all(|m| m.reason == MissingReason::InputsChanged)
     );
-    assert!(delta.degraded.is_empty(), "delta should be a wash");
 }
 
-// sutra/409: coverage is per-axis. Even when a file was partial in the snapshot
-// (structural axis worst-cased), a freshly recomputed on-demand finding is still
-// credited, so genuine new debt on the changed file still registers as a
-// degradation attributed to the on-demand finding.
 #[test]
-fn test_health_delta_credits_ondemand_debt_on_partial_snapshot_file() {
+fn evidence_without_any_run_is_legacy_partial_not_clean() {
+    use sutra::health::assess::PersistentEvidence;
     let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/skipped.rs");
-    seed_fn(&db, fid, "skipped::handle", "handle", Some(2));
+    seed_file(&db, "src/a.rs");
+    db.replace_health_findings(&[]).unwrap();
+    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let s = ev.file("src/a.rs").unwrap().score();
+    assert!(s.partial());
+    assert!(
+        s.missing
+            .iter()
+            .all(|m| m.reason == MissingReason::LegacyUnknown)
+    );
+}
 
-    let facts = sutra::health::scoring::WorkspaceFacts::detect(&db).unwrap();
-    let floor = score_file(&[], &facts, false).score;
+#[test]
+fn evidence_marks_a_file_added_after_the_run_never_computed() {
+    use sutra::health::assess::PersistentEvidence;
+    let (_dir, db) = setup_db();
+    seed_file(&db, "src/a.rs");
+    db.replace_health_findings(&[]).unwrap();
+    publish_seeded_run(&db);
+    seed_file(&db, "src/new.rs");
+    // Validity is the caller's claim; even a (wrongly) current claim cannot make
+    // a file the run never saw complete.
+    let ev = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    assert!(ev.file("src/a.rs").unwrap().score().value.is_measured());
+    let new = ev.file("src/new.rs").unwrap().score();
+    assert!(new.partial());
+    assert!(
+        new.missing
+            .iter()
+            .all(|m| m.reason == MissingReason::NeverComputed)
+    );
+}
 
-    let snap_id = insert_snapshot(&db, floor);
-    db.insert_snapshot_files(
-        snap_id,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/skipped.rs".into(),
-            score: floor,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Partial,
-            missing_biomarkers: vec!["nested_complexity".into()],
-        }],
-    )
-    .unwrap();
+#[test]
+fn evidence_applies_waivers_and_records_them_in_the_basis() {
+    use sutra::health::assess::PersistentEvidence;
+    let (_dir, db) = setup_db();
+    let fid = seed_file(&db, "src/hot.rs");
+    db.replace_health_findings(&[nested_finding(fid)]).unwrap();
+    publish_seeded_run(&db);
+    let before = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let before_basis = before.file("src/hot.rs").unwrap().basis;
 
-    let ondemand = vec![HealthFinding {
-        file_id: fid,
-        symbol_id: Some(1),
-        biomarker_kind: BiomarkerKind::FunctionHotspot,
-        severity: HealthSeverity::Advisory,
-        confidence: 1.0,
-        provenance: "on-demand:blame".into(),
-        metric_value: 12.0,
-        threshold: 5.0,
-        detail: "skipped::handle: 12 distinct commits".into(),
-    }];
+    db.create_health_waiver("nested_complexity", "src/hot.rs", None, "accepted", "test")
+        .unwrap();
+    let after = PersistentEvidence::load(&db, Validity::Current).unwrap();
+    let f = after.file("src/hot.rs").unwrap();
+    assert!(f.findings.is_empty());
+    assert_eq!(f.waived.len(), 1);
+    assert_eq!(f.score().value, ScoreValue::Measured(10.0));
+    assert_ne!(
+        f.basis, before_basis,
+        "a waiver changes the scoring basis, so the 8.66 → 10.0 move is not a measured improvement"
+    );
+}
 
-    let delta = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &["src/skipped.rs".to_string()],
-        &ondemand,
-        BaselineSelector::Latest,
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-
-    assert_eq!(delta.degraded.len(), 1);
-    let entry = &delta.degraded[0];
-    assert!(entry.delta < 0.0);
-    assert_eq!(entry.driving_findings[0].biomarker_kind, "function_hotspot");
+#[test]
+fn baseline_selector_pinned_missing_stays_missing() {
+    let (_dir, db) = setup_db();
+    insert_snapshot(&db, 9.0);
+    assert_eq!(BaselineSelector::Pinned(None).resolve(&db).unwrap(), None);
+    let pinned = insert_snapshot(&db, 8.0);
+    let latest = insert_snapshot(&db, 7.0);
+    assert_eq!(
+        BaselineSelector::Pinned(Some(pinned)).resolve(&db).unwrap(),
+        Some(pinned)
+    );
+    assert_eq!(BaselineSelector::Latest.resolve(&db).unwrap(), Some(latest));
 }
 
 // ---------------------------------------------------------------------------
@@ -2200,9 +2090,12 @@ fn file_health_component_filter() {
 
     let findings = compute_nested_complexity(&db).unwrap();
     db.replace_health_findings(&findings).unwrap();
+    publish_seeded_run(&db);
 
     // Without filter: both files + component summary
-    let all = sutra::tools::file_health::handle(&db, None, None, None, None, false).unwrap();
+    let all =
+        sutra::tools::file_health::handle(&db, Validity::Current, None, None, None, None, false)
+            .unwrap();
     assert_eq!(all["total_files"].as_u64().unwrap(), 2);
     assert!(
         all.get("components").is_some(),
@@ -2210,8 +2103,16 @@ fn file_health_component_filter() {
     );
 
     // With component filter: only Alpha's file, no component summary
-    let filtered =
-        sutra::tools::file_health::handle(&db, None, None, None, Some("Alpha"), false).unwrap();
+    let filtered = sutra::tools::file_health::handle(
+        &db,
+        Validity::Current,
+        None,
+        None,
+        None,
+        Some("Alpha"),
+        false,
+    )
+    .unwrap();
     assert_eq!(filtered["total_files"].as_u64().unwrap(), 1);
     assert_eq!(
         filtered["files"][0]["path"].as_str().unwrap(),
@@ -2245,10 +2146,21 @@ fn file_health_marks_components_unavailable_when_membership_stale() {
 
     let findings = compute_nested_complexity(&db).unwrap();
     db.replace_health_findings(&findings).unwrap();
+    publish_seeded_run(&db);
 
     let ctx = ToolContext::for_test(Arc::new(db), dir.path().to_path_buf());
-    let result =
-        sutra::tools::file_health::handle_ctx(&ctx, None, None, Some("all"), None, false).unwrap();
+    let result = sutra::tools::file_health::handle_ctx(
+        &ctx,
+        sutra::health::refresh::DemandOutcome::Refreshed(
+            sutra::health::refresh::RefreshResult::Published(sutra::health::evidence::RunId(1)),
+        ),
+        None,
+        None,
+        Some("all"),
+        None,
+        false,
+    )
+    .unwrap();
 
     assert!(
         result.get("components").is_none(),
@@ -2278,13 +2190,22 @@ fn file_health_component_instability() {
     db.insert_import(fa, "src/beta/b.rs", Some(fb), 1, "use", None)
         .unwrap();
 
-    // Stamp coverage as a full parse would: these files were analyzed and are
-    // genuinely finding-free, so they score a clean 10.0 rather than being
-    // worst-cased as not-yet-analyzed (sutra/408).
+    // Publish a complete run as a full parse would: these files were analyzed
+    // and are genuinely finding-free, so they score a measured 10.0 rather than
+    // a partial bound (sutra/416).
     db.replace_health_findings(&[]).unwrap();
+    publish_seeded_run(&db);
 
-    let result =
-        sutra::tools::file_health::handle(&db, None, None, Some("all"), None, false).unwrap();
+    let result = sutra::tools::file_health::handle(
+        &db,
+        Validity::Current,
+        None,
+        None,
+        Some("all"),
+        None,
+        false,
+    )
+    .unwrap();
     let components = result["components"].as_array().unwrap();
     assert!(!components.is_empty());
 
@@ -2447,130 +2368,6 @@ fn import_cycle_roundtrips_through_db() {
     }
 }
 
-// --- sutra/408: per-file coverage worst-casing ---
-
-/// The health score `score_workspace` assigns to one file.
-fn workspace_file_score(db: &Db, file_id: i64) -> f64 {
-    sutra::health::scoring::score_workspace(db)
-        .unwrap()
-        .file_scores
-        .iter()
-        .find(|s| s.file_id == file_id)
-        .unwrap_or_else(|| panic!("file {file_id} missing from workspace scores"))
-        .score
-}
-
-#[test]
-fn score_workspace_scores_covered_finding_free_file_as_clean() {
-    // A file the producers analyzed and found nothing is genuinely clean: 10.0,
-    // not partial. replace_health_findings stamps coverage at the current hash.
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/clean.rs");
-    db.replace_health_findings(&[]).unwrap();
-
-    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
-    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
-    assert_eq!(sf.score, 10.0);
-    assert!(
-        sf.missing.is_empty(),
-        "an analyzed clean file is not partial"
-    );
-}
-
-#[test]
-fn score_workspace_worst_cases_file_without_coverage() {
-    // A finding-free file that was never analyzed (no coverage stamp) must be
-    // worst-cased, not floored at a clean 10.0 — the central sutra/408 gap.
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/unknown.rs");
-    // No replace_health_findings → no coverage stamp for this file.
-
-    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
-    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
-    assert!(
-        sf.score < 10.0,
-        "uncovered file must not score a clean 10.0"
-    );
-    assert!(!sf.missing.is_empty(), "uncovered file is partial");
-}
-
-#[test]
-fn score_workspace_worst_cases_file_after_incremental_change() {
-    // Findings computed at one revision; the file is then reparsed with new
-    // content but findings are NOT recomputed (the query-path incremental
-    // reparse never runs compute_all_health_findings). The stale analysis must
-    // not be trusted — the drifted file is worst-cased.
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/changed.rs"); // content_hash "abc123"
-    db.replace_health_findings(&[]).unwrap(); // covered at "abc123"
-    assert_eq!(workspace_file_score(&db, fid), 10.0);
-
-    // Simulate incremental reparse: content changed, findings untouched.
-    db.upsert_file("src/changed.rs", "rust", "def456", 120, true)
-        .unwrap();
-
-    let ws = sutra::health::scoring::score_workspace(&db).unwrap();
-    let sf = ws.file_scores.iter().find(|s| s.file_id == fid).unwrap();
-    assert!(
-        sf.score < 10.0,
-        "changed-but-not-reanalyzed file must be worst-cased"
-    );
-    assert!(!sf.missing.is_empty());
-}
-
-#[test]
-fn git_availability_round_trips_through_detect() {
-    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
-    let (_dir, db) = setup_db();
-
-    for state in [
-        GitAvailability::Available,
-        GitAvailability::NoHistory,
-        GitAvailability::NotARepo,
-    ] {
-        db.set_git_availability(state.as_str()).unwrap();
-        assert_eq!(WorkspaceFacts::detect(&db).unwrap().git, state);
-    }
-}
-
-#[test]
-fn detect_falls_back_to_commit_count_when_git_availability_unset() {
-    // Indexes predating sutra/408 have no persisted git_availability: an empty
-    // commit table reads as NotARepo (the old "no git" → excluded behavior).
-    use sutra::health::scoring::{GitAvailability, WorkspaceFacts};
-    let (_dir, db) = setup_db();
-    assert_eq!(
-        WorkspaceFacts::detect(&db).unwrap().git,
-        GitAvailability::NotARepo
-    );
-}
-
-#[test]
-fn no_history_worst_cases_rather_than_improving_by_excluding_git() {
-    // Regression for the git-conflation harm: a real repo whose history was
-    // unavailable this run (NoHistory) must worst-case the git biomarkers, so
-    // health cannot improve by "losing" evidence. NoHistory therefore scores
-    // strictly below NotARepo, which legitimately excludes the git dimension.
-    use sutra::health::scoring::GitAvailability;
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/x.rs");
-    db.replace_health_findings(&[]).unwrap(); // covered, finding-free
-
-    db.set_git_availability(GitAvailability::NotARepo.as_str())
-        .unwrap();
-    let excluded = workspace_file_score(&db, fid);
-
-    db.set_git_availability(GitAvailability::NoHistory.as_str())
-        .unwrap();
-    let worst_cased = workspace_file_score(&db, fid);
-
-    assert_eq!(excluded, 10.0, "not a git repo → git excluded → clean");
-    assert!(
-        worst_cased < excluded,
-        "NoHistory must worst-case ({worst_cased}), not improve to clean ({excluded})"
-    );
-}
-
 #[test]
 fn snapshot_file_completeness_round_trips() {
     // sutra/408: `partial` + `missing_biomarkers` survive the snapshot so trend
@@ -2585,6 +2382,8 @@ fn snapshot_file_completeness_round_trips() {
             category_scores: "{}".into(),
             completeness: SnapshotCompleteness::Partial,
             missing_biomarkers: vec!["nested_complexity".into(), "import_cycle".into()],
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         },
         SnapshotFileRow {
             file_id: 2,
@@ -2593,6 +2392,8 @@ fn snapshot_file_completeness_round_trips() {
             category_scores: "{}".into(),
             completeness: SnapshotCompleteness::Complete,
             missing_biomarkers: Vec::new(),
+            score_upper: None,
+            score_basis: Some("basis-v1".into()),
         },
     ];
     db.insert_snapshot_files(snap_id, &files).unwrap();
@@ -2615,197 +2416,6 @@ fn snapshot_file_completeness_round_trips() {
     assert!(whole.missing_biomarkers.is_empty());
 }
 
-// --- review baseline pinning (sutra/421 Wave D) ---
-
-#[test]
-fn compute_health_delta_honors_the_pinned_baseline_over_latest() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/x.rs");
-
-    // An OLDER baseline where the file scored 6.0, then a NEWER snapshot where it
-    // scored a clean 10.0. `sutra_review` pins the pre-request baseline; the
-    // wrong behaviour would silently compare against the latest.
-    let baseline = insert_snapshot(&db, 6.0);
-    db.insert_snapshot_files(
-        baseline,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/x.rs".into(),
-            score: 6.0,
-            category_scores: r#"{"structural":4.0}"#.into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    let latest = insert_snapshot(&db, 10.0);
-    db.insert_snapshot_files(
-        latest,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/x.rs".into(),
-            score: 10.0,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    // The file has no stored or on-demand findings → current score is a clean 10.0.
-    let changed = ["src/x.rs".to_string()];
-
-    // Latest → latest snapshot (10.0): no measured change.
-    let against_latest =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], BaselineSelector::Latest)
-            .unwrap()
-            .into_measured()
-            .expect("measured delta");
-    assert!(
-        against_latest.degraded.is_empty() && against_latest.improved.is_empty(),
-        "vs latest (10.0) there is no delta"
-    );
-
-    // Pinned(Some(baseline)) → the pinned older snapshot (6.0): a +4 improvement.
-    let against_pinned = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &changed,
-        &[],
-        BaselineSelector::Pinned(Some(baseline)),
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-    assert_eq!(against_pinned.degraded.len(), 0);
-    assert_eq!(
-        against_pinned.improved.len(),
-        1,
-        "vs the pinned 6.0 baseline the file improved to 10.0"
-    );
-    assert_eq!(against_pinned.improved[0].path, "src/x.rs");
-    assert!((against_pinned.improved[0].previous_score - 6.0).abs() < 1e-6);
-}
-
-// sutra/424 F5: a genuinely-missing baseline (no checkpoint existed when review
-// pinned it) must stay missing → incomparable, even after parser healing writes
-// a fresh snapshot DURING the request. `Pinned(None)` must NOT fall back to the
-// latest checkpoint the way `Latest` does — otherwise review compares current
-// against its own just-healed snapshot and manufactures a no-change delta.
-#[test]
-fn compute_health_delta_pinned_missing_baseline_is_incomparable() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/x.rs");
-
-    // Simulate tool_context's parser healing writing a fresh snapshot mid-request,
-    // AFTER the (empty) baseline was pinned: a latest checkpoint now exists.
-    let healed = insert_snapshot(&db, 10.0);
-    db.insert_snapshot_files(
-        healed,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/x.rs".into(),
-            score: 10.0,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    let changed = ["src/x.rs".to_string()];
-
-    // Pinned(None) — the baseline was absent at pin time. Despite the healed
-    // snapshot now being the latest, the result is incomparable, not a delta.
-    let outcome = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &changed,
-        &[],
-        BaselineSelector::Pinned(None),
-    )
-    .unwrap();
-    assert!(
-        matches!(
-            outcome,
-            HealthDeltaOutcome::Incomparable(IncomparableReason::MissingBaseline)
-        ),
-        "a pinned-missing baseline must be incomparable, not healed into the latest snapshot"
-    );
-
-    // Latest, by contrast, deliberately DOES fall back to the healed snapshot
-    // (non-review callers keep the pre-pinning behaviour — sutra/421).
-    let via_latest =
-        sutra::health::ondemand::compute_health_delta(&db, &changed, &[], BaselineSelector::Latest)
-            .unwrap();
-    assert!(
-        matches!(via_latest, HealthDeltaOutcome::Measured(_)),
-        "Latest still resolves to the newest checkpoint for non-review callers"
-    );
-}
-
-#[test]
-fn compute_health_delta_excludes_waived_findings_like_file_health() {
-    let (_dir, db) = setup_db();
-    let fid = seed_file(&db, "src/w.rs");
-    seed_fn(&db, fid, "w::deep", "deep", Some(7)); // nesting 7 > 4 → a finding
-
-    let findings = compute_nested_complexity(&db).unwrap();
-    assert_eq!(findings.len(), 1);
-    db.replace_health_findings(&findings).unwrap();
-
-    // Baseline where the file scored a clean 10.0 — score_workspace excludes
-    // waived findings, so a waived finding never lowered the stored baseline.
-    let baseline = insert_snapshot(&db, 10.0);
-    db.insert_snapshot_files(
-        baseline,
-        &[SnapshotFileRow {
-            file_id: fid,
-            file_path: "src/w.rs".into(),
-            score: 10.0,
-            category_scores: "{}".into(),
-            completeness: SnapshotCompleteness::Complete,
-            missing_biomarkers: Vec::new(),
-        }],
-    )
-    .unwrap();
-
-    let changed = ["src/w.rs".to_string()];
-
-    // Active finding lowers the current score → a degradation vs the clean baseline.
-    let unwaived = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &changed,
-        &[],
-        BaselineSelector::Pinned(Some(baseline)),
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-    assert_eq!(
-        unwaived.degraded.len(),
-        1,
-        "the active finding degrades vs a clean baseline"
-    );
-
-    // Waiving it must exclude it from the current side too (same policy as file
-    // health), so no spurious degradation against the waiver-free baseline.
-    db.create_health_waiver("nested_complexity", "src/w.rs", None, "accepted", "josh")
-        .unwrap();
-    let waived = sutra::health::ondemand::compute_health_delta(
-        &db,
-        &changed,
-        &[],
-        BaselineSelector::Pinned(Some(baseline)),
-    )
-    .unwrap()
-    .into_measured()
-    .expect("measured delta");
-    assert!(
-        waived.degraded.is_empty() && waived.improved.is_empty(),
-        "a waived finding must not manufacture a delta"
-    );
-}
-
 // --- sutra/418: trend completeness fidelity ---
 
 fn snap_row(
@@ -2822,6 +2432,8 @@ fn snap_row(
         category_scores: "{}".into(),
         completeness,
         missing_biomarkers: missing.iter().map(|m| m.to_string()).collect(),
+        score_upper: None,
+        score_basis: Some("basis-v1".into()),
     }
 }
 

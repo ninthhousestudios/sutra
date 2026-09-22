@@ -797,6 +797,7 @@ pub fn parse_workspace(
         Ok(PostParseResult::NoChanges) => {
             if let Err(e) = record_unchanged_snapshot(
                 db,
+                &workspace.root,
                 head_commit.clone(),
                 Some(parse_started_at.clone()),
                 files_parsed,
@@ -811,6 +812,7 @@ pub fn parse_workspace(
         Ok(PostParseResult::Full { .. }) => {
             if let Err(e) = record_snapshot(
                 db,
+                &workspace.root,
                 head_commit.clone(),
                 Some(parse_started_at.clone()),
                 files_parsed,
@@ -830,6 +832,7 @@ pub fn parse_workspace(
         Err(_) => {
             if let Err(e) = record_snapshot(
                 db,
+                &workspace.root,
                 head_commit,
                 Some(parse_started_at),
                 files_parsed,
@@ -1199,7 +1202,6 @@ fn post_parse_sequence(
             graph_stamp.generation,
             graph_stamp.indexed_paths,
         )?;
-        db.set_git_availability(ingestion.availability.as_str())?;
         let churn_map = ingestion.churn;
         let health_history = ingestion.observation;
         log_phase_rss("post_parse:cochange_done");
@@ -1250,8 +1252,7 @@ fn post_parse_sequence(
 
         // Publish an immutable health run through the shared refresh core so full
         // parse and on-demand agree on findings/completeness (sutra/415, AC3).
-        // This also refreshes the live health_findings/health_coverage tables the
-        // legacy scoring path reads. Nothing bumps data_generation between the
+        // Scoring reads the published run (sutra/416), never the live tables. Nothing bumps data_generation between the
         // graph probe above and here, so the run publishes at that generation.
         match crate::health::refresh::publish_run(
             health_session,
@@ -1281,6 +1282,7 @@ fn post_parse_sequence(
 #[allow(clippy::too_many_arguments)]
 fn record_snapshot(
     db: &Db,
+    workspace_root: &Path,
     head_commit: Option<String>,
     timestamp: Option<String>,
     files_parsed: i64,
@@ -1289,7 +1291,7 @@ fn record_snapshot(
     parse_errors: i64,
     duration_ms: i64,
 ) -> Result<()> {
-    let health = compute_snapshot_health(db)?;
+    let health = compute_snapshot_health(db, workspace_root)?;
     db.insert_snapshot_atomic(
         &SnapshotParams {
             files_parsed,
@@ -1314,6 +1316,7 @@ fn record_snapshot(
 #[allow(clippy::too_many_arguments)]
 fn record_unchanged_snapshot(
     db: &Db,
+    workspace_root: &Path,
     head_commit: Option<String>,
     timestamp: Option<String>,
     files_parsed: i64,
@@ -1322,9 +1325,11 @@ fn record_unchanged_snapshot(
     parse_errors: i64,
     duration_ms: i64,
 ) -> Result<()> {
-    let Some(previous) = db.latest_snapshots(1)?.into_iter().next() else {
+    let Some((previous, file_scores, component_scores)) = copyable_snapshot(db, workspace_root)?
+    else {
         return record_snapshot(
             db,
+            workspace_root,
             head_commit,
             timestamp,
             files_parsed,
@@ -1334,27 +1339,6 @@ fn record_unchanged_snapshot(
             duration_ms,
         );
     };
-
-    let file_scores = db.snapshot_file_scores(previous.id)?;
-    // Copying forward an Unknown-completeness row would keep a legacy
-    // observation Unknown for as long as the source stays unchanged; recompute
-    // instead so an upgraded index gains recorded completeness (sutra/418).
-    if file_scores
-        .iter()
-        .any(|f| f.completeness == SnapshotCompleteness::Unknown)
-    {
-        return record_snapshot(
-            db,
-            head_commit,
-            timestamp,
-            files_parsed,
-            symbols_extracted,
-            refs_extracted,
-            parse_errors,
-            duration_ms,
-        );
-    }
-    let component_scores = db.snapshot_component_scores(previous.id)?;
     db.insert_snapshot_atomic(
         &SnapshotParams {
             files_parsed,
@@ -1374,6 +1358,48 @@ fn record_unchanged_snapshot(
         &component_scores,
     )?;
     Ok(())
+}
+
+/// The latest checkpoint and its rows when they may be copied forward by a
+/// no-change parse, else `None` (recompute). Unchanged source bytes are not
+/// enough: the copy must carry the completeness and score basis the current
+/// evidence would record (health-evidence-contract.md § Publication and
+/// consumers). Recompute when a prior row is legacy (Unknown completeness / no
+/// basis), when the current run no longer validates, or when any file's basis
+/// or the indexed file set moved (e.g. a waiver added between two no-change
+/// parses) — otherwise a copied row would present an old basis as current.
+/// A checkpoint plus its per-file and per-component rows.
+type CheckpointRows = (
+    crate::db::SnapshotRow,
+    Vec<SnapshotFileRow>,
+    Vec<SnapshotComponentRow>,
+);
+
+fn copyable_snapshot(db: &Db, workspace_root: &Path) -> Result<Option<CheckpointRows>> {
+    let Some(previous) = db.latest_snapshots(1)?.into_iter().next() else {
+        return Ok(None);
+    };
+    let file_scores = db.snapshot_file_scores(previous.id)?;
+    let component_scores = db.snapshot_component_scores(previous.id)?;
+    let legacy = file_scores
+        .iter()
+        .any(|f| f.completeness == SnapshotCompleteness::Unknown || f.score_basis.is_none())
+        || component_scores
+            .iter()
+            .any(|c| c.completeness == SnapshotCompleteness::Unknown || c.score_basis.is_none());
+    if legacy {
+        return Ok(None);
+    }
+    let evidence =
+        crate::health::assess::PersistentEvidence::load(db, snapshot_validity(db, workspace_root))?;
+    let unchanged_basis = evidence.validity == crate::health::evidence::Validity::Current
+        && evidence.files.len() == file_scores.len()
+        && file_scores.iter().all(|row| {
+            evidence
+                .file(&row.file_path)
+                .is_some_and(|e| row.score_basis.as_deref() == Some(e.basis.to_hex().as_str()))
+        });
+    Ok(unchanged_basis.then_some((previous, file_scores, component_scores)))
 }
 
 /// Recursively walk `root` and collect files with matching extensions, also
@@ -1435,8 +1461,25 @@ struct SnapshotHealthData {
     component_scores: Vec<SnapshotComponentRow>,
 }
 
-fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
-    use crate::health::scoring;
+/// Validity of the current health run for a snapshot. A failed probe records
+/// the snapshot as stale-partial rather than dropping the checkpoint.
+fn snapshot_validity(db: &Db, workspace_root: &Path) -> crate::health::evidence::Validity {
+    use crate::health::evidence::{InputFailure, MissingReason, Validity};
+    match crate::health::refresh::current_run_validity(
+        db,
+        workspace_root,
+        chrono::Utc::now().timestamp(),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("snapshot: health validity probe failed: {e}");
+            Validity::Stale(MissingReason::Failed(InputFailure::ProbeFailed))
+        }
+    }
+}
+
+fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHealthData> {
+    use crate::health::assess::{self, PersistentEvidence};
 
     let files = db.all_files()?;
     let complexity = db.complexity_by_file()?;
@@ -1457,71 +1500,63 @@ fn compute_snapshot_health(db: &Db) -> Result<SnapshotHealthData> {
         }
     }
 
-    let workspace = scoring::score_workspace(db)?;
-    let file_score_map: HashMap<i64, &scoring::ScoredFile> = workspace
-        .file_scores
-        .iter()
-        .map(|fs| (fs.file_id, fs))
-        .collect();
+    // Score from the validated current run (sutra/416): the checkpoint records
+    // exactly what the evidence supports — measured scores, or conservative
+    // bounds with the missing producers — plus the basis they were scored under.
+    let evidence = PersistentEvidence::load(db, snapshot_validity(db, workspace_root))?;
+    let workspace = assess::score_workspace(db, &evidence)?;
 
-    let mut file_scores = Vec::new();
+    let mut file_scores = Vec::with_capacity(workspace.files.len());
     let mut health_sum = 0.0;
-
-    for f in &files {
-        let (score, cat_json, completeness, missing_biomarkers) = match file_score_map.get(&f.id) {
-            Some(sf) => {
-                let cat_totals: HashMap<&str, f64> = sf
-                    .category_totals
-                    .iter()
-                    .map(|(cat, &v)| (cat.as_str(), v))
-                    .collect();
-                let json = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
-                // Carry completeness through the snapshot (sutra/408) so trend
-                // can tell a worst-cased partial score from real degradation.
-                // Sorted: the scorer's order is not stable across runs, and trend
-                // compares these sets between snapshots (sutra/418).
-                let mut missing: Vec<String> = sf
-                    .missing
-                    .iter()
-                    .map(|m| m.biomarker.as_str().to_string())
-                    .collect();
-                missing.sort_unstable();
-                let completeness = if missing.is_empty() {
-                    SnapshotCompleteness::Complete
-                } else {
-                    SnapshotCompleteness::Partial
-                };
-                (sf.score, json, completeness, missing)
+    for sf in &workspace.files {
+        let cat_totals: HashMap<&str, f64> = sf
+            .score
+            .categories
+            .iter()
+            .map(|c| (c.category.as_str(), c.pessimistic))
+            .collect();
+        let category_scores = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
+        let (completeness, score_upper) = match sf.score.value {
+            crate::health::scoring::ScoreValue::Measured(_) => {
+                (SnapshotCompleteness::Complete, None)
             }
-            // Unscored file: the 10.0 is a placeholder, not a measurement, so
-            // its completeness is not claimed (sutra/418).
-            None => (10.0, "{}".into(), SnapshotCompleteness::Unknown, Vec::new()),
+            crate::health::scoring::ScoreValue::Partial { upper, .. } => {
+                (SnapshotCompleteness::Partial, Some(upper))
+            }
         };
-
-        file_scores.push(SnapshotFileRow {
-            file_id: f.id,
-            file_path: f.path.to_string(),
-            score,
-            category_scores: cat_json,
-            completeness,
-            missing_biomarkers,
-        });
+        let score = sf.score.value.lower();
         health_sum += score;
+        file_scores.push(SnapshotFileRow {
+            file_id: sf.evidence.file_id,
+            file_path: sf.evidence.path.to_string(),
+            score,
+            category_scores,
+            completeness,
+            missing_biomarkers: sf.score.missing_names(),
+            score_upper,
+            score_basis: Some(sf.evidence.basis.to_hex()),
+        });
     }
 
-    let health_score = if files.is_empty() {
+    let health_score = if file_scores.is_empty() {
         10.0
     } else {
-        health_sum / files.len() as f64
+        health_sum / file_scores.len() as f64
     };
 
     let component_scores = workspace
-        .component_scores
+        .components
         .into_iter()
         .map(|cs| SnapshotComponentRow {
+            score: cs.value.lower(),
+            completeness: if cs.value.is_measured() {
+                SnapshotCompleteness::Complete
+            } else {
+                SnapshotCompleteness::Partial
+            },
+            score_basis: Some(cs.basis.to_hex()),
             component_id: cs.component_id,
             component_name: cs.component_name,
-            score: cs.score,
             member_count: cs.member_count as i64,
             total_nloc: cs.total_nloc,
         })

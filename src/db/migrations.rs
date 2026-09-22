@@ -446,6 +446,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0076_snapshot_completeness_recorded.sql"),
         true,
     ),
+    // Snapshot scoring basis + interval bounds + component completeness
+    // (sutra/416). ephemeral_only: same reasoning as 0073/0076 — both snapshot
+    // detail tables are Ephemeral and recreated by 0033 on reindex.
+    (
+        "0077_snapshot_score_basis",
+        include_str!("../../migrations/0077_snapshot_score_basis.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -628,6 +636,10 @@ impl Db {
             }
             "0076_snapshot_completeness_recorded" => {
                 Self::column_exists(conn, "health_snapshot_files", "completeness_recorded")
+            }
+            "0077_snapshot_score_basis" => {
+                Self::column_exists(conn, "health_snapshot_files", "score_basis")
+                    && Self::column_exists(conn, "health_snapshot_components", "score_basis")
             }
             "0005_conventions" => {
                 let exists: bool = conn

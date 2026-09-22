@@ -1704,6 +1704,8 @@ fn test_snapshot_pruning() {
                     category_scores: "{}".into(),
                     completeness: SnapshotCompleteness::Complete,
                     missing_biomarkers: Vec::new(),
+                    score_upper: None,
+                    score_basis: Some("basis-v1".into()),
                 }],
                 &[SnapshotComponentRow {
                     component_id: "comp".into(),
@@ -1711,6 +1713,8 @@ fn test_snapshot_pruning() {
                     score: i as f64,
                     member_count: 1,
                     total_nloc: 10,
+                    completeness: SnapshotCompleteness::Complete,
+                    score_basis: Some("comp-basis-v1".into()),
                 }],
             )
             .unwrap();

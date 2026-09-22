@@ -115,36 +115,9 @@ impl Db {
                     f.detail,
                 ])?;
             }
-
-            // Coverage stamp (sutra/408): record the content_hash each file's
-            // findings were just computed for. This runs only after a full
-            // compute_all_health_findings, which evaluates every file, so the
-            // covered set is all files at their current hash. score_workspace
-            // later worst-cases any file whose current hash has since drifted
-            // (incrementally reparsed) or that has no stamp (newly added).
-            conn.execute("DELETE FROM health_coverage", [])?;
-            conn.execute_batch(
-                "INSERT INTO health_coverage (file_id, content_hash)
-                 SELECT id, content_hash FROM files",
-            )?;
         }
         tx.commit()?;
         Ok(())
-    }
-
-    /// Map of file_id → the content_hash its health findings were last computed
-    /// for (sutra/408). A file absent from this map, or whose current
-    /// `FileRow.content_hash` differs from its stamp, has no valid analysis at
-    /// its current revision and is worst-cased by scoring.
-    pub fn health_coverage_map(&self) -> Result<std::collections::HashMap<i64, String>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT file_id, content_hash FROM health_coverage")?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<std::collections::HashMap<i64, String>>>()?;
-        Ok(rows)
     }
 
     /// Qualified names for the given symbol ids, for labelling retained health

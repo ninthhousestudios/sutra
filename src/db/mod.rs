@@ -505,8 +505,14 @@ pub struct SnapshotFileRow {
     /// whether that is unknown because the row predates recording it (sutra/418).
     /// Lets trend tell partial analysis apart from real degradation.
     pub completeness: SnapshotCompleteness,
-    /// Names of the worst-cased biomarkers behind a `Partial` score.
+    /// Names of the missing producers behind a `Partial` score.
     pub missing_biomarkers: Vec<String>,
+    /// Optimistic bound of a `Partial` score (`score` is the conservative lower
+    /// bound). `None` when measured, or on rows predating sutra/416.
+    pub score_upper: Option<f64>,
+    /// Hex [`crate::health::scoring::file_score_basis`] digest. `None` = Unknown
+    /// basis (every row before sutra/416): never matches, so never measured.
+    pub score_basis: Option<String>,
 }
 
 /// Persisted completeness of one per-file snapshot score.
@@ -562,15 +568,23 @@ pub struct FileHealthHistoryRow {
     pub category_scores: String,
     pub completeness: SnapshotCompleteness,
     pub missing_biomarkers: Vec<String>,
+    pub score_upper: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SnapshotComponentRow {
     pub component_id: String,
     pub component_name: String,
+    /// Conservative (lower-bound) score when `Partial`.
     pub score: f64,
     pub member_count: i64,
     pub total_nloc: i64,
+    /// `Complete` only when every member file was measured (sutra/416);
+    /// `Unknown` on rows that never recorded it.
+    pub completeness: SnapshotCompleteness,
+    /// Digest over membership, member bases and the aggregation rule. `None` =
+    /// Unknown (legacy): a component delta is never measured against it.
+    pub score_basis: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2142,30 +2156,6 @@ impl Db {
         Ok(())
     }
 
-    /// The persisted git-availability state recorded at the last full parse
-    /// ("available" | "no_history" | "not_a_repo"), or `None` on an index
-    /// predating sutra/408. `None` reads as "unknown" — the caller falls back
-    /// to the commit-count heuristic (see `WorkspaceFacts::detect`).
-    pub fn git_availability(&self) -> Result<Option<String>> {
-        let conn = self.conn.lock();
-        let value: Option<String> = conn.query_row(
-            "SELECT git_availability FROM index_meta WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(value)
-    }
-
-    /// Record the git-availability state resolved during a full parse, where
-    /// both the workspace root and the git-command outcome are in hand.
-    pub fn set_git_availability(&self, value: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE index_meta SET git_availability = ?1 WHERE id = 1",
-            params![value],
-        )?;
-        Ok(())
-    }
-
     /// Mark derived data as complete up to the given generation.
     pub fn set_derived_complete(&self, generation: i64) -> Result<()> {
         self.conn.lock().execute(
@@ -2492,21 +2482,7 @@ impl Db {
 
             insert_snapshot_file_rows(&conn, snapshot_id, files)?;
 
-            let mut comp_stmt = conn.prepare(
-                "INSERT INTO health_snapshot_components
-                 (snapshot_id, component_id, component_name, score, member_count, total_nloc)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for c in components {
-                comp_stmt.execute(params![
-                    snapshot_id,
-                    c.component_id,
-                    c.component_name,
-                    c.score,
-                    c.member_count,
-                    c.total_nloc
-                ])?;
-            }
+            insert_snapshot_component_rows(&conn, snapshot_id, components)?;
 
             Ok(snapshot_id)
         })();
@@ -2658,29 +2634,15 @@ impl Db {
         components: &[SnapshotComponentRow],
     ) -> Result<()> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "INSERT INTO health_snapshot_components
-             (snapshot_id, component_id, component_name, score, member_count, total_nloc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )?;
-        for c in components {
-            stmt.execute(params![
-                snapshot_id,
-                c.component_id,
-                c.component_name,
-                c.score,
-                c.member_count,
-                c.total_nloc
-            ])?;
-        }
-        Ok(())
+        insert_snapshot_component_rows(&conn, snapshot_id, components)
     }
 
     pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT file_id, file_path, score, category_scores,
-                    partial, completeness_recorded, missing_biomarkers
+                    partial, completeness_recorded, missing_biomarkers,
+                    score_upper, score_basis
              FROM health_snapshot_files WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
@@ -2693,6 +2655,8 @@ impl Db {
                     category_scores: row.get(3)?,
                     completeness,
                     missing_biomarkers,
+                    score_upper: row.get(7)?,
+                    score_basis: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2702,7 +2666,8 @@ impl Db {
     pub fn snapshot_component_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotComponentRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT component_id, component_name, score, member_count, total_nloc
+            "SELECT component_id, component_name, score, member_count, total_nloc,
+                    partial, completeness_recorded, score_basis
              FROM health_snapshot_components WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
@@ -2713,6 +2678,8 @@ impl Db {
                     score: row.get(2)?,
                     member_count: row.get(3)?,
                     total_nloc: row.get(4)?,
+                    completeness: SnapshotCompleteness::from_columns(row.get(5)?, row.get(6)?),
+                    score_basis: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2727,7 +2694,8 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT s.timestamp, hsf.score, hsf.category_scores,
-                    hsf.partial, hsf.completeness_recorded, hsf.missing_biomarkers
+                    hsf.partial, hsf.completeness_recorded, hsf.missing_biomarkers,
+                    hsf.score_upper
              FROM health_snapshot_files hsf
              JOIN snapshots s ON s.id = hsf.snapshot_id
              WHERE hsf.file_path = ?1
@@ -2742,6 +2710,7 @@ impl Db {
                     category_scores: row.get(2)?,
                     completeness,
                     missing_biomarkers,
+                    score_upper: row.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2776,8 +2745,8 @@ fn insert_snapshot_file_rows(
     let mut stmt = conn.prepare(
         "INSERT INTO health_snapshot_files
          (snapshot_id, file_id, file_path, score, category_scores,
-          partial, completeness_recorded, missing_biomarkers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+          partial, completeness_recorded, missing_biomarkers, score_upper, score_basis)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for f in files {
         let (partial, recorded) = f.completeness.to_columns();
@@ -2792,6 +2761,38 @@ fn insert_snapshot_file_rows(
             partial,
             recorded,
             missing_json,
+            f.score_upper,
+            f.score_basis,
+        ])?;
+    }
+    Ok(())
+}
+
+/// The single writer for `health_snapshot_components` rows, shared by both
+/// snapshot insert paths for the same reason as [`insert_snapshot_file_rows`].
+fn insert_snapshot_component_rows(
+    conn: &Connection,
+    snapshot_id: i64,
+    components: &[SnapshotComponentRow],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO health_snapshot_components
+         (snapshot_id, component_id, component_name, score, member_count, total_nloc,
+          partial, completeness_recorded, score_basis)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for c in components {
+        let (partial, recorded) = c.completeness.to_columns();
+        stmt.execute(params![
+            snapshot_id,
+            c.component_id,
+            c.component_name,
+            c.score,
+            c.member_count,
+            c.total_nloc,
+            partial,
+            recorded,
+            c.score_basis,
         ])?;
     }
     Ok(())
