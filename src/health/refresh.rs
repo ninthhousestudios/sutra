@@ -327,7 +327,8 @@ fn ingest_present(
 ) -> Result<HistoryIngestion> {
     // Re-pin the HEAD sha (the observation only carries a digest of it). A race
     // to an unborn/broken state here is folded into empty/unknown; publication
-    // re-checks repository identity under the transaction regardless.
+    // re-probes repository identity/HEAD just before committing (`publish_run` →
+    // `repository_moved`) and aborts with `InputsChanged` on a mismatch.
     let head_sha = match git::head_commit(workspace_root) {
         Ok(Some(sha)) => sha,
         Ok(None) => {
@@ -459,6 +460,18 @@ pub fn publish_run(
         })
         .collect();
 
+    // Recheck before commit (contract "Publication and consumers", sutra/425):
+    // re-probe the repository just before publishing and abort if it moved since
+    // the caller observed the `history` we are about to stamp. A HEAD move / repo
+    // state change mid-refresh does NOT bump the graph generation (which advances
+    // only on file insert/delete + resolution), so `publish_health_run`'s
+    // generation guard alone would let findings computed against the pre-move
+    // history publish as a complete, current stamp over mixed inputs. The stale
+    // run self-heals on the next refresh (`observe_history` sees the new HEAD).
+    if repository_moved(&history, workspace_root) {
+        return Ok(RefreshResult::InputsChanged);
+    }
+
     let epoch = graph.epoch;
     let generation = graph.generation;
     let inputs = InputStamp {
@@ -482,6 +495,40 @@ pub fn publish_run(
     match db.publish_health_run(generation, &run)? {
         Some(id) => Ok(RefreshResult::Published(id)),
         None => Ok(RefreshResult::InputsChanged),
+    }
+}
+
+/// Re-probe repository identity / HEAD / history boundaries and report whether
+/// they diverge from what the `history` observation (computed earlier by the
+/// caller during ingestion) was derived against. `true` means the repository
+/// moved under us since ingestion — a HEAD advance, an identity/boundary change,
+/// or the repo appearing/vanishing — and publication must abort rather than
+/// stamp a complete run over mixed inputs (see the call site in [`publish_run`]).
+///
+/// Only the repository fingerprint is compared, not the full history observation:
+/// the other stamp axes (day, window, indexed paths, ingestion generation) are
+/// fixed by the same `graph`/clock the caller already pinned, and the born-HEAD
+/// `Loaded`/`Empty` distinction is decided from `commit_files` written under this
+/// same held lock — so the repository probe is the only axis an external actor
+/// can change between ingestion and here.
+fn repository_moved(history: &HistoryObservation, workspace_root: &Path) -> bool {
+    let observed = probe_repository(workspace_root);
+    match history {
+        // Both born-history states pinned a concrete repository stamp: require an
+        // identical present repository now. Anything else (moved HEAD, changed
+        // identity/boundaries, now absent, now an indeterminate probe) is a move.
+        HistoryObservation::Loaded(stamp) | HistoryObservation::Empty(stamp) => {
+            !matches!(&observed, RepositoryObservation::Present(rs) if *rs == stamp.repository)
+        }
+        // A confirmed non-repository must still be confirmed absent with the same
+        // probe fingerprint; a repo appearing (or a differing probe) is a move.
+        HistoryObservation::Unsupported { absence_probe } => {
+            !matches!(&observed, RepositoryObservation::ConfirmedAbsent { probe } if probe == absence_probe)
+        }
+        // The observation already records a failed probe: the run stamps the git
+        // producers Missing(Failed) regardless of current repo state, so there is
+        // no mixed-input hazard to recheck.
+        HistoryObservation::Unknown(_) => false,
     }
 }
 
@@ -661,5 +708,113 @@ mod tests {
             "deferred:frozen"
         );
         assert_eq!(DemandOutcome::Failed.validity(), "unavailable");
+    }
+
+    // --- repository_moved: the pre-publication recheck (sutra/425) ---
+
+    fn git(root: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn git_init_commit(root: &Path) {
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["config", "user.name", "T"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(root, &["add", "-A"]);
+        // --no-verify skips any inherited pre-commit hook; gpgsign off keeps the
+        // commit hermetic on hosts with global signing enabled.
+        git(
+            root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "one",
+            ],
+        );
+    }
+
+    /// A `Loaded` history observation pinned to the repository's current state.
+    /// Only `repository` is inspected by `repository_moved`; the remaining stamp
+    /// axes are filler.
+    fn loaded_history(root: &Path) -> HistoryObservation {
+        match probe_repository(root) {
+            RepositoryObservation::Present(repository) => {
+                HistoryObservation::Loaded(HistoryStamp {
+                    repository,
+                    day: UtcDay(0),
+                    window_days: 90,
+                    indexed_paths: Digest::of(b"paths"),
+                    ingestion_version: Digest::of(b"iv"),
+                    ingestion_generation: Generation(0),
+                })
+            }
+            other => panic!("expected a present repository, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repository_moved_is_false_when_head_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_commit(dir.path());
+        let history = loaded_history(dir.path());
+        assert!(
+            !repository_moved(&history, dir.path()),
+            "an unchanged HEAD must not read as moved"
+        );
+    }
+
+    #[test]
+    fn repository_moved_detects_a_head_advance() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_commit(dir.path());
+        // History pinned to the first commit.
+        let history = loaded_history(dir.path());
+
+        // Advance HEAD: a mid-refresh commit does not bump the graph generation,
+        // so only this repository recheck catches it.
+        std::fs::write(dir.path().join("b.txt"), "two\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "two",
+            ],
+        );
+
+        assert!(
+            repository_moved(&history, dir.path()),
+            "a HEAD advance since ingestion must abort publication"
+        );
+    }
+
+    #[test]
+    fn repository_moved_ignores_a_failed_history_probe() {
+        // An `Unknown` observation already stamps git producers Missing(Failed);
+        // there is no established history to invalidate, so the recheck is a no-op
+        // regardless of the current path state.
+        let dir = tempfile::tempdir().unwrap();
+        let history = HistoryObservation::Unknown(InputFailure::IngestionFailed);
+        assert!(!repository_moved(&history, dir.path()));
     }
 }
