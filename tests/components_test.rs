@@ -162,6 +162,61 @@ fn test_first_run_gate_skips_when_components_and_membership_exist() {
 }
 
 #[test]
+fn membership_current_tracks_clustering_staleness() {
+    let (dir, db) = setup_db();
+
+    // A single dense cluster of 3 files.
+    let a1 = db
+        .upsert_file("src/core/a1.rs", "rust", "h1", 50, true)
+        .unwrap();
+    let a2 = db
+        .upsert_file("src/core/a2.rs", "rust", "h2", 50, true)
+        .unwrap();
+    let a3 = db
+        .upsert_file("src/core/a3.rs", "rust", "h3", 50, true)
+        .unwrap();
+    let sa1 = insert_symbol(&db, a1, "core_a1_fn");
+    let sa2 = insert_symbol(&db, a2, "core_a2_fn");
+    let sa3 = insert_symbol(&db, a3, "core_a3_fn");
+    insert_refs(&db, a1, sa2, 10);
+    insert_refs(&db, a1, sa3, 10);
+    insert_refs(&db, a2, sa1, 10);
+    insert_refs(&db, a2, sa3, 10);
+    insert_refs(&db, a3, sa1, 10);
+    insert_refs(&db, a3, sa2, 10);
+
+    // Cluster with the same boundary multipliers the production parse path uses,
+    // so `membership_current` (which reconstructs them from `default_registry`)
+    // recomputes an identical config hash.
+    let multipliers = sutra::parser::adapter::default_registry().boundary_multipliers();
+    let files = db.all_files().unwrap();
+    let count = components::discover_components(
+        &db,
+        &files,
+        &GraphData::load(&db).unwrap(),
+        dir.path(),
+        &multipliers,
+    )
+    .unwrap();
+    assert!(count > 0, "expected at least one component");
+
+    // Fresh clustering: membership is current for the live graph/history/config.
+    assert!(
+        components::membership_current(&db, dir.path()).unwrap(),
+        "membership should be current immediately after clustering"
+    );
+
+    // Drift the graph without re-clustering (as an incremental reparse + demand
+    // refresh would): the file count changes, so the stored membership is stale.
+    db.upsert_file("src/core/a4.rs", "rust", "h4", 50, true)
+        .unwrap();
+    assert!(
+        !components::membership_current(&db, dir.path()).unwrap(),
+        "membership should be stale after the graph drifts without a re-cluster"
+    );
+}
+
+#[test]
 fn test_reconciliation_after_reindex_preserves_and_repopulates() {
     let (dir, db) = setup_db();
     pin_resolution(dir.path());

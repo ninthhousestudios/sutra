@@ -2222,6 +2222,46 @@ fn file_health_component_filter() {
 }
 
 #[test]
+fn file_health_marks_components_unavailable_when_membership_stale() {
+    use std::sync::Arc;
+    use sutra::tools::ToolContext;
+
+    let (dir, db) = setup_db();
+
+    let fa = seed_file(&db, "src/alpha/a.rs");
+    let fb = seed_file(&db, "src/beta/b.rs");
+    seed_fn(&db, fa, "alpha::deep", "deep", Some(6));
+    seed_fn(&db, fb, "beta::deep", "deep", Some(7));
+
+    // Components + membership exist, but no clustering_meta was ever stamped — the
+    // grouping's currency for the live graph/history/config cannot be verified, so
+    // the query path must treat it as stale rather than scoring off it (sutra/426).
+    db.insert_component("alpha", "Alpha").unwrap();
+    db.insert_component("beta", "Beta").unwrap();
+    db.batch_insert_membership(&[("alpha".into(), fa), ("beta".into(), fb)])
+        .unwrap();
+
+    let findings = compute_nested_complexity(&db).unwrap();
+    db.replace_health_findings(&findings).unwrap();
+
+    let ctx = ToolContext::for_test(Arc::new(db), dir.path().to_path_buf());
+    let result =
+        sutra::tools::file_health::handle_ctx(&ctx, None, None, Some("all"), None, false).unwrap();
+
+    assert!(
+        result.get("components").is_none(),
+        "stale membership must not surface component scores as current"
+    );
+    let unavailable = result
+        .get("components_unavailable")
+        .expect("stale membership should surface a components_unavailable block");
+    assert_eq!(unavailable["reason"].as_str().unwrap(), "stale_membership");
+    // The per-file evidence is still reported — component unavailability is a
+    // distinct axis, not a blanket failure of the report.
+    assert_eq!(result["total_files"].as_u64().unwrap(), 2);
+}
+
+#[test]
 fn file_health_component_instability() {
     let (_dir, db) = setup_db();
 

@@ -83,19 +83,8 @@ pub fn discover_components(
     let commit_file_count = db.commit_file_count()?;
     let newest_commit_at = db.newest_commit_at()?;
 
-    if has_existing && has_membership {
-        let current_edge_count = identity::edge_count(files, gd);
-        if !identity::is_clustering_stale(
-            db,
-            current_edge_count,
-            file_count,
-            commit_file_count,
-            newest_commit_at,
-            threshold,
-            &cfg_hash,
-        )? {
-            return Ok(0);
-        }
+    if has_existing && has_membership && clustering_current(db, files, gd, threshold, &cfg_hash)? {
+        return Ok(0);
     }
 
     let Some((clusters, file_map, edge_count)) =
@@ -118,6 +107,62 @@ pub fn discover_components(
         newest_commit_at,
     )?;
     Ok(count)
+}
+
+/// Is the persisted component membership current for the live graph/history/
+/// config? Single source of truth for the clustering-staleness decision, shared
+/// by the full-parse gate (`discover_components` recomputes when this is false)
+/// and the read-only query-path check (`membership_current`). The caller supplies
+/// the already-loaded `threshold` and `cfg_hash` so neither path double-loads the
+/// components config.
+fn clustering_current(
+    db: &Db,
+    files: &[FileRow],
+    gd: &GraphData,
+    threshold: f64,
+    cfg_hash: &str,
+) -> Result<bool> {
+    let current_edge_count = identity::edge_count(files, gd);
+    let stale = identity::is_clustering_stale(
+        db,
+        current_edge_count,
+        files.len() as i64,
+        db.commit_file_count()?,
+        db.newest_commit_at()?,
+        threshold,
+        cfg_hash,
+    )?;
+    Ok(!stale)
+}
+
+/// Read-only check for the health query path: is the stored component membership
+/// current for the live graph/history/config, WITHOUT recomputing clustering
+/// (only a full parse re-clusters)? A demand refresh rebuilds file rollups and
+/// re-ingests history but does not re-cluster, so after an incremental reparse the
+/// membership can drift; scoring components (and their instability penalty) off
+/// that stale grouping would present a possibly-wrong result as current (sutra/426).
+///
+/// Returns `true` when there is nothing to be stale (no files, or no persisted
+/// membership yet) so the caller renders its (empty) component set unchanged. The
+/// `boundary_multipliers` are reconstructed from `default_registry()` — the same
+/// source the parse path stamps clustering with (the pipeline always parses with
+/// the full default registry), so the recomputed config hash matches.
+pub fn membership_current(db: &Db, workspace_root: &Path) -> Result<bool> {
+    let files = db.all_files()?;
+    if files.is_empty() {
+        return Ok(true);
+    }
+    if db.component_count()? == 0 || db.membership_count()? == 0 {
+        return Ok(true);
+    }
+    let config = load_config(workspace_root)?;
+    let threshold = config
+        .staleness_threshold
+        .unwrap_or(DEFAULT_STALENESS_THRESHOLD);
+    let boundary_multipliers = crate::parser::adapter::default_registry().boundary_multipliers();
+    let cfg_hash = identity::clustering_config_hash(&boundary_multipliers, &config);
+    let gd = GraphData::load(db)?;
+    clustering_current(db, &files, &gd, threshold, &cfg_hash)
 }
 
 #[cfg(test)]

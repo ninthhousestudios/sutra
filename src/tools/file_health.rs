@@ -51,7 +51,7 @@ pub fn handle_ctx(
     component: Option<&str>,
     explain: bool,
 ) -> Result<serde_json::Value> {
-    handle_inner(
+    let mut result = handle_inner(
         ctx.db(),
         path,
         limit,
@@ -59,7 +59,30 @@ pub fn handle_ctx(
         component,
         ctx.freshness_annotator(),
         explain,
-    )
+    )?;
+    // Component membership is only recomputed by a full parse; the demand refresh
+    // that ran before this call rebuilt file rollups but did not re-cluster. If the
+    // stored membership is no longer current for the live graph/history/config, the
+    // component scores `handle_inner` just built (and their instability penalty) are
+    // computed off a stale grouping — mark them unavailable rather than presenting a
+    // possibly-wrong grouping as current. This is a distinct axis from the per-file
+    // evidence, which is genuinely current after the refresh (sutra/426).
+    if result.get("components").is_some()
+        && !crate::components::membership_current(ctx.db(), ctx.workspace_root())?
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.remove("components");
+        obj.remove("total_components");
+        obj.insert(
+            "components_unavailable".into(),
+            json!({
+                "reason": "stale_membership",
+                "detail": "component clustering is stale relative to the current \
+                    graph/history/config; run a full parse to refresh component scores",
+            }),
+        );
+    }
+    Ok(result)
 }
 
 /// Attach a `health_evidence` block summarising the demand-refresh outcome and

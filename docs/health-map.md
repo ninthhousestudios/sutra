@@ -145,6 +145,14 @@ src/tools/
                       via scoring::score_file, builds per-file + per-component
                       JSON. Accepts optional `component` filter (by name).
                       Component scores include instability metrics.
+                      handle_ctx gates the component block on
+                      components::membership_current (sutra/426): the demand
+                      refresh rebuilds file rollups but does NOT re-cluster, so
+                      when clustering is stale for the live graph/history/config
+                      the component scores (and instability penalty) are computed
+                      off a stale grouping — replaced by a `components_unavailable`
+                      { reason: "stale_membership" } block, distinct from the
+                      current per-file evidence. Full parse re-clusters and repairs.
   trend.rs          — MCP tool: sutra_trend. Comparison mode diffs two
                       snapshots with per-file deltas (improved/degraded),
                       per-component deltas, category breakdown. History
