@@ -474,7 +474,7 @@ a single review invocation.
 | Biomarker | Produced by | Notes |
 |---|---|---|
 | nested_complexity | findings.rs (parse) | |
-| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | git-gated: NotARepo → Unsupported (excluded); NoHistory (empty window / `git log` failure) → Unwired (worst-cased) |
+| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | git-gated: NotARepo → Unsupported (excluded); NoHistory (empty window / `git log` failure) → Unwired (worst-cased). Shallow clone → history is `Unknown(HistoryIncomplete)` → Missing(Failed) / partial, never Complete: a truncated object graph cannot positively establish window completeness (sutra/427). A shallow clone is always re-ingested (never reuses), so deepening at unchanged HEAD is picked up; `git::history_boundaries` also fingerprints the actual `.git/shallow` boundary commit set, not just the is-shallow boolean |
 | import_cycle | findings.rs (parse) | |
 | dead_code_ratio | findings.rs compute_dead_code_ratio (parse) | provisional threshold 0.15 (uncalibrated) |
 | blast_radius_churn | git_metrics.rs compute_blast_radius_churn (parse) | provisional: blast_radius ≥ 10 AND churn ≥ 5 (uncalibrated) |

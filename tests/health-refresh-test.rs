@@ -16,7 +16,7 @@ use sutra::config::Config;
 use sutra::db::Db;
 use sutra::git::head_commit;
 use sutra::health::BiomarkerKind;
-use sutra::health::evidence::ProducerOutcome;
+use sutra::health::evidence::{InputFailure, MissingReason, ProducerOutcome};
 use sutra::health::refresh::{DemandOutcome, RefreshResult, refresh_acquiring};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
@@ -398,6 +398,90 @@ const GIT_FILES: [(&str, &str); 2] = [
     ("src/util.rs", "pub fn greet() -> i32 { 2 }\n"),
 ];
 
+/// Build a workspace that is a *shallow* clone (`--depth 1`) of a THREE-commit
+/// origin repo. Returns the fixture (whose workspace root is the clone) plus the
+/// origin tempdir the caller must keep alive. The clone's object graph is
+/// truncated at a shallow boundary, so history is incomplete: even a successful
+/// `git log` over the window cannot establish that every qualifying commit is
+/// present (health-evidence contract; sutra/427). Three origin commits leave the
+/// clone still shallow after a single `--deepen 1`, so a deepening test keeps a
+/// truncated boundary.
+fn shallow_git_fixture(id: &str) -> (Fixture, tempfile::TempDir) {
+    let origin = tempfile::tempdir().unwrap();
+    for (rel, contents) in GIT_FILES {
+        let full = origin.path().join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, contents).unwrap();
+    }
+    git_init(origin.path());
+    let now = chrono::Utc::now().timestamp();
+    // Three commits, each touching every file, all inside the trailing window.
+    for (i, ts) in [now - 10_800, now - 7_200, now - 3_600]
+        .into_iter()
+        .enumerate()
+    {
+        if i > 0 {
+            for (rel, _) in GIT_FILES {
+                let p = origin.path().join(rel);
+                let mut src = std::fs::read_to_string(&p).unwrap();
+                src.push_str("// seed touch\n");
+                std::fs::write(&p, src).unwrap();
+            }
+        }
+        git_commit(origin.path(), ts);
+    }
+
+    // A depth-1 clone of the origin over file:// (a plain local path ignores
+    // --depth): the working tree checks out, the ancestry is truncated.
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    let origin_url = format!("file://{}", origin.path().display());
+    git(
+        root.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &origin_url,
+            work.to_str().unwrap(),
+        ],
+        None,
+    );
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry(id, work);
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    (
+        Fixture {
+            _root: root,
+            _db_dir: db_dir,
+            ws,
+            config,
+            db,
+        },
+        origin,
+    )
+}
+
+/// Assert every per-file outcome for `producer` is `Missing(HistoryIncomplete)`
+/// — the shallow-clone contract: the git producer saw an incomplete history, not
+/// `Complete` (which would silently treat truncated history as measured).
+fn assert_all_history_incomplete(db: &Db, producer: BiomarkerKind) {
+    let outcomes = producer_outcomes(db, producer);
+    assert!(!outcomes.is_empty(), "{producer:?} must stage an outcome");
+    for outcome in &outcomes {
+        assert!(
+            matches!(
+                outcome,
+                ProducerOutcome::Missing(MissingReason::Failed(InputFailure::HistoryIncomplete))
+            ),
+            "{producer:?} over a shallow clone must be Missing(HistoryIncomplete), got {outcome:?}"
+        );
+    }
+}
+
 // --- AC1: a full parse WITH history marks the git producers Complete ---
 
 #[test]
@@ -495,4 +579,56 @@ fn static_edge_change_at_unchanged_head_flips_hidden_coupling() {
         0,
         "a static edge over the co-changing pair must clear the hidden-coupling finding"
     );
+}
+
+// --- Shallow clone: history is incomplete, never Complete (sutra/427) ---
+
+#[test]
+fn shallow_clone_marks_git_producers_incomplete_not_complete() {
+    let (fx, _origin) = shallow_git_fixture("git-shallow");
+    full_parse(&fx);
+
+    // The clone is shallow: HEAD resolves and the tip commit sits in the window,
+    // but the truncated object graph means completeness of the requested range
+    // cannot be positively established. Every git producer must therefore be
+    // partial (Missing(HistoryIncomplete)), NOT Complete — the contract deviation
+    // this task closes.
+    assert_all_history_incomplete(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert_all_history_incomplete(&fx.db, BiomarkerKind::BlastRadiusChurn);
+    assert_all_history_incomplete(&fx.db, BiomarkerKind::CoChangeScatter);
+    assert_all_history_incomplete(&fx.db, BiomarkerKind::ChangeEntropy);
+}
+
+// --- Deepening at unchanged HEAD re-ingests, does not reuse stale evidence ---
+
+#[test]
+fn deepening_a_shallow_clone_at_unchanged_head_re_ingests() {
+    let (fx, _origin) = shallow_git_fixture("git-deepen");
+    full_parse(&fx);
+    let head = head_sha(&fx.ws.root);
+
+    // A clean demand request over a still-shallow clone never reuses: the history
+    // is unconfirmed-complete, so the refresh always re-ingests and republishes.
+    let out = demand_refresh(&fx);
+    assert!(
+        matches!(out, DemandOutcome::Refreshed(RefreshResult::Published(_))),
+        "a shallow clone's unconfirmed history must re-ingest, not reuse, got {out:?}"
+    );
+
+    // Deepen the clone: HEAD is unchanged, but the shallow boundary set moves and
+    // newly-accessible qualifying ancestors appear. The old is-shallow-boolean
+    // fingerprint left the stamp unchanged here, so demand refresh reused stale
+    // evidence. It must re-ingest.
+    git(&fx.ws.root, &["fetch", "-q", "--deepen", "1"], None);
+    assert_eq!(head_sha(&fx.ws.root), head, "deepening must not move HEAD");
+
+    let out = demand_refresh(&fx);
+    assert!(
+        matches!(out, DemandOutcome::Refreshed(RefreshResult::Published(_))),
+        "deepening at unchanged HEAD must re-ingest (publish), not reuse, got {out:?}"
+    );
+
+    // Deepening by one still leaves the three-commit origin truncated by one, so
+    // the range is still incomplete — partial, not silently healed to Complete.
+    assert_all_history_incomplete(&fx.db, BiomarkerKind::HiddenCoupling);
 }

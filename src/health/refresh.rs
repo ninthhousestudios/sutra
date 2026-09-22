@@ -349,6 +349,33 @@ fn ingest_present(
         }
     };
 
+    // A shallow clone's object graph is truncated at the `.git/shallow`
+    // boundary, so even a successful `git log` over the window cannot positively
+    // establish that every qualifying commit is present: the range is
+    // incomplete, not Loaded/Complete (health-evidence contract; sutra/427). The
+    // git producers are worst-cased via `Unknown(HistoryIncomplete)`. Retain any
+    // prior commit rows (do not clear) — an incomplete refresh must not destroy
+    // evidence — and defer to `Unknown(ProbeFailed)` if the shallow probe itself
+    // is indeterminate.
+    match git::is_shallow_repository(workspace_root) {
+        Ok(true) => {
+            return Ok(HistoryIngestion {
+                observation: HistoryObservation::Unknown(InputFailure::HistoryIncomplete),
+                availability: GitAvailability::NoHistory,
+                churn: HashMap::new(),
+            });
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!("health: shallow-repository probe failed during history ingestion: {e}");
+            return Ok(HistoryIngestion {
+                observation: HistoryObservation::Unknown(InputFailure::ProbeFailed),
+                availability: GitAvailability::NoHistory,
+                churn: HashMap::new(),
+            });
+        }
+    }
+
     match git::git_commit_files_since(workspace_root, &head_sha, cutoff) {
         Ok(commit_files) if !commit_files.is_empty() => {
             let churn = git::churn_from_commit_files(&commit_files);
@@ -668,6 +695,13 @@ fn observe_history(
             };
             if matches!(stamp.repository.head, Head::Unborn) {
                 Ok(HistoryObservation::Empty(stamp))
+            } else if git::is_shallow_repository(workspace_root)? {
+                // Mirror `ingest_present`: a shallow clone's window is incomplete,
+                // never Loaded. Classifying it identically here keeps the cheap
+                // reuse probe honest — the stored observation is
+                // `Unknown(HistoryIncomplete)`, and `history_validity` refreshes
+                // rather than reuse a history it cannot confirm complete (sutra/427).
+                Ok(HistoryObservation::Unknown(InputFailure::HistoryIncomplete))
             } else if db.commit_file_count()? > 0 {
                 Ok(HistoryObservation::Loaded(stamp))
             } else {

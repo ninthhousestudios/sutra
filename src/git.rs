@@ -466,30 +466,82 @@ pub fn repo_identity(workspace_root: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// A fingerprint of the history boundary: shallow state plus any grafts/replace
-/// refs that truncate or rewrite reachable history. History reachable from a
-/// pinned HEAD is only "complete for the requested range" if these boundaries
-/// are unchanged; a repository that becomes (un)shallow or gains a replace ref
-/// can expose or hide qualifying commits without HEAD moving (sutra/415).
+/// True when the repository backing `workspace_root` is a shallow clone. A
+/// shallow clone's object graph is truncated at the `.git/shallow` boundary
+/// commits, so history reachable from a pinned HEAD may be missing qualifying
+/// ancestors — the requested window cannot be positively established as complete
+/// (health-evidence contract; sutra/427).
+pub fn is_shallow_repository(workspace_root: &Path) -> Result<bool> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--is-shallow-repository"])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git rev-parse --is-shallow: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(SutraError::Internal(format!(
+            "git rev-parse --is-shallow-repository: {stderr}"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
+}
+
+/// The sorted shallow boundary commit SHAs — the contents of the repo's
+/// `shallow` file — or an empty vec when the repository is not shallow. These
+/// are the commits whose parents are deliberately absent; deepening a shallow
+/// clone (`git fetch --deepen`) rewrites this set even when HEAD and the
+/// is-shallow flag are both unchanged, so the boundary *set* must be
+/// fingerprinted, not merely the boolean (sutra/427).
+fn shallow_boundary_commits(workspace_root: &Path) -> Result<Vec<String>> {
+    // Resolve the absolute path to the `shallow` file (it lives in the common
+    // git dir, which differs from the per-worktree dir under linked worktrees).
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "shallow",
+        ])
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git rev-parse --git-path shallow: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(SutraError::Internal(format!(
+            "git rev-parse --git-path shallow: {stderr}"
+        )));
+    }
+    let shallow_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // A non-shallow repo has no `shallow` file; a shallow one can also briefly
+    // lack it between fetch phases. Treat absent/unreadable as no boundaries.
+    let contents = std::fs::read_to_string(&shallow_path).unwrap_or_default();
+    let mut lines: Vec<String> = contents
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.sort();
+    Ok(lines)
+}
+
+/// A fingerprint of the history boundary: shallow state and the actual shallow
+/// boundary commit set, plus any grafts/replace refs that truncate or rewrite
+/// reachable history. History reachable from a pinned HEAD is only "complete for
+/// the requested range" if these boundaries are unchanged; a repository that
+/// becomes (un)shallow, is deepened at an unchanged HEAD, or gains a replace ref
+/// can expose or hide qualifying commits without HEAD moving (sutra/415,
+/// sutra/427).
 pub fn history_boundaries(workspace_root: &Path) -> Result<String> {
-    let shallow = {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_root)
-            .args(["rev-parse", "--is-shallow-repository"])
-            .output()
-            .map_err(|e| SutraError::Internal(format!("git rev-parse --is-shallow: {e}")))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(SutraError::Internal(format!(
-                "git rev-parse --is-shallow-repository: {stderr}"
-            )));
-        }
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
+    let shallow = is_shallow_repository(workspace_root)?;
+    // Fingerprint the boundary commit SHAs, not just the boolean: deepening a
+    // shallow clone leaves the flag and HEAD unchanged while newly exposing
+    // qualifying ancestors, so the set is what actually moves (sutra/427).
+    let boundaries = shallow_boundary_commits(workspace_root)?.join(",");
     // Replace refs rewrite the object a commit resolves to; grafts (via replace
     // refs in modern git) truncate ancestry. `refs/replace` is empty in the
-    // common case, so the fingerprint reduces to just the shallow flag.
+    // common case, so the fingerprint reduces to just the shallow state.
     let replace = {
         let out = Command::new("git")
             .arg("-C")
@@ -515,7 +567,9 @@ pub fn history_boundaries(workspace_root: &Path) -> Result<String> {
         lines.sort();
         lines.join(",")
     };
-    Ok(format!("shallow={shallow};replace={replace}"))
+    Ok(format!(
+        "shallow={shallow};boundaries={boundaries};replace={replace}"
+    ))
 }
 
 /// Ingest commit-file history reachable from a pinned `head_sha` whose committer
