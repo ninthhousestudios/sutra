@@ -4,22 +4,17 @@ Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
 
-Approved replacement contract (sutra/412, 2026-09-21; implementation in 413–418):
-[health evidence contract](health-evidence-contract.md). It includes the checked
-type skeleton and downstream boundaries; it is not implemented behavior.
+Governing contract (sutra/412, approved 2026-09-21; implemented by 413–418 and
+416): [health evidence contract](health-evidence-contract.md). Background:
+[sutra/411 evidence lifecycle review](reviews/2026-09-21-health-evidence-lifecycle.md).
 
-Review correction: 2026-09-21 — [sutra/411 evidence lifecycle review](reviews/2026-09-21-health-evidence-lifecycle.md)
-confirms incremental parsing deletes findings/history and falsifies the
-snapshot-mirroring rationale below. The recorded two-axis fix also needs revision:
-hidden coupling depends on the current graph, and graph validity is not per-file
-content validity. Session-start reparse removal is not a requirement.
-
-Last implementation update: 2026-09-19 (sutra/408: made the "missing analysis is never zero
-debt" contract actually fire — per-file health_coverage stamp so incrementally
-reparsed / finding-free files are worst-cased not floored, GitAvailability axis
-separating NotARepo from NoHistory, snapshot partial/missing_biomarkers columns.
-Prior: sutra/402 landed the contract — producers, ComponentInstability
-deduction, CoverageGradient unsupported)
+Last implementation update: 2026-09-22 (sutra/416: scoring consumes the published
+run's per-(file, producer) outcomes — no coverage bool, no snapshot mirroring;
+partial scores are cap-saturating intervals; snapshots persist a per-file score
+basis and upper bound; review separates temporal comparison from on-demand
+attribution; trend gates file/aggregate/component deltas on matching basis. See
+"Scoring over validated evidence" below. Removed: `WorkspaceFacts`,
+`GitAvailability`, `health_coverage` reads/writes, `compute_health_delta`.)
 
 ## Module layout
 
@@ -45,28 +40,30 @@ src/health/
   ondemand.rs       — On-demand biomarkers computed at review time via git
                       blame (too expensive for parse-time pipeline).
                       BlameCache (in-memory per-review dedup),
-                      compute_ondemand_findings (function_hotspot +
-                      code_age_volatility), compute_shape_change_findings
-                      (SubtleStructural ShapeChange → HrrShapeChange finding),
-                      compute_health_delta (per-file score comparison vs latest
-                      snapshot with attribution).
-                      FunctionBlameStats, HealthDelta, HealthDeltaEntry.
-  scoring.rs        — HealthCategory (5 variants), category caps, biomarker
-                      weights (repowise calibrated), severity weights,
-                      WorkspaceFacts{git: GitAvailability} + detect (reads
-                      persisted index_meta.git_availability, falls back to
-                      commit-count), GitAvailability
-                      (Available/NoHistory/NotARepo), BiomarkerSupport
-                      (Scored/Unsupported/Unwired),
-                      BiomarkerKind::file_scoring_support (single source of
-                      truth), score_file(findings, facts, covered) — category
-                      capping + proportional scaling + worst-cases Unwired
-                      biomarkers AND (when !covered) Scored ones
-                      (MissingDeduction, FileHealthScore.missing/partial()),
-                      instability_penalty, score_component (NLOC-weighted),
-                      score_workspace(db) (scores every file via
-                      health_coverage_map; instability always computed +
-                      applied), FileHealthScore, FindingDeduction
+                      compute_ondemand_findings → OnDemandEvidence{findings,
+                      outcomes per changed path} (function_hotspot +
+                      code_age_volatility; a blame failure is Missing, not a
+                      skip), OnDemandEvidence::add_shape_diff (HrrShapeChange
+                      Complete/Missing per analyzed/failed path),
+                      compute_shape_change_findings.
+  scoring.rs        — HealthCategory (5 variants + ALL), caps, weights,
+                      severity weights. BiomarkerScope (Persistent/OnDemand/
+                      Component; exhaustive) + PERSISTENT_PRODUCERS.
+                      EvidencePart{outcomes, findings}; score_file(&[parts]) →
+                      FileHealthScore{value: ScoreValue(Measured|Partial{lower,
+                      upper}), deductions, categories, missing, unsupported};
+                      scenario_score (shared cap/clamp primitive);
+                      file_score_basis; SCORING_VERSION; instability_penalty,
+                      score_component (NLOC-weighted).
+  assess.rs         — PersistentEvidence::load(db, Validity): the current run's
+                      outcomes/findings for every indexed file, validity applied,
+                      waivers partitioned on captured path/symbol label, per-file
+                      basis. score_workspace(db, &evidence) → files + components
+                      (component value/bounds + membership basis).
+  compare.rs        — BaselineSelector (+resolve), IncomparableReason,
+                      SideSummary, temporal_blocker (the one temporal rule, used
+                      by trend and review), attribute (on-demand attribution,
+                      MarginalEffect Exact|Conditional).
 
 src/parser/
   complexity.rs     — cyclomatic, cognitive, max_nesting_depth (all take
@@ -89,19 +86,23 @@ src/db/
                       (both used by hidden_coupling).
   health.rs         — HealthFindingRow, HealthWaiverRow, NestingExceedRow.
                       Db methods: symbols_exceeding_nesting, replace_health_findings
-                      (also stamps health_coverage for all files),
-                      health_coverage_map, get_health_findings (optional file_id +
+                      (live diagnostic table; scoring reads the run),
+                      get_health_findings (optional file_id +
                       biomarker_kind filters), get_health_waivers,
                       create_health_waiver (upsert), delete_health_waiver,
                       get_health_findings_with_waiver_status.
   mod.rs            — TABLE_REGISTRY entries: health_findings (Ephemeral),
-                      health_coverage (Ephemeral), health_waivers (Durable).
-                      git_availability / set_git_availability (index_meta).
-                      SnapshotFileRow.partial + .missing_biomarkers.
+                      health_coverage (Ephemeral, vestigial since sutra/416 —
+                      no reader or writer), health_waivers (Durable).
+                      SnapshotFileRow.completeness/missing_biomarkers/
+                      score_upper/score_basis; SnapshotComponentRow.completeness/
+                      score_basis; one row writer per snapshot detail table.
                       SymbolRow.max_nesting field. InsertSymbolParams.max_nesting.
   migrations.rs     — 0027 (ephemeral), 0028 (durable), 0071 git_availability
-                      (durable ALTER on index_meta), 0072 health_coverage
-                      (ephemeral), 0073 snapshot completeness (ephemeral ALTER)
+                      (durable ALTER; column unused since sutra/416), 0072
+                      health_coverage (ephemeral; unused since 416), 0073/0076
+                      snapshot completeness, 0077 snapshot score basis + upper
+                      bound + component completeness (ephemeral ALTERs)
 
 src/similarity/
   hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
@@ -141,9 +142,12 @@ src/similarity/
                       vectors, off skips HRR entirely).
 
 src/tools/
-  file_health.rs    — MCP tool: queries findings with waiver status, scores
-                      via scoring::score_file, builds per-file + per-component
-                      JSON. Accepts optional `component` filter (by name).
+  file_health.rs    — MCP tool: scores PersistentEvidence (validity from the
+                      demand refresh outcome), builds per-file + per-component
+                      JSON. Partial entries: health_score null + score_bounds +
+                      missing[{biomarker, reason}]; findings of a non-Complete
+                      producer are listed `stale` with deduction 0. Sorted by
+                      upper bound. Accepts optional `component` filter (by name).
                       Component scores include instability metrics.
                       handle_ctx gates the component block on
                       components::membership_current (sutra/426): the demand
@@ -174,12 +178,14 @@ src/db/
   components.rs     — component_members_with_line_count() added for
                       NLOC-weighted component health scoring.
 
-src/pipeline.rs     — post_parse_sequence tail: compute_all_health_findings
-                      + replace_health_findings (runs after component discovery
-                      and alias sync, before record_snapshot).
-                      record_snapshot calls compute_snapshot_health which
-                      scores all files via scoring::score_file and aggregates
-                      to components, storing per-file and per-component data.
+src/pipeline.rs     — post_parse_sequence tail: refresh::publish_run (runs after
+                      component discovery and alias sync, before record_snapshot).
+                      record_snapshot calls compute_snapshot_health, which
+                      validates the current run (refresh::current_run_validity),
+                      scores PersistentEvidence via assess::score_workspace and
+                      stores lower bound / upper bound / completeness / basis per
+                      file and per component. copyable_snapshot gates NoChanges
+                      copy-forward on matching basis + current validity.
 ```
 
 ## Key types
@@ -205,62 +211,58 @@ ShapeChange). Component-scoped: `ComponentInstability` (computed via
 `default_severity()` maps tier 1/2 → Advisory, tier 3 + sutra-specific →
 Informational. `category()` returns HealthCategory. `default_weight()`
 returns repowise-calibrated weight (or moderate/uncalibrated default).
-`file_scoring_support(facts)` (in scoring.rs) is the single source of truth
-for the "missing analysis is never zero debt" contract — see below.
+`scope()` (in scoring.rs) is the exhaustive Persistent/OnDemand/Component
+classification; `PERSISTENT_PRODUCERS` lists the per-file producers every run
+stages an outcome for — see below.
 
-### The zero-debt contract (scoring.rs, sutra/402 + sutra/408)
-Findings are positive-only (emitted only on a problem), so absence used to be
-indistinguishable between "clean", "not applicable", and "check never ran" —
-all scored as zero debt. `file_scoring_support(&WorkspaceFacts)` classifies
-each biomarker for file-level parse-time scoring:
-- `Scored` — producer wired + data source present. Worst-cased anyway when the
-  file's analysis is not current (see coverage below).
-- `Unsupported(reason)` — data source **structurally** absent (not a git repo;
-  no coverage ingestion). Excluded from scoring, surfaced as
-  `unsupported_biomarkers`.
-- `Unwired` — should be scored but has no data this run: no producer, or a git
-  data source that was unavailable (empty commit window / `git log` failure).
-  `score_file` worst-cases it at full weight (within category caps) and sets
-  `FileHealthScore.missing` / `partial()`; `file_health` surfaces per-file
-  `partial` + `missing_biomarkers`.
-- `None` — scored elsewhere (review-time on-demand or component-scoped).
-The match is exhaustive, so a new variant forces a decision.
+### Scoring over validated evidence (sutra/416)
+Findings are positive-only, so their absence proves nothing. Every consumer
+therefore scores **outcomes**, not finding presence: the published run stages one
+`ProducerOutcome` per (file, persistent producer) — `Complete{n}`,
+`Missing(reason)`, or `Unsupported(reason)` — and `assess::PersistentEvidence`
+loads them for every indexed file under a caller-supplied `Validity`:
+- `Current` — outcomes as staged. The demand refresh establishes it
+  (`DemandOutcome::persistent_validity`: Reused/Published → Current;
+  InputsChanged, Deferred(..), Failed → Stale(reason)); the snapshot writer uses
+  `refresh::current_run_validity` (probe + `evidence::validate`, no mutation).
+- `Stale(reason)` — every `Complete` and every repository-dependent `Unsupported`
+  becomes `Missing(reason)`; only `NoCoverageIngestion` stays unsupported.
+- No run at all → `Missing(LegacyUnknown)`; a file the run lacks →
+  `Missing(NeverComputed)`.
 
-**Per-file coverage (sutra/408).** Workspace-scope "producer wired" is not
-per-file "producer ran for THIS file's current content." The `health_coverage`
-table records the `content_hash` each file's findings were computed for,
-stamped atomically inside `replace_health_findings` (which runs only after a
-full `compute_all_health_findings` over every file). `score_workspace` scores
-**every** indexed file — not just files with findings — and passes
-`covered = coverage[file_id] == file.content_hash` to `score_file`. When
-`!covered` (an incrementally-reparsed file whose findings were never recomputed,
-or a newly-added file with none), the stale present findings are ignored and
-every `Scored`/`Unwired` file-scored biomarker is worst-cased. This is what
-makes the contract fire on the live query path: `parse_incremental` never
-recomputes health findings, so without coverage a drifted file would float back
-to a clean 10.0.
+`score_file(&[EvidencePart])`: a finding counts only when **its own part**
+recorded its producer `Complete` (a stale or unauthorized finding is never known
+debt). Per category, the optimistic deduction is capped known debt; if any
+producer in the category is `Missing`, the pessimistic deduction is the full
+cap. `Measured(score)` only when nothing is missing, otherwise
+`Partial{lower, upper}` (global [1, 10] clamp applied to each). One missing
+finding's weight is not a proved worst case, so the old one-weight worst-casing
+is gone. `Unsupported` producers are excluded and surfaced.
 
-**Per-axis coverage (sutra/409).** `covered` in `score_file` governs only the
-*file-scored* biomarkers (`file_scoring_support` is `Some`). A present finding
-whose biomarker is review-time on-demand or component-scoped (`None`) is trusted
-regardless of `covered`, because the caller recomputes it fresh every run. This
-lets one `score_file` call worst-case a stale structural axis while still
-crediting fresh on-demand debt in the same (cap-sharing) score — required by the
-delta path below. `score_workspace`/`file_health` pass uniform per-file coverage,
-so their behavior is unchanged.
+Consequences worth knowing: a file with no in-window commits (sutra/423) has its
+git producers `Missing(NoHistory)`, so organizational (3.5), structural (2.5, via
+blast_radius_churn) and coupling (2.0, via hidden_coupling) all saturate in the
+lower bound — such files report bounds, not a point score. That is the approved
+contract decision ("missing per-file history stays partial"), not a bug.
 
-**Git availability axis (sutra/408).** `WorkspaceFacts.git: GitAvailability`
-(`Available` | `NoHistory` | `NotARepo`) replaces the old `has_git` bool and is
-persisted on `index_meta.git_availability` at parse time (where the git outcome
-is observed; `detect` only has the `Db`). Only `NotARepo` (true structural
-absence) → `Unsupported`; `NoHistory` (empty window or a transient `git log`
-failure) → `Unwired` (worst-cased). A `git log` failure no longer clears
-`commit_files`, so health cannot improve by losing evidence. `detect` falls back
-to the `commit_file_count` heuristic on indexes predating the column.
+**Score basis.** `scoring::file_score_basis` digests SCORING_VERSION,
+HEALTH_ANALYSIS_VERSION, every persistent producer's severity weight, weight,
+category and cap, the file's applicability (which producers are Unsupported and
+why) and the waiver policy for the path (sorted `(biomarker, symbol)` of its
+waivers). A `Missing` producer is still applicable, so completeness transitions do
+not change the basis. Input generations and history windows are deliberately not
+in it. Component basis (`assess::score_members`): aggregation version,
+instability-penalty form, and the sorted member (path, file basis) set — so a
+membership change is a basis change.
 
-Snapshots persist `partial` + `missing_biomarkers` per file
-(`health_snapshot_files`), so `trend` can tell partial analysis from real
-degradation.
+**Waivers** are partitioned once, in `PersistentEvidence::load`, over the run's
+captured path + symbol label (`waivers::partition`), and review applies the same
+policy to on-demand findings. Waived findings stay visible (`FileEvidence.waived`).
+
+Snapshots persist completeness + `missing_biomarkers` + `score_upper` +
+`score_basis` per file (`health_snapshot_files`; `score` is the conservative lower
+bound), and completeness + basis per component, so `trend` can tell partial
+analysis and rule changes from real change.
 
 **Trend completeness contract (sutra/418).** `SnapshotFileRow.completeness`
 is `Complete | Partial | Unknown`, stored as `partial` + `completeness_recorded`
@@ -291,25 +293,35 @@ Additive output fields (existing fields keep their meaning):
   side is partial/unknown) | `population_changed` (file sets differ). Parse
   counters in `deltas` (`files_parsed`, `total_complexity`, ...) are exact and
   always reported.
-- **Scope of "measured" (known gap).** `measured` / `improved` / `degraded`
-  today prove only complete evidence over the same file population. They do
-  **not** prove a matching scoring basis: snapshots record no waiver policy,
-  scoring/analysis version or biomarker set, so adding a waiver (or a scoring
-  change) between two otherwise identical parses still reports a measured
-  improvement. This falls short of the contract's matching-basis rule and is
-  tracked on sutra/416 (persist a scoring-basis identity per snapshot).
-- NoChanges copy-forward (`record_unchanged_snapshot`) recomputes instead of
-  copying when any prior row is `Unknown`, so an upgraded index gains recorded
-  completeness on its next parse. Validating other health inputs before
-  copy-forward is sutra/429.
+- **Basis (sutra/416).** Pairs also need matching non-null `score_basis`.
+  Additional `files.incomparable` reasons: `unknown_basis` (a side predates 0077)
+  and `score_basis_changed`; entries carry `basis_changed`, and a pair is listed
+  at equal score/completeness when only its basis moved. `aggregate_comparison`
+  adds the same two reasons (checked after `population_changed`).
+- Every file/component rule goes through `compare::temporal_blocker`, the same
+  rule review uses.
+- **Components (sutra/416).** Entries gain `measured`, `reason`,
+  `from_completeness`/`to_completeness`; `delta` is null unless measured. New
+  components have `from: null` (`reason: new_component`, no 10.0 fallback);
+  removed components are listed (`removed_component`, `to: null`). Other reasons:
+  `unknown_completeness`, `partial`, `unknown_basis`, `score_basis_changed`
+  (membership or member basis moved). Order: measured deltas worst-first, then
+  incomparable entries by name.
+- History entries add `score_bounds {lower, upper}` for partial rows written
+  since 0077.
+- NoChanges copy-forward (`pipeline::copyable_snapshot`) copies only when every
+  prior file/component row has recorded completeness and a basis, the current run
+  validates `Current`, the indexed file set is unchanged, and every file's current
+  basis equals its stored one (a waiver added between no-change parses forces a
+  recompute). Validating remaining health inputs (sutra/429) is subsumed by the
+  `Current` check for the persistent run; component-membership currency is not.
 
 Behaviour changes that are not additive, per health-evidence-contract.md
 § Comparison: new files no longer compare against a fallback 10.0 (they were
 listed as improved/degraded), and removed files moved from `degraded`
 (`delta: "removed"`) to `incomparable`; `deltas.health_score` and category
-deltas can be `null`. Not in scope: component deltas still use a 10.0 fallback
-for new components and have no membership-compatibility check (snapshots store
-no membership) — tracked on sutra/416.
+deltas can be `null`; component `delta` can be `null` and removed components now
+appear (sutra/416).
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the
@@ -332,8 +344,8 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | health_findings | Ephemeral | 0027 | Computed findings, rebuilt each parse |
 | health_waivers | Durable | 0028 | User-authored waivers, survive reindex |
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
-| health_snapshot_files | Ephemeral | 0033 | Per-file health scores at each snapshot |
-| health_snapshot_components | Ephemeral | 0033 | Per-component aggregated scores at each snapshot |
+| health_snapshot_files | Ephemeral | 0033, 0073, 0076, 0077 | Per-file score (lower bound), completeness, missing producers, upper bound, score basis |
+| health_snapshot_components | Ephemeral | 0033, 0077 | Per-component aggregated scores (lower bound), completeness, membership basis |
 | index_meta (index_epoch col) | Durable | 0074 | ALTER adds index_epoch TEXT; minted lazily, NULLed+reminted on reindex (sutra/414) |
 | health_runs | Ephemeral | 0075 | Immutable, insert-only health evidence runs (FK-free JSON blobs: input_stamp, outcomes, findings) |
 | health_current | Ephemeral | 0075 | Single-row atomic pointer to the current health_runs.run_id |
@@ -475,34 +487,32 @@ a single review invocation.
 - Symbol-level
 - Provenance: `on-demand:blame`
 
-### Health delta (review integration)
-- `compute_health_delta(db, changed_paths, ondemand_findings, baseline: BaselineSelector)`
-  compares current per-file scores (stored findings + on-demand) against a
-  baseline snapshot. Returns `HealthDeltaOutcome` — `Measured(HealthDelta)` or
-  `Incomparable(IncomparableReason)`.
-- `BaselineSelector` (sutra/424 F5): `Latest` falls back to the newest
-  checkpoint at compute time (non-review callers, pre-pinning behaviour);
-  `Pinned(Some(id))` uses the caller's pre-request baseline; `Pinned(None)` is a
-  genuinely-missing baseline → `Incomparable(MissingBaseline)`, so review does
-  not compare against a snapshot healed into being during its own request.
-- Review gates the delta on refresh validity (sutra/424 F3): `sutra_review`
-  captures the `DemandOutcome` from `refresh_health_locked` and passes it to
-  `review::handle`; when `DemandOutcome::validity() != "current"` the persistent
-  side is unverified, so review emits `health_delta_incomparable { reason: <token> }`
-  (the validity token) instead of a measured delta. `validity()` lives on
-  `DemandOutcome` and is the shared seam with `file_health::attach_health_evidence`.
-- Degraded files include `driving_findings` showing which on-demand
-  biomarkers contributed to the decline
-- **Known bug (sutra/411):** current coverage mirrors the snapshot's per-file
-  decision (sutra/409), but incremental parsing deletes current findings and
-  coverage without recording a snapshot. A formerly complete, unhealthy file
-  can therefore be scored clean after a comment-only edit. The old rationale
-  that every parse snapshots and preserves the same findings is false. Current
-  evidence must establish current completeness; missing analysis must not be
-  presented as measured improvement or degradation. See the review linked above.
-- Review output ordering: constraint_violations → deviations →
-  health_findings → hrr_shape_changes → health_delta (or
-  health_delta_incomparable / health_delta_error)
+### Review health (sutra/416)
+`tools::review::review_health` produces `health_delta`:
+`{baseline_snapshot_id, persistent_validity, temporal_incomparable, files[]}`.
+- Baseline: `compare::BaselineSelector` — review pins `Pinned(id)` before
+  `tool_context` can record a newer checkpoint; `Pinned(None)` stays missing
+  (`temporal_incomparable: "missing_baseline"`), never healed (sutra/424 F5).
+- **Temporal** (per changed file): baseline snapshot row vs the current run's
+  observation (`PersistentEvidence` under the refresh outcome's validity), via
+  `compare::temporal_blocker`. `{measured: true, delta, from, to}` only for
+  complete + matching basis; otherwise `{measured: false, reason, from, to}`.
+  Pre-0077 baseline rows show `legacy_score`, not a bound. On-demand findings are
+  never part of either side — a parse-time checkpoint has no blame/shape
+  evidence, so their "history" cannot be invented.
+- **on_demand** (per changed file with on-demand outcomes or findings):
+  `compare::attribute(persistent, ondemand)` — `without`/`with` score values,
+  `effect` `{kind: exact, value}` or `{kind: conditional, lower, upper}`, per
+  finding `raw_deduction`/`scaled_deduction` (caps shared with persistent
+  findings, so a saturated cap gives an exact 0 effect despite a real finding),
+  and `missing` on-demand producers. Conditional bounds: upper assumes missing
+  persistent debt saturates its categories and missing on-demand producers found
+  nothing; lower the reverse (both via `scoring::scenario_score`).
+- A file is listed when its measured delta moved, its incomparable pair changed
+  (score, completeness or basis), or it has on-demand findings/missing evidence.
+- `health_findings` (display) lists on-demand findings with a `waived` flag.
+- Any failure (blame/storage/scoring) surfaces as `health_delta_error`; nothing
+  is swallowed with `.ok()`.
 
 ## PRD and arc context
 
@@ -525,7 +535,7 @@ a single review invocation.
 | Biomarker | Produced by | Notes |
 |---|---|---|
 | nested_complexity | findings.rs (parse) | |
-| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | git-gated: NotARepo → Unsupported (excluded); NoHistory (empty window / `git log` failure) → Unwired (worst-cased). Shallow clone → history is `Unknown(HistoryIncomplete)` → Missing(Failed) / partial, never Complete: a truncated object graph cannot positively establish window completeness (sutra/427). A shallow clone is always re-ingested (never reuses), so deepening at unchanged HEAD is picked up; `git::history_boundaries` also fingerprints the actual `.git/shallow` boundary commit set, not just the is-shallow boolean |
+| co_change_scatter / change_entropy / ownership_risk / hidden_coupling | git_metrics.rs (parse) | git-gated: confirmed non-repository → Unsupported (excluded); no usable per-file history → Missing(NoHistory); probe/ingestion failure → Missing(Failed) — both saturate their category in the lower bound. Shallow clone → history is `Unknown(HistoryIncomplete)` → Missing(Failed) / partial, never Complete: a truncated object graph cannot positively establish window completeness (sutra/427). A shallow clone is always re-ingested (never reuses), so deepening at unchanged HEAD is picked up; `git::history_boundaries` also fingerprints the actual `.git/shallow` boundary commit set, not just the is-shallow boolean |
 | import_cycle | findings.rs (parse) | |
 | dead_code_ratio | findings.rs compute_dead_code_ratio (parse) | provisional threshold 0.15 (uncalibrated) |
 | blast_radius_churn | git_metrics.rs compute_blast_radius_churn (parse) | provisional: blast_radius ≥ 10 AND churn ≥ 5 (uncalibrated) |
@@ -551,19 +561,15 @@ Severity weights: Advisory = 1.0, Informational = 0.5.
 Proportional scaling within category when sum exceeds cap.
 Component scores: NLOC-weighted average of member file scores, minus
 `instability_penalty` (Informational × ComponentInstability weight × I, capped
-at the coupling cap). Instability is always computed so snapshot and file_health
-component scores agree. Final clamp [1.0, 10.0].
+at the coupling cap), computed on member lower and upper bounds; measured only
+when every member is measured. Instability is always computed (a failure now
+propagates) so snapshot and file_health component scores agree. Final clamp
+[1.0, 10.0].
 
-Worst-casing (sutra/402 + sutra/408): `score_file(findings, facts, covered)`
-deducts at full weight (within the category cap) for any file-scored biomarker
-that is `Unwired` (no producer, or git NoHistory), OR `Scored` when the file's
-analysis is not current (`!covered` — see the coverage section above), recording
-each in `FileHealthScore.missing` and flipping `partial()`. This is live, not
-dormant: any incrementally-reparsed or newly-added file is worst-cased until a
-full parse recomputes its findings, and a git NoHistory workspace worst-cases
-its git biomarkers. `Unsupported` dimensions (coverage_gradient always; git
-biomarkers only when NotARepo) remain excluded and surfaced rather than scored
-as zero debt.
+Missing analysis (sutra/416): see "Scoring over validated evidence" — a missing
+producer saturates its category cap in the lower bound; the score is an interval,
+not a worst-cased point value. `Unsupported` dimensions (coverage_gradient always;
+git biomarkers only on a confirmed non-repository) are excluded and surfaced.
 
 Calibrated biomarker weights (from repowise T0-protocol corpus):
 co_change_scatter 1.80, change_entropy 1.51, ownership_risk 1.38,
@@ -598,6 +604,13 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
 - Unit tests: `#[cfg(test)]` in `src/parser/complexity.rs` (5 nesting depth tests)
 - Unit tests: `#[cfg(test)]` in `src/similarity/search.rs` (5 search tests)
 - Unit tests: `#[cfg(test)]` in `src/graph.rs` (7 SCC tests)
+- Unit tests: `src/health/{scoring,assess,compare}.rs` (bounds, validity,
+  basis, temporal rule, attribution incl. saturated caps / conditional bounds)
+- Real-path: `tests/health-refresh-test.rs` § sutra/416 (full parse → comment
+  edit → incremental → refresh → review; stale refresh; debt removal; legacy
+  baseline; blame hotspot attribution; per-file history; waiver basis in trend)
+- Test support: `tests/support/health_run.rs::publish_run_with` publishes seeded
+  findings as a run (scoring reads only published runs)
 - Integration tests: `tests/health-test.rs` (model, threshold,
   DB round-trip, waiver CRUD, waiver exclusion, scoring, git-organizational
   biomarkers: scatter, entropy, ownership, coupling, alias merging,
@@ -606,7 +619,9 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
   HealthFinding::to_row, health delta: degradation, improvement,
   no-snapshot fallback, on-demand finding attribution,
   component instability: basic, isolated, fully-efferent,
-  file health: component filter, component instability in scores,
+  file health: component filter, component instability in scores, partial
+  bounds; validated evidence (stale run, legacy, never-computed, waivers/basis);
+  trend component basis gating,
   import cycle: cyclic fires, acyclic absent, DB roundtrip)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,

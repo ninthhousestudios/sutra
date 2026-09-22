@@ -1,7 +1,13 @@
 # Health evidence contract
 
-Status: approved by Josh on 2026-09-21, sutra/412. Implementation is assigned to
-sutra/413–418; this artifact contains no production implementation.
+Status: approved by Josh on 2026-09-21, sutra/412. Implemented by sutra/413–418
+(416 landed the comparison/scoring model, 2026-09-22); the skeleton below is the
+approved design artifact, and `docs/health-map.md` maps the landed code.
+Implementation deviations from the skeleton (sutra/416): `ScoreValue` and
+`MarginalEffect` have no `Unavailable` variant — an absent run or file is scored
+as `Partial` with `Missing(LegacyUnknown | NeverComputed)`, and a file with no
+applicable on-demand producer is simply not attributed; `ScoreBasis` is one digest
+per file (plus one per component) rather than six fields.
 This contract replaces the two-axis proposal in sutra/411 and the snapshot
 mirroring rationale in sutra/409. Session-start reparse remains enabled.
 

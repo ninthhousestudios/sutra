@@ -1078,6 +1078,10 @@ impl SutraServer {
         description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
         identifies changed files and symbols, computes transitive impact, calculates a \
         0.0–1.0 risk score with breakdown, and ranks recommended reads. \
+        health_delta separates a temporal comparison of persistent health (measured only \
+        between complete observations under the same scoring basis, else incomparable with \
+        a reason) from on_demand attribution of fresh blame/shape findings against the \
+        current evidence. \
         diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
         or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit."
     )]
@@ -1111,9 +1115,9 @@ impl SutraServer {
         // persistent side reflects the current index (an incremental reparse above
         // does not recompute health). Uses the locked core, not the acquiring
         // adapter, to avoid re-locking the coordinator. Best-effort.
-        // Capture the refresh outcome: a Deferred/Failed/stale refresh means the
-        // persistent health tables are not verified current, so review must report
-        // the delta as incomparable rather than measure against them (sutra/424 F3).
+        // Capture the refresh outcome: a Deferred/Failed/stale refresh leaves the
+        // current run unverified, so its outcomes read as Missing — the temporal
+        // side is partial (incomparable) and attribution only conditional (sutra/416).
         let refresh_outcome =
             self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);
         let dd = self.get_dd_engine(&args.workspace);
@@ -1163,7 +1167,9 @@ impl SutraServer {
     #[tool(
         description = "Per-file and per-component health report. Returns derived health scores \
         (1.0-10.0), active findings with full detail, category deductions, and component \
-        instability (Martin's Ce/(Ca+Ce)). Filter by file path or component name. \
+        instability (Martin's Ce/(Ca+Ce)). A file or component with missing analysis is \
+        partial: health_score is null and score_bounds gives {lower, upper}, with the \
+        missing producers and reasons. Filter by file path or component name. \
         Default mode='actionable' shows only files with findings; mode='all' includes everything. \
         Worst files first."
     )]
@@ -1172,10 +1178,9 @@ impl SutraServer {
         Parameters(args): Parameters<FileHealthArgs>,
     ) -> Result<String, ErrorData> {
         let ctx = self.tool_context(&args.workspace).await?;
-        // Demand-refresh persistent health evidence, then read the coherent run
-        // (sutra/415 Wave D): the refresh republishes the live health tables the
-        // scoring below reads, and its outcome tells us whether those scores are
-        // current, deferred, or partial.
+        // Demand-refresh persistent health evidence, then score the coherent run
+        // (sutra/415 Wave D, sutra/416): the refresh outcome is the run's validity —
+        // a deferred/failed refresh makes its outcomes Missing, so scores are bounds.
         let refresh_outcome = self.refresh_health(&args.workspace).await;
         let mut result = tools::file_health::handle_ctx(
             &ctx,
@@ -1197,8 +1202,10 @@ impl SutraServer {
         or query a single file's health history over time. \
         Defaults to comparing the two most recent snapshots. \
         Set 'path' to get a per-file time series instead of a comparison. \
-        Only complete-vs-complete file pairs are measured improved/degraded; \
-        partial, unknown-completeness, new and removed files are 'incomparable'. \
+        Only complete-vs-complete pairs scored under the same basis (waivers, weights, \
+        versions, applicability) are measured improved/degraded; partial, legacy, \
+        basis-changed, new and removed files are 'incomparable' with a reason. \
+        Component deltas are likewise measured only under a matching membership basis. \
         Workspace/category health deltas are null unless aggregate_comparison.measured."
     )]
     pub async fn sutra_trend(
