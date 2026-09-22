@@ -1616,7 +1616,9 @@ fn test_trend_comparison_with_file_deltas() {
     };
     let result = sutra::tools::trend::handle(&db, &args).unwrap();
 
-    // Aggregate health delta
+    // Aggregate health delta: complete evidence, same population → measured.
+    assert_eq!(result["aggregate_comparison"]["measured"], true);
+    assert!(result["aggregate_comparison"]["reason"].is_null());
     let deltas = &result["deltas"];
     assert!((deltas["health_score"].as_f64().unwrap() - 1.0).abs() < 0.01);
     assert_eq!(deltas["pattern_family_count"].as_i64().unwrap(), 0);
@@ -2949,6 +2951,16 @@ fn trend_comparison_measures_only_complete_pairs_and_surfaces_the_rest() {
         "unchanged partial observation"
     );
 
+    // Aggregates move with the incomplete files, so they are not measured.
+    assert!(result["deltas"]["health_score"].is_null());
+    assert_eq!(result["aggregate_comparison"]["measured"], false);
+    assert_eq!(
+        result["aggregate_comparison"]["reason"],
+        "incomplete_evidence"
+    );
+    // Parse counters are still reported.
+    assert!(result["deltas"]["files_parsed"].is_number());
+
     assert_eq!(result["completeness"]["from"]["partial"], 2);
     assert_eq!(result["completeness"]["from"]["unknown"], 1);
     assert_eq!(result["completeness"]["to"]["complete"], 4);
@@ -3025,4 +3037,44 @@ fn legacy_snapshot_rows_read_as_unknown_not_complete() {
     assert_eq!(old["reason"], "unknown_completeness");
     assert_eq!(old["from"], 6.0);
     assert_eq!(old["to"], 8.0);
+}
+
+#[test]
+fn trend_aggregates_are_incomparable_when_the_population_changes() {
+    use SnapshotCompleteness::Complete;
+    let (_dir, db) = setup_db();
+    let from = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        from,
+        &[SnapshotFileRow {
+            category_scores: r#"{"structural":2.0}"#.into(),
+            ..snap_row(1, "src/a.rs", 8.0, Complete, &[])
+        }],
+    )
+    .unwrap();
+    let to = insert_snapshot(&db, 9.0);
+    db.insert_snapshot_files(
+        to,
+        &[
+            SnapshotFileRow {
+                category_scores: r#"{"structural":2.0}"#.into(),
+                ..snap_row(1, "src/a.rs", 8.0, Complete, &[])
+            },
+            // A clean new file lifts the workspace mean without any code improving.
+            snap_row(2, "src/new.rs", 10.0, Complete, &[]),
+        ],
+    )
+    .unwrap();
+
+    let result = trend(&db, None);
+    assert_eq!(
+        result["aggregate_comparison"]["reason"],
+        "population_changed"
+    );
+    assert!(result["deltas"]["health_score"].is_null());
+    let structural = &result["categories"]["structural"];
+    assert_eq!(structural["from"], 2.0);
+    assert_eq!(structural["to"], 2.0);
+    assert!(structural["delta"].is_null());
+    assert!(result["files"]["improved"].as_array().unwrap().is_empty());
 }

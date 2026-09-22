@@ -764,7 +764,9 @@ fn test_trend_default_from_to() {
     assert_eq!(deltas["total_complexity"], 15);
     assert_eq!(deltas["dead_symbol_count"], 3);
     assert_eq!(deltas["hotspot_count"], 2);
-    assert!((deltas["health_score"].as_f64().unwrap() - (-15.0)).abs() < 0.01);
+    // No per-file evidence behind either aggregate → not a measured change (sutra/418).
+    assert!(deltas["health_score"].is_null());
+    assert_eq!(result["aggregate_comparison"]["reason"], "no_file_evidence");
 }
 
 #[test]

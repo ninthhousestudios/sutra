@@ -739,6 +739,38 @@ fn full_parse_snapshot_round_trips_completeness_through_trend() {
             cmp["files"][bucket]
         );
     }
+    assert_eq!(cmp["aggregate_comparison"]["reason"], "incomplete_evidence");
+    assert!(cmp["deltas"]["health_score"].is_null());
     assert_eq!(cmp["completeness"]["to"]["partial"], 1);
     assert_eq!(cmp["completeness"]["to"]["unknown"], 0);
+}
+
+#[test]
+fn unchanged_parse_recomputes_an_unknown_completeness_snapshot() {
+    // Upgrade case: the latest checkpoint's rows never recorded completeness
+    // (pre-0076 / pre-418 atomic writer). An unchanged-source parse must not copy
+    // that Unknown forward, or trend stays incomparable indefinitely.
+    let fx = fixture("snap-unknown-upgrade", &[("src/deep.rs", DEEP_SRC)]);
+    full_parse(&fx);
+    let legacy = fx.db.latest_snapshots(1).unwrap()[0].id;
+    fx.db
+        .conn_for_test()
+        .execute(
+            "UPDATE health_snapshot_files SET partial = 0, completeness_recorded = 0
+             WHERE snapshot_id = ?1",
+            [legacy],
+        )
+        .unwrap();
+    assert!(
+        fx.db
+            .snapshot_file_scores(legacy)
+            .unwrap()
+            .iter()
+            .all(|r| r.completeness == sutra::db::SnapshotCompleteness::Unknown)
+    );
+
+    full_parse(&fx);
+    let latest = fx.db.latest_snapshots(1).unwrap()[0].id;
+    assert_ne!(latest, legacy, "unchanged parse records a checkpoint");
+    assert_snapshot_completeness_matches_scorer(&fx.db, latest);
 }

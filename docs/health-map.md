@@ -283,16 +283,26 @@ Additive output fields (existing fields keep their meaning):
   `new_file` | `removed_file` | `unknown_completeness` | `partial`. A pair is
   listed when its score or its completeness changed — so equal-score
   completeness transitions stay visible.
-- Top-level `completeness: {from, to}` counts files per status on each side,
-  so readers of the aggregate `deltas`/`categories` see how much was measured.
+- Top-level `completeness: {from, to}` counts files per status on each side.
+- Top-level `aggregate_comparison: {measured, reason}`. `deltas.health_score`
+  and every `categories.*.delta` are numbers only when `measured`; otherwise
+  `null` (the `from`/`to` observations stay). `reason`: `no_file_evidence`
+  (either side has no per-file rows) | `incomplete_evidence` (any file on either
+  side is partial/unknown) | `population_changed` (file sets differ). Parse
+  counters in `deltas` (`files_parsed`, `total_complexity`, ...) are exact and
+  always reported.
+- NoChanges copy-forward (`record_unchanged_snapshot`) recomputes instead of
+  copying when any prior row is `Unknown`, so an upgraded index gains recorded
+  completeness on its next parse. Validating other health inputs before
+  copy-forward is sutra/429.
 
 Behaviour changes that are not additive, per health-evidence-contract.md
 § Comparison: new files no longer compare against a fallback 10.0 (they were
 listed as improved/degraded), and removed files moved from `degraded`
-(`delta: "removed"`) to `incomparable`. Not in scope: component deltas still
-use a 10.0 fallback for new components and have no membership-compatibility
-check, and workspace/category aggregates still sum partial files — the top-level
-counts expose that rather than suppress it.
+(`delta: "removed"`) to `incomparable`; `deltas.health_score` and category
+deltas can be `null`. Not in scope: component deltas still use a 10.0 fallback
+for new components and have no membership-compatibility check (snapshots store
+no membership) — tracked on sutra/416.
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the

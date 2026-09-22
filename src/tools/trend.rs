@@ -61,6 +61,16 @@ fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value
 fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<serde_json::Value> {
     let (snap_from, snap_to) = resolve_snapshots(db, from, to)?;
 
+    let from_files = db.snapshot_file_scores(snap_from.id)?;
+    let to_files = db.snapshot_file_scores(snap_to.id)?;
+    let aggregate_blocker = aggregate_incomparable_reason(&from_files, &to_files);
+    let measured = |delta: f64| match aggregate_blocker {
+        None => json!(round2(delta)),
+        Some(_) => serde_json::Value::Null,
+    };
+
+    // Parse counters are exact observations; only the health aggregates are
+    // measured claims and are gated on comparable file evidence.
     let deltas = json!({
         "files_parsed": snap_to.files_parsed - snap_from.files_parsed,
         "symbols_extracted": snap_to.symbols_extracted - snap_from.symbols_extracted,
@@ -70,19 +80,17 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
         "total_complexity": snap_to.total_complexity - snap_from.total_complexity,
         "dead_symbol_count": snap_to.dead_symbol_count - snap_from.dead_symbol_count,
         "hotspot_count": snap_to.hotspot_count - snap_from.hotspot_count,
-        "health_score": round2(snap_to.health_score - snap_from.health_score),
+        "health_score": measured(snap_to.health_score - snap_from.health_score),
         "pattern_family_count": snap_to.pattern_family_count - snap_from.pattern_family_count,
     });
 
-    let from_files = db.snapshot_file_scores(snap_from.id)?;
-    let to_files = db.snapshot_file_scores(snap_to.id)?;
     let file_deltas = compute_file_deltas(&from_files, &to_files);
 
     let from_comps = db.snapshot_component_scores(snap_from.id)?;
     let to_comps = db.snapshot_component_scores(snap_to.id)?;
     let component_deltas = compute_component_deltas(&from_comps, &to_comps);
 
-    let category_deltas = compute_category_deltas(&from_files, &to_files);
+    let category_deltas = compute_category_deltas(&from_files, &to_files, measured);
 
     Ok(json!({
         "from": snapshot_to_json(&snap_from),
@@ -92,10 +100,47 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
             "to": completeness_counts(&to_files),
         },
         "deltas": deltas,
+        "aggregate_comparison": {
+            "measured": aggregate_blocker.is_none(),
+            "reason": aggregate_blocker,
+        },
         "files": file_deltas,
         "components": component_deltas,
         "categories": category_deltas,
     }))
+}
+
+/// Why the workspace/category health aggregates of two snapshots cannot be
+/// compared as a measured change, or `None` when they can. An aggregate is
+/// measured only when both sides carry per-file evidence, every observation on
+/// both sides is complete, and the file population is the same — otherwise the
+/// aggregate moves with missing analysis or with membership, not code quality
+/// (health-evidence-contract.md § Comparison and scoring).
+fn aggregate_incomparable_reason(
+    from: &[SnapshotFileRow],
+    to: &[SnapshotFileRow],
+) -> Option<&'static str> {
+    if from.is_empty() || to.is_empty() {
+        return Some("no_file_evidence");
+    }
+    let all_complete = |files: &[SnapshotFileRow]| {
+        files
+            .iter()
+            .all(|f| f.completeness == SnapshotCompleteness::Complete)
+    };
+    if !all_complete(from) || !all_complete(to) {
+        return Some("incomplete_evidence");
+    }
+    if sorted_paths(from) != sorted_paths(to) {
+        return Some("population_changed");
+    }
+    None
+}
+
+fn sorted_paths(files: &[SnapshotFileRow]) -> Vec<&str> {
+    let mut paths: Vec<&str> = files.iter().map(|f| f.file_path.as_str()).collect();
+    paths.sort_unstable();
+    paths
 }
 
 /// Per-file comparison (health-evidence-contract.md § Comparison and scoring).
@@ -303,6 +348,7 @@ fn compute_component_deltas(
 fn compute_category_deltas(
     from_files: &[SnapshotFileRow],
     to_files: &[SnapshotFileRow],
+    measured: impl Fn(f64) -> serde_json::Value,
 ) -> serde_json::Value {
     let from_cats = aggregate_categories(from_files);
     let to_cats = aggregate_categories(to_files);
@@ -320,7 +366,7 @@ fn compute_category_deltas(
             json!({
                 "from": round2(f),
                 "to": round2(t),
-                "delta": round2(t - f),
+                "delta": measured(t - f),
             }),
         );
     }

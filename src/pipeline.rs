@@ -1336,6 +1336,24 @@ fn record_unchanged_snapshot(
     };
 
     let file_scores = db.snapshot_file_scores(previous.id)?;
+    // Copying forward an Unknown-completeness row would keep a legacy
+    // observation Unknown for as long as the source stays unchanged; recompute
+    // instead so an upgraded index gains recorded completeness (sutra/418).
+    if file_scores
+        .iter()
+        .any(|f| f.completeness == SnapshotCompleteness::Unknown)
+    {
+        return record_snapshot(
+            db,
+            head_commit,
+            timestamp,
+            files_parsed,
+            symbols_extracted,
+            refs_extracted,
+            parse_errors,
+            duration_ms,
+        );
+    }
     let component_scores = db.snapshot_component_scores(previous.id)?;
     db.insert_snapshot_atomic(
         &SnapshotParams {
