@@ -116,25 +116,53 @@ fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::F
     Ok(lock_file)
 }
 
-/// Try to acquire the cross-process parse flock *without blocking*. Returns
-/// `Ok(None)` when another process already holds it (the caller must defer rather
-/// than wait). Used by the demand health refresh, which the contract requires to
-/// report `LockBusy` on contention instead of blocking a health query behind a
-/// peer's write (`docs/health-evidence-contract.md`, "Publication and consumers").
+/// Try to acquire the cross-process parse flock *without blocking on a peer's
+/// write*. Returns `Ok(None)` when the flock is genuinely held (the caller must
+/// defer rather than wait). Used by the demand health refresh, which the contract
+/// requires to report `LockBusy` on contention instead of blocking a health query
+/// behind a peer's write (`docs/health-evidence-contract.md`, "Publication and
+/// consumers").
+///
+/// The acquire retries over a tiny bounded budget before reporting contention.
+/// This is not a wait on a peer write — it rides out a *spurious* contention
+/// window unrelated to any lock owner: whenever any thread in this process spawns
+/// a subprocess (git, etc.), `fork` duplicates every open fd — including a peer
+/// workspace's parse-lock fd — into the child, and the flock on that shared open
+/// file description stays held until the child reaches `exec` and `O_CLOEXEC`
+/// drops the fd. During that sub-millisecond fork→exec window a bare
+/// `try_lock_exclusive` observes contention even though the flock's real owner has
+/// already released it. A genuine peer parse holds the flock for the whole run
+/// (far longer than the budget), so it still exhausts every attempt and the caller
+/// defers as required (sutra/428).
 pub fn try_acquire_parse_flock(
     config: &Config,
     workspace_id: &str,
 ) -> Result<Option<std::fs::File>> {
+    /// Attempts spread across the transient fork→exec window; the final attempt
+    /// does not sleep, so the worst-case added latency is `(ATTEMPTS-1) * BACKOFF`.
+    const ATTEMPTS: u32 = 5;
+    const BACKOFF: Duration = Duration::from_millis(1);
+
     let lock_file = open_parse_lock_file(config, workspace_id)?;
-    match lock_file.try_lock_exclusive() {
-        Ok(()) => Ok(Some(lock_file)),
-        // Contention (another process holds the flock) is not an error here — the
-        // caller defers. Any other error is a real filesystem/lock failure.
-        Err(e) if e.kind() == fs2::lock_contended_error().kind() => Ok(None),
-        Err(e) => Err(crate::error::SutraError::Internal(format!(
-            "could not attempt parse lock: {e}"
-        ))),
+    for attempt in 0..ATTEMPTS {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => return Ok(Some(lock_file)),
+            // Contention is not an error. It may be a spurious fork→exec blip (retry
+            // to ride it out) or a genuine peer write (retries exhaust → defer).
+            Err(e) if e.kind() == fs2::lock_contended_error().kind() => {
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(BACKOFF);
+                }
+            }
+            // Any other error is a real filesystem/lock failure.
+            Err(e) => {
+                return Err(crate::error::SutraError::Internal(format!(
+                    "could not attempt parse lock: {e}"
+                )));
+            }
+        }
     }
+    Ok(None)
 }
 
 /// Summary of a parse pipeline run.
