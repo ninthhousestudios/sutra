@@ -74,7 +74,14 @@ src/constraints/
                       violations) or evaluate_raw (raw SQLite: guard hook).
                       CheckOutcome, EvalScope, FactsSource.
                       Covers: forbidden_dep/boundary via DD maintained view,
-                      no_cycles via SCC, max_fan_in via fan_in_files rollup,
+                      no_cycles via SCC, max_fan_in via live graph fan-in
+                      (build_file_adjacency — NOT the stored fan_in_files
+                      rollup, which the incremental refresh defers; sutra/440).
+                      Under ChangedFiles, max_fan_in is diff-attributed via
+                      DiffImportEdges (same extractor on base + snapshot): it
+                      keeps its severity only when the diff adds net importers
+                      of the target; pre-existing drift → Informational,
+                      delta PreExisting, so it never gates an unrelated commit.
                       external via external::check_*, forbidden_pattern via
                       patterns::check_forbidden_patterns, dead_constraint via
                       constraint_coverage. Pattern scan runs before edge-empty

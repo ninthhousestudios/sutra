@@ -1613,6 +1613,7 @@ severity = "blocking"
             EvalScope::ChangedFiles {
                 changed_ids: &changed_ids,
                 old_edges: &old_edges,
+                import_delta: &Default::default(),
                 changed_pattern_only_paths: &no_stubs,
                 content,
                 changed_paths: &changed_paths,
@@ -1885,6 +1886,7 @@ name = "no-unsafe"
         EvalScope::ChangedFiles {
             changed_ids: &changed_ids,
             old_edges: &old_edges,
+            import_delta: &Default::default(),
             changed_pattern_only_paths: &[],
             content: sutra::constraints::check::ContentSource::Worktree,
             changed_paths: &changed_paths,

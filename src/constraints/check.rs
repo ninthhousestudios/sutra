@@ -65,11 +65,57 @@ pub enum ContentSource<'a> {
     Revision(&'a str),
 }
 
+/// Import-edge movement of a diff's changed files, used to attribute a
+/// `max_fan_in` violation to the diff rather than to graph-wide drift
+/// (sutra/440). Both edge sets come from the same extractor run over the base
+/// revision and the requested snapshot, and only for files it could read on
+/// both sides, so an unchanged import line never reads as added merely because
+/// the extractor and the index resolve it differently.
+#[derive(Default)]
+pub struct DiffImportEdges {
+    pub base_edges: HashSet<(i64, i64)>,
+    pub head_edges: HashSet<(i64, i64)>,
+    /// Changed files absent at the base revision. Every one that now
+    /// contributes to a target's fan-in is a new importer, whatever its
+    /// language — no base-side extraction is needed to know that.
+    pub added_ids: HashSet<i64>,
+}
+
+impl DiffImportEdges {
+    /// Net importers of `target` the diff adds: files that newly import it
+    /// (or are new and reach it at all) minus changed files that stopped
+    /// reaching it. `importers` is the target's live fan-in set. A file that
+    /// drops its import but still references the target by some other edge
+    /// hasn't lowered fan-in, so it doesn't count as removed.
+    fn net_importers_added(&self, target: i64, importers: &HashSet<i64>) -> i64 {
+        let added = importers
+            .iter()
+            .filter(|&&src| {
+                self.added_ids.contains(&src)
+                    || (self.head_edges.contains(&(src, target))
+                        && !self.base_edges.contains(&(src, target)))
+            })
+            .count();
+        let removed = self
+            .base_edges
+            .iter()
+            .filter(|&&(src, dst)| {
+                dst == target && !self.head_edges.contains(&(src, dst)) && !importers.contains(&src)
+            })
+            .count();
+        added as i64 - removed as i64
+    }
+}
+
 pub enum EvalScope<'a> {
     Workspace,
     ChangedFiles {
         changed_ids: &'a HashSet<i64>,
         old_edges: &'a HashSet<(i64, i64)>,
+        /// Fan-in attribution for `max_fan_in`: a hub already over threshold
+        /// blocks only a diff that adds importers to it; pre-existing drift is
+        /// reported as Informational so it never gates an unrelated commit.
+        import_delta: &'a DiffImportEdges,
         /// Changed files that are pattern-eligible but unindexed (`.pyi` stubs).
         /// They have no id, so they can't ride along in `changed_ids` — without
         /// them a changed stub is invisible to review-scoped pattern checks.
@@ -153,7 +199,7 @@ pub fn requires_component_facts(constraints: &[Constraint]) -> bool {
 /// Read one scope-matched file's content from the requested snapshot. A missing
 /// file (deleted at the revision, unreadable on disk) yields `None` and is
 /// skipped — the same soft-fail the disk-only read had.
-fn read_scoped_content(
+pub(crate) fn read_scoped_content(
     workspace_root: &Path,
     content: ContentSource,
     rel_path: &str,
@@ -718,44 +764,76 @@ fn evaluate_dd(
         }
     }
 
-    // MaxFanIn evaluation
-    let glob_opts = MatchOptions {
-        require_literal_separator: true,
-        ..MatchOptions::default()
-    };
-    for c in &all_constraints {
-        let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
-            continue;
+    // MaxFanIn evaluation. Fan-in is computed from the live graph, not read
+    // from the stored `fan_in_files` rollup: the query-path incremental refresh
+    // defers rollups to the next full parse (docs/freshness-map.md), so the
+    // column lags a working-tree edit the gate must see (sutra/440).
+    if all_constraints
+        .iter()
+        .any(|c| matches!(c.kind, ConstraintKind::MaxFanIn { .. }))
+    {
+        let graph_data = crate::graph::GraphData::load(db)?;
+        let (fan_in_map, _) = crate::graph::build_file_adjacency(&all_files, &graph_data);
+        let import_delta = match scope {
+            EvalScope::ChangedFiles { import_delta, .. } => Some(*import_delta),
+            _ => None,
         };
-        let pat = match Pattern::new(target) {
-            Ok(p) => p,
-            Err(_) => continue,
+        let no_importers = HashSet::new();
+        let glob_opts = MatchOptions {
+            require_literal_separator: true,
+            ..MatchOptions::default()
         };
-        for f in &all_files {
-            if f.fan_in_files <= *threshold as i64 {
+        for c in &all_constraints {
+            let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
                 continue;
+            };
+            let pat = match Pattern::new(target) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            for f in &all_files {
+                let importers = fan_in_map.get(&f.id).unwrap_or(&no_importers);
+                let fan_in = importers.len();
+                if fan_in <= *threshold as usize {
+                    continue;
+                }
+                if !pat.matches_with(&f.path, glob_opts) {
+                    continue;
+                }
+                // A diff-scoped gate blocks only on fan-in the diff adds. A hub
+                // already over threshold is graph-wide drift: it stays visible,
+                // demoted to Informational, so it can't fail every unrelated
+                // commit (including docs-only ones) until someone fixes it.
+                let (severity, delta, note) = match import_delta {
+                    None => (c.severity, FindingDelta::Unknown, ""),
+                    Some(d) if d.net_importers_added(f.id, importers) > 0 => {
+                        (c.severity, FindingDelta::Introduced, "")
+                    }
+                    Some(_) => (
+                        Severity::Informational,
+                        FindingDelta::PreExisting,
+                        " (pre-existing: this diff adds no importer)",
+                    ),
+                };
+                findings.push(ConstraintFinding {
+                    constraint_id: Arc::clone(&c.id),
+                    constraint_name: c.name.clone(),
+                    constraint_kind: "max_fan_in".into(),
+                    severity,
+                    provenance: c.provenance.clone(),
+                    from_path: f.path.to_string(),
+                    to_path: String::new(),
+                    component_context: None,
+                    detail: format!(
+                        "fan-in is {fan_in}, threshold is {threshold}: {}{note}",
+                        f.path,
+                    ),
+                    delta,
+                    line: None,
+                    snippet: None,
+                    enclosing_symbol: None,
+                });
             }
-            if !pat.matches_with(&f.path, glob_opts) {
-                continue;
-            }
-            findings.push(ConstraintFinding {
-                constraint_id: Arc::clone(&c.id),
-                constraint_name: c.name.clone(),
-                constraint_kind: "max_fan_in".into(),
-                severity: c.severity,
-                provenance: c.provenance.clone(),
-                from_path: f.path.to_string(),
-                to_path: String::new(),
-                component_context: None,
-                detail: format!(
-                    "fan-in is {}, threshold is {threshold}: {}",
-                    f.fan_in_files, f.path,
-                ),
-                delta: FindingDelta::Unknown,
-                line: None,
-                snippet: None,
-                enclosing_symbol: None,
-            });
         }
     }
 

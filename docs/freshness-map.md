@@ -158,6 +158,11 @@ the edit, but importance-ranked or similarity/health-derived views (e.g.
 until the next full parse. This is intentional — the deferred tiers carry O(n²)
 phases that must not run on the query path.
 
+Consumers that gate on a derived value must not read the deferred column. The
+`max_fan_in` constraint computes fan-in from the live refs + import graph
+rather than `files.fan_in_files`, so `sutra check` sees a working-tree edit
+right after the incremental refresh (sutra/440).
+
 `parse_incremental` records **no** snapshot and never calls
 `set_derived_complete`: staleness is content-based (per-file fingerprints, updated
 by `replace_file_data`), so the next drift probe reads clean without a snapshot,

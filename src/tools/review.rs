@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::components;
 use crate::constraints::DdEngine;
-use crate::constraints::check::{self, ContentSource, EvalScope, FactsSource};
+use crate::constraints::check::{self, ContentSource, DiffImportEdges, EvalScope, FactsSource};
 use crate::db::Db;
 use crate::db::{HealthFindingRow, SnapshotCompleteness, SnapshotFileRow};
 use crate::error::Result;
@@ -517,17 +517,17 @@ fn extract_outgoing_edges(
     file_id: i64,
     workspace_root: &Path,
     id_map: &HashMap<&str, i64>,
-) -> Vec<(i64, i64)> {
+) -> Option<Vec<(i64, i64)>> {
     let language = if rel_path.ends_with(".rs") {
         "rust"
     } else if rel_path.ends_with(".dart") {
         "dart"
     } else {
-        return Vec::new();
+        return None;
     };
     let result = match crate::parser::parse_file(content, language, rel_path) {
         Ok(r) if r.parsed_ok => r,
-        _ => return Vec::new(),
+        _ => return None,
     };
     let mut edges = Vec::new();
     match language {
@@ -580,7 +580,7 @@ fn extract_outgoing_edges(
         }
         _ => {}
     }
-    edges
+    Some(edges)
 }
 
 pub fn build_findings(
@@ -606,17 +606,34 @@ pub fn build_findings(
         .collect();
 
     let mut old_edges: HashSet<(i64, i64)> = HashSet::new();
+    let mut import_delta = DiffImportEdges::default();
     for path in changed_paths {
         let file_id = match id_map.get(path.as_str()) {
             Some(&id) => id,
             None => continue,
         };
-        if let Ok(Some(old_content)) = git::git_file_content_at(workspace_root, base_revision, path)
-        {
-            for edge in extract_outgoing_edges(&old_content, path, file_id, workspace_root, &id_map)
-            {
-                old_edges.insert(edge);
+        let old_content = match git::git_file_content_at(workspace_root, base_revision, path) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                import_delta.added_ids.insert(file_id);
+                continue;
             }
+            Err(_) => continue,
+        };
+        let Some(base_edges) =
+            extract_outgoing_edges(&old_content, path, file_id, workspace_root, &id_map)
+        else {
+            continue;
+        };
+        old_edges.extend(base_edges.iter().copied());
+        // Fan-in attribution compares like with like: the same extractor over
+        // the requested snapshot, and only when both sides extracted (sutra/440).
+        if let Some(head_content) = check::read_scoped_content(workspace_root, content, path)
+            && let Some(head_edges) =
+                extract_outgoing_edges(&head_content, path, file_id, workspace_root, &id_map)
+        {
+            import_delta.base_edges.extend(base_edges);
+            import_delta.head_edges.extend(head_edges);
         }
     }
 
@@ -638,6 +655,7 @@ pub fn build_findings(
         EvalScope::ChangedFiles {
             changed_ids: &changed_ids,
             old_edges: &old_edges,
+            import_delta: &import_delta,
             changed_pattern_only_paths: &changed_pattern_only_paths,
             content,
             changed_paths: &changed_set,
