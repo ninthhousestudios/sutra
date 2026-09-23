@@ -24,7 +24,7 @@ use crate::health::scoring::{EvidencePart, ScoreValue};
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules;
 use crate::tools::change_signals::{self, ChurnMap};
-use crate::tools::file_health::{missing_json, score_value_json};
+use crate::tools::file_health::{missing_json, score_value_json, stored_score_json};
 use crate::tools::scoring::{self, Signal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -406,27 +406,16 @@ fn observation_changed(current: &ScoreValue, base: &SnapshotFileRow, basis: Opti
         || basis != base.score_basis.as_deref()
 }
 
-/// A baseline checkpoint observation. Rows without a recorded basis predate
-/// sutra/416: their score was computed under different rules, so it is shown as
-/// `legacy_score`, never as a bound.
+/// A baseline checkpoint observation, serialized through the shared stored-score
+/// shape (legacy rows surface as `legacy_score`, never as a bound).
 fn baseline_observation_json(r: &SnapshotFileRow) -> serde_json::Value {
-    let mut m = serde_json::Map::new();
+    let mut m = stored_score_json(
+        r.completeness,
+        r.score_basis.is_some(),
+        r.score,
+        r.score_upper,
+    );
     m.insert("completeness".into(), json!(r.completeness.as_str()));
-    match (r.completeness, r.score_basis.is_some(), r.score_upper) {
-        (SnapshotCompleteness::Complete, true, _) => {
-            m.insert("health_score".into(), json!(scoring::round3(r.score)));
-        }
-        (SnapshotCompleteness::Partial, true, Some(upper)) => {
-            m.insert("health_score".into(), serde_json::Value::Null);
-            m.insert(
-                "score_bounds".into(),
-                json!({ "lower": scoring::round3(r.score), "upper": scoring::round3(upper) }),
-            );
-        }
-        _ => {
-            m.insert("legacy_score".into(), json!(scoring::round3(r.score)));
-        }
-    }
     if !r.missing_biomarkers.is_empty() {
         m.insert("missing_biomarkers".into(), json!(r.missing_biomarkers));
     }

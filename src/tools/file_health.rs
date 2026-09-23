@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::Db;
+use crate::db::{Db, SnapshotCompleteness};
 use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
 use crate::health::assess::RunVerdict;
@@ -165,6 +165,34 @@ pub(crate) fn score_value_json(value: &ScoreValue) -> serde_json::Map<String, se
         }
     }
     map
+}
+
+/// Serialize a stored checkpoint observation in the same shape as a live score.
+/// Complete under a recorded basis is measured; Partial under a recorded basis
+/// with its upper bound is `null` plus bounds. Anything else — completeness never
+/// recorded, or no basis (scored before sutra/416 under different rules) — is
+/// `health_score: null` plus `legacy_score`: never presented as a measurement or
+/// a bound.
+pub(crate) fn stored_score_json(
+    completeness: SnapshotCompleteness,
+    basis_recorded: bool,
+    score: f64,
+    score_upper: Option<f64>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let value = match (completeness, basis_recorded, score_upper) {
+        (SnapshotCompleteness::Complete, true, _) => ScoreValue::Measured(score),
+        (SnapshotCompleteness::Partial, true, Some(upper)) => ScoreValue::Partial {
+            lower: score,
+            upper,
+        },
+        _ => {
+            let mut map = serde_json::Map::new();
+            map.insert("health_score".into(), serde_json::Value::Null);
+            map.insert("legacy_score".into(), json!(scoring::round2(score)));
+            return map;
+        }
+    };
+    score_value_json(&value)
 }
 
 /// `[{biomarker, reason}]` for a score's missing producers.

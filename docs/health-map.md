@@ -294,7 +294,14 @@ Additive output fields (existing fields keep their meaning):
 - Every completeness object is `{completeness: "complete"|"partial"|"unknown",
   partial: bool | null, missing_biomarkers: [..]}`; `partial` is `null` for
   Unknown.
-- History entries carry those three keys flat, next to `health_score`.
+- History entries carry those three keys flat, next to the score, which goes
+  through the same stored-score serializer as review baselines
+  (`file_health::stored_score_json`, sutra/438): complete under a recorded
+  basis → numeric `health_score`; partial under a recorded basis →
+  `health_score: null` + `score_bounds {lower, upper}` + `partial: true`;
+  anything else (Unknown completeness, or no `score_basis` — pre-416 rules) →
+  `health_score: null` + `legacy_score`. A malformed stored `category_scores`
+  is an error, not an empty object.
 - Comparison `files.improved`/`files.degraded` entries add `from_completeness`
   and `to_completeness`. They now contain **only** complete→complete pairs.
 - Comparison `files.incomparable`: `{path, from, to, from_completeness,

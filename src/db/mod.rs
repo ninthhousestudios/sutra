@@ -579,6 +579,8 @@ pub struct FileHealthHistoryRow {
     pub completeness: SnapshotCompleteness,
     pub missing_biomarkers: Vec<String>,
     pub score_upper: Option<f64>,
+    /// `None` = scored before sutra/416 under different rules (legacy).
+    pub score_basis: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2773,7 +2775,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT s.timestamp, hsf.score, hsf.category_scores,
                     hsf.partial, hsf.completeness_recorded, hsf.missing_biomarkers,
-                    hsf.score_upper
+                    hsf.score_upper, hsf.score_basis
              FROM health_snapshot_files hsf
              JOIN snapshots s ON s.id = hsf.snapshot_id
              WHERE hsf.file_path = ?1
@@ -2789,6 +2791,7 @@ impl Db {
                     completeness,
                     missing_biomarkers,
                     score_upper: row.get(6)?,
+                    score_basis: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

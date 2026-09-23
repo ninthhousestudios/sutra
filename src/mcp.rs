@@ -1203,7 +1203,10 @@ impl SutraServer {
         description = "Compare two parse snapshots with per-file and per-component health deltas, \
         or query a single file's health history over time. \
         Defaults to comparing the two most recent snapshots. \
-        Set 'path' to get a per-file time series instead of a comparison. \
+        Set 'path' to get a per-file time series instead of a comparison; in it, only \
+        complete entries carry a numeric health_score — partial entries have health_score \
+        null plus score_bounds {lower, upper}, legacy entries health_score null plus \
+        legacy_score. \
         Only complete-vs-complete pairs scored under the same basis (waivers, weights, \
         versions, applicability) are measured improved/degraded; partial, legacy, \
         basis-changed, new and removed files are 'incomparable' with a reason. \

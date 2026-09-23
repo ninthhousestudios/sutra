@@ -1758,6 +1758,82 @@ fn test_trend_file_history_mode() {
     assert!((snapshots[1]["health_score"].as_f64().unwrap() - 7.0).abs() < 0.01);
 }
 
+/// sutra/438: a partial row's stored score is only its lower bound and a legacy
+/// row's was scored under other rules — neither is a numeric health_score.
+#[test]
+fn test_trend_history_partial_and_legacy_rows_are_not_measured() {
+    let (_dir, db) = setup_db();
+
+    let legacy = insert_snapshot(&db, 6.0);
+    let mut row = snap_row(1, "src/x.rs", 6.0, SnapshotCompleteness::Unknown, &[]);
+    row.score_basis = None;
+    db.insert_snapshot_files(legacy, &[row]).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let no_basis = insert_snapshot(&db, 6.5);
+    let mut row = snap_row(1, "src/x.rs", 6.5, SnapshotCompleteness::Complete, &[]);
+    row.score_basis = None;
+    db.insert_snapshot_files(no_basis, &[row]).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let partial = insert_snapshot(&db, 7.0);
+    let mut row = snap_row(
+        1,
+        "src/x.rs",
+        4.0,
+        SnapshotCompleteness::Partial,
+        &["change_entropy"],
+    );
+    row.score_upper = Some(8.5);
+    db.insert_snapshot_files(partial, &[row]).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let complete = insert_snapshot(&db, 9.0);
+    let row = snap_row(1, "src/x.rs", 9.25, SnapshotCompleteness::Complete, &[]);
+    db.insert_snapshot_files(complete, &[row]).unwrap();
+
+    let result = trend(&db, Some("src/x.rs"));
+    let snaps = result["snapshots"].as_array().unwrap();
+    assert_eq!(snaps.len(), 4);
+
+    // Newest first.
+    assert_eq!(snaps[0]["completeness"], "complete");
+    assert!((snaps[0]["health_score"].as_f64().unwrap() - 9.25).abs() < 0.001);
+    assert!(snaps[0].get("score_bounds").is_none());
+
+    assert_eq!(snaps[1]["completeness"], "partial");
+    assert!(snaps[1]["health_score"].is_null());
+    assert!((snaps[1]["score_bounds"]["lower"].as_f64().unwrap() - 4.0).abs() < 0.001);
+    assert!((snaps[1]["score_bounds"]["upper"].as_f64().unwrap() - 8.5).abs() < 0.001);
+    assert_eq!(snaps[1]["partial"], true);
+
+    for legacy in &snaps[2..] {
+        assert!(legacy["health_score"].is_null(), "legacy row: {legacy}");
+        assert!(legacy.get("score_bounds").is_none());
+        assert!(legacy["legacy_score"].is_number());
+    }
+    assert_eq!(snaps[3]["completeness"], "unknown");
+}
+
+#[test]
+fn test_trend_history_corrupt_category_scores_is_an_error() {
+    let (_dir, db) = setup_db();
+    let snap = insert_snapshot(&db, 7.0);
+    let mut row = snap_row(1, "src/x.rs", 7.0, SnapshotCompleteness::Complete, &[]);
+    row.category_scores = "{not json".into();
+    db.insert_snapshot_files(snap, &[row]).unwrap();
+
+    let args = sutra::tools::trend::TrendArgs {
+        workspace: String::new(),
+        from: None,
+        to: None,
+        path: Some("src/x.rs".into()),
+        limit: None,
+    };
+    let err = sutra::tools::trend::handle(&db, &args).unwrap_err();
+    assert!(err.to_string().contains("category_scores"), "{err}");
+}
+
 // --- Blame parsing ---
 
 #[test]
@@ -2648,7 +2724,11 @@ fn trend_history_exposes_completeness_on_every_entry() {
     assert!(entries[2]["partial"].is_null());
     for e in entries {
         assert!(e["missing_biomarkers"].is_array());
-        assert!(e["health_score"].is_number());
+        // Only a complete observation is a measured score (sutra/438).
+        assert_eq!(
+            e["health_score"].is_number(),
+            e["completeness"] == "complete"
+        );
     }
 }
 

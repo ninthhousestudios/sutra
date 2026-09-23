@@ -8,9 +8,10 @@ use crate::db::{
     Db, SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow, SnapshotFileRow,
     SnapshotRow,
 };
-use crate::error::Result;
+use crate::error::{Result, SutraError};
 use crate::health::compare::{self, IncomparableReason, SideSummary};
 use crate::health::scoring;
+use crate::tools::file_health::stored_score_json;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TrendArgs {
@@ -42,25 +43,28 @@ pub fn handle(db: &Db, args: &TrendArgs) -> Result<serde_json::Value> {
 
 fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value> {
     let history = db.file_health_history(path, limit)?;
-    let snapshots: Vec<_> = history
+    let snapshots: Vec<serde_json::Value> = history
         .iter()
         .map(|h| {
+            let category_deductions = serde_json::from_str::<serde_json::Value>(&h.category_scores)
+                .map_err(|e| {
+                    SutraError::Internal(format!(
+                        "corrupt category_scores for {path} at snapshot {}: {e}",
+                        h.timestamp
+                    ))
+                })?;
             let mut entry = completeness_json(h.completeness, &h.missing_biomarkers);
+            entry.extend(stored_score_json(
+                h.completeness,
+                h.score_basis.is_some(),
+                h.score,
+                h.score_upper,
+            ));
             entry.insert("timestamp".into(), json!(h.timestamp));
-            entry.insert("health_score".into(), json!(round2(h.score)));
-            if let Some(upper) = h.score_upper {
-                entry.insert(
-                    "score_bounds".into(),
-                    json!({ "lower": round2(h.score), "upper": round2(upper) }),
-                );
-            }
-            entry.insert(
-                "category_deductions".into(),
-                serde_json::from_str::<serde_json::Value>(&h.category_scores).unwrap_or(json!({})),
-            );
-            serde_json::Value::Object(entry)
+            entry.insert("category_deductions".into(), category_deductions);
+            Ok(serde_json::Value::Object(entry))
         })
-        .collect();
+        .collect::<Result<_>>()?;
     Ok(json!({
         "mode": "history",
         "path": path,
