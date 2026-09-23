@@ -771,3 +771,113 @@ async fn test_parser_stamp_not_advanced_when_forced_reparse_leaves_stale_row() {
         "healed: unchanged file is skipped again",
     );
 }
+
+// sutra/431: an unchanged workspace must re-extract nothing on the second parse.
+// A retired heal gate treated any symbol with NULL language_attrs as a
+// pre-migration row and bypassed both skips — but several extractors (Rust
+// struct fields among them) legitimately emit no attrs, so every file holding
+// such a symbol was re-extracted on every parse, reshuffling ids and rollups.
+#[tokio::test]
+async fn test_unchanged_file_with_attrless_symbols_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub struct Point {\n    pub x: i64,\n}\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("attrless-skip", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    let reparse = || {
+        let cancel = AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap()
+    };
+
+    let first = reparse();
+    assert_eq!(first.files_parsed, 1, "first parse must extract the file");
+
+    // Precondition: the field symbol really is stored with NULL attrs, so this
+    // test exercises the case the retired gate mis-handled.
+    let conn = rusqlite::Connection::open(db_dir.path().join(&ws.id).join("index.db")).unwrap();
+    let null_attrs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE kind = 'field' AND language_attrs IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        null_attrs >= 1,
+        "fixture must hold an attr-less field symbol"
+    );
+
+    let second = reparse();
+    assert_eq!(
+        second.files_parsed, 0,
+        "unchanged file must be skipped even when a symbol has no language_attrs",
+    );
+}
+
+// sutra/431: resolution tie-breaks must not depend on symbol rowids. Two free
+// functions share a qualified name, so a receiver call falls to the global
+// fallback and ties. Re-extracting the winner's file reassigns its ids past the
+// loser's; with rowid-ordered candidates the tie then flipped, so a partial
+// reparse resolved differently from a fresh full parse.
+#[tokio::test]
+async fn test_global_fallback_tie_break_survives_reextraction() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.rs"), "pub fn resolve() {}\n").unwrap();
+    std::fs::write(src.join("z.rs"), "pub fn resolve() {}\n").unwrap();
+    std::fs::write(
+        src.join("caller.rs"),
+        "fn go(x: Thing) {\n    x.resolve();\n}\n",
+    )
+    .unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let ws = make_entry("tie-break", dir.path().to_path_buf());
+    let config = make_config(db_dir.path());
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+
+    let reparse = || {
+        let cancel = AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap()
+    };
+    let conn = rusqlite::Connection::open(db_dir.path().join(&ws.id).join("index.db")).unwrap();
+    let target_path = || -> String {
+        conn.query_row(
+            "SELECT tf.path FROM refs r
+             JOIN files f ON f.id = r.file_id
+             JOIN symbols s ON s.id = r.target_symbol_id
+             JOIN files tf ON tf.id = s.file_id
+             WHERE f.path = 'src/caller.rs' AND r.unresolved_name IS NULL
+               AND s.short_name = 'resolve'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+
+    reparse();
+    assert_eq!(target_path(), "src/a.rs", "tie breaks by file path");
+
+    // Change a.rs's bytes (not its symbols): it is re-extracted and its
+    // `resolve` gets a rowid above z.rs's.
+    std::fs::write(src.join("a.rs"), "// touched\npub fn resolve() {}\n").unwrap();
+    let partial = reparse();
+    assert_eq!(partial.files_parsed, 1, "only a.rs is re-extracted");
+    assert_eq!(
+        target_path(),
+        "src/a.rs",
+        "re-extraction must not flip the tie to the lower-rowid candidate",
+    );
+}

@@ -375,13 +375,15 @@ fn parse_single_file(
     let existing = db.file_by_path(&rel_path)?;
     // A parser-identity change (sutra/364) invalidates every skip: the bytes are
     // unchanged but the extractor that produced the stored symbols is not, so
-    // neither the mtime nor the content-hash short-circuit may fire.
+    // neither the mtime nor the content-hash short-circuit may fire. That stamp
+    // is the only extractor-staleness signal: an earlier "NULL language_attrs
+    // means pre-migration row" gate re-extracted every file holding a symbol
+    // kind whose extractor legitimately emits no attrs, on every parse (sutra/431).
     if !force_reparse
         && trust_mtime
         && let Some(ns) = mtime_ns
         && let Some(ref ex) = existing
         && ex.mtime_ns == Some(ns)
-        && !db.file_has_null_language_attrs(ex.id)?
     {
         return Ok(None);
     }
@@ -421,7 +423,6 @@ fn parse_single_file(
     if !force_reparse
         && let Some(ref ex) = existing
         && ex.content_hash == content_hash
-        && !db.file_has_null_language_attrs(ex.id)?
     {
         return Ok(None);
     }

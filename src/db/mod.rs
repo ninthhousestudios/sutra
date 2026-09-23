@@ -1634,17 +1634,6 @@ impl Db {
         Ok(grouped)
     }
 
-    pub fn file_has_null_language_attrs(&self, file_id: i64) -> Result<bool> {
-        let conn = self.conn.lock();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM symbols
-             WHERE file_id = ?1 AND language_attrs IS NULL",
-            params![file_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
-
     /// Return (file_id, symbol_count) for all files in a single query.
     pub fn symbol_counts_by_file(&self) -> Result<std::collections::HashMap<i64, i64>> {
         let conn = self.conn.lock();
@@ -1772,10 +1761,17 @@ impl Db {
     }
 
     /// Load summary of every symbol: id, names, kind, parent, and file_id.
+    ///
+    /// Ordered by file path, then id (extraction order within a file). The
+    /// resolver's tie-breaks take the first candidate in this order, so it must
+    /// not depend on rowids — re-extracting a file reassigns its ids, which
+    /// would flip which of two equal candidates wins (sutra/431).
     pub fn all_symbols_summary(&self) -> Result<Vec<SymbolEntry>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, qualified_name, short_name, kind, parent_symbol_id, file_id FROM symbols",
+            "SELECT s.id, s.qualified_name, s.short_name, s.kind, s.parent_symbol_id, s.file_id
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             ORDER BY f.path, s.id",
         )?;
         let rows: rusqlite::Result<Vec<SymbolEntry>> = stmt
             .query_map([], |row| {

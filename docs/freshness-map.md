@@ -49,6 +49,15 @@ bypasses **both** the mtime and content-hash short-circuits, then re-records the
 stamp on success. So a parser change forces exactly one full re-extraction and
 subsequent reparses skip unchanged files again.
 
+The stamp is the **only** extractor-staleness signal the skip consults. Do not
+infer staleness from row contents: an earlier gate treated any symbol with NULL
+`language_attrs` as a pre-migration row, but several extractors legitimately emit
+no attrs (Rust fields, most C/Python/TS symbols), so ~2/3 of files re-extracted on
+every parse of an unchanged workspace (sutra/431). Re-extraction reassigns symbol
+ids, so anything ordered by rowid shifts too — `all_symbols_summary` orders by
+`(path, id)` so resolver tie-breaks give the same answer after a partial reparse
+as after a fresh full parse.
+
 The hashed boundary is *all code that shapes persisted extraction output*, not
 just the grammars/adapters (sutra/383). The extraction→persistence normalization
 — symbol-tree flattening, ref/import field mapping, the per-file size caps —
