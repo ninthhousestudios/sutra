@@ -985,10 +985,8 @@ fn entity_change_walk(db: &Db, workspace_root: &Path, max_commits: u32) -> Resul
 /// Resolve pending cross-file references and rebuild import edges — the tier of
 /// derived data that graph and symbol queries read directly. Shared by the full
 /// parse (via [`post_parse_sequence`]) and the query-path incremental refresh
-/// ([`parse_incremental`], sutra/363). Returns the resolution counts plus the
-/// set of file ids that needed resolution, which the full-parse graph tier
-/// reuses as its dirty hint.
-fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64, HashSet<i64>)> {
+/// ([`parse_incremental`], sutra/363). Returns the resolution counts.
+fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64)> {
     // Query resolution work from DB — includes freshly-parsed files,
     // dependents of deleted symbols, and orphans from interrupted parses.
     log_phase_rss("post_parse:start");
@@ -1052,12 +1050,7 @@ fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64, 
     }
 
     log_phase_rss("post_parse:refs_resolved");
-    Ok((
-        resolved_count,
-        unresolved_count,
-        skipped_count,
-        resolution_set,
-    ))
+    Ok((resolved_count, unresolved_count, skipped_count))
 }
 
 /// Query-path incremental refresh (sutra/363): reparse only the drifted files
@@ -1122,7 +1115,7 @@ pub fn parse_incremental(
         }
     }
 
-    let (resolved_count, unresolved_count, skipped_count, _resolution_set) =
+    let (resolved_count, unresolved_count, skipped_count) =
         resolve_references(db, &workspace.root)?;
 
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -1157,20 +1150,14 @@ fn post_parse_sequence(
     registry: &LanguageRegistry,
     health_session: &crate::health::refresh::HealthSession<'_>,
 ) -> Result<(i64, i64, i64)> {
-    let (resolved_count, unresolved_count, skipped_count, resolution_set) =
-        resolve_references(db, workspace_root)?;
+    let (resolved_count, unresolved_count, skipped_count) = resolve_references(db, workspace_root)?;
 
     let files = db.all_files()?;
     if !files.is_empty() {
         let gd = graph::GraphData::load(db)?;
         log_phase_rss("post_parse:graph_loaded");
         let adjacency = graph::build_file_adjacency(&files, &gd);
-        let dirty_hint = if resolution_set.is_empty() {
-            None
-        } else {
-            Some(&resolution_set)
-        };
-        graph::compute_rollups_with_adjacency(db, &files, &adjacency, dirty_hint)?;
+        graph::compute_rollups_with_adjacency(db, &files, &adjacency)?;
         graph::compute_pagerank_with_adjacency(db, &files, &adjacency, &gd)?;
         log_phase_rss("post_parse:pagerank_done");
 

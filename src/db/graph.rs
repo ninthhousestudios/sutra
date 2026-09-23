@@ -24,6 +24,22 @@ impl Db {
         Ok(())
     }
 
+    /// Write `(file_id, fan_in, blast_radius)` rollups in one transaction.
+    pub fn batch_update_rollups(&self, updates: &[(i64, i64, i64)]) -> Result<()> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = conn.prepare_cached(
+                "UPDATE files SET fan_in_files = ?1, blast_radius = ?2 WHERE id = ?3",
+            )?;
+            for &(file_id, fan_in, blast_radius) in updates {
+                stmt.execute(params![fan_in, blast_radius, file_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn batch_update_file_pagerank(&self, updates: &[(i64, f64)]) -> Result<()> {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;

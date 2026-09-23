@@ -291,58 +291,45 @@ pub fn build_file_adjacency(
     (fan_in_map, outgoing)
 }
 
-pub fn compute_rollups(
-    db: &Db,
-    files: &[crate::db::FileRow],
-    changed_file_ids: Option<&HashSet<i64>>,
-) -> Result<()> {
+pub fn compute_rollups(db: &Db, files: &[crate::db::FileRow]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
 
     let gd = GraphData::load(db)?;
     let adjacency = build_file_adjacency(files, &gd);
-    compute_rollups_with_adjacency(db, files, &adjacency, changed_file_ids)
+    compute_rollups_with_adjacency(db, files, &adjacency)
 }
 
+/// Recompute `fan_in_files` and `blast_radius` for every file and write the
+/// rows whose stored values differ. There is no dirty-set shortcut: blast
+/// radius is a depth-3 BFS over dependents, so one changed edge moves the
+/// value of files up to two dependency hops past its target, and import-edge
+/// resolution rewrites edges outside the re-resolved files (sutra/434). The
+/// BFS is in-memory; diffing against `files` keeps the SQLite writes to the
+/// rows that actually moved.
 pub fn compute_rollups_with_adjacency(
     db: &Db,
     files: &[crate::db::FileRow],
     adjacency: &(FileGraph, FileGraph),
-    changed_file_ids: Option<&HashSet<i64>>,
 ) -> Result<()> {
-    if files.is_empty() {
+    let fan_in_map = &adjacency.0;
+    let updates: Vec<(i64, i64, i64)> = files
+        .iter()
+        .filter_map(|f| {
+            let fan_in = fan_in_map.get(&f.id).map_or(0, |s| s.len()) as i64;
+            let blast_radius = bfs_blast_radius(f.id, fan_in_map, 3) as i64;
+            (fan_in != f.fan_in_files || blast_radius != f.blast_radius).then_some((
+                f.id,
+                fan_in,
+                blast_radius,
+            ))
+        })
+        .collect();
+    if updates.is_empty() {
         return Ok(());
     }
-
-    let (fan_in_map, outgoing) = (&adjacency.0, &adjacency.1);
-
-    let dirty: HashSet<i64> = match changed_file_ids {
-        Some(changed) => {
-            let mut dirty = changed.clone();
-            for &fid in changed {
-                if let Some(deps) = fan_in_map.get(&fid) {
-                    dirty.extend(deps);
-                }
-                if let Some(targets) = outgoing.get(&fid) {
-                    dirty.extend(targets);
-                }
-            }
-            dirty
-        }
-        None => files.iter().map(|f| f.id).collect(),
-    };
-
-    for f in files {
-        if !dirty.contains(&f.id) {
-            continue;
-        }
-        let fan_in = fan_in_map.get(&f.id).map_or(0, |s| s.len()) as i64;
-        let blast_radius = bfs_blast_radius(f.id, fan_in_map, 3) as i64;
-        db.update_rollups(f.id, fan_in, blast_radius)?;
-    }
-
-    Ok(())
+    db.batch_update_rollups(&updates)
 }
 
 fn bfs_blast_radius(

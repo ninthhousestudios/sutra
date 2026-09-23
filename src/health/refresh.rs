@@ -269,7 +269,7 @@ fn rebuild_rollups(db: &Db) -> Result<()> {
     }
     let gd = graph::GraphData::load(db)?;
     let adjacency = graph::build_file_adjacency(&files, &gd);
-    graph::compute_rollups_with_adjacency(db, &files, &adjacency, None)?;
+    graph::compute_rollups_with_adjacency(db, &files, &adjacency)?;
     Ok(())
 }
 

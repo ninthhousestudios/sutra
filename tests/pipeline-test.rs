@@ -878,3 +878,61 @@ async fn test_global_fallback_tie_break_survives_reextraction() {
         "re-extraction must not flip the tie to the lower-rowid candidate",
     );
 }
+
+// sutra/434: blast_radius is a depth-3 BFS over dependents, so a changed
+// file's new or dropped edge moves the blast_radius of files up to two
+// dependency hops past its target — outside any 1-hop dirty set. An
+// incremental reparse must leave every file's rollups identical to a fresh
+// full parse of the same tree.
+#[tokio::test]
+async fn test_incremental_rollups_match_full_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    // Dependency chain: c -> b -> a (c calls b, b calls a).
+    std::fs::write(src.join("a.rs"), "pub fn fa() {}\n").unwrap();
+    std::fs::write(src.join("b.rs"), "pub fn fb() {\n    fa();\n}\n").unwrap();
+    std::fs::write(src.join("c.rs"), "pub fn fc() {\n    fb();\n}\n").unwrap();
+    std::fs::write(src.join("d.rs"), "pub fn fd() {}\n").unwrap();
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let config = make_config(config_dir.path());
+    let parse = |db_dir: &std::path::Path, id: &str| -> Vec<(String, i64, i64)> {
+        let ws = make_entry(id, dir.path().to_path_buf());
+        let db = Db::open_unchecked(&ws.id, db_dir).unwrap();
+        let cancel = AtomicBool::new(false);
+        let registry = default_registry();
+        pipeline::parse_workspace(&ws, &db, &config, &cancel, &registry).unwrap();
+        let mut rows: Vec<(String, i64, i64)> = db
+            .all_files()
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.path.to_string(), f.fan_in_files, f.blast_radius))
+            .collect();
+        rows.sort();
+        rows
+    };
+    let fresh = |id: &str| {
+        let db_dir = tempfile::tempdir().unwrap();
+        parse(db_dir.path(), id)
+    };
+
+    let inc_dir = tempfile::tempdir().unwrap();
+    parse(inc_dir.path(), "inc");
+
+    // Add an edge d -> c: a's blast_radius (3 hops away) grows.
+    std::fs::write(src.join("d.rs"), "pub fn fd() {\n    fc();\n}\n").unwrap();
+    assert_eq!(
+        parse(inc_dir.path(), "inc"),
+        fresh("full-add"),
+        "after adding d -> c"
+    );
+
+    // Drop it again: a's blast_radius must shrink back.
+    std::fs::write(src.join("d.rs"), "pub fn fd() {}\n").unwrap();
+    assert_eq!(
+        parse(inc_dir.path(), "inc"),
+        fresh("full-drop"),
+        "after dropping d -> c"
+    );
+}
