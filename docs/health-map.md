@@ -102,7 +102,8 @@ src/db/
                       (durable ALTER; column unused since sutra/416), 0072
                       health_coverage (ephemeral; unused since 416), 0073/0076
                       snapshot completeness, 0077 snapshot score basis + upper
-                      bound + component completeness (ephemeral ALTERs)
+                      bound + component completeness (ephemeral ALTERs), 0078
+                      component member weights + instability penalty
 
 src/similarity/
   hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
@@ -276,7 +277,8 @@ Snapshots persist completeness + `missing_biomarkers` + `score_upper` +
 `score_basis` per file (`health_snapshot_files`; `score` is the conservative lower
 bound; `category_scores` holds the pessimistic per-category deductions), and
 completeness + basis per component (lower bound only — component upper bounds
-are not persisted). The snapshot-level `health_score` is the mean of file lower
+are not persisted), plus each component's member weights
+(`health_snapshot_component_members`) and instability penalty (sutra/436). The snapshot-level `health_score` is the mean of file lower
 bounds and is only a measured aggregate when `aggregate_comparison.measured`.
 
 **Trend completeness contract (sutra/418).** `SnapshotFileRow.completeness`
@@ -322,6 +324,23 @@ Additive output fields (existing fields keep their meaning):
   `unknown_completeness`, `partial`, `unknown_basis`, `score_basis_changed`
   (membership or member basis moved). Order: measured deltas worst-first, then
   incomparable entries by name.
+- **Component weights (sutra/436).** The component basis covers membership and
+  member bases but deliberately not member weights (line counts) — putting them
+  in would make nearly every edited component incomparable. So a matching basis
+  does not make the raw score difference a quality change: a comment-only edit
+  moves a member's weight and with it the weighted mean. Component entries
+  replace `delta` with `measured_delta` + `weight_shift`:
+  `measured_delta = component_score(current member scores @ baseline weights,
+  current penalty) − component_score(baseline scores @ baseline weights,
+  baseline penalty)` (`scoring::component_score`, the scorer's own rule), and
+  `weight_shift = (to − from) − measured_delta` — line-count/mix movement, never
+  a measured improvement/degradation. An instability-penalty change counts as
+  measured (both penalties known). Both are null unless `measured`. Extra
+  reasons: `unknown_weights` (a side predates 0078 — never measured at a
+  defaulted weight), `unknown_instability` (a side's penalty unknown),
+  `inconsistent_members` (recorded members disagree, or a member lacks a
+  complete file row, despite the matching basis). Measured entries sort by
+  `measured_delta`.
 - History entries add `score_bounds {lower, upper}` for partial rows written
   since 0077.
 - NoChanges parses no longer copy health forward (sutra/416 review H1/H2): they
@@ -342,7 +361,9 @@ Behaviour changes that are not additive, per health-evidence-contract.md
 listed as improved/degraded), and removed files moved from `degraded`
 (`delta: "removed"`) to `incomparable`; `deltas.health_score` and category
 deltas can be `null`; component `delta` can be `null` and removed components now
-appear (sutra/416).
+appear (sutra/416). Component `delta` is replaced by `measured_delta` +
+`weight_shift` (sutra/436), and components compared against a pre-0078 snapshot
+become `unknown_weights` instead of measured.
 
 ### HealthSeverity (health/findings.rs)
 Enum: `Advisory`, `Informational`. Health never blocks — that's the
@@ -366,7 +387,8 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | health_waivers | Durable | 0028 | User-authored waivers, survive reindex |
 | symbols (max_nesting col) | Ephemeral | 0027 | ALTER TABLE adds max_nesting INTEGER |
 | health_snapshot_files | Ephemeral | 0033, 0073, 0076, 0077 | Per-file score (lower bound), completeness, missing producers, upper bound, score basis |
-| health_snapshot_components | Ephemeral | 0033, 0077 | Per-component aggregated scores (lower bound), completeness, membership basis |
+| health_snapshot_components | Ephemeral | 0033, 0077, 0078 | Per-component aggregated scores (lower bound), completeness, membership basis, `weights_recorded`, instability penalty |
+| health_snapshot_component_members | Ephemeral | 0078 | Per-snapshot (component, member path, weight = line count); a file may be in several components |
 | index_meta (index_epoch col) | Durable | 0074 | ALTER adds index_epoch TEXT; minted lazily, NULLed+reminted on reindex (sutra/414) |
 | health_runs | Ephemeral | 0075 | Immutable health evidence runs (FK-free JSON blobs: input_stamp, outcomes, findings). Pruned to the current run plus runs referenced by retained snapshots, on publish and on snapshot prune (sutra/432) |
 | health_current | Ephemeral | 0075 | Single-row atomic pointer to the current health_runs.run_id |
@@ -648,7 +670,7 @@ legacy `compute_file_scores` (0–100 scale) has been removed.
   component instability: basic, isolated, fully-efferent,
   file health: component filter, component instability in scores, partial
   bounds; validated evidence (stale run, legacy, never-computed, waivers/basis);
-  trend component basis gating,
+  trend component basis gating, component deltas at baseline weights,
   import cycle: cyclic fires, acyclic absent, DB roundtrip)
 - Integration tests: `tests/similarity_test.rs` (12 tests — HRR vectors,
   strip/embed modes, determinism, discrimination, pattern families,

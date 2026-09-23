@@ -13,7 +13,8 @@ use tracing::{debug, info, warn};
 use crate::components;
 use crate::config::Config;
 use crate::db::{
-    Db, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
+    Db, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow,
+    SnapshotFileRow, SnapshotParams,
 };
 use crate::error::Result;
 use crate::graph;
@@ -1489,6 +1490,16 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
                 SnapshotCompleteness::Partial
             },
             score_basis: Some(cs.basis.to_hex()),
+            members: Some(
+                cs.members
+                    .iter()
+                    .map(|&(path, weight)| SnapshotComponentMember {
+                        file_path: path.to_string(),
+                        weight,
+                    })
+                    .collect(),
+            ),
+            instability_penalty: cs.penalty,
             component_id: cs.component_id,
             component_name: cs.component_name,
             member_count: cs.member_count as i64,

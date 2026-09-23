@@ -454,6 +454,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0077_snapshot_score_basis.sql"),
         true,
     ),
+    // Component member weights + instability penalty on snapshots (sutra/436).
+    // ephemeral_only: same reasoning as 0077 — the snapshot detail tables are
+    // Ephemeral and recreated by 0033 on reindex.
+    (
+        "0078_snapshot_component_weights",
+        include_str!("../../migrations/0078_snapshot_component_weights.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -641,6 +649,11 @@ impl Db {
                 Self::column_exists(conn, "health_snapshot_files", "score_basis")
                     && Self::column_exists(conn, "health_snapshot_components", "score_basis")
                     && Self::column_exists(conn, "snapshots", "health_run_id")
+            }
+            "0078_snapshot_component_weights" => {
+                Self::column_exists(conn, "health_snapshot_components", "weights_recorded")
+                    && Self::column_exists(conn, "health_snapshot_components", "instability_penalty")
+                    && Self::column_exists(conn, "health_snapshot_component_members", "weight")
             }
             "0005_conventions" => {
                 let exists: bool = conn

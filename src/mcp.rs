@@ -1207,7 +1207,9 @@ impl SutraServer {
         Only complete-vs-complete pairs scored under the same basis (waivers, weights, \
         versions, applicability) are measured improved/degraded; partial, legacy, \
         basis-changed, new and removed files are 'incomparable' with a reason. \
-        Component deltas are likewise measured only under a matching membership basis. \
+        Component deltas are likewise measured only under a matching membership basis: \
+        measured_delta is the change at the baseline's member weights; weight_shift is the \
+        rest of the score move (line-count/mix change), never a quality change. \
         Workspace/category health deltas are null unless aggregate_comparison.measured."
     )]
     pub async fn sutra_trend(

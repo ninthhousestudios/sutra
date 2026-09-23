@@ -4,9 +4,13 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::db::{Db, SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotRow};
+use crate::db::{
+    Db, SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow, SnapshotFileRow,
+    SnapshotRow,
+};
 use crate::error::Result;
 use crate::health::compare::{self, IncomparableReason, SideSummary};
+use crate::health::scoring;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TrendArgs {
@@ -95,7 +99,7 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
 
     let from_comps = db.snapshot_component_scores(snap_from.id)?;
     let to_comps = db.snapshot_component_scores(snap_to.id)?;
-    let component_deltas = compute_component_deltas(&from_comps, &to_comps);
+    let component_deltas = compute_component_deltas(&from_comps, &to_comps, &from_files, &to_files);
 
     let category_deltas = compute_category_deltas(&from_files, &to_files, measured);
 
@@ -169,6 +173,12 @@ fn aggregate_incomparable_reason(
 
 fn sorted_paths(files: &[SnapshotFileRow]) -> Vec<&str> {
     let mut paths: Vec<&str> = files.iter().map(|f| f.file_path.as_str()).collect();
+    paths.sort_unstable();
+    paths
+}
+
+fn sorted_member_paths(members: &[SnapshotComponentMember]) -> Vec<&str> {
+    let mut paths: Vec<&str> = members.iter().map(|m| m.file_path.as_str()).collect();
     paths.sort_unstable();
     paths
 }
@@ -365,40 +375,53 @@ fn completeness_counts(files: &[SnapshotFileRow]) -> serde_json::Value {
     })
 }
 
-/// Per-component comparison. A component delta is measured only when both
+/// Per-component comparison. A component change is measured only when both
 /// snapshots recorded the component as complete under the same basis — which
-/// covers its membership, its member files' bases and the aggregation rule.
+/// covers its membership, its member files' bases and the aggregation rule —
+/// and recorded the member weights and instability penalty on both sides.
+///
+/// The basis deliberately excludes member weights (line counts), so a matching
+/// basis does not make the raw score difference a quality change: a comment-only
+/// edit moves a member's weight and with it the weighted mean. The observed
+/// change is split (sutra/436): `measured_delta` re-evaluates the current member
+/// scores and penalty at the *baseline's* weights; `weight_shift` is the rest of
+/// the observed change (line-count/mix movement), never a measured improvement
+/// or degradation.
+///
 /// New components have no fallback baseline of 10.0 and removed components are
-/// listed; both, and every other unsupported pair, carry `measured: false` and
-/// a `reason` with `delta: null`. Sorted: measured deltas worst-first, then the
-/// incomparable entries by name.
-fn component_side(c: &SnapshotComponentRow) -> SideSummary<'_> {
-    SideSummary {
-        completeness: c.completeness,
-        basis: c.score_basis.as_deref(),
-    }
-}
-
+/// listed; both, and every other unsupported pair, carry `measured: false` and a
+/// `reason` with null `measured_delta`/`weight_shift`. Sorted: measured entries
+/// worst `measured_delta` first, then the incomparable entries by name.
 fn compute_component_deltas(
     from: &[SnapshotComponentRow],
     to: &[SnapshotComponentRow],
+    from_files: &[SnapshotFileRow],
+    to_files: &[SnapshotFileRow],
 ) -> Vec<serde_json::Value> {
     let from_map: HashMap<&str, &SnapshotComponentRow> =
         from.iter().map(|c| (c.component_id.as_str(), c)).collect();
     let to_ids: std::collections::HashSet<&str> =
         to.iter().map(|c| c.component_id.as_str()).collect();
+    let files = MemberScores {
+        from: from_files
+            .iter()
+            .map(|f| (f.file_path.as_str(), f))
+            .collect(),
+        to: to_files.iter().map(|f| (f.file_path.as_str(), f)).collect(),
+    };
 
     let mut measured: Vec<(f64, serde_json::Value)> = Vec::new();
     let mut incomparable: Vec<serde_json::Value> = Vec::new();
     for c in to {
         let prev = from_map.get(c.component_id.as_str()).copied();
-        let entry = |from: Option<f64>, delta: Option<f64>, reason: Option<&str>| {
+        let entry = |from: Option<f64>, change: Option<&ComponentChange>, reason: Option<&str>| {
             json!({
                 "id": c.component_id,
                 "name": c.component_name,
                 "from": from.map(round2),
                 "to": round2(c.score),
-                "delta": delta.map(round2),
+                "measured_delta": change.map(|ch| round2(ch.measured)),
+                "weight_shift": change.map(|ch| round2(ch.weight_shift)),
                 "measured": reason.is_none(),
                 "reason": reason,
                 "from_completeness": prev.map(|p| p.completeness.as_str()),
@@ -410,10 +433,12 @@ fn compute_component_deltas(
             compare::temporal_blocker(prev.map(component_side), Some(component_side(c))),
             prev,
         ) {
-            (None, Some(p)) => {
-                let delta = c.score - p.score;
-                measured.push((delta, entry(Some(p.score), Some(delta), None)));
-            }
+            (None, Some(p)) => match component_change(p, c, &files) {
+                Ok(change) => {
+                    measured.push((change.measured, entry(Some(p.score), Some(&change), None)));
+                }
+                Err(reason) => incomparable.push(entry(Some(p.score), None, Some(reason))),
+            },
             (reason, p) => {
                 let reason = reason.unwrap_or(IncomparableReason::NewFile);
                 let token = match reason {
@@ -431,7 +456,8 @@ fn compute_component_deltas(
                 "name": p.component_name,
                 "from": round2(p.score),
                 "to": null,
-                "delta": null,
+                "measured_delta": null,
+                "weight_shift": null,
                 "measured": false,
                 "reason": "removed_component",
                 "from_completeness": p.completeness.as_str(),
@@ -448,6 +474,74 @@ fn compute_component_deltas(
         .map(|(_, v)| v)
         .chain(incomparable)
         .collect()
+}
+
+fn component_side(c: &SnapshotComponentRow) -> SideSummary<'_> {
+    SideSummary {
+        completeness: c.completeness,
+        basis: c.score_basis.as_deref(),
+    }
+}
+
+/// Both snapshots' file rows by path — the member scores a component was
+/// aggregated from.
+struct MemberScores<'a> {
+    from: HashMap<&'a str, &'a SnapshotFileRow>,
+    to: HashMap<&'a str, &'a SnapshotFileRow>,
+}
+
+/// A component's observed change split into its measured part and the weight
+/// shift. `measured + weight_shift` is the observed score difference.
+struct ComponentChange {
+    measured: f64,
+    weight_shift: f64,
+}
+
+/// Split the change of a component pair that already passed the temporal rule
+/// (both complete, same basis), or the reason it still cannot be measured:
+/// `unknown_weights` (a side predates recorded member weights — never measured
+/// at a defaulted weight), `unknown_instability` (a side's penalty is unknown),
+/// or `inconsistent_members` (the recorded members disagree between the sides,
+/// or a member has no complete file observation, despite the matching basis).
+fn component_change(
+    prev: &SnapshotComponentRow,
+    cur: &SnapshotComponentRow,
+    files: &MemberScores<'_>,
+) -> std::result::Result<ComponentChange, &'static str> {
+    let (Some(base_members), Some(cur_members)) = (&prev.members, &cur.members) else {
+        return Err("unknown_weights");
+    };
+    let (Some(base_penalty), Some(cur_penalty)) =
+        (prev.instability_penalty, cur.instability_penalty)
+    else {
+        return Err("unknown_instability");
+    };
+    if sorted_member_paths(base_members) != sorted_member_paths(cur_members) {
+        return Err("inconsistent_members");
+    }
+    let complete_score = |rows: &HashMap<&str, &SnapshotFileRow>, path: &str| {
+        rows.get(path)
+            .filter(|f| f.completeness == SnapshotCompleteness::Complete)
+            .map(|f| f.score)
+    };
+    let mut base_pairs = Vec::with_capacity(base_members.len());
+    let mut cur_pairs = Vec::with_capacity(base_members.len());
+    for m in base_members {
+        let (Some(b), Some(c)) = (
+            complete_score(&files.from, &m.file_path),
+            complete_score(&files.to, &m.file_path),
+        ) else {
+            return Err("inconsistent_members");
+        };
+        base_pairs.push((b, m.weight));
+        cur_pairs.push((c, m.weight));
+    }
+    let measured = scoring::component_score(&cur_pairs, cur_penalty)
+        - scoring::component_score(&base_pairs, base_penalty);
+    Ok(ComponentChange {
+        measured,
+        weight_shift: (cur.score - prev.score) - measured,
+    })
 }
 
 fn compute_category_deltas(

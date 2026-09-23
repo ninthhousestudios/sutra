@@ -239,6 +239,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
         is_virtual: false,
     },
     TableMeta {
+        name: "health_snapshot_component_members",
+        partition: TablePartition::Ephemeral,
+        is_virtual: false,
+    },
+    TableMeta {
         name: "health_runs",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
@@ -590,6 +595,20 @@ pub struct SnapshotComponentRow {
     /// Digest over membership, member bases and the aggregation rule. `None` =
     /// Unknown (legacy): a component delta is never measured against it.
     pub score_basis: Option<String>,
+    /// Each member file and the aggregation weight (line count) it was scored
+    /// at. `None` = weights never recorded (rows before sutra/436): the delta is
+    /// incomparable, never measured at a defaulted weight.
+    pub members: Option<Vec<SnapshotComponentMember>>,
+    /// Instability penalty subtracted from the weighted mean. `None` = unknown
+    /// (instability computation failed, or a legacy row).
+    pub instability_penalty: Option<f64>,
+}
+
+/// One member of a snapshot component, at the weight it was aggregated with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotComponentMember {
+    pub file_path: String,
+    pub weight: i64,
 }
 
 #[derive(Debug)]
@@ -2529,6 +2548,9 @@ impl Db {
             format!("DELETE FROM health_snapshot_files WHERE snapshot_id IN ({placeholders})");
         let sql_components =
             format!("DELETE FROM health_snapshot_components WHERE snapshot_id IN ({placeholders})");
+        let sql_members = format!(
+            "DELETE FROM health_snapshot_component_members WHERE snapshot_id IN ({placeholders})"
+        );
         let sql_snapshots = format!("DELETE FROM snapshots WHERE id IN ({placeholders})");
 
         let id_params: Vec<Box<dyn rusqlite::types::ToSql>> =
@@ -2538,6 +2560,7 @@ impl Db {
 
         conn.execute(&sql_files, param_refs.as_slice())?;
         conn.execute(&sql_components, param_refs.as_slice())?;
+        conn.execute(&sql_members, param_refs.as_slice())?;
         conn.execute(&sql_snapshots, param_refs.as_slice())?;
         health_evidence::prune_unreferenced_health_runs(&conn)?;
 
@@ -2691,21 +2714,50 @@ impl Db {
 
     pub fn snapshot_component_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotComponentRow>> {
         let conn = self.conn.lock();
+        let mut members: std::collections::HashMap<String, Vec<SnapshotComponentMember>> =
+            std::collections::HashMap::new();
+        let mut stmt = conn.prepare(
+            "SELECT component_id, file_path, weight
+             FROM health_snapshot_component_members WHERE snapshot_id = ?1",
+        )?;
+        let member_rows = stmt.query_map(params![snapshot_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SnapshotComponentMember {
+                    file_path: row.get(1)?,
+                    weight: row.get(2)?,
+                },
+            ))
+        })?;
+        for r in member_rows {
+            let (component_id, member) = r?;
+            members.entry(component_id).or_default().push(member);
+        }
+
         let mut stmt = conn.prepare(
             "SELECT component_id, component_name, score, member_count, total_nloc,
-                    partial, completeness_recorded, score_basis
+                    partial, completeness_recorded, score_basis,
+                    weights_recorded, instability_penalty
              FROM health_snapshot_components WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![snapshot_id], |row| {
+                let component_id: String = row.get(0)?;
+                let weights_recorded: i64 = row.get(8)?;
+                // Recorded weights with no member rows is an empty member list,
+                // not Unknown; unrecorded weights stay Unknown whatever exists.
+                let members = (weights_recorded != 0)
+                    .then(|| members.remove(&component_id).unwrap_or_default());
                 Ok(SnapshotComponentRow {
-                    component_id: row.get(0)?,
                     component_name: row.get(1)?,
                     score: row.get(2)?,
                     member_count: row.get(3)?,
                     total_nloc: row.get(4)?,
                     completeness: SnapshotCompleteness::from_columns(row.get(5)?, row.get(6)?),
                     score_basis: row.get(7)?,
+                    members,
+                    instability_penalty: row.get(9)?,
+                    component_id,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2794,8 +2846,9 @@ fn insert_snapshot_file_rows(
     Ok(())
 }
 
-/// The single writer for `health_snapshot_components` rows, shared by both
-/// snapshot insert paths for the same reason as [`insert_snapshot_file_rows`].
+/// The single writer for `health_snapshot_components` rows and their member
+/// weights, shared by both snapshot insert paths for the same reason as
+/// [`insert_snapshot_file_rows`].
 fn insert_snapshot_component_rows(
     conn: &Connection,
     snapshot_id: i64,
@@ -2804,8 +2857,13 @@ fn insert_snapshot_component_rows(
     let mut stmt = conn.prepare(
         "INSERT INTO health_snapshot_components
          (snapshot_id, component_id, component_name, score, member_count, total_nloc,
-          partial, completeness_recorded, score_basis)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+          partial, completeness_recorded, score_basis, weights_recorded, instability_penalty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?;
+    let mut member_stmt = conn.prepare(
+        "INSERT INTO health_snapshot_component_members
+         (snapshot_id, component_id, file_path, weight)
+         VALUES (?1, ?2, ?3, ?4)",
     )?;
     for c in components {
         let (partial, recorded) = c.completeness.to_columns();
@@ -2819,7 +2877,12 @@ fn insert_snapshot_component_rows(
             partial,
             recorded,
             c.score_basis,
+            i64::from(c.members.is_some()),
+            c.instability_penalty,
         ])?;
+        for m in c.members.iter().flatten() {
+            member_stmt.execute(params![snapshot_id, c.component_id, m.file_path, m.weight])?;
+        }
     }
     Ok(())
 }

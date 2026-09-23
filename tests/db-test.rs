@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use sutra::db::{
     CommitRow, Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
-    SnapshotCompleteness, SnapshotComponentRow, SnapshotFileRow, SnapshotParams, TABLE_REGISTRY,
-    TablePartition,
+    SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow, SnapshotFileRow,
+    SnapshotParams, TABLE_REGISTRY, TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
 
@@ -1725,6 +1725,11 @@ fn test_snapshot_pruning() {
                     total_nloc: 10,
                     completeness: SnapshotCompleteness::Complete,
                     score_basis: Some("comp-basis-v1".into()),
+                    members: Some(vec![SnapshotComponentMember {
+                        file_path: "a.rs".into(),
+                        weight: 10,
+                    }]),
+                    instability_penalty: Some(0.0),
                 }],
             )
             .unwrap();
@@ -1774,6 +1779,25 @@ fn test_snapshot_pruning() {
         db.snapshot_component_scores(surviving_id).unwrap().len(),
         1,
         "child component rows for surviving snapshot should remain"
+    );
+    let member_rows = |id: i64| -> i64 {
+        db.conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM health_snapshot_component_members WHERE snapshot_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        member_rows(pruned_id),
+        0,
+        "member weights pruned with the snapshot"
+    );
+    assert_eq!(
+        member_rows(surviving_id),
+        1,
+        "surviving member weights remain"
     );
 }
 

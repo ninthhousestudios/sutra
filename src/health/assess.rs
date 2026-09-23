@@ -293,7 +293,7 @@ pub struct ScoredFile<'e> {
 }
 
 #[derive(Debug)]
-pub struct ScoredComponent {
+pub struct ScoredComponent<'e> {
     pub component_id: String,
     pub component_name: String,
     /// NLOC-weighted member scores minus the instability penalty. `Measured` only
@@ -302,6 +302,13 @@ pub struct ScoredComponent {
     pub member_count: usize,
     pub total_nloc: i64,
     pub instability: Option<ComponentInstability>,
+    /// The instability penalty subtracted, or `None` when instability could not
+    /// be computed (the value is then bounded, never measured).
+    pub penalty: Option<f64>,
+    /// Each observed member's path and aggregation weight (line count). Not in
+    /// the basis: trend measures at the baseline's weights and reports the
+    /// weight shift separately (sutra/436).
+    pub members: Vec<(&'e str, i64)>,
     /// Membership + member bases + aggregation identity: two component
     /// observations compare as measured only when this matches.
     pub basis: Digest,
@@ -310,7 +317,7 @@ pub struct ScoredComponent {
 #[derive(Debug)]
 pub struct WorkspaceHealth<'e> {
     pub files: Vec<ScoredFile<'e>>,
-    pub components: Vec<ScoredComponent>,
+    pub components: Vec<ScoredComponent<'e>>,
 }
 
 /// Score every indexed file and every live component from validated evidence.
@@ -366,6 +373,11 @@ pub fn score_workspace<'e>(
             .map(|m| Penalty::Known(m.remove(&comp.id)))
             .unwrap_or(Penalty::Unknown);
         let (value, basis) = score_members(members, &by_id, &instability, membership_current);
+        let penalty = instability.known();
+        let observed = members
+            .iter()
+            .filter_map(|(fid, nloc)| by_id.get(fid).map(|f| (f.evidence.path.as_str(), *nloc)))
+            .collect();
         let instability = match instability {
             Penalty::Known(i) => i,
             Penalty::Unknown => None,
@@ -377,6 +389,8 @@ pub fn score_workspace<'e>(
             member_count: members.len(),
             total_nloc: members.iter().map(|(_, n)| n).sum(),
             instability,
+            penalty,
+            members: observed,
             basis,
         });
     }
@@ -389,6 +403,19 @@ pub fn score_workspace<'e>(
 enum Penalty {
     Known(Option<ComponentInstability>),
     Unknown,
+}
+
+impl Penalty {
+    /// The exact penalty, when known (no instability entry → no penalty).
+    fn known(&self) -> Option<f64> {
+        match self {
+            Penalty::Known(i) => Some(
+                i.as_ref()
+                    .map_or(0.0, |i| scoring::instability_penalty(i.instability)),
+            ),
+            Penalty::Unknown => None,
+        }
+    }
 }
 
 /// Aggregate member scores into a component value and its basis digest.
@@ -419,22 +446,16 @@ fn score_members(
         }
     }
     // (least, most) penalty: exact when instability is known, else [0, max].
-    let (min_penalty, max_penalty) = match instability {
-        Penalty::Known(i) => {
-            let p = i
-                .as_ref()
-                .map_or(0.0, |i| scoring::instability_penalty(i.instability));
-            (p, p)
-        }
-        Penalty::Unknown => {
+    let (min_penalty, max_penalty) = match instability.known() {
+        Some(p) => (p, p),
+        None => {
             complete = false;
             (0.0, scoring::instability_penalty(1.0))
         }
     };
     complete &= membership_current;
-    let clamp = |v: f64| v.clamp(scoring::MIN_SCORE, scoring::MAX_SCORE);
-    let lower = clamp(scoring::score_component(&lower_pairs) - max_penalty);
-    let upper = clamp(scoring::score_component(&upper_pairs) - min_penalty);
+    let lower = scoring::component_score(&lower_pairs, max_penalty);
+    let upper = scoring::component_score(&upper_pairs, min_penalty);
     let value = if complete {
         ScoreValue::Measured(upper)
     } else {

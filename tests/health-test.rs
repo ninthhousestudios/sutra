@@ -3,7 +3,7 @@ mod health_run;
 use health_run::{publish_run_with, publish_seeded_run};
 use sutra::db::{
     CommitRow, Db, HealthFindingRow, InsertSymbolParams, SnapshotCompleteness,
-    SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
+    SnapshotComponentMember, SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use sutra::git::parse_blame_porcelain;
 use sutra::health::compare::BaselineSelector;
@@ -1479,6 +1479,17 @@ fn test_snapshot_stores_per_component_health() {
             total_nloc: 1200,
             completeness: SnapshotCompleteness::Complete,
             score_basis: Some("comp-basis-v1".into()),
+            members: Some(vec![
+                SnapshotComponentMember {
+                    file_path: "src/auth/a.rs".into(),
+                    weight: 700,
+                },
+                SnapshotComponentMember {
+                    file_path: "src/auth/b.rs".into(),
+                    weight: 500,
+                },
+            ]),
+            instability_penalty: Some(0.25),
         },
         SnapshotComponentRow {
             component_id: "comp_b".into(),
@@ -1488,6 +1499,8 @@ fn test_snapshot_stores_per_component_health() {
             total_nloc: 800,
             completeness: SnapshotCompleteness::Complete,
             score_basis: Some("comp-basis-v1".into()),
+            members: None,
+            instability_penalty: None,
         },
     ];
     db.insert_snapshot_components(snap_id, &comps).unwrap();
@@ -1499,9 +1512,24 @@ fn test_snapshot_stores_per_component_health() {
     assert!((auth.score - 8.3).abs() < 0.01);
     assert_eq!(auth.member_count, 5);
     assert_eq!(auth.total_nloc, 1200);
+    let mut members: Vec<(&str, i64)> = auth
+        .members
+        .as_deref()
+        .expect("weights recorded")
+        .iter()
+        .map(|m| (m.file_path.as_str(), m.weight))
+        .collect();
+    members.sort_unstable();
+    assert_eq!(members, [("src/auth/a.rs", 700), ("src/auth/b.rs", 500)]);
+    assert_eq!(auth.instability_penalty, Some(0.25));
 
     let db_comp = loaded.iter().find(|c| c.component_id == "comp_b").unwrap();
     assert!((db_comp.score - 6.9).abs() < 0.01);
+    assert!(
+        db_comp.members.is_none(),
+        "unrecorded weights read back as unknown, not an empty member list"
+    );
+    assert_eq!(db_comp.instability_penalty, None);
 }
 
 #[test]
@@ -2718,6 +2746,11 @@ fn comp_row(
         total_nloc: 100,
         completeness,
         score_basis: basis.map(Into::into),
+        members: Some(vec![SnapshotComponentMember {
+            file_path: format!("src/{id}.rs"),
+            weight: 100,
+        }]),
+        instability_penalty: Some(0.0),
     }
 }
 
@@ -2737,7 +2770,11 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
         ],
     )
     .unwrap();
+    db.insert_snapshot_files(from, &[snap_row(1, "src/same.rs", 8.0, Complete, &[])])
+        .unwrap();
     let to = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(to, &[snap_row(1, "src/same.rs", 7.0, Complete, &[])])
+        .unwrap();
     db.insert_snapshot_components(
         to,
         &[
@@ -2760,7 +2797,8 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
     };
     let same = get("same");
     assert_eq!(same["measured"], true);
-    assert_eq!(same["delta"], -1.0);
+    assert_eq!(same["measured_delta"], -1.0);
+    assert_eq!(same["weight_shift"], 0.0);
     for (id, reason) in [
         ("moved", "score_basis_changed"),
         ("legacy", "unknown_completeness"),
@@ -2771,11 +2809,186 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
         let c = get(id);
         assert_eq!(c["measured"], false, "{id}");
         assert_eq!(c["reason"], reason, "{id}");
-        assert!(c["delta"].is_null(), "{id}: no delta without a measurement");
+        assert!(
+            c["measured_delta"].is_null() && c["weight_shift"].is_null(),
+            "{id}: no delta without a measurement"
+        );
     }
     assert!(
         get("fresh")["from"].is_null(),
         "a new component has no fallback baseline of 10.0"
+    );
+}
+
+// --- sutra/436: component deltas at fixed baseline weights ---
+
+/// A complete component row under basis "m1" with the given members
+/// `(path, weight)` and instability penalty.
+fn weighted_comp(
+    id: &str,
+    score: f64,
+    members: Option<&[(&str, i64)]>,
+    penalty: Option<f64>,
+) -> SnapshotComponentRow {
+    SnapshotComponentRow {
+        members: members.map(|ms| {
+            ms.iter()
+                .map(|&(path, weight)| SnapshotComponentMember {
+                    file_path: path.into(),
+                    weight,
+                })
+                .collect()
+        }),
+        instability_penalty: penalty,
+        ..comp_row(id, score, SnapshotCompleteness::Complete, Some("m1"))
+    }
+}
+
+/// Complete file rows for `(path, score)` pairs.
+fn complete_files(scores: &[(&str, f64)]) -> Vec<SnapshotFileRow> {
+    scores
+        .iter()
+        .enumerate()
+        .map(|(i, &(path, score))| {
+            snap_row(
+                i as i64 + 1,
+                path,
+                score,
+                SnapshotCompleteness::Complete,
+                &[],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn trend_component_deltas_are_measured_at_baseline_weights() {
+    let (_dir, db) = setup_db();
+    let from = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        from,
+        &complete_files(&[
+            ("mix/a.rs", 10.0),
+            ("mix/b.rs", 6.0),
+            ("debt/a.rs", 10.0),
+            ("debt/b.rs", 6.0),
+            ("unstable/a.rs", 9.0),
+            ("pre/a.rs", 9.0),
+            ("noinst/a.rs", 9.0),
+        ]),
+    )
+    .unwrap();
+    db.insert_snapshot_components(
+        from,
+        &[
+            // (10*100 + 6*100) / 200
+            weighted_comp(
+                "mix",
+                8.0,
+                Some(&[("mix/a.rs", 100), ("mix/b.rs", 100)]),
+                Some(0.0),
+            ),
+            // (10*100 + 6*300) / 400
+            weighted_comp(
+                "debt",
+                7.0,
+                Some(&[("debt/a.rs", 100), ("debt/b.rs", 300)]),
+                Some(0.0),
+            ),
+            weighted_comp("unstable", 9.0, Some(&[("unstable/a.rs", 100)]), Some(0.0)),
+            weighted_comp("pre", 9.0, None, None),
+            weighted_comp("noinst", 9.0, Some(&[("noinst/a.rs", 100)]), Some(0.0)),
+        ],
+    )
+    .unwrap();
+
+    let to = insert_snapshot(&db, 8.0);
+    db.insert_snapshot_files(
+        to,
+        &complete_files(&[
+            ("mix/a.rs", 10.0),
+            ("mix/b.rs", 6.0),
+            ("debt/a.rs", 8.0),
+            ("debt/b.rs", 6.0),
+            ("unstable/a.rs", 9.0),
+            ("pre/a.rs", 9.0),
+            ("noinst/a.rs", 9.0),
+        ]),
+    )
+    .unwrap();
+    db.insert_snapshot_components(
+        to,
+        &[
+            // Weight only: mix/a.rs grew (comments) to 300 lines. (3000 + 600) / 400.
+            weighted_comp(
+                "mix",
+                9.0,
+                Some(&[("mix/a.rs", 300), ("mix/b.rs", 100)]),
+                Some(0.0),
+            ),
+            // Real debt in debt/a.rs (10 → 8) while debt/b.rs shrank to 100 lines:
+            // (800 + 600) / 200 — the raw score did not move at all.
+            weighted_comp(
+                "debt",
+                7.0,
+                Some(&[("debt/a.rs", 100), ("debt/b.rs", 100)]),
+                Some(0.0),
+            ),
+            weighted_comp("unstable", 8.7, Some(&[("unstable/a.rs", 100)]), Some(0.3)),
+            weighted_comp("pre", 9.0, Some(&[("pre/a.rs", 100)]), Some(0.0)),
+            weighted_comp("noinst", 9.0, Some(&[("noinst/a.rs", 100)]), None),
+        ],
+    )
+    .unwrap();
+
+    let out = trend(&db, None);
+    let comps = out["components"].as_array().unwrap();
+    let get = |id: &str| {
+        comps
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed: {out}"))
+    };
+
+    let mix = get("mix");
+    assert_eq!(mix["measured"], true, "{mix}");
+    assert_eq!(
+        mix["measured_delta"], 0.0,
+        "a line-count change is no quality change"
+    );
+    assert_eq!(mix["weight_shift"], 1.0, "{mix}");
+
+    let debt = get("debt");
+    assert_eq!(debt["measured"], true, "{debt}");
+    // Baseline weights 100/400: (8 - 10) * 100 / 400.
+    assert_eq!(debt["measured_delta"], -0.5, "{debt}");
+    assert_eq!(debt["weight_shift"], 0.5, "{debt}");
+
+    let unstable = get("unstable");
+    assert_eq!(
+        unstable["measured_delta"], -0.3,
+        "known-both-sides penalty change is measured"
+    );
+    assert_eq!(unstable["weight_shift"], 0.0);
+
+    for (id, reason) in [
+        ("pre", "unknown_weights"),
+        ("noinst", "unknown_instability"),
+    ] {
+        let c = get(id);
+        assert_eq!(c["measured"], false, "{id}");
+        assert_eq!(c["reason"], reason, "{id}");
+        assert!(
+            c["measured_delta"].is_null() && c["weight_shift"].is_null(),
+            "{id}"
+        );
+    }
+
+    let order: Vec<&str> = comps.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(
+        &order[..3],
+        ["debt", "unstable", "mix"],
+        "measured entries sort by measured_delta, worst first"
     );
 }
 

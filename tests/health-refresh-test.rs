@@ -1425,3 +1425,54 @@ fn comment_only_edit_keeps_the_file_in_its_component() {
     assert_eq!(membership(&fx.db), before);
     assert!(sutra::components::membership_current(&fx.db, &fx.ws.root).unwrap());
 }
+
+#[test]
+fn comment_only_edit_shifts_component_weight_without_a_measured_change() {
+    let fx = two_clique_fixture("component-weight");
+    full_parse(&fx);
+
+    // Comment-only, uncommitted: the member's line count grows, its findings and
+    // HEAD do not move.
+    let path = fx.ws.root.join("src/alpha/b.rs");
+    let mut src = std::fs::read_to_string(&path).unwrap();
+    for i in 0..40 {
+        src.push_str(&format!("// comment line {i}\n"));
+    }
+    std::fs::write(&path, &src).unwrap();
+    full_parse(&fx);
+
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    for bucket in ["improved", "degraded", "incomparable"] {
+        assert!(
+            cmp["files"][bucket].as_array().unwrap().is_empty(),
+            "no member file score moved ({bucket}): {cmp}"
+        );
+    }
+    let comps = cmp["components"].as_array().unwrap();
+    let multi = comps
+        .iter()
+        .find(|c| {
+            c["member_count"].as_i64().unwrap_or(0) >= 2 && c["from"].as_f64() != c["to"].as_f64()
+        })
+        .unwrap_or_else(|| panic!("a multi-member component whose score moved: {cmp}"));
+    assert_eq!(multi["measured"], true, "{multi}");
+    assert_eq!(
+        multi["measured_delta"], 0.0,
+        "a comment-only edit is no quality change: {multi}"
+    );
+    let shift = multi["weight_shift"].as_f64().unwrap();
+    assert!(
+        shift.abs() >= 0.01,
+        "the score move is weight shift: {multi}"
+    );
+}

@@ -175,6 +175,10 @@ both observations preserved. Completeness transitions remain visible at equal
 numeric scores. Component/workspace measured comparisons also require compatible
 membership/population and weighting; otherwise expose constituent changes without
 calling the aggregate a measured improvement/degradation. No fallback baseline 10.
+A component's member weights (line counts) are not part of its basis: its
+measured change is evaluated at the baseline's weights, and the remainder of the
+observed change is reported separately as a weight shift, never as a measured
+improvement/degradation. Missing weights on either side make it incomparable.
 
 Partial scoring returns an interval, not measured degradation. For each category,
 the optimistic deduction is capped known current debt; if any applicable producer

@@ -520,6 +520,14 @@ pub fn instability_penalty(instability: f64) -> f64 {
     raw.min(HealthCategory::Coupling.cap())
 }
 
+/// A component's score: the NLOC-weighted mean of `(member score, weight)`
+/// pairs less the instability `penalty`, clamped to the score range. The one
+/// aggregation rule, shared by the scorer and trend's re-evaluation at baseline
+/// weights (sutra/436) so the two cannot drift.
+pub fn component_score(members: &[(f64, i64)], penalty: f64) -> f64 {
+    (score_component(members) - penalty).clamp(MIN_SCORE, MAX_SCORE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
