@@ -1608,11 +1608,21 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
         "commit history must survive a content edit"
     );
 
+    // Component membership is PRESERVED: a global partition whose freshness is
+    // the clustering gate's, not the file's content (sutra/439).
+    let members: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM component_membership WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(members, 1, "membership must survive a content edit");
+
     // Derived analysis is INVALIDATED (cannot claim currentness on new content).
     for (table, label) in [
         ("health_findings", "health findings"),
         ("health_coverage", "health coverage"),
-        ("component_membership", "component membership"),
         ("hrr_file_hashes", "hrr file hashes"),
     ] {
         let n: i64 = conn

@@ -1057,11 +1057,19 @@ impl Db {
             //   REPLACE (extraction):  symbols, refs (outgoing), imports,
             //                          symbols_fts.
             //   INVALIDATE (derived):  health_findings, health_coverage,
-            //                          component_membership, hrr_file_hashes,
-            //                          plus hrr_vectors and pattern_family_members
-            //                          (cascade off the symbols delete).
+            //                          hrr_file_hashes, plus hrr_vectors and
+            //                          pattern_family_members (cascade off the
+            //                          symbols delete).
             //   PRESERVE (raw/history): commit_files, and health_snapshot_files
             //                          (no FK; immutable path-keyed snapshots).
+            //   PRESERVE (global partition): component_membership. It groups
+            //                          stable file ids by the whole graph; its
+            //                          freshness is the clustering gate's
+            //                          edge-drift threshold, like any neighbour
+            //                          whose edges moved. Deleting the row made no
+            //                          grouping stale — the gate still read
+            //                          current, so the edited file silently left
+            //                          its component (sutra/439).
             //   RE-RESOLVE (resolution): inbound refs from other files (detached
             //                          below); inbound import edges keep their
             //                          resolved_file_id — path identity is stable
@@ -1121,18 +1129,14 @@ impl Db {
 
             // Invalidate extraction-derived analysis that is keyed by file_id and
             // therefore survives the symbol cascade. Preserving the file id must
-            // not let stale findings/coverage/membership/similarity claim they
-            // reflect the new content (health-evidence contract, sutra/412).
+            // not let stale findings/coverage/similarity claim they reflect the
+            // new content (health-evidence contract, sutra/412).
             conn.execute(
                 "DELETE FROM health_findings WHERE file_id = ?1",
                 params![old_id],
             )?;
             conn.execute(
                 "DELETE FROM health_coverage WHERE file_id = ?1",
-                params![old_id],
-            )?;
-            conn.execute(
-                "DELETE FROM component_membership WHERE file_id = ?1",
                 params![old_id],
             )?;
             conn.execute(

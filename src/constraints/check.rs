@@ -138,12 +138,12 @@ pub fn evaluate(
 /// Whether any active constraint resolves against component membership, and so
 /// needs the derived component tier to be current. Only `Boundary` does — every
 /// other kind resolves via path globs or import edges (see
-/// `ConstraintResolver::resolve`). An incremental refresh row-replaces changed
-/// files and the `component_membership` FK cascade drops their membership without
-/// re-deriving it (`discover_components` runs only in a full parse), so a gate
-/// evaluating a `Boundary` rule over an incrementally refreshed index would stop
-/// seeing the changed file and silently pass a real violation (sutra/386). The
-/// `sutra check` refresh uses this to force a full parse when it holds.
+/// `ConstraintResolver::resolve`). An incremental refresh never re-derives
+/// membership (`discover_components` runs only in a full parse): an edited file
+/// keeps its prior component (sutra/439), but a new file has none, so a gate
+/// evaluating a `Boundary` rule over an incrementally refreshed index would not
+/// see it and silently pass a real violation (sutra/386). The `sutra check`
+/// refresh uses this to force a full parse when it holds.
 pub fn requires_component_facts(constraints: &[Constraint]) -> bool {
     constraints
         .iter()

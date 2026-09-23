@@ -1329,3 +1329,99 @@ fn unchanged_parse_after_head_move_republishes_and_records_provenance() {
         "trend explains the history move: {changes:?}"
     );
 }
+
+// --- sutra/436: component trend deltas at fixed baseline weights ---
+
+/// Two groups of three mutually-calling files, each group committed on its own
+/// (twice) so both static edges and co-change stay within a group: clustering
+/// yields multi-member components. `alpha/a.rs` carries nesting debt, so alpha's
+/// members score differently and a weight move changes its weighted mean.
+fn two_clique_fixture(id: &str) -> Fixture {
+    let mut files: Vec<(String, String)> = vec![(
+        "src/lib.rs".into(),
+        "pub mod alpha;\npub mod beta;\n".into(),
+    )];
+    for group in ["alpha", "beta"] {
+        files.push((
+            format!("src/{group}/mod.rs"),
+            "pub mod a;\npub mod b;\npub mod c;\n".into(),
+        ));
+        for (me, x, y) in [("a", "b", "c"), ("b", "c", "a"), ("c", "a", "b")] {
+            let body = if group == "alpha" && me == "a" {
+                DEEP_SRC.replace("pub fn deep", &format!("pub fn {group}_{me}"))
+            } else {
+                format!("pub fn {group}_{me}(x: i32) -> i32 {{\n    x\n}}\n")
+            };
+            files.push((
+                format!("src/{group}/{me}.rs"),
+                format!(
+                    "use super::{x}::{group}_{x};\nuse super::{y}::{group}_{y};\n\n\
+                     pub fn {group}_{me}_calls(v: i32) -> i32 {{\n    {group}_{x}(v) + {group}_{y}(v)\n}}\n\n{body}"
+                ),
+            ));
+        }
+    }
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let fx = fixture(id, &refs);
+    git_init(&fx.ws.root);
+    let now = chrono::Utc::now().timestamp();
+    git(&fx.ws.root, &["add", "src/lib.rs"], None);
+    for (i, group) in ["alpha", "beta"].into_iter().enumerate() {
+        for pass in 0..2 {
+            if pass > 0 {
+                for (rel, _) in files.iter().filter(|(p, _)| p.contains(group)) {
+                    let p = fx.ws.root.join(rel);
+                    let mut src = std::fs::read_to_string(&p).unwrap();
+                    src.push_str("// seed touch\n");
+                    std::fs::write(&p, src).unwrap();
+                }
+            }
+            git(&fx.ws.root, &["add", &format!("src/{group}")], None);
+            git(
+                &fx.ws.root,
+                &["commit", "-q", "--no-verify", "-m", "seed"],
+                Some(now - 7200 + (i as i64 * 2 + pass) * 600),
+            );
+        }
+    }
+    fx
+}
+
+/// `(component id, member file id)` pairs of the live membership, sorted. File
+/// ids are stable across content edits (sutra/413).
+fn membership(db: &Db) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = db
+        .component_members_with_line_count()
+        .unwrap()
+        .into_iter()
+        .map(|(comp, fid, _)| (comp, fid))
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn comment_only_edit_keeps_the_file_in_its_component() {
+    let fx = two_clique_fixture("component-keep");
+    full_parse(&fx);
+    let before = membership(&fx.db);
+    let edited = fx.db.file_by_path("src/alpha/b.rs").unwrap().unwrap().id;
+    assert!(
+        before.iter().any(|&(_, fid)| fid == edited),
+        "fixture clusters the edited file: {before:?}"
+    );
+
+    let path = fx.ws.root.join("src/alpha/b.rs");
+    let mut src = std::fs::read_to_string(&path).unwrap();
+    src.push_str("// comment only\n");
+    std::fs::write(&path, &src).unwrap();
+    full_parse(&fx);
+
+    // The full parse does not re-cluster (edge drift is under threshold), so the
+    // content edit must not have deleted the file's membership either (sutra/439).
+    assert_eq!(membership(&fx.db), before);
+    assert!(sutra::components::membership_current(&fx.db, &fx.ws.root).unwrap());
+}

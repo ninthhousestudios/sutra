@@ -789,12 +789,12 @@ fn cmd_check(
             }
             // Content drift only: incremental reparse of the drift set — unless
             // an active Boundary rule needs component membership. Incremental
-            // refresh row-replaces changed files and the component_membership FK
-            // cascade drops their membership without re-deriving it (that's a
-            // full-parse job), so a Boundary rule would stop seeing the changed
-            // file and silently pass a real violation (sutra/386). Fall back to a
-            // full parse in that case; the common forbidden_pattern-only gate
-            // keeps the fast incremental path.
+            // refresh does not re-derive membership (that's a full-parse job):
+            // an edited file keeps its prior component (sutra/439), but a new
+            // file has none, so a Boundary rule would not see it and silently
+            // pass a real violation (sutra/386). Fall back to a full parse in
+            // that case; the common forbidden_pattern-only gate keeps the fast
+            // incremental path.
             (_, Some(drift)) if !drift.is_empty() => {
                 let needs_components = sutra::rules::load_rules(ws_root)
                     .map(|mut r| {
