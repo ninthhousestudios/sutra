@@ -633,6 +633,125 @@ fn deepening_a_shallow_clone_at_unchanged_head_re_ingests() {
     assert_all_history_incomplete(&fx.db, BiomarkerKind::HiddenCoupling);
 }
 
+// --- sutra/410: a live git failure never destroys evidence or improves health ---
+
+fn commit_file_rows(db: &Db) -> i64 {
+    db.conn_for_test()
+        .query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Per-file checkpointed scores of the latest snapshot, keyed by path.
+fn latest_scores(db: &Db) -> std::collections::HashMap<String, f64> {
+    db.snapshot_file_scores(latest_snapshot(db))
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.file_path, r.score))
+        .collect()
+}
+
+/// Break `git log` without touching the repository probe: drop the loose tree
+/// object of HEAD's parent. `rev-parse HEAD`, the repo identity and the shallow
+/// probe still succeed (the repo is Present at an unchanged HEAD), but the
+/// `--name-only` diff against the parent fails with `unable to read tree`.
+fn corrupt_parent_tree(root: &Path) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "HEAD~1^{tree}"])
+        .output()
+        .expect("git spawn");
+    assert!(out.status.success(), "parent tree must resolve");
+    let tree = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let object = root.join(".git/objects").join(&tree[..2]).join(&tree[2..]);
+    std::fs::remove_file(&object).expect("parent tree is a loose object");
+}
+
+#[test]
+fn git_log_failure_retains_commit_files_and_does_not_improve_health() {
+    let fx = git_fixture("git-failure", &GIT_FILES);
+    full_parse(&fx);
+    let rows_before = commit_file_rows(&fx.db);
+    assert!(
+        rows_before > 0,
+        "baseline ingestion must populate commit_files"
+    );
+    assert_all_complete(&fx.db, BiomarkerKind::HiddenCoupling);
+    assert!(
+        producer_finding_total(&fx.db, BiomarkerKind::HiddenCoupling) > 0,
+        "baseline must carry git debt for the no-improvement check to bite"
+    );
+    let scores_before = latest_scores(&fx.db);
+
+    corrupt_parent_tree(&fx.ws.root);
+    // A comment edit forces the next full parse through post_parse_sequence (and
+    // so through history ingestion) rather than a no-change copy-forward.
+    let mut src = std::fs::read_to_string(fx.ws.root.join("src/util.rs")).unwrap();
+    src.push_str("// trailing comment\n");
+    std::fs::write(fx.ws.root.join("src/util.rs"), &src).unwrap();
+    let snap = full_parse(&fx);
+    assert_eq!(snap.files_parsed, 1, "the edited file reparses");
+    assert!(
+        head_commit(&fx.ws.root).unwrap().is_some(),
+        "the repo is still Present at a resolved HEAD"
+    );
+
+    // Prior evidence survives the failed ingestion.
+    assert_eq!(
+        commit_file_rows(&fx.db),
+        rows_before,
+        "a transient git failure must not clear commit_files"
+    );
+
+    // Git producers record the failure — never Unsupported (structural absence)
+    // nor Complete over an unestablished range.
+    for producer in [
+        BiomarkerKind::HiddenCoupling,
+        BiomarkerKind::BlastRadiusChurn,
+        BiomarkerKind::CoChangeScatter,
+        BiomarkerKind::ChangeEntropy,
+    ] {
+        let outcomes = producer_outcomes(&fx.db, producer);
+        assert!(!outcomes.is_empty(), "{producer:?} must stage an outcome");
+        for outcome in &outcomes {
+            assert!(
+                matches!(
+                    outcome,
+                    ProducerOutcome::Missing(MissingReason::Failed(InputFailure::IngestionFailed))
+                ),
+                "{producer:?} under a git log failure must be Missing(IngestionFailed), got {outcome:?}"
+            );
+        }
+    }
+
+    // Losing evidence must not read as getting healthier: every file's
+    // checkpointed (worst-case lower-bound) score is no better than before.
+    let scores_after = latest_scores(&fx.db);
+    assert_eq!(scores_after.len(), scores_before.len());
+    for (path, before) in &scores_before {
+        let after = scores_after[path];
+        assert!(
+            after <= *before + 1e-9,
+            "{path}: health improved after a git failure ({before} -> {after})"
+        );
+    }
+}
+
+#[test]
+fn non_repository_marks_git_producers_unsupported() {
+    let fx = fixture("not-a-repo", &GIT_FILES);
+    full_parse(&fx);
+    assert_eq!(commit_file_rows(&fx.db), 0);
+    for producer in GIT_PRODUCERS {
+        for outcome in producer_outcomes(&fx.db, producer) {
+            assert!(
+                matches!(outcome, ProducerOutcome::Unsupported(_)),
+                "{producer:?} outside a git repo must be Unsupported, got {outcome:?}"
+            );
+        }
+    }
+}
+
 // --- sutra/418: snapshot completeness through the production writer ---
 
 /// Assert every row of `snapshot_id` recorded its completeness and score basis
