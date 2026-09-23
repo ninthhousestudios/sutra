@@ -255,46 +255,20 @@ impl Db {
         let findings = self.get_health_findings(None, None)?;
         let waivers = self.get_health_waivers()?;
 
-        let resolved: Vec<ResolvedHealthFinding> = findings
-            .into_iter()
-            .map(|f| {
-                let file_path = self.file_path_by_id(f.file_id).unwrap_or_default();
-                let symbol_name = f
-                    .symbol_id
-                    .and_then(|sid| self.symbol_qualified_name(sid).ok());
-                ResolvedHealthFinding {
-                    finding: f,
-                    file_path,
-                    symbol_name,
-                }
-            })
-            .collect();
+        let files = self.all_files()?;
+        let path_by_id: std::collections::HashMap<i64, &str> =
+            files.iter().map(|f| (f.id, &*f.path)).collect();
+        let resolved: Vec<ResolvedHealthFinding> =
+            crate::health::assess::label_findings(self, findings, &path_by_id)?
+                .into_iter()
+                .map(ResolvedHealthFinding::from)
+                .collect();
 
         let (active, waived) = waivers::partition(resolved, &waivers);
         let mut results: Vec<(HealthFindingRow, bool)> =
             active.into_iter().map(|r| (r.finding, false)).collect();
         results.extend(waived.into_iter().map(|w| (w.finding.finding, true)));
         Ok(results)
-    }
-
-    fn symbol_qualified_name(&self, symbol_id: i64) -> Result<String> {
-        let conn = self.conn.lock();
-        let name: String = conn.query_row(
-            "SELECT qualified_name FROM symbols WHERE id = ?1",
-            params![symbol_id],
-            |row| row.get(0),
-        )?;
-        Ok(name)
-    }
-
-    fn file_path_by_id(&self, file_id: i64) -> Result<String> {
-        let conn = self.conn.lock();
-        let path: String = conn.query_row(
-            "SELECT path FROM files WHERE id = ?1",
-            params![file_id],
-            |row| row.get(0),
-        )?;
-        Ok(path)
     }
 
     pub fn reconcile_orphaned_health_waivers(&self) -> Result<Vec<HealthWaiverRow>> {

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use crate::db::{Db, HealthFindingRow, HealthWaiverRow};
 use crate::error::Result;
 use crate::health::evidence::{
-    Digest, MissingReason, ProducerOutcome, RunId, UnsupportedReason, Validity,
+    Digest, MissingReason, ProducerOutcome, RunId, StoredFinding, UnsupportedReason, Validity,
 };
 use crate::health::findings::{BiomarkerKind, HealthSeverity};
 use crate::health::instability::{self, ComponentInstability};
@@ -49,6 +49,31 @@ impl RunVerdict {
             validity: Validity::Stale(reason),
         }
     }
+}
+
+/// Capture each row's file path and symbol label — the identity health waivers
+/// match on. The one labelling step shared by the persistent run
+/// ([`crate::health::refresh::publish_run`]), on-demand review and the live-table
+/// diagnostic, so their waiver identity cannot drift (sutra/437). Labels are
+/// looked up, never consumed: several findings can share one symbol. A file id
+/// missing from `path_by_id` labels as `"?"`, which no waiver path matches.
+pub fn label_findings<S: AsRef<str>>(
+    db: &Db,
+    rows: Vec<HealthFindingRow>,
+    path_by_id: &HashMap<i64, S>,
+) -> Result<Vec<StoredFinding>> {
+    let symbol_ids: Vec<i64> = rows.iter().filter_map(|r| r.symbol_id).collect();
+    let labels = db.symbol_labels(&symbol_ids)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| StoredFinding {
+            file_path: path_by_id
+                .get(&row.file_id)
+                .map_or_else(|| "?".to_string(), |p| p.as_ref().to_string()),
+            symbol_label: row.symbol_id.and_then(|sid| labels.get(&sid).cloned()),
+            finding: row,
+        })
+        .collect())
 }
 
 /// The persistent evidence for one currently indexed file.
@@ -133,11 +158,7 @@ impl PersistentEvidence {
         // live ids (contract § Identity and validity).
         let resolved: Vec<ResolvedHealthFinding> = stored_findings
             .into_iter()
-            .map(|f| ResolvedHealthFinding {
-                finding: f.finding,
-                file_path: f.file_path,
-                symbol_name: f.symbol_label,
-            })
+            .map(ResolvedHealthFinding::from)
             .collect();
         let (active, waived) = waivers::partition(resolved, &waivers);
         let mut active_by_path: HashMap<String, Vec<HealthFindingRow>> = HashMap::new();

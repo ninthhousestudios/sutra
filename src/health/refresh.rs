@@ -29,7 +29,7 @@ use crate::health::assess::RunVerdict;
 use crate::health::evidence::{
     ConfigStamp, Digest, Generation, GraphStamp, Head, HistoryObservation, HistoryStamp,
     InputFailure, InputStamp, MissingReason, ProducerOutcome, PublishRun, RepositoryObservation,
-    RunId, StoredFinding, StoredOutcome, UnsupportedReason, UtcDay, Validity, validate,
+    RunId, StoredOutcome, UnsupportedReason, UtcDay, Validity, validate,
 };
 use crate::health::findings::BiomarkerKind;
 use crate::health::probe::{
@@ -486,8 +486,6 @@ pub fn publish_run(
     let files = db.all_files()?;
     let path_by_id: HashMap<i64, String> =
         files.iter().map(|f| (f.id, f.path.to_string())).collect();
-    let symbol_ids: Vec<i64> = rows.iter().filter_map(|r| r.symbol_id).collect();
-    let labels = db.symbol_labels(&symbol_ids)?;
 
     // Stage outcomes while we still borrow the rows; then consume the rows into
     // retained findings (moving each row, no clone).
@@ -516,19 +514,7 @@ pub fn publish_run(
         &history_files,
         &owners.stamp,
     );
-    let stored_findings: Vec<StoredFinding> = rows
-        .into_iter()
-        .map(|row| StoredFinding {
-            file_path: path_by_id
-                .get(&row.file_id)
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            symbol_label: row
-                .symbol_id
-                .and_then(|sid| labels.get(&sid).map(|s| s.to_string())),
-            finding: row,
-        })
-        .collect();
+    let stored_findings = crate::health::assess::label_findings(db, rows, &path_by_id)?;
 
     // Recheck before commit (contract "Publication and consumers", sutra/425):
     // re-probe the repository just before publishing and abort if it moved since

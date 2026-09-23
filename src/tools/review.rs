@@ -376,22 +376,16 @@ fn partition_ondemand(
         .iter()
         .map(|f| (f.file_id, f.path.as_str()))
         .collect();
-    let symbol_ids: Vec<i64> = findings.iter().filter_map(|f| f.symbol_id).collect();
-    let mut labels = db.symbol_labels(&symbol_ids)?;
-    let resolved: Vec<ResolvedHealthFinding> = findings
+    let rows: Vec<HealthFindingRow> = findings
         .into_iter()
         .enumerate()
-        .map(|(i, f)| {
-            let row = f.into_row(-(i as i64) - 1);
-            ResolvedHealthFinding {
-                file_path: path_of
-                    .get(&row.file_id)
-                    .map_or_else(String::new, |p| p.to_string()),
-                symbol_name: row.symbol_id.and_then(|sid| labels.remove(&sid)),
-                finding: row,
-            }
-        })
+        .map(|(i, f)| f.into_row(-(i as i64) - 1))
         .collect();
+    let resolved: Vec<ResolvedHealthFinding> =
+        crate::health::assess::label_findings(db, rows, &path_of)?
+            .into_iter()
+            .map(ResolvedHealthFinding::from)
+            .collect();
     let (active, waived) = waivers::partition(resolved, evidence.waivers());
     Ok((
         active.into_iter().map(|r| r.finding).collect(),
@@ -1076,4 +1070,83 @@ pub fn compute(
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::InsertSymbolParams;
+    use crate::health::assess::RunVerdict;
+    use crate::health::evidence::MissingReason;
+    use crate::health::findings::{BiomarkerKind, HealthFinding, HealthSeverity};
+
+    fn finding(file_id: i64, symbol_id: i64, kind: BiomarkerKind) -> HealthFinding {
+        HealthFinding {
+            file_id,
+            symbol_id: Some(symbol_id),
+            biomarker_kind: kind,
+            severity: HealthSeverity::Advisory,
+            confidence: 1.0,
+            provenance: "test".to_string(),
+            metric_value: 10.0,
+            threshold: 5.0,
+            detail: String::new(),
+        }
+    }
+
+    /// sutra/437: every finding on a symbol carries its label, not just the
+    /// first — a symbol-scoped waiver on a later finding must still match.
+    #[test]
+    fn symbol_waiver_matches_second_ondemand_finding_on_same_symbol() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_unchecked("test", dir.path()).unwrap();
+        let fid = db
+            .upsert_file("src/hot.rs", "rust", "abc123", 100, true)
+            .unwrap();
+        let sid = db
+            .insert_symbol(&InsertSymbolParams {
+                file_id: fid,
+                qualified_name: "hot::churny",
+                short_name: "churny",
+                kind: "function",
+                signature: None,
+                signature_hash: None,
+                structural_hash: None,
+                visibility: Some("pub"),
+                start_line: 1,
+                start_col: 0,
+                end_line: 10,
+                end_col: 0,
+                parent_symbol_id: None,
+                docstring: None,
+                cyclomatic: Some(1),
+                cognitive: Some(0),
+                max_nesting: Some(1),
+                flags: 0,
+                language_attrs: None,
+            })
+            .unwrap();
+        db.create_health_waiver(
+            "code_age_volatility",
+            "src/hot.rs",
+            Some("hot::churny"),
+            "known churn",
+            "josh",
+        )
+        .unwrap();
+        let evidence =
+            PersistentEvidence::load(&db, RunVerdict::stale(MissingReason::LegacyUnknown)).unwrap();
+
+        let findings = vec![
+            finding(fid, sid, BiomarkerKind::FunctionHotspot),
+            finding(fid, sid, BiomarkerKind::CodeAgeVolatility),
+        ];
+        let (active, waived) = partition_ondemand(&db, findings, &evidence).unwrap();
+
+        let kinds = |rows: &[HealthFindingRow]| -> Vec<String> {
+            rows.iter().map(|r| r.biomarker_kind.to_string()).collect()
+        };
+        assert_eq!(kinds(&active), ["function_hotspot"]);
+        assert_eq!(kinds(&waived), ["code_age_volatility"]);
+    }
 }

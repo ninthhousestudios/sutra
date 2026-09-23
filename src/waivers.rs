@@ -1,5 +1,6 @@
 use crate::constraints::ConstraintFinding;
 use crate::db::{ConstraintWaiverRow, HealthFindingRow, HealthWaiverRow};
+use crate::health::evidence::StoredFinding;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaiverMeta {
@@ -63,6 +64,18 @@ pub struct ResolvedHealthFinding {
     pub finding: HealthFindingRow,
     pub file_path: String,
     pub symbol_name: Option<String>,
+}
+
+/// A retained finding resolves to its captured path and symbol label — waivers
+/// never re-resolve live ids (health-evidence-contract.md § Identity and validity).
+impl From<StoredFinding> for ResolvedHealthFinding {
+    fn from(f: StoredFinding) -> Self {
+        ResolvedHealthFinding {
+            finding: f.finding,
+            file_path: f.file_path,
+            symbol_name: f.symbol_label,
+        }
+    }
 }
 
 impl Waivable for ResolvedHealthFinding {
