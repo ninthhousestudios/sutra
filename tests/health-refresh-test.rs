@@ -1546,6 +1546,48 @@ fn comment_only_edit_keeps_the_file_in_its_component() {
 }
 
 #[test]
+fn unchanged_parse_after_a_new_commit_re_clusters_stale_membership() {
+    // sutra/443: a commit touching only an unindexed file moves the newest
+    // ingested commit, which stales the clustering. The next parse sees no source
+    // change (NoChanges), and must still re-cluster rather than checkpoint every
+    // component partial on a stale-membership verdict it can never repair.
+    let fx = two_clique_fixture("nochange-recluster");
+    full_parse(&fx);
+    let first = fx.db.latest_snapshots(1).unwrap().remove(0);
+    let first_components = fx.db.snapshot_component_scores(first.id).unwrap();
+    assert!(
+        first_components
+            .iter()
+            .any(|c| c.completeness == sutra::db::SnapshotCompleteness::Complete),
+        "fixture yields measured components: {first_components:?}"
+    );
+
+    std::fs::write(fx.ws.root.join("NOTES.md"), "notes\n").unwrap();
+    git_commit(&fx.ws.root, chrono::Utc::now().timestamp() - 60);
+    let snap = full_parse(&fx);
+    assert_eq!(snap.files_parsed, 0, "no indexed source changed");
+
+    assert!(
+        sutra::components::membership_current(&fx.db, &fx.ws.root).unwrap(),
+        "the unchanged parse re-clustered against the new history"
+    );
+    let second = fx.db.latest_snapshots(1).unwrap().remove(0);
+    assert_ne!(second.id, first.id);
+    let second_components = fx.db.snapshot_component_scores(second.id).unwrap();
+    assert_eq!(
+        second_components
+            .iter()
+            .map(|c| (&c.component_id, c.completeness))
+            .collect::<Vec<_>>(),
+        first_components
+            .iter()
+            .map(|c| (&c.component_id, c.completeness))
+            .collect::<Vec<_>>(),
+        "same components, same completeness: not all-partial on stale membership"
+    );
+}
+
+#[test]
 fn comment_only_edit_shifts_component_weight_without_a_measured_change() {
     let fx = two_clique_fixture("component-weight");
     full_parse(&fx);

@@ -13,8 +13,8 @@ use tracing::{debug, info, warn};
 use crate::components;
 use crate::config::Config;
 use crate::db::{
-    Db, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow,
-    SnapshotFileRow, SnapshotParams,
+    Db, FileRow, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentMember,
+    SnapshotComponentRow, SnapshotFileRow, SnapshotParams,
 };
 use crate::error::Result;
 use crate::graph;
@@ -816,6 +816,11 @@ pub fn parse_workspace(
             {
                 warn!(workspace = %workspace.id, "health refresh failed on unchanged parse: {e}");
             }
+            if let Err(e) =
+                recluster_unchanged(db, &workspace.root, &registry.boundary_multipliers())
+            {
+                warn!(workspace = %workspace.id, "component re-clustering failed on unchanged parse: {e}");
+            }
             if let Err(e) = record_unchanged_snapshot(db, &workspace.root, meta) {
                 warn!(workspace = %workspace.id, "failed to record unchanged snapshot after parse: {e}");
             }
@@ -1144,6 +1149,60 @@ pub fn parse_incremental(
     })
 }
 
+/// Re-cluster components when the stored membership is stale, then recompute
+/// their semantic anchors. `discover_components` is itself gated on
+/// `clustering_current`, so this is a no-op (0) on a current clustering. Shared by
+/// the full post-parse sequence and the no-change parse.
+fn discover_components_and_anchors(
+    db: &Db,
+    files: &[FileRow],
+    gd: &graph::GraphData,
+    workspace_root: &Path,
+    boundary_multipliers: &HashMap<String, f64>,
+    churn_map: &HashMap<String, u32>,
+) -> Result<usize> {
+    info!(files = files.len(), "discovering components");
+    let component_count =
+        components::discover_components(db, files, gd, workspace_root, boundary_multipliers)?;
+    log_phase_rss("post_parse:components_done");
+    if component_count > 0 {
+        info!(component_count, "discovered components");
+        let anchor_count = components::compute_semantic_anchors(db, gd, churn_map)?;
+        if anchor_count > 0 {
+            info!(anchor_count, "computed semantic anchors");
+        }
+    }
+    Ok(component_count)
+}
+
+/// The no-change parse's clustering repair (sutra/443). Its health refresh
+/// re-ingests history, and a new commit moves `newest_commit_at`, which stales
+/// the clustering; without this the checkpoint scores every component partial on
+/// a stale-membership verdict that no unchanged parse could ever clear. Must run
+/// after the refresh (so the gate sees the ingested history) and before the
+/// checkpoint. Churn comes from the persisted `commit_files` because a reused
+/// health run ingests nothing this parse.
+fn recluster_unchanged(
+    db: &Db,
+    workspace_root: &Path,
+    boundary_multipliers: &HashMap<String, f64>,
+) -> Result<usize> {
+    if components::membership_current(db, workspace_root)? {
+        return Ok(0);
+    }
+    let files = db.all_files()?;
+    let gd = graph::GraphData::load(db)?;
+    let churn_map = db.churn_by_path()?;
+    discover_components_and_anchors(
+        db,
+        &files,
+        &gd,
+        workspace_root,
+        boundary_multipliers,
+        &churn_map,
+    )
+}
+
 fn post_parse_sequence(
     db: &Db,
     workspace_root: &Path,
@@ -1191,17 +1250,14 @@ fn post_parse_sequence(
         }
         log_phase_rss("post_parse:entity_walk_done");
 
-        info!(files = files.len(), "discovering components");
-        let component_count =
-            components::discover_components(db, &files, &gd, workspace_root, boundary_multipliers)?;
-        log_phase_rss("post_parse:components_done");
-        if component_count > 0 {
-            info!(component_count, "discovered components");
-            let anchor_count = components::compute_semantic_anchors(db, &gd, &churn_map)?;
-            if anchor_count > 0 {
-                info!(anchor_count, "computed semantic anchors");
-            }
-        }
+        discover_components_and_anchors(
+            db,
+            &files,
+            &gd,
+            workspace_root,
+            boundary_multipliers,
+            &churn_map,
+        )?;
         log_phase_rss("post_parse:anchors_done");
 
         let alias_count = crate::vocabulary::sync_aliases(db, workspace_root)?;

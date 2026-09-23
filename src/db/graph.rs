@@ -321,6 +321,22 @@ impl Db {
         Ok(ids?)
     }
 
+    /// Per-path count of ingested commits touching each indexed file — the
+    /// churn map [`crate::git::churn_from_commit_files`] derives at ingestion,
+    /// read back from the persisted `commit_files` for callers that did not
+    /// ingest this run (the no-change parse re-clustering path).
+    pub fn churn_by_path(&self) -> Result<HashMap<String, u32>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT f.path, COUNT(*) FROM commit_files cf \
+             JOIN files f ON f.id = cf.file_id GROUP BY f.path",
+        )?;
+        let churn: rusqlite::Result<HashMap<String, u32>> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect();
+        Ok(churn?)
+    }
+
     pub fn newest_commit_at(&self) -> Result<i64> {
         let conn = self.conn.lock();
         Ok(conn.query_row(

@@ -161,7 +161,12 @@ src/tools/
                       the component scores (and instability penalty) are computed
                       off a stale grouping — replaced by a `components_unavailable`
                       { reason: "stale_membership" } block, distinct from the
-                      current per-file evidence. Full parse re-clusters and repairs.
+                      current per-file evidence. Every `parse_workspace` repairs
+                      it: the full path via post_parse_sequence, and the
+                      no-change path via recluster_unchanged after its health
+                      refresh (sutra/443). The refresh's history ingest moves
+                      newest_commit_at on any new commit, so without that repair
+                      the no-change path would checkpoint every component partial.
   trend.rs          — MCP tool: sutra_trend. Comparison mode diffs two
                       snapshots with per-file deltas (improved/degraded/
                       incomparable), per-component deltas, category
