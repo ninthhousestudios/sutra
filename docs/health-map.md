@@ -301,7 +301,8 @@ Additive output fields (existing fields keep their meaning):
   `health_score: null` + `score_bounds {lower, upper}` + `partial: true`;
   anything else (Unknown completeness, or no `score_basis` — pre-416 rules) →
   `health_score: null` + `legacy_score`. A malformed stored `category_scores`
-  is an error, not an empty object.
+  is an error, not an empty object — in history and in comparison category
+  totals alike (`trend::parse_category_scores`, sutra/441).
 - Comparison `files.improved`/`files.degraded` entries add `from_completeness`
   and `to_completeness`. They now contain **only** complete→complete pairs.
 - Comparison `files.incomparable`: `{path, from, to, from_completeness,

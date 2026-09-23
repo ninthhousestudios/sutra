@@ -46,13 +46,8 @@ fn handle_history(db: &Db, path: &str, limit: usize) -> Result<serde_json::Value
     let snapshots: Vec<serde_json::Value> = history
         .iter()
         .map(|h| {
-            let category_deductions = serde_json::from_str::<serde_json::Value>(&h.category_scores)
-                .map_err(|e| {
-                    SutraError::Internal(format!(
-                        "corrupt category_scores for {path} at snapshot {}: {e}",
-                        h.timestamp
-                    ))
-                })?;
+            let category_deductions: serde_json::Value =
+                parse_category_scores(&h.category_scores, path, &h.timestamp)?;
             let mut entry = completeness_json(h.completeness, &h.missing_biomarkers);
             entry.extend(stored_score_json(
                 h.completeness,
@@ -105,7 +100,11 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
     let to_comps = db.snapshot_component_scores(snap_to.id)?;
     let component_deltas = compute_component_deltas(&from_comps, &to_comps, &from_files, &to_files);
 
-    let category_deltas = compute_category_deltas(&from_files, &to_files, measured);
+    let category_deltas = compute_category_deltas(
+        (snap_from.id, &from_files),
+        (snap_to.id, &to_files),
+        measured,
+    )?;
 
     Ok(json!({
         "from": snapshot_to_json(&snap_from),
@@ -549,12 +548,12 @@ fn component_change(
 }
 
 fn compute_category_deltas(
-    from_files: &[SnapshotFileRow],
-    to_files: &[SnapshotFileRow],
+    (from_id, from_files): (i64, &[SnapshotFileRow]),
+    (to_id, to_files): (i64, &[SnapshotFileRow]),
     measured: impl Fn(f64) -> serde_json::Value,
-) -> serde_json::Value {
-    let from_cats = aggregate_categories(from_files);
-    let to_cats = aggregate_categories(to_files);
+) -> Result<serde_json::Value> {
+    let from_cats = aggregate_categories(from_id, from_files)?;
+    let to_cats = aggregate_categories(to_id, to_files)?;
 
     let mut all_keys: Vec<&str> = from_cats.keys().chain(to_cats.keys()).copied().collect();
     all_keys.sort();
@@ -573,10 +572,27 @@ fn compute_category_deltas(
             }),
         );
     }
-    serde_json::Value::Object(result)
+    Ok(serde_json::Value::Object(result))
 }
 
-fn aggregate_categories(files: &[SnapshotFileRow]) -> HashMap<&'static str, f64> {
+/// Parse a stored `category_scores` column. A malformed value is an error: read
+/// as `{}` it would pass for zero debt and move every aggregate built on it.
+fn parse_category_scores<T: serde::de::DeserializeOwned>(
+    raw: &str,
+    path: &str,
+    snapshot: &dyn std::fmt::Display,
+) -> Result<T> {
+    serde_json::from_str(raw).map_err(|e| {
+        SutraError::Internal(format!(
+            "corrupt category_scores for {path} at snapshot {snapshot}: {e}"
+        ))
+    })
+}
+
+fn aggregate_categories(
+    snapshot_id: i64,
+    files: &[SnapshotFileRow],
+) -> Result<HashMap<&'static str, f64>> {
     let category_names = [
         "organizational",
         "structural",
@@ -586,17 +602,17 @@ fn aggregate_categories(files: &[SnapshotFileRow]) -> HashMap<&'static str, f64>
     ];
     let mut totals = HashMap::new();
     for f in files {
-        if let Ok(map) = serde_json::from_str::<HashMap<String, f64>>(&f.category_scores) {
-            for (k, v) in &map {
-                for &name in &category_names {
-                    if k == name {
-                        *totals.entry(name).or_insert(0.0) += v;
-                    }
+        let map: HashMap<String, f64> =
+            parse_category_scores(&f.category_scores, &f.file_path, &snapshot_id)?;
+        for (k, v) in &map {
+            for &name in &category_names {
+                if k == name {
+                    *totals.entry(name).or_insert(0.0) += v;
                 }
             }
         }
     }
-    totals
+    Ok(totals)
 }
 
 fn resolve_snapshots(

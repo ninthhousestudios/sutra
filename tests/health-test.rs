@@ -1834,6 +1834,32 @@ fn test_trend_history_corrupt_category_scores_is_an_error() {
     assert!(err.to_string().contains("category_scores"), "{err}");
 }
 
+/// sutra/441: comparison mode must not drop a corrupt row from the category
+/// totals — that would read lost data as a debt change.
+#[test]
+fn test_trend_comparison_corrupt_category_scores_is_an_error() {
+    let (_dir, db) = setup_db();
+    let from = insert_snapshot(&db, 7.0);
+    let mut row = snap_row(1, "src/x.rs", 7.0, SnapshotCompleteness::Complete, &[]);
+    row.category_scores = "{not json".into();
+    db.insert_snapshot_files(from, &[row]).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let to = insert_snapshot(&db, 8.0);
+    let row = snap_row(1, "src/x.rs", 8.0, SnapshotCompleteness::Complete, &[]);
+    db.insert_snapshot_files(to, &[row]).unwrap();
+
+    let args = sutra::tools::trend::TrendArgs {
+        workspace: String::new(),
+        from: None,
+        to: None,
+        path: None,
+        limit: None,
+    };
+    let err = sutra::tools::trend::handle(&db, &args).unwrap_err();
+    assert!(err.to_string().contains("category_scores"), "{err}");
+    assert!(err.to_string().contains("src/x.rs"), "{err}");
+}
+
 // --- Blame parsing ---
 
 #[test]
