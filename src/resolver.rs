@@ -116,6 +116,26 @@ fn kind_compatible(context: &RefContextKind, symbol_kind: &str) -> bool {
     }
 }
 
+/// Which symbol kinds a ref may bind to across the resolution steps.
+#[derive(Clone, Copy)]
+enum KindFilter<'a> {
+    Any,
+    Context(&'a RefContextKind),
+    /// Rust `recv.name()`: method-call syntax can only dispatch to a method,
+    /// never to a same-named free function (sutra/433).
+    MethodOnly,
+}
+
+impl KindFilter<'_> {
+    fn accepts(self, symbol_kind: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Context(context) => kind_compatible(context, symbol_kind),
+            Self::MethodOnly => symbol_kind == "method",
+        }
+    }
+}
+
 fn resolve_single(
     r: &ExtractedRef,
     file_symbols: &[ExtractedSymbol],
@@ -142,6 +162,18 @@ fn resolve_single(
             | RefContextKind::Construction
             | RefContextKind::FieldAccess
     );
+    // A call through a receiver (`x.name()`) is a method call. Rust has no
+    // other meaning for that syntax, so candidates narrow to methods. Dart's
+    // `prefix.fn()` also carries a receiver and the parser does not record
+    // import prefixes, so Dart only *prefers* methods in the global fallback.
+    let receiver_call = matches!(r.context_kind, RefContextKind::Call) && r.receiver.is_some();
+    let filter = if receiver_call && lang == "rust" {
+        KindFilter::MethodOnly
+    } else if use_kind_filter {
+        KindFilter::Context(&r.context_kind)
+    } else {
+        KindFilter::Any
+    };
 
     // --- Step 0: scope-chain / type-tracking hints from parse-time resolution ---
     if let Some(hint) = &r.resolved_local_target {
@@ -180,10 +212,7 @@ fn resolve_single(
     // --- Step 1: local scope (file_symbols by short_name) ---
     let local_matches: Vec<&ExtractedSymbol> = file_symbols
         .iter()
-        .filter(|s| {
-            s.short_name == *name
-                && (!use_kind_filter || kind_compatible(&r.context_kind, s.kind.as_str()))
-        })
+        .filter(|s| s.short_name == *name && filter.accepts(s.kind.as_str()))
         .collect();
 
     if let Some(best) = pick_nearest_local(&local_matches, r.line, file_symbols) {
@@ -205,24 +234,22 @@ fn resolve_single(
 
     // --- Step 2: import-filtered match ---
     let mut visited: HashSet<&str> = HashSet::new();
-    if let Some(id) = find_via_imports(
-        name,
-        &r.context_kind,
-        use_kind_filter,
-        index,
-        file_imports,
-        &mut visited,
-    ) {
+    if let Some(id) = find_via_imports(name, filter, index, file_imports, &mut visited) {
         return resolved(r, id, ResolutionMethod::Import);
     }
 
     // --- Step 3: global match (all_symbols by short_name) ---
-    let global_matches: Vec<&SymbolEntry> = index
+    let mut global_matches: Vec<&SymbolEntry> = index
         .short(name)
         .iter()
-        .filter(|s| !use_kind_filter || kind_compatible(&r.context_kind, &s.kind))
+        .filter(|s| filter.accepts(&s.kind))
         .copied()
         .collect();
+    // Receiver calls prefer methods: otherwise the shortest-qualified-name
+    // tie-break below favours unqualified free functions over `Type::name`.
+    if receiver_call && global_matches.iter().any(|s| s.kind == "method") {
+        global_matches.retain(|s| s.kind == "method");
+    }
 
     if global_matches.len() == 1 {
         return resolved(r, global_matches[0].id, ResolutionMethod::GlobalFallback);
@@ -279,7 +306,8 @@ fn resolve_single(
         }
     }
 
-    if use_kind_filter {
+    // Kind-agnostic last resort; a Rust receiver call stays method-only.
+    if use_kind_filter && !matches!(filter, KindFilter::MethodOnly) {
         let fallback = index.short(name);
         if fallback.len() == 1 {
             return resolved(r, fallback[0].id, ResolutionMethod::GlobalFallback);
@@ -374,8 +402,7 @@ fn rfind_separator(path: &str) -> Option<(&str, usize)> {
 
 fn find_via_imports(
     name: &str,
-    context: &RefContextKind,
-    use_kind_filter: bool,
+    filter: KindFilter<'_>,
     index: &SymbolIndex<'_>,
     file_imports: &[ExtractedImport],
     visited: &mut HashSet<&str>,
@@ -398,7 +425,7 @@ fn find_via_imports(
         // First qualified-name match is checked for kind compatibility but not
         // searched past — mirrors the original scan's let-chain semantics.
         if let Some(s) = index.qualified(path).first()
-            && (!use_kind_filter || kind_compatible(context, &s.kind))
+            && filter.accepts(&s.kind)
         {
             return Some(s.id);
         }
@@ -407,18 +434,16 @@ fn find_via_imports(
             .map(|(prefix, _)| prefix)
             .unwrap_or(path.as_str());
 
-        if let Some(s) = index.short(name).iter().find(|s| {
-            s.qualified_name.starts_with(import_prefix)
-                && (!use_kind_filter || kind_compatible(context, &s.kind))
-        }) {
+        if let Some(s) = index
+            .short(name)
+            .iter()
+            .find(|s| s.qualified_name.starts_with(import_prefix) && filter.accepts(&s.kind))
+        {
             return Some(s.id);
         }
 
         if (last_segment == name || alias_match)
-            && let Some(s) = index
-                .short(name)
-                .iter()
-                .find(|s| !use_kind_filter || kind_compatible(context, &s.kind))
+            && let Some(s) = index.short(name).iter().find(|s| filter.accepts(&s.kind))
         {
             return Some(s.id);
         }
@@ -427,7 +452,7 @@ fn find_via_imports(
             && let Some(s) = index
                 .short(last_segment)
                 .iter()
-                .find(|s| !use_kind_filter || kind_compatible(context, &s.kind))
+                .find(|s| filter.accepts(&s.kind))
         {
             return Some(s.id);
         }

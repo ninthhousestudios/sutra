@@ -10,8 +10,9 @@ fn resolve(
     imports: &[ExtractedImport],
     file_id: i64,
 ) -> Vec<resolver::ResolvedRef> {
-    // "rust" is a neutral non-python language: the Python class-as-constructor
-    // rule stays off, so these tests exercise the general resolution path.
+    // "rust" keeps the Python class-as-constructor rule off, so these tests
+    // exercise the general resolution path. Not neutral for receiver calls:
+    // Rust narrows those to methods (sutra/433).
     resolve_lang(file_symbols, refs, all_symbols, imports, file_id, "rust")
 }
 
@@ -946,7 +947,9 @@ fn test_type_tracking_falls_through_when_class_absent() {
     let all_syms = vec![sym(1, "render", "render", "function")];
     let refs = vec![make_ref_with_type_tracking("render", 3, "Widget")];
 
-    let resolved = resolve(&[], &refs, &all_syms, &[], 0);
+    // Type-tracking hints come from the Dart parser; under Rust a receiver
+    // call is method-only and would never reach the free fn (sutra/433).
+    let resolved = resolve_lang(&[], &refs, &all_syms, &[], 0, "dart");
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -1036,4 +1039,73 @@ fn test_from_import_alias_resolves() {
         Some(42),
         "`OD` should resolve to `OrderedDict` via from-import alias"
     );
+}
+
+fn make_receiver_call(name: &str, receiver: &str, line: usize) -> ExtractedRef {
+    ExtractedRef {
+        receiver: Some(receiver.to_string()),
+        ..make_ref(name, line, RefContextKind::Call)
+    }
+}
+
+/// sutra/433: `baseline.resolve(db)` is method-call syntax. The unqualified
+/// free fn `resolve` must not win the shortest-qualified-name tie-break.
+#[test]
+fn test_rust_receiver_call_prefers_method_over_free_fn() {
+    let refs = vec![make_receiver_call("resolve", "baseline", 10)];
+    let all_symbols = vec![
+        sym(1, "resolve", "resolve", "function"),
+        sym(2, "BaselineSelector::resolve", "resolve", "method"),
+    ];
+
+    let resolved = resolve(&[], &refs, &all_symbols, &[], 0);
+
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// A Rust receiver call can never dispatch to a free fn: with only a free fn
+/// of that name (the method lives in an unindexed crate), stay unresolved —
+/// through the local, import, global and last-resort steps alike.
+#[test]
+fn test_rust_receiver_call_never_binds_free_fn() {
+    let file_symbols = vec![make_symbol("push", "push", SymbolKind::Function, 1, 3)];
+    let refs = vec![make_receiver_call("push", "v", 10)];
+    let all_symbols = vec![sym(1, "push", "push", "function")];
+    let imports = vec![make_import("crate::stack::push", 1)];
+
+    let resolved = resolve(&file_symbols, &refs, &all_symbols, &imports, 0);
+
+    assert_eq!(resolved[0].target_symbol_id, None);
+    assert_eq!(resolved[0].unresolved_name.as_deref(), Some("push"));
+}
+
+/// Without a receiver, a Rust call keeps binding free functions.
+#[test]
+fn test_rust_bare_call_still_binds_free_fn() {
+    let refs = vec![make_ref("resolve", 10, RefContextKind::Call)];
+    let all_symbols = vec![
+        sym(1, "resolve", "resolve", "function"),
+        sym(2, "BaselineSelector::resolve", "resolve", "method"),
+    ];
+
+    let resolved = resolve(&[], &refs, &all_symbols, &[], 0);
+
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
+}
+
+/// Dart receiver calls prefer methods but may still reach a top-level fn:
+/// `p.fn()` through an import prefix carries a receiver too.
+#[test]
+fn test_dart_receiver_call_prefers_method_falls_back_to_fn() {
+    let refs = vec![make_receiver_call("resolve", "x", 10)];
+    let both = vec![
+        sym(1, "resolve", "resolve", "function"),
+        sym(2, "Selector.resolve", "resolve", "method"),
+    ];
+    let resolved = resolve_lang(&[], &refs, &both, &[], 0, "dart");
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+
+    let fn_only = vec![sym(1, "resolve", "resolve", "function")];
+    let resolved = resolve_lang(&[], &refs, &fn_only, &[], 0, "dart");
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
 }

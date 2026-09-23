@@ -825,8 +825,9 @@ async fn test_unchanged_file_with_attrless_symbols_is_skipped() {
 }
 
 // sutra/431: resolution tie-breaks must not depend on symbol rowids. Two free
-// functions share a qualified name, so a receiver call falls to the global
-// fallback and ties. Re-extracting the winner's file reassigns its ids past the
+// functions share a qualified name, so an unimported call falls to the global
+// fallback and ties. (A receiver call would not: since sutra/433 Rust
+// `x.resolve()` binds methods only.) Re-extracting the winner's file reassigns its ids past the
 // loser's; with rowid-ordered candidates the tie then flipped, so a partial
 // reparse resolved differently from a fresh full parse.
 #[tokio::test]
@@ -836,11 +837,7 @@ async fn test_global_fallback_tie_break_survives_reextraction() {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("a.rs"), "pub fn resolve() {}\n").unwrap();
     std::fs::write(src.join("z.rs"), "pub fn resolve() {}\n").unwrap();
-    std::fs::write(
-        src.join("caller.rs"),
-        "fn go(x: Thing) {\n    x.resolve();\n}\n",
-    )
-    .unwrap();
+    std::fs::write(src.join("caller.rs"), "fn go() {\n    resolve();\n}\n").unwrap();
 
     let db_dir = tempfile::tempdir().unwrap();
     let ws = make_entry("tie-break", dir.path().to_path_buf());
