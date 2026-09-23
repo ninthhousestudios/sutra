@@ -362,10 +362,7 @@ fn collect_symbols_inner(
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_item" | "function_signature_item" => {
-                let inside_impl = name_context
-                    .last()
-                    .is_some_and(|_| node.kind() == "declaration_list");
-                let kind = if inside_impl || is_inside_impl(node) {
+                let kind = if is_method_container(node) {
                     SymbolKind::Method
                 } else {
                     SymbolKind::Function
@@ -500,16 +497,14 @@ fn collect_symbols_inner(
     symbols
 }
 
-/// Check whether a node is (transitively) inside an impl_item's body.
-fn is_inside_impl(node: Node) -> bool {
-    let mut current = Some(node);
-    while let Some(n) = current {
-        if n.kind() == "impl_item" {
-            return true;
-        }
-        current = n.parent();
-    }
-    false
+/// Whether `node` is the body of an `impl` or `trait` block, so a fn declared
+/// directly in it is a method. An inline `mod x { }` or `extern { }` body is
+/// also a `declaration_list`, and its fns stay free functions (sutra/435).
+fn is_method_container(node: Node) -> bool {
+    node.kind() == "declaration_list"
+        && node
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "impl_item" | "trait_item"))
 }
 
 /// Extract a symbol from a definition node.
@@ -1539,6 +1534,37 @@ mod tests {
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].short_name, "hello");
         assert_eq!(result.symbols[0].kind, SymbolKind::Function);
+    }
+
+    /// sutra/435: only fns directly in an `impl`/`trait` body are methods;
+    /// fns in an inline `mod` (e.g. `mod tests`) or `extern` block are free.
+    #[test]
+    fn method_kind_only_inside_impl_or_trait() {
+        fn kind_of(syms: &[ExtractedSymbol], qn: &str) -> Option<SymbolKind> {
+            syms.iter().find_map(|s| {
+                if s.qualified_name == qn {
+                    Some(s.kind)
+                } else {
+                    kind_of(&s.children, qn)
+                }
+            })
+        }
+        let src = "struct S;\n\
+            impl S { fn m(&self) {} }\n\
+            trait T { fn t(&self); fn d(&self) {} }\n\
+            mod tests { fn helper() {} mod inner { fn deep() {} } }\n\
+            extern \"C\" { fn ext(); }\n";
+        let result = parse_rust(src, "lib.rs").unwrap();
+        let syms = &result.symbols;
+        assert_eq!(kind_of(syms, "S::m"), Some(SymbolKind::Method));
+        assert_eq!(kind_of(syms, "T::t"), Some(SymbolKind::Method));
+        assert_eq!(kind_of(syms, "T::d"), Some(SymbolKind::Method));
+        assert_eq!(kind_of(syms, "tests::helper"), Some(SymbolKind::Function));
+        assert_eq!(
+            kind_of(syms, "tests::inner::deep"),
+            Some(SymbolKind::Function)
+        );
+        assert_eq!(kind_of(syms, "ext"), Some(SymbolKind::Function));
     }
 
     #[test]
