@@ -140,7 +140,7 @@ pub fn current_run_validity(db: &Db, workspace_root: &Path, now_unix: i64) -> Re
         db,
         workspace_root,
         utc_day(now_unix),
-        window_days(workspace_root),
+        window_days(workspace_root)?,
     )?;
     Ok(RunVerdict {
         run: Some(run.id),
@@ -173,12 +173,13 @@ fn needs_history(kind: BiomarkerKind) -> bool {
 }
 
 /// The trailing window length (days) for history selection: the workspace's
-/// configured co-change window, defaulting to the contract's 90 days.
-pub fn window_days(workspace_root: &Path) -> u32 {
-    crate::components::load_config(workspace_root)
-        .ok()
-        .and_then(|c| c.cochange_window_days)
-        .unwrap_or(DEFAULT_WINDOW_DAYS)
+/// configured co-change window, defaulting to the contract's 90 days when unset.
+/// A malformed `components.toml` is an error, not the default: the window is an
+/// input-stamp axis, so falling back would silently record a different window.
+pub fn window_days(workspace_root: &Path) -> Result<u32> {
+    Ok(crate::components::load_config(workspace_root)?
+        .cochange_window_days
+        .unwrap_or(DEFAULT_WINDOW_DAYS))
 }
 
 /// Demand refresh (Wave C adapter → here): validate the retained run against
@@ -191,7 +192,7 @@ pub fn refresh(
     workspace_root: &Path,
     now_unix: i64,
 ) -> Result<RefreshResult> {
-    let window = window_days(workspace_root);
+    let window = window_days(workspace_root)?;
     let day = utc_day(now_unix);
 
     // (1) Cheap observe + validate. No mutation, no git log: probe the graph,
@@ -770,6 +771,26 @@ fn observe_history(
 mod tests {
     use super::*;
     use crate::health::evidence::{DeferReason, RunId};
+
+    // sutra/432: the window is an input-stamp axis, so a malformed config must
+    // fail loudly instead of silently stamping the default window.
+    #[test]
+    fn window_days_default_configured_and_malformed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            window_days(dir.path()).expect("absent config"),
+            DEFAULT_WINDOW_DAYS
+        );
+
+        let sutra_dir = dir.path().join(".sutra");
+        std::fs::create_dir_all(&sutra_dir).expect("create .sutra");
+        let cfg = sutra_dir.join("components.toml");
+        std::fs::write(&cfg, "cochange_window_days = 30\n").expect("write config");
+        assert_eq!(window_days(dir.path()).expect("valid config"), 30);
+
+        std::fs::write(&cfg, "cochange_window_days = \"thirty\"\n").expect("write config");
+        assert!(window_days(dir.path()).is_err());
+    }
 
     // The validity token is the single contract seam shared by the file-health
     // evidence stamp and the review delta gate (sutra/424 F3); only "current"

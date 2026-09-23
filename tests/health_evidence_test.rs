@@ -1,7 +1,7 @@
 //! Storage + migration + invalidation + transaction-failure tests for the
 //! health evidence layer (sutra/414).
 
-use sutra::db::{Db, HealthFindingRow};
+use sutra::db::{Db, HealthFindingRow, SnapshotParams};
 use sutra::health::BiomarkerKind;
 use sutra::health::evidence::{
     ConfigStamp, Digest, Generation, GraphStamp, Head, HistoryObservation, HistoryStamp,
@@ -150,7 +150,7 @@ fn stale_generation_publication_is_rejected_and_writes_nothing() {
 }
 
 #[test]
-fn current_pointer_advances_and_old_run_is_retained_for_diagnostics() {
+fn current_pointer_advances_and_unreferenced_old_run_is_pruned() {
     let (_dir, db) = setup_db();
     let epoch = db.ensure_index_epoch().unwrap();
     let generation = Generation(db.get_data_generation().unwrap());
@@ -170,13 +170,83 @@ fn current_pointer_advances_and_old_run_is_retained_for_diagnostics() {
     assert_eq!(current.id, second_id);
     assert!(current.findings.is_empty());
 
-    // The invalidated old run remains loadable as diagnostic evidence.
+    // Neither current nor referenced by a snapshot: pruned (sutra/432).
+    assert!(db.load_health_run(first_id).unwrap().is_none());
+}
+
+fn snapshot_for(db: &Db, run_id: Option<i64>) -> i64 {
+    db.insert_snapshot(&SnapshotParams {
+        health_run_id: run_id,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[test]
+fn snapshot_referenced_run_survives_later_publication() {
+    let (_dir, db) = setup_db();
+    let epoch = db.ensure_index_epoch().unwrap();
+    let generation = Generation(db.get_data_generation().unwrap());
+
+    let first_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+    // A legacy snapshot with no run must not disable pruning (NOT IN + NULL).
+    snapshot_for(&db, None);
+    snapshot_for(&db, Some(first_id.0));
+
+    let second_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+    let third_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+
     let old = db
         .load_health_run(first_id)
         .unwrap()
-        .expect("old run retained");
-    assert_eq!(old.id, first_id);
+        .expect("checkpoint's run retained");
     assert_eq!(old.findings.len(), 1);
+    assert!(
+        db.load_health_run(second_id).unwrap().is_none(),
+        "superseded unreferenced run is pruned even with a run-less snapshot present"
+    );
+    assert_eq!(db.load_current_health_run().unwrap().unwrap().id, third_id);
+}
+
+#[test]
+fn pruning_a_snapshot_prunes_its_run_but_keeps_current() {
+    let (_dir, db) = setup_db();
+    let epoch = db.ensure_index_epoch().unwrap();
+    let generation = Generation(db.get_data_generation().unwrap());
+
+    let old_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+    snapshot_for(&db, Some(old_id.0));
+    let kept_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+    snapshot_for(&db, Some(kept_id.0));
+    let current_id = db
+        .publish_health_run(generation, &sample_run(epoch, generation))
+        .unwrap()
+        .unwrap();
+
+    assert!(db.load_health_run(old_id).unwrap().is_some());
+    assert_eq!(db.prune_snapshots(1).unwrap(), 1);
+
+    assert!(
+        db.load_health_run(old_id).unwrap().is_none(),
+        "run of a pruned snapshot is dropped"
+    );
+    assert!(db.load_health_run(kept_id).unwrap().is_some());
+    assert!(db.load_health_run(current_id).unwrap().is_some());
 }
 
 #[test]

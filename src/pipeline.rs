@@ -1181,7 +1181,7 @@ fn post_parse_sequence(
         // (sutra/408: a transient failure is NoHistory-worst-cased, never
         // structural absence) and the churn map semantic anchors consume.
         let health_day = crate::health::probe::utc_day(chrono::Utc::now().timestamp());
-        let health_window = crate::health::refresh::window_days(workspace_root);
+        let health_window = crate::health::refresh::window_days(workspace_root)?;
         let graph_stamp = crate::health::probe::probe_graph_stamp(db)?;
         let ingestion = crate::health::refresh::ingest_history(
             health_session,

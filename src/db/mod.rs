@@ -2535,6 +2535,7 @@ impl Db {
         conn.execute(&sql_files, param_refs.as_slice())?;
         conn.execute(&sql_components, param_refs.as_slice())?;
         conn.execute(&sql_snapshots, param_refs.as_slice())?;
+        health_evidence::prune_unreferenced_health_runs(&conn)?;
 
         Ok(stale_ids.len())
     }

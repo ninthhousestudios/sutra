@@ -156,6 +156,7 @@ impl Db {
              ON CONFLICT(id) DO UPDATE SET run_id = ?1, index_epoch = ?2",
             params![run_id, epoch_hex],
         )?;
+        prune_unreferenced_health_runs(&conn)?;
 
         tx.commit()?;
         Ok(Some(RunId(run_id)))
@@ -181,9 +182,9 @@ impl Db {
         row.map(decode_run).transpose()
     }
 
-    /// Load a specific run by id, for diagnostic / retained-evidence display. An
-    /// invalidated old run remains loadable here even after the current pointer
-    /// has advanced past it.
+    /// Load a specific run by id, for diagnostic / retained-evidence display. A
+    /// superseded run stays loadable only while a retained snapshot references
+    /// it; otherwise it is pruned (see `prune_unreferenced_health_runs`).
     pub fn load_health_run(&self, run_id: RunId) -> Result<Option<StoredRun>> {
         let conn = self.conn.lock();
         let row = conn
@@ -197,6 +198,26 @@ impl Db {
             .optional()?;
         row.map(decode_run).transpose()
     }
+}
+
+/// Delete every health run that is neither the current run nor referenced by a
+/// retained snapshot. Runs are otherwise insert-only (one per full parse and per
+/// republishing demand refresh), and trend/review `input_changes` needs exactly
+/// these two sets: the current run and the runs of retained checkpoints. Called
+/// after the current pointer moves and after snapshots are pruned. Returns the
+/// number of runs deleted.
+pub(super) fn prune_unreferenced_health_runs(conn: &rusqlite::Connection) -> Result<usize> {
+    // The `IS NOT NULL` filters are load-bearing: `x NOT IN (..., NULL)` is NULL,
+    // never true, so a single legacy snapshot without a run (or an absent
+    // pointer) would otherwise silently disable pruning.
+    let deleted = conn.execute(
+        "DELETE FROM health_runs
+         WHERE run_id NOT IN (SELECT run_id FROM health_current WHERE run_id IS NOT NULL)
+           AND run_id NOT IN (SELECT health_run_id FROM snapshots
+                              WHERE health_run_id IS NOT NULL)",
+        [],
+    )?;
+    Ok(deleted)
 }
 
 /// Raw column tuple for a `health_runs` row.

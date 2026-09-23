@@ -368,7 +368,7 @@ DB row for `health_waivers` table. Fields: `id`, `biomarker_kind`,
 | health_snapshot_files | Ephemeral | 0033, 0073, 0076, 0077 | Per-file score (lower bound), completeness, missing producers, upper bound, score basis |
 | health_snapshot_components | Ephemeral | 0033, 0077 | Per-component aggregated scores (lower bound), completeness, membership basis |
 | index_meta (index_epoch col) | Durable | 0074 | ALTER adds index_epoch TEXT; minted lazily, NULLed+reminted on reindex (sutra/414) |
-| health_runs | Ephemeral | 0075 | Immutable, insert-only health evidence runs (FK-free JSON blobs: input_stamp, outcomes, findings) |
+| health_runs | Ephemeral | 0075 | Immutable health evidence runs (FK-free JSON blobs: input_stamp, outcomes, findings). Pruned to the current run plus runs referenced by retained snapshots, on publish and on snapshot prune (sutra/432) |
 | health_current | Ephemeral | 0075 | Single-row atomic pointer to the current health_runs.run_id |
 
 Dropped in 0045: convention_snapshots (previously stored FCA conformance
@@ -388,7 +388,7 @@ The health-evidence contract (sutra/412) validity/storage layer:
 - `src/db/health_evidence.rs` — `index_epoch`/`ensure_index_epoch`,
   `publish_health_run` (atomic run + pointer; aborts `Ok(None)` if
   `data_generation` moved since the inputs were observed — the mixed-generation
-  guard), `load_current_health_run` / `load_health_run` (retained diagnostics).
+  guard), `load_current_health_run` / `load_health_run` (current or snapshot-referenced runs only).
   `get_derived_complete_generation` is the reader partner to
   `set_derived_complete`; health publication never advances it.
 - Legacy indexes have zero runs → readers return `None` (LegacyUnknown); no
