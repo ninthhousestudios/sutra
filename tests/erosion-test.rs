@@ -150,6 +150,11 @@ fn helper(x: i32) -> i32 {
 }
 
 #[cfg(test)]
+fn cfg_helper(x: i32) -> i32 {
+    if x > 0 { if x > 1 { 2 } else { 1 } } else { 0 }
+}
+
+#[cfg(test)]
 mod tests {
     fn nested(x: i32) -> i32 {
         if x > 0 { if x > 1 { 2 } else { 1 } } else { 0 }
@@ -173,6 +178,7 @@ fn test_code_contributes_no_mass() {
     // Precondition: the excluded symbols really do carry complexity.
     assert!(fx.cognitive_of(dart, "main") > 0);
     assert!(fx.cognitive_of(lib, "helper") > 0);
+    assert!(fx.cognitive_of(lib, "cfg_helper") > 0);
     assert!(fx.cognitive_of(lib, "nested") > 0);
 
     let by_file = erosion::load_samples_by_file(&fx.db).unwrap();

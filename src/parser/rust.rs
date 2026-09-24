@@ -360,6 +360,9 @@ fn collect_symbols_inner(
     let mut symbols = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // An item is test-only when it sits in a `#[cfg(test)]` scope or carries
+        // the attribute itself; the flag propagates into impl/trait/mod bodies.
+        let cfg_test = in_cfg_test || has_cfg_test_attr(child, src);
         match child.kind() {
             "function_item" | "function_signature_item" => {
                 let kind = if is_method_container(node) {
@@ -369,7 +372,7 @@ fn collect_symbols_inner(
                 };
                 if let Some(mut sym) = extract_symbol(child, src, name_context, kind) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
@@ -379,7 +382,7 @@ fn collect_symbols_inner(
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Struct)
                 {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     if let Some(body) = child.child_by_field_name("body") {
@@ -394,7 +397,7 @@ fn collect_symbols_inner(
             "enum_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Enum) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
@@ -403,14 +406,14 @@ fn collect_symbols_inner(
             "trait_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Trait) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        sym.children = collect_symbols_inner(body, src, &ctx, in_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, cfg_test);
                     }
                     symbols.push(sym);
                 }
@@ -419,14 +422,14 @@ fn collect_symbols_inner(
             "impl_item" => {
                 if let Some(mut sym) = extract_impl_symbol(child, src, name_context) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let impl_name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(impl_name);
-                        sym.children = collect_symbols_inner(body, src, &ctx, in_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, cfg_test);
                     }
                     symbols.push(sym);
                 }
@@ -437,7 +440,7 @@ fn collect_symbols_inner(
                     extract_symbol(child, src, name_context, SymbolKind::TypeAlias)
                 {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
@@ -446,7 +449,7 @@ fn collect_symbols_inner(
             "const_item" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Const) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
@@ -456,7 +459,7 @@ fn collect_symbols_inner(
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Static)
                 {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
@@ -465,25 +468,24 @@ fn collect_symbols_inner(
             "macro_definition" => {
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Macro) {
                     sym.flags |= extract_flags(child, src);
-                    if in_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     symbols.push(sym);
                 }
             }
             "mod_item" => {
-                let child_cfg_test = in_cfg_test || has_cfg_test_attr(child, src);
                 if let Some(mut sym) = extract_symbol(child, src, name_context, SymbolKind::Module)
                 {
                     sym.flags |= extract_flags(child, src);
-                    if child_cfg_test {
+                    if cfg_test {
                         sym.flags |= FLAG_CFG_TEST;
                     }
                     let name = sym.short_name.clone();
                     if let Some(body) = child.child_by_field_name("body") {
                         let mut ctx = name_context.to_vec();
                         ctx.push(name);
-                        sym.children = collect_symbols_inner(body, src, &ctx, child_cfg_test);
+                        sym.children = collect_symbols_inner(body, src, &ctx, cfg_test);
                     }
                     symbols.push(sym);
                 }
@@ -1595,6 +1597,27 @@ mod tests {
         let flat = crate::parser::flatten_symbols(&result.symbols);
         let helper = flat.iter().find(|s| s.short_name == "helper").unwrap();
         assert_eq!(helper.flags & FLAG_CFG_TEST, FLAG_CFG_TEST);
+    }
+
+    /// sutra/445: `#[cfg(test)]` on an item outside a test module flags that
+    /// item (and, for an impl, its methods); a plain sibling stays unflagged.
+    #[test]
+    fn flag_detects_cfg_test_on_free_items() {
+        let src = "#[cfg(test)]\nfn helper() {}\n\nfn prod() {}\n\n\
+                   #[cfg(test)]\nimpl Foo {\n    fn fixture() {}\n}\n\n\
+                   #[cfg(not(test))]\nfn real() {}";
+        let result = parse_rust(src, "lib.rs").unwrap();
+        let flat = crate::parser::flatten_symbols(&result.symbols);
+        let flags = |name: &str| {
+            flat.iter()
+                .find(|s| s.short_name == name)
+                .unwrap_or_else(|| panic!("symbol {name} not extracted"))
+                .flags
+        };
+        assert_eq!(flags("helper") & FLAG_CFG_TEST, FLAG_CFG_TEST);
+        assert_eq!(flags("fixture") & FLAG_CFG_TEST, FLAG_CFG_TEST);
+        assert_eq!(flags("prod") & FLAG_CFG_TEST, 0);
+        assert_eq!(flags("real") & FLAG_CFG_TEST, 0);
     }
 
     #[test]
