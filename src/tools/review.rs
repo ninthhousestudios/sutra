@@ -488,6 +488,8 @@ fn attribution_json(
 /// revisions they are compared between.
 pub struct DiffScope {
     pub entries: Vec<git::DiffFileEntry>,
+    /// `""` (the index) for unstaged, `HEAD` for staged, an explicit revision
+    /// otherwise. Read with `git show {base}:{path}`, so `""` resolves to the index.
     pub base_revision: String,
     /// `Some("")` for staged (the index), `None` for unstaged (the worktree), an
     /// explicit revision otherwise.
@@ -505,7 +507,8 @@ impl DiffScope {
 /// Shared by the review compositor and the `sutra check` CLI gate so both
 /// interpret `"staged"` / `"unstaged"` / `"branch"` / a commit spec identically.
 /// `head_revision` is `Some("")` for staged (the index), `None` for unstaged
-/// (the worktree), and an explicit revision otherwise.
+/// (the worktree), and an explicit revision otherwise; `base_revision` is `""`
+/// (the index) for unstaged, so both sides match what `git diff` compared.
 pub fn resolve_diff_scope(
     workspace_root: &Path,
     mode: &str,
@@ -524,9 +527,12 @@ pub fn resolve_diff_entries(workspace_root: &Path, mode: &str) -> Result<DiffSco
             "HEAD".to_string(),
             Some(String::new()),
         ),
+        // `git diff` compares the index to the worktree, so the base side is
+        // the index too: reading HEAD would leak staged changes into an
+        // unstaged review (sutra/458).
         "unstaged" => (
             git::git_diff_unstaged_entries(workspace_root)?,
-            "HEAD".to_string(),
+            String::new(),
             None,
         ),
         "branch" => {

@@ -658,3 +658,73 @@ fn review_erosion_delta_over_git_diff() {
     assert_eq!(j["total"]["crossed_down"], 1, "{j}");
     assert!(j["total"]["eroded_mass_removed"].as_f64().unwrap() > 0.0);
 }
+
+/// Unstaged mode compares the index to the worktree on both sides: staged
+/// changes (a threshold crossing, a new file, a rename) must not leak into an
+/// unstaged review that only touches comments (sutra/458).
+#[test]
+fn unstaged_erosion_delta_reads_base_from_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "t@t"]);
+    git(root, &["config", "user.name", "t"]);
+    let write = |rel: &str, body: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    write("src/a.rs", &nested_rs("grow", 3));
+    write("src/old.rs", &nested_rs("steady", 6));
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "--no-verify", "-qm", "base"]);
+
+    // Staged: grow crosses the threshold, a new eroded file, a rename.
+    write("src/a.rs", &nested_rs("grow", 6));
+    write("src/fresh.rs", &nested_rs("fresh", 6));
+    git(root, &["mv", "src/old.rs", "src/new.rs"]);
+    git(root, &["add", "-A"]);
+
+    // Unstaged: comment-only edits on top of each staged file.
+    for (rel, body) in [
+        ("src/a.rs", nested_rs("grow", 6)),
+        ("src/fresh.rs", nested_rs("fresh", 6)),
+        ("src/new.rs", nested_rs("steady", 6)),
+    ] {
+        write(rel, &format!("// unstaged note\n{body}"));
+    }
+
+    let scope = sutra::tools::review::resolve_diff_entries(root, "unstaged").unwrap();
+    let mut paths = scope.paths();
+    paths.sort();
+    assert_eq!(paths, ["src/a.rs", "src/fresh.rs", "src/new.rs"]);
+    assert_eq!(scope.head_revision, None);
+    // Staged-new and staged-renamed files exist on the base (index) side.
+    for p in ["src/fresh.rs", "src/new.rs"] {
+        let base = sutra::git::file_content_on_side(root, Some(&scope.base_revision), p).unwrap();
+        assert!(base.is_some(), "{p} missing from base side");
+    }
+
+    let delta = sutra::tools::erosion_delta::compute(
+        root,
+        &scope.entries,
+        &scope.base_revision,
+        scope.head_revision.as_deref(),
+        &default_registry(),
+    );
+    let j = sutra::tools::erosion_delta::delta_json(&delta).expect("block");
+    assert_eq!(j["status"], "complete", "{j}");
+    for key in [
+        "crossed_up",
+        "crossed_down",
+        "added_eroded",
+        "deleted_eroded",
+    ] {
+        assert_eq!(j["total"][key], 0, "{key}: {j}");
+    }
+    assert_eq!(j["functions"].as_array().unwrap().len(), 0, "{j}");
+    for f in j["files"].as_array().unwrap() {
+        assert_eq!(f["eroded_mass_delta"], 0.0, "{j}");
+        assert!(f["base"]["eroded_mass"].as_f64().unwrap() > 0.0, "{j}");
+    }
+}
