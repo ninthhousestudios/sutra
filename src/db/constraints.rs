@@ -158,6 +158,20 @@ pub(crate) fn active_ratchets_from_conn(conn: &rusqlite::Connection) -> Vec<Cons
         .unwrap_or_default()
 }
 
+/// Every cached constraint waiver, newest first. Shared by
+/// [`Db::get_constraint_waivers`] and the guard's read-only path, so both see
+/// the same rows in the same order — first match wins in `waivers::partition`,
+/// so order decides which rationale a finding reports.
+pub(crate) fn constraint_waivers_from_conn(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<Vec<ConstraintWaiverRow>> {
+    conn.prepare(&format!(
+        "SELECT {SELECT_COLS} FROM constraint_waivers ORDER BY created_at DESC"
+    ))?
+    .query_map([], map_waiver_row)?
+    .collect()
+}
+
 /// Read the accepted-cache freshness marker from a read-only connection — the
 /// guard's edit-time path holds a bare `Connection`, not a writable `Db`, so it
 /// cannot call [`Db::get_accepted_sync_marker`]. `None` (never projected, or the
@@ -229,14 +243,7 @@ impl Db {
                 stmt.query_map(params![id], map_waiver_row)?
                     .collect::<rusqlite::Result<Vec<_>>>()?
             }
-            None => {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT {SELECT_COLS} FROM constraint_waivers \
-                     ORDER BY created_at DESC"
-                ))?;
-                stmt.query_map([], map_waiver_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?
-            }
+            None => constraint_waivers_from_conn(&conn)?,
         };
         Ok(rows)
     }

@@ -5,6 +5,33 @@ use crate::error::Result;
 
 use super::{AliasRow, AnchorRow, ComponentRow, Db};
 
+/// Active components as `(id, name, prior_paths)`. Shared by
+/// [`Db::active_components_with_paths`] and the guard's read-only path.
+/// A missing, empty, or malformed `prior_paths` reads as no paths.
+pub(crate) fn active_components_with_paths_from_conn(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, Vec<String>)>> {
+    let mut stmt =
+        conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let json: Option<String> = row.get(2)?;
+            Ok((id, name, json))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, json)| {
+            let paths = json
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default();
+            (id, name, paths)
+        })
+        .collect())
+}
+
 impl Db {
     pub fn component_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
@@ -115,26 +142,7 @@ impl Db {
     }
 
     pub fn active_components_with_paths(&self) -> Result<Vec<(String, String, Vec<String>)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
-        let rows = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let json: Option<String> = row.get(2)?;
-                Ok((id, name, json))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut result = Vec::new();
-        for (id, name, json) in rows {
-            let paths: Vec<String> = match json {
-                Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            result.push((id, name, paths));
-        }
-        Ok(result)
+        active_components_with_paths_from_conn(&self.conn.lock())
     }
 
     pub fn dissolve_component(&self, id: &str) -> Result<()> {

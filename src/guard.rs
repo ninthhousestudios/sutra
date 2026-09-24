@@ -2200,6 +2200,24 @@ name = "protos-confined"
         assert!(outcome.active.is_empty());
     }
 
+    /// Manifest checks resolve waivers fresh-or-file like evaluate_raw, so a
+    /// waiver only in accepted.toml (cache never projected) is honoured (sutra/461).
+    #[test]
+    fn manifest_waiver_from_accepted_toml_with_stale_cache() {
+        let (conn, dir) = setup_external_db();
+        let manifest = "[dependencies]\ntonic = \"0.12\"\n";
+        std::fs::write(
+            dir.path().join(".sutra/accepted.toml"),
+            "[[waiver]]\nconstraint = \"protos-confined\"\nfile = \"server/Cargo.toml\"\n\
+             rationale = \"transition\"\nby = \"test\"\n",
+        )
+        .unwrap();
+
+        let outcome = check_proposed_manifest(&conn, dir.path(), "server/Cargo.toml", manifest);
+        assert!(outcome.active.is_empty());
+        assert_eq!(outcome.waived.len(), 1);
+    }
+
     #[test]
     fn external_targeting_member_surfaces_as_blocking_finding() {
         let conn = Connection::open_in_memory().unwrap();

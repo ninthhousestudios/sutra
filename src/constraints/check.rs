@@ -1041,7 +1041,7 @@ fn evaluate_raw(
         .collect()
     };
 
-    let comp_rows = build_component_rows_raw(conn)?;
+    let comp_rows = crate::db::active_components_with_paths_from_conn(conn)?;
     let mut file_to_component: HashMap<&str, &str> = HashMap::new();
     let mut comp_name_to_id: HashMap<&str, &str> = HashMap::new();
     for (comp_id, name, paths) in &comp_rows {
@@ -1245,39 +1245,20 @@ fn check_ratchet_violations(
 /// Check a manifest's findings against waivers and return a partitioned outcome.
 fn partition_manifest_findings(
     conn: &rusqlite::Connection,
+    workspace_root: &Path,
+    constraints: &[Constraint],
     manifest_rel_path: &str,
     findings: Vec<ConstraintFinding>,
 ) -> Result<(
     Vec<ConstraintFinding>,
     Vec<waivers::Waived<ConstraintFinding>>,
 )> {
-    use crate::db::ConstraintWaiverRow;
-    use rusqlite::params;
-
     if findings.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
-        .prepare(
-            "SELECT id, constraint_id, constraint_name, file_path, \
-             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-             FROM constraint_waivers WHERE file_path = ?1",
-        )?
-        .query_map(params![manifest_rel_path], |row| {
-            Ok(ConstraintWaiverRow {
-                id: row.get(0)?,
-                constraint_id: row.get(1)?,
-                constraint_name: row.get(2)?,
-                file_path: row.get(3)?,
-                symbol_qualified_name: row.get(4)?,
-                rationale: row.get(5)?,
-                waived_by: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let constraint_waivers = accepted::guard_waivers(conn, workspace_root, constraints, |p| {
+        p == manifest_rel_path
+    })?;
     Ok(waivers::partition(findings, &constraint_waivers))
 }
 
@@ -1342,7 +1323,13 @@ pub fn check_manifest_raw(
         findings.push(external::config_error_finding(&msg));
     }
 
-    let (mut active, waived) = partition_manifest_findings(conn, manifest_rel_path, findings)?;
+    let (mut active, waived) = partition_manifest_findings(
+        conn,
+        workspace_root,
+        &all_constraints,
+        manifest_rel_path,
+        findings,
+    )?;
 
     // When the root manifest's rename map changed, re-check declared workspace
     // members with the proposed renames — a new/changed alias may resolve to a
@@ -1383,8 +1370,13 @@ pub fn check_manifest_raw(
                 .into_iter()
                 .filter(|f| !old_keys.contains(&(&*f.constraint_id, f.to_path.as_str())))
                 .collect();
-                let (member_active, _) =
-                    partition_manifest_findings(conn, &member_rel, new_findings)?;
+                let (member_active, _) = partition_manifest_findings(
+                    conn,
+                    workspace_root,
+                    &all_constraints,
+                    &member_rel,
+                    new_findings,
+                )?;
                 active.extend(member_active);
             }
         }
@@ -1406,8 +1398,6 @@ pub fn check_pubspec_raw(
     pubspec_rel_path: &str,
     content: &str,
 ) -> Result<CheckOutcome> {
-    use rusqlite::params;
-
     let mut loaded_rules = rules::load_rules(workspace_root)?;
     let (all_constraints, parse_errors) = loaded_rules.all_constraints();
     if !external::has_external_constraints(&all_constraints) {
@@ -1431,28 +1421,10 @@ pub fn check_pubspec_raw(
         });
     }
 
-    use crate::db::ConstraintWaiverRow;
-    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
-        .prepare(
-            "SELECT id, constraint_id, constraint_name, file_path, \
-             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-             FROM constraint_waivers WHERE file_path = ?1",
-        )?
-        .query_map(params![pubspec_rel_path], |row| {
-            Ok(ConstraintWaiverRow {
-                id: row.get(0)?,
-                constraint_id: row.get(1)?,
-                constraint_name: row.get(2)?,
-                file_path: row.get(3)?,
-                symbol_qualified_name: row.get(4)?,
-                rationale: row.get(5)?,
-                waived_by: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let constraint_waivers =
+        accepted::guard_waivers(conn, workspace_root, &all_constraints, |p| {
+            p == pubspec_rel_path
+        })?;
 
     let (active, waived) = waivers::partition(findings, &constraint_waivers);
     Ok(CheckOutcome {
@@ -1461,29 +1433,6 @@ pub fn check_pubspec_raw(
         parse_errors,
         ..Default::default()
     })
-}
-
-fn build_component_rows_raw(
-    conn: &rusqlite::Connection,
-) -> Result<Vec<(String, String, Vec<String>)>> {
-    let mut out = Vec::new();
-    let mut stmt =
-        conn.prepare("SELECT id, name, prior_paths FROM components WHERE dissolved_at IS NULL")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        ))
-    })?;
-    for row in rows {
-        let (id, name, json) = row?;
-        let paths = json
-            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-            .unwrap_or_default();
-        out.push((id, name, paths));
-    }
-    Ok(out)
 }
 
 fn make_finding(

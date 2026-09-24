@@ -620,26 +620,8 @@ pub fn guard_waivers(
     relevant: impl Fn(&str) -> bool,
 ) -> Result<Vec<ConstraintWaiverRow>> {
     if is_cache_fresh_conn(conn, root)? {
-        return Ok(conn
-            .prepare(
-                "SELECT id, constraint_id, constraint_name, file_path, \
-                 symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-                 FROM constraint_waivers",
-            )?
-            .query_map([], |row| {
-                Ok(ConstraintWaiverRow {
-                    id: row.get(0)?,
-                    constraint_id: row.get(1)?,
-                    constraint_name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    symbol_qualified_name: row.get(4)?,
-                    rationale: row.get(5)?,
-                    waived_by: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
+        return Ok(crate::db::constraint_waivers_from_conn(conn)?
+            .into_iter()
             .filter(|w| relevant(&w.file_path))
             .collect());
     }
