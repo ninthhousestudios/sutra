@@ -1716,6 +1716,7 @@ fn test_snapshot_pruning() {
                     missing_biomarkers: Vec::new(),
                     score_upper: None,
                     score_basis: Some("basis-v1".into()),
+                    weight: Some(100),
                 }],
                 &[SnapshotComponentRow {
                     component_id: "comp".into(),

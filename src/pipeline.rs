@@ -1546,11 +1546,14 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
             missing_biomarkers: sf.score.missing_names(),
             score_upper,
             score_basis: Some(sf.evidence.basis.to_hex()),
+            weight: Some(sf.evidence.line_count),
         });
     }
 
-    // Pessimistic (lower) file scores, as persisted per file; one aggregation
-    // rule with components so clean additions cannot dilute it (sutra/404).
+    // Pessimistic (lower) file scores at the weights persisted per file, which
+    // trend re-evaluates at to split weight shift from quality (sutra/455); one
+    // aggregation rule with components so clean additions cannot dilute it
+    // (sutra/404).
     let weighted: Vec<(f64, i64)> = workspace
         .files
         .iter()

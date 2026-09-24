@@ -549,6 +549,10 @@ pub struct SnapshotFileRow {
     /// Hex [`crate::health::scoring::file_score_basis`] digest. `None` = Unknown
     /// basis (every row before sutra/416): never matches, so never measured.
     pub score_basis: Option<String>,
+    /// Line count the file was aggregated at in the workspace `health_score`.
+    /// `None` = unknown (every row before sutra/455): the workspace delta is
+    /// then never measured at a defaulted weight.
+    pub weight: Option<i64>,
 }
 
 /// Persisted completeness of one per-file snapshot score.
@@ -2770,7 +2774,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT file_id, file_path, score, category_scores,
                     partial, completeness_recorded, missing_biomarkers,
-                    score_upper, score_basis
+                    score_upper, score_basis, weight
              FROM health_snapshot_files WHERE snapshot_id = ?1",
         )?;
         let rows = stmt
@@ -2785,6 +2789,7 @@ impl Db {
                     missing_biomarkers,
                     score_upper: row.get(7)?,
                     score_basis: row.get(8)?,
+                    weight: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2903,8 +2908,9 @@ fn insert_snapshot_file_rows(
     let mut stmt = conn.prepare(
         "INSERT INTO health_snapshot_files
          (snapshot_id, file_id, file_path, score, category_scores,
-          partial, completeness_recorded, missing_biomarkers, score_upper, score_basis)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+          partial, completeness_recorded, missing_biomarkers, score_upper, score_basis,
+          weight)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for f in files {
         let (partial, recorded) = f.completeness.to_columns();
@@ -2921,6 +2927,7 @@ fn insert_snapshot_file_rows(
             missing_json,
             f.score_upper,
             f.score_basis,
+            f.weight,
         ])?;
     }
     Ok(())

@@ -1473,6 +1473,7 @@ fn test_snapshot_stores_per_file_health() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         },
         SnapshotFileRow {
             file_id: 2,
@@ -1483,6 +1484,7 @@ fn test_snapshot_stores_per_file_health() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         },
     ];
     db.insert_snapshot_files(snap_id, &files).unwrap();
@@ -1582,6 +1584,7 @@ fn test_file_health_history() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         }],
     )
     .unwrap();
@@ -1598,6 +1601,7 @@ fn test_file_health_history() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         }],
     )
     .unwrap();
@@ -1614,6 +1618,7 @@ fn test_file_health_history() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         }],
     )
     .unwrap();
@@ -1648,8 +1653,13 @@ fn test_snapshot_pattern_family_count_roundtrip() {
 #[test]
 fn test_trend_comparison_with_file_deltas() {
     let (_dir, db) = setup_db();
+    // Unequal weights so the a/b swap of deduction moves the NLOC-weighted
+    // density; the snapshot health_score is what the pipeline would write.
+    use sutra::health::scoring::workspace_score;
+    let from_score = workspace_score(&[(8.0, 300), (6.0, 100)]);
+    let to_score = workspace_score(&[(9.0, 300), (5.0, 100)]);
 
-    let snap1 = insert_snapshot(&db, 7.0);
+    let snap1 = insert_snapshot(&db, from_score);
     db.insert_snapshot_files(
         snap1,
         &[
@@ -1662,6 +1672,7 @@ fn test_trend_comparison_with_file_deltas() {
                 missing_biomarkers: Vec::new(),
                 score_upper: None,
                 score_basis: Some("basis-v1".into()),
+                weight: Some(300),
             },
             SnapshotFileRow {
                 file_id: 2,
@@ -1672,12 +1683,13 @@ fn test_trend_comparison_with_file_deltas() {
                 missing_biomarkers: Vec::new(),
                 score_upper: None,
                 score_basis: Some("basis-v1".into()),
+                weight: Some(100),
             },
         ],
     )
     .unwrap();
 
-    let snap2 = insert_snapshot(&db, 8.0);
+    let snap2 = insert_snapshot(&db, to_score);
     db.insert_snapshot_files(
         snap2,
         &[
@@ -1690,6 +1702,7 @@ fn test_trend_comparison_with_file_deltas() {
                 missing_biomarkers: Vec::new(),
                 score_upper: None,
                 score_basis: Some("basis-v1".into()),
+                weight: Some(300),
             },
             SnapshotFileRow {
                 file_id: 2,
@@ -1700,6 +1713,7 @@ fn test_trend_comparison_with_file_deltas() {
                 missing_biomarkers: Vec::new(),
                 score_upper: None,
                 score_basis: Some("basis-v1".into()),
+                weight: Some(100),
             },
         ],
     )
@@ -1718,7 +1732,11 @@ fn test_trend_comparison_with_file_deltas() {
     assert_eq!(result["aggregate_comparison"]["measured"], true);
     assert!(result["aggregate_comparison"]["reason"].is_null());
     let deltas = &result["deltas"];
-    assert!((deltas["health_score"].as_f64().unwrap() - 1.0).abs() < 0.01);
+    let measured = deltas["health_score"].as_f64().unwrap();
+    assert!(measured > 0.0);
+    assert!((measured - round2(to_score - from_score)).abs() < 1e-9);
+    // Weights unchanged: the whole observed move is measured.
+    assert_eq!(deltas["health_score_weight_shift"].as_f64().unwrap(), 0.0);
     assert_eq!(deltas["pattern_family_count"].as_i64().unwrap(), 0);
 
     // Per-file deltas
@@ -1755,6 +1773,7 @@ fn test_trend_file_history_mode() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         }],
     )
     .unwrap();
@@ -1771,6 +1790,7 @@ fn test_trend_file_history_mode() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         }],
     )
     .unwrap();
@@ -2560,6 +2580,7 @@ fn snapshot_file_completeness_round_trips() {
             missing_biomarkers: vec!["nested_complexity".into(), "import_cycle".into()],
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         },
         SnapshotFileRow {
             file_id: 2,
@@ -2570,6 +2591,7 @@ fn snapshot_file_completeness_round_trips() {
             missing_biomarkers: Vec::new(),
             score_upper: None,
             score_basis: Some("basis-v1".into()),
+            weight: Some(100),
         },
     ];
     db.insert_snapshot_files(snap_id, &files).unwrap();
@@ -2610,6 +2632,7 @@ fn snap_row(
         missing_biomarkers: missing.iter().map(|m| m.to_string()).collect(),
         score_upper: None,
         score_basis: Some("basis-v1".into()),
+        weight: Some(100),
     }
 }
 
@@ -3256,4 +3279,38 @@ fn stale_component_membership_is_never_measured() {
         "stale membership keeps bounds but is never a measurement"
     );
     assert_eq!(current.components[0].basis, stale.components[0].basis);
+}
+
+#[test]
+fn trend_workspace_delta_with_unknown_weights_is_not_measured() {
+    // sutra/455: a row predating recorded file weights must never be measured at
+    // a defaulted weight — the workspace delta and the categories gated with it
+    // are null with `unknown_weights`.
+    let (_dir, db) = setup_db();
+    let snap1 = insert_snapshot(&db, 9.0);
+    let legacy = SnapshotFileRow {
+        weight: None,
+        ..snap_row(1, "src/a.rs", 9.0, SnapshotCompleteness::Complete, &[])
+    };
+    db.insert_snapshot_files(snap1, &[legacy]).unwrap();
+    let snap2 = insert_snapshot(&db, 9.5);
+    db.insert_snapshot_files(
+        snap2,
+        &[snap_row(
+            1,
+            "src/a.rs",
+            9.5,
+            SnapshotCompleteness::Complete,
+            &[],
+        )],
+    )
+    .unwrap();
+
+    let result = trend(&db, None);
+    assert_eq!(result["aggregate_comparison"]["measured"], false);
+    assert_eq!(result["aggregate_comparison"]["reason"], "unknown_weights");
+    assert!(result["deltas"]["health_score"].is_null());
+    assert!(result["deltas"]["health_score_weight_shift"].is_null());
+    // The file pair itself is still measured: weights only gate the aggregate.
+    assert_eq!(result["files"]["improved"].as_array().unwrap().len(), 1);
 }

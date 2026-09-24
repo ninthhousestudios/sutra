@@ -73,7 +73,16 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
 
     let from_files = db.snapshot_file_scores(snap_from.id)?;
     let to_files = db.snapshot_file_scores(snap_to.id)?;
-    let aggregate_blocker = aggregate_incomparable_reason(&from_files, &to_files);
+    let workspace = match aggregate_incomparable_reason(&from_files, &to_files) {
+        Some(reason) => Err(reason),
+        None => workspace_change(
+            &from_files,
+            &to_files,
+            snap_to.health_score - snap_from.health_score,
+        ),
+    };
+    let aggregate_blocker = workspace.as_ref().err().copied();
+    let workspace = workspace.ok();
     let measured = |delta: f64| match aggregate_blocker {
         None => json!(round2(delta)),
         Some(_) => serde_json::Value::Null,
@@ -90,7 +99,10 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
         "total_complexity": snap_to.total_complexity - snap_from.total_complexity,
         "dead_symbol_count": snap_to.dead_symbol_count - snap_from.dead_symbol_count,
         "hotspot_count": snap_to.hotspot_count - snap_from.hotspot_count,
-        "health_score": measured(snap_to.health_score - snap_from.health_score),
+        // Measured at the baseline's file weights; line-count movement is
+        // reported apart, never as a quality change (sutra/455).
+        "health_score": workspace.as_ref().map(|w| round2(w.measured)),
+        "health_score_weight_shift": workspace.as_ref().map(|w| round2(w.weight_shift)),
         "pattern_family_count": snap_to.pattern_family_count - snap_from.pattern_family_count,
     });
     if let Some(obj) = deltas.as_object_mut() {
@@ -420,7 +432,7 @@ fn compute_component_deltas(
     let mut incomparable: Vec<serde_json::Value> = Vec::new();
     for c in to {
         let prev = from_map.get(c.component_id.as_str()).copied();
-        let entry = |from: Option<f64>, change: Option<&ComponentChange>, reason: Option<&str>| {
+        let entry = |from: Option<f64>, change: Option<&WeightedChange>, reason: Option<&str>| {
             json!({
                 "id": c.component_id,
                 "name": c.component_name,
@@ -496,11 +508,61 @@ struct MemberScores<'a> {
     to: HashMap<&'a str, &'a SnapshotFileRow>,
 }
 
-/// A component's observed change split into its measured part and the weight
-/// shift. `measured + weight_shift` is the observed score difference.
-struct ComponentChange {
+/// A weighted aggregate's (component or workspace) observed change split into
+/// its measured part and the weight shift. `measured + weight_shift` is the
+/// observed score difference.
+struct WeightedChange {
     measured: f64,
     weight_shift: f64,
+}
+
+impl WeightedChange {
+    /// Re-evaluate both sides at the baseline's weights: `base`/`cur` pair each
+    /// member's baseline/current score with its *baseline* weight. The rest of
+    /// `observed` is weight shift.
+    fn at_baseline_weights(
+        (base, base_penalty): (&[(f64, i64)], f64),
+        (cur, cur_penalty): (&[(f64, i64)], f64),
+        observed: f64,
+    ) -> Self {
+        let measured = scoring::component_score(cur, cur_penalty)
+            - scoring::component_score(base, base_penalty);
+        Self {
+            measured,
+            weight_shift: observed - measured,
+        }
+    }
+}
+
+/// Split the workspace `health_score` change of a pair that already passed
+/// [`aggregate_incomparable_reason`] (same population, all complete, same
+/// bases). `workspace_score` is `component_score` with no penalty, so the split
+/// is the component one; `unknown_weights` when a side predates recorded file
+/// weights (sutra/455) — never measured at a defaulted weight.
+fn workspace_change(
+    from: &[SnapshotFileRow],
+    to: &[SnapshotFileRow],
+    observed: f64,
+) -> std::result::Result<WeightedChange, &'static str> {
+    if from.iter().chain(to).any(|f| f.weight.is_none()) {
+        return Err("unknown_weights");
+    }
+    let to_scores: HashMap<&str, f64> =
+        to.iter().map(|f| (f.file_path.as_str(), f.score)).collect();
+    let mut base_pairs = Vec::with_capacity(from.len());
+    let mut cur_pairs = Vec::with_capacity(from.len());
+    for f in from {
+        let (Some(weight), Some(&cur)) = (f.weight, to_scores.get(f.file_path.as_str())) else {
+            return Err("population_changed");
+        };
+        base_pairs.push((f.score, weight));
+        cur_pairs.push((cur, weight));
+    }
+    Ok(WeightedChange::at_baseline_weights(
+        (&base_pairs, 0.0),
+        (&cur_pairs, 0.0),
+        observed,
+    ))
 }
 
 /// Split the change of a component pair that already passed the temporal rule
@@ -513,7 +575,7 @@ fn component_change(
     prev: &SnapshotComponentRow,
     cur: &SnapshotComponentRow,
     files: &MemberScores<'_>,
-) -> std::result::Result<ComponentChange, &'static str> {
+) -> std::result::Result<WeightedChange, &'static str> {
     let (Some(base_members), Some(cur_members)) = (&prev.members, &cur.members) else {
         return Err("unknown_weights");
     };
@@ -542,12 +604,11 @@ fn component_change(
         base_pairs.push((b, m.weight));
         cur_pairs.push((c, m.weight));
     }
-    let measured = scoring::component_score(&cur_pairs, cur_penalty)
-        - scoring::component_score(&base_pairs, base_penalty);
-    Ok(ComponentChange {
-        measured,
-        weight_shift: (cur.score - prev.score) - measured,
-    })
+    Ok(WeightedChange::at_baseline_weights(
+        (&base_pairs, base_penalty),
+        (&cur_pairs, cur_penalty),
+        cur.score - prev.score,
+    ))
 }
 
 fn compute_category_deltas(

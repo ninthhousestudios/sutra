@@ -469,6 +469,14 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0079_snapshot_erosion.sql"),
         true,
     ),
+    // Per-file workspace aggregation weight on snapshots (sutra/455).
+    // ephemeral_only: same reasoning as 0078 — health_snapshot_files is
+    // Ephemeral and recreated by 0033 on reindex.
+    (
+        "0080_snapshot_file_weight",
+        include_str!("../../migrations/0080_snapshot_file_weight.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -661,6 +669,9 @@ impl Db {
                 Self::column_exists(conn, "health_snapshot_components", "weights_recorded")
                     && Self::column_exists(conn, "health_snapshot_components", "instability_penalty")
                     && Self::column_exists(conn, "health_snapshot_component_members", "weight")
+            }
+            "0080_snapshot_file_weight" => {
+                Self::column_exists(conn, "health_snapshot_files", "weight")
             }
             "0079_snapshot_erosion" => {
                 Self::column_exists(conn, "snapshots", "eroded_mass")

@@ -1213,7 +1213,9 @@ impl SutraServer {
         Component deltas are likewise measured only under a matching membership basis: \
         measured_delta is the change at the baseline's member weights; weight_shift is the \
         rest of the score move (line-count/mix change), never a quality change. \
-        Workspace/category health deltas are null unless aggregate_comparison.measured."
+        Workspace/category health deltas are null unless aggregate_comparison.measured; \
+        the workspace health_score delta is likewise measured at the baseline's file \
+        weights, with health_score_weight_shift the line-count-driven rest."
     )]
     pub async fn sutra_trend(
         &self,

@@ -1406,6 +1406,58 @@ fn waiver_between_parses_is_a_basis_change_not_a_measured_improvement() {
 }
 
 #[test]
+fn comment_only_growth_is_weight_shift_not_a_measured_improvement() {
+    // sutra/455 (Codex review of sutra/450): the workspace health_score is
+    // line-count weighted, so growing a clean file with comments raises it with
+    // no finding change. Trend must report that move as weight_shift, measured 0.
+    const CLEAN_SRC: &str = "pub fn clean() -> u32 {\n    1\n}\n";
+    let fx = fixture(
+        "comment-growth",
+        &[("src/deep.rs", DEEP_SRC), ("src/clean.rs", CLEAN_SRC)],
+    );
+    full_parse(&fx);
+    let first = latest_snapshot(&fx.db);
+    let padded = format!("{}{CLEAN_SRC}", "// commentary\n".repeat(200));
+    std::fs::write(fx.ws.root.join("src/clean.rs"), padded).unwrap();
+    full_parse(&fx);
+    let second = latest_snapshot(&fx.db);
+    assert_ne!(first, second);
+
+    let weight = |snap: i64, path: &str| {
+        fx.db
+            .snapshot_file_scores(snap)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.file_path == path)
+            .and_then(|r| r.weight)
+            .expect("the production writer records each file's weight")
+    };
+    assert!(weight(second, "src/clean.rs") > weight(first, "src/clean.rs") + 150);
+
+    let cmp = sutra::tools::trend::handle(
+        &fx.db,
+        &sutra::tools::trend::TrendArgs {
+            workspace: String::new(),
+            from: None,
+            to: None,
+            path: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    for bucket in ["improved", "degraded", "incomparable"] {
+        assert!(cmp["files"][bucket].as_array().unwrap().is_empty(), "{cmp}");
+    }
+    assert_eq!(cmp["aggregate_comparison"]["measured"], true, "{cmp}");
+    assert_eq!(cmp["deltas"]["health_score"], 0.0, "{cmp}");
+    let shift = cmp["deltas"]["health_score_weight_shift"].as_f64().unwrap();
+    assert!(
+        shift > 0.0,
+        "diluting clean NLOC is an observed rise: {cmp}"
+    );
+}
+
+#[test]
 fn unchanged_parse_after_head_move_republishes_and_records_provenance() {
     // Review H1/H2: a no-change parse must not checkpoint rows from an older run
     // nor a stale (all-partial) run. HEAD moves via a commit touching only an

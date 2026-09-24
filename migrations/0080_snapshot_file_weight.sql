@@ -1,0 +1,16 @@
+-- Persist each file's workspace aggregation weight on snapshots (sutra/455).
+--
+-- Since sutra/450 the snapshot health_score is scoring::workspace_score over
+-- (file lower bound, files.line_count). The aggregate comparison gate checks
+-- population, completeness and basis but not weights, so a comment-only edit
+-- that grew a clean file moved the workspace score and trend reported it as a
+-- measured change. Trend now measures the workspace delta at the baseline's
+-- weights and reports the rest as weight_shift, as components do (0078).
+--
+-- health_snapshot_files:
+--   weight  the line count the file was aggregated at. NULL = unknown (every
+--           row before sutra/455): the workspace delta is then incomparable
+--           (unknown_weights) — never measured at a defaulted weight.
+-- Ephemeral (the snapshot detail tables are dropped and recreated on reindex) —
+-- replay to re-add the column.
+ALTER TABLE health_snapshot_files ADD COLUMN weight INTEGER;

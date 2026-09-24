@@ -287,8 +287,11 @@ Snapshots persist completeness + `missing_biomarkers` + `score_upper` +
 bound; `category_scores` holds the pessimistic per-category deductions), and
 completeness + basis per component (lower bound only — component upper bounds
 are not persisted), plus each component's member weights
-(`health_snapshot_component_members`) and instability penalty (sutra/436). The snapshot-level `health_score` is the mean of file lower
-bounds and is only a measured aggregate when `aggregate_comparison.measured`.
+(`health_snapshot_component_members`) and instability penalty (sutra/436), and
+each file's workspace aggregation `weight` (its line count, migration 0080,
+sutra/455). The snapshot-level `health_score` is `workspace_score` over file lower
+bounds at those weights and is only a measured aggregate when
+`aggregate_comparison.measured`.
 
 **Trend completeness contract (sutra/418).** `SnapshotFileRow.completeness`
 is `Complete | Partial | Unknown`, stored as `partial` + `completeness_recorded`
@@ -327,6 +330,15 @@ Additive output fields (existing fields keep their meaning):
   side is partial/unknown) | `population_changed` (file sets differ). Parse
   counters in `deltas` (`files_parsed`, `total_complexity`, ...) are exact and
   always reported.
+- **Workspace weights (sutra/455).** The workspace `health_score` is weighted by
+  line count, which no basis covers, so `deltas.health_score` is split like a
+  component delta: it is the measured change at the *baseline's* file weights
+  (`workspace_score` = `component_score` with no penalty), and
+  `deltas.health_score_weight_shift` is the rest of the observed move — a
+  comment-only edit that grows a clean file shows up there, never as a measured
+  improvement. `aggregate_comparison` adds reason `unknown_weights` (a side
+  predates 0080), checked last; it nulls the category deltas too, since they
+  share the one gate.
 - **Basis (sutra/416).** Pairs also need matching non-null `score_basis`.
   Additional `files.incomparable` reasons: `unknown_basis` (a side predates 0077)
   and `score_basis_changed`; entries carry `basis_changed`, and a pair is listed
