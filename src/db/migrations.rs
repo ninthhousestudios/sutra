@@ -462,6 +462,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0078_snapshot_component_weights.sql"),
         true,
     ),
+    // Nullable erosion aggregates on snapshots (sutra/442). ephemeral_only:
+    // snapshots is Ephemeral and recreated by 0001 on reindex.
+    (
+        "0079_snapshot_erosion",
+        include_str!("../../migrations/0079_snapshot_erosion.sql"),
+        true,
+    ),
 ];
 
 impl Db {
@@ -654,6 +661,11 @@ impl Db {
                 Self::column_exists(conn, "health_snapshot_components", "weights_recorded")
                     && Self::column_exists(conn, "health_snapshot_components", "instability_penalty")
                     && Self::column_exists(conn, "health_snapshot_component_members", "weight")
+            }
+            "0079_snapshot_erosion" => {
+                Self::column_exists(conn, "snapshots", "eroded_mass")
+                    && Self::column_exists(conn, "snapshots", "total_mass")
+                    && Self::column_exists(conn, "snapshots", "erosion_version")
             }
             "0005_conventions" => {
                 let exists: bool = conn

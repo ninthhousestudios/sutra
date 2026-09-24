@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::db::Db;
 use crate::error::Result;
 use crate::git;
+use crate::health::erosion::COGNITIVE_THRESHOLD;
 use crate::tools::change_signals::{self, ChurnMap};
 use crate::tools::symbol_diff;
 
@@ -81,9 +82,9 @@ pub fn handle(
             max_cog,
             signals.max_cognitive_symbol.as_deref().unwrap_or("?")
         ));
-    } else if max_cog >= 15 {
+    } else if max_cog >= COGNITIVE_THRESHOLD {
         verdict_reasons.push(format!(
-            "max cognitive complexity {} in {} (threshold: 15)",
+            "max cognitive complexity {} in {} (threshold: {COGNITIVE_THRESHOLD})",
             max_cog,
             signals.max_cognitive_symbol.as_deref().unwrap_or("?")
         ));
@@ -105,7 +106,7 @@ pub fn handle(
 
     let verdict = if impact_count >= 30 || max_cog >= 25 || signals.total_blast >= 50 {
         "fail"
-    } else if impact_count >= 10 || max_cog >= 15 || signals.total_blast >= 20 {
+    } else if impact_count >= 10 || max_cog >= COGNITIVE_THRESHOLD || signals.total_blast >= 20 {
         "warn"
     } else {
         "pass"

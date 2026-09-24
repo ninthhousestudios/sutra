@@ -26,6 +26,10 @@ src/health/
                       + from_str), compute_nested_complexity,
                       compute_dead_code_ratio, compute_all_health_findings(db,
                       workspace_root)
+  erosion.rs        — Standalone erosion metric (NOT a biomarker, sutra/442):
+                      mass/eroded/aggregate/nearest-rank percentiles,
+                      samples_by_file (outermost + test exclusion),
+                      COGNITIVE_THRESHOLD shared with diff_impact.
   instability.rs    — Component instability (Martin's Ce/(Ca+Ce)).
                       ComponentInstability{ce, ca, instability},
                       compute_component_instability(db). Uses import_edges
@@ -491,6 +495,38 @@ using `file_ids_needing_resolution`.
   - Rust: if, while, for, loop increment nesting; match does not; closures do
   - Dart: if, while, for, do increment; switch does not; function expressions do
   - Else-if chains are flat (no extra nesting per chained if)
+
+## erosion (standalone, not a biomarker)
+
+`health/erosion.rs` (sutra/442; design and rejected alternatives in sutra/403's
+decisions). Measures how concentrated complexity mass is, adapted from trellis.
+It produces no findings, no producer outcome, no deduction and no score-basis
+input — health scores are unaffected.
+
+- `mass = cognitive × sqrt(end_line − start_line + 1)`; eroded when
+  `cognitive >= COGNITIVE_THRESHOLD` (15). The constant is shared with
+  `diff_impact`'s risk gate.
+- Only outermost complexity-bearing symbols count (no ancestor with a
+  non-null cognitive): the complexity walkers descend into nested functions,
+  so a nested JS/TS function is already inside its parent's score.
+- Test code is excluded: files matching `components::is_test_file`, and
+  symbols (or ancestors) with `FLAG_TEST` (0x01, all parsers) or 0x02
+  (`cfg(test)`/test path in Rust and Dart only — TypeScript uses 0x02 for
+  `override`). A top-level `#[cfg(test)] fn` outside a test module is not
+  flagged by the Rust parser, so it still counts.
+- Scopes (file, component, workspace) always SUM function masses. Workspace
+  sums over files, not components (multi-membership). Empty scope → null
+  share and percentiles. Rank/trend by absolute `eroded_mass`; `eroded_share`
+  is descriptive only (non-monotone, bimodal at component scope).
+- Persistence: `snapshots.eroded_mass/total_mass/erosion_version`, NULLABLE
+  (migration 0079): pre-metric checkpoints read null, never 0. Computed in
+  `compute_parse_aggregates`; a NoChanges parse copies it forward only when
+  the previous checkpoint has the current `EROSION_VERSION`, otherwise
+  recomputes.
+- Surfacing: `sutra_file_health` per-file and per-component `erosion` blocks
+  (the component block disappears with the rest of `components` when
+  membership is stale); `sutra_trend` `deltas.eroded_mass/total_mass`, null
+  unless both checkpoints carry the same non-null version.
 
 ## git-organizational biomarkers (git_metrics.rs)
 

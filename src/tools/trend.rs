@@ -81,7 +81,7 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
 
     // Parse counters are exact observations; only the health aggregates are
     // measured claims and are gated on comparable file evidence.
-    let deltas = json!({
+    let mut deltas = json!({
         "files_parsed": snap_to.files_parsed - snap_from.files_parsed,
         "symbols_extracted": snap_to.symbols_extracted - snap_from.symbols_extracted,
         "refs_extracted": snap_to.refs_extracted - snap_from.refs_extracted,
@@ -93,6 +93,9 @@ fn handle_comparison(db: &Db, from: Option<&str>, to: Option<&str>) -> Result<se
         "health_score": measured(snap_to.health_score - snap_from.health_score),
         "pattern_family_count": snap_to.pattern_family_count - snap_from.pattern_family_count,
     });
+    if let Some(obj) = deltas.as_object_mut() {
+        obj.extend(erosion_deltas(&snap_from, &snap_to));
+    }
 
     let file_deltas = compute_file_deltas(&from_files, &to_files);
 
@@ -642,6 +645,33 @@ fn resolve_snapshots(
     }
 }
 
+/// Erosion deltas, only between two checkpoints that both recorded erosion
+/// under the same formula version; otherwise `null` (a legacy checkpoint's
+/// missing value is unknown, not zero). Ranked/trended by absolute mass.
+fn erosion_deltas(
+    from: &SnapshotRow,
+    to: &SnapshotRow,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    match (from.erosion, to.erosion) {
+        (Some(a), Some(b)) if a.version == b.version => {
+            out.insert(
+                "eroded_mass".into(),
+                json!(round2(b.eroded_mass - a.eroded_mass)),
+            );
+            out.insert(
+                "total_mass".into(),
+                json!(round2(b.total_mass - a.total_mass)),
+            );
+        }
+        _ => {
+            out.insert("eroded_mass".into(), serde_json::Value::Null);
+            out.insert("total_mass".into(), serde_json::Value::Null);
+        }
+    }
+    out
+}
+
 fn snapshot_to_json(s: &SnapshotRow) -> serde_json::Value {
     json!({
         "id": s.id,
@@ -657,6 +687,11 @@ fn snapshot_to_json(s: &SnapshotRow) -> serde_json::Value {
         "health_score": round2(s.health_score),
         "pattern_family_count": s.pattern_family_count,
         "health_run_id": s.health_run_id,
+        "erosion": s.erosion.map(|e| json!({
+            "eroded_mass": round2(e.eroded_mass),
+            "total_mass": round2(e.total_mass),
+            "version": e.version,
+        })),
     })
 }
 

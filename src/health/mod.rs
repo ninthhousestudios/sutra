@@ -1,5 +1,6 @@
 pub mod assess;
 pub mod compare;
+pub mod erosion;
 pub mod evidence;
 pub mod findings;
 pub mod git_metrics;

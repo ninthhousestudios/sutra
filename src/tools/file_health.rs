@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::freshness::FreshnessAnnotator;
 use crate::health::assess::RunVerdict;
 use crate::health::assess::{self, FileEvidence, PersistentEvidence};
+use crate::health::erosion;
 use crate::health::scoring::{self, FileHealthScore, MissingProducer, ScoreValue};
 use crate::tools::scoring::round3;
 
@@ -226,6 +227,7 @@ fn handle_inner(
     let mode = mode.unwrap_or("actionable");
 
     let evidence = PersistentEvidence::load(db, verdict)?;
+    let erosion_by_file = erosion::load_samples_by_file(db)?;
 
     // Resolve component filter to a set of file IDs
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
@@ -285,6 +287,8 @@ fn handle_inner(
         .iter()
         .map(|(f, score)| {
             let mut entry = file_entry(f, score, explain);
+            entry["erosion"] =
+                erosion::to_json(&erosion::files_aggregate(&erosion_by_file, [f.file_id]));
             if let Some(ref mut ann) = annotator
                 && let Some(row) = db.file_by_path(&f.path).ok().flatten()
             {
@@ -313,7 +317,7 @@ fn handle_inner(
     }
 
     if path.is_none() && component.is_none() {
-        let components = build_component_scores(db, &evidence)?;
+        let components = build_component_scores(db, &evidence, &erosion_by_file)?;
         result["total_components"] = json!(components.len());
         result["components"] = json!(components);
     }
@@ -427,6 +431,7 @@ fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde
 fn build_component_scores(
     db: &Db,
     evidence: &PersistentEvidence,
+    erosion_by_file: &HashMap<i64, Vec<erosion::FunctionSample>>,
 ) -> Result<Vec<serde_json::Value>> {
     // Membership currency is enforced by `handle_ctx`, which replaces the whole
     // block with `components_unavailable` when clustering is stale (sutra/426).
@@ -437,6 +442,14 @@ fn build_component_scores(
         .iter()
         .map(|cs| {
             let mut entry = score_value_json(&cs.value);
+            // Summed over the component's current member files, never averaged
+            // from file scores. Stale membership drops this with the rest of the
+            // component block (`handle_ctx`).
+            let members = db.component_file_ids(&cs.component_id)?;
+            entry.insert(
+                "erosion".into(),
+                erosion::to_json(&erosion::files_aggregate(erosion_by_file, members)),
+            );
             entry.insert("id".into(), json!(cs.component_id));
             entry.insert("name".into(), json!(cs.component_name));
             entry.insert("member_count".into(), json!(cs.member_count));
@@ -451,9 +464,9 @@ fn build_component_scores(
                     }),
                 );
             }
-            (cs.value.upper(), serde_json::Value::Object(entry))
+            Ok((cs.value.upper(), serde_json::Value::Object(entry)))
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     comp_results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(comp_results.into_iter().map(|(_, v)| v).collect())

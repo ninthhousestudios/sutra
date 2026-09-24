@@ -477,6 +477,30 @@ pub struct SnapshotRow {
     /// The health run this checkpoint's health rows were scored from
     /// (sutra/416). `None` on legacy checkpoints.
     pub health_run_id: Option<i64>,
+    /// Erosion aggregates (sutra/442). `None` on checkpoints written before the
+    /// metric existed — unknown, never zero.
+    pub erosion: Option<SnapshotErosion>,
+}
+
+/// Workspace erosion recorded on a checkpoint, with the formula version it was
+/// computed under ([`crate::health::erosion::EROSION_VERSION`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnapshotErosion {
+    pub eroded_mass: f64,
+    pub total_mass: f64,
+    pub version: i64,
+}
+
+/// One symbol's complexity-bearing shape, the input to erosion selection.
+#[derive(Debug, Clone)]
+pub struct SymbolComplexityRow {
+    pub id: i64,
+    pub file_id: i64,
+    pub parent_symbol_id: Option<i64>,
+    pub cognitive: Option<i64>,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub flags: i64,
 }
 
 pub struct CommitRow {
@@ -503,6 +527,8 @@ pub struct SnapshotParams {
     pub timestamp: Option<String>,
     /// Provenance: the health run the checkpoint was scored from.
     pub health_run_id: Option<i64>,
+    /// Workspace erosion; `None` stores NULLs.
+    pub erosion: Option<SnapshotErosion>,
 }
 
 #[derive(Debug, Clone)]
@@ -1687,6 +1713,31 @@ impl Db {
             .collect())
     }
 
+    /// Every symbol's complexity shape (erosion input, sutra/442). Includes
+    /// symbols without a cognitive score: they are the containers erosion walks
+    /// through to find a symbol's outermost complexity-bearing ancestor.
+    pub fn symbol_complexity_rows(&self) -> Result<Vec<SymbolComplexityRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, file_id, parent_symbol_id, cognitive, start_line, end_line, flags
+             FROM symbols",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SymbolComplexityRow {
+                    id: row.get(0)?,
+                    file_id: row.get(1)?,
+                    parent_symbol_id: row.get(2)?,
+                    cognitive: row.get(3)?,
+                    start_line: row.get(4)?,
+                    end_line: row.get(5)?,
+                    flags: row.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Find symbols with zero inbound references (potential dead code).
     /// Returns (qualified_name, file_path, kind, start_line, visibility).
     #[allow(clippy::type_complexity)]
@@ -2447,8 +2498,9 @@ impl Db {
                                     refs_extracted, parse_errors, duration_ms,
                                     total_complexity, dead_symbol_count,
                                     hotspot_count, health_score,
-                                    pattern_family_count, head_commit, health_run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                    pattern_family_count, head_commit, health_run_id,
+                                     eroded_mass, total_mass, erosion_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 ts,
                 p.files_parsed,
@@ -2463,6 +2515,9 @@ impl Db {
                 p.pattern_family_count,
                 p.head_commit,
                 p.health_run_id,
+                p.erosion.map(|e| e.eroded_mass),
+                p.erosion.map(|e| e.total_mass),
+                p.erosion.map(|e| e.version),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -2488,8 +2543,9 @@ impl Db {
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
                                         hotspot_count, health_score,
-                                        pattern_family_count, head_commit, health_run_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                        pattern_family_count, head_commit, health_run_id,
+                                         eroded_mass, total_mass, erosion_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     ts,
                     p.files_parsed,
@@ -2504,6 +2560,9 @@ impl Db {
                     p.pattern_family_count,
                     p.head_commit,
                     p.health_run_id,
+                    p.erosion.map(|e| e.eroded_mass),
+                    p.erosion.map(|e| e.total_mass),
+                    p.erosion.map(|e| e.version),
                 ],
             )?;
             let snapshot_id = conn.last_insert_rowid();
@@ -2626,7 +2685,8 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count, health_run_id
+                    hotspot_count, health_score, pattern_family_count, health_run_id,
+                    eroded_mass, total_mass, erosion_version
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -2660,7 +2720,8 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count, health_run_id
+                    hotspot_count, health_score, pattern_family_count, health_run_id,
+                    eroded_mass, total_mass, erosion_version
              FROM snapshots WHERE timestamp >= ?1 AND timestamp <= ?2
              ORDER BY timestamp ASC",
         )?;
@@ -2988,5 +3049,13 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         health_score: row.get(10)?,
         pattern_family_count: row.get(11)?,
         health_run_id: row.get(12)?,
+        erosion: match (row.get(13)?, row.get(14)?, row.get(15)?) {
+            (Some(eroded_mass), Some(total_mass), Some(version)) => Some(SnapshotErosion {
+                eroded_mass,
+                total_mass,
+                version,
+            }),
+            _ => None,
+        },
     })
 }
