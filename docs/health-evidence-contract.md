@@ -181,7 +181,7 @@ observed change is reported separately as a weight shift, never as a measured
 improvement/degradation. Missing weights on either side make it incomparable.
 
 Partial scoring returns an interval, not measured degradation. For each category,
-the optimistic deduction is capped known current debt; if any applicable producer
+the optimistic deduction is saturated known current debt; if any applicable producer
 is missing, the pessimistic deduction saturates the category cap. Apply normal
 global score limits to the summed deductions. This is a conservative bound even
 when a missing producer could emit multiple findings; one missing finding's weight
@@ -190,9 +190,10 @@ Never add stale findings to known current debt.
 
 On-demand attribution compares the **same current persistent evidence** with and
 without the fresh review findings. Both calculations share the ordinary category
-caps with persistent findings. Return raw on-demand deductions, scaled deductions
-and their marginal score effect separately: at a saturated cap the marginal effect
-can be zero despite a real finding. It is not a temporal delta. Missing on-demand
+saturation curves with persistent findings. Return raw on-demand deductions,
+scaled deductions and their marginal score effect separately: the curve never
+reaches its cap, so a real finding always has a nonzero effect off the score
+floor, diminishing as its category's debt grows. It is not a temporal delta. Missing on-demand
 evidence is explicit; partial persistent evidence permits only conditional/bounded
 attribution, not an exact marginal effect. A parse-time snapshot does not contain
 blame or shape evidence and cannot be used to invent their historical improvement.

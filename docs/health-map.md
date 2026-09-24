@@ -153,7 +153,7 @@ src/tools/
                       missing[{biomarker, reason}]; findings of a non-Complete
                       producer are listed `stale` with deduction 0;
                       `waived_findings` counts waiver-excluded findings.
-                      `category_deductions` is known (capped) debt only — the
+                      `category_deductions` is known (saturated) debt only — the
                       saturated caps behind a partial lower bound appear under
                       `_explain.categories.*.pessimistic_deduction`. Sorted by
                       upper bound. Accepts optional `component` filter (by name).
@@ -254,7 +254,7 @@ loads them for every indexed file under a caller-supplied `assess::RunVerdict { 
 
 `score_file(&[EvidencePart])`: a finding counts only when **its own part**
 recorded its producer `Complete` (a stale or unauthorized finding is never known
-debt). Per category, the optimistic deduction is capped known debt; if any
+debt). Per category, the optimistic deduction is saturated known debt; if any
 producer in the category is `Missing`, the pessimistic deduction is the full
 cap. `Measured(score)` only when nothing is missing, otherwise
 `Partial{lower, upper}` (global [1, 10] clamp applied to each). One missing
@@ -647,8 +647,14 @@ a single review invocation.
 
 ### Health scoring (sutra/85, implemented)
 
-`health/scoring.rs`: base 10.0, deductions per finding
-(`severity.weight() × biomarker.default_weight()`), capped per category:
+`health/scoring.rs`: base 10.0, raw deductions per finding
+(`severity.weight() × biomarker.default_weight()`), summed per category and
+soft-saturated toward the category cap (sutra/404, 450):
+`cap · b/(1+b)`, `b = ln(1 + raw/(cap · CATEGORY_SCALE_FRACTION))`, fraction 0.5
+provisional. Strictly increasing and never reaching the cap, so every extra
+finding costs something and the cap stays a sound supremum for the pessimistic
+bound. Initial slope is 1/fraction = 2: small raw debt (a lone informational
+finding) deducts *more* than its raw weight; heavy debt deducts less.
 
 | Category | Cap | Biomarkers |
 |---|---|---|
@@ -659,8 +665,15 @@ a single review invocation.
 | coverage | -2.0 | dead_code_ratio, coverage_gradient |
 
 Severity weights: Advisory = 1.0, Informational = 0.5.
-Proportional scaling within category when sum exceeds cap.
-Component scores: NLOC-weighted average of member file scores, minus
+Per finding: `scaled_deduction` is its proportional share of the category's
+saturated deduction (descriptive, non-monotone — a sibling shrinks it);
+`marginal` is the exact upper-score gain of resolving it alone (global clamp
+included), the actionable number.
+Component scores (`component_score`, one rule shared with trend and the
+snapshot workspace score): `10 − [0.5 · density + 0.5 · count]`, where density
+is the NLOC-weighted mean member deduction and count is
+`COMPONENT_COUNT.apply(Σ member deductions)` (limit 9, scale 5.0 provisional),
+minus
 `instability_penalty` (Informational × ComponentInstability weight × I, capped
 at the coupling cap), computed on member lower and upper bounds; measured only
 when every member is measured, membership is current
@@ -668,6 +681,17 @@ when every member is measured, membership is current
 ctx path replaces stale components with `components_unavailable`) and
 instability computed. An instability failure is not fatal: the penalty becomes
 unknown and the lower bound drops by the maximum penalty. Final clamp [1.0, 10.0].
+The snapshot `health_score` is `workspace_score` — every file as one component
+(lower bounds, line_count weights, no instability); it has no basis of its own,
+so a change to its rule must bump `SCORING_VERSION`.
+
+Monotonicity invariants (sutra/404; proptests in `scoring::invariants`):
+I1 file score strictly decreases with each known finding (off the 1.0 floor);
+I2 component score non-increasing in every member deduction and in the
+instability penalty, NLOC/membership fixed; I3 clean NLOC never dilutes the
+count term's share; I4 component bounds from member bounds are sound (needs I2).
+Mixed changes (a new file adding both debt and NLOC) can still raise a
+component's score — the count term damps, not forbids, dilution.
 
 Missing analysis (sutra/416): see "Scoring over validated evidence" — a missing
 producer saturates its category cap in the lower bound; the score is an interval,
