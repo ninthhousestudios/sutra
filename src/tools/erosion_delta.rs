@@ -15,7 +15,7 @@
 //! A side that cannot be read or parsed makes that file's delta unavailable,
 //! with a reason, and marks the totals partial — never zero.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::Duration;
 
@@ -520,11 +520,14 @@ fn file_deltas(
 /// Pair base and head functions. A `(qualified_name, kind)` key naming exactly
 /// one function on each side of a changed file pairs directly. A repeated key
 /// (cfg-gated twins, same-named items) is ambiguous: source position says
-/// nothing about which twin is which, so its members go through rename
-/// resolution — body identity, then same-name similarity — with every file's
-/// other leftovers. Only twins identity cannot tell apart fall back to source
-/// order. Returns `(old, new)` index pairs into `olds`/`news`; an unpaired
-/// function appears with the other side `None`.
+/// nothing about which twin is which, so the group is first resolved within
+/// itself — body identity, then same-name similarity — before any leftover
+/// joins rename resolution across every file. Resolving globally first let an
+/// unrelated function with a twin's structure (the structural hash ignores
+/// names) claim that twin. Twins identity cannot tell apart fall back to source
+/// order; see docs/health-map.md for that known limit. Returns `(old, new)`
+/// index pairs into `olds`/`news`; an unpaired function appears with the other
+/// side `None`.
 fn pair_functions<'a>(
     files: &[ChangedFile<'_, '_>],
     olds: &[SideFn<'a>],
@@ -541,28 +544,53 @@ fn pair_functions<'a>(
     for (n, f) in news.iter().enumerate() {
         groups.entry(key(f)).or_default().1.push(n);
     }
-    let unique_old = |f: &SideFn<'a>| {
-        groups
-            .get(&key(f))
-            .and_then(|(os, ns)| (os.len() == 1 && ns.len() == 1).then(|| os[0]))
-    };
-
-    let mut pairs: Vec<(Option<usize>, Option<usize>)> = Vec::new();
-    let mut leftover_new: Vec<usize> = Vec::new();
-    for (n, f) in news.iter().enumerate() {
-        match unique_old(f) {
-            Some(o) => pairs.push((Some(o), Some(n))),
-            None => leftover_new.push(n),
-        }
-    }
-    let leftover_old: Vec<usize> = (0..olds.len())
-        .filter(|&o| unique_old(&olds[o]).is_none())
-        .collect();
-
     // Candidates are attributed to the head path on both sides, so a function
     // in a renamed file still resolves as same-file.
     let candidate =
         |f: &SideFn<'_>| UnmatchedSymbol::new(f.span, f.source, &files[f.file].entry.path);
+
+    let mut pairs: Vec<(Option<usize>, Option<usize>)> = Vec::new();
+    let mut leftover_old: Vec<usize> = Vec::new();
+    let mut leftover_new: Vec<usize> = Vec::new();
+    // Groups in source order (head first), so pair order is deterministic.
+    let mut visited: HashSet<Key<'a>> = HashSet::new();
+    for f in news.iter().chain(olds) {
+        let k = key(f);
+        if !visited.insert(k) {
+            continue;
+        }
+        let (os, ns) = groups
+            .get(&k)
+            .expect("invariant: every sampled function's key is grouped");
+        if let ([o], [n]) = (os.as_slice(), ns.as_slice()) {
+            pairs.push((Some(*o), Some(*n)));
+            continue;
+        }
+        let group_old: Vec<UnmatchedSymbol> = os.iter().map(|&o| candidate(&olds[o])).collect();
+        let group_new: Vec<UnmatchedSymbol> = ns.iter().map(|&n| candidate(&news[n])).collect();
+        let within = symbol_diff::resolve_renames(&group_old, &group_new);
+        pairs.extend(
+            within
+                .pairs
+                .iter()
+                .map(|&(go, gn)| (Some(os[go]), Some(ns[gn]))),
+        );
+        leftover_old.extend(
+            os.iter()
+                .enumerate()
+                .filter(|(g, _)| !within.matched_old.contains(g))
+                .map(|(_, &o)| o),
+        );
+        leftover_new.extend(
+            ns.iter()
+                .enumerate()
+                .filter(|(g, _)| !within.matched_new.contains(g))
+                .map(|(_, &n)| n),
+        );
+    }
+    leftover_old.sort_unstable();
+    leftover_new.sort_unstable();
+
     let unmatched_old: Vec<UnmatchedSymbol> =
         leftover_old.iter().map(|&o| candidate(&olds[o])).collect();
     let unmatched_new: Vec<UnmatchedSymbol> =
@@ -1090,6 +1118,30 @@ mod tests {
         let delta = run(&[entry("a.rs", None)], vec![(Some(&base), Some(&head))]);
         let changes: Vec<_> = delta.functions.iter().map(FunctionDelta::change).collect();
         assert_eq!(changes, vec![Some(ErosionChange::ErodedChanged)]);
+        assert_net_matches(&delta);
+    }
+
+    #[test]
+    fn unrelated_structural_twin_cannot_claim_a_twins_identity() {
+        // g is new and structurally identical to the eroded f's old body (the
+        // structural hash ignores names); it precedes the edited f.
+        let base = cfg_twins(("unix", 3), ("not(unix)", 6));
+        let head = format!(
+            "{}{}",
+            nested("g", 6),
+            cfg_twins(("unix", 3), ("not(unix)", 7))
+        );
+        let delta = run(&[entry("a.rs", None)], vec![(Some(&base), Some(&head))]);
+        let change = |name: &str| {
+            delta
+                .functions
+                .iter()
+                .filter(|f| f.symbol == name)
+                .map(FunctionDelta::change)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(change("g"), vec![Some(ErosionChange::AddedEroded)]);
+        assert_eq!(change("f"), vec![Some(ErosionChange::ErodedChanged)]);
         assert_net_matches(&delta);
     }
 

@@ -560,11 +560,23 @@ input — health scores are unaffected.
   file_health's for the same bytes (pinned by
   `review_samples_match_file_health_samples`). Pairing: a
   `(qualified_name, kind)` key naming exactly one function on each side of a
-  file pairs directly. Repeated keys (cfg-gated twins) are ambiguous, so their
-  members join the leftovers of all files in `symbol_diff::resolve_renames`
-  (`ResolveResult.pairs`: body identity, then same-name similarity). Twins
-  that identity cannot separate fall back to source order. Pairing twins by
-  position first fabricated crossings when unchanged twins were reordered. That means a rename
+  file pairs directly. A repeated key (cfg-gated twins) is ambiguous, so its
+  group is first resolved within itself by `symbol_diff::resolve_renames`
+  (`ResolveResult.pairs`: body identity, then same-name similarity). Only then
+  do the remaining functions join the leftovers of all files for rename and
+  move resolution. Order matters: the Rust structural hash ignores names, so
+  resolving globally first let an unrelated new function with a twin's old
+  structure claim that twin. Pairing twins by position first fabricated
+  crossings when unchanged twins were reordered.
+  **Known limit:** twins that identity cannot separate fall back to source
+  order. If same-named twins are reordered *and* both are rewritten past the
+  similarity gates (`MIN_COUNT_RATIO`) in one diff, the fallback can mispair
+  them and report a spurious `crossed_up`/`crossed_down` pair. File and total
+  mass stay correct; only per-function labels are wrong. It isn't fixed because
+  `SymbolSpan` starts at the fn node, so the cfg attribute that would separate
+  the twins is outside it. The fixes are widening spans to include attributes
+  (which touches every hash consumer) or reporting the group as unresolved
+  (new output vocabulary). Revisit if it shows up in practice. That means a rename
   that also rewrites the body is reported as deleted + added, the same as
   symbol_diff. A cross-file move is removed from its base file and added to its
   head file. Per-file `eroded_mass_added − eroded_mass_removed` equals the net
