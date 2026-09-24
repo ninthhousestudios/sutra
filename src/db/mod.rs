@@ -21,6 +21,7 @@ pub use constraints::{
 };
 pub(crate) use constraints::{accepted_sync_marker_from_conn, active_ratchets_from_conn};
 pub use conventions::ConventionRow;
+pub(crate) use graph::file_importers_from_conn;
 pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{
     HrrSymbolRow, PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary,

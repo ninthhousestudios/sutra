@@ -82,6 +82,15 @@ src/constraints/
                       keeps its severity only when the diff adds net importers
                       of the target; pre-existing drift → Informational,
                       delta PreExisting, so it never gates an unrelated commit.
+                      Both engines run max_fan_in through one rule body,
+                      max_fan_in_findings (sutra/456); evaluate_raw feeds it
+                      per-target live importers (db::file_importers_from_conn,
+                      same edge union as build_file_adjacency) and, for Edges
+                      scope, a guard-built DiffImportEdges (on-disk vs
+                      proposed, same extractor). SingleFile never attributes,
+                      so it reports but cannot block. evaluate_raw no longer
+                      evaluates forbidden_pattern: the guard uses
+                      check_proposed_patterns.
                       external via external::check_*, forbidden_pattern via
                       patterns::check_forbidden_patterns, dead_constraint via
                       constraint_coverage. Pattern scan runs before edge-empty

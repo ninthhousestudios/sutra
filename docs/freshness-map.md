@@ -161,7 +161,8 @@ phases that must not run on the query path.
 Consumers that gate on a derived value must not read the deferred column. The
 `max_fan_in` constraint computes fan-in from the live refs + import graph
 rather than `files.fan_in_files`, so `sutra check` sees a working-tree edit
-right after the incremental refresh (sutra/440).
+right after the incremental refresh (sutra/440). The guard's read-only path
+does the same per target file via `db::file_importers_from_conn` (sutra/456).
 
 `parse_incremental` records **no** snapshot and never calls
 `set_derived_complete`: staleness is content-based (per-file fingerprints, updated

@@ -300,6 +300,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             guard::check_proposed_file_constraints(
                 &conn,
                 &project_root,
+                &rel_path,
                 file_id,
                 &proposed_imports.edges,
                 &proposed_imports.externals,

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, params};
 use serde::Deserialize;
 
-use crate::constraints::check::{self, CheckOutcome, EvalScope, FactsSource};
+use crate::constraints::check::{self, CheckOutcome, DiffImportEdges, EvalScope, FactsSource};
 use crate::parser::ParseResult;
 use crate::rules::{self, Severity};
 
@@ -797,9 +797,44 @@ fn get_incoming_edges(conn: &Connection, file_id: i64) -> Vec<(i64, i64)> {
     .unwrap_or_default()
 }
 
+/// The edit's import movement for `max_fan_in` attribution: the file's outgoing
+/// edges on disk (base) against the proposed ones (head). Base comes from
+/// running `extract_proposed_imports` over the on-disk content, the same
+/// extractor that produced head, so an unchanged import never reads as added
+/// merely because the index resolved it differently (the sutra/440 contract
+/// review already keeps). A file absent on disk is new, so every importer it
+/// contributes is added; one whose disk content won't parse yields no
+/// attribution, and nothing blocks on fan-in.
+fn proposed_import_delta(
+    conn: &Connection,
+    project_root: &Path,
+    rel_path: &str,
+    file_id: i64,
+    proposed_outgoing: &[(i64, i64)],
+) -> DiffImportEdges {
+    let mut delta = DiffImportEdges::default();
+    let on_disk = match std::fs::read_to_string(project_root.join(rel_path)) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            delta.added_ids.insert(file_id);
+            return delta;
+        }
+        Err(_) => return delta,
+    };
+    let Some(base) = parse_proposed(rel_path, &on_disk).and_then(|parsed| {
+        extract_proposed_imports(conn, project_root, rel_path, file_id, &parsed)
+    }) else {
+        return delta;
+    };
+    delta.base_edges.extend(base.edges);
+    delta.head_edges.extend(proposed_outgoing.iter().copied());
+    delta
+}
+
 pub fn check_proposed_file_constraints(
     conn: &Connection,
     project_root: &Path,
+    rel_path: &str,
     file_id: i64,
     proposed_outgoing: &[(i64, i64)],
     proposed_externals: &[(String, String, bool)],
@@ -807,11 +842,25 @@ pub fn check_proposed_file_constraints(
     let registry = crate::parser::adapter::default_registry();
     let mut edges: Vec<(i64, i64)> = proposed_outgoing.to_vec();
     edges.extend(get_incoming_edges(conn, file_id));
+    // The base-side extraction re-reads and re-parses the file on every edit;
+    // only `max_fan_in` consumes it, so skip it when no such rule exists.
+    let has_max_fan_in = crate::rules::load_rules(project_root).is_ok_and(|mut r| {
+        r.all_constraints()
+            .0
+            .iter()
+            .any(|c| matches!(c.kind, crate::rules::ConstraintKind::MaxFanIn { .. }))
+    });
+    let import_delta = if has_max_fan_in {
+        proposed_import_delta(conn, project_root, rel_path, file_id, proposed_outgoing)
+    } else {
+        DiffImportEdges::default()
+    };
     check::evaluate(
         &FactsSource::RawConn(conn),
         project_root,
         EvalScope::Edges {
             edges: &edges,
+            import_delta: &import_delta,
             externals: proposed_externals,
         },
         &registry,
@@ -1970,8 +2019,14 @@ name = "no-tools-daemon"
     fn proposed_violating_edit_denied() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -1990,8 +2045,14 @@ name = "no-tools-daemon"
         conn.execute_batch("INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2);")
             .unwrap();
         let proposed_outgoing = vec![(1, 3)];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2004,8 +2065,14 @@ name = "no-tools-daemon"
     fn proposed_unrelated_edit_to_violating_file_denied() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2), (1, 3)];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2018,8 +2085,14 @@ name = "no-tools-daemon"
     fn waiver_on_target_does_not_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         assert_eq!(outcome.active.len(), 1);
         let constraint_id = std::sync::Arc::clone(&outcome.active[0].constraint_id);
 
@@ -2030,8 +2103,14 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         assert_eq!(
             outcome.active.len(),
             1,
@@ -2044,8 +2123,14 @@ name = "no-tools-daemon"
     fn waiver_on_source_does_suppress() {
         let (conn, dir) = setup_constraint_db();
         let proposed_outgoing = vec![(1, 2)];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         assert_eq!(outcome.active.len(), 1);
 
         // Waiver on the SOURCE file (tools/review.rs), in .sutra/accepted.toml —
@@ -2057,8 +2142,14 @@ name = "no-tools-daemon"
         )
         .unwrap();
 
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            1,
+            &proposed_outgoing,
+            &[],
+        );
         assert!(outcome.active.is_empty());
         assert_eq!(outcome.waived.len(), 1);
     }
@@ -2105,7 +2196,8 @@ name = "protos-confined"
     fn proposed_external_import_denied() {
         let (conn, dir) = setup_external_db();
         let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 1, &[], &externals);
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2123,7 +2215,8 @@ name = "protos-confined"
     fn proposed_confined_external_denied_outside_allowed_paths() {
         let (conn, dir) = setup_external_db();
         let externals = vec![("server/src/main.rs".to_string(), "tonic".to_string(), false)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &externals);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 2, &[], &externals);
         assert_eq!(outcome.active.len(), 1);
         assert_eq!(
             outcome.active[0].constraint_name.as_deref(),
@@ -2135,7 +2228,8 @@ name = "protos-confined"
             "tonic".to_string(),
             false,
         )];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 2, &[], &allowed);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 2, &[], &allowed);
         assert!(outcome.active.is_empty());
     }
 
@@ -2153,7 +2247,8 @@ name = "protos-confined"
     fn external_waiver_suppresses() {
         let (conn, dir) = setup_external_db();
         let externals = vec![("report/src/lib.rs".to_string(), "axum".to_string(), false)];
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 1, &[], &externals);
         assert_eq!(outcome.active.len(), 1);
 
         // File-authoritative waiver keyed by constraint name (sutra/303/308).
@@ -2164,7 +2259,8 @@ name = "protos-confined"
         )
         .unwrap();
 
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &externals);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 1, &[], &externals);
         assert!(outcome.active.is_empty());
         assert_eq!(outcome.waived.len(), 1);
     }
@@ -2222,7 +2318,8 @@ name = "bad-rule-targets-member"
         .unwrap();
 
         // Edges path (check_proposed_file_constraints)
-        let outcome = check_proposed_file_constraints(&conn, dir.path(), 1, &[], &[]);
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/edited.rs", 1, &[], &[]);
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2306,8 +2403,14 @@ name = "tabs-use-kernel-not-runner"
 
         assert_eq!(pi.edges, vec![(1, 3)]);
 
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &pi.edges, &pi.externals);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "lib/tabs/provider.dart",
+            1,
+            &pi.edges,
+            &pi.externals,
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2327,8 +2430,14 @@ name = "tabs-use-kernel-not-runner"
 
         assert_eq!(pi.edges, vec![(1, 2)]);
 
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &pi.edges, &pi.externals);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "lib/tabs/provider.dart",
+            1,
+            &pi.edges,
+            &pi.externals,
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2375,8 +2484,14 @@ name = "tabs-use-kernel-not-runner"
             .unwrap();
         // We're editing daemon.rs — proposed outgoing is clean, but incoming is violating
         let proposed_outgoing: Vec<(i64, i64)> = vec![];
-        let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 2, &proposed_outgoing, &[]);
+        let outcome = check_proposed_file_constraints(
+            &conn,
+            dir.path(),
+            "src/edited.rs",
+            2,
+            &proposed_outgoing,
+            &[],
+        );
         let blocking: Vec<_> = outcome
             .active
             .iter()
@@ -2391,98 +2506,115 @@ name = "tabs-use-kernel-not-runner"
 
     // --- max_fan_in constraints ---
 
-    #[test]
-    fn max_fan_in_violation_detected() {
+    /// A fan-in fixture on the live-graph schema. Each `(target, n)` in
+    /// `importers` gets `n` importing files (ids 100+) in the imports table,
+    /// while every `files.fan_in_files` stays 0: the rollup the incremental
+    /// refresh leaves stale, which the guard must not read (sutra/456).
+    fn fan_in_fixture(
+        files: &[(i64, &str)],
+        importers: &[(i64, i64)],
+        rule: &str,
+    ) -> (Connection, tempfile::TempDir) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, file_id INTEGER);
+             CREATE TABLE refs (file_id INTEGER, target_symbol_id INTEGER);
              CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
-             INSERT INTO files VALUES (1, 'src/config.rs', 15);
-             INSERT INTO files VALUES (2, 'src/lib.rs', 3);",
+             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');",
         )
         .unwrap();
-
+        for (id, path) in files {
+            conn.execute(
+                "INSERT INTO files (id, path) VALUES (?1, ?2)",
+                params![id, path],
+            )
+            .unwrap();
+        }
+        let mut next_importer = 100;
+        for &(target, n) in importers {
+            for _ in 0..n {
+                conn.execute(
+                    "INSERT INTO imports (file_id, resolved_file_id) VALUES (?1, ?2)",
+                    params![next_importer, target],
+                )
+                .unwrap();
+                next_importer += 1;
+            }
+        }
         let dir = tempfile::tempdir().unwrap();
         let rules_dir = dir.path().join(".sutra");
         std::fs::create_dir_all(&rules_dir).unwrap();
-        std::fs::write(
-            rules_dir.join("rules.toml"),
-            r#"
+        std::fs::write(rules_dir.join("rules.toml"), rule).unwrap();
+        (conn, dir)
+    }
+
+    const CONFIG_FAN_IN_RULE: &str = r#"
 [[constraint]]
 kind = "max_fan_in"
 target = "src/config.rs"
 threshold = 10
+severity = "blocking"
 name = "config-fan-in"
-"#,
+"#;
+
+    #[test]
+    fn max_fan_in_reads_live_importers_not_stale_rollup() {
+        let (conn, dir) = fan_in_fixture(
+            &[(1, "src/config.rs"), (2, "src/lib.rs")],
+            &[(1, 15), (2, 3)],
+            CONFIG_FAN_IN_RULE,
+        );
+
+        let outcome = check_file_constraints(&conn, dir.path(), 1);
+        assert_eq!(outcome.active.len(), 1);
+        let f = &outcome.active[0];
+        assert_eq!(f.constraint_kind, "max_fan_in");
+        assert!(f.detail.contains("fan-in is 15"), "{}", f.detail);
+        assert!(f.detail.contains("threshold is 10"));
+        // Editing the hub itself adds no importer to it: pre-existing drift
+        // reports but can't block the edit.
+        assert_eq!(f.severity, Severity::Informational);
+        assert_eq!(f.delta, FindingDelta::PreExisting);
+    }
+
+    #[test]
+    fn max_fan_in_counts_ref_edges_like_the_index() {
+        let (conn, dir) = fan_in_fixture(&[(1, "src/config.rs")], &[(1, 10)], CONFIG_FAN_IN_RULE);
+        // One more file reaches config only through a symbol reference, and a
+        // self-reference must not count — the build_file_adjacency union.
+        conn.execute_batch(
+            "INSERT INTO symbols VALUES (7, 1);
+             INSERT INTO refs VALUES (200, 7);
+             INSERT INTO refs VALUES (1, 7);",
         )
         .unwrap();
 
         let outcome = check_file_constraints(&conn, dir.path(), 1);
         assert_eq!(outcome.active.len(), 1);
-        assert_eq!(outcome.active[0].constraint_kind, "max_fan_in");
-        assert_eq!(outcome.active[0].severity, Severity::Advisory);
-        assert!(outcome.active[0].detail.contains("fan-in is 15"));
-        assert!(outcome.active[0].detail.contains("threshold is 10"));
+        assert!(outcome.active[0].detail.contains("fan-in is 11"));
     }
 
     #[test]
     fn max_fan_in_below_threshold_no_finding() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
-             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
-             INSERT INTO files VALUES (1, 'src/config.rs', 5);",
-        )
-        .unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let rules_dir = dir.path().join(".sutra");
-        std::fs::create_dir_all(&rules_dir).unwrap();
-        std::fs::write(
-            rules_dir.join("rules.toml"),
-            r#"
-[[constraint]]
-kind = "max_fan_in"
-target = "src/config.rs"
-threshold = 10
-"#,
-        )
-        .unwrap();
-
+        let (conn, dir) = fan_in_fixture(&[(1, "src/config.rs")], &[(1, 5)], CONFIG_FAN_IN_RULE);
         let outcome = check_file_constraints(&conn, dir.path(), 1);
         assert!(outcome.active.is_empty());
     }
 
     #[test]
     fn max_fan_in_glob_target() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
-             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
-             INSERT INTO files VALUES (1, 'src/core/config.rs', 20);
-             INSERT INTO files VALUES (2, 'src/core/utils.rs', 5);",
-        )
-        .unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let rules_dir = dir.path().join(".sutra");
-        std::fs::create_dir_all(&rules_dir).unwrap();
-        std::fs::write(
-            rules_dir.join("rules.toml"),
+        let (conn, dir) = fan_in_fixture(
+            &[(1, "src/core/config.rs"), (2, "src/core/utils.rs")],
+            &[(1, 20), (2, 5)],
             r#"
 [[constraint]]
 kind = "max_fan_in"
 target = "src/core/*"
 threshold = 10
 "#,
-        )
-        .unwrap();
+        );
 
         // File 1 matches glob and exceeds threshold
         let outcome = check_file_constraints(&conn, dir.path(), 1);
@@ -2493,41 +2625,101 @@ threshold = 10
         assert!(outcome.active.is_empty());
     }
 
-    #[test]
-    fn max_fan_in_proposed_edge_to_over_threshold_target() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE imports (file_id INTEGER, resolved_file_id INTEGER, is_test INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, fan_in_files INTEGER DEFAULT 0);
-             CREATE TABLE components (id TEXT, name TEXT, prior_paths TEXT, dissolved_at TEXT);
-             CREATE TABLE constraint_waivers (id INTEGER PRIMARY KEY, constraint_id TEXT, constraint_name TEXT, file_path TEXT, symbol_qualified_name TEXT, rationale TEXT DEFAULT '', waived_by TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
-             INSERT INTO files VALUES (1, 'src/editor.rs', 0);
-             INSERT INTO files VALUES (2, 'src/config.rs', 15);",
-        )
-        .unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let rules_dir = dir.path().join(".sutra");
-        std::fs::create_dir_all(&rules_dir).unwrap();
+    /// A Rust crate on disk for the attribution tests: the base side of the
+    /// edit is extracted from `src/editor.rs` as written here.
+    fn write_editor_crate(dir: &Path, editor_on_disk: &str) {
         std::fs::write(
-            rules_dir.join("rules.toml"),
-            r#"
-[[constraint]]
-kind = "max_fan_in"
-target = "src/config.rs"
-threshold = 10
-name = "config-fan-in"
-"#,
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/editor.rs"), editor_on_disk).unwrap();
+        std::fs::write(dir.join("src/config.rs"), "pub struct Settings;\n").unwrap();
+    }
 
-        // Proposed edge from file 1 to file 2 (target already over threshold)
-        let proposed_outgoing = vec![(1, 2)];
+    /// Proposed outgoing edges of `src/editor.rs` (id 1), via the guard's own
+    /// extractor.
+    fn proposed_editor_edges(conn: &Connection, dir: &Path, content: &str) -> Vec<(i64, i64)> {
+        let parsed = parse_proposed("src/editor.rs", content).unwrap();
+        extract_proposed_imports(conn, dir, "src/editor.rs", 1, &parsed)
+            .unwrap()
+            .edges
+    }
+
+    #[test]
+    fn max_fan_in_blocks_an_edit_that_adds_an_importer() {
+        // Regression (sutra/456): the hub crossed the threshold since the last
+        // full parse, so its stored fan_in_files (0) says nothing. The guard
+        // must see live fan-in plus the importer this edit adds.
+        let (conn, dir) = fan_in_fixture(
+            &[(1, "src/editor.rs"), (2, "src/config.rs")],
+            &[(2, 10)],
+            CONFIG_FAN_IN_RULE,
+        );
+        write_editor_crate(dir.path(), "pub fn edit() {}\n");
+        let proposed = proposed_editor_edges(
+            &conn,
+            dir.path(),
+            "use crate::config::Settings;\npub fn edit() {}\n",
+        );
+        assert_eq!(proposed, vec![(1, 2)]);
+
         let outcome =
-            check_proposed_file_constraints(&conn, dir.path(), 1, &proposed_outgoing, &[]);
+            check_proposed_file_constraints(&conn, dir.path(), "src/editor.rs", 1, &proposed, &[]);
         assert_eq!(outcome.active.len(), 1);
-        assert_eq!(outcome.active[0].constraint_kind, "max_fan_in");
-        assert!(outcome.active[0].detail.contains("fan-in is 15"));
+        let f = &outcome.active[0];
+        assert!(f.detail.contains("fan-in is 11"), "{}", f.detail);
+        assert_eq!(f.severity, Severity::Blocking);
+        assert_eq!(f.delta, FindingDelta::Introduced);
+    }
+
+    #[test]
+    fn max_fan_in_does_not_block_an_edit_that_keeps_an_existing_import() {
+        // The editor already imports the over-threshold hub on disk; an edit
+        // that keeps that import adds no importer and must not be denied.
+        let (conn, dir) = fan_in_fixture(
+            &[(1, "src/editor.rs"), (2, "src/config.rs")],
+            &[(2, 15)],
+            CONFIG_FAN_IN_RULE,
+        );
+        conn.execute(
+            "INSERT INTO imports (file_id, resolved_file_id) VALUES (1, 2)",
+            [],
+        )
+        .unwrap();
+        write_editor_crate(
+            dir.path(),
+            "use crate::config::Settings;\npub fn edit() {}\n",
+        );
+        let proposed = proposed_editor_edges(
+            &conn,
+            dir.path(),
+            "use crate::config::Settings;\npub fn edit() { let _ = 1; }\n",
+        );
+
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/editor.rs", 1, &proposed, &[]);
+        assert_eq!(outcome.active.len(), 1);
+        let f = &outcome.active[0];
+        assert!(f.detail.contains("fan-in is 16"), "{}", f.detail);
+        assert_eq!(f.severity, Severity::Informational);
+        assert_eq!(f.delta, FindingDelta::PreExisting);
+    }
+
+    #[test]
+    fn max_fan_in_edit_to_a_file_missing_on_disk_counts_as_added() {
+        let (conn, dir) = fan_in_fixture(
+            &[(1, "src/editor.rs"), (2, "src/config.rs")],
+            &[(2, 15)],
+            CONFIG_FAN_IN_RULE,
+        );
+
+        let outcome =
+            check_proposed_file_constraints(&conn, dir.path(), "src/editor.rs", 1, &[(1, 2)], &[]);
+        assert_eq!(outcome.active.len(), 1);
+        assert_eq!(outcome.active[0].severity, Severity::Blocking);
+        assert_eq!(outcome.active[0].delta, FindingDelta::Introduced);
     }
 
     #[test]

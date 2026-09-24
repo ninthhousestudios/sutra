@@ -426,3 +426,26 @@ impl Db {
             .map_err(Into::into)
     }
 }
+
+/// Live fan-in set of one file, read straight from the import and ref tables
+/// on a raw connection: the per-file counterpart of
+/// [`crate::graph::build_file_adjacency`], with the same edge union (every
+/// resolved import, test or not, plus every resolved ref into one of the
+/// file's symbols) and the same self-edge exclusion. The guard uses it instead
+/// of the stored `fan_in_files` rollup, which the query-path incremental
+/// refresh leaves stale until the next full parse (sutra/456).
+pub(crate) fn file_importers_from_conn(
+    conn: &rusqlite::Connection,
+    file_id: i64,
+) -> Result<HashSet<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT file_id FROM imports WHERE resolved_file_id = ?1 AND file_id != ?1 \
+         UNION \
+         SELECT r.file_id FROM refs r JOIN symbols s ON s.id = r.target_symbol_id \
+         WHERE s.file_id = ?1 AND r.file_id != ?1",
+    )?;
+    let rows: rusqlite::Result<HashSet<i64>> = stmt
+        .query_map(params![file_id], |row| row.get(0))?
+        .collect();
+    Ok(rows?)
+}

@@ -131,6 +131,10 @@ pub enum EvalScope<'a> {
     SingleFile(i64),
     Edges {
         edges: &'a [(i64, i64)],
+        /// The edited file's outgoing edges on disk (base) vs in the proposed
+        /// content (head), from the same extractor, so `max_fan_in` blocks an
+        /// edit only when it adds an importer to an over-threshold hub.
+        import_delta: &'a DiffImportEdges,
         /// Proposed `(from_path, crate_name, is_test)` external imports
         /// (guard side).
         externals: &'a [(String, String, bool)],
@@ -177,7 +181,7 @@ pub fn evaluate(
                     .to_string(),
             ))
         }
-        FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope, registry),
+        FactsSource::RawConn(conn) => evaluate_raw(conn, workspace_root, scope),
     }
 }
 
@@ -779,62 +783,19 @@ fn evaluate_dd(
             _ => None,
         };
         let no_importers = HashSet::new();
-        let glob_opts = MatchOptions {
-            require_literal_separator: true,
-            ..MatchOptions::default()
-        };
-        for c in &all_constraints {
-            let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
-                continue;
-            };
-            let pat = match Pattern::new(target) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            for f in &all_files {
-                let importers = fan_in_map.get(&f.id).unwrap_or(&no_importers);
-                let fan_in = importers.len();
-                if fan_in <= *threshold as usize {
-                    continue;
-                }
-                if !pat.matches_with(&f.path, glob_opts) {
-                    continue;
-                }
-                // A diff-scoped gate blocks only on fan-in the diff adds. A hub
-                // already over threshold is graph-wide drift: it stays visible,
-                // demoted to Informational, so it can't fail every unrelated
-                // commit (including docs-only ones) until someone fixes it.
-                let (severity, delta, note) = match import_delta {
-                    None => (c.severity, FindingDelta::Unknown, ""),
-                    Some(d) if d.net_importers_added(f.id, importers) > 0 => {
-                        (c.severity, FindingDelta::Introduced, "")
-                    }
-                    Some(_) => (
-                        Severity::Informational,
-                        FindingDelta::PreExisting,
-                        " (pre-existing: this diff adds no importer)",
-                    ),
-                };
-                findings.push(ConstraintFinding {
-                    constraint_id: Arc::clone(&c.id),
-                    constraint_name: c.name.clone(),
-                    constraint_kind: "max_fan_in".into(),
-                    severity,
-                    provenance: c.provenance.clone(),
-                    from_path: f.path.to_string(),
-                    to_path: String::new(),
-                    component_context: None,
-                    detail: format!(
-                        "fan-in is {fan_in}, threshold is {threshold}: {}{note}",
-                        f.path,
-                    ),
-                    delta,
-                    line: None,
-                    snippet: None,
-                    enclosing_symbol: None,
-                });
-            }
-        }
+        let candidates: Vec<FanInCandidate> = all_files
+            .iter()
+            .map(|f| FanInCandidate {
+                id: f.id,
+                path: &f.path,
+                importers: fan_in_map.get(&f.id).unwrap_or(&no_importers),
+            })
+            .collect();
+        findings.extend(max_fan_in_findings(
+            &all_constraints,
+            &candidates,
+            import_delta,
+        ));
     }
 
     let constraint_waivers = db.get_constraint_waivers(None)?;
@@ -852,11 +813,86 @@ fn evaluate_dd(
     })
 }
 
+/// One file a `max_fan_in` rule may fire on, with its live fan-in set.
+struct FanInCandidate<'a> {
+    id: i64,
+    path: &'a str,
+    importers: &'a HashSet<i64>,
+}
+
+/// `max_fan_in` findings over `candidates`: the one rule body both engines
+/// share, so the report and the guard can't drift on it again (sutra/456). The
+/// engines differ only in the facts they hand in — `evaluate_dd` every indexed
+/// file against the whole-graph adjacency, `evaluate_raw` just the scope's edge
+/// targets against per-file live queries. Fan-in is always the live importer
+/// set, never the stored `fan_in_files` rollup, which lags an incremental
+/// refresh (sutra/440).
+///
+/// `import_delta` is `None` for an unattributed audit (every violation keeps
+/// the rule's severity). With a delta, a check blocks only on fan-in the change
+/// adds: a hub already over threshold is graph-wide drift, demoted to
+/// Informational so it can't fail every unrelated commit or edit until someone
+/// fixes it.
+fn max_fan_in_findings(
+    constraints: &[Constraint],
+    candidates: &[FanInCandidate],
+    import_delta: Option<&DiffImportEdges>,
+) -> Vec<ConstraintFinding> {
+    let glob_opts = MatchOptions {
+        require_literal_separator: true,
+        ..MatchOptions::default()
+    };
+    let mut findings = Vec::new();
+    for c in constraints {
+        let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
+            continue;
+        };
+        let Ok(pat) = Pattern::new(target) else {
+            continue;
+        };
+        for f in candidates {
+            let fan_in = f.importers.len();
+            if fan_in <= *threshold as usize || !pat.matches_with(f.path, glob_opts) {
+                continue;
+            }
+            let (severity, delta, note) = match import_delta {
+                None => (c.severity, FindingDelta::Unknown, ""),
+                Some(d) if d.net_importers_added(f.id, f.importers) > 0 => {
+                    (c.severity, FindingDelta::Introduced, "")
+                }
+                Some(_) => (
+                    Severity::Informational,
+                    FindingDelta::PreExisting,
+                    " (pre-existing: this diff adds no importer)",
+                ),
+            };
+            findings.push(ConstraintFinding {
+                constraint_id: Arc::clone(&c.id),
+                constraint_name: c.name.as_ref().map(Arc::clone),
+                constraint_kind: "max_fan_in".into(),
+                severity,
+                provenance: c.provenance.as_ref().map(Arc::clone),
+                from_path: f.path.to_string(),
+                to_path: String::new(),
+                component_context: None,
+                detail: format!(
+                    "fan-in is {fan_in}, threshold is {threshold}: {}{note}",
+                    f.path,
+                ),
+                delta,
+                line: None,
+                snippet: None,
+                enclosing_symbol: None,
+            });
+        }
+    }
+    findings
+}
+
 fn evaluate_raw(
     conn: &rusqlite::Connection,
     workspace_root: &Path,
     scope: EvalScope,
-    registry: &LanguageRegistry,
 ) -> Result<CheckOutcome> {
     use rusqlite::params;
 
@@ -900,10 +936,10 @@ fn evaluate_raw(
     let has_max_fan_in = all_constraints
         .iter()
         .any(|c| matches!(c.kind, rules::ConstraintKind::MaxFanIn { .. }));
-    let has_patterns = all_constraints
-        .iter()
-        .any(|c| matches!(c.kind, rules::ConstraintKind::ForbiddenPattern { .. }));
-    if !has_forbidden_or_boundary && !has_external && !has_max_fan_in && !has_patterns {
+    // forbidden_pattern is deliberately absent: the guard evaluates patterns on
+    // proposed content with introduced-only semantics (`check_proposed_patterns`)
+    // and drops any pattern finding this engine would return.
+    if !has_forbidden_or_boundary && !has_external && !has_max_fan_in {
         let mut active = parse_error_findings;
         active.extend(check_ratchet_violations(
             &active_ratchets_from_conn(conn),
@@ -974,7 +1010,7 @@ fn evaluate_raw(
         }
     };
 
-    if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in && !has_patterns {
+    if edges.is_empty() && external_findings.is_empty() && !has_max_fan_in {
         let mut active = parse_error_findings;
         active.extend(check_ratchet_violations(
             &active_ratchets_from_conn(conn),
@@ -1113,89 +1149,61 @@ fn evaluate_raw(
         }
     }
 
-    // MaxFanIn evaluation
+    // MaxFanIn evaluation — live per-target importer sets through the shared
+    // rule body. The scope's own edges join each set: a proposed import isn't
+    // in the index yet, and it is exactly the importer the guard must see.
     if has_max_fan_in {
-        let glob_opts = MatchOptions {
-            require_literal_separator: true,
-            ..MatchOptions::default()
-        };
-        let fan_in_targets: Vec<(String, i64)> = match &scope {
-            EvalScope::SingleFile(file_id) => conn
-                .prepare("SELECT path, fan_in_files FROM files WHERE id = ?1")?
-                .query_row(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .ok()
-                .into_iter()
-                .collect(),
-            EvalScope::Edges { edges, .. } => {
-                let target_ids: HashSet<i64> = edges.iter().map(|(_, t)| *t).collect();
-                let mut rows = Vec::new();
-                let mut stmt =
-                    conn.prepare("SELECT path, fan_in_files FROM files WHERE id = ?1")?;
-                for tid in &target_ids {
-                    if let Ok(row) = stmt.query_row(params![tid], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                    }) {
-                        rows.push(row);
-                    }
-                }
-                rows
+        let no_delta = DiffImportEdges::default();
+        let (targets, import_delta): (Vec<(i64, &str)>, &DiffImportEdges) = match &scope {
+            // No proposed content to compare against, so nothing is attributable
+            // to the edit: an over-threshold file reports, but never blocks.
+            EvalScope::SingleFile(file_id) => (
+                single_file_path
+                    .as_deref()
+                    .map(|p| (*file_id, p))
+                    .into_iter()
+                    .collect(),
+                &no_delta,
+            ),
+            EvalScope::Edges { import_delta, .. } => {
+                let mut ids: Vec<i64> = edges.iter().map(|&(_, t)| t).collect();
+                ids.sort_unstable();
+                ids.dedup();
+                let targets = ids
+                    .into_iter()
+                    .filter_map(|t| path_map.get(&t).map(|p| (t, p.as_str())))
+                    .collect();
+                (targets, *import_delta)
             }
-            _ => Vec::new(),
+            _ => (Vec::new(), &no_delta),
         };
-        for (path, fan_in) in &fan_in_targets {
-            for c in &all_constraints {
-                let ConstraintKind::MaxFanIn { target, threshold } = &c.kind else {
-                    continue;
-                };
-                if *fan_in <= *threshold as i64 {
-                    continue;
-                }
-                if let Ok(pat) = Pattern::new(target)
-                    && pat.matches_with(path, glob_opts)
-                {
-                    findings.push(ConstraintFinding {
-                        constraint_id: Arc::clone(&c.id),
-                        constraint_name: c.name.clone(),
-                        constraint_kind: "max_fan_in".into(),
-                        severity: c.severity,
-                        provenance: c.provenance.clone(),
-                        from_path: path.clone(),
-                        to_path: String::new(),
-                        component_context: None,
-                        detail: format!("fan-in is {fan_in}, threshold is {threshold}: {path}",),
-                        delta: FindingDelta::Unknown,
-                        line: None,
-                        snippet: None,
-                        enclosing_symbol: None,
-                    });
-                }
-            }
-        }
-    }
-
-    // Forbidden pattern checks — read source from disk for scope-matched files
-    if has_patterns && !matches!(scope, EvalScope::Edges { .. }) {
-        let scan_paths: Vec<String> = match &scope {
-            EvalScope::SingleFile(_) => single_file_path.into_iter().collect(),
-            _ => Vec::new(),
-        };
-        if !scan_paths.is_empty() {
-            let mut sources: Vec<(String, String)> = Vec::new();
-            for path in &scan_paths {
-                if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
-                    sources.push((path.clone(), content));
-                }
-            }
-            let source_refs: Vec<(&str, &str)> = sources
-                .iter()
-                .map(|(p, c)| (p.as_str(), c.as_str()))
-                .collect();
-            findings.extend(super::patterns::check_forbidden_patterns(
-                &all_constraints,
-                &source_refs,
-                registry,
-            ));
-        }
+        let importer_sets: Vec<HashSet<i64>> = targets
+            .iter()
+            .map(|&(t, _)| {
+                let mut set = crate::db::file_importers_from_conn(conn, t)?;
+                set.extend(
+                    edges
+                        .iter()
+                        .filter(|&&(s, d)| d == t && s != t)
+                        .map(|&(s, _)| s),
+                );
+                Ok(set)
+            })
+            .collect::<Result<_>>()?;
+        let candidates: Vec<FanInCandidate> = targets
+            .iter()
+            .zip(&importer_sets)
+            .map(|(&(id, path), importers)| FanInCandidate {
+                id,
+                path,
+                importers,
+            })
+            .collect();
+        findings.extend(max_fan_in_findings(
+            &all_constraints,
+            &candidates,
+            Some(import_delta),
+        ));
     }
 
     let (mut active, waived) = waivers::partition(findings, &constraint_waivers);

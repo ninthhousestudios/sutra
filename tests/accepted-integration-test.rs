@@ -12,7 +12,7 @@
 //!     read-only (`RawConn`) path and by the DD-backed review — both derive from
 //!     the same file.
 
-use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+use sutra::constraints::check::{DiffImportEdges, EvalScope, FactsSource, evaluate};
 use sutra::db::Db;
 use sutra::parser::adapter::default_registry;
 
@@ -148,6 +148,7 @@ fn hand_edited_file_honored_by_guard_and_review_alike() {
         dir.path(),
         EvalScope::Edges {
             edges: &edges,
+            import_delta: &DiffImportEdges::default(),
             externals: &[],
         },
         &registry,
