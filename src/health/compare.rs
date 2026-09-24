@@ -199,8 +199,9 @@ pub fn input_changes_json(
 /// The marginal score effect of on-demand evidence.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MarginalEffect {
-    /// Both persistent and on-demand evidence complete: the exact effect. Can be
-    /// zero despite a real finding when its category cap is already saturated.
+    /// Both persistent and on-demand evidence complete: the exact effect.
+    /// Strictly negative for any known on-demand finding unless the score is
+    /// already at the floor.
     Exact(f64),
     /// Some producer is missing on either side: the effect lies in
     /// `[lower, upper]` (both ≤ 0). `upper` assumes missing persistent debt
@@ -215,9 +216,11 @@ pub struct FindingAttribution {
     /// Index into the on-demand part's findings.
     pub index: usize,
     pub raw_deduction: f64,
-    /// Its share of the category's capped known deduction, with persistent
+    /// Its share of the category's saturated known deduction, with persistent
     /// findings competing for the same cap.
     pub scaled_deduction: f64,
+    /// Exact rise of the `with` upper score were this finding alone resolved.
+    pub marginal: f64,
 }
 
 #[derive(Debug)]
@@ -231,7 +234,7 @@ pub struct OnDemandAttribution {
 }
 
 /// Attribute fresh on-demand evidence against the current persistent evidence,
-/// sharing the ordinary category caps (contract: "compares the same current
+/// sharing the ordinary category saturation (contract: "compares the same current
 /// persistent evidence with and without the fresh review findings").
 pub fn attribute(persistent: EvidencePart<'_>, ondemand: EvidencePart<'_>) -> OnDemandAttribution {
     let without = score_file(&[persistent]);
@@ -264,6 +267,7 @@ pub fn attribute(persistent: EvidencePart<'_>, ondemand: EvidencePart<'_>) -> On
             index: d.index,
             raw_deduction: d.raw_deduction,
             scaled_deduction: d.scaled_deduction,
+            marginal: d.marginal,
         })
         .collect();
     let missing = score_file(&[ondemand]).missing;
@@ -283,7 +287,12 @@ mod tests {
     use crate::db::HealthFindingRow;
     use crate::health::evidence::{InputFailure, MissingReason, ProducerOutcome};
     use crate::health::findings::BiomarkerKind;
-    use crate::health::scoring::{PERSISTENT_PRODUCERS, ProducerResult};
+    use crate::health::scoring::{HealthCategory, PERSISTENT_PRODUCERS, ProducerResult};
+
+    /// Structural deduction for `raw` known debt.
+    fn structural(raw: f64) -> f64 {
+        HealthCategory::Structural.saturation().apply(raw)
+    }
 
     fn row(id: i64, kind: BiomarkerKind) -> HealthFindingRow {
         HealthFindingRow {
@@ -376,17 +385,19 @@ mod tests {
             },
         );
         match a.effect {
-            MarginalEffect::Exact(e) => assert!((e + 1.16).abs() < 1e-9),
+            MarginalEffect::Exact(e) => assert!((e + structural(1.16)).abs() < 1e-9),
             other => panic!("expected exact, got {other:?}"),
         }
         assert_eq!(a.findings.len(), 1);
         assert!((a.findings[0].raw_deduction - 1.16).abs() < 1e-9);
+        assert!((a.findings[0].marginal - structural(1.16)).abs() < 1e-9);
     }
 
     #[test]
-    fn saturated_cap_gives_zero_marginal_effect_despite_a_real_finding() {
-        // Structural cap 2.5 already saturated by persistent debt
-        // (nested 1.34 + blast 1.00 + nested 1.34 = 3.68).
+    fn debt_past_the_cap_still_charges_a_real_finding() {
+        // Persistent structural debt (nested 1.34 + blast 1.00 + nested 1.34 =
+        // 3.68) exceeds the 2.5 cap; a hard cap charged the on-demand finding
+        // nothing, the soft saturation charges it a diminishing but real cost.
         let p = complete();
         let pfind = [
             row(1, BiomarkerKind::NestedComplexity),
@@ -405,10 +416,15 @@ mod tests {
                 findings: &dfind,
             },
         );
-        assert_eq!(a.effect, MarginalEffect::Exact(0.0));
+        let cost = structural(3.68 + 1.16) - structural(3.68);
+        match a.effect {
+            MarginalEffect::Exact(e) => assert!(e < 0.0 && (e + cost).abs() < 1e-9, "{e}"),
+            other => panic!("expected exact, got {other:?}"),
+        }
         let f = a.findings[0];
         assert!((f.raw_deduction - 1.16).abs() < 1e-9);
         assert!(f.scaled_deduction > 0.0 && f.scaled_deduction < 1.16);
+        assert!((f.marginal - cost).abs() < 1e-9);
     }
 
     #[test]
@@ -433,7 +449,7 @@ mod tests {
         );
         match a.effect {
             MarginalEffect::Conditional { lower, upper } => {
-                assert!((lower + 1.16).abs() < 1e-9, "lower {lower}");
+                assert!((lower + structural(1.16)).abs() < 1e-9, "lower {lower}");
                 assert_eq!(upper, 0.0);
             }
             other => panic!("expected conditional, got {other:?}"),

@@ -92,6 +92,7 @@ crossbeam-channel = "0.5"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+proptest = "1.11.0"
 
 [lints.clippy]
 # unwrap_used = "warn"

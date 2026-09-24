@@ -10,13 +10,13 @@ use sutra::health::compare::BaselineSelector;
 use sutra::health::evidence::{MissingReason, ProducerOutcome, UnsupportedReason};
 use sutra::health::findings::HealthFinding;
 use sutra::health::scoring::{
-    BiomarkerScope, EvidencePart, PERSISTENT_PRODUCERS, ProducerResult, ScoreValue,
+    BiomarkerScope, EvidencePart, PERSISTENT_PRODUCERS, ProducerResult, ScoreValue, round2,
 };
 use sutra::health::{
-    BiomarkerKind, FileHealthScore, HealthSeverity, compute_all_health_findings,
-    compute_blast_radius_churn, compute_change_entropy, compute_co_change_scatter,
-    compute_hidden_coupling, compute_nested_complexity, compute_ownership_risk,
-    instability::compute_component_instability, score_component, score_file,
+    BiomarkerKind, FileHealthScore, HealthCategory, HealthSeverity, component_score,
+    compute_all_health_findings, compute_blast_radius_churn, compute_change_entropy,
+    compute_co_change_scatter, compute_hidden_coupling, compute_nested_complexity,
+    compute_ownership_risk, instability::compute_component_instability, score_file,
 };
 
 fn setup_db() -> (tempfile::TempDir, Db) {
@@ -55,6 +55,11 @@ fn seed_fn(db: &Db, file_id: i64, qn: &str, sn: &str, max_nesting: Option<i64>) 
 }
 
 // --- Finding model ---
+
+/// A category's deduction for `raw` known debt under the scoring curve.
+fn sat(cat: HealthCategory, raw: f64) -> f64 {
+    cat.saturation().apply(raw)
+}
 
 #[test]
 fn biomarker_kind_as_str_roundtrip() {
@@ -537,7 +542,8 @@ fn contract_known_debt_narrows_the_bound_it_shares_a_category_with() {
     let result = score(&outcomes, &findings);
     match result.value {
         ScoreValue::Partial { lower, upper } => {
-            assert!((upper - 8.66).abs() < 0.01);
+            let known = sat(HealthCategory::Structural, 1.34);
+            assert!((upper - (10.0 - known)).abs() < 1e-9);
             assert!((lower - 7.5).abs() < 1e-9);
         }
         other => panic!("expected partial, got {other:?}"),
@@ -566,35 +572,45 @@ fn contract_review_and_component_biomarkers_are_not_persistent() {
 fn scoring_single_advisory_finding() {
     let findings = [make_finding(1, 1, "nested_complexity", "advisory")];
     let result = score(&complete_outcomes(), &findings);
-    // advisory weight 1.0 × biomarker weight 1.34 = 1.34 deduction
-    assert!((result.value.upper() - 8.66).abs() < 0.01);
+    // advisory weight 1.0 × biomarker weight 1.34 = 1.34 raw, saturated to ~1.05
+    let known = sat(HealthCategory::Structural, 1.34);
+    assert!((result.value.upper() - (10.0 - known)).abs() < 1e-9);
+    assert!((result.value.upper() - 8.95).abs() < 0.01);
     assert_eq!(result.deductions.len(), 1);
     assert!((result.deductions[0].raw_deduction - 1.34).abs() < 0.01);
-    assert!((result.deductions[0].scaled_deduction - 1.34).abs() < 0.01);
+    // A lone finding owns its whole category deduction, and resolving it
+    // recovers exactly that.
+    assert!((result.deductions[0].scaled_deduction - known).abs() < 1e-9);
+    assert!((result.deductions[0].marginal - known).abs() < 1e-9);
 }
 
 #[test]
 fn scoring_informational_deducts_less() {
     let findings = [make_finding(1, 1, "dead_code_ratio", "informational")];
-    // informational weight 0.5 × biomarker weight 0.80 = 0.40 deduction
-    assert!((measured(&findings) - 9.60).abs() < 0.01);
+    // informational weight 0.5 × biomarker weight 0.80 = 0.40 raw
+    let known = sat(HealthCategory::Coverage, 0.40);
+    assert!((measured(&findings) - (10.0 - known)).abs() < 1e-9);
+    let advisory = [make_finding(1, 1, "dead_code_ratio", "advisory")];
+    assert!(measured(&findings) > measured(&advisory));
 }
 
 #[test]
-fn scoring_category_cap_with_proportional_scaling() {
-    // Three advisory nested_complexity findings: 3 × 1.34 = 4.02,
-    // exceeds structural cap of 2.5. Scale factor = 2.5/4.02.
+fn scoring_debt_past_the_cap_saturates_with_proportional_scaling() {
+    // Three advisory nested_complexity findings: 3 × 1.34 = 4.02 raw, past
+    // the structural cap of 2.5 — deducted below the cap, and still more
+    // than two findings deduct.
     let findings = [
         make_finding(1, 1, "nested_complexity", "advisory"),
         make_finding(2, 1, "nested_complexity", "advisory"),
         make_finding(3, 1, "nested_complexity", "advisory"),
     ];
     let result = score(&complete_outcomes(), &findings);
-    // Total structural deduction capped at 2.5 → score = 7.5
-    assert!((result.value.upper() - 7.5).abs() < 0.01);
-    // All three scaled deductions should be equal and sum to 2.5
+    let known = sat(HealthCategory::Structural, 4.02);
+    assert!(known < 2.5 && known > sat(HealthCategory::Structural, 2.68));
+    assert!((result.value.upper() - (10.0 - known)).abs() < 1e-9);
+    // All three scaled deductions are equal and sum to the category deduction.
     let total: f64 = result.deductions.iter().map(|d| d.scaled_deduction).sum();
-    assert!((total - 2.5).abs() < 0.01);
+    assert!((total - known).abs() < 1e-9);
     let first = result.deductions[0].scaled_deduction;
     for d in &result.deductions {
         assert!((d.scaled_deduction - first).abs() < 0.001);
@@ -603,47 +619,65 @@ fn scoring_category_cap_with_proportional_scaling() {
 
 #[test]
 fn scoring_all_categories_maxed_yields_minimum() {
-    // Overload every category past its cap; sum of caps = 11.5 > 9.0
-    let findings = [
-        // organizational cap 3.5: co_change_scatter ×3 = 5.40 → capped
-        make_finding(1, 1, "co_change_scatter", "advisory"),
-        make_finding(2, 1, "co_change_scatter", "advisory"),
-        make_finding(3, 1, "co_change_scatter", "advisory"),
-        // structural cap 2.5: nested_complexity ×3 = 4.02 → capped
-        make_finding(4, 1, "nested_complexity", "advisory"),
-        make_finding(5, 1, "nested_complexity", "advisory"),
-        make_finding(6, 1, "nested_complexity", "advisory"),
-        // coupling cap 2.0: hidden_coupling ×3 = 3.00 → capped
-        make_finding(7, 1, "hidden_coupling", "advisory"),
-        make_finding(8, 1, "hidden_coupling", "advisory"),
-        make_finding(9, 1, "hidden_coupling", "advisory"),
-        // freshness cap 1.5: code_age_volatility ×3 = 3.30 → capped
-        make_finding(10, 1, "code_age_volatility", "advisory"),
-        make_finding(11, 1, "code_age_volatility", "advisory"),
-        make_finding(12, 1, "code_age_volatility", "advisory"),
-        // coverage cap 2.0: dead_code_ratio ×6 info = 6×0.40 = 2.40 → capped
-        make_finding(13, 1, "dead_code_ratio", "informational"),
-        make_finding(14, 1, "dead_code_ratio", "informational"),
-        make_finding(15, 1, "dead_code_ratio", "informational"),
-        make_finding(16, 1, "dead_code_ratio", "informational"),
-        make_finding(17, 1, "dead_code_ratio", "informational"),
-        make_finding(18, 1, "dead_code_ratio", "informational"),
+    // The caps sum to 11.5 > 9.0, so debt heavy enough in every category
+    // clamps at the floor even though no category reaches its cap.
+    let kinds = [
+        ("co_change_scatter", "advisory"),
+        ("nested_complexity", "advisory"),
+        ("hidden_coupling", "advisory"),
+        ("code_age_volatility", "advisory"),
+        ("dead_code_ratio", "informational"),
     ];
-    assert!((measured(&findings) - 1.0).abs() < 0.01);
+    let findings: Vec<_> = kinds
+        .iter()
+        .flat_map(|&kind| std::iter::repeat_n(kind, 200))
+        .enumerate()
+        .map(|(i, (kind, severity))| make_finding(i as i64 + 1, 1, kind, severity))
+        .collect();
+    assert!((measured(&findings) - 1.0).abs() < 1e-9);
 }
 
 #[test]
-fn scoring_component_nloc_weighted() {
+fn scoring_heavy_debt_in_every_category_is_saturated_not_capped() {
+    // Three findings past each cap: a hard cap floored this at 1.0; the
+    // soft saturation leaves it measurably above the floor.
+    let findings = [
+        make_finding(1, 1, "co_change_scatter", "advisory"),
+        make_finding(2, 1, "co_change_scatter", "advisory"),
+        make_finding(3, 1, "co_change_scatter", "advisory"),
+        make_finding(4, 1, "nested_complexity", "advisory"),
+        make_finding(5, 1, "nested_complexity", "advisory"),
+        make_finding(6, 1, "nested_complexity", "advisory"),
+        make_finding(7, 1, "hidden_coupling", "advisory"),
+        make_finding(8, 1, "hidden_coupling", "advisory"),
+        make_finding(9, 1, "hidden_coupling", "advisory"),
+        make_finding(10, 1, "code_age_volatility", "advisory"),
+        make_finding(11, 1, "code_age_volatility", "advisory"),
+        make_finding(12, 1, "code_age_volatility", "advisory"),
+    ];
+    let expected = 10.0
+        - sat(HealthCategory::Organizational, 5.40)
+        - sat(HealthCategory::Structural, 4.02)
+        - sat(HealthCategory::Coupling, 3.00)
+        - sat(HealthCategory::Freshness, 3.30);
+    assert!((measured(&findings) - expected).abs() < 1e-9);
+    assert!(expected > 1.0);
+}
+
+#[test]
+fn scoring_component_blends_density_and_count() {
     // file A: score 8.0, 300 lines; file B: score 6.0, 100 lines
-    // weighted avg = (8.0×300 + 6.0×100) / 400 = 3000/400 = 7.5
+    // density = NLOC-weighted mean deduction = (2.0×300 + 4.0×100) / 400 = 2.5
+    // count   = 9 · b/(1+b), b = ln(1 + 6.0/5.0) ≈ 3.968 (total debt mass 6.0)
+    // score   = 10 − (0.5×2.5 + 0.5×3.968) ≈ 6.77
     let scores = [(8.0, 300_i64), (6.0, 100)];
-    let result = score_component(&scores);
-    assert!((result - 7.5).abs() < 0.01);
+    let result = component_score(&scores, 0.0);
+    assert!((result - 6.77).abs() < 0.01, "got {result}");
 }
 
 #[test]
 fn scoring_component_empty_is_perfect() {
-    let result = score_component(&[]);
+    let result = component_score(&[], 0.0);
     assert_eq!(result, 10.0);
 }
 
@@ -2005,7 +2039,8 @@ fn evidence_scores_the_current_run_as_measured() {
 
     let ev = PersistentEvidence::load(&db, health_run::current_verdict(&db)).unwrap();
     let s = ev.file("src/hot.rs").unwrap().score();
-    assert!(matches!(s.value, ScoreValue::Measured(v) if (v - 8.66).abs() < 0.01));
+    let expected = 10.0 - sat(HealthCategory::Structural, 1.34);
+    assert!(matches!(s.value, ScoreValue::Measured(v) if (v - expected).abs() < 1e-9));
 }
 
 #[test]
@@ -2868,7 +2903,12 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
     db.insert_snapshot_components(
         from,
         &[
-            comp_row("same", 8.0, Complete, Some("m1")),
+            comp_row(
+                "same",
+                component_score(&[(8.0, 100)], 0.0),
+                Complete,
+                Some("m1"),
+            ),
             comp_row("moved", 8.0, Complete, Some("m1")),
             comp_row("legacy", 8.0, Unknown, None),
             comp_row("half", 8.0, Complete, Some("m1")),
@@ -2884,7 +2924,12 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
     db.insert_snapshot_components(
         to,
         &[
-            comp_row("same", 7.0, Complete, Some("m1")),
+            comp_row(
+                "same",
+                component_score(&[(7.0, 100)], 0.0),
+                Complete,
+                Some("m1"),
+            ),
             comp_row("moved", 9.5, Complete, Some("m2")),
             comp_row("legacy", 9.0, Complete, Some("m1")),
             comp_row("half", 9.0, Partial, Some("m1")),
@@ -2903,7 +2948,9 @@ fn trend_component_deltas_are_measured_only_under_a_matching_basis() {
     };
     let same = get("same");
     assert_eq!(same["measured"], true);
-    assert_eq!(same["measured_delta"], -1.0);
+    let delta = component_score(&[(7.0, 100)], 0.0) - component_score(&[(8.0, 100)], 0.0);
+    assert_eq!(same["measured_delta"], round2(delta));
+    assert!(delta < 0.0);
     assert_eq!(same["weight_shift"], 0.0);
     for (id, reason) in [
         ("moved", "score_basis_changed"),
@@ -2987,21 +3034,24 @@ fn trend_component_deltas_are_measured_at_baseline_weights() {
     db.insert_snapshot_components(
         from,
         &[
-            // (10*100 + 6*100) / 200
             weighted_comp(
                 "mix",
-                8.0,
+                component_score(&[(10.0, 100), (6.0, 100)], 0.0),
                 Some(&[("mix/a.rs", 100), ("mix/b.rs", 100)]),
                 Some(0.0),
             ),
-            // (10*100 + 6*300) / 400
             weighted_comp(
                 "debt",
-                7.0,
+                component_score(&[(10.0, 100), (6.0, 300)], 0.0),
                 Some(&[("debt/a.rs", 100), ("debt/b.rs", 300)]),
                 Some(0.0),
             ),
-            weighted_comp("unstable", 9.0, Some(&[("unstable/a.rs", 100)]), Some(0.0)),
+            weighted_comp(
+                "unstable",
+                component_score(&[(9.0, 100)], 0.0),
+                Some(&[("unstable/a.rs", 100)]),
+                Some(0.0),
+            ),
             weighted_comp("pre", 9.0, None, None),
             weighted_comp("noinst", 9.0, Some(&[("noinst/a.rs", 100)]), Some(0.0)),
         ],
@@ -3025,22 +3075,26 @@ fn trend_component_deltas_are_measured_at_baseline_weights() {
     db.insert_snapshot_components(
         to,
         &[
-            // Weight only: mix/a.rs grew (comments) to 300 lines. (3000 + 600) / 400.
+            // Weight only: mix/a.rs grew (comments) to 300 lines.
             weighted_comp(
                 "mix",
-                9.0,
+                component_score(&[(10.0, 300), (6.0, 100)], 0.0),
                 Some(&[("mix/a.rs", 300), ("mix/b.rs", 100)]),
                 Some(0.0),
             ),
-            // Real debt in debt/a.rs (10 → 8) while debt/b.rs shrank to 100 lines:
-            // (800 + 600) / 200 — the raw score did not move at all.
+            // Real debt in debt/a.rs (10 → 8) while debt/b.rs shrank to 100 lines.
             weighted_comp(
                 "debt",
-                7.0,
+                component_score(&[(8.0, 100), (6.0, 100)], 0.0),
                 Some(&[("debt/a.rs", 100), ("debt/b.rs", 100)]),
                 Some(0.0),
             ),
-            weighted_comp("unstable", 8.7, Some(&[("unstable/a.rs", 100)]), Some(0.3)),
+            weighted_comp(
+                "unstable",
+                component_score(&[(9.0, 100)], 0.3),
+                Some(&[("unstable/a.rs", 100)]),
+                Some(0.3),
+            ),
             weighted_comp("pre", 9.0, Some(&[("pre/a.rs", 100)]), Some(0.0)),
             weighted_comp("noinst", 9.0, Some(&[("noinst/a.rs", 100)]), None),
         ],
@@ -3062,13 +3116,22 @@ fn trend_component_deltas_are_measured_at_baseline_weights() {
         mix["measured_delta"], 0.0,
         "a line-count change is no quality change"
     );
-    assert_eq!(mix["weight_shift"], 1.0, "{mix}");
+    let mix_shift = component_score(&[(10.0, 300), (6.0, 100)], 0.0)
+        - component_score(&[(10.0, 100), (6.0, 100)], 0.0);
+    assert!(
+        mix_shift > 0.0,
+        "diluting clean lines still lift the density term"
+    );
+    assert_eq!(mix["weight_shift"], round2(mix_shift), "{mix}");
 
     let debt = get("debt");
     assert_eq!(debt["measured"], true, "{debt}");
-    // Baseline weights 100/400: (8 - 10) * 100 / 400.
-    assert_eq!(debt["measured_delta"], -0.5, "{debt}");
-    assert_eq!(debt["weight_shift"], 0.5, "{debt}");
+    // Measured at baseline weights (100/300); the rest is the weight shift.
+    let base = component_score(&[(10.0, 100), (6.0, 300)], 0.0);
+    let measured = component_score(&[(8.0, 100), (6.0, 300)], 0.0) - base;
+    let observed = component_score(&[(8.0, 100), (6.0, 100)], 0.0) - base;
+    assert_eq!(debt["measured_delta"], round2(measured), "{debt}");
+    assert_eq!(debt["weight_shift"], round2(observed - measured), "{debt}");
 
     let unstable = get("unstable");
     assert_eq!(
@@ -3120,9 +3183,10 @@ fn file_health_reports_bounds_not_a_point_score_for_partial_files() {
     let f = &out["files"][0];
     assert!(f["health_score"].is_null(), "{f}");
     assert_eq!(f["partial"], true);
-    assert!((f["score_bounds"]["upper"].as_f64().unwrap() - 8.66).abs() < 0.01);
-    // Organizational saturated at its cap (3.5) on top of the known 1.34.
-    assert!((f["score_bounds"]["lower"].as_f64().unwrap() - 5.16).abs() < 0.01);
+    let upper = 10.0 - sat(HealthCategory::Structural, 1.34);
+    assert!((f["score_bounds"]["upper"].as_f64().unwrap() - round2(upper)).abs() < 1e-9);
+    // Organizational saturated at its cap (3.5) on top of the known structural debt.
+    assert!((f["score_bounds"]["lower"].as_f64().unwrap() - round2(upper - 3.5)).abs() < 1e-9);
     assert_eq!(
         f["missing_biomarkers"],
         serde_json::json!(["change_entropy"])

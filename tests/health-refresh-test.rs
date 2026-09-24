@@ -15,9 +15,9 @@ use std::time::Instant;
 use sutra::config::Config;
 use sutra::db::Db;
 use sutra::git::head_commit;
-use sutra::health::BiomarkerKind;
 use sutra::health::evidence::{InputFailure, MissingReason, ProducerOutcome};
 use sutra::health::refresh::{DemandOutcome, RefreshResult, refresh_acquiring};
+use sutra::health::{BiomarkerKind, HealthCategory};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::workspace::WorkspaceEntry;
@@ -1279,9 +1279,13 @@ fn on_demand_debt_is_attributed_under_shared_caps_not_as_temporal_change() {
         .find(|f| f["biomarker"] == "function_hotspot")
         .unwrap_or_else(|| panic!("function_hotspot attributed: {od}"));
     assert!((hotspot["raw_deduction"].as_f64().unwrap() - 1.16).abs() < 1e-3);
-    // Structural: nested 1.34 + hotspot 1.16 = 2.50 = cap, so exact effect -1.16.
+    // Structural: persistent nested 1.34, then + hotspot 1.16 on the same
+    // saturation curve, so the exact effect is the curve's increment.
+    let structural = HealthCategory::Structural.saturation();
+    let cost = structural.apply(1.34 + 1.16) - structural.apply(1.34);
     assert_eq!(od["effect"]["kind"], "exact", "{od}");
-    assert!((od["effect"]["value"].as_f64().unwrap() + 1.16).abs() < 1e-3);
+    assert!((od["effect"]["value"].as_f64().unwrap() + cost).abs() < 1e-3);
+    assert!((hotspot["marginal"].as_f64().unwrap() - cost).abs() < 1e-3);
     // Temporal compares persistent evidence only: unchanged.
     assert_eq!(e["temporal"]["measured"], true);
     assert!(e["temporal"]["delta"].as_f64().unwrap().abs() < 0.005);

@@ -31,8 +31,9 @@ use crate::health::scoring::{
 use crate::waivers::{self, ResolvedHealthFinding};
 
 /// Component-aggregation identity folded into every component basis. Bump when
-/// the aggregation rule (NLOC weighting, instability penalty form) changes.
-const COMPONENT_SCORING_VERSION: &str = "component-scoring-v1-nloc-instability";
+/// the aggregation rule (density/count blend, instability penalty form)
+/// changes; the blend share and count curve are digested directly.
+const COMPONENT_SCORING_VERSION: &str = "component-scoring-v2-density-count";
 
 /// A validity verdict about one specific run. `Current` vouches only for `run`;
 /// it never transfers to whichever run the pointer names at load time.
@@ -82,6 +83,8 @@ pub struct FileEvidence {
     pub path: String,
     /// Live file id (display and component membership only).
     pub file_id: i64,
+    /// Indexed line count: the file's weight in the workspace score.
+    pub line_count: i64,
     /// One outcome per [`PERSISTENT_PRODUCERS`] entry, validity applied.
     pub outcomes: Vec<ProducerResult>,
     /// Retained findings not covered by a waiver.
@@ -202,6 +205,7 @@ impl PersistentEvidence {
             files.push(FileEvidence {
                 path: path.to_string(),
                 file_id: file.id,
+                line_count: file.line_count,
                 outcomes,
                 findings,
                 waived,
@@ -296,8 +300,9 @@ pub struct ScoredFile<'e> {
 pub struct ScoredComponent<'e> {
     pub component_id: String,
     pub component_name: String,
-    /// NLOC-weighted member scores minus the instability penalty. `Measured` only
-    /// when every member file is measured.
+    /// [`scoring::component_score`] of the members (density + count blend) minus
+    /// the instability penalty. `Measured` only when every member file is
+    /// measured.
     pub value: ScoreValue,
     pub member_count: usize,
     pub total_nloc: i64,
@@ -469,8 +474,10 @@ fn score_members(
 
     identity.sort_unstable();
     let mut buf = format!(
-        "{COMPONENT_SCORING_VERSION}\n{}\n",
-        scoring::instability_penalty(1.0)
+        "{COMPONENT_SCORING_VERSION}\n{}\n{}|{:?}\n",
+        scoring::instability_penalty(1.0),
+        scoring::COMPONENT_DENSITY_SHARE,
+        scoring::COMPONENT_COUNT,
     );
     for (path, basis) in &identity {
         buf.push_str(&format!("{path}|{basis}\n"));
@@ -488,6 +495,7 @@ mod tests {
         let evidence = FileEvidence {
             path: "src/a.rs".into(),
             file_id: 1,
+            line_count: 100,
             outcomes: PERSISTENT_PRODUCERS
                 .iter()
                 .map(|&k| (k, ProducerOutcome::Complete { finding_count: 0 }))

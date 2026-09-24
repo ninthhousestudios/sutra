@@ -453,6 +453,7 @@ fn attribution_json(
                 "detail": row.detail,
                 "raw_deduction": scoring::round3(f.raw_deduction),
                 "scaled_deduction": scoring::round3(f.scaled_deduction),
+                "marginal": scoring::round3(f.marginal),
             })
         })
         .collect();

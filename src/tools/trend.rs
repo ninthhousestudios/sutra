@@ -388,7 +388,7 @@ fn completeness_counts(files: &[SnapshotFileRow]) -> serde_json::Value {
 ///
 /// The basis deliberately excludes member weights (line counts), so a matching
 /// basis does not make the raw score difference a quality change: a comment-only
-/// edit moves a member's weight and with it the weighted mean. The observed
+/// edit moves a member's weight and with it the density term. The observed
 /// change is split (sutra/436): `measured_delta` re-evaluates the current member
 /// scores and penalty at the *baseline's* weights; `weight_shift` is the rest of
 /// the observed change (line-count/mix movement), never a measured improvement

@@ -359,7 +359,10 @@ fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde
                 "detail": finding.detail,
             });
             match deduction_of(i) {
-                Some(d) => j["deduction"] = json!(scoring::round2(d.scaled_deduction)),
+                Some(d) => {
+                    j["deduction"] = json!(scoring::round2(d.scaled_deduction));
+                    j["marginal"] = json!(scoring::round2(d.marginal));
+                }
                 None => {
                     j["deduction"] = json!(0.0);
                     j["stale"] = json!(true);
@@ -404,8 +407,8 @@ fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde
                     json!({
                         "cap": cap,
                         "raw_total": round3(c.known_raw),
-                        "capped": c.known_raw > cap,
-                        "scale_factor": if c.known_raw > cap { round3(cap / c.known_raw) } else { 1.0 },
+                        "saturated_deduction": round3(c.known),
+                        "scale_factor": if c.known_raw > 0.0 { round3(c.known / c.known_raw) } else { 1.0 },
                         "pessimistic_deduction": round3(c.pessimistic),
                     }),
                 )
@@ -421,14 +424,18 @@ fn file_entry(f: &FileEvidence, score: &FileHealthScore, explain: bool) -> serde
                     "raw_deduction": round3(d.raw_deduction),
                     "scaled_deduction": round3(d.scaled_deduction),
                     "scale_factor": if d.raw_deduction > 0.0 { round3(d.scaled_deduction / d.raw_deduction) } else { 1.0 },
+                    "marginal": round3(d.marginal),
                 })
             })
             .collect();
         entry.insert(
             "_explain".into(),
             json!({
-                "formula": "upper = 10.0 - sum(capped known deductions); lower additionally \
-                    saturates every category with a missing producer; clamped to [1.0, 10.0]",
+                "formula": format!("upper = 10.0 - sum over categories of cap * b/(1+b), \
+                    b = ln(1 + raw/(cap * {})); lower additionally saturates every category \
+                    with a missing producer to its cap; clamped to [1.0, 10.0]. A finding's \
+                    deduction is its proportional share of its category; marginal is the \
+                    exact score gain if it alone were resolved", scoring::CATEGORY_SCALE_FRACTION),
                 "categories": categories_explain,
                 "findings": findings_explain,
             }),

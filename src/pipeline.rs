@@ -1507,7 +1507,7 @@ fn snapshot_verdict(db: &Db, workspace_root: &Path) -> crate::health::assess::Ru
 
 fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHealthData> {
     use crate::health::assess::{self, PersistentEvidence};
-    use crate::health::scoring::ScoreValue;
+    use crate::health::scoring::{self, ScoreValue};
 
     // Score from the validated current run (sutra/416): the checkpoint records
     // exactly what the evidence supports — measured scores, or conservative
@@ -1524,7 +1524,6 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
     let workspace = assess::score_workspace(db, &evidence, membership_current)?;
 
     let mut file_scores = Vec::with_capacity(workspace.files.len());
-    let mut health_sum = 0.0;
     for sf in &workspace.files {
         let cat_totals: HashMap<&str, f64> = sf
             .score
@@ -1538,7 +1537,6 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
             ScoreValue::Partial { upper, .. } => (SnapshotCompleteness::Partial, Some(upper)),
         };
         let score = sf.score.value.lower();
-        health_sum += score;
         file_scores.push(SnapshotFileRow {
             file_id: sf.evidence.file_id,
             file_path: sf.evidence.path.to_string(),
@@ -1551,11 +1549,14 @@ fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHea
         });
     }
 
-    let health_score = if file_scores.is_empty() {
-        10.0
-    } else {
-        health_sum / file_scores.len() as f64
-    };
+    // Pessimistic (lower) file scores, as persisted per file; one aggregation
+    // rule with components so clean additions cannot dilute it (sutra/404).
+    let weighted: Vec<(f64, i64)> = workspace
+        .files
+        .iter()
+        .map(|sf| (sf.score.value.lower(), sf.evidence.line_count))
+        .collect();
+    let health_score = scoring::workspace_score(&weighted);
 
     let component_scores = workspace
         .components
