@@ -10,6 +10,7 @@ use crate::diagnostics::{CandidateInfo, Diagnostic};
 use crate::error::Result;
 use crate::graph::EdgeKind;
 use crate::lessons::LessonsDb;
+use crate::parser::flags_mark_test;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextArgs {
@@ -72,9 +73,8 @@ fn truncate_head(content: &str, cap_tokens: usize) -> Option<(String, usize)> {
     Some((out, tokens))
 }
 
-fn is_test_symbol(sym: &SymbolRow, file_path: &str) -> bool {
-    const TEST_FLAGS: i64 = 0x03; // FLAG_TEST | FLAG_CFG_TEST
-    sym.flags & TEST_FLAGS != 0
+fn is_test_symbol(sym: &SymbolRow, file_path: &str, language: &str) -> bool {
+    flags_mark_test(sym.flags, language)
         || sym.qualified_name.starts_with("test_")
         || sym.qualified_name.starts_with("tests::")
         || *sym.qualified_name == *"tests"
@@ -86,6 +86,7 @@ fn is_test_symbol(sym: &SymbolRow, file_path: &str) -> bool {
 struct Neighbor {
     sym: SymbolRow,
     file_path: String,
+    language: String,
     edge_kind: EdgeKind,
     depth: usize,
 }
@@ -111,11 +112,11 @@ fn walk_dependencies(db: &Db, root: &SymbolRow, max_depth: usize) -> Result<Vec<
                     continue;
                 }
                 if let Some(target_sym) = db.symbol_by_id(target_id)? {
-                    let file_path = db
+                    let (file_path, language) = db
                         .file_by_id(target_sym.file_id)
                         .ok()
                         .flatten()
-                        .map(|f| f.path.to_string())
+                        .map(|f| (f.path.to_string(), f.language))
                         .unwrap_or_default();
                     queue.push_back((
                         target_sym.id,
@@ -127,6 +128,7 @@ fn walk_dependencies(db: &Db, root: &SymbolRow, max_depth: usize) -> Result<Vec<
                     result.push(Neighbor {
                         sym: target_sym,
                         file_path,
+                        language,
                         edge_kind: EdgeKind::from_context_kind(&r.context_kind),
                         depth: d + 1,
                     });
@@ -157,16 +159,17 @@ fn walk_dependents(db: &Db, root_id: i64, max_depth: usize) -> Result<Vec<Neighb
                 if !visited.insert(caller_sym.id) {
                     continue;
                 }
-                let file_path = db
+                let (file_path, language) = db
                     .file_by_id(r.file_id)
                     .ok()
                     .flatten()
-                    .map(|f| f.path.to_string())
+                    .map(|f| (f.path.to_string(), f.language))
                     .unwrap_or_default();
                 queue.push_back((caller_sym.id, d + 1));
                 result.push(Neighbor {
                     sym: caller_sym,
                     file_path,
+                    language,
                     edge_kind: EdgeKind::from_context_kind(&r.context_kind),
                     depth: d + 1,
                 });
@@ -388,7 +391,7 @@ pub fn handle(
 
     // No single neighbor may cost more than the target did (floor: budget/10).
     let neighbor_full_cap = tokens_used.max(budget / 10);
-    let target_is_test = is_test_symbol(&sym, &file_path);
+    let target_is_test = is_test_symbol(&sym, &file_path, &file.language);
 
     // ---------------------------------------------------------------
     // 2. Walk neighbors
@@ -576,7 +579,7 @@ fn pack_direct_neighbor(
     if included_ids.contains(&n.sym.id) {
         return;
     }
-    if !target_is_test && is_test_symbol(&n.sym, &n.file_path) {
+    if !target_is_test && is_test_symbol(&n.sym, &n.file_path, &n.language) {
         tally(omitted, role, true);
         return;
     }
@@ -655,7 +658,7 @@ fn pack_transitive_tier(
         if included_ids.contains(&n.sym.id) {
             continue;
         }
-        if !target_is_test && is_test_symbol(&n.sym, &n.file_path) {
+        if !target_is_test && is_test_symbol(&n.sym, &n.file_path, &n.language) {
             tally(omitted, role, true);
             continue;
         }
@@ -764,21 +767,31 @@ mod tests {
     #[test]
     fn test_is_test_symbol() {
         let sym = make_sym("test_something");
-        assert!(is_test_symbol(&sym, "src/lib.rs"));
+        assert!(is_test_symbol(&sym, "src/lib.rs", "rust"));
 
         let non_test = make_sym("handle");
-        assert!(!is_test_symbol(&non_test, "src/lib.rs"));
-        assert!(is_test_symbol(&non_test, "tests/integration.rs"));
+        assert!(!is_test_symbol(&non_test, "src/lib.rs", "rust"));
+        assert!(is_test_symbol(&non_test, "tests/integration.rs", "rust"));
 
         // Parser-flagged test (FLAG_TEST = 0x01)
         let mut flagged = make_sym("verify_output");
         flagged.flags = 0x01;
-        assert!(is_test_symbol(&flagged, "src/lib.rs"));
+        assert!(is_test_symbol(&flagged, "src/lib.rs", "rust"));
 
         // Parser-flagged cfg(test) module (FLAG_CFG_TEST = 0x02)
         let mut cfg_test = make_sym("helper_in_test_mod");
         cfg_test.flags = 0x02;
-        assert!(is_test_symbol(&cfg_test, "src/lib.rs"));
+        assert!(is_test_symbol(&cfg_test, "src/lib.rs", "rust"));
+        assert!(is_test_symbol(&cfg_test, "lib/src/widget.dart", "dart"));
+    }
+
+    /// sutra/446: TypeScript stores `override` in bit 0x02, which Rust/Dart use
+    /// for cfg(test). An override method must not be classified as test code.
+    #[test]
+    fn typescript_override_is_not_test_symbol() {
+        let mut ts_override = make_sym("Widget.render");
+        ts_override.flags = 0x02;
+        assert!(!is_test_symbol(&ts_override, "src/widget.ts", "typescript"));
     }
 
     #[test]

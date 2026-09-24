@@ -19,6 +19,16 @@ use crate::error::Result;
 /// full parse must re-extract every file once and re-record the stamp.
 pub const PARSER_STAMP: &str = env!("SUTRA_PARSER_STAMP");
 
+/// Whether a stored symbol's `flags` mark it as test code. `FLAG_TEST` (0x01)
+/// means test in every parser that sets it; 0x02 means `cfg(test)`/test-path
+/// only in Rust and Dart — TypeScript uses the same bit for `override`, so the
+/// bit must never be read without the file's language.
+pub fn flags_mark_test(flags: i64, language: &str) -> bool {
+    let cfg_test_bit = matches!(language, "rust" | "dart");
+    flags & i64::from(rust::FLAG_TEST) != 0
+        || (cfg_test_bit && flags & i64::from(rust::FLAG_CFG_TEST) != 0)
+}
+
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     pub file_path: String,

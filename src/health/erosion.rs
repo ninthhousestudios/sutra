@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::db::{Db, SymbolComplexityRow};
 use crate::error::Result;
-use crate::parser::rust::{FLAG_CFG_TEST, FLAG_TEST};
+use crate::parser::flags_mark_test;
 
 /// Version of the erosion formula stored on each snapshot. Bump on any change
 /// to mass, the threshold, or symbol selection: trend compares erosion only
@@ -100,14 +100,6 @@ fn nearest_rank(sorted: &[i64], percentile: usize) -> Option<i64> {
     sorted.get(rank - 1).copied()
 }
 
-/// Whether a symbol's flags mark it as test code. `FLAG_TEST` (0x01) means test
-/// in every parser that sets it; 0x02 means `cfg(test)`/test-path only in Rust
-/// and Dart — TypeScript uses the same bit for `override`.
-fn is_test_symbol(flags: i64, language: &str) -> bool {
-    let cfg_test_bit = matches!(language, "rust" | "dart");
-    flags & i64::from(FLAG_TEST) != 0 || (cfg_test_bit && flags & i64::from(FLAG_CFG_TEST) != 0)
-}
-
 /// Outermost, non-test function samples grouped by file id.
 ///
 /// `test_files` holds files excluded by path ([`crate::components::is_test_file`]);
@@ -121,7 +113,7 @@ pub fn samples_by_file(
 ) -> HashMap<i64, Vec<FunctionSample>> {
     let by_id: HashMap<i64, &SymbolComplexityRow> = rows.iter().map(|r| (r.id, r)).collect();
     let is_test = |r: &SymbolComplexityRow| {
-        is_test_symbol(r.flags, languages.get(&r.file_id).copied().unwrap_or(""))
+        flags_mark_test(r.flags, languages.get(&r.file_id).copied().unwrap_or(""))
     };
 
     let mut out: HashMap<i64, Vec<FunctionSample>> = HashMap::new();
@@ -210,6 +202,7 @@ fn round2(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::rust::{FLAG_CFG_TEST, FLAG_TEST};
 
     fn s(cognitive: i64, sloc: i64) -> FunctionSample {
         FunctionSample { cognitive, sloc }
