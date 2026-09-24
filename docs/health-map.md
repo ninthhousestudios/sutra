@@ -512,8 +512,7 @@ input — health scores are unaffected.
 - Test code is excluded: files matching `components::is_test_file`, and
   symbols (or ancestors) with `FLAG_TEST` (0x01, all parsers) or 0x02
   (`cfg(test)`/test path in Rust and Dart only — TypeScript uses 0x02 for
-  `override`). A top-level `#[cfg(test)] fn` outside a test module is not
-  flagged by the Rust parser, so it still counts.
+  `override`). Free `#[cfg(test)]` items are flagged too (sutra/445).
 - Scopes (file, component, workspace) always SUM function masses. Workspace
   sums over files, not components (multi-membership). Empty scope → null
   share and percentiles. Rank/trend by absolute `eroded_mass`; `eroded_share`
@@ -522,7 +521,9 @@ input — health scores are unaffected.
   (migration 0079): pre-metric checkpoints read null, never 0. Computed in
   `compute_parse_aggregates`; a NoChanges parse copies it forward only when
   the previous checkpoint has the current `EROSION_VERSION`, otherwise
-  recomputes.
+  recomputes. Bump `EROSION_VERSION` on any change to which symbols count,
+  including parser-side changes (test flags, cognitive, parent links) — the
+  parser stamp forces a reparse but does not stop trend comparing across it.
 - Surfacing: `sutra_file_health` per-file and per-component `erosion` blocks
   (the component block disappears with the rest of `components` when
   membership is stale); `sutra_trend` `deltas.eroded_mass/total_mass`, null

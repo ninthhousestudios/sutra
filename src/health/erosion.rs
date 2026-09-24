@@ -26,8 +26,13 @@ use crate::parser::flags_mark_test;
 
 /// Version of the erosion formula stored on each snapshot. Bump on any change
 /// to mass, the threshold, or symbol selection: trend compares erosion only
-/// between snapshots with the same version.
-pub const EROSION_VERSION: i64 = 1;
+/// between snapshots with the same version. Selection also depends on parser
+/// output — a parser change to test flags, cognitive scores, or parent links
+/// that alters which symbols count needs a bump too; the parser stamp forces a
+/// reparse but does not gate trend comparability.
+///
+/// 2: free `#[cfg(test)]` Rust items are flagged and excluded (sutra/445).
+pub const EROSION_VERSION: i64 = 2;
 
 /// Cognitive complexity at or above which a function is over threshold. Shared
 /// by erosion ("eroded") and diff_impact's risk gate so the two never disagree
