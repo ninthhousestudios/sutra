@@ -454,7 +454,7 @@ fn build_component_scores(
             // Summed over the component's current member files, never averaged
             // from file scores. Stale membership drops this with the rest of the
             // component block (`handle_ctx`).
-            let members = db.component_file_ids(&cs.component_id)?;
+            let members = cs.member_file_ids.iter().copied();
             entry.insert(
                 "erosion".into(),
                 erosion::to_json(&erosion::files_aggregate(erosion_by_file, members)),
@@ -473,9 +473,9 @@ fn build_component_scores(
                     }),
                 );
             }
-            Ok((cs.value.upper(), serde_json::Value::Object(entry)))
+            (cs.value.upper(), serde_json::Value::Object(entry))
         })
-        .collect::<Result<_>>()?;
+        .collect();
 
     comp_results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(comp_results.into_iter().map(|(_, v)| v).collect())

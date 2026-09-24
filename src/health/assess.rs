@@ -309,6 +309,10 @@ pub struct ScoredComponent<'e> {
     /// the basis: trend measures at the baseline's weights and reports the
     /// weight shift separately (sutra/436).
     pub members: Vec<(&'e str, i64)>,
+    /// Every member file id (live files, including unscored ones) — the same
+    /// set `member_count` counts. Lets callers aggregate per-file data over the
+    /// component without re-querying membership.
+    pub member_file_ids: Vec<i64>,
     /// Membership + member bases + aggregation identity: two component
     /// observations compare as measured only when this matches.
     pub basis: Digest,
@@ -391,6 +395,7 @@ pub fn score_workspace<'e>(
             instability,
             penalty,
             members: observed,
+            member_file_ids: members.iter().map(|(fid, _)| *fid).collect(),
             basis,
         });
     }
