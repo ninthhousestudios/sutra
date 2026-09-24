@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::json;
 
 use crate::components::is_test_file;
-use crate::db::{Db, FileRow, SymbolComplexityRow};
+use crate::db::{Db, FileRow, InsertSymbolParams, SymbolComplexityRow};
 use crate::error::Result;
 use crate::parser::flags_mark_test;
 
@@ -109,20 +109,37 @@ fn nearest_rank(sorted: &[i64], percentile: usize) -> Option<i64> {
 /// Outermost, non-test function samples grouped by file id.
 ///
 /// `test_files` holds files excluded by path ([`is_test_file`]);
-/// `languages` maps file id to language for flag interpretation. A symbol is
-/// dropped when any ancestor carries a cognitive score (it is already folded
-/// into that ancestor) or when it or any ancestor is flagged as test code.
+/// `languages` maps file id to language for flag interpretation.
 pub fn samples_by_file(
     rows: &[SymbolComplexityRow],
     test_files: &HashSet<i64>,
     languages: &HashMap<i64, &str>,
 ) -> HashMap<i64, Vec<FunctionSample>> {
+    let mut out: HashMap<i64, Vec<FunctionSample>> = HashMap::new();
+    for (row, sample) in select_samples(rows, test_files, languages) {
+        out.entry(row.file_id).or_default().push(sample);
+    }
+    out
+}
+
+/// The erosion selection rule, shared by the index path ([`samples_by_file`])
+/// and the diff path ([`parsed_samples`]) so the two cannot drift: every
+/// complexity-bearing row that is outermost and not test code, with its sample.
+///
+/// A symbol is dropped when its file is in `test_files`, when any ancestor
+/// carries a cognitive score (it is already folded into that ancestor), or when
+/// it or any ancestor is flagged as test code.
+pub fn select_samples<'r>(
+    rows: &'r [SymbolComplexityRow],
+    test_files: &HashSet<i64>,
+    languages: &HashMap<i64, &str>,
+) -> Vec<(&'r SymbolComplexityRow, FunctionSample)> {
     let by_id: HashMap<i64, &SymbolComplexityRow> = rows.iter().map(|r| (r.id, r)).collect();
     let is_test = |r: &SymbolComplexityRow| {
         flags_mark_test(r.flags, languages.get(&r.file_id).copied().unwrap_or(""))
     };
 
-    let mut out: HashMap<i64, Vec<FunctionSample>> = HashMap::new();
+    let mut out = Vec::new();
     for row in rows {
         let Some(cognitive) = row.cognitive else {
             continue;
@@ -151,12 +168,53 @@ pub fn samples_by_file(
         if excluded {
             continue;
         }
-        out.entry(row.file_id).or_default().push(FunctionSample {
-            cognitive,
-            sloc: row.end_line - row.start_line + 1,
-        });
+        out.push((
+            row,
+            FunctionSample {
+                cognitive,
+                sloc: row.end_line - row.start_line + 1,
+            },
+        ));
     }
     out
+}
+
+/// Erosion samples of one freshly parsed file that is not read from the index
+/// (a diff's base or head side), as `(index into flat, sample)`.
+///
+/// `flat`/`parents` must come from
+/// [`crate::parser::persist::flatten_symbols_for_insert`], the flattening the
+/// index persists: the rows handed to [`select_samples`] then match what
+/// [`load_samples_for_files`] reads back for the same bytes, up to row ids.
+pub fn parsed_samples(
+    flat: &[InsertSymbolParams<'_>],
+    parents: &[Option<usize>],
+    path: &str,
+    language: &str,
+) -> Vec<(usize, FunctionSample)> {
+    const FILE: i64 = 0;
+    // Row id = flat index; the parent index maps onto the same id space.
+    let rows: Vec<SymbolComplexityRow> = (0_i64..)
+        .zip(flat.iter().zip(parents))
+        .map(|(id, (p, parent))| SymbolComplexityRow {
+            id,
+            file_id: FILE,
+            parent_symbol_id: parent.and_then(|pi| i64::try_from(pi).ok()),
+            cognitive: p.cognitive,
+            start_line: p.start_line,
+            end_line: p.end_line,
+            flags: p.flags,
+        })
+        .collect();
+    let test_files: HashSet<i64> = file_exclusion(path).map(|_| FILE).into_iter().collect();
+    let languages = HashMap::from([(FILE, language)]);
+    select_samples(&rows, &test_files, &languages)
+        .into_iter()
+        .map(|(row, sample)| {
+            let idx = usize::try_from(row.id).expect("invariant: row ids are flat indices");
+            (idx, sample)
+        })
+        .collect()
 }
 
 /// Load the erosion samples of every indexed file.

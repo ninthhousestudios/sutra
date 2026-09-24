@@ -496,3 +496,165 @@ fn path_filtered_erosion_matches_unfiltered() {
         erosion_block(&all, "src/ui/eps.js")
     );
 }
+
+// ── sutra_review erosion delta (sutra/451) ──────────────────────────────────
+
+const TS_CLASS: &str = r#"
+class Base { run(x: number): number { return x; } }
+class Impl extends Base {
+  override run(x: number): number {
+    if (x > 0) { for (let i = 0; i < x; i++) { if (i % 2) { while (i > 3) { if (i) { break; } } } } }
+    const f = (y: number) => { if (y) { if (y > 1) { return 2; } } return 0; };
+    return f(x);
+  }
+}
+"#;
+
+fn sorted_samples(samples: &[erosion::FunctionSample]) -> Vec<(i64, i64)> {
+    let mut v: Vec<(i64, i64)> = samples.iter().map(|s| (s.cognitive, s.sloc)).collect();
+    v.sort_unstable();
+    v
+}
+
+/// The review path parses a diff side itself; its samples must be the ones
+/// file_health reads from the index for the same bytes — selection, flattening,
+/// test exclusion and parent links included.
+#[test]
+fn review_samples_match_file_health_samples() {
+    let files = [
+        ("src/nested.js", NESTED_JS),
+        ("src/lib.rs", RUST_LIB),
+        ("test/widget_test.dart", DART_TEST),
+        ("src/impl.ts", TS_CLASS),
+    ];
+    let fx = Fixture::new(
+        "erosion-review-parity",
+        &["javascript", "rust", "dart", "typescript"],
+        &files,
+    );
+    fx.parse();
+    let ids: Vec<i64> = files.iter().map(|(p, _)| fx.file_id(p)).collect();
+    let indexed = erosion::load_samples_for_files(&fx.db, &ids).unwrap();
+    let registry = default_registry();
+    let mut nonempty = 0;
+    for ((path, src), id) in files.iter().zip(&ids) {
+        let from_index = sorted_samples(indexed.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        let from_review = sorted_samples(
+            &sutra::tools::erosion_delta::source_samples(&registry, path, src)
+                .unwrap_or_else(|| panic!("{path} parses")),
+        );
+        assert_eq!(from_review, from_index, "{path}");
+        nonempty += usize::from(!from_index.is_empty());
+    }
+    assert_eq!(
+        nonempty, 3,
+        "only the path-excluded Dart test file is empty"
+    );
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("git spawn");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A Rust fn whose cognitive score is 1 + 2 + … + depth (nested ifs).
+fn nested_rs(name: &str, depth: usize) -> String {
+    let mut body = String::from("0");
+    for d in (0..depth).rev() {
+        body = format!("if x > {d} {{ {body} }} else {{ 1 }}");
+    }
+    format!("pub fn {name}(x: i32) -> i32 {{\n    {body}\n}}\n")
+}
+
+#[test]
+fn review_erosion_delta_over_git_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "t@t"]);
+    git(root, &["config", "user.name", "t"]);
+    let write = |rel: &str, body: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    write("src/a.rs", &nested_rs("grow", 3));
+    write(
+        "src/old.rs",
+        &format!("{}{}", nested_rs("steady", 6), nested_rs("pad", 2)),
+    );
+    write("README.md", "docs\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "--no-verify", "-qm", "base"]);
+
+    // grow crosses the threshold; old.rs is renamed unchanged; docs change.
+    write("src/a.rs", &nested_rs("grow", 6));
+    git(root, &["mv", "src/old.rs", "src/new.rs"]);
+    write("README.md", "more docs\n");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "--no-verify", "-qm", "head"]);
+
+    let scope = sutra::tools::review::resolve_diff_entries(root, "HEAD~1..HEAD").unwrap();
+    let renamed = scope
+        .entries
+        .iter()
+        .find(|e| e.path == "src/new.rs")
+        .expect("rename entry");
+    assert_eq!(renamed.old_path.as_deref(), Some("src/old.rs"));
+
+    let registry = default_registry();
+    let delta = sutra::tools::erosion_delta::compute(
+        root,
+        &scope.entries,
+        &scope.base_revision,
+        scope.head_revision.as_deref(),
+        &registry,
+    );
+    let j = sutra::tools::erosion_delta::delta_json(&delta).expect("block");
+    assert_eq!(j["status"], "complete", "{j}");
+    assert_eq!(j["total"]["crossed_up"], 1, "{j}");
+    assert_eq!(
+        j["total"]["added_eroded"], 0,
+        "rename is not an addition: {j}"
+    );
+    assert_eq!(j["total"]["deleted_eroded"], 0, "{j}");
+    assert_eq!(j["functions"].as_array().unwrap().len(), 1, "{j}");
+    assert_eq!(j["functions"][0]["symbol"], "grow");
+    assert_eq!(j["functions"][0]["change"], "crossed_up");
+    let files = j["files"].as_array().unwrap();
+    assert!(
+        files.iter().all(|f| f["path"] != "README.md"),
+        "no adapter, not listed"
+    );
+    let new_rs = files
+        .iter()
+        .find(|f| f["path"] == "src/new.rs")
+        .expect("renamed file");
+    assert_eq!(new_rs["old_path"], "src/old.rs");
+    assert_eq!(new_rs["eroded_mass_delta"], 0.0);
+    assert!(new_rs["base"]["eroded_mass"].as_f64().unwrap() > 0.0);
+
+    // Unstaged: head is the worktree, base is HEAD.
+    write("src/a.rs", &nested_rs("grow", 2));
+    let scope = sutra::tools::review::resolve_diff_entries(root, "unstaged").unwrap();
+    assert_eq!(scope.head_revision, None);
+    let delta = sutra::tools::erosion_delta::compute(
+        root,
+        &scope.entries,
+        &scope.base_revision,
+        scope.head_revision.as_deref(),
+        &registry,
+    );
+    let j = sutra::tools::erosion_delta::delta_json(&delta).expect("block");
+    assert_eq!(j["total"]["crossed_down"], 1, "{j}");
+    assert!(j["total"]["eroded_mass_removed"].as_f64().unwrap() > 0.0);
+}

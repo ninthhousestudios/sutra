@@ -185,24 +185,14 @@ pub fn detect_shape_changes<'a>(
             }
         };
 
-        let new_source = match head_revision {
-            Some(rev) => match git::git_file_content_at(workspace_root, rev, path) {
-                Ok(Some(s)) => s,
-                // Deleted at head: nothing to compare.
-                Ok(None) => continue,
-                Err(_) => {
-                    failed.push(path.as_str());
-                    continue;
-                }
-            },
-            None => match std::fs::read_to_string(workspace_root.join(path)) {
-                Ok(s) => s,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => {
-                    failed.push(path.as_str());
-                    continue;
-                }
-            },
+        let new_source = match git::file_content_on_side(workspace_root, head_revision, path) {
+            Ok(Some(s)) => s,
+            // Deleted at head: nothing to compare.
+            Ok(None) => continue,
+            Err(_) => {
+                failed.push(path.as_str());
+                continue;
+            }
         };
 
         let grammar = adapter.grammar();

@@ -1082,6 +1082,11 @@ impl SutraServer {
         between complete observations under the same scoring basis, else incomparable with \
         a reason) from on_demand attribution of fresh blame/shape findings against the \
         current evidence. \
+        erosion_delta compares base and head erosion (cognitive >= 15, mass = cognitive x \
+        sqrt(lines), same selection as sutra_file_health) over the changed files: per-file \
+        eroded mass added/removed, totals, and functions that crossed the threshold, were \
+        added/deleted eroded, or changed eroded mass (renames/moves paired). A side that \
+        cannot be read or parsed makes that file unavailable and status partial, never zero. \
         diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
         or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit."
     )]

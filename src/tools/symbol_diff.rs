@@ -61,13 +61,63 @@ pub struct ResolveResult {
     pub changes: Vec<(String, SymbolChange)>,
     pub matched_old: HashSet<usize>,
     pub matched_new: HashSet<usize>,
+    /// Every `(old_idx, new_idx)` match, including the ones that produce no
+    /// change (identical body, disambiguator shift) and so are absent from
+    /// `changes`.
+    pub pairs: Vec<(usize, usize)>,
 }
 
 fn extract_content(source: &str, sym: &ExtractedSymbol) -> String {
+    span_content(source, sym.start_line, sym.end_line)
+}
+
+fn span_content(source: &str, start_line: usize, end_line: usize) -> String {
     let lines: Vec<&str> = source.lines().collect();
-    let start = sym.start_line.saturating_sub(1);
-    let end = sym.end_line.min(lines.len());
+    let start = start_line.saturating_sub(1);
+    let end = end_line.min(lines.len());
     lines[start..end].join("\n")
+}
+
+/// Identity and 1-based line span of a symbol, as rename resolution needs it.
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolSpan<'a> {
+    pub qualified_name: &'a str,
+    pub short_name: &'a str,
+    pub kind: &'a str,
+    pub structural_hash: Option<&'a str>,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+impl<'a> From<&'a ExtractedSymbol> for SymbolSpan<'a> {
+    fn from(sym: &'a ExtractedSymbol) -> Self {
+        SymbolSpan {
+            qualified_name: &sym.qualified_name,
+            short_name: &sym.short_name,
+            kind: sym.kind.as_str(),
+            structural_hash: sym.structural_hash.as_deref(),
+            start_line: sym.start_line,
+            end_line: sym.end_line,
+        }
+    }
+}
+
+impl UnmatchedSymbol {
+    /// A rename-resolution candidate for `sym`, whose span is read from
+    /// `source`; `file` is the path the candidate is attributed to.
+    pub fn new(sym: SymbolSpan<'_>, source: &str, file: &str) -> Self {
+        let content = span_content(source, sym.start_line, sym.end_line);
+        UnmatchedSymbol {
+            qualified_name: sym.qualified_name.to_string(),
+            short_name: sym.short_name.to_string(),
+            kind: sym.kind.to_string(),
+            file: file.to_string(),
+            body_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+            structural_hash: sym.structural_hash.map(str::to_string),
+            start_line: sym.start_line,
+            content,
+        }
+    }
 }
 
 fn body_hash(source: &str, sym: &ExtractedSymbol) -> String {
@@ -107,20 +157,7 @@ fn parent_qualified<'a>(qualified_name: &'a str, short_name: &str) -> Option<&'a
 fn build_unmatched(parse: &ParseResult, source: &str, file: &str) -> Vec<UnmatchedSymbol> {
     let flat = flatten_symbols(&parse.symbols);
     flat.iter()
-        .map(|sym| {
-            let content = extract_content(source, sym);
-            let bh = blake3::hash(content.as_bytes()).to_hex().to_string();
-            UnmatchedSymbol {
-                qualified_name: sym.qualified_name.to_string(),
-                short_name: sym.short_name.to_string(),
-                kind: sym.kind.as_str().to_string(),
-                file: file.to_string(),
-                body_hash: bh,
-                structural_hash: sym.structural_hash.as_ref().map(|s| s.to_string()),
-                start_line: sym.start_line,
-                content,
-            }
-        })
+        .map(|sym| UnmatchedSymbol::new(SymbolSpan::from(*sym), source, file))
         .collect()
 }
 
@@ -151,18 +188,11 @@ pub fn classify_symbols(
     for new_sym in &new_flat {
         match old_map.get(&sym_key(new_sym)) {
             None => {
-                let content = extract_content(new_source, new_sym);
-                let bh = blake3::hash(content.as_bytes()).to_hex().to_string();
-                unmatched_new.push(UnmatchedSymbol {
-                    qualified_name: new_sym.qualified_name.to_string(),
-                    short_name: new_sym.short_name.to_string(),
-                    kind: new_sym.kind.as_str().to_string(),
-                    file: new_file.to_string(),
-                    body_hash: bh,
-                    structural_hash: new_sym.structural_hash.as_ref().map(|s| s.to_string()),
-                    start_line: new_sym.start_line,
-                    content,
-                });
+                unmatched_new.push(UnmatchedSymbol::new(
+                    SymbolSpan::from(*new_sym),
+                    new_source,
+                    new_file,
+                ));
             }
             Some(old_sym) => {
                 let sig_changed = match (&old_sym.signature_hash, &new_sym.signature_hash) {
@@ -227,18 +257,11 @@ pub fn classify_symbols(
     let mut unmatched_old = Vec::new();
     for old_sym in &old_flat {
         if !new_map.contains_key(&sym_key(old_sym)) {
-            let content = extract_content(old_source, old_sym);
-            let bh = blake3::hash(content.as_bytes()).to_hex().to_string();
-            unmatched_old.push(UnmatchedSymbol {
-                qualified_name: old_sym.qualified_name.to_string(),
-                short_name: old_sym.short_name.to_string(),
-                kind: old_sym.kind.as_str().to_string(),
-                file: old_file.to_string(),
-                body_hash: bh,
-                structural_hash: old_sym.structural_hash.as_ref().map(|s| s.to_string()),
-                start_line: old_sym.start_line,
-                content,
-            });
+            unmatched_old.push(UnmatchedSymbol::new(
+                SymbolSpan::from(*old_sym),
+                old_source,
+                old_file,
+            ));
         }
     }
 
@@ -292,6 +315,7 @@ pub fn resolve_renames(
     let mut changes: Vec<(String, SymbolChange)> = Vec::new();
     let mut matched_old: HashSet<usize> = HashSet::new();
     let mut matched_new: HashSet<usize> = HashSet::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     // Phase 2: hash match — body_hash first, structural_hash fallback
     let mut old_by_body: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -340,6 +364,7 @@ pub fn resolve_renames(
             {
                 matched_old.insert(old_idx);
                 matched_new.insert(new_idx);
+                pairs.push((old_idx, new_idx));
                 continue;
             }
 
@@ -359,11 +384,13 @@ pub fn resolve_renames(
                 // Same name, same file — content matched by hash so no real change
                 matched_old.insert(old_idx);
                 matched_new.insert(new_idx);
+                pairs.push((old_idx, new_idx));
                 continue;
             };
 
             matched_old.insert(old_idx);
             matched_new.insert(new_idx);
+            pairs.push((old_idx, new_idx));
 
             changes.push((
                 new_sym.file.to_string(),
@@ -459,6 +486,7 @@ pub fn resolve_renames(
 
             matched_old.insert(old_idx);
             matched_new.insert(new_idx);
+            pairs.push((old_idx, new_idx));
 
             let old_sym = &unmatched_old[old_idx];
             let new_sym = &unmatched_new[new_idx];
@@ -494,6 +522,7 @@ pub fn resolve_renames(
         changes,
         matched_old,
         matched_new,
+        pairs,
     }
 }
 

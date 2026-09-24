@@ -28,7 +28,9 @@ src/health/
                       workspace_root)
   erosion.rs        — Standalone erosion metric (NOT a biomarker, sutra/442):
                       mass/eroded/aggregate/nearest-rank percentiles,
-                      samples_by_file (outermost + test exclusion),
+                      select_samples (the one selection rule: outermost +
+                      test exclusion) behind samples_by_file (index) and
+                      parsed_samples (a fresh parse, for review),
                       COGNITIVE_THRESHOLD shared with diff_impact.
   instability.rs    — Component instability (Martin's Ce/(Ca+Ce)).
                       ComponentInstability{ce, ca, instability},
@@ -544,6 +546,25 @@ input — health scores are unaffected.
   (`load_samples_for_files`; parent chains stay within a file); only the
   unfiltered query, which emits components, scans all symbols. `sutra_trend` `deltas.eroded_mass/total_mass`, null
   unless both checkpoints carry the same non-null version.
+- Review delta (`tools/erosion_delta.rs`, sutra/451): `sutra_review`'s
+  `erosion_delta` block parses the base and head of every changed file that
+  has a language adapter. Base is read from `old_path` for renames, via
+  `review::resolve_diff_entries`. Head is a revision, the index, or the
+  worktree (`git::file_content_on_side`). Samples come from
+  `erosion::parsed_samples` over `parser::persist::flatten_symbols_for_insert`,
+  the flattening the index persists, so a function's sample equals
+  file_health's for the same bytes (pinned by
+  `review_samples_match_file_health_samples`). Pairing: exact
+  `(qualified_name, kind)` within a file, then `symbol_diff::resolve_renames`
+  (`ResolveResult.pairs`) over the leftovers of all files. That means a rename
+  that also rewrites the body is reported as deleted + added, the same as
+  symbol_diff. A cross-file move is removed from its base file and added to its
+  head file. Per-file `eroded_mass_added − eroded_mass_removed` equals the net
+  change. A side that cannot be read or parsed, or is over `MAX_LINES`, makes
+  the file `unavailable` (excluded from pairing and from totals, block `status`
+  = `partial`). Syntax errors mark the file `partial`. Complete files with no
+  eroded mass on either side are omitted. `FunctionDelta.marginal_gain` is the sutra/404
+  hook: `None` today, because erosion is not a health-score input.
 
 ## git-organizational biomarkers (git_metrics.rs)
 

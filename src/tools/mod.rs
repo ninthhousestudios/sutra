@@ -10,6 +10,7 @@ pub mod conventions;
 pub mod dead;
 pub mod deps;
 pub mod diff_impact;
+pub mod erosion_delta;
 pub mod explore;
 pub mod explore_lexical;
 pub mod file_health;

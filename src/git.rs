@@ -83,11 +83,25 @@ pub struct CommitFile {
 }
 
 pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<DiffFileEntry>> {
+    git_diff_entries(workspace_root, &[&format!("{base}..{head}")])
+}
+
+/// Staged changes (index vs HEAD) as entries, renames carrying `old_path`.
+pub fn git_diff_staged_entries(workspace_root: &Path) -> Result<Vec<DiffFileEntry>> {
+    git_diff_entries(workspace_root, &["--cached"])
+}
+
+/// Unstaged changes (worktree vs index) as entries, renames carrying `old_path`.
+pub fn git_diff_unstaged_entries(workspace_root: &Path) -> Result<Vec<DiffFileEntry>> {
+    git_diff_entries(workspace_root, &[])
+}
+
+fn git_diff_entries(workspace_root: &Path, extra: &[&str]) -> Result<Vec<DiffFileEntry>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
         .args(["diff", "--name-status", "-M"])
-        .arg(format!("{base}..{head}"))
+        .args(extra)
         .output()
         .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;
 
@@ -117,48 +131,6 @@ pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<V
         }
     }
     Ok(entries)
-}
-
-pub fn git_diff_staged(workspace_root: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["diff", "--name-only", "--cached"])
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git diff --cached failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SutraError::Internal(format!("git diff --cached: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .map(|l| l.to_string())
-        .filter(|l| !l.is_empty())
-        .collect())
-}
-
-pub fn git_diff_unstaged(workspace_root: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["diff", "--name-only"])
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SutraError::Internal(format!("git diff: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .map(|l| l.to_string())
-        .filter(|l| !l.is_empty())
-        .collect())
 }
 
 pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
@@ -682,6 +654,24 @@ pub fn git_churn(workspace_root: &Path, window_days: u32) -> Result<HashMap<Stri
         }
     }
     Ok(counts)
+}
+
+/// Content of `path` on one side of a diff: `Some(rev)` reads the revision
+/// (`Some("")` is the index), `None` reads the worktree. `Ok(None)` when the file
+/// does not exist on that side.
+pub fn file_content_on_side(
+    workspace_root: &Path,
+    revision: Option<&str>,
+    path: &str,
+) -> Result<Option<String>> {
+    match revision {
+        Some(rev) => git_file_content_at(workspace_root, rev, path),
+        None => match std::fs::read_to_string(workspace_root.join(path)) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(SutraError::Internal(format!("read {path}: {e}"))),
+        },
+    }
 }
 
 pub fn git_file_content_at(

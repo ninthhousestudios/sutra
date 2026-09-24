@@ -112,6 +112,18 @@ The score combines weighted signals:
 
 A score above 0.5 warrants careful review. Above 0.7 is high-risk.
 
+## Erosion delta
+`erosion_delta` compares structural erosion between the diff's base and head. It uses the \
+same function selection as `sutra_file_health` (outermost functions, test code excluded, \
+eroded at cognitive >= 15, mass = cognitive x sqrt(lines)):
+- `total`: base/head eroded mass over the changed files, mass added/removed, and counts of \
+threshold crossings and added/deleted eroded functions
+- `files`: per-file base/head aggregates and eroded mass added/removed/net
+- `functions`: `crossed_up`, `crossed_down`, `added_eroded`, `deleted_eroded`, \
+`eroded_changed`, largest change first; renames and moves carry `from_symbol`/`from_file`
+If a file cannot be read or parsed on one side, it is marked `unavailable` with a reason \
+and the block's `status` is `partial`. It is never reported as zero.
+
 ## Complement with PR risk
 ```
 sutra_pr_risk(workspace=\"myproject\")

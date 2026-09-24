@@ -89,7 +89,9 @@ pub fn handle(
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
-    let (changed_paths, base_revision, head_revision) = resolve_diff_scope(workspace_root, mode)?;
+    let scope = resolve_diff_entries(workspace_root, mode)?;
+    let changed_paths = scope.paths();
+    let (base_revision, head_revision) = (&scope.base_revision, &scope.head_revision);
 
     let churn = ChurnMap {
         counts: git::git_churn(workspace_root, change_signals::CHURN_WINDOW_DAYS)?,
@@ -101,7 +103,7 @@ pub fn handle(
         db,
         workspace_root,
         &changed_paths,
-        &base_revision,
+        base_revision,
         // The compositor assesses current state — read the working tree, not the
         // diff snapshot, regardless of `diff_mode` (sutra/385).
         ContentSource::Worktree,
@@ -117,7 +119,7 @@ pub fn handle(
         db,
         workspace_root,
         &changed_paths,
-        &base_revision,
+        base_revision,
         head_revision.as_deref(),
         &registry,
         &shape_config,
@@ -138,6 +140,14 @@ pub fn handle(
         health_refresh,
     );
     let shape_changes = shape_diff.changes;
+
+    let erosion_delta = crate::tools::erosion_delta::compute(
+        workspace_root,
+        &scope.entries,
+        base_revision,
+        head_revision.as_deref(),
+        &registry,
+    );
 
     let mut result = compute(
         db,
@@ -178,6 +188,10 @@ pub fn handle(
             .collect();
         if !shape_out.is_empty() {
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
+        }
+
+        if let Some(block) = crate::tools::erosion_delta::delta_json(&erosion_delta) {
+            obj.insert("erosion_delta".into(), block);
         }
 
         match health {
@@ -470,6 +484,22 @@ fn attribution_json(
     (out, noteworthy)
 }
 
+/// A resolved diff: the changed files (renames carry `old_path`) and the two
+/// revisions they are compared between.
+pub struct DiffScope {
+    pub entries: Vec<git::DiffFileEntry>,
+    pub base_revision: String,
+    /// `Some("")` for staged (the index), `None` for unstaged (the worktree), an
+    /// explicit revision otherwise.
+    pub head_revision: Option<String>,
+}
+
+impl DiffScope {
+    pub fn paths(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.path.to_string()).collect()
+    }
+}
+
 /// Resolve a diff-mode string to `(changed_paths, base_revision, head_revision)`.
 ///
 /// Shared by the review compositor and the `sutra check` CLI gate so both
@@ -480,14 +510,22 @@ pub fn resolve_diff_scope(
     workspace_root: &Path,
     mode: &str,
 ) -> Result<(Vec<String>, String, Option<String>)> {
-    let resolved = match mode {
+    let scope = resolve_diff_entries(workspace_root, mode)?;
+    let paths = scope.paths();
+    Ok((paths, scope.base_revision, scope.head_revision))
+}
+
+/// [`resolve_diff_scope`] keeping the per-file entries, so a rename's base side
+/// is read from its old path. Every mode detects renames (`--name-status -M`).
+pub fn resolve_diff_entries(workspace_root: &Path, mode: &str) -> Result<DiffScope> {
+    let (entries, base_revision, head_revision) = match mode {
         "staged" => (
-            git::git_diff_staged(workspace_root)?,
+            git::git_diff_staged_entries(workspace_root)?,
             "HEAD".to_string(),
             Some(String::new()),
         ),
         "unstaged" => (
-            git::git_diff_unstaged(workspace_root)?,
+            git::git_diff_unstaged_entries(workspace_root)?,
             "HEAD".to_string(),
             None,
         ),
@@ -495,8 +533,7 @@ pub fn resolve_diff_scope(
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
             let entries = git::git_diff_files(workspace_root, &base, "HEAD")?;
-            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
-            (paths, base, Some("HEAD".to_string()))
+            (entries, base, Some("HEAD".to_string()))
         }
         spec => {
             let (base, head) = if let Some((a, b)) = spec.split_once("..") {
@@ -505,11 +542,14 @@ pub fn resolve_diff_scope(
                 (format!("{spec}~1"), spec.to_string())
             };
             let entries = git::git_diff_files(workspace_root, &base, &head)?;
-            let paths: Vec<String> = entries.iter().map(|e| e.path.to_string()).collect();
-            (paths, base, Some(head))
+            (entries, base, Some(head))
         }
     };
-    Ok(resolved)
+    Ok(DiffScope {
+        entries,
+        base_revision,
+        head_revision,
+    })
 }
 
 fn extract_outgoing_edges(
