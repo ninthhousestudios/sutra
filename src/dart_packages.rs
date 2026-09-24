@@ -75,10 +75,14 @@ pub(crate) fn resolve_relative_import(
     file_id: i64,
     id_to_path: &HashMap<i64, &str>,
 ) -> Option<String> {
-    let importing_path = id_to_path.get(&file_id)?;
+    resolve_relative_to(path, id_to_path.get(&file_id)?)
+}
+
+/// Resolve a relative Dart import against the workspace-relative path of the
+/// importing file. The indexer, guard, and review all resolve through here.
+pub(crate) fn resolve_relative_to(path: &str, importing_path: &str) -> Option<String> {
     let parent = Path::new(importing_path).parent()?;
-    let joined = parent.join(path);
-    normalize_path(&joined)
+    normalize_path(&parent.join(path))
 }
 
 pub(crate) fn normalize_path(path: &Path) -> Option<String> {

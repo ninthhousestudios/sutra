@@ -683,8 +683,7 @@ pub fn extract_proposed_imports(
         }
     }
 
-    let edges = if language == "rust" {
-        let layout = layout.as_ref().unwrap();
+    let content_edges = if matches!(language.as_str(), "rust" | "dart") {
         let path_to_id: HashMap<String, i64> = conn
             .prepare("SELECT path, id FROM files")
             .ok()?
@@ -694,92 +693,32 @@ pub fn extract_proposed_imports(
             .ok()?
             .filter_map(|r| r.ok())
             .collect();
-        let path_ref_map: HashMap<&str, i64> =
+        let path_ids: HashMap<&str, i64> =
             path_to_id.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-
-        let mut edges = Vec::new();
-        for import in &result.imports {
-            let resolved = match crate::rust_imports::normalize_to_crate_segments(
-                &import.raw_path,
-                rel_path,
-                layout,
-            ) {
-                Some(r) if !r.segments.is_empty() => r,
-                _ => continue,
-            };
-            // `#[cfg(test)]` imports are not production dependencies. The guard
-            // drops them unconditionally rather than honouring per-constraint
-            // `include_tests` — the review path still enforces that case, and an
-            // edit-time deny on test wiring is the failure mode of sutra/290.
-            if import.is_test {
-                continue;
-            }
-            if let Some(target_id) = crate::rust_imports::resolve_segments(
-                &resolved.segments,
-                &path_ref_map,
-                &resolved.src_prefix,
-            ) && target_id != file_id
-            {
-                edges.push((file_id, target_id));
-            }
-        }
-        edges
-    } else if language == "dart" {
-        let path_to_id: HashMap<String, i64> = conn
-            .prepare("SELECT path, id FROM files")
-            .ok()?
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .ok()?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let has_package_imports = result
-            .imports
-            .iter()
-            .any(|i| !i.is_test && i.raw_path.starts_with("package:"));
-        let pkg_map = if has_package_imports {
-            Some(crate::dart_packages::DartPackageMap::build(project_root))
-        } else {
-            None
-        };
-        let parent = Path::new(rel_path).parent();
-
-        let mut edges = Vec::new();
-        for import in &result.imports {
-            if import.is_test {
-                continue;
-            }
-            let resolved_path = if import.raw_path.starts_with("package:") {
-                pkg_map
-                    .as_ref()
-                    .and_then(|m| crate::dart_packages::resolve_package_uri(&import.raw_path, m))
-            } else if import.raw_path.ends_with(".dart") && !import.raw_path.starts_with("dart:") {
-                parent
-                    .map(|p| p.join(&import.raw_path))
-                    .and_then(|j| crate::dart_packages::normalize_path(&j))
-            } else {
-                None
-            };
-            if let Some(path) = resolved_path
-                && let Some(&target_id) = path_to_id.get(&path)
-                && target_id != file_id
-            {
-                edges.push((file_id, target_id));
-            }
-        }
-        edges
-    } else {
-        conn.prepare(
-            "SELECT file_id, resolved_file_id FROM imports \
-             WHERE file_id = ?1 AND resolved_file_id IS NOT NULL AND is_test = 0",
+        crate::import_edges::content_import_edges(
+            project_root,
+            rel_path,
+            file_id,
+            &language,
+            result,
+            &path_ids,
+            crate::import_edges::TestImports::Drop,
         )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect()
-        })
-        .unwrap_or_default()
+    } else {
+        None
+    };
+    let edges = match content_edges {
+        Some(edges) => edges,
+        None => conn
+            .prepare(
+                "SELECT file_id, resolved_file_id FROM imports \
+                 WHERE file_id = ?1 AND resolved_file_id IS NOT NULL AND is_test = 0",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
 
     Some(ProposedImports { edges, externals })

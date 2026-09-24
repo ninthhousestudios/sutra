@@ -576,58 +576,18 @@ fn extract_outgoing_edges(
         Ok(r) if r.parsed_ok => r,
         _ => return None,
     };
-    let mut edges = Vec::new();
-    match language {
-        "rust" => {
-            let layout = crate::rust_imports::parse_workspace_layout(workspace_root);
-            let path_ref_map: HashMap<&str, i64> = id_map.iter().map(|(k, v)| (*k, *v)).collect();
-            for import in &result.imports {
-                let resolved = match crate::rust_imports::normalize_to_crate_segments(
-                    &import.raw_path,
-                    rel_path,
-                    &layout,
-                ) {
-                    Some(r) if !r.segments.is_empty() => r,
-                    _ => continue,
-                };
-                if let Some(target_id) = crate::rust_imports::resolve_segments(
-                    &resolved.segments,
-                    &path_ref_map,
-                    &resolved.src_prefix,
-                ) && target_id != file_id
-                {
-                    edges.push((file_id, target_id));
-                }
-            }
-        }
-        "dart" => {
-            let pkg_map = crate::dart_packages::DartPackageMap::build(workspace_root);
-            let id_to_path: HashMap<i64, &str> = id_map.iter().map(|(k, v)| (*v, *k)).collect();
-            for import in &result.imports {
-                let resolved = if import.raw_path.starts_with("package:") {
-                    crate::dart_packages::resolve_package_uri(&import.raw_path, &pkg_map)
-                } else if import.raw_path.ends_with(".dart")
-                    && !import.raw_path.starts_with("dart:")
-                {
-                    crate::dart_packages::resolve_relative_import(
-                        &import.raw_path,
-                        file_id,
-                        &id_to_path,
-                    )
-                } else {
-                    None
-                };
-                if let Some(path) = resolved
-                    && let Some(&target_id) = id_map.get(path.as_str())
-                    && target_id != file_id
-                {
-                    edges.push((file_id, target_id));
-                }
-            }
-        }
-        _ => {}
-    }
-    Some(edges)
+    // Review keeps test imports: its base edges are diffed against the index's
+    // full edge set (`import_edges`, test edges included), and per-constraint
+    // `include_tests` is applied downstream. The guard drops them (sutra/290).
+    crate::import_edges::content_import_edges(
+        workspace_root,
+        rel_path,
+        file_id,
+        language,
+        &result,
+        id_map,
+        crate::import_edges::TestImports::Keep,
+    )
 }
 
 pub fn build_findings(

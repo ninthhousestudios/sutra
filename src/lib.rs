@@ -12,6 +12,7 @@ pub mod git;
 pub mod graph;
 pub mod guard;
 pub mod health;
+pub mod import_edges;
 pub mod js_imports;
 pub mod lessons;
 pub mod lexical_tokenize;
