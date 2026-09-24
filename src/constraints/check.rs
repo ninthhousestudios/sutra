@@ -1051,8 +1051,6 @@ fn evaluate_raw(
         }
     }
 
-    use crate::db::ConstraintWaiverRow;
-
     let single_file_path: Option<String> = match &scope {
         EvalScope::SingleFile(file_id) => conn
             .query_row(
@@ -1070,56 +1068,10 @@ fn evaluate_raw(
         .chain(external_findings.iter().map(|f| f.from_path.as_str()))
         .chain(single_file_path.as_deref())
         .collect();
-    // The guard holds a read-only connection and cannot reproject the cache. When
-    // the cache is fresh (a server review already projected the current file) the
-    // DB read is the fast path. When it is stale — a hand-edited `accepted.toml`
-    // no server pass has seen yet — derive the waivers straight from that same
-    // file, so the guard honors exactly what the next audit will (guard must
-    // predict the report, sutra/308 hazard 3). Acks are report-only; the guard
-    // never needs them.
-    let constraint_waivers: Vec<ConstraintWaiverRow> =
-        if accepted::is_cache_fresh_conn(conn, workspace_root)? {
-            conn.prepare(
-                "SELECT id, constraint_id, constraint_name, file_path, \
-                 symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-                 FROM constraint_waivers",
-            )?
-            .query_map([], |row| {
-                Ok(ConstraintWaiverRow {
-                    id: row.get(0)?,
-                    constraint_id: row.get(1)?,
-                    constraint_name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    symbol_qualified_name: row.get(4)?,
-                    rationale: row.get(5)?,
-                    waived_by: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .filter(|w| relevant_paths.contains(w.file_path.as_str()))
-            .collect()
-        } else {
-            accepted::resolve_waivers_for_guard(workspace_root, &all_constraints)?
-                .into_iter()
-                .filter(|w| relevant_paths.contains(w.file_path.as_str()))
-                .map(|w| ConstraintWaiverRow {
-                    // The file carries no id/timestamps; the guard only matches on
-                    // (constraint_id, file, symbol) and reads rationale/by, so the
-                    // synthesized display fields are inert here.
-                    id: 0,
-                    constraint_id: w.constraint_id.into(),
-                    constraint_name: w.constraint_name.map(Into::into),
-                    file_path: w.file_path,
-                    symbol_qualified_name: w.symbol_qualified_name,
-                    rationale: w.rationale,
-                    waived_by: w.waived_by,
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                })
-                .collect()
-        };
+    let constraint_waivers =
+        accepted::guard_waivers(conn, workspace_root, &all_constraints, |p| {
+            relevant_paths.contains(p)
+        })?;
 
     let mut findings = external_findings;
     for (from_id, to_id) in &edges {

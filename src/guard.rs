@@ -874,10 +874,8 @@ pub fn check_proposed_patterns(
     use crate::constraints::patterns::{
         MatchKey, check_forbidden_patterns, match_key, subtract_multiset,
     };
-    use crate::db::ConstraintWaiverRow;
     use crate::rules::{self, ConstraintKind};
     use crate::waivers;
-    use std::sync::Arc;
 
     let registry = crate::parser::adapter::default_registry();
 
@@ -906,27 +904,12 @@ pub fn check_proposed_patterns(
         };
     }
 
-    let constraint_waivers: Vec<ConstraintWaiverRow> = conn
-        .prepare(
-            "SELECT id, constraint_id, constraint_name, file_path, \
-             symbol_qualified_name, rationale, waived_by, created_at, updated_at \
-             FROM constraint_waivers WHERE file_path = ?1",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![rel_path], |row| {
-                Ok(ConstraintWaiverRow {
-                    id: row.get(0)?,
-                    constraint_id: Arc::from(row.get::<_, String>(1)?),
-                    constraint_name: row.get::<_, Option<String>>(2)?.map(Arc::from),
-                    file_path: row.get(3)?,
-                    symbol_qualified_name: row.get(4)?,
-                    rationale: row.get(5)?,
-                    waived_by: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?
-            .collect()
+    // Same fresh-or-file resolution as evaluate_raw, so a waiver just added to
+    // accepted.toml is honoured before a server pass reprojects it (sutra/459).
+    // Fail-open to no waivers, as the DB read here always has.
+    let constraint_waivers =
+        crate::constraints::accepted::guard_waivers(conn, project_root, &all_constraints, |p| {
+            p == rel_path
         })
         .unwrap_or_default();
 
@@ -3112,11 +3095,48 @@ scope = "src/"
             params![rule_id],
         )
         .unwrap();
+        // The cached row is only authoritative while the cache is fresh, i.e.
+        // projected from the accepted.toml currently on disk.
+        let hash = crate::constraints::accepted::current_file_hash(dir.path()).unwrap();
+        conn.execute_batch("CREATE TABLE accepted_sync (id INTEGER PRIMARY KEY, file_hash TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO accepted_sync (id, file_hash) VALUES (1, ?1)",
+            params![hash],
+        )
+        .unwrap();
 
         let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
         assert!(
             outcome.active.is_empty(),
             "waived symbol should be excluded from both counts"
+        );
+        assert_eq!(outcome.waived.len(), 1);
+    }
+
+    /// A waiver hand-added to accepted.toml that no server pass has projected
+    /// yet (stale cache) is honoured at edit time, exactly as the next review
+    /// will honour it (sutra/459).
+    #[test]
+    fn pattern_waiver_from_accepted_toml_with_stale_cache() {
+        let disk_content = "fn main() {\n    let x = 1;\n}\n";
+        let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(outcome.active.len(), 1, "denied before the waiver exists");
+
+        std::fs::write(
+            dir.path().join(".sutra/accepted.toml"),
+            "[[waiver]]\nconstraint = \"no-clone\"\nfile = \"src/lib.rs\"\n\
+             symbol = \"main\"\nrationale = \"API requires owned\"\nby = \"test\"\n",
+        )
+        .unwrap();
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(
+            outcome.active.is_empty(),
+            "file-only waiver must be honoured"
         );
         assert_eq!(outcome.waived.len(), 1);
     }

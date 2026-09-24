@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::db::{AckProjection, Db, WaiverProjection};
+use crate::db::{AckProjection, ConstraintWaiverRow, Db, WaiverProjection};
 use crate::error::{Result, SutraError};
 use crate::rules::Constraint;
 
@@ -602,6 +602,65 @@ pub fn refresh_cache(
 pub fn is_cache_fresh_conn(conn: &rusqlite::Connection, root: &Path) -> Result<bool> {
     let marker = crate::db::accepted_sync_marker_from_conn(conn);
     Ok(marker.as_deref() == Some(current_file_hash(root)?.as_str()))
+}
+
+/// The waivers the guard enforces, restricted to paths `relevant` accepts.
+///
+/// The guard holds a read-only connection and cannot reproject the cache. When
+/// the cache is fresh (a server review already projected the current file) the
+/// DB read is the fast path. When it is stale — a hand-edited `accepted.toml`
+/// no server pass has seen yet — derive the waivers straight from that same
+/// file, so the guard honors exactly what the next audit will (guard must
+/// predict the report, sutra/308 hazard 3). Acks are report-only; the guard
+/// never needs them. Every guard-side waiver read goes through here (sutra/459).
+pub fn guard_waivers(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    constraints: &[Constraint],
+    relevant: impl Fn(&str) -> bool,
+) -> Result<Vec<ConstraintWaiverRow>> {
+    if is_cache_fresh_conn(conn, root)? {
+        return Ok(conn
+            .prepare(
+                "SELECT id, constraint_id, constraint_name, file_path, \
+                 symbol_qualified_name, rationale, waived_by, created_at, updated_at \
+                 FROM constraint_waivers",
+            )?
+            .query_map([], |row| {
+                Ok(ConstraintWaiverRow {
+                    id: row.get(0)?,
+                    constraint_id: row.get(1)?,
+                    constraint_name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    symbol_qualified_name: row.get(4)?,
+                    rationale: row.get(5)?,
+                    waived_by: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|w| relevant(&w.file_path))
+            .collect());
+    }
+    Ok(resolve_waivers_for_guard(root, constraints)?
+        .into_iter()
+        .filter(|w| relevant(&w.file_path))
+        .map(|w| ConstraintWaiverRow {
+            // The file carries no id/timestamps; the guard only matches on
+            // (constraint_id, file, symbol) and reads rationale/by, so the
+            // synthesized display fields are inert here.
+            id: 0,
+            constraint_id: w.constraint_id.into(),
+            constraint_name: w.constraint_name.map(Into::into),
+            file_path: w.file_path,
+            symbol_qualified_name: w.symbol_qualified_name,
+            rationale: w.rationale,
+            waived_by: w.waived_by,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+        .collect())
 }
 
 #[cfg(test)]
