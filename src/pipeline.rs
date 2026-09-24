@@ -1330,8 +1330,9 @@ struct ParseAggregates {
     dead_symbol_count: i64,
     hotspot_count: i64,
     pattern_family_count: i64,
-    /// `None` only when copied forward from a checkpoint that predates erosion.
-    erosion: Option<SnapshotErosion>,
+    /// Always present: a copy-forward from a legacy or other-version checkpoint
+    /// recomputes rather than carrying `None` over.
+    erosion: SnapshotErosion,
 }
 
 fn record_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMeta) -> Result<()> {
@@ -1356,8 +1357,8 @@ fn record_unchanged_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMet
             // (NULL) or older-version checkpoint is recomputed — the source is
             // unchanged, so the fresh value is what that checkpoint should hold.
             erosion: match previous.erosion {
-                Some(e) if e.version == crate::health::erosion::EROSION_VERSION => Some(e),
-                _ => Some(compute_erosion(db)?),
+                Some(e) if e.version == crate::health::erosion::EROSION_VERSION => e,
+                _ => compute_erosion(db)?,
             },
         },
         None => compute_parse_aggregates(db)?,
@@ -1387,7 +1388,7 @@ fn write_checkpoint(
             head_commit: meta.head_commit,
             timestamp: meta.timestamp,
             health_run_id: health.run_id,
-            erosion: aggregates.erosion,
+            erosion: Some(aggregates.erosion),
         },
         &health.file_scores,
         &health.component_scores,
@@ -1471,7 +1472,7 @@ fn compute_parse_aggregates(db: &Db) -> Result<ParseAggregates> {
         dead_symbol_count,
         hotspot_count,
         pattern_family_count: db.pattern_family_count()?,
-        erosion: Some(compute_erosion(db)?),
+        erosion: compute_erosion(db)?,
     })
 }
 

@@ -440,3 +440,59 @@ fn stale_membership_drops_component_erosion() {
     let files = stale["files"].as_array().unwrap();
     assert!(files.iter().all(|f| f["erosion"].is_object()));
 }
+
+fn file_health_json(fx: &Fixture, path: Option<&str>) -> serde_json::Value {
+    let verdict = sutra::health::refresh::current_run_validity(
+        &fx.db,
+        &fx.ws.root,
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    sutra::tools::file_health::handle(&fx.db, verdict, path, None, Some("all"), None, false)
+        .unwrap()
+}
+
+fn erosion_block<'a>(result: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+    &result["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == path)
+        .unwrap_or_else(|| panic!("{path} listed: {result}"))["erosion"]
+}
+
+#[test]
+fn path_excluded_test_file_is_marked_not_clean() {
+    let fx = Fixture::new(
+        "erosion-excluded",
+        &["dart", "javascript"],
+        &[
+            ("test/widget_test.dart", DART_TEST),
+            ("src/nested.js", NESTED_JS),
+        ],
+    );
+    fx.parse();
+    let result = file_health_json(&fx, None);
+
+    let excluded = erosion_block(&result, "test/widget_test.dart");
+    assert_eq!(excluded["excluded"], "test_file", "{excluded}");
+    assert_eq!(excluded["function_count"], 0);
+
+    let counted = erosion_block(&result, "src/nested.js");
+    assert!(counted.get("excluded").is_none(), "{counted}");
+    assert_eq!(counted["function_count"], 1);
+}
+
+#[test]
+fn path_filtered_erosion_matches_unfiltered() {
+    let fx = clustered_fixture("erosion-fh-path");
+    fx.parse();
+    let all = file_health_json(&fx, None);
+    let one = file_health_json(&fx, Some("src/ui/eps.js"));
+    assert_eq!(one["total_files"], 1);
+    assert!(one.get("components").is_none());
+    assert_eq!(
+        erosion_block(&one, "src/ui/eps.js"),
+        erosion_block(&all, "src/ui/eps.js")
+    );
+}

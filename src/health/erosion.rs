@@ -20,7 +20,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
-use crate::db::{Db, SymbolComplexityRow};
+use crate::components::is_test_file;
+use crate::db::{Db, FileRow, SymbolComplexityRow};
 use crate::error::Result;
 use crate::parser::flags_mark_test;
 
@@ -107,7 +108,7 @@ fn nearest_rank(sorted: &[i64], percentile: usize) -> Option<i64> {
 
 /// Outermost, non-test function samples grouped by file id.
 ///
-/// `test_files` holds files excluded by path ([`crate::components::is_test_file`]);
+/// `test_files` holds files excluded by path ([`is_test_file`]);
 /// `languages` maps file id to language for flag interpretation. A symbol is
 /// dropped when any ancestor carries a cognitive score (it is already folded
 /// into that ancestor) or when it or any ancestor is flagged as test code.
@@ -161,14 +162,55 @@ pub fn samples_by_file(
 /// Load the erosion samples of every indexed file.
 pub fn load_samples_by_file(db: &Db) -> Result<HashMap<i64, Vec<FunctionSample>>> {
     let files = db.all_files()?;
-    let test_files: HashSet<i64> = files
-        .iter()
-        .filter(|f| crate::components::is_test_file(&f.path))
-        .map(|f| f.id)
-        .collect();
-    let languages: HashMap<i64, &str> = files.iter().map(|f| (f.id, f.language.as_str())).collect();
     let rows = db.symbol_complexity_rows()?;
-    Ok(samples_by_file(&rows, &test_files, &languages))
+    Ok(samples_for(files.iter(), &rows))
+}
+
+/// Load the erosion samples of `file_ids` only — for callers that report a
+/// handful of files and must not scan the whole `symbols` table.
+pub fn load_samples_for_files(
+    db: &Db,
+    file_ids: &[i64],
+) -> Result<HashMap<i64, Vec<FunctionSample>>> {
+    let files = db.files_by_ids(file_ids)?;
+    let rows = db.symbol_complexity_rows_for_files(file_ids)?;
+    Ok(samples_for(files.values(), &rows))
+}
+
+fn samples_for<'a>(
+    files: impl IntoIterator<Item = &'a FileRow>,
+    rows: &[SymbolComplexityRow],
+) -> HashMap<i64, Vec<FunctionSample>> {
+    let mut test_files: HashSet<i64> = HashSet::new();
+    let mut languages: HashMap<i64, &str> = HashMap::new();
+    for f in files {
+        if is_test_file(&f.path) {
+            test_files.insert(f.id);
+        }
+        languages.insert(f.id, f.language.as_str());
+    }
+    samples_by_file(rows, &test_files, &languages)
+}
+
+/// Why a file is excluded from erosion wholesale, if it is. Path-excluded test
+/// files carry no samples, so without this marker their block would read the
+/// same as a file with no functions.
+pub fn file_exclusion(path: &str) -> Option<&'static str> {
+    is_test_file(path).then_some("test_file")
+}
+
+/// One file's erosion block, with an `excluded` marker when the whole file is
+/// out of scope.
+pub fn file_json(
+    by_file: &HashMap<i64, Vec<FunctionSample>>,
+    file_id: i64,
+    path: &str,
+) -> serde_json::Value {
+    let mut block = to_json(&files_aggregate(by_file, [file_id]));
+    if let Some(reason) = file_exclusion(path) {
+        block["excluded"] = json!(reason);
+    }
+    block
 }
 
 /// Workspace erosion: summed over files (a file can belong to several

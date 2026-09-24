@@ -1723,17 +1723,33 @@ impl Db {
              FROM symbols",
         )?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(SymbolComplexityRow {
-                    id: row.get(0)?,
-                    file_id: row.get(1)?,
-                    parent_symbol_id: row.get(2)?,
-                    cognitive: row.get(3)?,
-                    start_line: row.get(4)?,
-                    end_line: row.get(5)?,
-                    flags: row.get(6)?,
-                })
-            })?
+            .query_map([], map_complexity_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// [`Self::symbol_complexity_rows`] restricted to `file_ids`. A symbol's
+    /// parent chain stays within its file, so a per-file subset is closed under
+    /// the ancestor walk erosion performs.
+    pub fn symbol_complexity_rows_for_files(
+        &self,
+        file_ids: &[i64],
+    ) -> Result<Vec<SymbolComplexityRow>> {
+        if file_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, file_id, parent_symbol_id, cognitive, start_line, end_line, flags
+             FROM symbols WHERE file_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(file_ids.iter()),
+                map_complexity_row,
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -2961,6 +2977,18 @@ fn map_snapshot_completeness(
     let missing_json: String = row.get(first + 2)?;
     let missing_biomarkers: Vec<String> = serde_json::from_str(&missing_json).unwrap_or_default();
     Ok((completeness, missing_biomarkers))
+}
+
+fn map_complexity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolComplexityRow> {
+    Ok(SymbolComplexityRow {
+        id: row.get(0)?,
+        file_id: row.get(1)?,
+        parent_symbol_id: row.get(2)?,
+        cognitive: row.get(3)?,
+        start_line: row.get(4)?,
+        end_line: row.get(5)?,
+        flags: row.get(6)?,
+    })
 }
 
 fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {

@@ -526,7 +526,11 @@ input — health scores are unaffected.
   parser stamp forces a reparse but does not stop trend comparing across it.
 - Surfacing: `sutra_file_health` per-file and per-component `erosion` blocks
   (the component block disappears with the rest of `components` when
-  membership is stale); `sutra_trend` `deltas.eroded_mass/total_mass`, null
+  membership is stale). A path-excluded test file's block carries
+  `"excluded": "test_file"` so it doesn't read as a clean file. A
+  path/component-filtered query loads samples for the reported files only
+  (`load_samples_for_files`; parent chains stay within a file); only the
+  unfiltered query, which emits components, scans all symbols. `sutra_trend` `deltas.eroded_mass/total_mass`, null
   unless both checkpoints carry the same non-null version.
 
 ## git-organizational biomarkers (git_metrics.rs)

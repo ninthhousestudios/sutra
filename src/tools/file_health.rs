@@ -227,7 +227,9 @@ fn handle_inner(
     let mode = mode.unwrap_or("actionable");
 
     let evidence = PersistentEvidence::load(db, verdict)?;
-    let erosion_by_file = erosion::load_samples_by_file(db)?;
+    // The component block sums erosion over members across the whole workspace;
+    // it is only emitted for an unfiltered query.
+    let emit_components = path.is_none() && component.is_none();
 
     // Resolve component filter to a set of file IDs
     let component_file_ids: Option<HashSet<i64>> = if let Some(comp_name) = component {
@@ -283,12 +285,19 @@ fn handle_inner(
     });
     scored.truncate(limit);
 
+    // A filtered query reads only the reported files' symbols, not the table.
+    let erosion_by_file = if emit_components {
+        erosion::load_samples_by_file(db)?
+    } else {
+        let ids: Vec<i64> = scored.iter().map(|(f, _)| f.file_id).collect();
+        erosion::load_samples_for_files(db, &ids)?
+    };
+
     let items: Vec<_> = scored
         .iter()
         .map(|(f, score)| {
             let mut entry = file_entry(f, score, explain);
-            entry["erosion"] =
-                erosion::to_json(&erosion::files_aggregate(&erosion_by_file, [f.file_id]));
+            entry["erosion"] = erosion::file_json(&erosion_by_file, f.file_id, &f.path);
             if let Some(ref mut ann) = annotator
                 && let Some(row) = db.file_by_path(&f.path).ok().flatten()
             {
@@ -316,7 +325,7 @@ fn handle_inner(
         result["unsupported_biomarkers"] = json!(unsupported);
     }
 
-    if path.is_none() && component.is_none() {
+    if emit_components {
         let components = build_component_scores(db, &evidence, &erosion_by_file)?;
         result["total_components"] = json!(components.len());
         result["components"] = json!(components);
