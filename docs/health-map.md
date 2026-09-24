@@ -680,22 +680,6 @@ The `file_health` MCP tool returns findings + derived scores (1.0–10.0
 scale). The pipeline snapshot system also uses `scoring::score_file` —
 legacy `compute_file_scores` (0–100 scale) has been removed.
 
-### Remaining arc tasks
-
-| Task | Title | Status | Key concern |
-|---|---|---|---|
-| sutra/84 | health finding model + first biomarker | done | this doc |
-| sutra/85 | health scoring with category capping | done | scoring.rs + tool rewrite |
-| sutra/86 | git-organizational biomarkers | done | git_metrics.rs, db/graph.rs queries |
-| sutra/87 | review-1: health foundation | done | review gate |
-| sutra/88 | HRR encoder | done | similarity/hrr.rs, encoder.rs, codebook.rs |
-| sutra/89 | structural similarity search | done | similarity/search.rs, tools/similar.rs |
-| sutra/90 | pattern families + duplicates | done | similarity/duplicates.rs, tools/duplicates.rs |
-| sutra/91 | health snapshots + per-file history | done | pipeline.rs, trend.rs, db/mod.rs |
-| sutra/93 | semantic diff for review | needs-review | similarity/diff.rs, review.rs |
-| sutra/94 | review integration — health delta + on-demand biomarkers | needs-review | health/ondemand.rs, git.rs, review.rs |
-| sutra/95 | convention drift detection | removed | dropped in sutra/232 (zero usage) |
-| sutra/96 | orient + health MCP tools | done (orient later deleted, sutra/312) | health/instability.rs, ~~tools/orient.rs~~, tools/file_health.rs |
 
 ## Test locations
 
