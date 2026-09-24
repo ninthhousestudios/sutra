@@ -330,11 +330,21 @@ fn syntax_errors(file: &ChangedFile<'_, '_>) -> Option<String> {
 }
 
 fn compare(files: &[ChangedFile<'_, '_>]) -> ErosionDelta {
-    // Sample both sides of every comparable file. An unavailable file joins
-    // neither side: pairing its readable half would report it all as added or
-    // deleted.
-    let mut olds: Vec<SideFn<'_>> = Vec::new();
-    let mut news: Vec<SideFn<'_>> = Vec::new();
+    let (olds, news) = sample_sides(files);
+    let pairs = pair_functions(files, &olds, &news);
+    let mass = attribute_mass(&pairs, &olds, &news);
+    ErosionDelta {
+        files: file_deltas(files, &olds, &news, &mass),
+        functions: function_deltas(files, &pairs, &olds, &news),
+    }
+}
+
+/// Erosion samples of both sides of every comparable file. An unavailable file
+/// joins neither side: pairing its readable half would report it all as added
+/// or deleted.
+fn sample_sides<'a>(files: &'a [ChangedFile<'_, '_>]) -> (Vec<SideFn<'a>>, Vec<SideFn<'a>>) {
+    let mut olds = Vec::new();
+    let mut news = Vec::new();
     for (i, f) in files.iter().enumerate() {
         if unavailability(f).is_some() {
             continue;
@@ -348,64 +358,100 @@ fn compare(files: &[ChangedFile<'_, '_>]) -> ErosionDelta {
             news.extend(side_functions(parse, source, path, f.language, i));
         }
     }
+    (olds, news)
+}
 
-    let pairs = pair_functions(files, &olds, &news);
+/// Per-file eroded-mass increases and decreases, keyed by changed-file index.
+#[derive(Debug, Default)]
+struct FileMass {
+    added: HashMap<usize, f64>,
+    /// Positive magnitudes.
+    removed: HashMap<usize, f64>,
+}
 
-    // Per-file eroded-mass increases/decreases. A function paired within one
-    // file contributes its net change; a function moved across files is removed
-    // from its base file and added to its head file.
-    let mut added: HashMap<usize, f64> = HashMap::new();
-    let mut removed: HashMap<usize, f64> = HashMap::new();
-    let mut contribute = |file: usize, delta: f64| {
+impl FileMass {
+    fn record(&mut self, file: usize, delta: f64) {
         if delta > 0.0 {
-            *added.entry(file).or_default() += delta;
+            *self.added.entry(file).or_default() += delta;
         } else if delta < 0.0 {
-            *removed.entry(file).or_default() -= delta;
+            *self.removed.entry(file).or_default() -= delta;
         }
-    };
-    let mut functions = Vec::new();
-    for &(o, n) in &pairs {
+    }
+}
+
+/// Attribute each pair's eroded-mass change to files. A function paired within
+/// one file contributes its net change; a function moved across files is
+/// removed from its base file and added to its head file.
+fn attribute_mass(
+    pairs: &[(Option<usize>, Option<usize>)],
+    olds: &[SideFn<'_>],
+    news: &[SideFn<'_>],
+) -> FileMass {
+    let mut mass = FileMass::default();
+    for &(o, n) in pairs {
         let old = o.map(|i| &olds[i]);
         let new = n.map(|i| &news[i]);
-        let (base, head) = (old.map(|f| f.sample), new.map(|f| f.sample));
         match (old, new) {
             (Some(of), Some(nf)) if of.file == nf.file => {
-                contribute(of.file, eroded_mass(head) - eroded_mass(base));
+                mass.record(
+                    of.file,
+                    eroded_mass(Some(nf.sample)) - eroded_mass(Some(of.sample)),
+                );
             }
             _ => {
                 if let Some(of) = old {
-                    contribute(of.file, -eroded_mass(base));
+                    mass.record(of.file, -eroded_mass(Some(of.sample)));
                 }
                 if let Some(nf) = new {
-                    contribute(nf.file, eroded_mass(head));
+                    mass.record(nf.file, eroded_mass(Some(nf.sample)));
                 }
             }
         }
-        let Some(shown) = new.or(old) else {
-            continue;
-        };
-        let renamed = old.zip(new).and_then(|(of, nf)| {
-            (of.span.qualified_name != nf.span.qualified_name)
-                .then(|| of.span.qualified_name.to_string())
-        });
-        let moved = old.zip(new).and_then(|(of, nf)| {
-            (of.file != nf.file).then(|| files[of.file].entry.path.to_string())
-        });
-        let delta = FunctionDelta {
-            file: files[shown.file].entry.path.to_string(),
-            symbol: shown.span.qualified_name.to_string(),
-            from_symbol: renamed,
-            from_file: moved,
-            base,
-            head,
-            marginal_gain: None,
-        };
-        if delta.change().is_some() {
-            functions.push(delta);
-        }
     }
+    mass
+}
 
-    let file_deltas = files
+/// One [`FunctionDelta`] per pair whose erosion changed.
+fn function_deltas(
+    files: &[ChangedFile<'_, '_>],
+    pairs: &[(Option<usize>, Option<usize>)],
+    olds: &[SideFn<'_>],
+    news: &[SideFn<'_>],
+) -> Vec<FunctionDelta> {
+    pairs
+        .iter()
+        .filter_map(|&(o, n)| {
+            let old = o.map(|i| &olds[i]);
+            let new = n.map(|i| &news[i]);
+            let shown = new.or(old)?;
+            let renamed = old.zip(new).and_then(|(of, nf)| {
+                (of.span.qualified_name != nf.span.qualified_name)
+                    .then(|| of.span.qualified_name.to_string())
+            });
+            let moved = old.zip(new).and_then(|(of, nf)| {
+                (of.file != nf.file).then(|| files[of.file].entry.path.to_string())
+            });
+            let delta = FunctionDelta {
+                file: files[shown.file].entry.path.to_string(),
+                symbol: shown.span.qualified_name.to_string(),
+                from_symbol: renamed,
+                from_file: moved,
+                base: old.map(|f| f.sample),
+                head: new.map(|f| f.sample),
+                marginal_gain: None,
+            };
+            delta.change().is_some().then_some(delta)
+        })
+        .collect()
+}
+
+fn file_deltas(
+    files: &[ChangedFile<'_, '_>],
+    olds: &[SideFn<'_>],
+    news: &[SideFn<'_>],
+    mass: &FileMass,
+) -> Vec<FileDelta> {
+    files
         .iter()
         .enumerate()
         .map(|(i, f)| {
@@ -418,8 +464,8 @@ fn compare(files: &[ChangedFile<'_, '_>]) -> ErosionDelta {
                     head: erosion::aggregate(
                         news.iter().filter(|s| s.file == i).map(|s| &s.sample),
                     ),
-                    eroded_mass_added: added.get(&i).copied().unwrap_or(0.0),
-                    eroded_mass_removed: removed.get(&i).copied().unwrap_or(0.0),
+                    eroded_mass_added: mass.added.get(&i).copied().unwrap_or(0.0),
+                    eroded_mass_removed: mass.removed.get(&i).copied().unwrap_or(0.0),
                     partial: syntax_errors(f),
                 },
             };
@@ -429,12 +475,7 @@ fn compare(files: &[ChangedFile<'_, '_>]) -> ErosionDelta {
                 outcome,
             }
         })
-        .collect();
-
-    ErosionDelta {
-        files: file_deltas,
-        functions,
-    }
+        .collect()
 }
 
 /// Pair base and head functions: exact `(qualified_name, kind)` within the same
@@ -718,6 +759,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn side_fn(file: usize, cognitive: i64) -> SideFn<'static> {
+        SideFn {
+            file,
+            span: SymbolSpan {
+                qualified_name: "f",
+                short_name: "f",
+                kind: "function",
+                structural_hash: None,
+                start_line: 1,
+                end_line: 4,
+            },
+            source: "",
+            sample: FunctionSample { cognitive, sloc: 4 },
+        }
+    }
+
+    #[test]
+    fn attribute_mass_nets_in_file_and_splits_across_files() {
+        let olds = [side_fn(0, 20), side_fn(0, 20), side_fn(1, 3)];
+        let news = [side_fn(0, 30), side_fn(1, 20), side_fn(1, 20)];
+        // In-file change, cross-file move, and an added fn over a below-threshold
+        // deleted one.
+        let pairs = [
+            (Some(0), Some(0)),
+            (Some(1), Some(1)),
+            (Some(2), None),
+            (None, Some(2)),
+        ];
+        let mass = attribute_mass(&pairs, &olds, &news);
+        let m = |c: i64| {
+            eroded_mass(Some(FunctionSample {
+                cognitive: c,
+                sloc: 4,
+            }))
+        };
+        assert_eq!(mass.added.get(&0), Some(&(m(30) - m(20))));
+        assert_eq!(mass.removed.get(&0), Some(&m(20)));
+        assert_eq!(mass.added.get(&1), Some(&(m(20) + m(20))));
+        assert_eq!(
+            mass.removed.get(&1),
+            None,
+            "a below-threshold deletion removes no mass"
+        );
     }
 
     #[test]
