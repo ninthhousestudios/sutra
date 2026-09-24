@@ -657,7 +657,7 @@ pub fn diff_files(
     let mut errors: HashMap<String, String> = HashMap::new();
 
     for entry in entries {
-        let old_file = entry.old_path.as_deref().unwrap_or(&entry.path);
+        let old_file = entry.base_path();
         let new_file = &entry.path;
 
         let language = match language_for_path(new_file).or_else(|| language_for_path(old_file)) {

@@ -547,16 +547,24 @@ input — health scores are unaffected.
   unfiltered query, which emits components, scans all symbols. `sutra_trend` `deltas.eroded_mass/total_mass`, null
   unless both checkpoints carry the same non-null version.
 - Review delta (`tools/erosion_delta.rs`, sutra/451): `sutra_review`'s
-  `erosion_delta` block parses the base and head of every changed file that
-  has a language adapter. Base is read from `old_path` for renames, via
-  `review::resolve_diff_entries`. Head is a revision, the index, or the
+  `erosion_delta` block parses the base and head of every changed file where
+  either side has a language adapter. Base is read from `old_path` for renames, via
+  `review::resolve_diff_entries`. Each side is parsed by its own path's adapter
+  (`side_adapters`), as the index would have parsed it: a rename across
+  extensions changes the grammar, and a side with no adapter is `Unindexed`
+  (no samples, like the index), so erosion renamed into an indexed language is
+  added and erosion renamed out of one is deleted. Head is a revision, the index, or the
   worktree (`git::file_content_on_side`). Samples come from
   `erosion::parsed_samples` over `parser::persist::flatten_symbols_for_insert`,
   the flattening the index persists, so a function's sample equals
   file_health's for the same bytes (pinned by
-  `review_samples_match_file_health_samples`). Pairing: exact
-  `(qualified_name, kind)` within a file, then `symbol_diff::resolve_renames`
-  (`ResolveResult.pairs`) over the leftovers of all files. That means a rename
+  `review_samples_match_file_health_samples`). Pairing: a
+  `(qualified_name, kind)` key naming exactly one function on each side of a
+  file pairs directly. Repeated keys (cfg-gated twins) are ambiguous, so their
+  members join the leftovers of all files in `symbol_diff::resolve_renames`
+  (`ResolveResult.pairs`: body identity, then same-name similarity). Twins
+  that identity cannot separate fall back to source order. Pairing twins by
+  position first fabricated crossings when unchanged twins were reordered. That means a rename
   that also rewrites the body is reported as deleted + added, the same as
   symbol_diff. A cross-file move is removed from its base file and added to its
   head file. Per-file `eroded_mass_added − eroded_mass_removed` equals the net

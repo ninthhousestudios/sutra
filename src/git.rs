@@ -10,6 +10,13 @@ pub struct DiffFileEntry {
     pub old_path: Option<String>,
 }
 
+impl DiffFileEntry {
+    /// The path on the base side: the old path of a rename, else `path`.
+    pub fn base_path(&self) -> &str {
+        self.old_path.as_deref().unwrap_or(&self.path)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BlameLine {
     pub commit: String,

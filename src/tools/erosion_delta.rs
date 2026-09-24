@@ -6,10 +6,11 @@
 //! index persists them — so a function's sample here is the one file_health
 //! would report for the same bytes.
 //!
-//! Functions are paired across the diff by exact `(qualified_name, kind)` within
-//! a file first, then by [`symbol_diff::resolve_renames`] over the leftovers of
-//! every file (renames, moves across files). An unpaired function is added or
-//! deleted.
+//! Functions are paired across the diff by a `(qualified_name, kind)` key unique
+//! on both sides of a file first, then by [`symbol_diff::resolve_renames`] over
+//! the leftovers of every file (repeated keys, renames, moves across files). An
+//! unpaired function is added or deleted. Each side is parsed by its own path's
+//! adapter, so a rename across extensions is measured as the index saw it.
 //!
 //! A side that cannot be read or parsed makes that file's delta unavailable,
 //! with a reason, and marks the totals partial — never zero.
@@ -33,21 +34,25 @@ const PARSE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FUNCTIONS: usize = 20;
 
 /// One side of a changed file.
-enum Side {
+enum Side<'r> {
     /// The file does not exist on this side (added or deleted).
     Absent,
+    /// No language adapter handles this side's path (one end of a rename across
+    /// extensions): the index holds no samples for it, so it contributes none.
+    Unindexed,
     Unavailable(String),
     Parsed {
         source: String,
         parse: ParseResult,
+        /// Language of this side's own path; a rename can change it.
+        language: &'r str,
     },
 }
 
 struct ChangedFile<'e, 'r> {
     entry: &'e DiffFileEntry,
-    language: &'r str,
-    base: Side,
-    head: Side,
+    base: Side<'r>,
+    head: Side<'r>,
 }
 
 /// Why a changed file has no comparable delta: one side could not be read or
@@ -176,14 +181,17 @@ pub fn compute(
     let files: Vec<ChangedFile<'_, '_>> = entries
         .iter()
         .filter_map(|entry| {
-            let old_path = entry.old_path.as_deref().unwrap_or(&entry.path);
-            let adapter =
-                adapter_for(registry, &entry.path).or_else(|| adapter_for(registry, old_path))?;
+            let (base_adapter, head_adapter) = side_adapters(registry, entry)?;
             Some(ChangedFile {
                 entry,
-                language: adapter.language_id(),
-                base: load_side(workspace_root, Some(base), old_path, adapter, &mut pool),
-                head: load_side(workspace_root, head, &entry.path, adapter, &mut pool),
+                base: load_side(
+                    workspace_root,
+                    Some(base),
+                    entry.base_path(),
+                    base_adapter,
+                    &mut pool,
+                ),
+                head: load_side(workspace_root, head, &entry.path, head_adapter, &mut pool),
             })
         })
         .collect();
@@ -201,14 +209,34 @@ pub fn source_samples(
     let adapter = adapter_for(registry, path)?;
     let mut pool = ParserPool::new(PARSE_TIMEOUT);
     match parse_side(source.to_string(), path, adapter, &mut pool) {
-        Side::Parsed { source, parse } => Some(
-            side_functions(&parse, &source, path, adapter.language_id(), 0)
+        Side::Parsed {
+            source,
+            parse,
+            language,
+        } => Some(
+            side_functions(&parse, &source, path, language, 0)
                 .into_iter()
                 .map(|f| f.sample)
                 .collect(),
         ),
-        Side::Absent | Side::Unavailable(_) => None,
+        Side::Absent | Side::Unindexed | Side::Unavailable(_) => None,
     }
+}
+
+/// A side's language adapter; `None` when its path is not indexed.
+type SideAdapter<'r> = Option<&'r dyn LanguageAdapter>;
+
+/// The adapter for each side of `entry`, the base side's from its old path:
+/// the index parsed each side by its own path at that revision, so a rename
+/// across extensions changes the grammar or drops the side from the index.
+/// `None` when neither side is indexed.
+fn side_adapters<'r>(
+    registry: &'r LanguageRegistry,
+    entry: &DiffFileEntry,
+) -> Option<(SideAdapter<'r>, SideAdapter<'r>)> {
+    let base = adapter_for(registry, entry.base_path());
+    let head = adapter_for(registry, &entry.path);
+    (base.is_some() || head.is_some()).then_some((base, head))
 }
 
 fn adapter_for<'r>(registry: &'r LanguageRegistry, path: &str) -> Option<&'r dyn LanguageAdapter> {
@@ -216,13 +244,16 @@ fn adapter_for<'r>(registry: &'r LanguageRegistry, path: &str) -> Option<&'r dyn
     registry.adapter_for_extension(ext)
 }
 
-fn load_side(
+fn load_side<'r>(
     workspace_root: &Path,
     revision: Option<&str>,
     path: &str,
-    adapter: &dyn LanguageAdapter,
+    adapter: Option<&'r dyn LanguageAdapter>,
     pool: &mut ParserPool,
-) -> Side {
+) -> Side<'r> {
+    let Some(adapter) = adapter else {
+        return Side::Unindexed;
+    };
     match git::file_content_on_side(workspace_root, revision, path) {
         Ok(None) => Side::Absent,
         Ok(Some(source)) => parse_side(source, path, adapter, pool),
@@ -230,12 +261,12 @@ fn load_side(
     }
 }
 
-fn parse_side(
+fn parse_side<'r>(
     source: String,
     path: &str,
-    adapter: &dyn LanguageAdapter,
+    adapter: &'r dyn LanguageAdapter,
     pool: &mut ParserPool,
-) -> Side {
+) -> Side<'r> {
     // The pipeline skips oversized files, so the index holds no samples for
     // them either; comparing a parse here would invent a number file_health
     // never shows.
@@ -246,7 +277,11 @@ fn parse_side(
         ));
     }
     match pool.parse_with(adapter, &source, path) {
-        Ok(parse) => Side::Parsed { source, parse },
+        Ok(parse) => Side::Parsed {
+            source,
+            parse,
+            language: adapter.language_id(),
+        },
         Err(e) => Side::Unavailable(format!("parse failed: {e}")),
     }
 }
@@ -289,10 +324,14 @@ fn side_functions<'a>(
         .collect()
 }
 
-fn side_parse(side: &Side) -> Option<(&ParseResult, &str)> {
+fn side_parse<'s, 'r>(side: &'s Side<'r>) -> Option<(&'s ParseResult, &'s str, &'r str)> {
     match side {
-        Side::Parsed { source, parse } => Some((parse, source.as_str())),
-        Side::Absent | Side::Unavailable(_) => None,
+        Side::Parsed {
+            source,
+            parse,
+            language,
+        } => Some((parse, source.as_str(), language)),
+        Side::Absent | Side::Unindexed | Side::Unavailable(_) => None,
     }
 }
 
@@ -315,7 +354,7 @@ fn unavailability(file: &ChangedFile<'_, '_>) -> Option<Unavailability> {
 }
 
 fn syntax_errors(file: &ChangedFile<'_, '_>) -> Option<String> {
-    let bad = |side: &Side| side_parse(side).is_some_and(|(p, _)| !p.parsed_ok);
+    let bad = |side: &Side| side_parse(side).is_some_and(|(p, _, _)| !p.parsed_ok);
     let sides: Vec<&str> = [("base", &file.base), ("head", &file.head)]
         .into_iter()
         .filter(|(_, s)| bad(s))
@@ -350,12 +389,12 @@ fn sample_sides<'a>(files: &'a [ChangedFile<'_, '_>]) -> (Vec<SideFn<'a>>, Vec<S
             continue;
         }
         let path = f.entry.path.as_str();
-        let old_path = f.entry.old_path.as_deref().unwrap_or(path);
-        if let Some((parse, source)) = side_parse(&f.base) {
-            olds.extend(side_functions(parse, source, old_path, f.language, i));
+        let old_path = f.entry.base_path();
+        if let Some((parse, source, language)) = side_parse(&f.base) {
+            olds.extend(side_functions(parse, source, old_path, language, i));
         }
-        if let Some((parse, source)) = side_parse(&f.head) {
-            news.extend(side_functions(parse, source, path, f.language, i));
+        if let Some((parse, source, language)) = side_parse(&f.head) {
+            news.extend(side_functions(parse, source, path, language, i));
         }
     }
     (olds, news)
@@ -478,36 +517,47 @@ fn file_deltas(
         .collect()
 }
 
-/// Pair base and head functions: exact `(qualified_name, kind)` within the same
-/// changed file first (in source order when a key repeats), then rename
-/// resolution over every file's leftovers. Returns `(old, new)` index pairs into
-/// `olds`/`news`; an unpaired function appears with the other side `None`.
+/// Pair base and head functions. A `(qualified_name, kind)` key naming exactly
+/// one function on each side of a changed file pairs directly. A repeated key
+/// (cfg-gated twins, same-named items) is ambiguous: source position says
+/// nothing about which twin is which, so its members go through rename
+/// resolution — body identity, then same-name similarity — with every file's
+/// other leftovers. Only twins identity cannot tell apart fall back to source
+/// order. Returns `(old, new)` index pairs into `olds`/`news`; an unpaired
+/// function appears with the other side `None`.
 fn pair_functions<'a>(
     files: &[ChangedFile<'_, '_>],
     olds: &[SideFn<'a>],
     news: &[SideFn<'a>],
 ) -> Vec<(Option<usize>, Option<usize>)> {
-    fn key<'a>(f: &SideFn<'a>) -> (usize, &'a str, &'a str) {
+    type Key<'a> = (usize, &'a str, &'a str);
+    fn key<'a>(f: &SideFn<'a>) -> Key<'a> {
         (f.file, f.span.qualified_name, f.span.kind)
     }
-    let mut old_by_key: HashMap<(usize, &'a str, &'a str), VecDeque<usize>> = HashMap::new();
-    for (i, f) in olds.iter().enumerate() {
-        old_by_key.entry(key(f)).or_default().push_back(i);
+    let mut groups: HashMap<Key<'a>, (Vec<usize>, Vec<usize>)> = HashMap::new();
+    for (o, f) in olds.iter().enumerate() {
+        groups.entry(key(f)).or_default().0.push(o);
     }
+    for (n, f) in news.iter().enumerate() {
+        groups.entry(key(f)).or_default().1.push(n);
+    }
+    let unique_old = |f: &SideFn<'a>| {
+        groups
+            .get(&key(f))
+            .and_then(|(os, ns)| (os.len() == 1 && ns.len() == 1).then(|| os[0]))
+    };
 
     let mut pairs: Vec<(Option<usize>, Option<usize>)> = Vec::new();
-    let mut paired_old = vec![false; olds.len()];
     let mut leftover_new: Vec<usize> = Vec::new();
     for (n, f) in news.iter().enumerate() {
-        match old_by_key.get_mut(&key(f)).and_then(VecDeque::pop_front) {
-            Some(o) => {
-                paired_old[o] = true;
-                pairs.push((Some(o), Some(n)));
-            }
+        match unique_old(f) {
+            Some(o) => pairs.push((Some(o), Some(n))),
             None => leftover_new.push(n),
         }
     }
-    let leftover_old: Vec<usize> = (0..olds.len()).filter(|&o| !paired_old[o]).collect();
+    let leftover_old: Vec<usize> = (0..olds.len())
+        .filter(|&o| unique_old(&olds[o]).is_none())
+        .collect();
 
     // Candidates are attributed to the head path on both sides, so a function
     // in a renamed file still resolves as same-file.
@@ -526,20 +576,26 @@ fn pair_functions<'a>(
         resolved_new[un] = true;
         pairs.push((Some(leftover_old[uo]), Some(leftover_new[un])));
     }
-    pairs.extend(
-        leftover_new
-            .iter()
-            .zip(&resolved_new)
-            .filter(|(_, r)| !**r)
-            .map(|(&n, _)| (None, Some(n))),
-    );
-    pairs.extend(
-        leftover_old
-            .iter()
-            .zip(&resolved_old)
-            .filter(|(_, r)| !**r)
-            .map(|(&o, _)| (Some(o), None)),
-    );
+
+    // Last resort: twins identity could not separate (all rewritten) pair in
+    // source order, as a unique key pairs same-named functions whatever their
+    // bodies.
+    let mut unresolved_old: HashMap<Key<'a>, VecDeque<usize>> = HashMap::new();
+    for (&o, _) in leftover_old.iter().zip(&resolved_old).filter(|(_, r)| !**r) {
+        unresolved_old
+            .entry(key(&olds[o]))
+            .or_default()
+            .push_back(o);
+    }
+    for (&n, _) in leftover_new.iter().zip(&resolved_new).filter(|(_, r)| !**r) {
+        let o = unresolved_old
+            .get_mut(&key(&news[n]))
+            .and_then(VecDeque::pop_front);
+        pairs.push((o, Some(n)));
+    }
+    let mut still_old: Vec<usize> = unresolved_old.into_values().flatten().collect();
+    still_old.sort_unstable();
+    pairs.extend(still_old.into_iter().map(|o| (Some(o), None)));
     pairs
 }
 
@@ -711,8 +767,15 @@ mod tests {
         }
     }
 
-    fn side(registry: &LanguageRegistry, path: &str, src: Option<&str>) -> Side {
-        let adapter = adapter_for(registry, path).expect("rust adapter");
+    /// Mirrors [`load_side`] with `src` standing in for the git read.
+    fn side<'r>(
+        adapter: Option<&'r dyn LanguageAdapter>,
+        path: &str,
+        src: Option<&str>,
+    ) -> Side<'r> {
+        let Some(adapter) = adapter else {
+            return Side::Unindexed;
+        };
         let mut pool = ParserPool::new(PARSE_TIMEOUT);
         match src {
             Some(s) => parse_side(s.to_string(), path, adapter, &mut pool),
@@ -725,11 +788,13 @@ mod tests {
         let files: Vec<ChangedFile<'_, '_>> = entries
             .iter()
             .zip(sides)
-            .map(|(e, (b, h))| ChangedFile {
-                entry: e,
-                language: "rust",
-                base: side(&registry, e.old_path.as_deref().unwrap_or(&e.path), b),
-                head: side(&registry, &e.path, h),
+            .map(|(e, (b, h))| {
+                let (base, head) = side_adapters(&registry, e).expect("fixture path is indexed");
+                ChangedFile {
+                    entry: e,
+                    base: side(base, e.base_path(), b),
+                    head: side(head, &e.path, h),
+                }
             })
             .collect();
         compare(&files)
@@ -958,8 +1023,7 @@ mod tests {
         let src = nested("f", 6);
         let files = vec![ChangedFile {
             entry: &e,
-            language: "rust",
-            base: side(&registry, "a.rs", Some(&src)),
+            base: side(adapter_for(&registry, "a.rs"), "a.rs", Some(&src)),
             head: Side::Unavailable("read failed: boom".to_string()),
         }];
         let delta = compare(&files);
@@ -991,5 +1055,87 @@ mod tests {
     #[test]
     fn no_adapter_files_emit_no_block() {
         assert!(delta_json(&ErosionDelta::default()).is_none());
+    }
+
+    /// Two `f`s gated on complementary cfgs: one below the threshold, one
+    /// above, in the given order.
+    fn cfg_twins(first: (&str, usize), second: (&str, usize)) -> String {
+        format!(
+            "#[cfg({})]\n{}#[cfg({})]\n{}",
+            first.0,
+            nested("f", first.1),
+            second.0,
+            nested("f", second.1)
+        )
+    }
+
+    #[test]
+    fn reordered_cfg_twins_are_no_erosion_change() {
+        let base = cfg_twins(("unix", 3), ("not(unix)", 6));
+        let head = cfg_twins(("not(unix)", 6), ("unix", 3));
+        let delta = run(&[entry("a.rs", None)], vec![(Some(&base), Some(&head))]);
+        assert!(
+            delta.functions.is_empty(),
+            "reordering unchanged twins fabricated changes: {:?}",
+            delta.functions
+        );
+        let (_, _, added, removed) = measured(&delta.files[0]);
+        assert_eq!((added, removed), (0.0, 0.0));
+    }
+
+    #[test]
+    fn reordered_edited_twin_pairs_by_similarity_not_position() {
+        let base = cfg_twins(("unix", 3), ("not(unix)", 6));
+        let head = cfg_twins(("not(unix)", 7), ("unix", 3));
+        let delta = run(&[entry("a.rs", None)], vec![(Some(&base), Some(&head))]);
+        let changes: Vec<_> = delta.functions.iter().map(FunctionDelta::change).collect();
+        assert_eq!(changes, vec![Some(ErosionChange::ErodedChanged)]);
+        assert_net_matches(&delta);
+    }
+
+    #[test]
+    fn rename_into_supported_language_adds_its_erosion() {
+        let src = nested("f", 6);
+        let delta = run(
+            &[entry("a.rs", Some("a.txt"))],
+            vec![(Some(&src), Some(&src))],
+        );
+        let (b, h, added, _) = measured(&delta.files[0]);
+        assert_eq!(b.function_count, 0, "the index never parsed a.txt");
+        assert_eq!(h.eroded_count, 1);
+        assert!(added > 0.0);
+        assert_eq!(
+            delta.functions[0].change(),
+            Some(ErosionChange::AddedEroded)
+        );
+    }
+
+    #[test]
+    fn rename_out_of_supported_language_deletes_its_erosion() {
+        let src = nested("f", 6);
+        let delta = run(
+            &[entry("a.txt", Some("a.rs"))],
+            vec![(Some(&src), Some(&src))],
+        );
+        let (b, h, _, removed) = measured(&delta.files[0]);
+        assert_eq!(b.eroded_count, 1);
+        assert_eq!(h.function_count, 0, "the index no longer parses a.txt");
+        assert!(removed > 0.0);
+        assert_eq!(
+            delta.functions[0].change(),
+            Some(ErosionChange::DeletedEroded)
+        );
+    }
+
+    #[test]
+    fn cross_language_rename_parses_each_side_with_its_own_grammar() {
+        let rust = nested("f", 6);
+        let python = "def g(x):\n    return x\n";
+        let delta = run(
+            &[entry("a.py", Some("a.rs"))],
+            vec![(Some(&rust), Some(python))],
+        );
+        let (b, _, _, _) = measured(&delta.files[0]);
+        assert_eq!(b.eroded_count, 1, "base must be parsed as Rust, not Python");
     }
 }
