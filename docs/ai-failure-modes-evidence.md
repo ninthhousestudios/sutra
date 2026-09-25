@@ -132,6 +132,16 @@ frequent AND sutra has leverage at the moment of writing.
      time. It would have fired on the dual engine (456/460), the copied
      pipeline (explore/54), the duplicated fork (ai/197), and the edge
      extractors.
+     **Back-tested (sutra/463, [dup-exists-backtest.md](dup-exists-backtest.md)):
+     GO as a review-time advisory grouped by matched file; NO-GO at the
+     guard.** It fires on 6 of 23 pinned DUP introductions: 6 of the 9 where a
+     similar body existed, 7 of 9 with same-change comparison. That includes
+     explore/54, ai/197, sutra/418 and 459. It misses 460, a 2-line inline
+     reimplementation, and all 6 list-shaped cases. On a held-out sample it
+     fires on 42% of added functions: 20% real duplicates, 70% accurate but
+     idiomatic siblings, 10% noise. `sutra_similar`'s default strip mode is
+     unusable for this; the check uses embed + lexical + rare shared token
+     runs.
    - "You fixed 1 of N": when a diff rewrites a pattern at one site, list
      the surviving instances. It would have fired on yojana/47, sutra/283,
      sutra/441 and sutra/459. This mechanism was not on the candidate list

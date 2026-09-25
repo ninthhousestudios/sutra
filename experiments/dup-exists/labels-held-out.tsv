@@ -1,0 +1,41 @@
+sha	function	label	note
+d70bf20	accepted_sync_marker_from_conn	DUP	same SELECT as Db::get_accepted_sync_marker, swallowing errors instead of propagating; both live at HEAD
+3b5f777	is_definition_name	FAM	parallel language-adapter function
+3b5f777	classify_ref_context	FAM	parallel language-adapter function
+3b5f777	walk_imports_recursive	FAM	parallel language-adapter function
+c303793	probe_owners	DUP	second reader of .sutra/owners.toml with different failure semantics; load_owners_config later removed
+f56c8a6	ResolutionMethod::as_str	FAM	enum as_str sibling
+d5420db	default_smriti_db	FAM	env-or-$HOME path idiom
+d5420db	SmritiReader::open	FAM	open-connection sibling
+01a9cb7	Db::symbol_complexity_rows	FAM	Db query sibling
+df8712e	parse	FAM	Python adapter mirrors C adapter (near-identical boilerplate; arguably a default trait method)
+df8712e	extract_flags	FAM	parallel adapter
+df8712e	is_test_file	FAM	parallel adapter, language-specific rules
+df8712e	collect_symbols	FAM	parallel adapter
+df8712e	collect_symbol	FAM	parallel adapter
+df8712e	extract_function	FAM	parallel adapter
+df8712e	extract_class	FAM	parallel adapter
+df8712e	collect_assignment_symbols	FAM	parallel adapter
+df8712e	extract_docstring_body	NOISE	shape-only match to rust extract_visibility
+df8712e	extract_docstring_from_comment	DUP	comment-marker stripping copied from dart/c extract_docstring (lex 0.99)
+df8712e	build_fn_signature	FAM	parallel adapter
+df8712e	extract_fn_language_attrs	FAM	parallel adapter
+df8712e	has_async_keyword	FAM	parallel adapter
+df8712e	has_type_hints	NOISE	cursor-walk idiom
+df8712e	walk_refs_recursive	FAM	parallel adapter
+df8712e	is_definition_name	FAM	parallel adapter
+df8712e	classify_ref_context	FAM	parallel adapter
+df8712e	collect_imports	FAM	parallel adapter
+df8712e	collect_import_names	FAM	parallel adapter
+df8712e	collect_import_from	FAM	parallel adapter
+e77727a	body_for_name	DUP	list-shaped: inverse of body_display_name's hand-maintained body list
+312aec9	last_turn_at	FAM	store query sibling
+0576cd5	seriesSteps	FAM	thin wrapper sibling in the same file
+0576cd5	seriesStepsWithOverrides	FAM	thin wrapper sibling in the same file
+de1ca59	ExportService::_csvEscape	DUP	identical private helper already in CsvChartFormat
+de1ca59	_ContextBarState::_showPreciseTimePicker	NOISE	widget boilerplate
+cd86c7c	_RiseSetTabState::_buildResultCards	FAM	per-tab result-card builder
+934028b	_EphemerisManagerScreenState::_atlasRow	NOISE	widget boilerplate
+934028b	_EphemerisManagerScreenState::_runAtlasDownload	DUP	download flow copied from _runDownload (107 rare shared runs)
+934028b	_EphemerisManagerScreenState::_handleAtlasCancel	DUP	copied from _handleCancel
+934028b	_EphemerisManagerScreenState::_deleteAtlasRelease	DUP	copied from _handleDelete

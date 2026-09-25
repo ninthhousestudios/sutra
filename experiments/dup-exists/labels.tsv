@@ -1,0 +1,50 @@
+sha	function	label	note
+2479d4a	Db::symbol_labels	FAM	Db query accessor sibling
+2479d4a	rebuild_rollups	DUP	adjacency+rollups sequence also inline in post_parse_sequence
+2479d4a	ingest_present	NOISE	shared `match git::head_commit(..) { Ok(Some(sha)) =>` idiom only
+fbbb77c	has_annotation	NOISE	shared tree-sitter cursor `.children(&mut cursor).any(` idiom only
+fbbb77c	extract_flags	FAM	parallel Dart/Rust adapter method
+1ac2818	EdgeKind::from_context_kind	FAM	enum-to-enum mapping beside the source enum's as_str
+1ac2818	EdgeKind::as_str	FAM	enum as_str sibling
+1ac2818	EdgeKind::clustering_weight	NOISE	weights vs strings; shape-only match
+646259e	map_ratchet_row	FAM	row mapper sibling
+646259e	Db::get_constraint_ratchet	FAM	Db accessor sibling
+646259e	Db::get_active_constraint_ratchets	FAM	Db accessor sibling
+646259e	Db::release_constraint_ratchet	FAM	Db accessor sibling
+646259e	Severity::ordinal	FAM	parallel severity enum in another domain (arguable DUP)
+646259e	Severity::from_str_lossy	FAM	parallel severity enum in another domain (arguable DUP)
+646259e	Constraint::rendered_description	DUP	second per-ConstraintKind renderer beside orient::constraint_detail (variant list must stay in sync)
+b8743a0	extract_language_attrs	NOISE	cursor-walk idiom + shape-only combo
+9b68786	Db::load_hrr_vector	FAM	Db accessor sibling
+9b68786	Db::load_all_vectors_by_mode	DUP	generalizes load_all_strip_vectors; both still live at HEAD
+9b68786	handle	DUP	resolve-symbol + NoSuchSymbol/Ambiguous diagnostic block copied from calls::handle (239 rare shared runs)
+59967be	Db::function_symbols_for_hrr_files	DUP	symbol-join SQL copied; function_symbols_for_hrr still live beside it
+59967be	Db::files_needing_hrr_recompute	FAM	Db accessor sibling
+59967be	Db::insert_hrr_vectors_and_hashes	DUP	insert loop copied from replace_hrr_vectors; both live at HEAD
+59967be	Db::hrr_vector_count	FAM	count(*) accessor sibling
+9fc2c0a	LiveTurn::locked_log	MIG	copy of routes/ai.rs Turn; ai.rs retired in 348d4c9
+9fc2c0a	LiveTurns::locked	MIG	same migration
+9fc2c0a	live_sse	MIG	same migration
+9fc2c0a	replay_sse	MIG	same migration
+631fde6	stream	MIG	provider code moved out of routes/ai.rs, old retired later
+631fde6	SseDecoder::push	MIG	same migration
+631fde6	normalize	MIG	same migration
+631fde6	wire::SystemInstruction<'a>::new	MIG	same migration
+631fde6	wire::Content::from_neutral	MIG	same migration
+85ae96e	Knowledge::fetch_source	FAM	trait-delegation one-liner sibling
+85ae96e	KoshaClient::fetch_source	FAM	sibling HTTP endpoint (shared request boilerplate; arguable DUP)
+79d4489	computePhenomena	DUP	calc pipeline shared with computePlanets (combo top-1 is noise: phenomenaToExportRows)
+79d4489	computePlanetocentric	DUP	calc pipeline + field mapping copied from computePlanets
+79d4489	computeStar	DUP	param list + result field mapping copied from computePlanets
+7c2b489	UserSignSet::copyWith	FAM	copyWith sibling
+7c2b489	UserSignSet::fromJson	FAM	fromJson sibling
+7c2b489	_listEq	DUP	identical private helper already in applied_globals.dart
+7c2b489	UserSignSetListPrefCodec::read	DUP	module cloned from user_ayanamsa.dart
+7c2b489	SignNameSelectionPrefCodec::read	DUP	module cloned from user_ayanamsa.dart
+7c2b489	UserSignSetNotifier::add	DUP	module cloned from user_ayanamsa.dart
+7c2b489	UserSignSetNotifier::update	DUP	module cloned from user_ayanamsa.dart
+7c2b489	SignNameSelector::build	DUP	hand-rolls the decorated dropdown LabeledDropdown already provides
+7c2b489	showUserSignSetDialog	DUP	dialog cloned from showUserAyanamsaDialog
+8f8d4b2	_DatesTabState::_commitFields	DUP	copy of _DifferentialTabState::_commitTimeOverride
+ebd9dc1	_PhenomenaTabState::_addAsteroid	DUP	copy of _OtherBodiesTabState::_addAsteroid
+ebd9dc1	_PhenomenaTabState::_addCustomComet	DUP	copy of _OtherBodiesTabState::_addCustomComet

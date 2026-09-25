@@ -1,0 +1,20 @@
+case	repo_path	intro_commit	new_fn	new_file	orig_fn	orig_file	shape
+sutra/460	/home/josh/soft/manas/sutra	a1db6240bb18	extract_proposed_imports	src/guard.rs	resolve_relative_import	src/dart_packages.rs	block
+sutra/456	/home/josh/soft/manas/sutra	d41191289423	evaluate_raw	src/constraints/check.rs	evaluate_dd	src/constraints/check.rs	block
+sutra/418	/home/josh/soft/manas/sutra	25bca131c7b0	Db::insert_snapshot_atomic	src/db/mod.rs	Db::insert_snapshot_files	src/db/mod.rs	sql
+sutra/437	/home/josh/soft/manas/sutra	7db158478c93	partition_ondemand	src/tools/review.rs	publish_run	src/health/refresh.rs	block
+sutra/438	/home/josh/soft/manas/sutra	7db158478c93	handle_history	src/tools/trend.rs	score_value_json	src/tools/file_health.rs	block
+sutra/459	/home/josh/soft/manas/sutra	fdcc825f2432	check_proposed_patterns	src/guard.rs	evaluate_raw	src/constraints/check.rs	sql
+sutra/401	/home/josh/soft/manas/sutra	ed3ad159fd3f	query_idents	src/tools/explore_lexical.rs	tokenize		function
+explore/54	/home/josh/adityas/explore	ddda8cdf621b	_openChart	lib/main.dart	_submitChart	lib/main.dart	block
+ai/197	/home/josh/adityas/explore	19c9c3a8ba7f	ChatPill::build	lib/ui/chat_pill.dart	_ChatPanelState::build	lib/ui/chat_panel.dart	block
+ai/101	/home/josh/adityas/backend	5fa0501c2643	post_consent	server/src/routes/chat.rs	create_checkout	server/src/routes/shop/checkout.rs	block
+ai/119	/home/josh/adityas/backend	7c21ace57ae5	build_history	server/src/chat/engine.rs	plan	server/src/chat/compaction.rs	block
+ai/211	/home/josh/adityas/backend	d55d91b0d98f	model_pricing	server/src/ai_metrics.rs	Config::from_env	server/src/config.rs	function
+swisseph-rs/159	/home/josh/nhs/soft/astrology/swisseph-rs	a330a4f4d2cf	nodaps_osc_body_j2000	src/context.rs	pctr_bary_state	src/context.rs	block
+sutra/261	/home/josh/soft/manas/sutra	7501bb626fff	language_for_path	src/tools/symbol_diff.rs	language_from_path	src/guard.rs	list
+sutra/261r	/home/josh/soft/manas/sutra	7501bb626fff	language_for_path	src/tools/symbol_diff.rs	adapter_for_extension	src/parser/adapter.rs	list
+sutra/283r	/home/josh/soft/manas/sutra	3f1e069f86d2	language_from_path	src/guard.rs	adapter_for_extension	src/parser/adapter.rs	list
+swe/80	/home/josh/nhs/soft/astrology/swe_dashboard	6be31e5d874d	restoreFromPersistence	lib/core/context_provider.dart	loadContextBar	lib/core/persistence.dart	list
+swe/91	/home/josh/nhs/soft/astrology/swe_dashboard	f1950a06ff47	_buildJdCard	lib/tabs/heliacal/heliacal_tab.dart	heliacalToExportRows	lib/tabs/heliacal/heliacal_provider.dart	list
+pyswisseph-rs/31	/home/josh/nhs/soft/astrology/pyswisseph-rs	a5483a424d91	py_new	src/config.rs	set_sidereal_mode		function
