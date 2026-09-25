@@ -477,6 +477,21 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0080_snapshot_file_weight.sql"),
         true,
     ),
+    // Drop the health scoring/trend/run tables and snapshot health columns
+    // (sutra/473). ephemeral_only: reindex recreates them through the earlier
+    // ephemeral migrations, so the drop must replay after them.
+    (
+        "0081_drop_health_scoring",
+        include_str!("../../migrations/0081_drop_health_scoring.sql"),
+        true,
+    ),
+    // Drop index_meta.index_epoch and git_availability (sutra/473). NOT
+    // ephemeral_only: index_meta is Durable (same reasoning as 0071/0074).
+    (
+        "0082_drop_health_index_meta",
+        include_str!("../../migrations/0082_drop_health_index_meta.sql"),
+        false,
+    ),
 ];
 
 impl Db {

@@ -12,10 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{
-    Db, FileRow, ResolvedRefRow, SnapshotCompleteness, SnapshotComponentMember,
-    SnapshotComponentRow, SnapshotErosion, SnapshotFileRow, SnapshotParams,
-};
+use crate::db::{Db, FileRow, ResolvedRefRow, SnapshotErosion, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
@@ -88,9 +85,7 @@ impl ParseCoordinator {
 }
 
 /// Open (creating if needed) the per-workspace `parse.lock` file *without*
-/// acquiring the flock. Both the blocking [`acquire_parse_flock`] and the
-/// nonblocking [`try_acquire_parse_flock`] share this so they open the identical
-/// descriptor and only differ in how they take the OS lock.
+/// acquiring the flock.
 fn open_parse_lock_file(config: &Config, workspace_id: &str) -> Result<std::fs::File> {
     let lock_dir = config.db_dir.join(workspace_id);
     std::fs::create_dir_all(&lock_dir).map_err(|e| {
@@ -117,55 +112,6 @@ fn acquire_parse_flock(config: &Config, workspace_id: &str) -> Result<std::fs::F
         crate::error::SutraError::Internal(format!("could not acquire parse lock: {e}"))
     })?;
     Ok(lock_file)
-}
-
-/// Try to acquire the cross-process parse flock *without blocking on a peer's
-/// write*. Returns `Ok(None)` when the flock is genuinely held (the caller must
-/// defer rather than wait). Used by the demand health refresh, which the contract
-/// requires to report `LockBusy` on contention instead of blocking a health query
-/// behind a peer's write (`docs/health-evidence-contract.md`, "Publication and
-/// consumers").
-///
-/// The acquire retries over a tiny bounded budget before reporting contention.
-/// This is not a wait on a peer write — it rides out a *spurious* contention
-/// window unrelated to any lock owner: whenever any thread in this process spawns
-/// a subprocess (git, etc.), `fork` duplicates every open fd — including a peer
-/// workspace's parse-lock fd — into the child, and the flock on that shared open
-/// file description stays held until the child reaches `exec` and `O_CLOEXEC`
-/// drops the fd. During that sub-millisecond fork→exec window a bare
-/// `try_lock_exclusive` observes contention even though the flock's real owner has
-/// already released it. A genuine peer parse holds the flock for the whole run
-/// (far longer than the budget), so it still exhausts every attempt and the caller
-/// defers as required (sutra/428).
-pub fn try_acquire_parse_flock(
-    config: &Config,
-    workspace_id: &str,
-) -> Result<Option<std::fs::File>> {
-    /// Attempts spread across the transient fork→exec window; the final attempt
-    /// does not sleep, so the worst-case added latency is `(ATTEMPTS-1) * BACKOFF`.
-    const ATTEMPTS: u32 = 5;
-    const BACKOFF: Duration = Duration::from_millis(1);
-
-    let lock_file = open_parse_lock_file(config, workspace_id)?;
-    for attempt in 0..ATTEMPTS {
-        match lock_file.try_lock_exclusive() {
-            Ok(()) => return Ok(Some(lock_file)),
-            // Contention is not an error. It may be a spurious fork→exec blip (retry
-            // to ride it out) or a genuine peer write (retries exhaust → defer).
-            Err(e) if e.kind() == fs2::lock_contended_error().kind() => {
-                if attempt + 1 < ATTEMPTS {
-                    std::thread::sleep(BACKOFF);
-                }
-            }
-            // Any other error is a real filesystem/lock failure.
-            Err(e) => {
-                return Err(crate::error::SutraError::Internal(format!(
-                    "could not attempt parse lock: {e}"
-                )));
-            }
-        }
-    }
-    Ok(None)
 }
 
 /// Summary of a parse pipeline run.
@@ -647,10 +593,9 @@ pub fn parse_workspace(
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
-    let flock = acquire_parse_flock(config, &workspace.id)?;
-    // The full parse holds the coordinator (its caller) + this flock, so it is
-    // the already-locked health publisher (sutra/415).
-    let health_session = crate::health::refresh::HealthSession::from_held_flock(&flock);
+    // Held for the whole parse: history ingestion and findings rewrite their
+    // tables under it.
+    let _flock = acquire_parse_flock(config, &workspace.id)?;
     let head_commit = crate::git::head_commit_hash(&workspace.root);
     let parse_started_at = chrono::Utc::now().to_rfc3339();
     let start = Instant::now();
@@ -781,7 +726,6 @@ pub fn parse_workspace(
             &workspace.root,
             &registry.boundary_multipliers(),
             registry,
-            &health_session,
         )?;
         Ok(PostParseResult::Full {
             resolved_count,
@@ -806,27 +750,23 @@ pub fn parse_workspace(
     };
     match &inner {
         Ok(PostParseResult::NoChanges) => {
-            // Checkpoint only after publication (health-evidence contract): an
-            // unchanged-source parse still refreshes health under the held lock,
-            // so a crossed midnight / HEAD move / config edit republishes rather
-            // than checkpointing a stale (all-partial) run.
-            let now = chrono::Utc::now().timestamp();
-            if let Err(e) =
-                crate::health::refresh::refresh(&health_session, db, &workspace.root, now)
-            {
-                warn!(workspace = %workspace.id, "health refresh failed on unchanged parse: {e}");
+            // History moves independently of source bytes (a commit, a crossed
+            // midnight, a window edit), so an unchanged-source parse still
+            // re-ingests it and refreshes the findings that read it.
+            if let Err(e) = refresh_history(db, &workspace.root) {
+                warn!(workspace = %workspace.id, "history refresh failed on unchanged parse: {e}");
             }
             if let Err(e) =
                 recluster_unchanged(db, &workspace.root, &registry.boundary_multipliers())
             {
                 warn!(workspace = %workspace.id, "component re-clustering failed on unchanged parse: {e}");
             }
-            if let Err(e) = record_unchanged_snapshot(db, &workspace.root, meta) {
+            if let Err(e) = record_unchanged_snapshot(db, meta) {
                 warn!(workspace = %workspace.id, "failed to record unchanged snapshot after parse: {e}");
             }
         }
         Ok(PostParseResult::Full { .. }) => {
-            if let Err(e) = record_snapshot(db, &workspace.root, meta) {
+            if let Err(e) = record_snapshot(db, meta) {
                 warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
             } else if let Err(e) = db
                 .get_data_generation()
@@ -836,7 +776,7 @@ pub fn parse_workspace(
             }
         }
         Err(_) => {
-            if let Err(e) = record_snapshot(db, &workspace.root, meta) {
+            if let Err(e) = record_snapshot(db, meta) {
                 warn!(workspace = %workspace.id, "failed to record snapshot after parse: {e}");
             }
         }
@@ -1175,13 +1115,18 @@ fn discover_components_and_anchors(
     Ok(component_count)
 }
 
-/// The no-change parse's clustering repair (sutra/443). Its health refresh
-/// re-ingests history, and a new commit moves `newest_commit_at`, which stales
-/// the clustering; without this the checkpoint scores every component partial on
-/// a stale-membership verdict that no unchanged parse could ever clear. Must run
-/// after the refresh (so the gate sees the ingested history) and before the
-/// checkpoint. Churn comes from the persisted `commit_files` because a reused
-/// health run ingests nothing this parse.
+/// Re-ingest git history and refresh the findings that read it, for a parse
+/// whose source did not change.
+fn refresh_history(db: &Db, workspace_root: &Path) -> Result<()> {
+    let ingestion = crate::history::ingest(db, workspace_root, chrono::Utc::now().timestamp())?;
+    crate::health::refresh_findings(db, workspace_root, ingestion.loaded)
+}
+
+/// The no-change parse's clustering repair (sutra/443). The history refresh
+/// before it can ingest a new commit, which moves `newest_commit_at` and stales
+/// the clustering; no unchanged parse could otherwise repair it. Must run after
+/// the history refresh (so the gate sees the ingested history). Churn comes from
+/// the persisted `commit_files` (indexed paths only).
 fn recluster_unchanged(
     db: &Db,
     workspace_root: &Path,
@@ -1208,7 +1153,6 @@ fn post_parse_sequence(
     workspace_root: &Path,
     boundary_multipliers: &HashMap<String, f64>,
     registry: &LanguageRegistry,
-    health_session: &crate::health::refresh::HealthSession<'_>,
 ) -> Result<(i64, i64, i64)> {
     let (resolved_count, unresolved_count, skipped_count) = resolve_references(db, workspace_root)?;
 
@@ -1222,25 +1166,10 @@ fn post_parse_sequence(
         log_phase_rss("post_parse:pagerank_done");
 
         // Ingest commit-file history against the pinned HEAD and the absolute
-        // day-quantized cutoff the health contract requires (sutra/415), through
-        // the shared refresh core so full parse and on-demand health select
-        // history identically. This also resolves the git-availability axis
-        // (sutra/408: a transient failure is NoHistory-worst-cased, never
-        // structural absence) and the churn map semantic anchors consume.
-        let health_day = crate::health::probe::utc_day(chrono::Utc::now().timestamp());
-        let health_window = crate::health::refresh::window_days(workspace_root)?;
-        let graph_stamp = crate::health::probe::probe_graph_stamp(db)?;
-        let ingestion = crate::health::refresh::ingest_history(
-            health_session,
-            db,
-            workspace_root,
-            health_day,
-            health_window,
-            graph_stamp.generation,
-            graph_stamp.indexed_paths,
-        )?;
+        // day-quantized cutoff; also yields the churn map semantic anchors consume.
+        let ingestion = crate::history::ingest(db, workspace_root, chrono::Utc::now().timestamp())?;
         let churn_map = ingestion.churn;
-        let health_history = ingestion.observation;
+        let history_loaded = ingestion.loaded;
         log_phase_rss("post_parse:cochange_done");
 
         match entity_change_walk(db, workspace_root, 500) {
@@ -1284,22 +1213,7 @@ fn post_parse_sequence(
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
         }
 
-        // Publish an immutable health run through the shared refresh core so full
-        // parse and on-demand agree on findings/completeness (sutra/415, AC3).
-        // Scoring reads the published run (sutra/416), never the live tables. Nothing bumps data_generation between the
-        // graph probe above and here, so the run publishes at that generation.
-        match crate::health::refresh::publish_run(
-            health_session,
-            db,
-            workspace_root,
-            graph_stamp,
-            health_history,
-        )? {
-            crate::health::refresh::RefreshResult::Published(_) => {}
-            other => {
-                warn!(?other, "health run not published on full parse");
-            }
-        }
+        crate::health::refresh_findings(db, workspace_root, history_loaded)?;
         log_phase_rss("post_parse:health_done");
 
         if hrr_changed {
@@ -1335,18 +1249,14 @@ struct ParseAggregates {
     erosion: SnapshotErosion,
 }
 
-fn record_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMeta) -> Result<()> {
+fn record_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
     let aggregates = compute_parse_aggregates(db)?;
-    write_checkpoint(db, workspace_root, meta, aggregates)
+    write_checkpoint(db, meta, aggregates)
 }
 
-/// A no-change parse copies the parse-derived aggregates forward (the source is
-/// unchanged), but always rescores health from the current validated run: health
-/// inputs (history day/HEAD, owners, waivers) move independently of source bytes,
-/// so copying the previous checkpoint's health rows could present evidence from
-/// an older run as current (health-evidence-contract.md § Publication and
-/// consumers: copy-forward only for unchanged health inputs and score basis).
-fn record_unchanged_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMeta) -> Result<()> {
+/// A no-change parse copies the parse-derived aggregates forward: the source is
+/// unchanged.
+fn record_unchanged_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
     let aggregates = match db.latest_snapshots(1)?.into_iter().next() {
         Some(previous) => ParseAggregates {
             total_complexity: previous.total_complexity,
@@ -1363,36 +1273,24 @@ fn record_unchanged_snapshot(db: &Db, workspace_root: &Path, meta: CheckpointMet
         },
         None => compute_parse_aggregates(db)?,
     };
-    write_checkpoint(db, workspace_root, meta, aggregates)
+    write_checkpoint(db, meta, aggregates)
 }
 
-fn write_checkpoint(
-    db: &Db,
-    workspace_root: &Path,
-    meta: CheckpointMeta,
-    aggregates: ParseAggregates,
-) -> Result<()> {
-    let health = compute_snapshot_health(db, workspace_root)?;
-    db.insert_snapshot_atomic(
-        &SnapshotParams {
-            files_parsed: meta.files_parsed,
-            symbols_extracted: meta.symbols_extracted,
-            refs_extracted: meta.refs_extracted,
-            parse_errors: meta.parse_errors,
-            duration_ms: meta.duration_ms,
-            total_complexity: aggregates.total_complexity,
-            dead_symbol_count: aggregates.dead_symbol_count,
-            hotspot_count: aggregates.hotspot_count,
-            health_score: health.health_score,
-            pattern_family_count: aggregates.pattern_family_count,
-            head_commit: meta.head_commit,
-            timestamp: meta.timestamp,
-            health_run_id: health.run_id,
-            erosion: Some(aggregates.erosion),
-        },
-        &health.file_scores,
-        &health.component_scores,
-    )?;
+fn write_checkpoint(db: &Db, meta: CheckpointMeta, aggregates: ParseAggregates) -> Result<()> {
+    db.insert_snapshot(&SnapshotParams {
+        files_parsed: meta.files_parsed,
+        symbols_extracted: meta.symbols_extracted,
+        refs_extracted: meta.refs_extracted,
+        parse_errors: meta.parse_errors,
+        duration_ms: meta.duration_ms,
+        total_complexity: aggregates.total_complexity,
+        dead_symbol_count: aggregates.dead_symbol_count,
+        hotspot_count: aggregates.hotspot_count,
+        pattern_family_count: aggregates.pattern_family_count,
+        head_commit: meta.head_commit,
+        timestamp: meta.timestamp,
+        erosion: Some(aggregates.erosion),
+    })?;
     Ok(())
 }
 
@@ -1445,13 +1343,6 @@ pub(crate) fn walk_source_files(
     walk_source_files_checked(root, allowed_extensions).0
 }
 
-struct SnapshotHealthData {
-    health_score: f64,
-    run_id: Option<i64>,
-    file_scores: Vec<SnapshotFileRow>,
-    component_scores: Vec<SnapshotComponentRow>,
-}
-
 fn compute_parse_aggregates(db: &Db) -> Result<ParseAggregates> {
     let files = db.all_files()?;
     let complexity = db.complexity_by_file()?;
@@ -1483,117 +1374,6 @@ fn compute_erosion(db: &Db) -> Result<SnapshotErosion> {
         eroded_mass: workspace.eroded_mass,
         total_mass: workspace.total_mass,
         version: erosion::EROSION_VERSION,
-    })
-}
-
-/// The verdict on the current health run for a checkpoint. A failed probe
-/// records the checkpoint as stale-partial rather than dropping it.
-fn snapshot_verdict(db: &Db, workspace_root: &Path) -> crate::health::assess::RunVerdict {
-    use crate::health::evidence::{InputFailure, MissingReason};
-    match crate::health::refresh::current_run_validity(
-        db,
-        workspace_root,
-        chrono::Utc::now().timestamp(),
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("snapshot: health validity probe failed: {e}");
-            crate::health::assess::RunVerdict::stale(MissingReason::Failed(
-                InputFailure::ProbeFailed,
-            ))
-        }
-    }
-}
-
-fn compute_snapshot_health(db: &Db, workspace_root: &Path) -> Result<SnapshotHealthData> {
-    use crate::health::assess::{self, PersistentEvidence};
-    use crate::health::scoring::{self, ScoreValue};
-
-    // Score from the validated current run (sutra/416): the checkpoint records
-    // exactly what the evidence supports — measured scores, or conservative
-    // bounds with the missing producers — plus the basis they were scored under
-    // and the run they came from.
-    let evidence = PersistentEvidence::load(db, snapshot_verdict(db, workspace_root))?;
-    // Component clustering is only rebuilt by a full parse; a stale grouping is
-    // recorded partial, never measured (a probe failure reads as stale).
-    let membership_current = crate::components::membership_current(db, workspace_root)
-        .unwrap_or_else(|e| {
-            warn!("snapshot: component membership probe failed: {e}");
-            false
-        });
-    let workspace = assess::score_workspace(db, &evidence, membership_current)?;
-
-    let mut file_scores = Vec::with_capacity(workspace.files.len());
-    for sf in &workspace.files {
-        let cat_totals: HashMap<&str, f64> = sf
-            .score
-            .categories
-            .iter()
-            .map(|c| (c.category.as_str(), c.pessimistic))
-            .collect();
-        let category_scores = serde_json::to_string(&cat_totals).unwrap_or_else(|_| "{}".into());
-        let (completeness, score_upper) = match sf.score.value {
-            ScoreValue::Measured(_) => (SnapshotCompleteness::Complete, None),
-            ScoreValue::Partial { upper, .. } => (SnapshotCompleteness::Partial, Some(upper)),
-        };
-        let score = sf.score.value.lower();
-        file_scores.push(SnapshotFileRow {
-            file_id: sf.evidence.file_id,
-            file_path: sf.evidence.path.to_string(),
-            score,
-            category_scores,
-            completeness,
-            missing_biomarkers: sf.score.missing_names(),
-            score_upper,
-            score_basis: Some(sf.evidence.basis.to_hex()),
-            weight: Some(sf.evidence.line_count),
-        });
-    }
-
-    // Pessimistic (lower) file scores at the weights persisted per file, which
-    // trend re-evaluates at to split weight shift from quality (sutra/455); one
-    // aggregation rule with components so clean additions cannot dilute it
-    // (sutra/404).
-    let weighted: Vec<(f64, i64)> = workspace
-        .files
-        .iter()
-        .map(|sf| (sf.score.value.lower(), sf.evidence.line_count))
-        .collect();
-    let health_score = scoring::workspace_score(&weighted);
-
-    let component_scores = workspace
-        .components
-        .into_iter()
-        .map(|cs| SnapshotComponentRow {
-            score: cs.value.lower(),
-            completeness: if cs.value.is_measured() {
-                SnapshotCompleteness::Complete
-            } else {
-                SnapshotCompleteness::Partial
-            },
-            score_basis: Some(cs.basis.to_hex()),
-            members: Some(
-                cs.members
-                    .iter()
-                    .map(|&(path, weight)| SnapshotComponentMember {
-                        file_path: path.to_string(),
-                        weight,
-                    })
-                    .collect(),
-            ),
-            instability_penalty: cs.penalty,
-            component_id: cs.component_id,
-            component_name: cs.component_name,
-            member_count: cs.member_count as i64,
-            total_nloc: cs.total_nloc,
-        })
-        .collect();
-
-    Ok(SnapshotHealthData {
-        health_score,
-        run_id: evidence.run_id.map(|r| r.0),
-        file_scores,
-        component_scores,
     })
 }
 

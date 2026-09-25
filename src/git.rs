@@ -17,71 +17,6 @@ impl DiffFileEntry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BlameLine {
-    pub commit: String,
-    pub author_time: i64,
-    pub line_no: usize,
-}
-
-pub fn parse_blame_porcelain(input: &str) -> Vec<BlameLine> {
-    let mut results = Vec::new();
-    let mut current_commit = String::new();
-    let mut current_time: i64 = 0;
-    let mut current_line: usize = 0;
-    let mut time_cache: HashMap<String, i64> = HashMap::new();
-
-    for line in input.lines() {
-        if line.starts_with('\t') {
-            results.push(BlameLine {
-                commit: current_commit.clone(),
-                author_time: current_time,
-                line_no: current_line,
-            });
-        } else if let Some(ts) = line.strip_prefix("author-time ") {
-            current_time = ts.trim().parse().unwrap_or(0);
-            time_cache.insert(current_commit.clone(), current_time);
-        } else {
-            let bytes = line.as_bytes();
-            if bytes.len() > 40
-                && bytes[40] == b' '
-                && bytes[..40].iter().all(|b| b.is_ascii_hexdigit())
-            {
-                current_commit = line[..40].to_string();
-                if let Some(&cached) = time_cache.get(&current_commit) {
-                    current_time = cached;
-                }
-                let parts: Vec<&str> = line[41..].split_whitespace().collect();
-                if parts.len() >= 2 {
-                    current_line = parts[1].parse().unwrap_or(0);
-                }
-            }
-        }
-    }
-    results
-}
-
-pub fn git_blame_porcelain(workspace_root: &Path, path: &str) -> Result<Vec<BlameLine>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["blame", "--porcelain", path])
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git blame failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("no such path") || stderr.contains("bad revision") {
-            return Ok(vec![]);
-        }
-        return Err(SutraError::Internal(format!("git blame: {stderr}")));
-    }
-
-    let text = String::from_utf8(output.stdout)
-        .map_err(|e| SutraError::Internal(format!("git blame: non-UTF8: {e}")))?;
-    Ok(parse_blame_porcelain(&text))
-}
-
 pub struct CommitFile {
     pub hash: String,
     pub timestamp: i64,
@@ -384,9 +319,9 @@ pub fn git_commit_files(workspace_root: &Path, window_days: u32) -> Result<Vec<C
 /// Pin the repository HEAD. `Ok(Some(sha))` is a resolved commit; `Ok(None)` is
 /// a present repository with an unborn HEAD (a fresh repo with no commits yet);
 /// `Err` is an indeterminate probe failure (git missing, access error, broken
-/// objects) that must NOT be read as an unborn branch. The health input contract
-/// (sutra/415) requires selecting history against a pinned HEAD, so this is the
-/// identity every subsequent `git_commit_files_since` call is anchored to.
+/// objects) that must NOT be read as an unborn branch. History ingestion selects
+/// against a pinned HEAD, so this is the identity every subsequent
+/// `git_commit_files_since` call is anchored to.
 pub fn head_commit(workspace_root: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
         .arg("-C")
@@ -424,32 +359,11 @@ pub fn head_commit(workspace_root: &Path) -> Result<Option<String>> {
     )))
 }
 
-/// A stable identity for the repository/worktree backing `workspace_root` — the
-/// absolute git directory. Recorded so a health run cannot be reused after the
-/// worktree is pointed at a different repository (sutra/415).
-pub fn repo_identity(workspace_root: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
-        .map_err(|e| {
-            SutraError::Internal(format!("git rev-parse --absolute-git-dir failed: {e}"))
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SutraError::Internal(format!(
-            "git rev-parse --absolute-git-dir: {stderr}"
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// True when the repository backing `workspace_root` is a shallow clone. A
 /// shallow clone's object graph is truncated at the `.git/shallow` boundary
 /// commits, so history reachable from a pinned HEAD may be missing qualifying
 /// ancestors — the requested window cannot be positively established as complete
-/// (health-evidence contract; sutra/427).
+/// (sutra/427).
 pub fn is_shallow_repository(workspace_root: &Path) -> Result<bool> {
     let out = Command::new("git")
         .arg("-C")
@@ -466,95 +380,10 @@ pub fn is_shallow_repository(workspace_root: &Path) -> Result<bool> {
     Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
 }
 
-/// The sorted shallow boundary commit SHAs — the contents of the repo's
-/// `shallow` file — or an empty vec when the repository is not shallow. These
-/// are the commits whose parents are deliberately absent; deepening a shallow
-/// clone (`git fetch --deepen`) rewrites this set even when HEAD and the
-/// is-shallow flag are both unchanged, so the boundary *set* must be
-/// fingerprinted, not merely the boolean (sutra/427).
-fn shallow_boundary_commits(workspace_root: &Path) -> Result<Vec<String>> {
-    // Resolve the absolute path to the `shallow` file (it lives in the common
-    // git dir, which differs from the per-worktree dir under linked worktrees).
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "shallow",
-        ])
-        .output()
-        .map_err(|e| SutraError::Internal(format!("git rev-parse --git-path shallow: {e}")))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(SutraError::Internal(format!(
-            "git rev-parse --git-path shallow: {stderr}"
-        )));
-    }
-    let shallow_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    // A non-shallow repo has no `shallow` file; a shallow one can also briefly
-    // lack it between fetch phases. Treat absent/unreadable as no boundaries.
-    let contents = std::fs::read_to_string(&shallow_path).unwrap_or_default();
-    let mut lines: Vec<String> = contents
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    lines.sort();
-    Ok(lines)
-}
-
-/// A fingerprint of the history boundary: shallow state and the actual shallow
-/// boundary commit set, plus any grafts/replace refs that truncate or rewrite
-/// reachable history. History reachable from a pinned HEAD is only "complete for
-/// the requested range" if these boundaries are unchanged; a repository that
-/// becomes (un)shallow, is deepened at an unchanged HEAD, or gains a replace ref
-/// can expose or hide qualifying commits without HEAD moving (sutra/415,
-/// sutra/427).
-pub fn history_boundaries(workspace_root: &Path) -> Result<String> {
-    let shallow = is_shallow_repository(workspace_root)?;
-    // Fingerprint the boundary commit SHAs, not just the boolean: deepening a
-    // shallow clone leaves the flag and HEAD unchanged while newly exposing
-    // qualifying ancestors, so the set is what actually moves (sutra/427).
-    let boundaries = shallow_boundary_commits(workspace_root)?.join(",");
-    // Replace refs rewrite the object a commit resolves to; grafts (via replace
-    // refs in modern git) truncate ancestry. `refs/replace` is empty in the
-    // common case, so the fingerprint reduces to just the shallow state.
-    let replace = {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_root)
-            .args([
-                "for-each-ref",
-                "--format=%(objectname) %(refname)",
-                "refs/replace",
-            ])
-            .output()
-            .map_err(|e| SutraError::Internal(format!("git for-each-ref refs/replace: {e}")))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(SutraError::Internal(format!(
-                "git for-each-ref refs/replace: {stderr}"
-            )));
-        }
-        let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
-        lines.sort();
-        lines.join(",")
-    };
-    Ok(format!(
-        "shallow={shallow};boundaries={boundaries};replace={replace}"
-    ))
-}
-
 /// Ingest commit-file history reachable from a pinned `head_sha` whose committer
 /// timestamp is `>= cutoff_unix`. Replaces the relative `--since "N days ago"`
 /// selection (which cannot be reproduced from a stored HEAD) with the absolute
-/// committer-time cutoff the health contract requires (sutra/415).
+/// committer-time cutoff (sutra/415).
 ///
 /// There is no upper timestamp bound: future-dated commits reachable from HEAD
 /// are included. The cutoff is applied in Rust on the raw committer timestamp

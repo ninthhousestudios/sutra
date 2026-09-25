@@ -120,9 +120,8 @@ impl Db {
         Ok(())
     }
 
-    /// Qualified names for the given symbol ids, for labelling retained health
-    /// findings (sutra/415). Missing ids are simply absent from the map — a
-    /// finding whose symbol was since deleted keeps its captured label elsewhere.
+    /// Qualified names for the given symbol ids, for labelling health findings.
+    /// Missing ids are simply absent from the map.
     pub fn symbol_labels(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, String>> {
         let mut map = std::collections::HashMap::new();
         if ids.is_empty() {
@@ -258,11 +257,18 @@ impl Db {
         let files = self.all_files()?;
         let path_by_id: std::collections::HashMap<i64, &str> =
             files.iter().map(|f| (f.id, &*f.path)).collect();
-        let resolved: Vec<ResolvedHealthFinding> =
-            crate::health::assess::label_findings(self, findings, &path_by_id)?
-                .into_iter()
-                .map(ResolvedHealthFinding::from)
-                .collect();
+        let symbol_ids: Vec<i64> = findings.iter().filter_map(|r| r.symbol_id).collect();
+        let labels = self.symbol_labels(&symbol_ids)?;
+        let resolved: Vec<ResolvedHealthFinding> = findings
+            .into_iter()
+            .map(|finding| ResolvedHealthFinding {
+                file_path: path_by_id
+                    .get(&finding.file_id)
+                    .map_or_else(|| "?".to_string(), |p| p.to_string()),
+                symbol_name: finding.symbol_id.and_then(|sid| labels.get(&sid).cloned()),
+                finding,
+            })
+            .collect();
 
         let (active, waived) = waivers::partition(resolved, &waivers);
         let mut results: Vec<(HealthFindingRow, bool)> =

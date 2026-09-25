@@ -1,10 +1,9 @@
 //! Diff-scoped erosion delta for `sutra_review` (sutra/451).
 //!
 //! Parses the base and head side of every changed file and compares their
-//! erosion samples. Selection is [`erosion::parsed_samples`], the same rule
-//! `sutra_file_health` applies to the index, fed rows flattened exactly as the
-//! index persists them — so a function's sample here is the one file_health
-//! would report for the same bytes.
+//! erosion samples. Selection is [`erosion::parsed_samples`], the same rule the
+//! index samples use, fed rows flattened exactly as the index persists them — so
+//! a function's sample here is the one the index holds for the same bytes.
 //!
 //! Functions are paired across the diff by a `(qualified_name, kind)` key unique
 //! on both sides of a file first, then by [`symbol_diff::resolve_renames`] over
@@ -23,10 +22,10 @@ use serde_json::json;
 
 use crate::git::{self, DiffFileEntry};
 use crate::health::erosion::{self, COGNITIVE_THRESHOLD, ErosionAggregate, FunctionSample};
-use crate::health::scoring::round2;
 use crate::parser::ParseResult;
 use crate::parser::adapter::{LanguageAdapter, LanguageRegistry, ParserPool};
 use crate::parser::persist::{MAX_LINES, flatten_symbols_for_insert};
+use crate::tools::scoring::round2;
 use crate::tools::symbol_diff::{self, SymbolSpan, UnmatchedSymbol};
 
 const PARSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -199,7 +198,7 @@ pub fn compute(
 }
 
 /// Erosion samples of `source` as the review path computes them — the seam the
-/// file_health parity test pins. `None` when no adapter handles `path` or the
+/// index parity test pins. `None` when no adapter handles `path` or the
 /// file cannot be parsed.
 pub fn source_samples(
     registry: &LanguageRegistry,
@@ -268,8 +267,8 @@ fn parse_side<'r>(
     pool: &mut ParserPool,
 ) -> Side<'r> {
     // The pipeline skips oversized files, so the index holds no samples for
-    // them either; comparing a parse here would invent a number file_health
-    // never shows.
+    // them either; comparing a parse here would invent a number the index never
+    // holds.
     let lines = source.lines().count();
     if lines > MAX_LINES {
         return Side::Unavailable(format!(

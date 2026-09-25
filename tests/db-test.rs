@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use sutra::db::{
     CommitRow, Db, InsertImportParams, InsertRefParams, InsertSymbolParams, ResolvedRefRow,
-    SnapshotCompleteness, SnapshotComponentMember, SnapshotComponentRow, SnapshotFileRow,
     SnapshotParams, TABLE_REGISTRY, TablePartition,
 };
 use sutra::workspace::WorkspaceEntry;
@@ -606,7 +605,6 @@ fn test_insert_snapshot_and_last_parse_time() {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -626,7 +624,6 @@ fn test_snapshot_with_aggregates() {
         total_complexity: 42,
         dead_symbol_count: 5,
         hotspot_count: 3,
-        health_score: 78.0,
         ..Default::default()
     })
     .unwrap();
@@ -639,7 +636,6 @@ fn test_snapshot_with_aggregates() {
     assert_eq!(s.total_complexity, 42);
     assert_eq!(s.dead_symbol_count, 5);
     assert_eq!(s.hotspot_count, 3);
-    assert!((s.health_score - 78.0).abs() < 0.01);
 }
 
 #[test]
@@ -654,7 +650,6 @@ fn test_latest_snapshots_ordering() {
         total_complexity: 10,
         dead_symbol_count: 1,
         hotspot_count: 0,
-        health_score: 90.0,
         ..Default::default()
     })
     .unwrap();
@@ -668,7 +663,6 @@ fn test_latest_snapshots_ordering() {
         total_complexity: 20,
         dead_symbol_count: 3,
         hotspot_count: 2,
-        health_score: 75.0,
         ..Default::default()
     })
     .unwrap();
@@ -677,125 +671,6 @@ fn test_latest_snapshots_ordering() {
     assert_eq!(snaps.len(), 2);
     assert_eq!(snaps[0].files_parsed, 20);
     assert_eq!(snaps[1].files_parsed, 10);
-}
-
-#[test]
-fn test_snapshots_between() {
-    let (_dir, db) = setup_db();
-    db.insert_snapshot(&SnapshotParams {
-        files_parsed: 10,
-        symbols_extracted: 50,
-        refs_extracted: 20,
-        parse_errors: 0,
-        duration_ms: 100,
-        total_complexity: 10,
-        dead_symbol_count: 1,
-        hotspot_count: 0,
-        health_score: 90.0,
-        ..Default::default()
-    })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(&SnapshotParams {
-        files_parsed: 20,
-        symbols_extracted: 80,
-        refs_extracted: 40,
-        parse_errors: 1,
-        duration_ms: 200,
-        total_complexity: 20,
-        dead_symbol_count: 3,
-        hotspot_count: 2,
-        health_score: 75.0,
-        ..Default::default()
-    })
-    .unwrap();
-
-    let snaps = db.snapshots_between("2000-01-01", "2099-01-01").unwrap();
-    assert_eq!(snaps.len(), 2);
-    assert_eq!(snaps[0].files_parsed, 10);
-    assert_eq!(snaps[1].files_parsed, 20);
-}
-
-#[test]
-fn test_trend_default_from_to() {
-    let (_dir, db) = setup_db();
-    db.insert_snapshot(&SnapshotParams {
-        files_parsed: 10,
-        symbols_extracted: 50,
-        refs_extracted: 20,
-        parse_errors: 0,
-        duration_ms: 100,
-        total_complexity: 10,
-        dead_symbol_count: 1,
-        hotspot_count: 0,
-        health_score: 90.0,
-        ..Default::default()
-    })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    db.insert_snapshot(&SnapshotParams {
-        files_parsed: 20,
-        symbols_extracted: 80,
-        refs_extracted: 40,
-        parse_errors: 1,
-        duration_ms: 200,
-        total_complexity: 25,
-        dead_symbol_count: 4,
-        hotspot_count: 2,
-        health_score: 75.0,
-        ..Default::default()
-    })
-    .unwrap();
-
-    let result = sutra::tools::trend::handle(
-        &db,
-        &sutra::tools::trend::TrendArgs {
-            workspace: String::new(),
-            from: None,
-            to: None,
-            path: None,
-            limit: None,
-        },
-    )
-    .unwrap();
-    let deltas = &result["deltas"];
-    assert_eq!(deltas["files_parsed"], 10);
-    assert_eq!(deltas["symbols_extracted"], 30);
-    assert_eq!(deltas["total_complexity"], 15);
-    assert_eq!(deltas["dead_symbol_count"], 3);
-    assert_eq!(deltas["hotspot_count"], 2);
-    // No per-file evidence behind either aggregate → not a measured change (sutra/418).
-    assert!(deltas["health_score"].is_null());
-    assert_eq!(result["aggregate_comparison"]["reason"], "no_file_evidence");
-}
-
-#[test]
-fn test_trend_insufficient_snapshots() {
-    let (_dir, db) = setup_db();
-    db.insert_snapshot(&SnapshotParams {
-        files_parsed: 10,
-        symbols_extracted: 50,
-        refs_extracted: 20,
-        parse_errors: 0,
-        duration_ms: 100,
-        total_complexity: 10,
-        dead_symbol_count: 1,
-        hotspot_count: 0,
-        health_score: 90.0,
-        ..Default::default()
-    })
-    .unwrap();
-    let result = sutra::tools::trend::handle(
-        &db,
-        &sutra::tools::trend::TrendArgs {
-            workspace: String::new(),
-            from: None,
-            to: None,
-            path: None,
-            limit: None,
-        },
-    );
-    assert!(result.is_err());
 }
 
 #[test]
@@ -810,7 +685,6 @@ fn test_pre_existing_snapshots_have_zero_aggregates() {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -818,7 +692,6 @@ fn test_pre_existing_snapshots_have_zero_aggregates() {
     assert_eq!(snaps[0].total_complexity, 0);
     assert_eq!(snaps[0].dead_symbol_count, 0);
     assert_eq!(snaps[0].hotspot_count, 0);
-    assert!((snaps[0].health_score - 0.0).abs() < 0.01);
 }
 
 #[test]
@@ -1694,45 +1567,10 @@ fn test_snapshot_pruning() {
     let mut ids = Vec::new();
     for i in 0..total {
         let id = db
-            .insert_snapshot_atomic(
-                &SnapshotParams {
-                    files_parsed: i as i64,
-                    symbols_extracted: 0,
-                    refs_extracted: 0,
-                    parse_errors: 0,
-                    duration_ms: 0,
-                    total_complexity: 0,
-                    dead_symbol_count: 0,
-                    hotspot_count: 0,
-                    health_score: 0.0,
-                    ..Default::default()
-                },
-                &[SnapshotFileRow {
-                    file_id: 1,
-                    file_path: "a.rs".into(),
-                    score: i as f64,
-                    category_scores: "{}".into(),
-                    completeness: SnapshotCompleteness::Complete,
-                    missing_biomarkers: Vec::new(),
-                    score_upper: None,
-                    score_basis: Some("basis-v1".into()),
-                    weight: Some(100),
-                }],
-                &[SnapshotComponentRow {
-                    component_id: "comp".into(),
-                    component_name: "comp".into(),
-                    score: i as f64,
-                    member_count: 1,
-                    total_nloc: 10,
-                    completeness: SnapshotCompleteness::Complete,
-                    score_basis: Some("comp-basis-v1".into()),
-                    members: Some(vec![SnapshotComponentMember {
-                        file_path: "a.rs".into(),
-                        weight: 10,
-                    }]),
-                    instability_penalty: Some(0.0),
-                }],
-            )
+            .insert_snapshot(&SnapshotParams {
+                files_parsed: i as i64,
+                ..Default::default()
+            })
             .unwrap();
         ids.push(id);
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1760,46 +1598,30 @@ fn test_snapshot_pruning() {
             "recent snapshot {id} should survive"
         );
     }
+}
 
-    let pruned_id = ids[0];
-    let surviving_id = *ids.last().unwrap();
-    assert!(
-        db.snapshot_file_scores(pruned_id).unwrap().is_empty(),
-        "child file rows for pruned snapshot should be gone"
-    );
-    assert!(
-        db.snapshot_component_scores(pruned_id).unwrap().is_empty(),
-        "child component rows for pruned snapshot should be gone"
-    );
-    assert_eq!(
-        db.snapshot_file_scores(surviving_id).unwrap().len(),
-        1,
-        "child file rows for surviving snapshot should remain"
-    );
-    assert_eq!(
-        db.snapshot_component_scores(surviving_id).unwrap().len(),
-        1,
-        "child component rows for surviving snapshot should remain"
-    );
-    let member_rows = |id: i64| -> i64 {
-        db.conn_for_test()
-            .query_row(
-                "SELECT COUNT(*) FROM health_snapshot_component_members WHERE snapshot_id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .unwrap()
-    };
-    assert_eq!(
-        member_rows(pruned_id),
-        0,
-        "member weights pruned with the snapshot"
-    );
-    assert_eq!(
-        member_rows(surviving_id),
-        1,
-        "surviving member weights remain"
-    );
+/// The checkpoint writer keeps the retention bound on its own (sutra/473: the
+/// pruning used to live only on the deleted health-detail writer).
+#[test]
+fn test_insert_snapshot_prunes_beyond_retention() {
+    let (_dir, db) = setup_db();
+    for i in 0..35 {
+        db.insert_snapshot(&SnapshotParams {
+            files_parsed: i,
+            timestamp: Some(format!("2026-01-01T00:00:{i:02}+00:00")),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    let snaps = db.latest_snapshots(100).unwrap();
+    assert_eq!(snaps.len(), 30);
+    assert_eq!(snaps[0].files_parsed, 34, "newest kept");
+    assert_eq!(snaps[29].files_parsed, 5, "oldest five pruned");
+    let (ts, _) = db
+        .last_parse_info()
+        .unwrap()
+        .expect("parse record survives");
+    assert_eq!(ts, "2026-01-01T00:00:34+00:00");
 }
 
 // ---------------------------------------------------------------------------

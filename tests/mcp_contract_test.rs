@@ -47,7 +47,6 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -93,7 +92,6 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();
@@ -795,7 +793,6 @@ fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
         total_complexity: 0,
         dead_symbol_count: 0,
         hotspot_count: 0,
-        health_score: 0.0,
         ..Default::default()
     })
     .unwrap();

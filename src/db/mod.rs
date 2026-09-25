@@ -9,9 +9,7 @@ mod constraints;
 mod conventions;
 pub mod entity_changes;
 mod graph;
-pub(crate) use graph::MAX_COCHANGE_COMMIT_FANOUT;
 mod health;
-mod health_evidence;
 mod migrations;
 mod similarity;
 
@@ -229,31 +227,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "pattern_family_members",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_snapshot_files",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_snapshot_components",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_snapshot_component_members",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_runs",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_current",
         partition: TablePartition::Ephemeral,
         is_virtual: false,
     },
@@ -476,11 +449,7 @@ pub struct SnapshotRow {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub health_score: f64,
     pub pattern_family_count: i64,
-    /// The health run this checkpoint's health rows were scored from
-    /// (sutra/416). `None` on legacy checkpoints.
-    pub health_run_id: Option<i64>,
     /// Erosion aggregates (sutra/442). `None` on checkpoints written before the
     /// metric existed — unknown, never zero.
     pub erosion: Option<SnapshotErosion>,
@@ -523,128 +492,13 @@ pub struct SnapshotParams {
     pub total_complexity: i64,
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
-    pub health_score: f64,
     pub pattern_family_count: i64,
     pub head_commit: Option<String>,
     /// Pre-parse timestamp for freshness watermark. When set, used instead
     /// of insert-time so edits during parsing aren't hidden.
     pub timestamp: Option<String>,
-    /// Provenance: the health run the checkpoint was scored from.
-    pub health_run_id: Option<i64>,
     /// Workspace erosion; `None` stores NULLs.
     pub erosion: Option<SnapshotErosion>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SnapshotFileRow {
-    pub file_id: i64,
-    pub file_path: String,
-    pub score: f64,
-    pub category_scores: String,
-    /// Whether this score was computed from complete analysis (sutra/408), or
-    /// whether that is unknown because the row predates recording it (sutra/418).
-    /// Lets trend tell partial analysis apart from real degradation.
-    pub completeness: SnapshotCompleteness,
-    /// Names of the missing producers behind a `Partial` score.
-    pub missing_biomarkers: Vec<String>,
-    /// Optimistic bound of a `Partial` score (`score` is the conservative lower
-    /// bound). `None` when measured, or on rows predating sutra/416.
-    pub score_upper: Option<f64>,
-    /// Hex [`crate::health::scoring::file_score_basis`] digest. `None` = Unknown
-    /// basis (every row before sutra/416): never matches, so never measured.
-    pub score_basis: Option<String>,
-    /// Line count the file was aggregated at in the workspace `health_score`.
-    /// `None` = unknown (every row before sutra/455): the workspace delta is
-    /// then never measured at a defaulted weight.
-    pub weight: Option<i64>,
-}
-
-/// Persisted completeness of one per-file snapshot score.
-///
-/// Stored as `partial` + `completeness_recorded` on `health_snapshot_files`.
-/// `Unknown` is a first-class state, not a synonym for `Complete`: rows written
-/// before completeness was recorded carry a defaulted `partial = 0` that proves
-/// nothing (health-evidence-contract.md § Migration), so they read as `Unknown`
-/// and are never backfilled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotCompleteness {
-    /// Every file-scored biomarker was measured.
-    Complete,
-    /// Some biomarker was worst-cased (see `missing_biomarkers`).
-    Partial,
-    /// Completeness was never recorded for this row (legacy observation).
-    Unknown,
-}
-
-impl SnapshotCompleteness {
-    /// Wire name used in tool output.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Complete => "complete",
-            Self::Partial => "partial",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// `(partial, completeness_recorded)` column values.
-    fn to_columns(self) -> (i64, i64) {
-        match self {
-            Self::Complete => (0, 1),
-            Self::Partial => (1, 1),
-            Self::Unknown => (0, 0),
-        }
-    }
-
-    fn from_columns(partial: i64, recorded: i64) -> Self {
-        match (recorded != 0, partial != 0) {
-            (false, _) => Self::Unknown,
-            (true, true) => Self::Partial,
-            (true, false) => Self::Complete,
-        }
-    }
-}
-
-/// One entry of a file's snapshot history, newest-first (`Db::file_health_history`).
-#[derive(Debug, Clone)]
-pub struct FileHealthHistoryRow {
-    pub timestamp: String,
-    pub score: f64,
-    pub category_scores: String,
-    pub completeness: SnapshotCompleteness,
-    pub missing_biomarkers: Vec<String>,
-    pub score_upper: Option<f64>,
-    /// `None` = scored before sutra/416 under different rules (legacy).
-    pub score_basis: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SnapshotComponentRow {
-    pub component_id: String,
-    pub component_name: String,
-    /// Conservative (lower-bound) score when `Partial`.
-    pub score: f64,
-    pub member_count: i64,
-    pub total_nloc: i64,
-    /// `Complete` only when every member file was measured (sutra/416);
-    /// `Unknown` on rows that never recorded it.
-    pub completeness: SnapshotCompleteness,
-    /// Digest over membership, member bases and the aggregation rule. `None` =
-    /// Unknown (legacy): a component delta is never measured against it.
-    pub score_basis: Option<String>,
-    /// Each member file and the aggregation weight (line count) it was scored
-    /// at. `None` = weights never recorded (rows before sutra/436): the delta is
-    /// incomparable, never measured at a defaulted weight.
-    pub members: Option<Vec<SnapshotComponentMember>>,
-    /// Instability penalty subtracted from the weighted mean. `None` = unknown
-    /// (instability computation failed, or a legacy row).
-    pub instability_penalty: Option<f64>,
-}
-
-/// One member of a snapshot component, at the weight it was aggregated with.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SnapshotComponentMember {
-    pub file_path: String,
-    pub weight: i64,
 }
 
 #[derive(Debug)]
@@ -885,14 +739,10 @@ impl Db {
 
         self.run_migrations()?;
 
-        // Reset generation counters — all ephemeral data was wiped. Also clear
-        // the index epoch (sutra/414): a full reindex is a new index lifetime, so
-        // the next Db::ensure_index_epoch mints a fresh epoch and prior retained
-        // evidence (already dropped with health_runs) is never re-resolved against
-        // the replacement extraction.
+        // Reset generation counters — all ephemeral data was wiped.
         self.conn.lock().execute(
             "UPDATE index_meta
-             SET data_generation = 0, derived_complete_generation = 0, index_epoch = NULL
+             SET data_generation = 0, derived_complete_generation = 0
              WHERE id = 1",
             [],
         )?;
@@ -2510,66 +2360,26 @@ impl Db {
     // snapshots
     // -----------------------------------------------------------------------
 
-    /// Insert a snapshot record. Returns the new row id.
+    /// Insert a snapshot record and prune checkpoints beyond the retention
+    /// limit. Returns the new row id.
     pub fn insert_snapshot(&self, p: &SnapshotParams) -> Result<i64> {
-        let ts = p
-            .timestamp
-            .clone()
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
-                                    refs_extracted, parse_errors, duration_ms,
-                                    total_complexity, dead_symbol_count,
-                                    hotspot_count, health_score,
-                                    pattern_family_count, head_commit, health_run_id,
-                                     eroded_mass, total_mass, erosion_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-            params![
-                ts,
-                p.files_parsed,
-                p.symbols_extracted,
-                p.refs_extracted,
-                p.parse_errors,
-                p.duration_ms,
-                p.total_complexity,
-                p.dead_symbol_count,
-                p.hotspot_count,
-                p.health_score,
-                p.pattern_family_count,
-                p.head_commit,
-                p.health_run_id,
-                p.erosion.map(|e| e.eroded_mass),
-                p.erosion.map(|e| e.total_mass),
-                p.erosion.map(|e| e.version),
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    /// Insert snapshot + file/component details atomically in one transaction.
-    pub fn insert_snapshot_atomic(
-        &self,
-        p: &SnapshotParams,
-        files: &[SnapshotFileRow],
-        components: &[SnapshotComponentRow],
-    ) -> Result<i64> {
-        let ts = p
-            .timestamp
-            .clone()
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-        let conn = self.conn.lock();
-        conn.execute_batch("BEGIN")?;
-
-        let result = (|| -> Result<i64> {
+        let now;
+        let ts: &str = match p.timestamp.as_deref() {
+            Some(t) => t,
+            None => {
+                now = chrono::Utc::now().to_rfc3339();
+                &now
+            }
+        };
+        let id = {
+            let conn = self.conn.lock();
             conn.execute(
                 "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
-                                        hotspot_count, health_score,
-                                        pattern_family_count, head_commit, health_run_id,
-                                         eroded_mass, total_mass, erosion_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                        hotspot_count, pattern_family_count, head_commit,
+                                        eroded_mass, total_mass, erosion_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     ts,
                     p.files_parsed,
@@ -2580,41 +2390,22 @@ impl Db {
                     p.total_complexity,
                     p.dead_symbol_count,
                     p.hotspot_count,
-                    p.health_score,
                     p.pattern_family_count,
                     p.head_commit,
-                    p.health_run_id,
                     p.erosion.map(|e| e.eroded_mass),
                     p.erosion.map(|e| e.total_mass),
                     p.erosion.map(|e| e.version),
                 ],
             )?;
-            let snapshot_id = conn.last_insert_rowid();
-
-            insert_snapshot_file_rows(&conn, snapshot_id, files)?;
-
-            insert_snapshot_component_rows(&conn, snapshot_id, components)?;
-
-            Ok(snapshot_id)
-        })();
-
-        match result {
-            Ok(id) => {
-                conn.execute_batch("COMMIT")?;
-                drop(conn);
-                self.prune_snapshots(Self::MAX_SNAPSHOTS)?;
-                Ok(id)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
+            conn.last_insert_rowid()
+        };
+        self.prune_snapshots(Self::MAX_SNAPSHOTS)?;
+        Ok(id)
     }
 
     const MAX_SNAPSHOTS: usize = 30;
 
-    /// Delete snapshots (and their child rows) beyond the most recent `keep`.
+    /// Delete snapshots beyond the most recent `keep`.
     /// Returns the number of snapshots deleted.
     pub fn prune_snapshots(&self, keep: usize) -> Result<usize> {
         let conn = self.conn.lock();
@@ -2629,25 +2420,8 @@ impl Db {
         }
 
         let placeholders: String = stale_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql_files =
-            format!("DELETE FROM health_snapshot_files WHERE snapshot_id IN ({placeholders})");
-        let sql_components =
-            format!("DELETE FROM health_snapshot_components WHERE snapshot_id IN ({placeholders})");
-        let sql_members = format!(
-            "DELETE FROM health_snapshot_component_members WHERE snapshot_id IN ({placeholders})"
-        );
-        let sql_snapshots = format!("DELETE FROM snapshots WHERE id IN ({placeholders})");
-
-        let id_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            stale_ids.iter().map(|id| Box::new(*id) as _).collect();
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            id_params.iter().map(|b| b.as_ref()).collect();
-
-        conn.execute(&sql_files, param_refs.as_slice())?;
-        conn.execute(&sql_components, param_refs.as_slice())?;
-        conn.execute(&sql_members, param_refs.as_slice())?;
-        conn.execute(&sql_snapshots, param_refs.as_slice())?;
-        health_evidence::prune_unreferenced_health_runs(&conn)?;
+        let sql = format!("DELETE FROM snapshots WHERE id IN ({placeholders})");
+        conn.execute(&sql, rusqlite::params_from_iter(&stale_ids))?;
 
         Ok(stale_ids.len())
     }
@@ -2709,178 +2483,13 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count, health_run_id,
+                    hotspot_count, pattern_family_count,
                     eroded_mass, total_mass, erosion_version
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
             .query_map(params![limit], map_snapshot_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// The health run a checkpoint was scored from (`None` for legacy
-    /// checkpoints or an unknown id).
-    pub fn snapshot_health_run_id(&self, snapshot_id: i64) -> Result<Option<i64>> {
-        let conn = self.conn.lock();
-        let run: Option<Option<i64>> = conn
-            .query_row(
-                "SELECT health_run_id FROM snapshots WHERE id = ?1",
-                params![snapshot_id],
-                |row| row.get(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })?;
-        Ok(run.flatten())
-    }
-
-    /// Return all snapshots whose timestamp falls within [from, to], ordered oldest-first.
-    pub fn snapshots_between(&self, from: &str, to: &str) -> Result<Vec<SnapshotRow>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, timestamp, files_parsed, symbols_extracted,
-                    refs_extracted, parse_errors, duration_ms,
-                    total_complexity, dead_symbol_count,
-                    hotspot_count, health_score, pattern_family_count, health_run_id,
-                    eroded_mass, total_mass, erosion_version
-             FROM snapshots WHERE timestamp >= ?1 AND timestamp <= ?2
-             ORDER BY timestamp ASC",
-        )?;
-        let rows = stmt
-            .query_map(params![from, to], map_snapshot_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    // -----------------------------------------------------------------------
-    // health snapshot details
-    // -----------------------------------------------------------------------
-
-    pub fn insert_snapshot_files(&self, snapshot_id: i64, files: &[SnapshotFileRow]) -> Result<()> {
-        let conn = self.conn.lock();
-        insert_snapshot_file_rows(&conn, snapshot_id, files)
-    }
-
-    pub fn insert_snapshot_components(
-        &self,
-        snapshot_id: i64,
-        components: &[SnapshotComponentRow],
-    ) -> Result<()> {
-        let conn = self.conn.lock();
-        insert_snapshot_component_rows(&conn, snapshot_id, components)
-    }
-
-    pub fn snapshot_file_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotFileRow>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT file_id, file_path, score, category_scores,
-                    partial, completeness_recorded, missing_biomarkers,
-                    score_upper, score_basis, weight
-             FROM health_snapshot_files WHERE snapshot_id = ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![snapshot_id], |row| {
-                let (completeness, missing_biomarkers) = map_snapshot_completeness(row, 4)?;
-                Ok(SnapshotFileRow {
-                    file_id: row.get(0)?,
-                    file_path: row.get(1)?,
-                    score: row.get(2)?,
-                    category_scores: row.get(3)?,
-                    completeness,
-                    missing_biomarkers,
-                    score_upper: row.get(7)?,
-                    score_basis: row.get(8)?,
-                    weight: row.get(9)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn snapshot_component_scores(&self, snapshot_id: i64) -> Result<Vec<SnapshotComponentRow>> {
-        let conn = self.conn.lock();
-        let mut members: std::collections::HashMap<String, Vec<SnapshotComponentMember>> =
-            std::collections::HashMap::new();
-        let mut stmt = conn.prepare(
-            "SELECT component_id, file_path, weight
-             FROM health_snapshot_component_members WHERE snapshot_id = ?1",
-        )?;
-        let member_rows = stmt.query_map(params![snapshot_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                SnapshotComponentMember {
-                    file_path: row.get(1)?,
-                    weight: row.get(2)?,
-                },
-            ))
-        })?;
-        for r in member_rows {
-            let (component_id, member) = r?;
-            members.entry(component_id).or_default().push(member);
-        }
-
-        let mut stmt = conn.prepare(
-            "SELECT component_id, component_name, score, member_count, total_nloc,
-                    partial, completeness_recorded, score_basis,
-                    weights_recorded, instability_penalty
-             FROM health_snapshot_components WHERE snapshot_id = ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![snapshot_id], |row| {
-                let component_id: String = row.get(0)?;
-                let weights_recorded: i64 = row.get(8)?;
-                // Recorded weights with no member rows is an empty member list,
-                // not Unknown; unrecorded weights stay Unknown whatever exists.
-                let members = (weights_recorded != 0)
-                    .then(|| members.remove(&component_id).unwrap_or_default());
-                Ok(SnapshotComponentRow {
-                    component_name: row.get(1)?,
-                    score: row.get(2)?,
-                    member_count: row.get(3)?,
-                    total_nloc: row.get(4)?,
-                    completeness: SnapshotCompleteness::from_columns(row.get(5)?, row.get(6)?),
-                    score_basis: row.get(7)?,
-                    members,
-                    instability_penalty: row.get(9)?,
-                    component_id,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn file_health_history(
-        &self,
-        file_path: &str,
-        limit: usize,
-    ) -> Result<Vec<FileHealthHistoryRow>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.timestamp, hsf.score, hsf.category_scores,
-                    hsf.partial, hsf.completeness_recorded, hsf.missing_biomarkers,
-                    hsf.score_upper, hsf.score_basis
-             FROM health_snapshot_files hsf
-             JOIN snapshots s ON s.id = hsf.snapshot_id
-             WHERE hsf.file_path = ?1
-             ORDER BY s.timestamp DESC LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![file_path, limit as i64], |row| {
-                let (completeness, missing_biomarkers) = map_snapshot_completeness(row, 3)?;
-                Ok(FileHealthHistoryRow {
-                    timestamp: row.get(0)?,
-                    score: row.get(1)?,
-                    category_scores: row.get(2)?,
-                    completeness,
-                    missing_biomarkers,
-                    score_upper: row.get(6)?,
-                    score_basis: row.get(7)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 }
@@ -2898,96 +2507,6 @@ fn batch_aware_transaction(conn: &Connection) -> Result<Option<rusqlite::Transac
     } else {
         Ok(None)
     }
-}
-
-/// The single writer for `health_snapshot_files` rows. Both snapshot insert
-/// paths go through it so completeness cannot be dropped by one of them again
-/// (sutra/418: the atomic production writer omitted `partial` and
-/// `missing_biomarkers` while the standalone one stored them).
-fn insert_snapshot_file_rows(
-    conn: &Connection,
-    snapshot_id: i64,
-    files: &[SnapshotFileRow],
-) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO health_snapshot_files
-         (snapshot_id, file_id, file_path, score, category_scores,
-          partial, completeness_recorded, missing_biomarkers, score_upper, score_basis,
-          weight)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-    )?;
-    for f in files {
-        let (partial, recorded) = f.completeness.to_columns();
-        let missing_json =
-            serde_json::to_string(&f.missing_biomarkers).unwrap_or_else(|_| "[]".to_string());
-        stmt.execute(params![
-            snapshot_id,
-            f.file_id,
-            f.file_path,
-            f.score,
-            f.category_scores,
-            partial,
-            recorded,
-            missing_json,
-            f.score_upper,
-            f.score_basis,
-            f.weight,
-        ])?;
-    }
-    Ok(())
-}
-
-/// The single writer for `health_snapshot_components` rows and their member
-/// weights, shared by both snapshot insert paths for the same reason as
-/// [`insert_snapshot_file_rows`].
-fn insert_snapshot_component_rows(
-    conn: &Connection,
-    snapshot_id: i64,
-    components: &[SnapshotComponentRow],
-) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO health_snapshot_components
-         (snapshot_id, component_id, component_name, score, member_count, total_nloc,
-          partial, completeness_recorded, score_basis, weights_recorded, instability_penalty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-    )?;
-    let mut member_stmt = conn.prepare(
-        "INSERT INTO health_snapshot_component_members
-         (snapshot_id, component_id, file_path, weight)
-         VALUES (?1, ?2, ?3, ?4)",
-    )?;
-    for c in components {
-        let (partial, recorded) = c.completeness.to_columns();
-        stmt.execute(params![
-            snapshot_id,
-            c.component_id,
-            c.component_name,
-            c.score,
-            c.member_count,
-            c.total_nloc,
-            partial,
-            recorded,
-            c.score_basis,
-            i64::from(c.members.is_some()),
-            c.instability_penalty,
-        ])?;
-        for m in c.members.iter().flatten() {
-            member_stmt.execute(params![snapshot_id, c.component_id, m.file_path, m.weight])?;
-        }
-    }
-    Ok(())
-}
-
-/// Read `(partial, completeness_recorded, missing_biomarkers)` starting at
-/// column `first`.
-fn map_snapshot_completeness(
-    row: &rusqlite::Row<'_>,
-    first: usize,
-) -> rusqlite::Result<(SnapshotCompleteness, Vec<String>)> {
-    let completeness = SnapshotCompleteness::from_columns(row.get(first)?, row.get(first + 1)?);
-    let missing_json: String = row.get(first + 2)?;
-    let missing_biomarkers: Vec<String> = serde_json::from_str(&missing_json).unwrap_or_default();
-    Ok((completeness, missing_biomarkers))
 }
 
 fn map_complexity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolComplexityRow> {
@@ -3085,10 +2604,8 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         total_complexity: row.get(7)?,
         dead_symbol_count: row.get(8)?,
         hotspot_count: row.get(9)?,
-        health_score: row.get(10)?,
-        pattern_family_count: row.get(11)?,
-        health_run_id: row.get(12)?,
-        erosion: match (row.get(13)?, row.get(14)?, row.get(15)?) {
+        pattern_family_count: row.get(10)?,
+        erosion: match (row.get(11)?, row.get(12)?, row.get(13)?) {
             (Some(eroded_mass), Some(total_mass), Some(version)) => Some(SnapshotErosion {
                 eroded_mass,
                 total_mass,

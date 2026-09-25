@@ -1055,7 +1055,7 @@ fn test_rust_receiver_call_prefers_method_over_free_fn() {
     let refs = vec![make_receiver_call("resolve", "baseline", 10)];
     let all_symbols = vec![
         sym(1, "resolve", "resolve", "function"),
-        sym(2, "BaselineSelector::resolve", "resolve", "method"),
+        sym(2, "Selector::resolve", "resolve", "method"),
     ];
 
     let resolved = resolve(&[], &refs, &all_symbols, &[], 0);
@@ -1085,7 +1085,7 @@ fn test_rust_bare_call_still_binds_free_fn() {
     let refs = vec![make_ref("resolve", 10, RefContextKind::Call)];
     let all_symbols = vec![
         sym(1, "resolve", "resolve", "function"),
-        sym(2, "BaselineSelector::resolve", "resolve", "method"),
+        sym(2, "Selector::resolve", "resolve", "method"),
     ];
 
     let resolved = resolve(&[], &refs, &all_symbols, &[], 0);

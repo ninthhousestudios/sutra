@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -31,16 +32,14 @@ pub struct OwnersConfig {
     pub aliases: HashMap<String, String>,
 }
 
-/// The widest commit (in indexed files touched) a git producer consumes; wider
-/// commits are discarded as carrying no co-edit signal. A file whose only
-/// in-window commits exceed its producer's limit has no usable history for that
-/// producer, so the run stages it Missing(NoHistory) (sutra/423). `None` = the
-/// producer applies no width filter.
-pub(crate) fn max_observed_commit_width(kind: BiomarkerKind) -> Option<i64> {
-    match kind {
-        BiomarkerKind::ChangeEntropy => Some(MAX_COMMIT_WIDTH),
-        BiomarkerKind::HiddenCoupling => Some(crate::db::MAX_COCHANGE_COMMIT_FANOUT),
-        _ => None,
+/// Load `.sutra/owners.toml`. A missing file is the default (empty) config; a
+/// present-but-unreadable or malformed file is `None`, so the ownership producer
+/// declines to score rather than silently using the default.
+pub fn load_owners(workspace_root: &Path) -> Option<OwnersConfig> {
+    match std::fs::read_to_string(workspace_root.join(".sutra/owners.toml")) {
+        Ok(content) => toml::from_str(&content).ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(OwnersConfig::default()),
+        Err(_) => None,
     }
 }
 
@@ -122,10 +121,9 @@ pub fn compute_change_entropy(db: &Db) -> Result<Vec<HealthFinding>> {
 }
 
 /// Ownership-risk findings from the observed author distribution, merged through
-/// the caller-supplied owners aliases. The config is *probed* by the caller
-/// ([`crate::health::probe::probe_owners`]) so a malformed/unreadable owners file
-/// is a recorded failure the caller declines to score from, never silently
-/// treated as an empty default (health-evidence contract, sutra/415).
+/// the caller-supplied owners aliases. The caller loads the config with
+/// [`load_owners`] and declines to score when it is unreadable or malformed,
+/// never silently treating it as an empty default.
 pub fn compute_ownership_risk(db: &Db, owners_config: &OwnersConfig) -> Result<Vec<HealthFinding>> {
     let raw = db.file_author_commits()?;
     let mut by_file: HashMap<i64, HashMap<String, i64>> = HashMap::new();
@@ -268,4 +266,44 @@ pub fn compute_blast_radius_churn(db: &Db) -> Result<Vec<HealthFinding>> {
         })
         .collect();
     Ok(findings)
+}
+
+#[cfg(test)]
+mod owners_tests {
+    use super::*;
+
+    #[test]
+    fn owners_default_when_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = load_owners(dir.path()).expect("absent file is the default");
+        assert!(config.aliases.is_empty());
+    }
+
+    #[test]
+    fn owners_parsed_when_valid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".sutra")).expect("create .sutra");
+        std::fs::write(
+            dir.path().join(".sutra/owners.toml"),
+            "[aliases]\n\"bot@x\" = \"human@x\"\n",
+        )
+        .expect("write owners");
+        let config = load_owners(dir.path()).expect("valid config");
+        assert_eq!(
+            config.aliases.get("bot@x").map(String::as_str),
+            Some("human@x")
+        );
+    }
+
+    #[test]
+    fn owners_malformed_is_none_not_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".sutra")).expect("create .sutra");
+        std::fs::write(
+            dir.path().join(".sutra/owners.toml"),
+            "this is not = valid = toml [[[",
+        )
+        .expect("write owners");
+        assert!(load_owners(dir.path()).is_none());
+    }
 }

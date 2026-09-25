@@ -13,7 +13,6 @@ pub mod diff_impact;
 pub mod erosion_delta;
 pub mod explore;
 pub mod explore_lexical;
-pub mod file_health;
 pub mod find;
 pub mod health;
 pub mod help;
@@ -35,7 +34,6 @@ pub mod scoring;
 pub mod similar;
 pub mod symbol_diff;
 pub mod trace;
-pub mod trend;
 pub mod winnow;
 
 use std::collections::HashMap;

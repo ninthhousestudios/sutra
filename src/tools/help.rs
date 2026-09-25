@@ -113,9 +113,9 @@ The score combines weighted signals:
 A score above 0.5 warrants careful review. Above 0.7 is high-risk.
 
 ## Erosion delta
-`erosion_delta` compares structural erosion between the diff's base and head. It uses the \
-same function selection as `sutra_file_health` (outermost functions, test code excluded, \
-eroded at cognitive >= 15, mass = cognitive x sqrt(lines)):
+`erosion_delta` compares structural erosion between the diff's base and head. It selects \
+outermost functions with test code excluded, eroded at cognitive >= 15, \
+mass = cognitive x sqrt(lines):
 - `total`: base/head eroded mass over the changed files, mass added/removed, and counts of \
 threshold crossings and added/deleted eroded functions
 - `files`: per-file base/head aggregates and eroded mass added/removed/net

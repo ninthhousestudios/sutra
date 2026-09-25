@@ -1,5 +1,5 @@
 //! Erosion metric (sutra/442): symbol selection over real parses, snapshot
-//! persistence, and trend/file_health surfacing.
+//! persistence, and the review erosion delta.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -9,7 +9,6 @@ use sutra::db::{Db, SnapshotErosion, SnapshotParams};
 use sutra::health::erosion::{self, EROSION_VERSION};
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
-use sutra::tools::trend::{self, TrendArgs};
 use sutra::workspace::WorkspaceEntry;
 
 fn make_config(db_dir: &Path) -> Config {
@@ -190,20 +189,6 @@ fn test_code_contributes_no_mass() {
     assert_eq!(cogs, vec![fx.cognitive_of(lib, "prod")], "only prod counts");
 }
 
-fn trend_cmp(db: &Db) -> serde_json::Value {
-    trend::handle(
-        db,
-        &TrendArgs {
-            workspace: String::new(),
-            from: None,
-            to: None,
-            path: None,
-            limit: None,
-        },
-    )
-    .unwrap()
-}
-
 #[test]
 fn snapshots_record_erosion_and_legacy_rows_read_null() {
     let fx = Fixture::new(
@@ -224,12 +209,6 @@ fn snapshots_record_erosion_and_legacy_rows_read_null() {
     fx.db.insert_snapshot(&SnapshotParams::default()).unwrap();
     let legacy = fx.db.latest_snapshots(1).unwrap().remove(0);
     assert_eq!(legacy.erosion, None);
-
-    // Trend against a legacy side: no erosion delta.
-    let cmp = trend_cmp(&fx.db);
-    assert!(cmp["deltas"]["eroded_mass"].is_null());
-    assert!(cmp["deltas"]["total_mass"].is_null());
-    assert!(cmp["to"]["erosion"].is_null());
 }
 
 #[test]
@@ -265,11 +244,6 @@ fn no_change_parse_carries_erosion_forward() {
     assert_eq!(copied.files_parsed, 0, "took the NoChanges path");
     assert_eq!(copied.erosion, Some(marker));
 
-    // Trend between two same-version checkpoints reports the mass deltas.
-    let cmp = trend_cmp(&fx.db);
-    assert_eq!(cmp["deltas"]["eroded_mass"], serde_json::json!(0.0));
-    assert_eq!(cmp["deltas"]["total_mass"], serde_json::json!(0.0));
-
     // A legacy (NULL) or other-version predecessor is recomputed, not copied.
     for previous in [
         None,
@@ -288,213 +262,6 @@ fn no_change_parse_carries_erosion_forward() {
         let latest = fx.db.latest_snapshots(1).unwrap().remove(0);
         assert_eq!(latest.erosion, Some(real), "recomputed after {previous:?}");
     }
-
-    // Different versions never produce a delta.
-    fx.db
-        .insert_snapshot(&SnapshotParams {
-            erosion: Some(SnapshotErosion {
-                version: EROSION_VERSION + 1,
-                ..marker
-            }),
-            ..SnapshotParams::default()
-        })
-        .unwrap();
-    let cmp = trend_cmp(&fx.db);
-    assert!(cmp["deltas"]["eroded_mass"].is_null());
-}
-
-/// One linked JS module: calls its two siblings and carries a nested,
-/// above-threshold function so every member file contributes erosion mass.
-fn linked_module(name: &str, siblings: [&str; 2]) -> String {
-    let [a, b] = siblings;
-    format!(
-        r#"import {{ {a} }} from './{a}.js';
-import {{ {b} }} from './{b}.js';
-
-export function {name}(xs) {{
-  if (xs) {{
-    for (const x of xs) {{
-      if (x) {{
-        while (x > 0) {{
-          if (x > 1) {{ return {a}(x) + {b}(x); }}
-        }}
-      }}
-    }}
-  }}
-  return {a}(0) + {b}(0);
-}}
-"#
-    )
-}
-
-/// Two directories of three mutually-importing files: enough linked files for
-/// clustering to form components on a real parse.
-fn clustered_fixture(id: &str) -> Fixture {
-    let groups = [
-        ["core", "alpha", "beta", "gamma"],
-        ["ui", "delta", "eps", "zeta"],
-    ];
-    let files: Vec<(String, String)> = groups
-        .iter()
-        .flat_map(|[dir, a, b, c]| {
-            [(a, [b, c]), (b, [a, c]), (c, [a, b])].map(|(name, sibs)| {
-                (
-                    format!("src/{dir}/{name}.js"),
-                    linked_module(name, [*sibs[0], *sibs[1]]),
-                )
-            })
-        })
-        .collect();
-    let refs: Vec<(&str, &str)> = files
-        .iter()
-        .map(|(p, b)| (p.as_str(), b.as_str()))
-        .collect();
-    Fixture::new(id, &["javascript"], &refs)
-}
-
-#[test]
-fn file_health_reports_file_and_component_erosion() {
-    let fx = clustered_fixture("erosion-fh");
-    fx.parse();
-    let verdict = sutra::health::refresh::current_run_validity(
-        &fx.db,
-        &fx.ws.root,
-        chrono::Utc::now().timestamp(),
-    )
-    .unwrap();
-    let result =
-        sutra::tools::file_health::handle(&fx.db, verdict, None, None, Some("all"), None, false)
-            .unwrap();
-
-    let file = result["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["path"] == "src/core/alpha.js")
-        .expect("file listed in mode=all");
-    let block = &file["erosion"];
-    assert_eq!(block["function_count"], 1);
-    assert!(block["total_mass"].as_f64().unwrap() > 0.0);
-
-    let components = result["components"].as_array().expect("components array");
-    assert!(!components.is_empty(), "fixture must cluster: {result}");
-    let by_file = erosion::load_samples_by_file(&fx.db).unwrap();
-    let workspace = erosion::workspace_aggregate(&by_file);
-    for comp in components {
-        let id = comp["id"].as_str().expect("component id");
-        let members = fx.db.component_file_ids(id).unwrap();
-        assert!(!members.is_empty(), "component {id} has members");
-        // Summed over exactly this component's member files.
-        let expected = erosion::to_json(&erosion::files_aggregate(&by_file, members));
-        assert_eq!(comp["erosion"], expected, "component erosion: {comp}");
-        assert!(comp["erosion"]["total_mass"].as_f64().unwrap() > 0.0);
-    }
-    // With more than one component, no single one carries the whole workspace
-    // mass — the block is per-component, not a workspace total echoed.
-    if components.len() > 1 {
-        for comp in components {
-            assert!(comp["erosion"]["total_mass"].as_f64().unwrap() < workspace.total_mass);
-        }
-    }
-}
-
-#[test]
-fn stale_membership_drops_component_erosion() {
-    use std::sync::Arc;
-    use sutra::tools::ToolContext;
-
-    let fx = clustered_fixture("erosion-fh-stale");
-    fx.parse();
-    let refreshed = sutra::health::refresh::DemandOutcome::Refreshed(
-        sutra::health::refresh::RefreshResult::Published(sutra::health::evidence::RunId(1)),
-    );
-    let db = Arc::new(Db::open_unchecked(&fx.ws.id, &fx.config.db_dir).unwrap());
-    let ctx = ToolContext::for_test(db, fx.ws.root.clone());
-    let call = || {
-        sutra::tools::file_health::handle_ctx(&ctx, refreshed, None, None, Some("all"), None, false)
-            .unwrap()
-    };
-
-    // Precondition: membership is current right after a full parse, so the
-    // component erosion blocks are present.
-    let current = call();
-    let comps = current["components"]
-        .as_array()
-        .expect("components when current");
-    assert!(!comps.is_empty());
-    assert!(comps.iter().all(|c| c["erosion"].is_object()));
-
-    // A clustering-config change the stored membership was not computed under.
-    let sutra_dir = fx.ws.root.join(".sutra");
-    std::fs::create_dir_all(&sutra_dir).unwrap();
-    std::fs::write(sutra_dir.join("components.toml"), "resolution = 7.5").unwrap();
-
-    let stale = call();
-    assert!(stale.get("components").is_none(), "stale: {stale}");
-    assert!(stale.get("total_components").is_none());
-    assert_eq!(
-        stale["components_unavailable"]["reason"],
-        "stale_membership"
-    );
-    // Per-file erosion is a distinct axis and still reported.
-    let files = stale["files"].as_array().unwrap();
-    assert!(files.iter().all(|f| f["erosion"].is_object()));
-}
-
-fn file_health_json(fx: &Fixture, path: Option<&str>) -> serde_json::Value {
-    let verdict = sutra::health::refresh::current_run_validity(
-        &fx.db,
-        &fx.ws.root,
-        chrono::Utc::now().timestamp(),
-    )
-    .unwrap();
-    sutra::tools::file_health::handle(&fx.db, verdict, path, None, Some("all"), None, false)
-        .unwrap()
-}
-
-fn erosion_block<'a>(result: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
-    &result["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["path"] == path)
-        .unwrap_or_else(|| panic!("{path} listed: {result}"))["erosion"]
-}
-
-#[test]
-fn path_excluded_test_file_is_marked_not_clean() {
-    let fx = Fixture::new(
-        "erosion-excluded",
-        &["dart", "javascript"],
-        &[
-            ("test/widget_test.dart", DART_TEST),
-            ("src/nested.js", NESTED_JS),
-        ],
-    );
-    fx.parse();
-    let result = file_health_json(&fx, None);
-
-    let excluded = erosion_block(&result, "test/widget_test.dart");
-    assert_eq!(excluded["excluded"], "test_file", "{excluded}");
-    assert_eq!(excluded["function_count"], 0);
-
-    let counted = erosion_block(&result, "src/nested.js");
-    assert!(counted.get("excluded").is_none(), "{counted}");
-    assert_eq!(counted["function_count"], 1);
-}
-
-#[test]
-fn path_filtered_erosion_matches_unfiltered() {
-    let fx = clustered_fixture("erosion-fh-path");
-    fx.parse();
-    let all = file_health_json(&fx, None);
-    let one = file_health_json(&fx, Some("src/ui/eps.js"));
-    assert_eq!(one["total_files"], 1);
-    assert!(one.get("components").is_none());
-    assert_eq!(
-        erosion_block(&one, "src/ui/eps.js"),
-        erosion_block(&all, "src/ui/eps.js")
-    );
 }
 
 // ── sutra_review erosion delta (sutra/451) ──────────────────────────────────
@@ -516,11 +283,11 @@ fn sorted_samples(samples: &[erosion::FunctionSample]) -> Vec<(i64, i64)> {
     v
 }
 
-/// The review path parses a diff side itself; its samples must be the ones
-/// file_health reads from the index for the same bytes — selection, flattening,
-/// test exclusion and parent links included.
+/// The review path parses a diff side itself; its samples must be the ones the
+/// index holds for the same bytes — selection, flattening, test exclusion and
+/// parent links included.
 #[test]
-fn review_samples_match_file_health_samples() {
+fn review_samples_match_indexed_samples() {
     let files = [
         ("src/nested.js", NESTED_JS),
         ("src/lib.rs", RUST_LIB),

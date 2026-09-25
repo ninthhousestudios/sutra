@@ -62,7 +62,6 @@ use crate::tools::dead::DeadArgs;
 use crate::tools::deps::DepsArgs;
 use crate::tools::diff_impact::DiffImpactArgs;
 use crate::tools::explore::ExploreArgs;
-use crate::tools::file_health::FileHealthArgs;
 use crate::tools::hotspots::HotspotsArgs;
 use crate::tools::impact::ImpactArgs;
 use crate::tools::lookup::LookupArgs;
@@ -76,7 +75,6 @@ use crate::tools::remember::RememberArgs;
 use crate::tools::review::ReviewArgs;
 use crate::tools::similar::SimilarArgs;
 use crate::tools::trace::TraceArgs;
-use crate::tools::trend::TrendArgs;
 use crate::tools::winnow::WinnowArgs;
 
 // ---------------------------------------------------------------------------
@@ -488,98 +486,6 @@ impl SutraServer {
         let entry = self.resolve_workspace(ws_id)?;
         let lock = self.parse_coord.lock_for(&entry.id);
         Ok(lock.lock_owned().await)
-    }
-
-    /// Demand health refresh (sutra/415 Wave C): the *acquiring* adapter for
-    /// health consumers (file health, workspace summaries). Acquires the parse
-    /// coordinator with the same bounded wait as the query path, then a
-    /// *nonblocking* cross-process flock, and drives the shared refresh core.
-    /// It never blocks a health query behind a peer's write (contention defers),
-    /// and only health consumers call it — ordinary symbol queries must NOT
-    /// rebuild health. Review does not use this adapter: it already holds the
-    /// coordinator and would deadlock re-acquiring it; it calls the locked core.
-    ///
-    /// The coordinator guard and the flock live inside `spawn_blocking` so a
-    /// dropped future (HTTP disconnect) cannot release them mid-write, exactly as
-    /// `refresh_before_answer` does for the incremental reparse (sutra/380).
-    async fn refresh_health(&self, ws_id: &str) -> crate::health::refresh::DemandOutcome {
-        use crate::health::evidence::DeferReason;
-        use crate::health::refresh::DemandOutcome;
-
-        let entry = match self.resolve_workspace(ws_id) {
-            Ok(e) => e,
-            Err(_) => return DemandOutcome::Failed,
-        };
-        // A frozen index is immutable: it can serve retained evidence but must not
-        // assert current filesystem health without validation (contract).
-        if entry.frozen {
-            return DemandOutcome::Deferred(DeferReason::Frozen);
-        }
-        let db = match self.get_db(ws_id) {
-            Ok(d) => d,
-            Err(_) => return DemandOutcome::Failed,
-        };
-
-        // In-process serialization: the same bounded wait the query path uses. A
-        // parse holding it past the deadline means defer rather than block.
-        let lock = self.parse_coord.lock_for(&entry.id);
-        let guard = match tokio::time::timeout(Self::REFRESH_LOCK_WAIT, lock.lock_owned()).await {
-            Ok(g) => g,
-            Err(_) => return DemandOutcome::Deferred(DeferReason::LockBusy),
-        };
-
-        let config = Arc::clone(&self.config);
-        // Move the owned entry fields into the worker (no clone): `entry` is a
-        // local and its id was only borrowed above to key the coordinator lock.
-        let root = entry.root;
-        let ws_lock_id = entry.id;
-        let now = chrono::Utc::now().timestamp();
-        let result = tokio::task::spawn_blocking(move || {
-            // Hold the coordinator guard for the whole write; refresh_acquiring
-            // takes the nonblocking cross-process flock and drives the core.
-            let _guard = guard;
-            match crate::health::refresh::refresh_acquiring(&config, &ws_lock_id, &db, &root, now) {
-                Ok(o) => o,
-                Err(e) => {
-                    tracing::warn!("health: demand refresh failed: {e}");
-                    DemandOutcome::Failed
-                }
-            }
-        })
-        .await;
-
-        match result {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                tracing::warn!("health: demand refresh worker panicked: {e}");
-                DemandOutcome::Failed
-            }
-        }
-    }
-
-    /// Refresh persistent health under an ALREADY-HELD coordinator lock (the
-    /// review DD path). Uses the shared locked core directly — never the acquiring
-    /// [`Self::refresh_health`], which would re-lock the coordinator and deadlock.
-    /// Takes only the nonblocking cross-process flock; on contention or error the
-    /// prior run stands. Best-effort and synchronous: the caller runs the DD
-    /// evaluation inline under the same guard with no await in between, so this
-    /// cannot be cancelled mid-write.
-    fn refresh_health_locked(
-        &self,
-        db: &Db,
-        root: &Path,
-        ws_id: &str,
-    ) -> crate::health::refresh::DemandOutcome {
-        use crate::health::refresh::DemandOutcome;
-        let canonical = self.canonical_ws_id(ws_id);
-        let now = chrono::Utc::now().timestamp();
-        match crate::health::refresh::refresh_acquiring(&self.config, &canonical, db, root, now) {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!("review: health refresh failed: {e}");
-                DemandOutcome::Failed
-            }
-        }
     }
 
     fn wrap_response(
@@ -1078,12 +984,8 @@ impl SutraServer {
         description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
         identifies changed files and symbols, computes transitive impact, calculates a \
         0.0–1.0 risk score with breakdown, and ranks recommended reads. \
-        health_delta separates a temporal comparison of persistent health (measured only \
-        between complete observations under the same scoring basis, else incomparable with \
-        a reason) from on_demand attribution of fresh blame/shape findings against the \
-        current evidence. \
         erosion_delta compares base and head erosion (cognitive >= 15, mass = cognitive x \
-        sqrt(lines), same selection as sutra_file_health) over the changed files: per-file \
+        sqrt(lines); outermost functions, test code excluded) over the changed files: per-file \
         eroded mass added/removed, totals, and functions that crossed the threshold, were \
         added/deleted eroded, or changed eroded mass (renames/moves paired). A side that \
         cannot be read or parsed makes that file unavailable and status partial, never zero. \
@@ -1094,22 +996,6 @@ impl SutraServer {
         &self,
         Parameters(args): Parameters<ReviewArgs>,
     ) -> Result<String, ErrorData> {
-        // Pin the baseline snapshot BEFORE tool_context can full-parse (stamp
-        // heal) and record a newer checkpoint — otherwise the health delta would
-        // compare current against a snapshot written by THIS request and hide real
-        // debt (sutra/415 contract). A read-only peek at the latest checkpoint id.
-        // A genuinely-missing baseline (no checkpoint at pin time) is pinned as
-        // `Pinned(None)` and must stay missing → incomparable (sutra/424 F5), not
-        // healed into the fresh snapshot the reparse below may write.
-        // A storage error here is an error, not a missing baseline (sutra/416).
-        let baseline = crate::health::compare::BaselineSelector::Pinned(
-            self.get_db(&args.workspace)?
-                .latest_snapshots(1)
-                .map_err(sutra_to_rmcp)?
-                .first()
-                .map(|s| s.id),
-        );
-
         // tool_context first: it refreshes the index (query-path incremental
         // reparse, sutra/363) and releases the parse lock before returning.
         let ctx = self.tool_context(&args.workspace).await?;
@@ -1118,23 +1004,12 @@ impl SutraServer {
         // This subsumes the previous await_parse, which only waited for an
         // in-flight parse and then released before evaluation ran.
         let _parse_guard = self.hold_parse_lock(&args.workspace).await?;
-        // Refresh persistent health within the held coordinator lock so the delta's
-        // persistent side reflects the current index (an incremental reparse above
-        // does not recompute health). Uses the locked core, not the acquiring
-        // adapter, to avoid re-locking the coordinator. Best-effort.
-        // Capture the refresh outcome: a Deferred/Failed/stale refresh leaves the
-        // current run unverified, so its outcomes read as Missing — the temporal
-        // side is partial (incomparable) and attribution only conditional (sutra/416).
-        let refresh_outcome =
-            self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);
         let dd = self.get_dd_engine(&args.workspace);
         let result = tools::review::handle(
             ctx.db(),
             ctx.workspace_root(),
             args.diff.as_deref(),
             Some(&dd),
-            baseline,
-            refresh_outcome,
             args.explain.unwrap_or(false),
         )
         .map_err(sutra_to_rmcp)?;
@@ -1168,66 +1043,6 @@ impl SutraServer {
         let ctx = self.tool_context(&args.workspace).await?;
         let result = tools::hotspots::handle_ctx(&ctx, args.window_days, args.limit)
             .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Per-file and per-component health report. Returns derived health scores \
-        (1.0-10.0), active findings with full detail, category deductions, and component \
-        instability (Martin's Ce/(Ca+Ce)). A file or component with missing analysis is \
-        partial: health_score is null and score_bounds gives {lower, upper}, with the \
-        missing producers and reasons. Filter by file path or component name. \
-        Default mode='actionable' shows only files with findings; mode='all' includes everything. \
-        Worst files first."
-    )]
-    pub async fn sutra_file_health(
-        &self,
-        Parameters(args): Parameters<FileHealthArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        // Demand-refresh persistent health evidence, then score the coherent run
-        // (sutra/415 Wave D, sutra/416): the refresh outcome is the run's validity —
-        // a deferred/failed refresh makes its outcomes Missing, so scores are bounds.
-        let refresh_outcome = self.refresh_health(&args.workspace).await;
-        let mut result = tools::file_health::handle_ctx(
-            &ctx,
-            refresh_outcome,
-            args.path.as_deref(),
-            args.limit,
-            args.mode.as_deref(),
-            args.component.as_deref(),
-            args.explain.unwrap_or(false),
-        )
-        .map_err(sutra_to_rmcp)?;
-        tools::file_health::attach_health_evidence(ctx.db(), &mut result, refresh_outcome)
-            .map_err(sutra_to_rmcp)?;
-        to_compact_json(ctx.wrap(result))
-    }
-
-    #[tool(
-        description = "Compare two parse snapshots with per-file and per-component health deltas, \
-        or query a single file's health history over time. \
-        Defaults to comparing the two most recent snapshots. \
-        Set 'path' to get a per-file time series instead of a comparison; in it, only \
-        complete entries carry a numeric health_score — partial entries have health_score \
-        null plus score_bounds {lower, upper}, legacy entries health_score null plus \
-        legacy_score. \
-        Only complete-vs-complete pairs scored under the same basis (waivers, weights, \
-        versions, applicability) are measured improved/degraded; partial, legacy, \
-        basis-changed, new and removed files are 'incomparable' with a reason. \
-        Component deltas are likewise measured only under a matching membership basis: \
-        measured_delta is the change at the baseline's member weights; weight_shift is the \
-        rest of the score move (line-count/mix change), never a quality change. \
-        Workspace/category health deltas are null unless aggregate_comparison.measured; \
-        the workspace health_score delta is likewise measured at the baseline's file \
-        weights, with health_score_weight_shift the line-count-driven rest."
-    )]
-    pub async fn sutra_trend(
-        &self,
-        Parameters(args): Parameters<TrendArgs>,
-    ) -> Result<String, ErrorData> {
-        let ctx = self.tool_context(&args.workspace).await?;
-        let result = tools::trend::handle(ctx.db(), &args).map_err(sutra_to_rmcp)?;
         to_compact_json(ctx.wrap(result))
     }
 

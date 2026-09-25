@@ -302,25 +302,6 @@ impl Db {
         Ok(conn.query_row("SELECT COUNT(*) FROM commit_files", [], |r| r.get(0))?)
     }
 
-    /// Ids of indexed files with at least one ingested (in-window) commit that
-    /// touches at most `max_commit_width` indexed files (`None` = no width limit)
-    /// — the per-file history population a git producer with that commit filter
-    /// actually observes.
-    pub fn history_file_ids(&self, max_commit_width: Option<i64>) -> Result<HashSet<i64>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT file_id FROM commit_files
-             WHERE commit_hash IN (
-                 SELECT commit_hash FROM commit_files
-                 GROUP BY commit_hash HAVING COUNT(*) <= ?1
-             )",
-        )?;
-        let ids: rusqlite::Result<HashSet<i64>> = stmt
-            .query_map([max_commit_width.unwrap_or(i64::MAX)], |r| r.get(0))?
-            .collect();
-        Ok(ids?)
-    }
-
     /// Per-path count of ingested commits touching each indexed file — the
     /// churn map [`crate::git::churn_from_commit_files`] derives at ingestion,
     /// read back from the persisted `commit_files` for callers that did not

@@ -1,9 +1,6 @@
-#[path = "support/health_run.rs"]
-mod health_run;
 use sutra::db::{Db, InsertSymbolParams};
-use sutra::health::findings::{BiomarkerKind, HealthFinding, HealthSeverity};
 use sutra::tools::review::ReviewFindings;
-use sutra::tools::{file_health, impact, map, pr_risk, review};
+use sutra::tools::{impact, map, pr_risk, review};
 
 fn sym<'a>(
     file_id: i64,
@@ -218,73 +215,6 @@ fn review_explain_false_has_no_explain_key() {
     )
     .unwrap();
     assert!(result.get("_explain").is_none());
-}
-
-#[test]
-fn file_health_explain_true_has_categories_and_findings() {
-    let (_dir, db) = setup_db();
-    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
-
-    let findings = vec![HealthFinding {
-        file_id: fa.id,
-        symbol_id: None,
-        biomarker_kind: BiomarkerKind::NestedComplexity,
-        severity: HealthSeverity::Advisory,
-        confidence: 0.9,
-        provenance: "test".to_string(),
-        metric_value: 8.0,
-        threshold: 5.0,
-        detail: "high nesting".to_string(),
-    }];
-    db.replace_health_findings(&findings).unwrap();
-    health_run::publish_seeded_run(&db);
-
-    let result = file_health::handle(
-        &db,
-        health_run::current_verdict(&db),
-        None,
-        None,
-        None,
-        None,
-        true,
-    )
-    .unwrap();
-    let files = result["files"].as_array().unwrap();
-    assert!(!files.is_empty());
-
-    let entry = &files[0];
-    let explain = &entry["_explain"];
-    assert!(explain.is_object(), "_explain must be present");
-    assert!(explain["formula"].is_string());
-    assert!(explain["categories"].is_object());
-    assert!(explain["findings"].is_array());
-
-    let findings_explain = explain["findings"].as_array().unwrap();
-    assert!(!findings_explain.is_empty());
-    let f = &findings_explain[0];
-    assert!(f["biomarker"].is_string());
-    assert!(f["raw_deduction"].is_number());
-    assert!(f["scaled_deduction"].is_number());
-    assert!(f["scale_factor"].is_number());
-}
-
-#[test]
-fn file_health_explain_false_has_no_explain_key() {
-    let (_dir, db) = setup_db();
-    let result = file_health::handle(
-        &db,
-        health_run::current_verdict(&db),
-        None,
-        None,
-        Some("all"),
-        None,
-        false,
-    )
-    .unwrap();
-    let files = result["files"].as_array().unwrap();
-    if !files.is_empty() {
-        assert!(files[0].get("_explain").is_none());
-    }
 }
 
 #[test]

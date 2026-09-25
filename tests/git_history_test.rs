@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use sutra::git::{git_commit_files_since, head_commit, history_boundaries, repo_identity};
+use sutra::git::{git_commit_files_since, head_commit};
 
 /// Run a git command in `dir`, optionally pinning committer+author date to a
 /// fixed unix timestamp, and assert success.
@@ -64,78 +64,6 @@ fn head_commit_resolves_after_first_commit() {
     let sha = head_commit(dir.path()).unwrap().expect("resolved HEAD");
     assert_eq!(sha.len(), 40, "full sha expected, got {sha}");
     assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-#[test]
-fn repo_identity_points_at_the_git_dir() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    let id = repo_identity(dir.path()).unwrap();
-    assert!(id.ends_with(".git"), "expected a .git dir, got {id}");
-    assert!(Path::new(&id).is_absolute(), "identity should be absolute");
-}
-
-#[test]
-fn history_boundaries_non_shallow_repo() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    commit(dir.path(), &[("a.txt", "1")], "first", 1_700_000_000);
-    let fp = history_boundaries(dir.path()).unwrap();
-    assert_eq!(fp, "shallow=false;boundaries=;replace=");
-}
-
-#[test]
-fn history_boundaries_shifts_when_a_shallow_clone_is_deepened() {
-    // Regression for sutra/427: fingerprinting only the is-shallow boolean left
-    // the stamp unchanged when a shallow clone was deepened (`git fetch
-    // --deepen`) at an unchanged HEAD, so demand refresh reused stale evidence
-    // even though newly-accessible qualifying ancestors now exist. The
-    // fingerprint must track the actual shallow boundary commit set.
-    let origin = tempfile::tempdir().unwrap();
-    init_repo(origin.path());
-    commit(origin.path(), &[("a.txt", "1")], "c1", 1_000);
-    commit(origin.path(), &[("a.txt", "2")], "c2", 2_000);
-    commit(origin.path(), &[("a.txt", "3")], "c3", 3_000);
-
-    // A depth-1 clone is shallow: HEAD present, ancestry truncated at a boundary.
-    let clone = tempfile::tempdir().unwrap();
-    let clone_path = clone.path().join("work");
-    let origin_url = format!("file://{}", origin.path().display());
-    git(
-        clone.path(),
-        &[
-            "clone",
-            "-q",
-            "--depth",
-            "1",
-            &origin_url,
-            clone_path.to_str().unwrap(),
-        ],
-        None,
-    );
-
-    let head_before = head_commit(&clone_path).unwrap().unwrap();
-    let fp_shallow = history_boundaries(&clone_path).unwrap();
-    assert!(
-        fp_shallow.starts_with("shallow=true;boundaries="),
-        "depth-1 clone must fingerprint as shallow with a boundary set, got {fp_shallow}"
-    );
-    assert!(
-        !fp_shallow.contains("boundaries=;"),
-        "a shallow clone must carry at least one boundary commit, got {fp_shallow}"
-    );
-
-    // Deepen the clone. HEAD is unchanged, and it may remain shallow, but the
-    // boundary set moves — so the fingerprint must change.
-    git(&clone_path, &["fetch", "-q", "--deepen", "1"], None);
-    let head_after = head_commit(&clone_path).unwrap().unwrap();
-    assert_eq!(head_before, head_after, "deepening must not move HEAD");
-
-    let fp_deepened = history_boundaries(&clone_path).unwrap();
-    assert_ne!(
-        fp_shallow, fp_deepened,
-        "deepening a shallow clone at an unchanged HEAD must change the boundary fingerprint"
-    );
 }
 
 #[test]
