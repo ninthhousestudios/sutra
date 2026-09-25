@@ -4,7 +4,7 @@
 
 Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations, tracks codebase health with empirically calibrated biomarkers, and accumulates code-anchored lessons from agent experience. It exposes all of this through 31 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through 31 MCP tools that AI coding agents (and humans) can call.
 
 The core loop: **explore** (find relevant code in one call, with lessons and conventions surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
 
@@ -118,22 +118,7 @@ Constraints can be **ratcheted** by adding `ratchet = true` — this registers a
 
 ### 5. Health metrics (Layer 4)
 
-Per-file and per-component health scores (1.0–10.0 scale) derived from empirically calibrated biomarkers:
-
-| Biomarker | What it detects | Source |
-|---|---|---|
-| `co_change_scatter` | Files that change with many unrelated files | git history |
-| `change_entropy` | Historically volatile files (Hassan's HCM) | git history |
-| `ownership_risk` | Diffuse ownership (no clear owner, many minor contributors) | git history |
-| `nested_complexity` | Deeply nested control flow (> 4 levels) | AST |
-| `function_hotspot` | High-churn + high-complexity functions | git blame (on-demand) |
-| `code_age_volatility` | Old code being frequently touched | git blame (on-demand) |
-| `hidden_coupling` | Files that co-change but have no static dependency | git + import graph |
-| `convention_drift` | Component diverging from its own conventions | FCA + HRR vectors |
-| `hrr_shape_change` | Subtle structural changes hidden in small text diffs | HRR vectors |
-| `component_instability` | Martin's instability metric (Ce/(Ca+Ce)) | import graph |
-
-Scores use category-capped deductions so no single dimension can dominate. Component scores are NLOC-weighted averages of member files. Health waivers let you acknowledge known issues without suppressing the signal.
+Health scores, trend and the biomarkers were removed (sutra/464; see `docs/health-disposition.md`). Their surviving signals live elsewhere: co-change partners with no static edge surface as `sutra_review`'s `behavioral_coupling`, import cycles are a `rules.toml` constraint, and unreferenced symbols come from `sutra_dead`. The complexity erosion metric in `sutra_review` is scheduled for removal next.
 
 ### 6. Vocabulary mapping (Layer 5)
 
@@ -416,7 +401,6 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 |------|---------|
 | `rules.toml` | Architectural constraints (forbidden deps, boundaries, cycles, fan-in, external crates, AST patterns) |
 | `aliases.toml` | Vocabulary aliases — human-readable names for components, files, and symbols (see [Layer 5](#5-vocabulary-mapping-layer-5)) |
-| `owners.toml` | Author alias mapping for ownership risk biomarker (maps agent emails to canonical human) |
 
 ## How it works
 
@@ -495,7 +479,7 @@ Sutra's mission is to help human-AI teams produce *coherent* software, not just 
 | 1 | Architecture (components, hierarchy, boundaries) | Implemented (directory-based clustering; graph clustering planned) |
 | 2 | Conventions (FCA detection, `sutra_conventions` list) | Implemented (detection + list; in-loop surfacing retired) |
 | 3 | Constraints (DD enforcement, guard, waivers) | Implemented |
-| 4 | Health (biomarkers, scoring, snapshots, trends) | Implemented |
+| 4 | Health (biomarkers, scoring, snapshots, trends) | Removed (sutra/464) |
 | 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases; HRR fuzzy matching planned) |
 | 6 | Similarity (HRR vectors, duplicates, semantic diff) | Implemented |
 | 7 | Lessons (code-anchored negative knowledge, contextual surfacing, confidence lifecycle) | Implemented |

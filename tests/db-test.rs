@@ -624,6 +624,7 @@ fn test_snapshot_with_aggregates() {
         total_complexity: 42,
         dead_symbol_count: 5,
         hotspot_count: 3,
+        pattern_family_count: 4,
         ..Default::default()
     })
     .unwrap();
@@ -636,6 +637,7 @@ fn test_snapshot_with_aggregates() {
     assert_eq!(s.total_complexity, 42);
     assert_eq!(s.dead_symbol_count, 5);
     assert_eq!(s.hotspot_count, 3);
+    assert_eq!(s.pattern_family_count, 4);
 }
 
 #[test]
@@ -1412,19 +1414,6 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
     {
         let conn = db.conn_for_test();
         conn.execute(
-            "INSERT INTO health_findings
-             (file_id, symbol_id, biomarker_kind, severity, confidence, provenance,
-              metric_value, threshold, detail)
-             VALUES (?1, NULL, 'nested_complexity', 'warning', 1.0, 'test', 9.0, 5.0, 'deep')",
-            rusqlite::params![file_id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO health_coverage (file_id, content_hash) VALUES (?1, 'hash1')",
-            rusqlite::params![file_id],
-        )
-        .unwrap();
-        conn.execute(
             "INSERT INTO components (id, name) VALUES ('comp1', 'Comp One')",
             [],
         )
@@ -1493,20 +1482,17 @@ fn test_replace_file_data_preserves_history_invalidates_derived() {
     assert_eq!(members, 1, "membership must survive a content edit");
 
     // Derived analysis is INVALIDATED (cannot claim currentness on new content).
-    for (table, label) in [
-        ("health_findings", "health findings"),
-        ("health_coverage", "health coverage"),
-        ("hrr_file_hashes", "hrr file hashes"),
-    ] {
-        let n: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE file_id = ?1"),
-                rusqlite::params![file_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 0, "stale {label} must be invalidated on content edit");
-    }
+    let hashes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM hrr_file_hashes WHERE file_id = ?1",
+            rusqlite::params![file_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        hashes, 0,
+        "stale hrr file hashes must be invalidated on content edit"
+    );
 }
 
 #[test]

@@ -178,14 +178,12 @@ pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result
     Ok(results)
 }
 
-/// Whether `workspace_root` is inside a git working tree. Used to tell a true
-/// structural absence (not a repo → git biomarkers excluded) from a transient
 /// Outcome of probing whether `workspace_root` is a git repository. The three
 /// states are deliberately distinct (sutra/417): only a *positively confirmed*
-/// non-repository may exclude the git biomarkers. A missing git executable, a
+/// non-repository may clear ingested history. A missing git executable, a
 /// spawn failure, an access error or any unrecognized nonzero exit is
 /// [`RepoProbe::Unknown`] — indeterminate, not structural absence — and must be
-/// worst-cased (retain prior evidence, do not exclude), never read as absence.
+/// worst-cased (retain prior history), never read as absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoProbe {
     /// git resolved a repository context at `workspace_root`.

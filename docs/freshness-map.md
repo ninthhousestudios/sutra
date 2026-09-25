@@ -185,8 +185,7 @@ incremental reparse, orphaning `commit_files` and derived evidence.
 | `imports` (outgoing) | extraction | replaced (delete by `file_id`, re-insert) |
 | inbound `refs` (other files → this file's symbols) | resolution | detached (`target_symbol_id=NULL`, call-site name recovered) then re-resolved (sutra/378) |
 | inbound `imports.resolved_file_id` (other files → this file) | resolution | **kept** — path identity is stable, so the edge stays correct |
-| `health_findings`, `health_coverage` | derived | invalidated (delete by `file_id`) |
-| `component_membership` | derived | invalidated (delete by `file_id`) |
+| `component_membership` | global partition | **preserved** — freshness is the clustering gate's edge-drift threshold (sutra/439) |
 | `hrr_file_hashes` | derived | invalidated (delete by `file_id`) |
 | `hrr_vectors`, `pattern_family_members` | derived | invalidated (cascade off the `symbols` delete) |
 | `commit_files` | raw history | **preserved** — never touched by a content edit |

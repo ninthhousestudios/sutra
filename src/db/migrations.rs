@@ -492,6 +492,20 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0082_drop_health_index_meta.sql"),
         false,
     ),
+    // Drop health_findings and health_coverage (sutra/474). ephemeral_only:
+    // reindex recreates them through 0027/0072, so the drop must replay after.
+    (
+        "0083_drop_health_findings",
+        include_str!("../../migrations/0083_drop_health_findings.sql"),
+        true,
+    ),
+    // Drop health_waivers (sutra/474). NOT ephemeral_only: health_waivers is
+    // Durable, so 0028 never replays on reindex (same reasoning as 0082).
+    (
+        "0084_drop_health_waivers",
+        include_str!("../../migrations/0084_drop_health_waivers.sql"),
+        false,
+    ),
 ];
 
 impl Db {

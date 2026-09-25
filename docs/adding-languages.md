@@ -29,8 +29,8 @@ declarations must be indexed. Map immutable bindings (`const`, `final`,
 `SymbolKind::Static`. Without this, `sutra_lookup` can't find module-level
 configuration, constants, or global state.
 
-Everything above Layer 0 — conventions (FCA), constraints (DD), health
-(biomarkers), similarity (HRR), components, review — is language-agnostic.
+Everything above Layer 0 — conventions (FCA), constraints (DD), similarity
+(HRR), components, review — is language-agnostic.
 A new language needs three things: a parser module, an adapter registration
 in `default_registry()`, and an **import resolver** (see below).
 

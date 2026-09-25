@@ -1,9 +1,9 @@
 //! Commit-file history ingestion (`commits` + `commit_files`).
 //!
 //! The ingested history feeds co-change (review `behavioral_coupling`, component
-//! clustering), the churn map semantic anchors consume, and the git biomarker
-//! producers. History is selected against a pinned HEAD with an absolute,
-//! UTC-day-quantized committer-time cutoff, never a relative `--since`.
+//! clustering) and the churn map semantic anchors consume. History is selected
+//! against a pinned HEAD with an absolute, UTC-day-quantized committer-time
+//! cutoff, never a relative `--since`.
 //!
 //! Callers hold the parse flock: ingestion rewrites both tables.
 
@@ -24,8 +24,8 @@ const SECONDS_PER_DAY: i64 = 86_400;
 /// The result of one ingestion.
 pub struct HistoryIngestion {
     /// Whether an indexed file has in-window history from a complete range. When
-    /// `false`, the git producers have no current data: either history was
-    /// cleared (non-repository, unborn HEAD, empty window) or the prior rows were
+    /// `false`, there is no current history: either it was cleared
+    /// (non-repository, unborn HEAD, empty window) or the prior rows were
     /// retained because the range could not be established (probe or `git log`
     /// failure, shallow clone).
     pub loaded: bool,

@@ -593,8 +593,7 @@ pub fn parse_workspace(
     cancel: &AtomicBool,
     registry: &LanguageRegistry,
 ) -> Result<ParseSnapshot> {
-    // Held for the whole parse: history ingestion and findings rewrite their
-    // tables under it.
+    // Held for the whole parse: history ingestion rewrites its tables under it.
     let _flock = acquire_parse_flock(config, &workspace.id)?;
     let head_commit = crate::git::head_commit_hash(&workspace.root);
     let parse_started_at = chrono::Utc::now().to_rfc3339();
@@ -752,7 +751,7 @@ pub fn parse_workspace(
         Ok(PostParseResult::NoChanges) => {
             // History moves independently of source bytes (a commit, a crossed
             // midnight, a window edit), so an unchanged-source parse still
-            // re-ingests it and refreshes the findings that read it.
+            // re-ingests it.
             if let Err(e) = refresh_history(db, &workspace.root) {
                 warn!(workspace = %workspace.id, "history refresh failed on unchanged parse: {e}");
             }
@@ -1115,11 +1114,10 @@ fn discover_components_and_anchors(
     Ok(component_count)
 }
 
-/// Re-ingest git history and refresh the findings that read it, for a parse
-/// whose source did not change.
+/// Re-ingest git history for a parse whose source did not change.
 fn refresh_history(db: &Db, workspace_root: &Path) -> Result<()> {
-    let ingestion = crate::history::ingest(db, workspace_root, chrono::Utc::now().timestamp())?;
-    crate::health::refresh_findings(db, workspace_root, ingestion.loaded)
+    crate::history::ingest(db, workspace_root, chrono::Utc::now().timestamp())?;
+    Ok(())
 }
 
 /// The no-change parse's clustering repair (sutra/443). The history refresh
@@ -1169,7 +1167,6 @@ fn post_parse_sequence(
         // day-quantized cutoff; also yields the churn map semantic anchors consume.
         let ingestion = crate::history::ingest(db, workspace_root, chrono::Utc::now().timestamp())?;
         let churn_map = ingestion.churn;
-        let history_loaded = ingestion.loaded;
         log_phase_rss("post_parse:cochange_done");
 
         match entity_change_walk(db, workspace_root, 500) {
@@ -1212,9 +1209,6 @@ fn post_parse_sequence(
         if conv_outcome.convention_count > 0 {
             info!(count = conv_outcome.convention_count, "rebuilt conventions");
         }
-
-        crate::health::refresh_findings(db, workspace_root, history_loaded)?;
-        log_phase_rss("post_parse:health_done");
 
         if hrr_changed {
             info!("similarity: detecting pattern families");

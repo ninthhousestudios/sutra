@@ -1,7 +1,6 @@
 //! Real-path regression for git history ingestion (`sutra::history`): what the
 //! full and unchanged parses write to `commits`/`commit_files`, when prior rows
-//! are retained or cleared, and that the git biomarker findings follow whether
-//! history loaded.
+//! are retained or cleared, and whether the ingestion reports history loaded.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,28 +8,9 @@ use std::process::Command;
 use sutra::config::Config;
 use sutra::db::Db;
 use sutra::git::head_commit;
-use sutra::health::BiomarkerKind;
 use sutra::parser::adapter::default_registry;
 use sutra::pipeline;
 use sutra::workspace::WorkspaceEntry;
-
-/// A function nested deeply enough (> 4) to emit a NestedComplexity finding.
-const DEEP_SRC: &str = "\
-pub fn deep(x: i32) -> i32 {
-    if x > 0 {
-        if x > 1 {
-            if x > 2 {
-                if x > 3 {
-                    if x > 4 {
-                        return x;
-                    }
-                }
-            }
-        }
-    }
-    0
-}
-";
 
 fn make_config(db_dir: &Path) -> Config {
     Config {
@@ -95,21 +75,18 @@ fn commit_file_rows(db: &Db) -> i64 {
         .unwrap()
 }
 
-/// Live findings of the git-history producers.
-fn git_finding_count(db: &Db) -> usize {
-    db.get_health_findings(None, None)
+/// Whether an ingestion against the fixture's current repository state reports
+/// loaded history. Ingestion is idempotent for a fixed repository and day.
+fn history_loaded(fx: &Fixture) -> bool {
+    sutra::history::ingest(&fx.db, &fx.ws.root, chrono::Utc::now().timestamp())
         .unwrap()
-        .iter()
-        .filter(|f| {
-            BiomarkerKind::parse(&f.biomarker_kind).is_some_and(BiomarkerKind::needs_history)
-        })
-        .count()
+        .loaded
 }
 
-fn hidden_coupling_count(db: &Db) -> usize {
-    db.get_health_findings(None, Some("hidden_coupling"))
-        .unwrap()
-        .len()
+/// File pairs whose co-change Jaccard reaches 0.5 — the review
+/// `behavioral_coupling` and clustering consumer of ingested history.
+fn cochange_pair_count(db: &Db) -> usize {
+    db.cochange_pairs_above_threshold(0.5).unwrap().len()
 }
 
 // --- git fixture helpers ---
@@ -244,7 +221,7 @@ fn shallow_git_fixture(id: &str) -> (Fixture, tempfile::TempDir) {
 }
 
 #[test]
-fn full_parse_with_history_ingests_and_git_findings_fire() {
+fn full_parse_with_history_ingests_and_feeds_cochange() {
     let fx = git_fixture("git-loaded", &GIT_FILES);
     full_parse(&fx);
 
@@ -252,16 +229,15 @@ fn full_parse_with_history_ingests_and_git_findings_fire() {
         commit_file_rows(&fx.db) > 0,
         "indexed files have in-window commits"
     );
-    // lib/util co-change with no static edge → HiddenCoupling fires, proving the
-    // ingested history reached the producer.
     assert!(
-        hidden_coupling_count(&fx.db) > 0,
-        "co-changing files with no import edge must yield a hidden-coupling finding"
+        cochange_pair_count(&fx.db) > 0,
+        "co-changing lib/util must yield a co-change pair"
     );
+    assert!(history_loaded(&fx));
 }
 
 #[test]
-fn shallow_clone_ingests_nothing_and_emits_no_git_findings() {
+fn shallow_clone_ingests_nothing() {
     let (fx, _origin) = shallow_git_fixture("git-shallow");
     full_parse(&fx);
 
@@ -271,7 +247,7 @@ fn shallow_clone_ingests_nothing_and_emits_no_git_findings() {
         0,
         "a truncated window is never ingested as complete history"
     );
-    assert_eq!(git_finding_count(&fx.db), 0);
+    assert!(!history_loaded(&fx));
 }
 
 /// Break `git log` without touching the repository probe: drop the loose tree
@@ -292,7 +268,7 @@ fn corrupt_parent_tree(root: &Path) {
 }
 
 #[test]
-fn git_log_failure_retains_commit_files_and_drops_git_findings() {
+fn git_log_failure_retains_commit_files_and_is_not_loaded() {
     let fx = git_fixture("git-failure", &GIT_FILES);
     full_parse(&fx);
     let rows_before = commit_file_rows(&fx.db);
@@ -300,7 +276,7 @@ fn git_log_failure_retains_commit_files_and_drops_git_findings() {
         rows_before > 0,
         "baseline ingestion must populate commit_files"
     );
-    assert!(hidden_coupling_count(&fx.db) > 0);
+    assert!(cochange_pair_count(&fx.db) > 0);
 
     corrupt_parent_tree(&fx.ws.root);
     // A comment edit forces the next full parse through history ingestion rather
@@ -320,10 +296,9 @@ fn git_log_failure_retains_commit_files_and_drops_git_findings() {
         rows_before,
         "a transient git failure must not clear commit_files"
     );
-    assert_eq!(
-        git_finding_count(&fx.db),
-        0,
-        "git findings are not published from history that failed to load"
+    assert!(
+        !history_loaded(&fx),
+        "retained rows are not reported as loaded history"
     );
 }
 
@@ -332,12 +307,12 @@ fn non_repository_has_no_history() {
     let fx = fixture("not-a-repo", &GIT_FILES);
     full_parse(&fx);
     assert_eq!(commit_file_rows(&fx.db), 0);
-    assert_eq!(git_finding_count(&fx.db), 0);
+    assert!(!history_loaded(&fx));
 }
 
 #[test]
 fn history_touching_only_unindexed_paths_is_not_loaded() {
-    let fx = fixture("unindexed-history", &[("src/lib.rs", DEEP_SRC)]);
+    let fx = fixture("unindexed-history", &[("src/lib.rs", "pub fn f() {}\n")]);
     git_init(&fx.ws.root);
     // The only in-window commit touches a non-indexed path.
     std::fs::write(fx.ws.root.join("README.md"), "readme\n").unwrap();
@@ -351,7 +326,7 @@ fn history_touching_only_unindexed_paths_is_not_loaded() {
     full_parse(&fx);
 
     assert_eq!(commit_file_rows(&fx.db), 0);
-    assert_eq!(git_finding_count(&fx.db), 0);
+    assert!(!history_loaded(&fx));
 }
 
 #[test]
@@ -377,7 +352,7 @@ fn unchanged_parse_ingests_a_new_commit() {
 
 /// Two groups of three mutually-calling files, each group committed on its own
 /// (twice) so both static edges and co-change stay within a group: clustering
-/// yields multi-member components. `alpha/a.rs` carries nesting debt, so
+/// yields multi-member components.
 fn two_clique_fixture(id: &str) -> Fixture {
     let mut files: Vec<(String, String)> = vec![(
         "src/lib.rs".into(),
@@ -389,11 +364,7 @@ fn two_clique_fixture(id: &str) -> Fixture {
             "pub mod a;\npub mod b;\npub mod c;\n".into(),
         ));
         for (me, x, y) in [("a", "b", "c"), ("b", "c", "a"), ("c", "a", "b")] {
-            let body = if group == "alpha" && me == "a" {
-                DEEP_SRC.replace("pub fn deep", &format!("pub fn {group}_{me}"))
-            } else {
-                format!("pub fn {group}_{me}(x: i32) -> i32 {{\n    x\n}}\n")
-            };
+            let body = format!("pub fn {group}_{me}(x: i32) -> i32 {{\n    x\n}}\n");
             files.push((
                 format!("src/{group}/{me}.rs"),
                 format!(

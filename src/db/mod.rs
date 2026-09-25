@@ -9,7 +9,6 @@ mod constraints;
 mod conventions;
 pub mod entity_changes;
 mod graph;
-mod health;
 mod migrations;
 mod similarity;
 
@@ -23,7 +22,6 @@ pub(crate) use constraints::{
 };
 pub use conventions::ConventionRow;
 pub(crate) use graph::file_importers_from_conn;
-pub use health::{HealthFindingRow, HealthWaiverRow, NestingExceedRow};
 pub use similarity::{
     HrrSymbolRow, PatternFamily, PatternFamilyMember, PatternFamilyRow, SymbolSummary,
 };
@@ -193,21 +191,6 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     TableMeta {
         name: "commit_files",
         partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_findings",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_coverage",
-        partition: TablePartition::Ephemeral,
-        is_virtual: false,
-    },
-    TableMeta {
-        name: "health_waivers",
-        partition: TablePartition::Durable,
         is_virtual: false,
     },
     TableMeta {
@@ -961,12 +944,10 @@ impl Db {
             // Child-table lifecycle audit (every table FK'd to files/symbols):
             //   REPLACE (extraction):  symbols, refs (outgoing), imports,
             //                          symbols_fts.
-            //   INVALIDATE (derived):  health_findings, health_coverage,
-            //                          hrr_file_hashes, plus hrr_vectors and
+            //   INVALIDATE (derived):  hrr_file_hashes, plus hrr_vectors and
             //                          pattern_family_members (cascade off the
             //                          symbols delete).
-            //   PRESERVE (raw/history): commit_files, and health_snapshot_files
-            //                          (no FK; immutable path-keyed snapshots).
+            //   PRESERVE (raw/history): commit_files.
             //   PRESERVE (global partition): component_membership. It groups
             //                          stable file ids by the whole graph; its
             //                          freshness is the clustering gate's
@@ -1025,25 +1006,16 @@ impl Db {
             }
 
             // Replace extraction children. Deleting the symbols cascades their
-            // dependent derived rows (hrr_vectors, pattern_family_members, and
-            // symbol-level health_findings). Refs and imports are keyed by
-            // file_id and replaced directly.
+            // dependent derived rows (hrr_vectors, pattern_family_members).
+            // Refs and imports are keyed by file_id and replaced directly.
             conn.execute("DELETE FROM symbols WHERE file_id = ?1", params![old_id])?;
             conn.execute("DELETE FROM refs WHERE file_id = ?1", params![old_id])?;
             conn.execute("DELETE FROM imports WHERE file_id = ?1", params![old_id])?;
 
             // Invalidate extraction-derived analysis that is keyed by file_id and
             // therefore survives the symbol cascade. Preserving the file id must
-            // not let stale findings/coverage/similarity claim they reflect the
-            // new content (health-evidence contract, sutra/412).
-            conn.execute(
-                "DELETE FROM health_findings WHERE file_id = ?1",
-                params![old_id],
-            )?;
-            conn.execute(
-                "DELETE FROM health_coverage WHERE file_id = ?1",
-                params![old_id],
-            )?;
+            // not let stale similarity claim it reflects the new content
+            // (sutra/412).
             conn.execute(
                 "DELETE FROM hrr_file_hashes WHERE file_id = ?1",
                 params![old_id],
@@ -1675,37 +1647,6 @@ impl Db {
         )?;
         let rows: rusqlite::Result<Vec<(String, i64)>> = stmt
             .query_map(params![like_pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect();
-        Ok(rows?)
-    }
-
-    /// Per-file dead-code ratio: (file_id, dead_count, total_count) for files
-    /// with at least one dead symbol. "Dead" and the scorable-symbol set mirror
-    /// `find_dead_symbols` (non-pub, non-test, `main` excluded, generated/impl
-    /// flags cleared) so the ratio biomarker and the `sutra_dead` tool agree on
-    /// what counts. A symbol is dead when no ref targets it (EXISTS avoids the
-    /// row multiplication a LEFT JOIN would cause for multiply-referenced symbols).
-    pub fn dead_code_ratio_by_file(&self) -> Result<Vec<(i64, i64, i64)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.file_id,
-                    SUM(CASE WHEN NOT EXISTS (
-                        SELECT 1 FROM refs r WHERE r.target_symbol_id = s.id
-                    ) THEN 1 ELSE 0 END) AS dead,
-                    COUNT(*) AS total
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.kind IN ('function','method','struct','enum','trait',
-                              'type_alias','class','mixin','const','static')
-               AND s.short_name != 'main'
-               AND (s.flags & 7) = 0
-               AND f.path NOT LIKE 'tests/%'
-               AND (s.visibility IS NULL OR s.visibility NOT IN ('pub','public'))
-             GROUP BY s.file_id
-             HAVING dead > 0",
-        )?;
-        let rows: rusqlite::Result<Vec<(i64, i64, i64)>> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect();
         Ok(rows?)
     }
