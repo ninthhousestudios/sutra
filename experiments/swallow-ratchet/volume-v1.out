@@ -1,0 +1,55 @@
+787 commits, 244 with >=1 added-line hit, 859 hits
+  rs-unwrap-or-lit            187 hits in 100 commits
+  rs-ok                       179 hits in  84 commits
+  rs-unwrap-or-default        116 hits in  65 commits
+  dart-catch-all              103 hits in  45 commits
+  dart-catch-underscore        57 hits in  32 commits
+  rs-if-let-ok-no-else         55 hits in  27 commits
+  rs-err-discard-arm           39 hits in  28 commits
+  rs-let-underscore            35 hits in  16 commits
+  dart-tryparse-default        29 hits in   6 commits
+  rs-let-ok-else               18 hits in  17 commits
+  dart-empty-catch             16 hits in   8 commits
+  rs-closure-discards-err      13 hits in   7 commits
+  rs-underscore-err-binding     8 hits in   3 commits
+  dart-value-or-null            4 hits in   4 commits
+swe_dashboard af3dd71 A- dart-catch-all             lib/core/ephe_assets.dart:23  } catch (_) {
+explore 8863ade A- dart-catch-all             lib/state/active_chart.dart:77  } catch (_) {
+swe_dashboard 6452e9b A- dart-catch-underscore      lib/tabs/other_bodies/other_bodies_provider.dart:120  } catch (_) {
+swe_dashboard 77e6c09 A- dart-catch-underscore      lib/core/calculation/horizontal_coords.dart:61  } catch (_) {
+swe_dashboard 6452e9b A- dart-catch-underscore      lib/tabs/planets/planets_provider.dart:195  } catch (_) {
+swe_dashboard a782481 A- dart-tryparse-default      lib/tabs/coordinates/coordinates_tab.dart:387  attemp: double.tryParse(_attempCtrl.text) ?? 15.0,
+sutra 4bc9bde A- rs-closure-discards-err    src/mcp.rs:204  .unwrap_or_else(|_| ws_id.to_string())
+sutra df8712e A- rs-err-discard-arm         src/parser/python.rs:268  Err(_) => return,
+sutra d094d9c A- rs-err-discard-arm         src/bin/explore-eval.rs:192  Err(_) => {
+sutra 3b5f777 A- rs-let-ok-else             src/parser/javascript.rs:1082  let Ok(func_name) = func.utf8_text(src) else {
+sutra 8f2fe19 A- rs-let-underscore          src/conventions/pipeline.rs:182  let _ = db.record_convention_history(&c.id, c.support as i64, c.confidence, &snapshot_id);
+sutra 3f7b782 A- rs-let-underscore          src/tools/review.rs:343  let _ = db.delete_stale_conventions(&current_ids);
+sutra 939d235 A- rs-let-underscore          src/tools/check.rs:170  let _ = writeln!(out, "\n{} waived violation(s).", report.waived.len());
+sutra 939d235 A- rs-let-underscore          src/tools/check.rs:160  let _ = writeln!(
+sutra 5f008aa A- rs-ok                      src/lessons.rs:672  .filter_map(|r| r.ok())
+sutra 6df802c A- rs-ok                      src/parser/dart.rs:913  return obj.utf8_text(src).ok().map(|s| s.to_string());
+sutra d0e31d7 A- rs-ok                      src/similarity/mod.rs:124  .and_then(|v| v.parse().ok())
+sutra ace5590 A- rs-ok                      src/db/constraints.rs:87  .map(|rows| rows.filter_map(|r| r.ok()).collect())
+sutra 7856a78 A- rs-ok                      src/guard.rs:395  .ok()
+sutra 96c0a20 A- rs-ok                      src/constraints/check.rs:716  .ok()
+sutra 3a57d3d A- rs-ok                      src/db/components.rs:28  .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+sutra 39d5727 A- rs-ok                      src/parser/c.rs:232  .and_then(|n| n.utf8_text(src).ok())
+sutra 890ed10 A- rs-ok                      src/rust_imports.rs:119  .ok()?
+sutra d0e31d7 A- rs-ok                      src/similarity/mod.rs:123  .ok()
+sutra d70bf20 A- rs-underscore-err-binding  src/tools/constraints.rs:391  let (all_constraints, _errors) = rules_loaded.all_constraints();
+sutra 589f051 A- rs-unwrap-or-default       src/tools/orient.rs:190  let from_path = path_map.get(&from_id).cloned().unwrap_or_default();
+sutra 6d5600f A- rs-unwrap-or-default       src/tools/impact.rs:110  let ws_langs = db.distinct_languages().unwrap_or_default();
+sutra 32a88fb A- rs-unwrap-or-default       src/components/anchors.rs:96  let churn_map = git::git_churn(workspace_root, 90).unwrap_or_default();
+sutra fdcc825 A- rs-unwrap-or-default       src/guard.rs:610  .unwrap_or_default();
+sutra d094d9c A- rs-unwrap-or-default       src/bin/explore-eval.rs:143  let home = std::env::var("HOME").unwrap_or_default();
+sutra 589f051 A- rs-unwrap-or-default       src/tools/orient.rs:54  .unwrap_or_default();
+sutra 07147cb A- rs-unwrap-or-lit           src/parser/javascript.rs:558  node.utf8_text(src).unwrap_or("").to_string()
+sutra 27c0268 A- rs-unwrap-or-lit           src/components/clustering.rs:294  let mut next_comm = result.communities.values().max().copied().unwrap_or(0) + 1;
+sutra b5bca7a A- rs-unwrap-or-lit           src/constraints/patterns.rs:90  .unwrap_or("")
+sutra 0ab38ce A- rs-unwrap-or-lit           build.rs:51  let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+sutra 68dcdca A- rs-unwrap-or-lit           src/tools/erosion_delta.rs:467  eroded_mass_added: mass.added.get(&i).copied().unwrap_or(0.0),
+sutra 9c8fe58 A- rs-unwrap-or-lit           src/mcp.rs:677  let compact = args.compact.unwrap_or(false);
+sutra bbcd7ab A- rs-unwrap-or-lit           src/tools/lookup.rs:61  let limit = limit.unwrap_or(20);
+sutra c7961e5 A- rs-unwrap-or-lit           src/mcp.rs:499  let budget = args.budget.unwrap_or(10);
+sutra 2d3e7a2 A- rs-unwrap-or-lit           src/tools/file_health.rs:235  let raw = s.category_raw_totals.get(c.as_str()).copied().unwrap_or(0.0);

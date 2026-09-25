@@ -1,0 +1,36 @@
+sutra 11c8e11 fix(context): interpret flag 0x02 per language so TS overrides aren't test code (s  [0 hit(s), 0 on added lines]
+sutra 1b53e40 5d-5: constraint waivers DB table + CRUD  [0 hit(s), 0 on added lines]
+sutra 4683ecf feat(guard): symbol-aware relevance for lesson injection (sutra/351)  [2 hit(s), 2 on added lines]
+  A- rs-unwrap-or-default       src/bin/guard.rs:414  .map(|p| guard::edit_touched_symbols(tool_input, project_root, rel_path, p))
+  A- rs-let-ok-else             src/guard.rs:552  let Ok(current) = std::fs::read_to_string(project_root.join(rel_path)) else {
+sutra 69fe468 fix(health): gate trend aggregates and repair Unknown copy-forward (sutra/418)  [0 hit(s), 0 on added lines]
+sutra 9253f6f refactor: qualify ref-ptr clones to Arc::clone/Rc::clone form (sutra/311 phase 1)  [0 hit(s), 0 on added lines]
+sutra 9acb38f 5c-4: tests for adaptive threshold, dedup, and scoped check  [0 hit(s), 0 on added lines]
+sutra a63e7ac fix(guard): ack every definition site of the impacted symbol (sutra/329)  [0 hit(s), 0 on added lines]
+sutra a78c7f9 feat: wire LessonsDb into SutraServer, add sutra_remember tool, inject into sutra_  [1 hit(s), 1 on added lines]
+  A- rs-unwrap-or-default       src/tools/read.rs:154  result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+sutra ef5729e refactor: add waivers module with Waivable trait and partition function  [0 hit(s), 0 on added lines]
+sutra f9e19e6 refactor: rename sutra_read tool to sutra_symbol  [0 hit(s), 0 on added lines]
+yojana 30f7583 Cancel MCP sessions before awaiting graceful shutdown (yojana/46)  [0 hit(s), 0 on added lines]
+yojana 4b7f815 feat: emit enum arrays in tool schemas for closed-vocabulary fields (yojana/35)  [0 hit(s), 0 on added lines]
+yojana 6b0f98d feat: CLI structured close-out — done -m and wontfix --reason (yojana/40)  [1 hit(s), 1 on added lines]
+  A- rs-unwrap-or-default       src/main.rs:542  _ => message.clone().unwrap_or_default(),
+yojana 7e77aab Sweep TaskStatus enum through db.rs, tools, graph, export, main (yojana/43)  [0 hit(s), 0 on added lines]
+swe_dashboard 0bbf8f6 True Sidereal binning: 13-constellation unequal signs + seam  [0 hit(s), 0 on added lines]
+swe_dashboard 2cb280c Horizons: draggable form/result split + taller result box (swe-dashboard/108)  [0 hit(s), 0 on added lines]
+swe_dashboard 47c6490 The remaining eleven tabs onto ResultCardGrid  [0 hit(s), 0 on added lines]
+swe_dashboard 6a7626f Move the heliacal Julian Days card onto the Context Scale  [0 hit(s), 0 on added lines]
+swe_dashboard 7ec0754 Calendar: carry the context Moment as raw civil fields, not a DateTime  [2 hit(s), 2 on added lines]
+  A- dart-catch-underscore      lib/core/jd_utils.dart:255  } catch (_) {
+  A- dart-catch-all             lib/core/jd_utils.dart:255  } catch (_) {
+swe_dashboard a5c0846 Step semantics: calendar-aware months/years, seconds+years units  [0 hit(s), 0 on added lines]
+swe_dashboard c98ef60 dart fix: the 65 auto-fixable analyzer diagnostics (swe-dashboard/93)  [0 hit(s), 0 on added lines]
+explore 21efb2d add save + load saved charts for logged-in users  [4 hit(s), 4 on added lines]
+  A- dart-catch-underscore      lib/api/chart_service.dart:98  } catch (_) {
+  A- dart-catch-all             lib/api/chart_service.dart:98  } catch (_) {
+  A- dart-catch-all             lib/main.dart:179  } catch (e) {
+  A- dart-catch-all             lib/main.dart:229  } catch (e) {
+explore 575d595 Add progressive image preloading pipeline  [0 hit(s), 0 on added lines]
+explore 6f10fd7 feat(explore): add shop reports link and update waitlist text  [0 hit(s), 0 on added lines]
+explore a2f6619 Add being type and planet popup cards, restructure side panels  [0 hit(s), 0 on added lines]
+explore c8c624b explore: remove chat allowlist — pure entitlement gating at cutover (adityas/ai/12  [0 hit(s), 0 on added lines]

@@ -155,6 +155,19 @@ frequent AND sutra has leverage at the moment of writing.
 2. **SWALLOW is the second target**, and cheap: forbidden_patterns already
    exist. It needs per-language idiom sets, diff attribution, and
    annotation-based waivers.
+   **Back-tested (sutra/465, [swallow-ratchet-backtest.md](swallow-ratchet-backtest.md)):
+   GO in two tiers, waived by a `// swallow: <reason>` comment.** All 14
+   lexical-idiom bugs fire on their offending line (16 of 22 pinned rows).
+   The misses are the non-lexical absence-reads-as-zero cases (402, 408,
+   423), log-and-default arms, and a permissive `Option` fallback.
+   - Tier A (10 rules: `.ok()`, `let _ = call`, `Err(_)`, `if let Ok` with no
+     else, `catch (_)`, `valueOrNull` …): 18 of 19 held-out sites were real
+     error discards (4 defects, 12 boundaries worth a sentence), at 0.5 sites
+     per ordinary commit. Blocking at the guard.
+   - Tier B (`unwrap_or*` on a call, catch-all, `tryParse ??`): 5 of 11 were
+     `Option` false matches. Advisory at review only.
+   Prerequisites: a `justify` marker field, added-line attribution in
+   check/review, and a guard match key that survives renames.
 3. **UNWIRED is rare but escapes to prod.** Worth doing once dead-code
    resolution is correct. Until then it's noise.
 4. **Deprioritise the growth gate and layering.** Neither shows up as a bug

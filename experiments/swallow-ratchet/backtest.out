@@ -1,0 +1,24 @@
+yojana/42              HIT   unwrap_or_default    rs-unwrap-or-default                     let criteria: Vec<Criterion> = serde_json::from_str(&t.acceptance_criteria).unwr
+yojana/47              HIT   unwrap_or_default    rs-unwrap-or-default                     serde_json::from_str(s).unwrap_or_default()
+yojana/47              MISS  log-and-default      -                                        Vec::new()
+sutra/147              HIT   .ok()                rs-ok                                    .ok()
+sutra/147              HIT   .ok()                rs-ok                                    .ok()
+sutra/417              HIT   unwrap_or(lit)       rs-unwrap-or-lit                         .unwrap_or(false)
+sutra/301              HIT   let _ =              rs-underscore-err-binding                let (constraints, _errors) = parsed.all_constraints();
+sutra/424              HIT   let _ =              rs-let-underscore                        let _ = self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspa
+sutra/432              HIT   .ok()                rs-ok                                    .ok()
+sutra/441              HIT   if let Ok no-else    rs-if-let-ok-no-else                     if let Ok(map) = serde_json::from_str::<HashMap<String, f64>>(&f.category_scores
+swisseph-rs/151        HIT   unwrap_or(lit)       rs-unwrap-or-lit                         .unwrap_or(swisseph::types::HouseSystem::Placidus);
+adityas/ai/104         HIT   unwrap_or(lit)       rs-ok,rs-unwrap-or-lit                   .and_then(|s| s.parse().ok())
+adityas/backend/66     MISS  None arm             -                                        access_until.unwrap_or_else(Utc::now) - self.period
+adityas/ai/141         HIT   catch (_)            dart-catch-all,dart-catch-underscore     } catch (_) {
+swe-dashboard/90       HIT   catch (_)            dart-catch-all,dart-catch-underscore     } catch (_) {
+swe-dashboard/94       HIT   empty catch          dart-catch-all,dart-catch-underscore,dart-empty-catch } catch (_) {}
+swe-dashboard/94       HIT   empty catch          dart-catch-all,dart-catch-underscore,dart-empty-catch } catch (_) {}
+swe-dashboard/116      HIT   valueOrNull          dart-value-or-null                       final atlas = ref.watch(atlasProvider).valueOrNull;
+sutra/402              MISS  non-lexical          -                                        score: (BASE_SCORE - total_deduction).clamp(MIN_SCORE, MAX_SCORE),
+sutra/408              MISS  non-lexical          -                                        has_git: db.commit_file_count()? > 0,
+sutra/408              MISS  log-and-default      -                                        db.replace_commit_files(&[], &[])?;
+sutra/423              MISS  non-lexical          -                                        HistoryObservation::Loaded(_) => ProducerOutcome::Complete {
+
+fired on 16 of 22 pinned cases

@@ -1,0 +1,5 @@
+harness/target/
+harness/Cargo.lock
+.ruff_cache/
+__pycache__/
+volume-hits*.json

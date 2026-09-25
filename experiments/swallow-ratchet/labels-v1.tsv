@@ -1,0 +1,41 @@
+repo	sha	site	rule_v1	label	note
+swe_dashboard	af3dd71	lib/core/ephe_assets.dart:23	dart-catch-all	B	asset-manifest read falls back to a static list
+explore	8863ade	lib/state/active_chart.dart:77	dart-catch-all	F	resets state then rethrows: not a swallow
+swe_dashboard	6452e9b	lib/tabs/other_bodies/other_bodies_provider.dart:120	dart-catch-underscore	?	equatorial calc failure leaves NaN in the value domain (swe-dashboard/94 shape)
+swe_dashboard	77e6c09	lib/core/calculation/horizontal_coords.dart:61	dart-catch-underscore	?	frame-of-date RA failure returns NaN in the value domain
+swe_dashboard	6452e9b	lib/tabs/planets/planets_provider.dart:195	dart-catch-underscore	B	optional field: orbit distance not available for every body (commented)
+swe_dashboard	a782481	lib/tabs/coordinates/coordinates_tab.dart:387	dart-tryparse-default	B	UI text field parse with a default
+sutra	4bc9bde	src/mcp.rs:204	rs-closure-discards-err	B	documented degrade to raw workspace id
+sutra	df8712e	src/parser/python.rs:268	rs-err-discard-arm	B	tree-sitter utf8_text on UTF-8 source
+sutra	d094d9c	src/bin/explore-eval.rs:192	rs-err-discard-arm	B	eval binary
+sutra	3b5f777	src/parser/javascript.rs:1082	rs-let-ok-else	B	tree-sitter utf8_text on UTF-8 source
+sutra	8f2fe19	src/conventions/pipeline.rs:182	rs-let-underscore	D	DB history write error discarded
+sutra	3f7b782	src/tools/review.rs:343	rs-let-underscore	D	DB delete error discarded
+sutra	939d235	src/tools/check.rs:170	rs-let-underscore	F	writeln! into a String (infallible)
+sutra	939d235	src/tools/check.rs:160	rs-let-underscore	F	writeln! into a String (infallible)
+sutra	5f008aa	src/lessons.rs:672	rs-ok	D	filter_map(r.ok()) drops failed rows (sutra/441 shape)
+sutra	6df802c	src/parser/dart.rs:913	rs-ok	B	tree-sitter utf8_text on UTF-8 source
+sutra	d0e31d7	src/similarity/mod.rs:124	rs-ok	D	invalid SUTRA_HRR_PARALLELISM silently ignored (adityas/ai/104 shape)
+sutra	ace5590	src/db/constraints.rs:87	rs-ok	D	filter_map(r.ok()) drops failed rows (sutra/441 shape)
+sutra	7856a78	src/guard.rs:395	rs-ok	D	Pattern::new(..).ok(): one of the 7 sites sutra/147 later fixed (2026-06-13)
+sutra	96c0a20	src/constraints/check.rs:716	rs-ok	D	DB error on path lookup reads as empty scan scope
+sutra	3a57d3d	src/db/components.rs:28	rs-ok	D	corrupt JSON reads as no paths (yojana/42 shape)
+sutra	39d5727	src/parser/c.rs:232	rs-ok	B	tree-sitter utf8_text on UTF-8 source
+sutra	890ed10	src/rust_imports.rs:119	rs-ok	B	strip_prefix in an Option-returning path helper
+sutra	d0e31d7	src/similarity/mod.rs:123	rs-ok	B	env var unset is the normal case
+sutra	d70bf20	src/tools/constraints.rs:391	rs-underscore-err-binding	D	rules parse errors discarded (sutra/301 shape)
+sutra	589f051	src/tools/orient.rs:190	rs-unwrap-or-default	F	Option map lookup
+sutra	6d5600f	src/tools/impact.rs:110	rs-unwrap-or-default	D	DB error reads as no languages
+sutra	32a88fb	src/components/anchors.rs:96	rs-unwrap-or-default	D	git failure reads as no churn (sutra/408/417 shape)
+sutra	fdcc825	src/guard.rs:610	rs-unwrap-or-default	B	guard's deliberate fail-open DB read
+sutra	d094d9c	src/bin/explore-eval.rs:143	rs-unwrap-or-default	B	eval binary, HOME
+sutra	589f051	src/tools/orient.rs:54	rs-unwrap-or-default	F	Option find().map()
+sutra	07147cb	src/parser/javascript.rs:558	rs-unwrap-or-lit	B	tree-sitter utf8_text on UTF-8 source
+sutra	27c0268	src/components/clustering.rs:294	rs-unwrap-or-lit	F	max() of possibly-empty set
+sutra	b5bca7a	src/constraints/patterns.rs:90	rs-unwrap-or-lit	F	Option slice get
+sutra	0ab38ce	build.rs:51	rs-unwrap-or-lit	F	file_name/to_str Option
+sutra	68dcdca	src/tools/erosion_delta.rs:467	rs-unwrap-or-lit	F	Option map lookup
+sutra	9c8fe58	src/mcp.rs:677	rs-unwrap-or-lit	F	optional tool argument default
+sutra	bbcd7ab	src/tools/lookup.rs:61	rs-unwrap-or-lit	F	optional tool argument default
+sutra	c7961e5	src/mcp.rs:499	rs-unwrap-or-lit	F	optional tool argument default
+sutra	2d3e7a2	src/tools/file_health.rs:235	rs-unwrap-or-lit	F	Option map lookup

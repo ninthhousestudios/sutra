@@ -1,0 +1,23 @@
+bug	lang	repo	intro_sha	fix_sha	file_at_intro	offending_line	idiom
+yojana/42	rust	/home/josh/soft/manas/yojana	3b2cd343fcd9	0b3ff3457147	src/display.rs	let criteria: Vec<Criterion> = serde_json::from_str(&t.acceptance_criteria).unwrap_or_default();	unwrap_or_default
+yojana/47	rust	/home/josh/soft/manas/yojana	2ec4b6985e71	7de830c7187c	src/tools/task.rs	serde_json::from_str(s).unwrap_or_default()	unwrap_or_default
+yojana/47	rust	/home/josh/soft/manas/yojana	e164449c31b6	7de830c7187c	src/context.rs	Vec::new()	log-and-default
+sutra/147	rust	/home/josh/soft/manas/sutra	bafae79f27ae	5a068f8b386f	src/constraints/external.rs	.ok()	.ok()
+sutra/147	rust	/home/josh/soft/manas/sutra	bafae79f27ae	5a068f8b386f	src/constraints/external.rs	.ok()	.ok()
+sutra/417	rust	/home/josh/soft/manas/sutra	fab5f4894094	62cc7614088a	src/git.rs	.unwrap_or(false)	unwrap_or(lit)
+sutra/301	rust	/home/josh/soft/manas/sutra	6e08d9c7abec	f61cd5a6f0ae	src/guard.rs	let (constraints, _errors) = parsed.all_constraints();	let _ =
+sutra/424	rust	/home/josh/soft/manas/sutra	d4f186ff9ba6	9e426dd41021	src/mcp.rs	let _ = self.refresh_health_locked(ctx.db(), ctx.workspace_root(), &args.workspace);	let _ =
+sutra/432	rust	/home/josh/soft/manas/sutra	2479d4a4e78d	66f2c91ac6c0	src/health/refresh.rs	.ok()	.ok()
+sutra/441	rust	/home/josh/soft/manas/sutra	9fa82dc059b7	7bde0a6fb887	src/tools/trend.rs	if let Ok(map) = serde_json::from_str::<HashMap<String, f64>>(&f.category_scores) {	if let Ok no-else
+swisseph-rs/151	rust	/home/josh/nhs/soft/astrology/swisseph-rs	8c3cb751f165	cb7a6432d153	swetest/src/compute.rs	.unwrap_or(swisseph::types::HouseSystem::Placidus);	unwrap_or(lit)
+adityas/ai/104	rust	/home/josh/adityas/backend	212d1fcdd4d3	c00df85b18f6	server/src/config.rs	.and_then(|s| s.parse().ok())	unwrap_or(lit)
+adityas/backend/66	rust	/home/josh/adityas/backend	db1aafa82bfd	7132429d7a1e	server/src/chat/budget.rs	access_until.unwrap_or_else(Utc::now) - self.period	None arm
+adityas/ai/141	dart	/home/josh/adityas/explore	4ccebe3fc7f3	0ed10589710f	lib/ai/sse_turn_transport.dart	} catch (_) {	catch (_)
+swe-dashboard/90	dart	/home/josh/nhs/soft/astrology/swe_dashboard	67f59436a54b	6ac831a43a53	lib/core/ephe/staging_io.dart	} catch (_) {	catch (_)
+swe-dashboard/94	dart	/home/josh/nhs/soft/astrology/swe_dashboard	f1950a06ff47	d146540fe344	lib/tabs/dates/dates_provider.dart	} catch (_) {}	empty catch
+swe-dashboard/94	dart	/home/josh/nhs/soft/astrology/swe_dashboard	58f3e430babf	d146540fe344	lib/tabs/planets/planets_provider.dart	} catch (_) {}	empty catch
+swe-dashboard/116	dart	/home/josh/nhs/soft/astrology/swe_dashboard	1503bae0e229	ee22e797f00f	lib/widgets/context_bar/location_search_field.dart	final atlas = ref.watch(atlasProvider).valueOrNull;	valueOrNull
+sutra/402	rust	/home/josh/soft/manas/sutra	b7f0c00dded7	5072089a6cb7	src/health/scoring.rs	score: (BASE_SCORE - total_deduction).clamp(MIN_SCORE, MAX_SCORE),	non-lexical
+sutra/408	rust	/home/josh/soft/manas/sutra	5072089a6cb7	fab5f4894094	src/health/scoring.rs	has_git: db.commit_file_count()? > 0,	non-lexical
+sutra/408	rust	/home/josh/soft/manas/sutra	2cd563762532	fab5f4894094	src/pipeline.rs	db.replace_commit_files(&[], &[])?;	log-and-default
+sutra/423	rust	/home/josh/soft/manas/sutra	2479d4a4e78d	b4f4d8127519	src/health/refresh.rs	HistoryObservation::Loaded(_) => ProducerOutcome::Complete {	non-lexical

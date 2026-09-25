@@ -1,0 +1,55 @@
+787 commits, 218 with >=1 added-line hit, 712 hits
+  rs-ok                       179 hits in  84 commits
+  rs-unwrap-or-default        115 hits in  68 commits
+  rs-unwrap-or-lit             83 hits in  56 commits
+  dart-catch-all               74 hits in  42 commits
+  rs-if-let-ok-no-else         55 hits in  27 commits
+  dart-catch-underscore        55 hits in  31 commits
+  rs-err-discard-arm           39 hits in  28 commits
+  dart-tryparse-default        29 hits in   6 commits
+  rs-let-underscore            24 hits in  14 commits
+  rs-let-ok-else               18 hits in  17 commits
+  dart-empty-catch             16 hits in   8 commits
+  rs-closure-discards-err      13 hits in   7 commits
+  rs-underscore-err-binding     8 hits in   3 commits
+  dart-value-or-null            4 hits in   4 commits
+explore a38de37 A- dart-catch-all             lib/astro/swe_worker.dart:26  } catch (e) {
+explore 4113d40 A- dart-catch-all             lib/api/waitlist_service.dart:31  } catch (_) {
+swe_dashboard 19affb0 A- dart-catch-all             lib/core/swe_service_stub.dart:42  } catch (_) {
+explore 720f76f A- dart-catch-all             lib/share_util_web.dart:55  } catch (e) {
+explore a38de37 A- dart-catch-all             lib/main.dart:58  } catch (e, s) {
+swe_dashboard 6452e9b A- dart-catch-underscore      lib/tabs/other_bodies/other_bodies_provider.dart:128  } catch (_) {
+swe_dashboard 19affb0 A- dart-catch-underscore      lib/core/swe_service_stub.dart:42  } catch (_) {
+swe_dashboard 8f8d4b2 A- dart-empty-catch           lib/tabs/heliacal/heliacal_tab.dart:84  } catch (_) {}
+sutra df8712e A- rs-err-discard-arm         src/parser/python.rs:268  Err(_) => return,
+sutra df8712e A- rs-if-let-ok-no-else       src/parser/python.rs:538  if let Ok(name) = node.utf8_text(src) {
+sutra 1f35916 A- rs-if-let-ok-no-else       src/constraints/check.rs:191  if let Ok(content) = std::fs::read_to_string(workspace_root.join(path)) {
+sutra e2ac396 A- rs-let-ok-else             build.rs:38  let Ok(entries) = fs::read_dir(dir) else {
+sutra ace5590 A- rs-let-ok-else             src/db/constraints.rs:79  let Ok(mut stmt) = conn.prepare(&format!(
+sutra 5f008aa A- rs-let-underscore          src/tools/orient.rs:691  let _ = ldb.apply_staleness(&mut comp_lessons, &resolver);
+sutra c420ae1 A- rs-let-underscore          src/guard/session_dedup.rs:65  let _ = conn.execute(
+sutra 8f2fe19 A- rs-let-underscore          src/conventions/pipeline.rs:182  let _ = db.record_convention_history(&c.id, c.support as i64, c.confidence, &snapshot_id);
+sutra cc674e8 A- rs-ok                      src/constraints/check.rs:697  .filter_map(|r| r.ok())
+sutra ace5590 A- rs-ok                      src/db/constraints.rs:86  .ok()
+sutra c997390 A- rs-ok                      src/tools/context.rs:152  .ok()
+sutra 39d5727 A- rs-ok                      src/parser/c.rs:467  if child.utf8_text(src).ok() == Some(keyword) {
+sutra a1db624 A- rs-ok                      src/guard.rs:577  .filter_map(|r| r.ok())
+sutra e9ec6a8 A- rs-ok                      src/parser/c.rs:266  .and_then(|t| t.utf8_text(src).ok());
+sutra df8712e A- rs-ok                      src/parser/python.rs:421  if ret.utf8_text(src).ok() == Some("None") {
+sutra c420ae1 A- rs-ok                      src/guard.rs:306  session_id.and_then(|sid| Some((session_dedup::SessionDedup::open(db_dir).ok()?, sid)));
+sutra c420ae1 A- rs-ok                      src/guard.rs:291  let mut found = ldb.query_for_context(&ctx).ok()?;
+sutra 5f815c7 A- rs-ok                      src/tools/context.rs:207  let source = std::fs::read_to_string(workspace_root.join(rel_path)).ok()?;
+sutra 3a57d3d A- rs-ok                      src/db/components.rs:28  .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+sutra a27df70 A- rs-ok                      src/health/erosion.rs:202  parent_symbol_id: parent.and_then(|pi| i64::try_from(pi).ok()),
+sutra a1db624 A- rs-ok                      src/guard.rs:576  .ok()?
+sutra 6df802c A- rs-ok                      src/parser/dart.rs:951  let var_name = name_node.utf8_text(src).ok()?.to_string();
+sutra fd0755a A- rs-ok                      src/similarity/minhash.rs:171  .filter_map(|i| std::str::from_utf8(&bytes[i..i + k]).ok())
+sutra 3a0ea81 A- rs-ok                      src/constraints/check.rs:388  .filter_map(|r| r.ok())
+sutra e389fb7 A- rs-underscore-err-binding  src/tools/constraints.rs:403  let (all_constraints, _errors) = rules_loaded.all_constraints();
+sutra 890ed10 A- rs-unwrap-or-default       src/rust_imports.rs:80  .map(|a| {
+sutra 0ab38ce A- rs-unwrap-or-default       build.rs:86  let crate_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+sutra b394ab2 A- rs-unwrap-or-lit           src/tools/file_health.rs:280  let sa = a["health_score"].as_f64().unwrap_or(10.0);
+sutra 6f85495 A- rs-unwrap-or-lit           src/health/ondemand.rs:101  ages_days.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+sutra 0e6ec6f A- rs-unwrap-or-lit           src/lessons.rs:397  .map(|anchors| {
+sutra fa1867d A- rs-unwrap-or-lit           src/tools/orient.rs:712  .map(|k| k.default_weight())
+sutra 910ef0f A- rs-unwrap-or-lit           src/main.rs:773  .map(|mut r| {

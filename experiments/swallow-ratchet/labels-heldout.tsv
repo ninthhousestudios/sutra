@@ -1,0 +1,31 @@
+repo	sha	site	rules_v2	label	note
+explore	af70552	lib/state/chat_turn.dart:721	dart-catch-all,dart-catch-underscore	?	usage-ceiling recheck silently skipped on fetch failure (quota semantics unclear)
+sutra	02e2708	src/constraints/external.rs:199	rs-ok	B	segment of an allowed_in glob already validated at parse time (sutra/147): unreachable
+sutra	0356435	src/tools/review.rs:217	rs-ok	B	display-name lookup degrades to none
+sutra	092e36a	src/parser/typescript.rs:272	rs-ok	B	tree-sitter utf8_text on UTF-8 source
+sutra	092e36a	src/parser/typescript.rs:601	rs-ok,rs-unwrap-or-default	D	stored language_attrs JSON: corrupt reads as no attrs (yojana/42 shape)
+sutra	092e36a	src/parser/typescript.rs:858	rs-if-let-ok-no-else	B	tree-sitter utf8_text on UTF-8 source
+sutra	17e45fc	src/pipeline.rs:652	rs-err-discard-arm	B	error arm records a snapshot (handled; error value unused)
+sutra	1922744	src/c_imports.rs:85	rs-if-let-ok-no-else	F	strip_prefix Err is control flow, not a failure
+sutra	2017132	src/tools/review.rs:365	rs-let-underscore	D	template generation error discarded
+sutra	2182aee	src/constraints/external.rs:405	rs-let-ok-else	D	invalid member glob silently skipped (sutra/147 shape)
+sutra	24d2c54	src/similarity/diff.rs:183	rs-err-discard-arm	B	file vanished between diff and read: skip
+sutra	39d5727	src/parser/c.rs:484	rs-if-let-ok-no-else	B	tree-sitter utf8_text on UTF-8 source
+sutra	3f1e069	src/guard.rs:351	rs-ok	B	guard's deliberate fail-open DB read
+sutra	6d5600f	src/tools/impact.rs:120	rs-unwrap-or-default	B	serializing lessons: effectively infallible (.expect would be better)
+sutra	6f85495	src/git.rs:38	rs-unwrap-or-lit	D	malformed git blame line number reads as line 0
+sutra	754b48e	src/parser/python.rs:68	rs-ok	B	tree-sitter utf8_text on UTF-8 source
+sutra	abce5ea	src/tools/review.rs:628	rs-unwrap-or-default	D	convention mining error reads as no conventions (absence reads as clean)
+sutra	c21980c	src/tools/orient.rs:348	rs-unwrap-or-default	F	Option map; the swallow is the .ok() a line above, reported separately
+sutra	c997390	src/tools/context.rs:154	rs-unwrap-or-default	F	Option map after .ok().flatten()
+sutra	c997390	src/tools/context.rs:178	rs-unwrap-or-lit	F	partial_cmp Option
+sutra	d0e31d7	src/similarity/mod.rs:120	rs-unwrap-or-lit	B	available_parallelism failure: standard fallback
+sutra	d464cc8	src/waivers.rs:81	rs-unwrap-or-lit	F	Option map lookup
+sutra	d70bf20	src/db/constraints.rs:173	rs-ok	D	DB error reads as never-synced
+sutra	f61cd5a	src/guard.rs:946	rs-err-discard-arm	B	documented: unparseable proposed rules do not block an edit
+swe_dashboard	037cd48	lib/tabs/other_bodies/other_bodies_provider.dart:174	dart-catch-all,dart-catch-underscore,dart-empty-catch	B	optional field: house position stays null
+swe_dashboard	5ec6914	lib/tabs/other_bodies/other_bodies_provider.dart:159	dart-value-or-null	?	scan error reads as no installed files (swe-dashboard/116 shape)
+swe_dashboard	7adc54e	lib/tabs/eclipses/eclipses_provider.dart:166	dart-catch-all	F	catch surfaces the error into the result list
+swe_dashboard	a782481	lib/tabs/coordinates/coordinates_tab.dart:148	dart-tryparse-default	B	UI text field parse with a default
+swe_dashboard	a782481	lib/tabs/coordinates/coordinates_tab.dart:275	dart-tryparse-default	B	UI text field parse with a default
+swe_dashboard	bf7fbd5	lib/tabs/dates/dates_provider.dart:233	dart-catch-all,dart-catch-underscore	B	commented: field renders a placeholder

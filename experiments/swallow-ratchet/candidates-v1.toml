@@ -1,0 +1,112 @@
+# Candidate swallow idioms for sutra/465. Each rule captures ONE token so the
+# reported line is the idiom's own line (the guard reports the first capture).
+
+# ---------------- Rust ----------------
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-ok"
+severity = "advisory"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "ok")) arguments: (arguments) @a (#eq? @a "()"))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-unwrap-or-default"
+severity = "advisory"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "unwrap_or_default")))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-unwrap-or-lit"
+severity = "advisory"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#eq? @m "unwrap_or")) arguments: (arguments . [(boolean_literal) (integer_literal) (float_literal) (string_literal) (scoped_identifier) (unary_expression)] .))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-let-underscore"
+severity = "advisory"
+query = '(let_declaration pattern: "_" @m)'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-if-let-ok-no-else"
+severity = "advisory"
+query = '(if_expression condition: (let_condition pattern: (tuple_struct_pattern type: (identifier) @m (#eq? @m "Ok"))) !alternative)'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-let-ok-else"
+severity = "advisory"
+query = '(let_declaration pattern: (tuple_struct_pattern type: (identifier) @m (#eq? @m "Ok")) alternative: (block))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-err-discard-arm"
+severity = "advisory"
+query = '''
+(tuple_struct_pattern type: (identifier) @m (#eq? @m "Err") . "_" .)
+(tuple_struct_pattern type: (identifier) @m (#eq? @m "Err") . (identifier) @i (#match? @i "^_") .)
+'''
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-closure-discards-err"
+severity = "advisory"
+query = '(call_expression function: (field_expression field: (field_identifier) @m (#match? @m "^(unwrap_or_else|or_else|map_or_else)$")) arguments: (arguments . (closure_expression parameters: (closure_parameters) @p (#match? @p "^\\|\\s*_\\w*\\s*\\|$"))))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+name = "rs-underscore-err-binding"
+severity = "advisory"
+query = '((identifier) @m (#match? @m "^_(e|err|errs|error|errors)$"))'
+
+# ---------------- Dart ----------------
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-empty-catch"
+severity = "advisory"
+query = '((try_statement (catch_clause) . (block) @match) (#match? @match "^\\{\\s*\\}$"))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-catch-underscore"
+severity = "advisory"
+query = '(catch_clause exception: (identifier) @m (#eq? @m "_"))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-catch-all"
+severity = "advisory"
+query = '(try_statement (block) . (catch_clause) @m)'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-value-or-null"
+severity = "advisory"
+query = '((identifier) @m (#eq? @m "valueOrNull"))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-tryparse-default"
+severity = "advisory"
+query = '(if_null_expression . (call_expression function: (member_expression property: (identifier) @m (#eq? @m "tryParse"))))'
+
+[[constraint]]
+kind = "forbidden_pattern"
+language = "dart"
+name = "dart-catch-error"
+severity = "advisory"
+query = '(call_expression function: (member_expression property: (identifier) @m (#match? @m "^(catchError|onError)$")))'

@@ -1,0 +1,270 @@
+### explore	af70552	lib/state/chat_turn.dart:721	dart-catch-all,dart-catch-underscore
+    Future<void> _recheckCeiling() async {
+      final int pct;
+      try {
+        pct = await ref.read(usageClientProvider).fetchUsagePct();
+>     } catch (_) {
+        return;
+      }
+      // The seam resolved after a dispose (panel torn down mid-recheck): the torn-
+### sutra	02e2708	src/constraints/external.rs:199	rs-ok
+                  };
+              }
+              Some(glob) => {
+                  if !Pattern::new(glob)
+>                     .ok()
+                      .is_some_and(|p| p.matches(component))
+                  {
+                      return Reach::OUTSIDE;
+### sutra	0356435	src/tools/review.rs:217	rs-ok
+                              s,
+                              &call_refs,
+                              &|id| {
+                                  db.symbol_by_id(id)
+>                                     .ok()
+                                      .flatten()
+                                      .map(|s| s.qualified_name)
+                              },
+### sutra	092e36a	src/parser/typescript.rs:272	rs-ok
+          attrs.insert("optional".into(), true.into());
+      }
+  
+      let sig = node.child_by_field_name("parameters").and_then(|params| {
+>         let params_text = params.utf8_text(src).ok()?;
+          Some(format!("{name}{params_text}"))
+      });
+      let sig_hash = sig
+### sutra	092e36a	src/parser/typescript.rs:601	rs-ok,rs-unwrap-or-default
+  
+      let mut attrs: serde_json::Map<String, serde_json::Value> = sym
+          .language_attrs
+          .as_ref()
+>         .and_then(|s| serde_json::from_str(s).ok())
+          .unwrap_or_default();
+  
+      if let Some(vis) = get_accessibility(node, src) {
+### sutra	092e36a	src/parser/typescript.rs:858	rs-if-let-ok-no-else
+  ) {
+      let mut decorators = Vec::new();
+      for child in node.children(&mut node.walk()) {
+          if child.kind() == "decorator" {
+>             if let Ok(text) = child.utf8_text(src) {
+                  let name = text.trim_start_matches('@');
+                  let name = name.split('(').next().unwrap_or(name);
+                  decorators.push(serde_json::Value::String(name.to_string()));
+### sutra	17e45fc	src/pipeline.rs:652	rs-err-discard-arm
+              {
+                  warn!(workspace = %workspace.id, "failed to mark derived data complete: {e}");
+              }
+          }
+>         Err(_) => {
+              if let Err(e) = record_snapshot(
+                  db,
+                  files_parsed,
+### sutra	1922744	src/c_imports.rs:85	rs-if-let-ok-no-else
+              return Some(id);
+          }
+          // Try stripping workspace_root prefix
+          let abs = workspace_root.join(&candidate);
+>         if let Ok(stripped) = abs.strip_prefix(workspace_root) {
+              let stripped_str = stripped.to_string_lossy();
+              if let Some(&id) = path_to_id.get(stripped_str.as_ref()) {
+                  return Some(id);
+### sutra	2017132	src/tools/review.rs:365	rs-let-underscore
+          }
+  
+          let _ = db.delete_stale_conventions(&current_ids);
+  
+>         let _ = conventions::templates::generate_templates_for_conventions(
+              &all_convs, &all_sym_attrs, &sig_info_map, db,
+          );
+          let _ = db.delete_orphan_templates(&current_ids);
+### sutra	2182aee	src/constraints/external.rs:405	rs-let-ok-else
+          .unwrap_or_default();
+      let mut out = Vec::new();
+      for pattern in member_globs {
+          let abs_pattern = root.join(pattern);
+>         let Ok(paths) = glob::glob(&abs_pattern.to_string_lossy()) else {
+              continue;
+          };
+          for entry in paths.flatten() {
+### sutra	24d2c54	src/similarity/diff.rs:183	rs-err-discard-arm
+                  Ok(None) | Err(_) => continue,
+              },
+              None => match std::fs::read_to_string(workspace_root.join(path)) {
+                  Ok(s) => s,
+>                 Err(_) => continue,
+              },
+          };
+  
+### sutra	39d5727	src/parser/c.rs:484	rs-if-let-ok-no-else
+      while let Some(sib) = sibling {
+          if sib.kind() != "comment" {
+              break;
+          }
+>         if let Ok(text) = sib.utf8_text(src) {
+              if let Some(inner) = text.strip_prefix("/**") {
+                  let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
+                  doc_lines.push(inner.to_string());
+### sutra	3f1e069	src/guard.rs:351	rs-ok
+      let crate_name = crate::rust_imports::read_crate_name(project_root);
+  
+      let path_to_id: HashMap<String, i64> = conn
+          .prepare("SELECT path, id FROM files")
+>         .ok()?
+          .query_map([], |row| {
+              Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+          })
+### sutra	6d5600f	src/tools/impact.rs:120	rs-unwrap-or-default
+              workspace_languages: &ws_langs,
+          };
+          let lessons = ldb.query_for_context(&ctx)?;
+          if !lessons.is_empty() {
+>             result["lessons"] = serde_json::to_value(&lessons).unwrap_or_default();
+          }
+      }
+  
+### sutra	6f85495	src/git.rs:38	rs-unwrap-or-lit
+              {
+                  current_commit = line[..40].to_string();
+                  let parts: Vec<&str> = line[41..].split_whitespace().collect();
+                  if parts.len() >= 2 {
+>                     current_line = parts[1].parse().unwrap_or(0);
+                  }
+              }
+          }
+### sutra	754b48e	src/parser/python.rs:68	rs-ok
+      let mut cursor = dec_node.walk();
+      for child in dec_node.children(&mut cursor) {
+          if matches!(child.kind(), "function_definition" | "class_definition") {
+              let name_node = child.child_by_field_name("name")?;
+>             let name = name_node.utf8_text(src).ok()?;
+              let dec_line = dec_node.start_position().row + 1;
+              return symbols
+                  .iter()
+### sutra	abce5ea	src/tools/review.rs:628	rs-unwrap-or-default
+              &comp_symbol_groups,
+              &file_to_component,
+              &id_map,
+          )
+>         .unwrap_or_default();
+  
+          for c in &all_convs {
+              let _ = db.upsert_convention(
+### sutra	c21980c	src/tools/orient.rs:348	rs-unwrap-or-default
+  
+      let workspace_health = scoring::score_workspace(db).ok();
+      let comp_health_map: HashMap<&str, &scoring::ScoredComponent> = workspace_health
+          .as_ref()
+>         .map(|wh| {
+              wh.component_scores
+                  .iter()
+                  .map(|cs| (cs.component_id.as_str(), cs))
+### sutra	c997390	src/tools/context.rs:154	rs-unwrap-or-default
+                  let file_path = db
+                      .file_by_id(r.file_id)
+                      .ok()
+                      .flatten()
+>                     .map(|f| f.path.to_string())
+                      .unwrap_or_default();
+                  queue.push_back((caller_sym.id, d + 1));
+                  result.push(Neighbor {
+### sutra	c997390	src/tools/context.rs:178	rs-unwrap-or-lit
+              .unwrap_or(std::cmp::Ordering::Equal)
+              .then_with(|| {
+                  let ap = a.sym.pagerank.unwrap_or(0.0);
+                  let bp = b.sym.pagerank.unwrap_or(0.0);
+>                 bp.partial_cmp(&ap).unwrap_or(std::cmp::Ordering::Equal)
+              })
+      });
+  }
+### sutra	d0e31d7	src/similarity/mod.rs:120	rs-unwrap-or-lit
+  }
+  
+  fn hrr_worker_count(file_count: usize) -> usize {
+      let default = std::thread::available_parallelism()
+>         .map(|n| n.get())
+          .unwrap_or(4);
+      std::env::var("SUTRA_HRR_PARALLELISM")
+          .ok()
+### sutra	d464cc8	src/waivers.rs:81	rs-unwrap-or-lit
+      fn find_waiver(&self, waivers: &ConventionWaiverSet) -> Option<WaiverMeta> {
+          let comp = waivers
+              .sym_component
+              .get(&(self.file.clone(), self.symbol.clone()))
+>             .map(|s| s.as_str())
+              .unwrap_or("");
+          let file_qualified = format!("{}::{}", self.file, self.symbol);
+          [
+### sutra	d70bf20	src/db/constraints.rs:173	rs-ok
+          "SELECT file_hash FROM accepted_sync WHERE id = 1",
+          [],
+          |row| row.get::<_, Option<String>>(0),
+      )
+>     .ok()
+      .flatten()
+  }
+  
+### sutra	f61cd5a	src/guard.rs:946	rs-err-discard-arm
+  /// unparseable content rather than blocking an edit-in-progress.
+  pub fn proposed_rules_parse_errors(proposed_content: &str) -> Vec<String> {
+      let mut parsed = match rules::parse_rules(proposed_content) {
+          Ok(r) => r,
+>         Err(_) => return Vec::new(),
+      };
+      let (_constraints, errors) = parsed.all_constraints();
+      errors
+### swe_dashboard	037cd48	lib/tabs/other_bodies/other_bodies_provider.dart:174	dart-catch-all,dart-catch-underscore,dart-empty-catch
+            // Dedicated tropical ecliptic calc — swe_house_pos can't honour a
+            // sidereal/XYZ config, so `r` can't be reused.
+            final trop = eph.calcUt(moment.ut, body, housePosCalcFlag(iflag));
+            housePos = housePosOf(eph, hpInputs, trop.longitude, trop.latitude);
+>         } catch (_) {}
+        }
+  
+        return OtherBodyResult(
+### swe_dashboard	5ec6914	lib/tabs/other_bodies/other_bodies_provider.dart:159	dart-value-or-null
+    }).toList();
+  });
+  
+  Set<String> _installedFilenames(Ref ref) {
+>   final scan = ref.watch(ephemerisScanProvider).valueOrNull;
+    if (scan == null) return const {};
+    return {
+      for (final f in scan.files)
+### swe_dashboard	7adc54e	lib/tabs/eclipses/eclipses_provider.dart:166	dart-catch-all
+                  searchJd = event.maxEclipseJd! + 1.0;
+                } else {
+                  break;
+                }
+>             } catch (e) {
+                results.add(
+                  EclipseEvent(
+                    index: i + 1,
+### swe_dashboard	a782481	lib/tabs/coordinates/coordinates_tab.dart:148	dart-tryparse-default
+        lon: double.tryParse(_lonCtrl.text) ?? 0.0,
+        lat: double.tryParse(_latCtrl.text) ?? 0.0,
+        dist: double.tryParse(_distCtrl.text) ?? 1.0,
+        atpress: double.tryParse(_atpressCtrl.text) ?? 1013.25,
+>       attemp: double.tryParse(_attempCtrl.text) ?? 15.0,
+        azimuth: double.tryParse(_azCtrl.text) ?? 0.0,
+        altitude: double.tryParse(_altCtrl.text) ?? 0.0,
+      );
+### swe_dashboard	a782481	lib/tabs/coordinates/coordinates_tab.dart:275	dart-tryparse-default
+        eclToEqu: _eclToEqu,
+        lon: double.tryParse(_lonCtrl.text) ?? 0.0,
+        lat: double.tryParse(_latCtrl.text) ?? 0.0,
+        dist: double.tryParse(_distCtrl.text) ?? 1.0,
+>       eps: double.tryParse(_epsCtrl.text) ?? 23.4393,
+      );
+    }
+  
+### swe_dashboard	bf7fbd5	lib/tabs/dates/dates_provider.dart:233	dart-catch-all,dart-catch-underscore
+    Civil? lmtClock;
+    Civil? latClock;
+    try {
+      lmtClock = jdUtils.civilFieldsOn(lmtClockJd, calendar);
+>   } catch (_) {
+      // Leave null: the field renders a placeholder rather than a bad time.
+    }
+    if (equationOfTimeError == null) {
