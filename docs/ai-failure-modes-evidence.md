@@ -136,6 +136,12 @@ frequent AND sutra has leverage at the moment of writing.
      the surviving instances. It would have fired on yojana/47, sutra/283,
      sutra/441 and sutra/459. This mechanism was not on the candidate list
      and may have the best precision.
+     **Back-tested (sutra/462, [sibling-pattern-backtest.md](sibling-pattern-backtest.md)):
+     GO as a review-time advisory.** It fired on all 4 of those diffs, plus 3
+     sites that later became their own fixes (sutra/261, 461). It misses
+     additive PAR by construction (0 of 4). 29 of 31 fresh ordinary commits
+     stayed silent. Per-item precision is low (about 1 real and 3 relevant per
+     13 items), but items are rare and cheap to dismiss.
 2. **SWALLOW is the second target**, and cheap: forbidden_patterns already
    exist. It needs per-language idiom sets, diff attribution, and
    annotation-based waivers.
