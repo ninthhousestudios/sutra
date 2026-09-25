@@ -431,30 +431,6 @@ pub struct SnapshotRow {
     pub dead_symbol_count: i64,
     pub hotspot_count: i64,
     pub pattern_family_count: i64,
-    /// Erosion aggregates (sutra/442). `None` on checkpoints written before the
-    /// metric existed — unknown, never zero.
-    pub erosion: Option<SnapshotErosion>,
-}
-
-/// Workspace erosion recorded on a checkpoint, with the formula version it was
-/// computed under ([`crate::health::erosion::EROSION_VERSION`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SnapshotErosion {
-    pub eroded_mass: f64,
-    pub total_mass: f64,
-    pub version: i64,
-}
-
-/// One symbol's complexity-bearing shape, the input to erosion selection.
-#[derive(Debug, Clone)]
-pub struct SymbolComplexityRow {
-    pub id: i64,
-    pub file_id: i64,
-    pub parent_symbol_id: Option<i64>,
-    pub cognitive: Option<i64>,
-    pub start_line: i64,
-    pub end_line: i64,
-    pub flags: i64,
 }
 
 pub struct CommitRow {
@@ -478,8 +454,6 @@ pub struct SnapshotParams {
     /// Pre-parse timestamp for freshness watermark. When set, used instead
     /// of insert-time so edits during parsing aren't hidden.
     pub timestamp: Option<String>,
-    /// Workspace erosion; `None` stores NULLs.
-    pub erosion: Option<SnapshotErosion>,
 }
 
 #[derive(Debug)]
@@ -1537,47 +1511,6 @@ impl Db {
             .collect())
     }
 
-    /// Every symbol's complexity shape (erosion input, sutra/442). Includes
-    /// symbols without a cognitive score: they are the containers erosion walks
-    /// through to find a symbol's outermost complexity-bearing ancestor.
-    pub fn symbol_complexity_rows(&self) -> Result<Vec<SymbolComplexityRow>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, file_id, parent_symbol_id, cognitive, start_line, end_line, flags
-             FROM symbols",
-        )?;
-        let rows = stmt
-            .query_map([], map_complexity_row)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// [`Self::symbol_complexity_rows`] restricted to `file_ids`. A symbol's
-    /// parent chain stays within its file, so a per-file subset is closed under
-    /// the ancestor walk erosion performs.
-    pub fn symbol_complexity_rows_for_files(
-        &self,
-        file_ids: &[i64],
-    ) -> Result<Vec<SymbolComplexityRow>> {
-        if file_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let conn = self.conn.lock();
-        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT id, file_id, parent_symbol_id, cognitive, start_line, end_line, flags
-             FROM symbols WHERE file_id IN ({placeholders})"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(file_ids.iter()),
-                map_complexity_row,
-            )?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
     /// Find symbols with zero inbound references (potential dead code).
     /// Returns (qualified_name, file_path, kind, start_line, visibility).
     #[allow(clippy::type_complexity)]
@@ -2312,9 +2245,8 @@ impl Db {
                 "INSERT INTO snapshots (timestamp, files_parsed, symbols_extracted,
                                         refs_extracted, parse_errors, duration_ms,
                                         total_complexity, dead_symbol_count,
-                                        hotspot_count, pattern_family_count, head_commit,
-                                        eroded_mass, total_mass, erosion_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                        hotspot_count, pattern_family_count, head_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     ts,
                     p.files_parsed,
@@ -2327,9 +2259,6 @@ impl Db {
                     p.hotspot_count,
                     p.pattern_family_count,
                     p.head_commit,
-                    p.erosion.map(|e| e.eroded_mass),
-                    p.erosion.map(|e| e.total_mass),
-                    p.erosion.map(|e| e.version),
                 ],
             )?;
             conn.last_insert_rowid()
@@ -2418,8 +2347,7 @@ impl Db {
             "SELECT id, timestamp, files_parsed, symbols_extracted,
                     refs_extracted, parse_errors, duration_ms,
                     total_complexity, dead_symbol_count,
-                    hotspot_count, pattern_family_count,
-                    eroded_mass, total_mass, erosion_version
+                    hotspot_count, pattern_family_count
              FROM snapshots ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -2442,18 +2370,6 @@ fn batch_aware_transaction(conn: &Connection) -> Result<Option<rusqlite::Transac
     } else {
         Ok(None)
     }
-}
-
-fn map_complexity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolComplexityRow> {
-    Ok(SymbolComplexityRow {
-        id: row.get(0)?,
-        file_id: row.get(1)?,
-        parent_symbol_id: row.get(2)?,
-        cognitive: row.get(3)?,
-        start_line: row.get(4)?,
-        end_line: row.get(5)?,
-        flags: row.get(6)?,
-    })
 }
 
 fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
@@ -2539,13 +2455,5 @@ fn map_snapshot_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotRow> {
         dead_symbol_count: row.get(8)?,
         hotspot_count: row.get(9)?,
         pattern_family_count: row.get(10)?,
-        erosion: match (row.get(11)?, row.get(12)?, row.get(13)?) {
-            (Some(eroded_mass), Some(total_mass), Some(version)) => Some(SnapshotErosion {
-                eroded_mass,
-                total_mass,
-                version,
-            }),
-            _ => None,
-        },
     })
 }

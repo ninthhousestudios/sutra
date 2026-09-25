@@ -61,10 +61,6 @@ pub struct ResolveResult {
     pub changes: Vec<(String, SymbolChange)>,
     pub matched_old: HashSet<usize>,
     pub matched_new: HashSet<usize>,
-    /// Every `(old_idx, new_idx)` match, including the ones that produce no
-    /// change (identical body, disambiguator shift) and so are absent from
-    /// `changes`.
-    pub pairs: Vec<(usize, usize)>,
 }
 
 fn extract_content(source: &str, sym: &ExtractedSymbol) -> String {
@@ -80,13 +76,13 @@ fn span_content(source: &str, start_line: usize, end_line: usize) -> String {
 
 /// Identity and 1-based line span of a symbol, as rename resolution needs it.
 #[derive(Debug, Clone, Copy)]
-pub struct SymbolSpan<'a> {
-    pub qualified_name: &'a str,
-    pub short_name: &'a str,
-    pub kind: &'a str,
-    pub structural_hash: Option<&'a str>,
-    pub start_line: usize,
-    pub end_line: usize,
+struct SymbolSpan<'a> {
+    qualified_name: &'a str,
+    short_name: &'a str,
+    kind: &'a str,
+    structural_hash: Option<&'a str>,
+    start_line: usize,
+    end_line: usize,
 }
 
 impl<'a> From<&'a ExtractedSymbol> for SymbolSpan<'a> {
@@ -105,7 +101,7 @@ impl<'a> From<&'a ExtractedSymbol> for SymbolSpan<'a> {
 impl UnmatchedSymbol {
     /// A rename-resolution candidate for `sym`, whose span is read from
     /// `source`; `file` is the path the candidate is attributed to.
-    pub fn new(sym: SymbolSpan<'_>, source: &str, file: &str) -> Self {
+    fn new(sym: SymbolSpan<'_>, source: &str, file: &str) -> Self {
         let content = span_content(source, sym.start_line, sym.end_line);
         UnmatchedSymbol {
             qualified_name: sym.qualified_name.to_string(),
@@ -315,7 +311,6 @@ pub fn resolve_renames(
     let mut changes: Vec<(String, SymbolChange)> = Vec::new();
     let mut matched_old: HashSet<usize> = HashSet::new();
     let mut matched_new: HashSet<usize> = HashSet::new();
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     // Phase 2: hash match — body_hash first, structural_hash fallback
     let mut old_by_body: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -364,7 +359,6 @@ pub fn resolve_renames(
             {
                 matched_old.insert(old_idx);
                 matched_new.insert(new_idx);
-                pairs.push((old_idx, new_idx));
                 continue;
             }
 
@@ -384,13 +378,11 @@ pub fn resolve_renames(
                 // Same name, same file — content matched by hash so no real change
                 matched_old.insert(old_idx);
                 matched_new.insert(new_idx);
-                pairs.push((old_idx, new_idx));
                 continue;
             };
 
             matched_old.insert(old_idx);
             matched_new.insert(new_idx);
-            pairs.push((old_idx, new_idx));
 
             changes.push((
                 new_sym.file.to_string(),
@@ -486,7 +478,6 @@ pub fn resolve_renames(
 
             matched_old.insert(old_idx);
             matched_new.insert(new_idx);
-            pairs.push((old_idx, new_idx));
 
             let old_sym = &unmatched_old[old_idx];
             let new_sym = &unmatched_new[new_idx];
@@ -522,7 +513,6 @@ pub fn resolve_renames(
         changes,
         matched_old,
         matched_new,
-        pairs,
     }
 }
 

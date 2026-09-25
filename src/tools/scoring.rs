@@ -2,10 +2,6 @@ pub fn normalize(raw: f64, ceiling: f64) -> f64 {
     (raw / ceiling).min(1.0)
 }
 
-pub fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
-}
-
 pub fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }

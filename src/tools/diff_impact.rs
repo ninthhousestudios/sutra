@@ -7,9 +7,12 @@ use serde_json::json;
 use crate::db::Db;
 use crate::error::Result;
 use crate::git;
-use crate::health::erosion::COGNITIVE_THRESHOLD;
 use crate::tools::change_signals::{self, ChurnMap};
 use crate::tools::symbol_diff;
+
+/// Cognitive complexity at or above which a changed function raises the risk
+/// verdict. 15 is Sonar's default.
+pub const COGNITIVE_THRESHOLD: i64 = 15;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffImpactArgs {

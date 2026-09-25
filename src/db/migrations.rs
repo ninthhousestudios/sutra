@@ -513,6 +513,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0085_drop_symbols_max_nesting.sql"),
         true,
     ),
+    // Drop the snapshots erosion columns (sutra/475). ephemeral_only: reindex
+    // recreates snapshots and 0079 re-adds them, so the drop must replay after.
+    (
+        "0086_drop_snapshot_erosion",
+        include_str!("../../migrations/0086_drop_snapshot_erosion.sql"),
+        true,
+    ),
 ];
 
 impl Db {

@@ -107,14 +107,6 @@ pub fn handle(
         &shape_config,
     );
 
-    let erosion_delta = crate::tools::erosion_delta::compute(
-        workspace_root,
-        &scope.entries,
-        base_revision,
-        head_revision.as_deref(),
-        &registry,
-    );
-
     let mut result = compute(
         db,
         workspace_root,
@@ -154,10 +146,6 @@ pub fn handle(
             .collect();
         if !shape_out.is_empty() {
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
-        }
-
-        if let Some(block) = crate::tools::erosion_delta::delta_json(&erosion_delta) {
-            obj.insert("erosion_delta".into(), block);
         }
     }
     Ok(result)

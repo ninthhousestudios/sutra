@@ -11,7 +11,6 @@ pub mod freshness;
 pub mod git;
 pub mod graph;
 pub mod guard;
-pub mod health;
 pub mod history;
 pub mod import_edges;
 pub mod js_imports;

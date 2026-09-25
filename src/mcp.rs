@@ -984,11 +984,6 @@ impl SutraServer {
         description = "Structural review compositor. Diffs current branch (or staged/unstaged), \
         identifies changed files and symbols, computes transitive impact, calculates a \
         0.0–1.0 risk score with breakdown, and ranks recommended reads. \
-        erosion_delta compares base and head erosion (cognitive >= 15, mass = cognitive x \
-        sqrt(lines); outermost functions, test code excluded) over the changed files: per-file \
-        eroded mass added/removed, totals, and functions that crossed the threshold, were \
-        added/deleted eroded, or changed eroded mass (renames/moves paired). A side that \
-        cannot be read or parsed makes that file unavailable and status partial, never zero. \
         diff: \"branch\" (default, against main merge-base), \"staged\", \"unstaged\", \
         or a commit spec — \"abc123..def456\" for a range, \"abc123\" for a single commit."
     )]

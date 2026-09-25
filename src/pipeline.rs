@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::components;
 use crate::config::Config;
-use crate::db::{Db, FileRow, ResolvedRefRow, SnapshotErosion, SnapshotParams};
+use crate::db::{Db, FileRow, ResolvedRefRow, SnapshotParams};
 use crate::error::Result;
 use crate::graph;
 use crate::parser;
@@ -1237,9 +1237,6 @@ struct ParseAggregates {
     dead_symbol_count: i64,
     hotspot_count: i64,
     pattern_family_count: i64,
-    /// Always present: a copy-forward from a legacy or other-version checkpoint
-    /// recomputes rather than carrying `None` over.
-    erosion: SnapshotErosion,
 }
 
 fn record_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
@@ -1256,13 +1253,6 @@ fn record_unchanged_snapshot(db: &Db, meta: CheckpointMeta) -> Result<()> {
             dead_symbol_count: previous.dead_symbol_count,
             hotspot_count: previous.hotspot_count,
             pattern_family_count: previous.pattern_family_count,
-            // Copy only values computed under the current formula; a legacy
-            // (NULL) or older-version checkpoint is recomputed — the source is
-            // unchanged, so the fresh value is what that checkpoint should hold.
-            erosion: match previous.erosion {
-                Some(e) if e.version == crate::health::erosion::EROSION_VERSION => e,
-                _ => compute_erosion(db)?,
-            },
         },
         None => compute_parse_aggregates(db)?,
     };
@@ -1282,7 +1272,6 @@ fn write_checkpoint(db: &Db, meta: CheckpointMeta, aggregates: ParseAggregates) 
         pattern_family_count: aggregates.pattern_family_count,
         head_commit: meta.head_commit,
         timestamp: meta.timestamp,
-        erosion: Some(aggregates.erosion),
     })?;
     Ok(())
 }
@@ -1356,17 +1345,6 @@ fn compute_parse_aggregates(db: &Db) -> Result<ParseAggregates> {
         dead_symbol_count,
         hotspot_count,
         pattern_family_count: db.pattern_family_count()?,
-        erosion: compute_erosion(db)?,
-    })
-}
-
-fn compute_erosion(db: &Db) -> Result<SnapshotErosion> {
-    use crate::health::erosion;
-    let workspace = erosion::workspace_aggregate(&erosion::load_samples_by_file(db)?);
-    Ok(SnapshotErosion {
-        eroded_mass: workspace.eroded_mass,
-        total_mass: workspace.total_mass,
-        version: erosion::EROSION_VERSION,
     })
 }
 
