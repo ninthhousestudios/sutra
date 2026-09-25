@@ -1,12 +1,9 @@
 # Health system architecture map
 
-> **Being deleted (sutra/464).** Scoring, trend, health runs, snapshot health
-> detail, `sutra_file_health`, `sutra_trend`, review `health_delta` and the
-> on-demand biomarkers went in sutra/473; the persistent biomarkers, the
-> `health_findings`/`health_coverage`/`health_waivers` tables and
-> `.sutra/owners.toml` in sutra/474. Erosion goes in sutra/475, after which this
-> map is archived. See [health-disposition.md](health-disposition.md) for what
-> survives and why. Don't extend these surfaces.
+> **Archived (sutra/475).** The health layer is fully deleted (sutra/464,
+> 473–475). History, complexity and similarity moved to
+> [similarity-map.md](../similarity-map.md); what survived and why is in
+> [health-disposition.md](../health-disposition.md).
 
 Quick-reference for what remains of the health layer (erosion), plus the git
 history ingestion and similarity modules it grew up alongside.

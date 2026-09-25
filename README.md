@@ -118,7 +118,7 @@ Constraints can be **ratcheted** by adding `ratchet = true` — this registers a
 
 ### 5. Health metrics (Layer 4)
 
-Health scores, trend and the biomarkers were removed (sutra/464; see `docs/health-disposition.md`). Their surviving signals live elsewhere: co-change partners with no static edge surface as `sutra_review`'s `behavioral_coupling`, import cycles are a `rules.toml` constraint, and unreferenced symbols come from `sutra_dead`. The complexity erosion metric in `sutra_review` is scheduled for removal next.
+Health scores, trend, the biomarkers and the erosion metric were removed (sutra/464; see `docs/health-disposition.md`). Their surviving signals live elsewhere: co-change partners with no static edge surface as `sutra_review`'s `behavioral_coupling`, import cycles are a `rules.toml` constraint, and unreferenced symbols come from `sutra_dead`. A changed function at cognitive complexity ≥ 15 still raises `sutra_diff_impact`'s risk verdict.
 
 ### 6. Vocabulary mapping (Layer 5)
 
@@ -230,7 +230,7 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
 | `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
-| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, HRR shape changes, erosion delta, and ranks recommended reads |
+| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, HRR shape changes, and ranks recommended reads |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
 | `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
