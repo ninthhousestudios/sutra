@@ -1,0 +1,236 @@
+id	primary	secondary	prod	note
+adityas/38	DOMAIN	PAR	prod	new table missing GRANT for runtime role
+adityas/ai/54	DOMAIN		-	FK existence oracle / unvalidated refs
+adityas/ai/58	PREMISE	SWALLOW	-	assumed non-live turn == completed; bare done reads as success
+adityas/ai/65	UNWIRED		prod	client half deferred as follow-up, never done
+adityas/ai/69	UNWIRED	SWALLOW	-	metadata backstop written never read; access_days defaults 30
+adityas/ai/70	DOMAIN	TESTVAC	-	reserve before gate; real gate faked in every test
+adityas/ai/77	DOMAIN		-	flaky clock
+adityas/ai/82	UNWIRED		-	tool documented + metered, never declared
+adityas/ai/84	DUP		-	two overlay construction paths diverged
+adityas/ai/91	DOMAIN		-	async generator race
+adityas/ai/92	DOMAIN	SWALLOW	-	robustness gaps
+adityas/ai/101	DUP	PAR	-	two consent-write paths built separately diverged; test not extended to new gated route
+adityas/ai/104	SWALLOW		-	unwrap_or(MAX) "safe" narrowing hid sign bug -> crypto-shred risk
+adityas/ai/107	PAR		prod	deploy paths don't sync templates
+adityas/ai/109	PAR	DUP,TESTVAC	-	invariant enforced at engine only, route gate unreconciled; hand-rolled JSON drifted from typed shape
+adityas/ai/110	UNWIRED	DUP	prod	Telemetry built ahead of call site, zero callers; hand-rolled narrower log instead
+adityas/ai/113	DOMAIN		-	positional anchor under concurrency
+adityas/ai/114	DOMAIN		-	recall list too narrow
+adityas/ai/115	PAR		-	metric content-free, adjacent log line not
+adityas/ai/117	DOMAIN		-	O(N^2) compaction design
+adityas/ai/119	DUP		-	two split criteria (positional vs watermark) disagree
+adityas/ai/124	DOMAIN		-	concurrent writer non-monotonic
+adityas/ai/125	PREMISE		-	documented fail-open not honored downstream
+adityas/ai/126	DOMAIN		-	partial reply only in transient state
+adityas/ai/129	DOMAIN		-	stale cached value latch
+adityas/ai/130	PAR		-	new backoff state; cleanup covers only old state
+adityas/ai/135	PAR		-	gate as two layers not covering every entrance
+adityas/ai/140	DOMAIN	TESTVAC	-	tests only cancelled after completed stream
+adityas/ai/141	SWALLOW		-	cancel swallows all HTTP failures as success
+adityas/ai/142	DOMAIN		-	UI state window
+adityas/ai/143	DOMAIN		-	a11y cadence
+adityas/ai/146	DOMAIN		-	latch conflation
+adityas/ai/149	PREMISE		-	assumed Stripe event ordering / no metadata
+adityas/ai/154	SWALLOW	TESTVAC	-	regex error -> false; unknown keys ignored; harness masks errors
+adityas/ai/155	PAR	DUP	-	test recipe hardcoded local, eval recipe did not
+adityas/ai/156	TESTVAC		-	compaction probe vacuous
+adityas/ai/165	DOMAIN		-	prompt content
+adityas/ai/171	PAR	TESTVAC	-	documented pattern not applied to new sibling table; test never inserted row
+adityas/ai/173	DOMAIN		-	no synthesis round reserved
+adityas/ai/174	PREMISE	PAR	-	assumed model won't call unoffered tools; estimate from wrong list
+adityas/ai/181	DUP	PREMISE	-	client re-derived access gate instead of mirroring backend
+adityas/ai/183	DOMAIN		-	state conflation
+adityas/ai/187	DUP		-	copy written independently of registry text
+adityas/ai/190	PAR	DEBRIS	prod	removal half-applied: stale call site broke every checkout
+adityas/ai/191	DOMAIN	SWALLOW	-	ordering race; failed GET coerced to false
+adityas/ai/192	DOMAIN		-	non-atomic settlement write
+adityas/ai/195	DOMAIN		-	identity-unscoped cached value
+adityas/ai/196	DOMAIN		-	superseded async build writes side channel
+adityas/ai/197	DUP	DOMAIN	-	buy-vs-renew fork duplicated in panel+pill and drifted
+adityas/ai/198	DOMAIN		-	identity-less cache
+adityas/ai/201	PAR	PREMISE	-	redaction covered warn path, not error path
+adityas/ai/206	DOMAIN		-	derived window fails open
+adityas/ai/211	DUP		-	two pricing consumers, no shared path
+adityas/backend/16	TESTVAC	PREMISE	prod	test JWTs RS256, prod ES256
+adityas/backend/25	DOMAIN		-	validation order
+adityas/backend/57	DUP	SWALLOW	-	deploy recipes duplicated sync logic, drifted
+adityas/backend/62	SWALLOW		-	schema guard soft-failed in exactly the case it guards
+adityas/backend/66	SWALLOW	DUP	-	permissive None fallback on security boundary; two reads
+adityas/explore/22	DOMAIN		-	platform async image
+adityas/explore/26	DOMAIN		-	browser timer throttling
+adityas/explore/31	DOMAIN		-	test infra pending timer
+adityas/explore/33	TESTVAC	PREMISE	-	guards written against imagined failure
+adityas/explore/46	REFAC		-	moved reaction carried over untracked refresh
+adityas/explore/47	UNWIRED	SWALLOW	-	assigned trigger never built; missing usage defaults to zero
+adityas/explore/54	DUP		-	copy-paste pipeline lacked the token guard
+adityas/explore/58	DOMAIN		-	framework teardown rule
+adityas/reports/12	DOMAIN		-	typst re-encodes webp
+aion/59	DOMAIN		-	layout constraints
+arjuna/arrow/12	DEBRIS		-	hand-maintained api-reference stale after migration
+arjuna/arrow/24	UNWIRED	DEBRIS,TESTVAC	-	canonicalConfig dead with lying doc
+arjuna/quiver/9	DOMAIN		-	native global state across isolates
+arjuna/quiver/14	DEBRIS	DOMAIN	-	stale native_assets.yaml after migration; toolchain
+ayus/14	PREMISE		-	LLM-training-data content in graph
+chitta/9	DOMAIN		-	protocol
+chitta/46	DOMAIN		-	typeless schema
+innerorbits/17	DEBRIS	PAR	prod	migration left Podfile line; web path lacks reset; tests not updated
+innerorbits/22	DOMAIN	TESTVAC	-	inverted bisection, never run end to end
+innerorbits/23	SWALLOW	PREMISE,DEBRIS	-	defensive skip for impossible failure + comment asserting the opposite
+innerorbits/25	DOMAIN		-	kill removes completion path
+kala-reverse/27	DOMAIN		-	RE analysis
+kala-reverse/30	DOMAIN		-	RE analysis
+kala-reverse/31	DOMAIN		-	RE analysis
+kosha/36	DOMAIN		-	non-atomic DDL
+libaditya/12	PAR	DUP	-	sibling files apply override, cusps/nakshatras call raw API
+libaditya/23	PREMISE		-	design decision predated measurement
+libaditya/25	DOMAIN		-	parity trade
+libaditya/26	DOMAIN		-	probe alias
+libaditya/27	DOMAIN		-	golden drift
+manas/22	DOMAIN		-	library default
+manas-cli/9	DUP		-	compile-time snapshot copy drifts from source
+panda/2	DOMAIN		-	startup race
+pyswisseph-rs/31	DUP		-	constructor re-implemented defaults instead of delegating
+smriti/31	DOMAIN		-	sqlite FTS wedging
+sutra/21	DOMAIN	SWALLOW	-	serial scheduler; snapshot only on success
+sutra/38	DOMAIN		-	parser child order
+sutra/143	SWALLOW		-	case mismatch -> silent zero-file walk
+sutra/147	SWALLOW	DUP	-	Pattern::new().ok() at 7 sites: typo makes constraint inert
+sutra/196	DOMAIN		-	algorithmic scaling
+sutra/216	DEBRIS		-	docs/schema drift
+sutra/217	TESTVAC		-	hardcoded count literals
+sutra/219	DOMAIN		-	vacuous .all() over empty + race
+sutra/220	PAR		-	partial fix of 219 (one staleness mode)
+sutra/238	DUP		-	NoCycles prefix-match while sibling fields glob
+sutra/239	DOMAIN		-	either/or dispatch design
+sutra/250	PAR	DEBRIS	-	fallback path lacks introduced-only; hardcoded spec idioms
+sutra/261	DUP		-	hardcoded language list duplicates registry
+sutra/271	PREMISE		-	patterns written against imagined ref shape
+sutra/272	PAR		-	JS adapter unlike all sibling adapters
+sutra/277	DOMAIN		-	cap at wrong layer
+sutra/280	DUP		-	hardcoded language list duplicates registry
+sutra/282	REFAC		-	reused owning constructor in hook (cost contract)
+sutra/283	DUP	PAR	-	identical hardcoded pair 12 lines from the 280 fix, missed
+sutra/284	PAR	DOMAIN	-	280 fix still fails open for aliases
+sutra/285	REFAC		-	new caller broke helper's implicit assumption
+sutra/287	SWALLOW	PAR	-	fallback to on-disk edges for Dart; guard deadlock
+sutra/288	PAR	DOMAIN	-	test-dir exclusion Rust-only
+sutra/290	DOMAIN		-	no test-scope concept
+sutra/291	DOMAIN		-	unsatisfiable constraint design
+sutra/293	PREMISE	DOMAIN	-	text-matching attrs; assumed migration enough
+sutra/294	PAR	PREMISE	-	filtering applied only where a test existed; commit claim aspirational
+sutra/296	PAR	DUP	-	escape hatch local to one of four consumers
+sutra/297	UNWIRED	DOMAIN	-	invalidate() had zero callers
+sutra/298	DOMAIN		-	snapshot coherence
+sutra/300	REFAC		-	lock overloaded; parsing flag meaning widened
+sutra/301	SWALLOW		-	parse errors discarded (let (_,_errors))
+sutra/302	DOMAIN		-	follow-up parser allowlist + LIKE wildcard
+sutra/307	DOMAIN		-	pair granularity
+sutra/320	PAR		-	projection written only on full-parse path
+sutra/324	PREMISE	DOMAIN	-	shipped fix on unmeasured hypothesis; O(n^2)
+sutra/329	DOMAIN		-	homonym resolution
+sutra/352	PREMISE		-	advisory over-promised retrievability
+sutra/355	DOMAIN		-	id-only existence check
+sutra/361	DOMAIN		-	serde drops comments
+sutra/364	DOMAIN		-	cache key missing dimension
+sutra/365	PREMISE	DUP	-	lines*4 token estimate unmeasured, 3 sites
+sutra/378	PAR	DOMAIN	-	incremental path loses refs full path rebuilds
+sutra/379	SWALLOW		-	walk warns-and-continues, partial read as deletions
+sutra/380	DOMAIN		-	spawn_blocking not cancelled
+sutra/381	SWALLOW		-	per-file failures return Ok; stamp advanced
+sutra/382	PAR	PREMISE	-	heal only in CWD path; doc cited nonexistent timer
+sutra/385	DOMAIN		-	scope: discarded head revision
+sutra/386	PAR		-	incremental path cascades membership; only full parse re-derives
+sutra/394	DUP	REFAC	-	two tokenizers ("single source" claim false); removed expand_patterns dropped capability
+sutra/396	PAR	SWALLOW	-	one write path doesn't bump generation; graph errors swallowed
+sutra/401	DUP		-	boost eligibility used different tokenizer than scoring
+sutra/402	SWALLOW		-	missing analysis contributes zero debt
+sutra/408	SWALLOW	PAR	-	per-file absence reads as clean; git failure == not-a-repo
+sutra/412	PAR		-	incremental path empties evidence, review trusts old completeness
+sutra/413	DOMAIN		-	delete+reinsert data lifecycle
+sutra/414	DOMAIN		-	validity coupled to content hash
+sutra/416	PAR	PREMISE	-	incremental path deletes findings without snapshot
+sutra/417	SWALLOW		-	unwrap_or(false) probe failure == not a repo
+sutra/418	DUP	PAR	-	two INSERT copies, only one got new columns
+sutra/419	SWALLOW		-	equality conflated same failure with same observation
+sutra/423	SWALLOW		-	unmeasured files marked Complete{0}
+sutra/424	SWALLOW		-	let _ = discarded refresh outcome; None=>latest fallback
+sutra/425	DOMAIN		-	external state not in guard
+sutra/426	PAR		-	demand refresh never re-clusters; stale membership shown current
+sutra/427	DOMAIN		-	shallow clone
+sutra/428	DOMAIN		-	fork/flock flake
+sutra/431	PAR	DOMAIN	-	heal gate assumed every extractor emits {}; no ORDER BY
+sutra/432	SWALLOW	DOMAIN	-	.ok() on config load -> default window; unbounded table
+sutra/433	DOMAIN		-	resolver receiver calls
+sutra/434	DOMAIN		-	1-hop dirty set vs depth-3 metric
+sutra/435	DOMAIN		-	parser mod vs impl
+sutra/436	DOMAIN		-	basis omits weights
+sutra/437	DUP		-	two waiver-identity builders drifted
+sutra/438	DUP	PAR,SWALLOW	-	third hand-rolled serializer never migrated; unwrap_or({})
+sutra/439	PAR	DOMAIN	-	content edit drops membership; gate doesn't check
+sutra/440	DOMAIN	PAR	-	fan-in check ignores scope; stale rollup
+sutra/441	SWALLOW	PAR	-	if let Ok drops corrupt rows; history fixed separately
+sutra/443	PAR		-	no-change path skips re-cluster
+sutra/445	PAR		-	cfg(test) read only in mod arm
+sutra/446	PREMISE		-	assumed flag bits global across parsers
+sutra/447	PAR		-	version bump not propagated across dependency
+sutra/448	TESTVAC		-	zero-iteration loop; test bypasses gate
+sutra/455	PAR		-	component path fixed weight shift, workspace path left out
+sutra/456	DUP	PAR	-	two copies of max_fan_in rule drifted twice
+sutra/458	DOMAIN		-	wrong base revision
+sutra/459	DUP	PAR	-	only evaluate_raw got file fallback; parallel direct SELECT
+sutra/460	DUP		-	guard and review each grew an edge extractor
+sutra/v1/30	DOMAIN		-	stale shared engine
+swe-dashboard/21	DOMAIN		-	rounding
+swe-dashboard/25	DOMAIN		-	library frame support
+swe-dashboard/34	PREMISE		-	diagnosis inverted (API slot convention)
+swe-dashboard/38	DOMAIN		-	i16 sign extension
+swe-dashboard/40	DOMAIN		-	labels ignore mode
+swe-dashboard/49	DOMAIN		-	month modelling
+swe-dashboard/61	TESTVAC	DOMAIN	-	guard narrower than contract; test can't distinguish
+swe-dashboard/62	TESTVAC	SWALLOW	-	parity test on silent Moshier fallback
+swe-dashboard/63	TESTVAC		-	comparator always passes; baselines dead
+swe-dashboard/64	DOMAIN		-	early return skips default
+swe-dashboard/72	DUP	PAR	-	strip-list omits bit; sibling feed same latent bug
+swe-dashboard/78	PREMISE		-	bit constants extrapolated, not read
+swe-dashboard/79	PREMISE		-	dense index vs bitfield
+swe-dashboard/80	DUP	TESTVAC	-	three hand-maintained field lists
+swe-dashboard/81	DUP	PAR	-	bits re-listed not derived from mask; hand mirror
+swe-dashboard/88	REFAC	SWALLOW	-	retired class removed incidental guard; catch-all prints NaN
+swe-dashboard/90	SWALLOW	REFAC	-	bare catch above probes; consolidation made swallow uniform
+swe-dashboard/91	DUP		-	two hand-maintained label lists
+swe-dashboard/94	SWALLOW		-	empty catches; sentinel in value domain
+swe-dashboard/97	LAYER	SWALLOW	-	leaf list reaches back into provider -> SCC; defaults on corruption
+swe-dashboard/110	DOMAIN		prod	manifest permission
+swe-dashboard/113	PREMISE	TESTVAC	-	tz semantics assumed; path untested
+swe-dashboard/116	SWALLOW		-	happy path only; errors swallowed via valueOrNull
+swe-dashboard/118	PREMISE	TESTVAC	-	comment encoded wrong assumption; proxy test
+swisseph-rs/17	DOMAIN		-	unchecked enum payload
+swisseph-rs/34	DOMAIN		-	FP order port
+swisseph-rs/36	DOMAIN		-	delta T source
+swisseph-rs/41	DOMAIN		-	stateless port
+swisseph-rs/53	DOMAIN		-	speed path
+swisseph-rs/58	DOMAIN		-	frame port
+swisseph-rs/81	DOMAIN		-	hardcoded tid_acc port
+swisseph-rs/98	TESTVAC		-	golden matrix vacuous pass
+swisseph-rs/99	PREMISE	DEBRIS	-	documented tolerance justification false
+swisseph-rs/151	SWALLOW		-	unwrap_or(Placidus) swallowed parse error (152 same)
+swisseph-rs/154	DOMAIN		-	needs flags
+swisseph-rs/156	DOMAIN		-	data discontinuity
+swisseph-rs/159	DUP		-	both provider sites hardcode empty files
+swisseph-rs/160	DOMAIN		-	continuous divergence
+swisseph-rs/165	REFAC		-	UT path inherited TT path's echo (over-reuse)
+swisseph-rs-dart/49	PREMISE		-	API slot convention (contradicts swisseph.dart/4)
+swisseph-rs-dart/50	TESTVAC	DOMAIN	-	harness silently unrunnable
+swisseph-rs-dart/52	DOMAIN		-	wasm_ffi dedup (54 same)
+swisseph-rs-dart/57	TESTVAC		-	silent skip -> suite green without running path
+swisseph.dart/4	PREMISE		-	API slot convention (contradicts rs-dart/49)
+vidya/11	DOMAIN		-	byte vs phoneme matching
+vidya/39	UNWIRED	SWALLOW	-	synonyms never persisted; literals silently dropped
+vidya/astrology-research/18	DOMAIN		-	RDF 1.2 semantics
+vidya/astrology-research/25	DOMAIN		-	stale prod load
+yojana/42	SWALLOW		-	unwrap_or_default: parse failure == no data
+yojana/45	DOMAIN		-	test env race; silenced unsafe warning
+yojana/46	DOMAIN		-	shutdown order
+yojana/47	PAR	SWALLOW	-	fix applied at 1 of 5 read sites
+yojana/56	DOMAIN		-	path separator
