@@ -1,5 +1,10 @@
 # Health system architecture map
 
+> **Being deleted (sutra/464, 2026-09-25).** Most of what this map describes is
+> scheduled for removal in sutra/473–475. See
+> [health-disposition.md](health-disposition.md) for what survives and why.
+> Don't extend these surfaces.
+
 Quick-reference for agents planning or implementing health/similarity tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each health-system landing.
