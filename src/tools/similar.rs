@@ -181,7 +181,7 @@ fn handle_duplicates(
 
     let mut families = Vec::new();
 
-    let vectors = db.load_all_strip_vectors()?;
+    let vectors = db.load_all_vectors_by_mode("strip")?;
     if !vectors.is_empty() {
         families.extend(crate::similarity::duplicates::find_pattern_families(
             &vectors, threshold, min_group,

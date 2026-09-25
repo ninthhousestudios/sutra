@@ -270,7 +270,7 @@ fn encode_file(
 pub fn compute_pattern_families(db: &Db) -> Result<usize> {
     let mut families = Vec::new();
 
-    let vectors = db.load_all_strip_vectors()?;
+    let vectors = db.load_all_vectors_by_mode("strip")?;
     if !vectors.is_empty() {
         families.extend(duplicates::find_pattern_families(&vectors, 0.85, 3));
     }

@@ -52,29 +52,32 @@ pub struct HrrChangedFile {
     pub content_hash: String,
 }
 
+/// Function/method rows the HRR encoder reads; callers may append `AND ...`.
+const HRR_SYMBOL_SELECT: &str = "SELECT s.id, s.file_id, f.path, f.language,
+        s.start_line, s.start_col, s.end_line, s.end_col
+ FROM symbols s
+ JOIN files f ON s.file_id = f.id
+ WHERE s.kind IN ('function', 'method')";
+
+fn hrr_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HrrSymbolRow> {
+    Ok(HrrSymbolRow {
+        symbol_id: row.get(0)?,
+        file_id: row.get(1)?,
+        file_path: row.get(2)?,
+        language: row.get(3)?,
+        start_line: row.get(4)?,
+        start_col: row.get(5)?,
+        end_line: row.get(6)?,
+        end_col: row.get(7)?,
+    })
+}
+
 impl Db {
     pub fn function_symbols_for_hrr(&self) -> Result<Vec<HrrSymbolRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.file_id, f.path, f.language,
-                    s.start_line, s.start_col, s.end_line, s.end_col
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.kind IN ('function', 'method')",
-        )?;
+        let mut stmt = conn.prepare(HRR_SYMBOL_SELECT)?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(HrrSymbolRow {
-                    symbol_id: row.get(0)?,
-                    file_id: row.get(1)?,
-                    file_path: row.get(2)?,
-                    language: row.get(3)?,
-                    start_line: row.get(4)?,
-                    start_col: row.get(5)?,
-                    end_line: row.get(6)?,
-                    end_col: row.get(7)?,
-                })
-            })?
+            .query_map([], hrr_symbol_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -128,31 +131,14 @@ impl Db {
         }
         let conn = self.conn.lock();
         let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT s.id, s.file_id, f.path, f.language,
-                    s.start_line, s.start_col, s.end_line, s.end_col
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.kind IN ('function', 'method') AND f.id IN ({placeholders})"
-        );
+        let sql = format!("{HRR_SYMBOL_SELECT} AND f.id IN ({placeholders})");
         let mut stmt = conn.prepare(&sql)?;
         let params: Vec<&dyn rusqlite::ToSql> = file_ids
             .iter()
             .map(|id| id as &dyn rusqlite::ToSql)
             .collect();
         let rows = stmt
-            .query_map(params.as_slice(), |row| {
-                Ok(HrrSymbolRow {
-                    symbol_id: row.get(0)?,
-                    file_id: row.get(1)?,
-                    file_path: row.get(2)?,
-                    language: row.get(3)?,
-                    start_line: row.get(4)?,
-                    start_col: row.get(5)?,
-                    end_line: row.get(6)?,
-                    end_col: row.get(7)?,
-                })
-            })?
+            .query_map(params.as_slice(), hrr_symbol_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -206,42 +192,10 @@ impl Db {
         Ok(())
     }
 
-    pub fn replace_hrr_vectors(&self, vectors: &[(i64, &str, &[u8])]) -> Result<()> {
-        let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
-        {
-            conn.execute("DELETE FROM hrr_vectors", [])?;
-            let mut stmt = conn
-                .prepare("INSERT INTO hrr_vectors (symbol_id, mode, vector) VALUES (?1, ?2, ?3)")?;
-            for &(sym_id, mode, blob) in vectors {
-                stmt.execute(params![sym_id, mode, blob])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     pub fn hrr_vector_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM hrr_vectors", [], |r| r.get(0))?;
         Ok(count)
-    }
-
-    pub fn load_all_strip_vectors(&self) -> Result<Vec<(i64, HrrVec)>> {
-        let conn = self.conn.lock();
-        // ORDER BY: downstream family detection must see a stable input order
-        // for run-to-run determinism (sutra/327).
-        let mut stmt = conn.prepare(
-            "SELECT symbol_id, vector FROM hrr_vectors WHERE mode = 'strip' ORDER BY symbol_id",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                let id: i64 = row.get(0)?;
-                let blob: Vec<u8> = row.get(1)?;
-                Ok((id, HrrVec::from_bytes(&blob)))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
     }
 
     pub fn load_hrr_vector(&self, symbol_id: i64, mode: &str) -> Result<Option<HrrVec>> {
@@ -259,8 +213,9 @@ impl Db {
 
     pub fn load_all_vectors_by_mode(&self, mode: &str) -> Result<Vec<(i64, HrrVec)>> {
         let conn = self.conn.lock();
-        // ORDER BY: stable input order so ranked search breaks exact-cosine
-        // ties the same way run-to-run (sutra/328, matches load_all_strip_vectors).
+        // ORDER BY: stable input order so family detection is deterministic
+        // (sutra/327) and ranked search breaks exact-cosine ties the same way
+        // run-to-run (sutra/328).
         let mut stmt = conn.prepare(
             "SELECT symbol_id, vector FROM hrr_vectors WHERE mode = ?1 ORDER BY symbol_id",
         )?;

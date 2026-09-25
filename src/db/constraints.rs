@@ -179,13 +179,17 @@ pub(crate) fn constraint_waivers_from_conn(
 /// guard then derives waivers straight from the file rather than trusting a cache
 /// it cannot confirm.
 pub(crate) fn accepted_sync_marker_from_conn(conn: &rusqlite::Connection) -> Option<String> {
+    query_accepted_sync_marker(conn).ok().flatten()
+}
+
+/// The one read of the accepted-cache marker. Callers choose the failure
+/// semantics: the guard swallows errors into "stale", [`Db`] propagates them.
+fn query_accepted_sync_marker(conn: &rusqlite::Connection) -> rusqlite::Result<Option<String>> {
     conn.query_row(
         "SELECT file_hash FROM accepted_sync WHERE id = 1",
         [],
-        |row| row.get::<_, Option<String>>(0),
+        |row| row.get(0),
     )
-    .ok()
-    .flatten()
 }
 
 impl Db {
@@ -483,12 +487,7 @@ impl Db {
     /// lookup failure, which propagates.
     pub fn get_accepted_sync_marker(&self) -> Result<Option<String>> {
         let conn = self.conn.lock();
-        let hash: Option<String> = conn.query_row(
-            "SELECT file_hash FROM accepted_sync WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(hash)
+        Ok(query_accepted_sync_marker(&conn)?)
     }
 
     // -----------------------------------------------------------------------

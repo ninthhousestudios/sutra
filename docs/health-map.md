@@ -185,8 +185,8 @@ src/tools/
 
 src/db/
   similarity.rs     — HrrSymbolRow, SymbolSummary, PatternFamily types.
-                      Db methods: function_symbols_for_hrr, replace_hrr_vectors,
-                      load_all_strip_vectors, load_hrr_vector (single),
+                      Db methods: function_symbols_for_hrr(_files),
+                      insert_hrr_vectors_and_hashes, load_hrr_vector (single),
                       load_all_vectors_by_mode, replace_pattern_families,
                       query_pattern_families, symbols_by_ids,
                       function_symbol_count, delete_embed_vectors.
