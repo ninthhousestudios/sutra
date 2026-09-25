@@ -712,15 +712,13 @@ fn extract_function(
     let language_attrs = extract_fn_language_attrs(node, src);
     let flags = extract_flags(file_path, &name, node, src);
 
-    let (cyclomatic, cognitive, max_nesting) = if let Some(body) = node.child_by_field_name("body")
-    {
+    let (cyclomatic, cognitive) = if let Some(body) = node.child_by_field_name("body") {
         (
             Some(complexity::cyclomatic(body, src, "python")),
             Some(complexity::cognitive(body, src, "python")),
-            Some(complexity::max_nesting_depth(body, src, "python")),
         )
     } else {
-        (Some(1), Some(0), Some(0))
+        (Some(1), Some(0))
     };
 
     Some(ExtractedSymbol {
@@ -740,7 +738,6 @@ fn extract_function(
         docstring,
         cyclomatic,
         cognitive,
-        max_nesting,
         flags,
         language_attrs,
     })
@@ -789,7 +786,6 @@ fn extract_class(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -850,7 +846,6 @@ fn collect_assignment_symbols(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     });

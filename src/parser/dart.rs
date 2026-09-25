@@ -655,20 +655,18 @@ fn build_symbol(
     let visibility = dart_visibility(&short_name);
     let docstring = extract_docstring(node, src);
 
-    let (cyclomatic, cognitive, max_nesting) =
-        if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
-            if let Some(body) = node.child_by_field_name("body") {
-                (
-                    Some(complexity::cyclomatic(body, src, "dart")),
-                    Some(complexity::cognitive(body, src, "dart")),
-                    Some(complexity::max_nesting_depth(body, src, "dart")),
-                )
-            } else {
-                (Some(1), Some(0), Some(0))
-            }
+    let (cyclomatic, cognitive) = if matches!(kind, SymbolKind::Function | SymbolKind::Method) {
+        if let Some(body) = node.child_by_field_name("body") {
+            (
+                Some(complexity::cyclomatic(body, src, "dart")),
+                Some(complexity::cognitive(body, src, "dart")),
+            )
         } else {
-            (None, None, None)
-        };
+            (Some(1), Some(0))
+        }
+    } else {
+        (None, None)
+    };
 
     Some(ExtractedSymbol {
         qualified_name,
@@ -687,7 +685,6 @@ fn build_symbol(
         docstring,
         cyclomatic,
         cognitive,
-        max_nesting,
         flags: 0,
         language_attrs: Some("{}".into()),
     })

@@ -310,7 +310,6 @@ pub struct SymbolRow {
     pub pagerank: Option<f64>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
-    pub max_nesting: Option<i64>,
     pub flags: i64,
     pub language_attrs: Option<String>,
 }
@@ -332,7 +331,6 @@ pub struct InsertSymbolParams<'a> {
     pub docstring: Option<&'a str>,
     pub cyclomatic: Option<i64>,
     pub cognitive: Option<i64>,
-    pub max_nesting: Option<i64>,
     pub flags: i64,
     pub language_attrs: Option<&'a str>,
 }
@@ -1061,9 +1059,9 @@ impl Db {
                     file_id, qualified_name, short_name, kind,
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
-                    parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
+                    parent_symbol_id, docstring, cyclomatic, cognitive, flags,
                     language_attrs
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                  ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
                     short_name = excluded.short_name,
                     kind = excluded.kind,
@@ -1078,7 +1076,6 @@ impl Db {
                     docstring = excluded.docstring,
                     cyclomatic = excluded.cyclomatic,
                     cognitive = excluded.cognitive,
-                    max_nesting = excluded.max_nesting,
                     flags = excluded.flags,
                     language_attrs = excluded.language_attrs
                  RETURNING id",
@@ -1100,7 +1097,6 @@ impl Db {
                     p.docstring,
                     p.cyclomatic,
                     p.cognitive,
-                    p.max_nesting,
                     p.flags,
                     p.language_attrs,
                 ],
@@ -1183,9 +1179,9 @@ impl Db {
                 file_id, qualified_name, short_name, kind,
                 signature, signature_hash, structural_hash, visibility,
                 start_line, start_col, end_line, end_col,
-                parent_symbol_id, docstring, cyclomatic, cognitive, max_nesting, flags,
+                parent_symbol_id, docstring, cyclomatic, cognitive, flags,
                 language_attrs
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(file_id, qualified_name, start_line) DO UPDATE SET
                 short_name = excluded.short_name,
                 kind = excluded.kind,
@@ -1200,7 +1196,6 @@ impl Db {
                 docstring = excluded.docstring,
                 cyclomatic = excluded.cyclomatic,
                 cognitive = excluded.cognitive,
-                max_nesting = excluded.max_nesting,
                 flags = excluded.flags,
                 language_attrs = excluded.language_attrs
              RETURNING id",
@@ -1221,7 +1216,6 @@ impl Db {
                 p.docstring,
                 p.cyclomatic,
                 p.cognitive,
-                p.max_nesting,
                 p.flags,
                 p.language_attrs,
             ],
@@ -1253,7 +1247,7 @@ impl Db {
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+                    cyclomatic, cognitive, flags, language_attrs
              FROM symbols WHERE id = ?1",
             params![id],
             map_symbol_row,
@@ -1280,7 +1274,7 @@ impl Db {
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+                    cyclomatic, cognitive, flags, language_attrs
              FROM symbols WHERE id IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -1298,7 +1292,7 @@ impl Db {
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+                    cyclomatic, cognitive, flags, language_attrs
              FROM symbols WHERE qualified_name = ?1",
             params![name],
             map_symbol_row,
@@ -1339,7 +1333,7 @@ impl Db {
                             signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, max_nesting, flags, language_attrs
+                            cyclomatic, cognitive, flags, language_attrs
                      FROM symbols
                      WHERE short_name = ?1 AND kind = ?2
                      LIMIT ?3",
@@ -1349,7 +1343,7 @@ impl Db {
                             signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, max_nesting, flags, language_attrs
+                            cyclomatic, cognitive, flags, language_attrs
                      FROM symbols
                      WHERE short_name = ?1
                      LIMIT ?2",
@@ -1402,7 +1396,7 @@ impl Db {
                             signature, signature_hash, structural_hash, visibility,
                             start_line, start_col, end_line, end_col,
                             parent_symbol_id, docstring, pagerank,
-                            cyclomatic, cognitive, max_nesting, flags, language_attrs
+                            cyclomatic, cognitive, flags, language_attrs
                      FROM symbols WHERE id = ?1",
                     params![sid],
                     map_symbol_row,
@@ -1486,7 +1480,7 @@ impl Db {
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+                    cyclomatic, cognitive, flags, language_attrs
              FROM symbols
              WHERE file_id = ?1
              ORDER BY start_line",
@@ -1503,7 +1497,7 @@ impl Db {
                     signature, signature_hash, structural_hash, visibility,
                     start_line, start_col, end_line, end_col,
                     parent_symbol_id, docstring, pagerank,
-                    cyclomatic, cognitive, max_nesting, flags, language_attrs
+                    cyclomatic, cognitive, flags, language_attrs
              FROM symbols ORDER BY file_id, start_line",
         )?;
         let rows: rusqlite::Result<Vec<SymbolRow>> = stmt.query_map([], map_symbol_row)?.collect();
@@ -2500,9 +2494,8 @@ fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRow> {
         pagerank: row.get(15)?,
         cyclomatic: row.get(16)?,
         cognitive: row.get(17)?,
-        max_nesting: row.get(18)?,
-        flags: row.get(19)?,
-        language_attrs: row.get(20)?,
+        flags: row.get(18)?,
+        language_attrs: row.get(19)?,
     })
 }
 

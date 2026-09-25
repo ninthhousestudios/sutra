@@ -354,7 +354,6 @@ mod tests {
             pagerank: None,
             cyclomatic: None,
             cognitive,
-            max_nesting: None,
             flags,
             language_attrs: None,
         }

@@ -256,48 +256,6 @@ fn classify_cognitive(kind: &str, lang: &str) -> (bool, bool) {
     }
 }
 
-pub fn max_nesting_depth(node: Node, src: &[u8], lang: &str) -> u32 {
-    let mut max_depth = 0;
-    walk_nesting(node, src, lang, 0, &mut max_depth);
-    max_depth
-}
-
-fn walk_nesting(node: Node, _src: &[u8], lang: &str, current_depth: u32, max_depth: &mut u32) {
-    let kind = node.kind();
-    let (_, increments_nesting) = classify_cognitive(kind, lang);
-    let new_depth = if increments_nesting {
-        current_depth + 1
-    } else {
-        current_depth
-    };
-    if new_depth > *max_depth {
-        *max_depth = new_depth;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let else_if_inner = match lang {
-            "rust" => Some("if_expression"),
-            "javascript" | "typescript" => Some("if_statement"),
-            _ => None,
-        };
-        if child.kind() == "else_clause"
-            && let Some(if_kind) = else_if_inner
-        {
-            let mut inner_cursor = child.walk();
-            for grandchild in child.children(&mut inner_cursor) {
-                if grandchild.kind() == if_kind {
-                    walk_nesting(grandchild, _src, lang, current_depth, max_depth);
-                } else {
-                    walk_nesting(grandchild, _src, lang, new_depth, max_depth);
-                }
-            }
-            continue;
-        }
-        walk_nesting(child, _src, lang, new_depth, max_depth);
-    }
-}
-
 fn is_logical_operator(node: Node, src: &[u8]) -> bool {
     if node.kind() == "boolean_operator" {
         return true;
@@ -391,47 +349,6 @@ mod tests {
         assert_eq!(cyclomatic(body, src.as_bytes(), "rust"), 3);
         // cognitive: +1(for, nesting=0) + +1+1(if, nesting=1) = 3
         assert_eq!(cognitive(body, src.as_bytes(), "rust"), 3);
-    }
-
-    #[test]
-    fn nesting_depth_flat() {
-        let src = "fn foo() { 42 }";
-        let tree = parse_rust_fn(src);
-        let body = body_node(&tree);
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 0);
-    }
-
-    #[test]
-    fn nesting_depth_single_if() {
-        let src = "fn foo(x: bool) { if x { 1 } }";
-        let tree = parse_rust_fn(src);
-        let body = body_node(&tree);
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 1);
-    }
-
-    #[test]
-    fn nesting_depth_nested() {
-        let src = "fn foo(a: bool, b: bool) { if a { for i in 0..10 { if b { } } } }";
-        let tree = parse_rust_fn(src);
-        let body = body_node(&tree);
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 3);
-    }
-
-    #[test]
-    fn nesting_depth_else_if_chain_is_flat() {
-        let src = "fn foo(a: i32) { if a > 0 { } else if a < 0 { } else { } }";
-        let tree = parse_rust_fn(src);
-        let body = body_node(&tree);
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 1);
-    }
-
-    #[test]
-    fn nesting_depth_closure() {
-        let src = "fn foo() { let f = |x| { if x { } }; }";
-        let tree = parse_rust_fn(src);
-        let body = body_node(&tree);
-        // closure increments nesting, if inside closure = depth 2
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "rust"), 2);
     }
 
     fn parse_python_fn(src: &str) -> tree_sitter::Tree {
@@ -549,22 +466,5 @@ def foo():
         let body = js_body_node(&tree);
         // if@0: +1, else: +1, else-if@0(flat): +1, else: +1 = 4
         assert_eq!(cognitive(body, src.as_bytes(), "javascript"), 4);
-    }
-
-    #[test]
-    fn js_nesting_depth_else_if_flat() {
-        let src = "function foo(a) { if (a > 0) { } else if (a < 0) { } else { } }";
-        let tree = parse_js(src);
-        let body = js_body_node(&tree);
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "javascript"), 1);
-    }
-
-    #[test]
-    fn js_nesting_depth_nested_arrow() {
-        let src = "function foo() { const f = (x) => { if (x) { } }; }";
-        let tree = parse_js(src);
-        let body = js_body_node(&tree);
-        // arrow increments nesting, if inside = depth 2
-        assert_eq!(max_nesting_depth(body, src.as_bytes(), "javascript"), 2);
     }
 }

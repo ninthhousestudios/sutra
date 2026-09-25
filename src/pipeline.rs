@@ -457,7 +457,6 @@ fn resolve_file_refs(
             docstring: s.docstring.clone(),
             cyclomatic: s.cyclomatic.map(|v| v as u32),
             cognitive: s.cognitive.map(|v| v as u32),
-            max_nesting: s.max_nesting.map(|v| v as u32),
             flags: 0,
             language_attrs: None,
         })

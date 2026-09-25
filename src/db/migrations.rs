@@ -506,6 +506,13 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0084_drop_health_waivers.sql"),
         false,
     ),
+    // Drop symbols.max_nesting (sutra/474). ephemeral_only: reindex recreates
+    // symbols and 0027 re-adds the column, so the drop must replay after it.
+    (
+        "0085_drop_symbols_max_nesting",
+        include_str!("../../migrations/0085_drop_symbols_max_nesting.sql"),
+        true,
+    ),
 ];
 
 impl Db {

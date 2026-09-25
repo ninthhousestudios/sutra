@@ -845,7 +845,6 @@ mod tests {
             pagerank: None,
             cyclomatic: None,
             cognitive: Some(3),
-            max_nesting: None,
             flags: 0,
             language_attrs: language_attrs.map(Into::into),
         }

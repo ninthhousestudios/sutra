@@ -201,15 +201,13 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
     let language_attrs = extract_fn_language_attrs(node, src, declarator);
     let flags = extract_flags(file_path, &name, node);
 
-    let (cyclomatic, cognitive, max_nesting) = if let Some(body) = node.child_by_field_name("body")
-    {
+    let (cyclomatic, cognitive) = if let Some(body) = node.child_by_field_name("body") {
         (
             Some(complexity::cyclomatic(body, src, "c")),
             Some(complexity::cognitive(body, src, "c")),
-            Some(complexity::max_nesting_depth(body, src, "c")),
         )
     } else {
-        (Some(1), Some(0), Some(0))
+        (Some(1), Some(0))
     };
 
     Some(ExtractedSymbol {
@@ -229,7 +227,6 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
         docstring,
         cyclomatic,
         cognitive,
-        max_nesting,
         flags,
         language_attrs,
     })
@@ -267,7 +264,6 @@ fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Ex
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -316,7 +312,6 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
             docstring,
             cyclomatic: None,
             cognitive: None,
-            max_nesting: None,
             flags: 0,
             language_attrs: None,
         });
@@ -368,7 +363,6 @@ fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Extr
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -409,7 +403,6 @@ fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<Extract
                 docstring: docstring.clone(),
                 cyclomatic: None,
                 cognitive: None,
-                max_nesting: None,
                 flags: 0,
                 language_attrs: None,
             });
@@ -445,7 +438,6 @@ fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -484,7 +476,6 @@ fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<Extra
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -534,7 +525,6 @@ fn collect_var_declarators(
                 docstring: docstring.clone(),
                 cyclomatic: None,
                 cognitive: None,
-                max_nesting: None,
                 flags,
                 language_attrs: None,
             });

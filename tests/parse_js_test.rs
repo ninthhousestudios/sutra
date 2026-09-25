@@ -229,11 +229,6 @@ function process(items) {
         "cognitive should be non-zero, got {}",
         sym.cognitive.unwrap()
     );
-    assert!(
-        sym.max_nesting.unwrap() >= 3,
-        "max_nesting={}, expected >= 3",
-        sym.max_nesting.unwrap()
-    );
 }
 
 // ---------------------------------------------------------------------------

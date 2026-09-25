@@ -235,7 +235,6 @@ int f(int x) {
     // base 1 + 2*if + for + while + 2*case - switch + && = 7
     assert_eq!(sym.cyclomatic, Some(7), "cyclomatic");
     assert!(sym.cognitive.unwrap() > 0, "cognitive should be > 0");
-    assert!(sym.max_nesting.unwrap() > 0, "max_nesting should be > 0");
 }
 
 // -- Step 6: Language attrs --

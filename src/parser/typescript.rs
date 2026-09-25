@@ -173,7 +173,6 @@ fn extract_interface(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -248,7 +247,6 @@ fn extract_property_signature(
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: javascript::attrs_to_json(&attrs),
     })
@@ -303,7 +301,6 @@ fn extract_method_signature(
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: javascript::attrs_to_json(&attrs),
     })
@@ -348,7 +345,6 @@ fn extract_type_alias(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -420,7 +416,6 @@ fn extract_enum(
                 docstring: None,
                 cyclomatic: None,
                 cognitive: None,
-                max_nesting: None,
                 flags: 0,
                 language_attrs: None,
             });
@@ -444,7 +439,6 @@ fn extract_enum(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: javascript::attrs_to_json(&attrs),
     })
@@ -496,7 +490,6 @@ fn extract_namespace(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -555,7 +548,6 @@ fn extract_class(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: javascript::attrs_to_json(&attrs),
     })
@@ -697,7 +689,6 @@ fn extract_field(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: javascript::attrs_to_json(&attrs),
     })
@@ -945,7 +936,6 @@ fn extract_function_signature(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })

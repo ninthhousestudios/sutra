@@ -33,7 +33,6 @@ fn setup_test_db_with_root() -> (tempfile::TempDir, Db) {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -78,7 +77,6 @@ fn setup_test_db() -> (tempfile::TempDir, Db) {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -648,7 +646,6 @@ fn test_winnow_rank_by_complexity() {
         docstring: None,
         cyclomatic: Some(15),
         cognitive: Some(25),
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -689,7 +686,6 @@ fn test_refs_context_kind_filter() {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -767,7 +763,6 @@ fn setup_explore_db_inner(with_calls: bool) -> (tempfile::TempDir, Db) {
                 docstring: None,
                 cyclomatic: None,
                 cognitive: None,
-                max_nesting: None,
                 flags: 0,
                 language_attrs: None,
             })
@@ -892,7 +887,6 @@ fn insert_named_symbol(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -1180,7 +1174,6 @@ fn test_explore_doc_line_present_and_one_liner_omits_signature() {
         docstring: Some("Render the widget to the screen.\nHandles layout and paint."),
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -1202,7 +1195,6 @@ fn test_explore_doc_line_present_and_one_liner_omits_signature() {
         docstring: Some("Whether the widget renders."),
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -1273,7 +1265,6 @@ fn test_explore_multiline_without_signature_carries_null() {
         docstring: None,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     })
@@ -1399,7 +1390,6 @@ fn setup_explore_db_wired_vs_isolated() -> (tempfile::TempDir, Db) {
                 docstring: None,
                 cyclomatic: None,
                 cognitive: None,
-                max_nesting: None,
                 flags: 0,
                 language_attrs: None,
             })

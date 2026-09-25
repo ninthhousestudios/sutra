@@ -32,16 +32,11 @@ src/history.rs      — ingest(db, root, now): commit-file history against the
                       behavioral_coupling, component clustering).
 
 src/parser/
-  complexity.rs     — cyclomatic, cognitive, max_nesting_depth (all take
-                      tree-sitter Node + src + lang). classify_cognitive
-                      shared between cognitive scoring and nesting depth.
-                      walk_nesting handles else-if chains as flat (same as
-                      cognitive).
-  mod.rs            — ExtractedSymbol: cyclomatic, cognitive, max_nesting
-                      fields (all Option<u32>)
-  rust.rs           — calls max_nesting_depth alongside cyclomatic/cognitive
-                      for Function/Method kinds (body node required)
-  dart.rs           — same pattern for Dart
+  complexity.rs     — cyclomatic and cognitive (tree-sitter Node + src +
+                      lang); classify_cognitive decides flow breaks and
+                      nesting increments. Erosion reads cognitive.
+  mod.rs            — ExtractedSymbol: cyclomatic, cognitive (Option<u32>),
+                      computed for Function/Method kinds in every parser
 
 src/similarity/
   hrr.rs            — HrrVec (1024-dim), Complex, FFT-based circular
@@ -168,22 +163,20 @@ input.
 
 ## Database
 
-`symbols.max_nesting` (migration 0027) is still written by the parsers but has
-no reader since the nested_complexity biomarker went (sutra/474).
-
 Dropped in 0081 (sutra/473): health_runs, health_current,
 health_snapshot_files, health_snapshot_components,
 health_snapshot_component_members, snapshots.health_score and
 snapshots.health_run_id. Dropped in 0082: index_meta.index_epoch and
 index_meta.git_availability. Dropped in 0083 (sutra/474): health_findings,
 health_coverage; in 0084: health_waivers (Durable — user-authored waivers
-were dropped with the feature). `snapshots` stays as the parse record
+were dropped with the feature); in 0085: symbols.max_nesting (only the
+nested_complexity biomarker read it; the parsers no longer compute it). `snapshots` stays as the parse record
 (`last_parse_time` / `last_parse_info`, erosion aggregates).
 
 ## Test locations
 
 - Unit tests: `src/history.rs` (cutoff, window config), `src/parser/complexity.rs`
-  (nesting depth), `src/graph.rs` (SCC)
+  (cyclomatic, cognitive), `src/graph.rs` (SCC)
 - Real-path: `tests/history-ingest-test.rs` (loaded / shallow / git log failure /
   non-repo / unindexed-only history, unchanged-parse ingestion and re-clustering)
 - Integration: `tests/erosion-test.rs` (selection, snapshot persistence, review

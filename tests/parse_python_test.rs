@@ -239,12 +239,6 @@ def process(items):
         "cognitive should be non-zero, got {}",
         sym.cognitive.unwrap()
     );
-    // for > if > try = nesting depth >= 3
-    assert!(
-        sym.max_nesting.unwrap() >= 3,
-        "max_nesting={}",
-        sym.max_nesting.unwrap()
-    );
 }
 
 // ---------------------------------------------------------------------------

@@ -36,7 +36,6 @@ fn sym<'a>(
         docstring: None,
         cyclomatic: None,
         cognitive,
-        max_nesting: None,
         flags: 0,
         language_attrs: None,
     }
@@ -600,7 +599,6 @@ forbidden_deps = [
             docstring: Some("A documented function"),
             cyclomatic: None,
             cognitive: Some(2),
-            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })
@@ -938,7 +936,6 @@ fn convention_pipeline_persists_conventions_to_db() {
             docstring: doc,
             cyclomatic: None,
             cognitive: Some(2),
-            max_nesting: None,
             flags: 0,
             language_attrs: None,
         })

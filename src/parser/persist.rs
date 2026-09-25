@@ -58,7 +58,6 @@ fn flatten_symbols_dfs<'a>(
             docstring: sym.docstring.as_deref(),
             cyclomatic: sym.cyclomatic.map(|v| v as i64),
             cognitive: sym.cognitive.map(|v| v as i64),
-            max_nesting: sym.max_nesting.map(|v| v as i64),
             flags: sym.flags as i64,
             language_attrs: sym.language_attrs.as_deref(),
         });

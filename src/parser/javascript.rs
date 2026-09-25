@@ -117,7 +117,7 @@ pub(super) fn extract_function(
     if body_has_node_kind(body, "await_expression") {
         attrs.insert("await".into(), true.into());
     }
-    let (cyc, cog, nesting) = complexity_triple(body, src);
+    let (cyc, cog) = complexity_pair(body, src);
 
     let sig = build_fn_signature(node, src, &name, is_async, is_generator);
     let sig_hash = sig
@@ -148,7 +148,6 @@ pub(super) fn extract_function(
         docstring,
         cyclomatic: cyc,
         cognitive: cog,
-        max_nesting: nesting,
         flags,
         language_attrs: attrs_to_json(&attrs),
     })
@@ -200,7 +199,6 @@ pub(super) fn extract_class(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags,
         language_attrs: None,
     })
@@ -284,7 +282,7 @@ pub(super) fn extract_method(
     if body_has_node_kind(body, "await_expression") {
         attrs.insert("await".into(), true.into());
     }
-    let (cyc, cog, nesting) = complexity_triple(body, src);
+    let (cyc, cog) = complexity_pair(body, src);
 
     let sig = build_method_signature(
         node,
@@ -326,7 +324,6 @@ pub(super) fn extract_method(
         docstring,
         cyclomatic: cyc,
         cognitive: cog,
-        max_nesting: nesting,
         flags,
         language_attrs: attrs_to_json(&attrs),
     })
@@ -381,7 +378,6 @@ pub(super) fn extract_field(
         docstring,
         cyclomatic: None,
         cognitive: None,
-        max_nesting: None,
         flags: 0,
         language_attrs: attrs_to_json(&attrs),
     })
@@ -426,7 +422,7 @@ pub(super) fn extract_variable_declarators(
         let is_fn_expr =
             value.is_some_and(|v| v.kind() == "function" || v.kind() == "generator_function");
 
-        let (kind, cyc, cog, nesting, sig, sig_hash, lang_attrs) = if is_arrow {
+        let (kind, cyc, cog, sig, sig_hash, lang_attrs) = if is_arrow {
             let arrow = value.unwrap();
             let is_async = has_keyword(arrow, src, "async");
             let mut a = serde_json::Map::new();
@@ -438,12 +434,12 @@ pub(super) fn extract_variable_declarators(
             if body_has_node_kind(body, "await_expression") {
                 a.insert("await".into(), true.into());
             }
-            let (c, co, n) = complexity_triple(body, src);
+            let (c, co) = complexity_pair(body, src);
             let s = build_arrow_signature(arrow, src, &name, is_async);
             let sh = s
                 .as_ref()
                 .map(|sig| blake3::hash(sig.as_bytes()).to_hex().to_string());
-            (SymbolKind::Function, c, co, n, s, sh, attrs_to_json(&a))
+            (SymbolKind::Function, c, co, s, sh, attrs_to_json(&a))
         } else if is_fn_expr {
             let fn_node = value.unwrap();
             let is_async = has_keyword(fn_node, src, "async");
@@ -459,12 +455,12 @@ pub(super) fn extract_variable_declarators(
             if body_has_node_kind(body, "await_expression") {
                 a.insert("await".into(), true.into());
             }
-            let (c, co, n) = complexity_triple(body, src);
+            let (c, co) = complexity_pair(body, src);
             let s = build_fn_signature(fn_node, src, &name, is_async, is_gen);
             let sh = s
                 .as_ref()
                 .map(|sig| blake3::hash(sig.as_bytes()).to_hex().to_string());
-            (SymbolKind::Function, c, co, n, s, sh, attrs_to_json(&a))
+            (SymbolKind::Function, c, co, s, sh, attrs_to_json(&a))
         } else {
             let mut a = serde_json::Map::new();
             a.insert(
@@ -476,7 +472,7 @@ pub(super) fn extract_variable_declarators(
             } else {
                 SymbolKind::Static
             };
-            (kind, None, None, None, None, None, attrs_to_json(&a))
+            (kind, None, None, None, None, attrs_to_json(&a))
         };
 
         let struct_hash = structural_hash::compute(
@@ -504,7 +500,6 @@ pub(super) fn extract_variable_declarators(
             docstring,
             cyclomatic: cyc,
             cognitive: cog,
-            max_nesting: nesting,
             flags,
             language_attrs: lang_attrs,
         };
@@ -664,17 +659,13 @@ pub(super) fn body_has_node_kind(body: Option<Node>, kind: &str) -> bool {
     false
 }
 
-pub(super) fn complexity_triple(
-    body: Option<Node>,
-    src: &[u8],
-) -> (Option<u32>, Option<u32>, Option<u32>) {
+pub(super) fn complexity_pair(body: Option<Node>, src: &[u8]) -> (Option<u32>, Option<u32>) {
     match body {
         Some(b) => (
             Some(complexity::cyclomatic(b, src, "javascript")),
             Some(complexity::cognitive(b, src, "javascript")),
-            Some(complexity::max_nesting_depth(b, src, "javascript")),
         ),
-        None => (Some(1), Some(0), Some(0)),
+        None => (Some(1), Some(0)),
     }
 }
 
