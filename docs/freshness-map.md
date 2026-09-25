@@ -5,10 +5,10 @@ index is stale, and how it refreshes before answering a query. Read this before
 touching `src/freshness.rs`, the refresh path in `src/mcp.rs`, or the incremental
 parse in `src/pipeline.rs`.
 
-Health freshness has a separate approved contract in
-[health evidence contract](health-evidence-contract.md) (sutra/412, approved
-2026-09-21; implementation in 413–418). Session-start reparse remains enabled.
-The design approval does not change the current implementation described below.
+The health evidence contract (sutra/412) and its validity/run layer were
+removed in sutra/473; the contract is archived at
+[archived/health-evidence-contract.md](archived/health-evidence-contract.md).
+Session-start reparse remains enabled.
 
 ## Staleness is content, not time
 
@@ -190,11 +190,10 @@ incremental reparse, orphaning `commit_files` and derived evidence.
 | `hrr_file_hashes` | derived | invalidated (delete by `file_id`) |
 | `hrr_vectors`, `pattern_family_members` | derived | invalidated (cascade off the `symbols` delete) |
 | `commit_files` | raw history | **preserved** — never touched by a content edit |
-| `health_snapshot_files` | immutable snapshot | **preserved** — no FK; path-keyed historical evidence |
 
 Preserving the id must never let stale derived rows claim they reflect the new
 content: extraction-derived analysis is invalidated independently of the raw
-history it is preserved alongside (health-evidence contract, sutra/412). Actual
+history it is preserved alongside (sutra/412). Actual
 file removal stays in `delete_file_cascade`, which still deletes the row.
 
 Shared helper: `resolve_references` (the resolution + import-edge tier) is called

@@ -245,12 +245,10 @@ Lessons are the negative complement to conventions: conventions say "do this," l
 | `sutra_provenance` | Git history of a symbol's file with commit classification (feature, bugfix, refactor, etc.) |
 | `sutra_trace` | Trace call chains — forward (entry points → symbol) or backward (symbol → leaves). Detects cycles |
 | `sutra_winnow` | Multi-axis composite query — AND-intersect filters (kind, complexity, churn, calls_to, file_glob, name_regex) and rank by importance/complexity/churn |
-| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, health findings, HRR shape changes, health delta, and ranks recommended reads |
-| `sutra_file_health` | Per-file and per-component health report with scores, active findings, category deductions, and component instability |
+| `sutra_review` | Structural review compositor — diffs current branch, computes risk score, identifies constraint violations, HRR shape changes, erosion delta, and ranks recommended reads |
 | `sutra_hotspots` | Riskiest files ranked by git churn × blast radius × complexity |
 | `sutra_dead` | Dead symbols (zero inbound references) and unreachable files. Auto-excludes tests, FFI entrypoints, benchmarks |
 | `sutra_similar` | Find structurally similar functions (with symbol) or near-duplicate pattern families (without symbol) |
-| `sutra_trend` | Health trend — compare two snapshots with per-file/per-component deltas, or query a file's score history over time |
 | `sutra_commit_manifest` | Manifest of symbols and files changed in a commit or range |
 
 ## Common workflows
@@ -312,11 +310,9 @@ Agent: sutra_remember(cite="01J...", source_tasks=["sutra/180"])
 ### Find code quality issues
 
 ```
-sutra_file_health()                → worst files with findings and scores
 sutra_hotspots()                   → riskiest files (churn × blast radius × complexity)
 sutra_dead()                       → unreferenced symbols and files
 sutra_similar()                    → near-duplicate function families
-sutra_trend()                      → health changes between snapshots
 ```
 
 ## Guard (real-time constraint enforcement)
