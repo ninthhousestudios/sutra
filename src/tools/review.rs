@@ -73,7 +73,7 @@ pub fn handle(
 ) -> Result<serde_json::Value> {
     let mode = diff_mode.unwrap_or("branch");
 
-    let scope = resolve_diff_entries(workspace_root, mode)?;
+    let scope = worktree_overlay(workspace_root, resolve_diff_entries(workspace_root, mode)?)?;
     let changed_paths = scope.paths();
     let (base_revision, head_revision) = (&scope.base_revision, &scope.head_revision);
 
@@ -83,9 +83,8 @@ pub fn handle(
     };
 
     let registry = crate::parser::adapter::default_registry();
-    // The compositor assesses current state — read the working tree, not the
-    // diff snapshot, regardless of `diff_mode` (sutra/385).
-    let content = ContentSource::Worktree;
+    // One snapshot for paths, hunks, content and the event patch (sutra/495).
+    let content = scope.content();
     let (findings, findings_error) = match diff_added_lines(workspace_root, base_revision, content)
         .and_then(|added_lines| {
             build_findings(
@@ -132,7 +131,7 @@ pub fn handle(
         FiringSurface {
             surface: "review",
             diff_spec: mode,
-            content: ContentSource::Worktree,
+            content,
         },
         &sibling_patterns,
         &findings.constraint_violations,
@@ -203,6 +202,38 @@ impl DiffScope {
     pub fn paths(&self) -> Vec<String> {
         self.entries.iter().map(|e| e.path.to_string()).collect()
     }
+
+    /// Where the head side's file content is read: the worktree for `None`,
+    /// the index for `Some("")`, a commit otherwise.
+    pub fn content(&self) -> ContentSource<'_> {
+        match self.head_revision.as_deref() {
+            Some(rev) => ContentSource::Revision(rev),
+            None => ContentSource::Worktree,
+        }
+    }
+}
+
+/// The review compositor assesses current state (sutra/385): when the
+/// requested diff ends at HEAD, the worktree is that diff plus uncommitted
+/// edits, so review `base` to the worktree instead. Every consumer (changed
+/// paths, added-line hunks, pattern content, the sibling check and the event
+/// patch it hashes) then reads one snapshot, and a dirty edit is neither
+/// attributed to a diff that does not hold it nor missed (sutra/495). A diff
+/// that ends elsewhere (the staged index, a historical commit) has no worktree
+/// counterpart and is reviewed as requested, as `sutra check` gates it.
+pub fn worktree_overlay(workspace_root: &Path, scope: DiffScope) -> Result<DiffScope> {
+    let at_head = match scope.head_revision.as_deref() {
+        None | Some("") => false,
+        Some(rev) => git::head_commit_hash(workspace_root).as_deref() == Some(rev),
+    };
+    if !at_head {
+        return Ok(scope);
+    }
+    Ok(DiffScope {
+        entries: git::git_diff_entries_to_worktree(workspace_root, &scope.base_revision)?,
+        base_revision: scope.base_revision,
+        head_revision: None,
+    })
 }
 
 /// Resolve a diff-mode string to `(changed_paths, base_revision, head_revision)`.
@@ -311,12 +342,11 @@ pub fn diff_added_lines(
     base_revision: &str,
     content: ContentSource,
 ) -> Result<AddedLines> {
-    let hunks = match content {
-        ContentSource::Revision(rev) => {
-            git::git_diff_hunks(workspace_root, base_revision, Some(rev))?
-        }
-        ContentSource::Worktree => git::git_diff_hunks_to_worktree(workspace_root, base_revision)?,
+    let head = match content {
+        ContentSource::Revision(rev) => Some(rev),
+        ContentSource::Worktree => None,
     };
+    let hunks = git::git_diff_hunks(workspace_root, base_revision, head)?;
     Ok(hunks
         .into_iter()
         .filter_map(|fh| {
@@ -332,9 +362,9 @@ pub fn build_findings(
     changed_paths: &[String],
     base_revision: &str,
     // Where forbidden-pattern content is read for the scoped files, and which of
-    // its lines the diff added ([`diff_added_lines`]). `sutra check` passes the
-    // requested snapshot (the staged index or a commit); the review compositor
-    // passes `Worktree` to preserve its assess-current-state contract.
+    // its lines the diff added ([`diff_added_lines`]), both from the scope's
+    // [`DiffScope::content`]: `sutra check` gates the requested snapshot; the
+    // review compositor first overlays the worktree ([`worktree_overlay`]).
     head: DiffHead,
     shared_dd: Option<&DdEngine>,
     registry: &LanguageRegistry,

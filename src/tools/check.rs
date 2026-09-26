@@ -13,7 +13,7 @@ use std::path::Path;
 use serde_json::json;
 
 use crate::constraints::ConstraintFinding;
-use crate::constraints::check::{ContentSource, DiffHead};
+use crate::constraints::check::DiffHead;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
@@ -65,16 +65,12 @@ pub fn handle(
 ) -> Result<CheckReport> {
     let scope = review::resolve_diff_entries(workspace_root, diff_mode)?;
     let changed_paths = scope.paths();
-    let (base_revision, head) = (&scope.base_revision, &scope.head_revision);
-    // Gate the *requested snapshot*, not the working tree: `resolve_diff_scope`
-    // returns `Some("")` for the staged index, `Some(rev)` for a commit spec, and
-    // `None` for unstaged (the worktree). Reading disk instead would let a fix
-    // applied only in the worktree mask still-staged bytes, and vice versa
-    // (sutra/385).
-    let content = match head.as_deref() {
-        Some(rev) => ContentSource::Revision(rev),
-        None => ContentSource::Worktree,
-    };
+    let base_revision = &scope.base_revision;
+    // Gate the *requested snapshot*, not the working tree: the staged index, a
+    // commit, or the worktree only for unstaged. Reading disk instead would let
+    // a fix applied only in the worktree mask still-staged bytes, and vice
+    // versa (sutra/385).
+    let content = scope.content();
     let added_lines = review::diff_added_lines(workspace_root, base_revision, content)?;
     let findings = review::build_findings(
         db,

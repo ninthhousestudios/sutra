@@ -41,6 +41,19 @@ pub fn git_diff_unstaged_entries(workspace_root: &Path) -> Result<Vec<DiffFileEn
     git_diff_entries(workspace_root, &[])
 }
 
+/// Files changed from `base` to the worktree. `base` `""` is the index, the
+/// same comparison as [`git_diff_unstaged_entries`].
+pub fn git_diff_entries_to_worktree(
+    workspace_root: &Path,
+    base: &str,
+) -> Result<Vec<DiffFileEntry>> {
+    if base.is_empty() {
+        git_diff_entries(workspace_root, &[])
+    } else {
+        git_diff_entries(workspace_root, &["--end-of-options", base])
+    }
+}
+
 fn git_diff_entries(workspace_root: &Path, extra: &[&str]) -> Result<Vec<DiffFileEntry>> {
     let output = Command::new("git")
         .arg("-C")
@@ -219,25 +232,25 @@ pub struct FileHunks {
 }
 
 /// Line-level hunks of the diff between two sides, with the same side
-/// conventions as [`file_content_on_side`]: `head` `None` compares the index to
-/// the worktree, `Some("")` compares `base` (HEAD) to the index, and
-/// `Some(rev)` compares `base` to `rev`. Renames are detected (`-M`).
+/// conventions as [`file_content_on_side`]: `head` `None` compares `base` to
+/// the worktree (`base` `""` being the index), `Some("")` compares `base`
+/// (HEAD) to the index, and `Some(rev)` compares `base` to `rev`. Renames are
+/// detected (`-M`).
 pub fn git_diff_hunks(
     workspace_root: &Path,
     base: &str,
     head: Option<&str>,
 ) -> Result<Vec<FileHunks>> {
     match head {
-        None => run_diff_hunks(workspace_root, &[]),
+        None => git_diff_hunks_to_worktree(workspace_root, base),
         Some("") => run_diff_hunks(workspace_root, &["--cached"]),
         Some(rev) => run_diff_hunks(workspace_root, &["--end-of-options", base, rev]),
     }
 }
 
-/// Line-level hunks from `base` to the worktree, for a surface that reads the
-/// worktree whatever the diff mode (the review compositor). `base` `""` is the
-/// index, so an unstaged review compares what `git diff` compares.
-pub fn git_diff_hunks_to_worktree(workspace_root: &Path, base: &str) -> Result<Vec<FileHunks>> {
+/// Line-level hunks from `base` to the worktree. `base` `""` is the index, so
+/// an unstaged diff compares what `git diff` compares.
+fn git_diff_hunks_to_worktree(workspace_root: &Path, base: &str) -> Result<Vec<FileHunks>> {
     if base.is_empty() {
         run_diff_hunks(workspace_root, &[])
     } else {

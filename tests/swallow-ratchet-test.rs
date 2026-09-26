@@ -86,30 +86,36 @@ fn fixture() -> Fixture {
         languages: vec!["rust".to_string()],
         frozen: false,
     };
+    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
+    let fx = Fixture {
+        _root: root,
+        db_dir,
+        ws,
+        db,
+    };
+    reparse(&fx);
+    fx
+}
+
+/// Index the fixture's worktree as it stands.
+fn reparse(fx: &Fixture) {
     let config = Config {
-        db_dir: db_dir.path().to_path_buf(),
-        workspaces_path: db_dir.path().join("workspaces.toml"),
+        db_dir: fx.db_dir.path().to_path_buf(),
+        workspaces_path: fx.db_dir.path().join("workspaces.toml"),
         listen_addr: "127.0.0.1:0".to_string(),
         parse_parallelism: 1,
         log_level: "warn".to_string(),
         constraints_idle_timeout_sec: 1800,
         parse_timeout_ms: 5000,
     };
-    let db = Db::open_unchecked(&ws.id, db_dir.path()).unwrap();
     pipeline::parse_workspace(
-        &ws,
-        &db,
+        &fx.ws,
+        &fx.db,
         &config,
         &AtomicBool::new(false),
         &default_registry(),
     )
     .unwrap();
-    Fixture {
-        _root: root,
-        db_dir,
-        ws,
-        db,
-    }
 }
 
 fn run_check(fx: &Fixture, diff: &str) -> CheckReport {
@@ -267,4 +273,95 @@ fn guard_blocks_are_recorded_once_per_proposed_edit() {
             Some("s.parse().ok()".to_string())
         )]
     );
+}
+
+/// `(file, line)` of each active constraint violation in a review.
+fn violation_sites(out: &serde_json::Value) -> Vec<(String, u64)> {
+    out["constraint_violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            (
+                v["from"].as_str().unwrap().to_string(),
+                v["line"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// A review whose diff ends at HEAD reads one snapshot, base to the worktree:
+/// a dirty edit in a file the commit changed and one in a file it did not are
+/// both reviewed, and the event hashes that same change, so reviewing it again
+/// once committed is the same event (sutra/495).
+#[test]
+fn review_at_head_reads_base_to_worktree_for_findings_and_event() {
+    let fx = fixture();
+    let r = &fx.ws.root;
+    write(r, "src/other.rs", "pub fn other() {}\n");
+    git(r, &["add", "-A"]);
+    git(r, &["commit", "-q", "--no-verify", "-m", "other"]);
+    reparse(&fx);
+    let committed =
+        format!("{SEED}pub fn added(s: &str) -> Option<u8> {{\n    s.parse().ok()\n}}\n");
+    write(r, "src/lib.rs", &committed);
+    git(r, &["commit", "-q", "--no-verify", "-am", "added"]);
+    write(
+        r,
+        "src/lib.rs",
+        &format!("{committed}pub fn dirty(s: &str) -> Option<u8> {{\n    s.parse().ok()\n}}\n"),
+    );
+    write(
+        r,
+        "src/other.rs",
+        "pub fn other(s: &str) -> Option<u8> {\n    s.parse().ok()\n}\n",
+    );
+
+    let out = review::handle(&fx.db, r, Some("HEAD"), None, false).unwrap();
+    assert_eq!(
+        violation_sites(&out),
+        vec![
+            ("src/lib.rs".to_string(), 5),
+            ("src/lib.rs".to_string(), 8),
+            ("src/other.rs".to_string(), 2),
+        ]
+    );
+    assert!(out.get("constraint_firing_log_error").is_none(), "{out}");
+    let events = |fx: &Fixture| -> Vec<i64> {
+        let mut ids: Vec<i64> = fx
+            .db
+            .firings(Some(PATTERN_MECHANISM), None)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.event_id)
+            .collect();
+        ids.dedup();
+        ids
+    };
+    let first = events(&fx);
+    assert_eq!(first.len(), 1, "one reviewed change is one event");
+    assert_eq!(pattern_firings(&fx).len(), 3);
+
+    // Commit the dirty edits: the same base-to-content change, now at HEAD.
+    git(r, &["commit", "-q", "--no-verify", "-am", "dirty"]);
+    let again = review::handle(&fx.db, r, Some("HEAD~2..HEAD"), None, false).unwrap();
+    assert_eq!(violation_sites(&again), violation_sites(&out));
+    assert_eq!(events(&fx), first, "the committed change is the same event");
+    assert_eq!(pattern_firings(&fx).len(), 3, "and the same sites");
+}
+
+/// A staged review reads the index even when the worktree disagrees: the
+/// staged `.ok()` is reported though a dirty edit removed it (sutra/495).
+#[test]
+fn staged_review_reads_the_index_not_the_worktree() {
+    let fx = fixture();
+    let r = &fx.ws.root;
+    write(r, "src/lib.rs", EDITED);
+    git(r, &["add", "-A"]);
+    write(r, "src/lib.rs", SEED);
+
+    let out = review::handle(&fx.db, r, Some("staged"), None, false).unwrap();
+    assert_eq!(violation_sites(&out), vec![("src/lib.rs".to_string(), 5)]);
+    assert!(out.get("constraint_firing_log_error").is_none(), "{out}");
+    assert_eq!(pattern_firings(&fx).len(), 1);
 }

@@ -197,6 +197,8 @@ src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
                       Then pattern check (introduced-only, doesn't need file_id),
                       then dep-kind check. Blocking → deny,
                       advisory/informational → stderr, waived → silent.
+                      The pattern check evaluates blocking rules only:
+                      advisory pattern rules are review-only (sutra/495).
                       Pattern findings from dep-kind fallback path filtered out
                       (handled separately with introduced-only semantics).
                       --check-constraints mode: full build_findings with
@@ -653,9 +655,18 @@ The added lines must come from the same snapshot the scan reads, or a line
 number is checked against another file's hunks. `build_findings` takes a
 `DiffHead { content, added_lines }`; callers build `added_lines` with
 `review::diff_added_lines(root, base, content)`: `git diff -U0 base rev` for a
-revision (`--cached` for staged), `git diff -U0 base` against the worktree for
-the review compositor, which reads the worktree whatever the diff mode. A git
-failure is an error, never a fall-back to whole-file scanning.
+revision (`--cached` for staged), `git diff -U0 base` against the worktree. A
+git failure is an error, never a fall-back to whole-file scanning.
+
+One snapshot per surface (sutra/495). `sutra check` gates the requested
+snapshot. The review compositor assesses current state: when the requested
+diff ends at HEAD (`branch`, or a spec whose head is HEAD),
+`review::worktree_overlay` rewrites the scope to base → worktree, so changed
+paths, added-line hunks, pattern content, the sibling check, and the event
+patch all describe the same change. A dirty edit is then neither attributed to
+a diff that lacks it nor missed. A diff ending elsewhere (the staged index, a
+historical commit) is reviewed as requested. `DiffScope::content()` maps the
+scope's head side to a `ContentSource` for both surfaces.
 
 Surfaces:
 - `sutra_review` adds `justified`: one entry per justification the diff adds
@@ -676,8 +687,9 @@ blocking denies through `tools::firings::record_guard_blocks`: the hook's
 connection is read-only, so the deny path alone opens a write connection (no
 migrations), and the event's patch is the proposed edit hashed as one
 prefix/suffix hunk, so retrying the same edit is the same event and site.
-Tier-B (advisory) rules still run at the guard but only reach stderr; their
-place is review.
+Tier-B (advisory) rules do not run at the guard: `check_proposed_patterns`
+keeps only blocking pattern rules, since an advisory hit there could reach
+nothing but the hook's stderr, which the agent never sees (sutra/495).
 
 ## Test scope (sutra/290)
 
