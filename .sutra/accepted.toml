@@ -329,27 +329,6 @@ by = "clone-audit-sutra/251"
 
 [[waiver]]
 constraint = "no-clone-driven-dev"
-file = "src/health/findings.rs"
-symbol = "HealthFinding::to_row"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/health/ondemand.rs"
-symbol = "compute_health_delta"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/health/scoring.rs"
-symbol = "score_workspace"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
 file = "src/lessons.rs"
 symbol = "LessonsDb::check_staleness"
 rationale = "owned struct field construction from borrowed data"
@@ -637,13 +616,6 @@ by = "clone-audit-sutra/251"
 
 [[waiver]]
 constraint = "no-clone-driven-dev"
-file = "src/tools/file_health.rs"
-symbol = "handle_inner"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
 file = "src/tools/mod.rs"
 symbol = "ToolContext::wrap"
 rationale = "owned struct field construction from borrowed data"
@@ -653,20 +625,6 @@ by = "clone-audit-sutra/251"
 constraint = "no-clone-driven-dev"
 file = "src/tools/mod.rs"
 symbol = "get_or_open_db"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/tools/orient.rs"
-symbol = "handle"
-rationale = "owned struct field construction from borrowed data"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/tools/orient.rs"
-symbol = "resolve_scope"
 rationale = "owned struct field construction from borrowed data"
 by = "clone-audit-sutra/251"
 
@@ -710,13 +668,6 @@ constraint = "no-clone-driven-dev"
 file = "src/tools/trace.rs"
 symbol = "dfs_callers"
 rationale = "DFS path snapshot — recording stack state at branch point"
-by = "clone-audit-sutra/251"
-
-[[waiver]]
-constraint = "no-clone-driven-dev"
-file = "src/tools/trend.rs"
-symbol = "resolve_snapshots"
-rationale = "owned struct field construction from borrowed data"
 by = "clone-audit-sutra/251"
 
 [[waiver]]
