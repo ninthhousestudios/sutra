@@ -75,6 +75,113 @@ fn git_diff_entries(workspace_root: &Path, extra: &[&str]) -> Result<Vec<DiffFil
     Ok(entries)
 }
 
+/// One `-U0` hunk: the removed lines are `old_start..old_start + old_len` on
+/// the base side, the added lines `new_start..new_start + new_len` on the head
+/// side (1-based). A zero length means the hunk only adds or only removes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    pub old_start: usize,
+    pub old_len: usize,
+    pub new_start: usize,
+    pub new_len: usize,
+}
+
+impl Hunk {
+    pub fn removed_lines(&self) -> std::ops::Range<usize> {
+        self.old_start..self.old_start + self.old_len
+    }
+
+    pub fn added_lines(&self) -> std::ops::Range<usize> {
+        self.new_start..self.new_start + self.new_len
+    }
+}
+
+/// The hunks of one file. `old_path` is `None` for an added file, `new_path`
+/// `None` for a deleted one.
+#[derive(Debug, Clone)]
+pub struct FileHunks {
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    pub hunks: Vec<Hunk>,
+}
+
+/// Line-level hunks of the diff between two sides, with the same side
+/// conventions as [`file_content_on_side`]: `head` `None` compares the index to
+/// the worktree, `Some("")` compares `base` (HEAD) to the index, and
+/// `Some(rev)` compares `base` to `rev`. Renames are detected (`-M`).
+pub fn git_diff_hunks(
+    workspace_root: &Path,
+    base: &str,
+    head: Option<&str>,
+) -> Result<Vec<FileHunks>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(workspace_root)
+        .args(["-c", "core.quotePath=false", "diff", "-U0", "--no-color"])
+        .args(["--no-ext-diff", "-M"]);
+    match head {
+        None => {}
+        Some("") => {
+            cmd.arg("--cached");
+        }
+        Some(rev) => {
+            cmd.args([base, rev]);
+        }
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SutraError::Internal(format!("git diff: {stderr}")));
+    }
+    Ok(parse_unified_hunks(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_unified_hunks(diff: &str) -> Vec<FileHunks> {
+    let mut files: Vec<FileHunks> = Vec::new();
+    let mut old_path: Option<String> = None;
+    for line in diff.lines() {
+        if line.starts_with("diff --git") {
+            old_path = None;
+        } else if let Some(p) = line.strip_prefix("--- ") {
+            old_path = p.strip_prefix("a/").map(str::to_string);
+        } else if let Some(p) = line.strip_prefix("+++ ") {
+            files.push(FileHunks {
+                old_path: old_path.take(),
+                new_path: p.strip_prefix("b/").map(str::to_string),
+                hunks: Vec::new(),
+            });
+        } else if line.starts_with("@@")
+            && let (Some(hunk), Some(file)) = (parse_hunk_header(line), files.last_mut())
+        {
+            file.hunks.push(hunk);
+        }
+    }
+    files
+}
+
+/// `@@ -a[,b] +c[,d] @@`, where an omitted length is 1.
+fn parse_hunk_header(line: &str) -> Option<Hunk> {
+    let mut parts = line.split_whitespace().skip(1);
+    let range = |s: &str| -> Option<(usize, usize)> {
+        match s.split_once(',') {
+            Some((start, len)) => Some((start.parse().ok()?, len.parse().ok()?)),
+            None => Some((s.parse().ok()?, 1)),
+        }
+    };
+    let (old_start, old_len) = range(parts.next()?.strip_prefix('-')?)?;
+    let (new_start, new_len) = range(parts.next()?.strip_prefix('+')?)?;
+    Some(Hunk {
+        old_start,
+        old_len,
+        new_start,
+        new_len,
+    })
+}
+
 pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
     // Try remote HEAD symbolic-ref first
     let output = Command::new("git")
@@ -752,5 +859,53 @@ mod tests {
             classify_repo_probe(done(0, "maybe\n", "")),
             RepoProbe::Unknown
         );
+    }
+
+    #[test]
+    fn unified_hunks_parse_renames_additions_and_omitted_lengths() {
+        let diff = "diff --git a/src/old.rs b/src/new.rs\n\
+similarity index 90%\n\
+rename from src/old.rs\n\
+rename to src/new.rs\n\
+--- a/src/old.rs\n\
++++ b/src/new.rs\n\
+@@ -3 +3 @@ fn a() {\n\
+-    x\n\
++    y\n\
+@@ -10,2 +9,0 @@\n\
+-gone\n\
+-gone\n\
+diff --git a/src/added.rs b/src/added.rs\n\
+new file mode 100644\n\
+--- /dev/null\n\
++++ b/src/added.rs\n\
+@@ -0,0 +1,2 @@\n\
++a\n\
++b\n";
+        let files = parse_unified_hunks(diff);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].old_path.as_deref(), Some("src/old.rs"));
+        assert_eq!(files[0].new_path.as_deref(), Some("src/new.rs"));
+        assert_eq!(
+            files[0].hunks,
+            vec![
+                Hunk {
+                    old_start: 3,
+                    old_len: 1,
+                    new_start: 3,
+                    new_len: 1
+                },
+                Hunk {
+                    old_start: 10,
+                    old_len: 2,
+                    new_start: 9,
+                    new_len: 0
+                },
+            ]
+        );
+        assert_eq!(files[0].hunks[1].removed_lines(), 10..12);
+        assert!(files[0].hunks[1].added_lines().is_empty());
+        assert_eq!(files[1].old_path, None);
+        assert_eq!(files[1].hunks[0].added_lines(), 1..3);
     }
 }

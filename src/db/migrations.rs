@@ -535,6 +535,12 @@ const MIGRATIONS: &[(&str, &str, bool)] = &[
         include_str!("../../migrations/0088_ref_qualifier.sql"),
         true,
     ),
+    // Shared firing log for write-side mechanisms (sutra/467). Durable.
+    (
+        "0089_mechanism_firings",
+        include_str!("../../migrations/0089_mechanism_firings.sql"),
+        false,
+    ),
 ];
 
 impl Db {

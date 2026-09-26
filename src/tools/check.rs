@@ -17,7 +17,7 @@ use crate::constraints::check::ContentSource;
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
-use crate::tools::review;
+use crate::tools::{review, sibling_pattern};
 use crate::waivers::Waived;
 
 /// Outcome of a `sutra check` run over a diff scope.
@@ -37,6 +37,8 @@ pub struct CheckReport {
     pub diff_mode: String,
     pub threshold: Severity,
     pub scanned_files: usize,
+    /// The "you fixed 1 of N" advisory (sutra/467). Reported, never gating.
+    pub sibling_patterns: Option<sibling_pattern::Advisory>,
 }
 
 impl CheckReport {
@@ -58,8 +60,9 @@ pub fn handle(
     threshold: Severity,
     registry: &LanguageRegistry,
 ) -> Result<CheckReport> {
-    let (changed_paths, base_revision, head) =
-        review::resolve_diff_scope(workspace_root, diff_mode)?;
+    let scope = review::resolve_diff_entries(workspace_root, diff_mode)?;
+    let changed_paths = scope.paths();
+    let (base_revision, head) = (&scope.base_revision, &scope.head_revision);
     // Gate the *requested snapshot*, not the working tree: `resolve_diff_scope`
     // returns `Some("")` for the staged index, `Some(rev)` for a commit spec, and
     // `None` for unstaged (the worktree). Reading disk instead would let a fix
@@ -73,11 +76,14 @@ pub fn handle(
         db,
         workspace_root,
         &changed_paths,
-        &base_revision,
+        base_revision,
         content,
         None,
         registry,
     )?;
+
+    let sibling_patterns =
+        sibling_pattern::run_advisory(db, workspace_root, &scope, registry, "check", diff_mode);
 
     let (blocking, below_threshold): (Vec<_>, Vec<_>) = findings
         .constraint_violations
@@ -92,6 +98,7 @@ pub fn handle(
         diff_mode: diff_mode.to_string(),
         threshold,
         scanned_files: changed_paths.len(),
+        sibling_patterns: Some(sibling_patterns),
     })
 }
 
@@ -180,8 +187,59 @@ pub fn render_human(report: &CheckReport) -> String {
     if !report.waived.is_empty() {
         let _ = writeln!(out, "\n{} waived violation(s).", report.waived.len());
     }
+    if let Some(advisory) = &report.sibling_patterns {
+        render_sibling_patterns(advisory, &mut out);
+    }
 
     out
+}
+
+/// The sibling-pattern advisory: each idiom the diff removed, and where it
+/// still survives. Advisory only.
+fn render_sibling_patterns(advisory: &sibling_pattern::Advisory, out: &mut String) {
+    use std::fmt::Write;
+    if let Some(e) = &advisory.error {
+        let _ = writeln!(out, "\nsibling-pattern check failed (not gating): {e}");
+    }
+    let findings = &advisory.report.findings;
+    if !findings.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} idiom(s) this diff removed survive elsewhere (advisory, not gating):",
+            findings.len()
+        );
+    }
+    for f in findings {
+        let idioms: Vec<&str> = f.idioms.iter().map(|i| i.idiom.as_str()).collect();
+        let kind = f.idioms.first().map_or("", |i| i.kind.as_str());
+        let class = match f.class {
+            sibling_pattern::PatternClass::Rewritten => "rewritten",
+            sibling_pattern::PatternClass::Wrapped => "wrapped",
+        };
+        let _ = writeln!(out, "  [{class} {kind}] {}", idioms.join("  |  "));
+        let _ = writeln!(out, "      removed at {}", f.removed_at.join(", "));
+        for s in &f.survivors {
+            match &s.symbol {
+                Some(sym) => {
+                    let _ = writeln!(out, "      survives {}:{}  ({sym})", s.file, s.line);
+                }
+                None => {
+                    let _ = writeln!(out, "      survives {}:{}", s.file, s.line);
+                }
+            }
+        }
+    }
+    if !advisory.report.incomplete.is_empty() {
+        let _ = writeln!(
+            out,
+            "  sibling-pattern check incomplete, {} file(s) unread: {}",
+            advisory.report.incomplete.len(),
+            advisory.report.incomplete.join("; ")
+        );
+    }
+    if let Some(e) = &advisory.firing_log_error {
+        let _ = writeln!(out, "  (firing log not written: {e})");
+    }
 }
 
 fn finding_json(f: &ConstraintFinding) -> serde_json::Value {
@@ -230,6 +288,7 @@ pub fn to_json(report: &CheckReport) -> serde_json::Value {
             "name": e.name,
             "error": e.error,
         })).collect::<Vec<_>>(),
+        "sibling_patterns": report.sibling_patterns.as_ref().map(sibling_pattern::Advisory::to_json),
     })
 }
 
@@ -273,6 +332,7 @@ mod tests {
             diff_mode: "staged".to_string(),
             threshold: Severity::Blocking,
             scanned_files: 3,
+            sibling_patterns: None,
         }
     }
 

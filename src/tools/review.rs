@@ -107,6 +107,15 @@ pub fn handle(
         &shape_config,
     );
 
+    let sibling_patterns = crate::tools::sibling_pattern::run_advisory(
+        db,
+        workspace_root,
+        &scope,
+        &registry,
+        "review",
+        mode,
+    );
+
     let mut result = compute(
         db,
         workspace_root,
@@ -147,6 +156,7 @@ pub fn handle(
         if !shape_out.is_empty() {
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
         }
+        obj.insert("sibling_patterns".into(), sibling_patterns.to_json());
     }
     Ok(result)
 }

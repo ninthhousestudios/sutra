@@ -8,6 +8,7 @@ mod components;
 mod constraints;
 mod conventions;
 pub mod entity_changes;
+pub mod firings;
 mod graph;
 mod migrations;
 mod similarity;
@@ -225,6 +226,11 @@ pub const TABLE_REGISTRY: &[TableMeta] = &[
     },
     TableMeta {
         name: "entity_changes",
+        partition: TablePartition::Durable,
+        is_virtual: false,
+    },
+    TableMeta {
+        name: "mechanism_firings",
         partition: TablePartition::Durable,
         is_virtual: false,
     },
@@ -1731,6 +1737,34 @@ impl Db {
     // -----------------------------------------------------------------------
     // refs
     // -----------------------------------------------------------------------
+
+    /// Files holding a call to each of `names` (bare names: `from_str`, not
+    /// `serde_json::from_str`), resolved or not. Refs inside macro bodies count:
+    /// the Rust extractor reads calls from token trees too.
+    pub fn files_with_calls_named(
+        &self,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, std::collections::HashSet<i64>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT r.file_id FROM refs r WHERE r.context_kind = 'call' \
+               AND r.target_symbol_id IS NULL AND r.unresolved_name = ?1 \
+             UNION \
+             SELECT r.file_id FROM refs r JOIN symbols s ON s.id = r.target_symbol_id \
+             WHERE r.context_kind = 'call' AND s.short_name = ?1",
+        )?;
+        let mut out = std::collections::HashMap::new();
+        for &name in names {
+            if out.contains_key(name) {
+                continue;
+            }
+            let ids = stmt
+                .query_map(params![name], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<i64>>>()?;
+            out.insert(name.to_string(), ids);
+        }
+        Ok(out)
+    }
 
     /// Insert a reference row. Returns the new row id.
     ///
