@@ -14,7 +14,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # The guard binary runs as a Claude Code PreToolUse hook on every edit.
 # It must stay lightweight: read-only SQLite queries + rules TOML parsing.
-# No FCA engine, no HRR vectors, no health scoring, no pipeline.
+# No FCA engine, no HRR vectors, no pipeline.
 
 [[constraint]]
 kind = "forbidden_dep"
@@ -29,13 +29,6 @@ kind = "forbidden_dep"
 from = "src/guard.rs"
 to = "src/similarity/*"
 name = "guard-no-similarity"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/guard.rs"
-to = "src/health/*"
-name = "guard-no-health"
 severity = "blocking"
 
 [[constraint]]
@@ -64,13 +57,6 @@ kind = "forbidden_dep"
 from = "src/bin/guard.rs"
 to = "src/similarity/*"
 name = "guard-bin-no-similarity"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/bin/guard.rs"
-to = "src/health/*"
-name = "guard-bin-no-health"
 severity = "blocking"
 
 
@@ -177,16 +163,6 @@ severity = "blocking"
 # name = "parser-conventions-coupling"
 # provenance = "docs/adr/0003-layered-adapter-traits.md"
 # severity = "advisory"
-
-# similarity::diff imports health::findings::BiomarkerKind.
-# Creates a logical cycle: health → similarity (for HRR) and
-# similarity → health (for finding types).
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/similarity/*"
-to = "src/health/*"
-name = "similarity-health-coupling"
-severity = "advisory"
 
 # similarity::mod imports parser::adapter::default_registry.
 # Math/embedding layer should not depend on parser infrastructure.
@@ -300,14 +276,6 @@ from = "src/tools/explore.rs"
 to = "src/conventions/*"
 name = "explore-no-conventions"
 provenance = "checkpoint:sutra/171"
-severity = "blocking"
-
-[[constraint]]
-kind = "forbidden_dep"
-from = "src/tools/explore.rs"
-to = "src/health/*"
-name = "explore-no-health"
-provenance = "checkpoint:sutra/175"
 severity = "blocking"
 
 [[constraint]]
