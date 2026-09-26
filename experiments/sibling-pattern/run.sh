@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Back-test + noise sample for sutra/462. Usage: run.sh [--v2]
+# Back-test + noise samples for the sibling-pattern check.
+# Default: replay every commit through the production check (sutra/467,
+# replay.py; build target/release/sutra first). --proto: the frozen v6
+# prototype (sutra/462, proto.py), which also takes --v2 … --v5.
+# Usage: run.sh [--proto] [--explain] [--vN]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 S=$(cd "$here/../.." && pwd); Y="$S/../yojana"; B="$HOME/adityas/backend"
-p() { python3 "$here/proto.py" "$1" "$2" "${@:3}"; }
+tool=replay.py
+if [[ "${1:-}" == "--proto" ]]; then tool=proto.py; shift; fi
+p() { python3 "$here/$tool" "$1" "$2" "${@:3}"; }
 echo "### back-test (first fix of each PAR pair)"
 for c in 91fedc7 f114fa5 af68577 d70bf20 ac25e6e 6e5d60e 723ac70; do p "$S" $c "$@"; done
 p "$Y" 0b3ff34 "$@"; p "$B" a06a497 "$@"

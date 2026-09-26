@@ -575,6 +575,13 @@ enum Feature {
     /// Two literals, sorted.
     Litpair(String, String),
     Sql(String),
+    /// A literal list the diff extended (`grown_litset`): the old items and
+    /// the added ones, sorted. It survives wherever a list still holds every
+    /// old item and none of the added ones.
+    GrownList {
+        old: Vec<String>,
+        added: Vec<String>,
+    },
 }
 
 impl Feature {
@@ -584,6 +591,9 @@ impl Feature {
             Self::Argfld { callee, field } => format!("{callee}(.{field})"),
             Self::Litpair(a, b) => format!("{a}+{b}"),
             Self::Sql(prefix) => prefix.to_string(),
+            Self::GrownList { old, added } => {
+                format!("{{{}}} extended by {}", old.join(", "), added.join(", "))
+            }
         }
     }
 
@@ -593,7 +603,7 @@ impl Feature {
         match self {
             Self::Chain { method, .. } => Some(method),
             Self::Argfld { callee, .. } => Some(bare_name(callee)),
-            Self::Litpair(..) | Self::Sql(_) => None,
+            Self::Litpair(..) | Self::Sql(_) | Self::GrownList { .. } => None,
         }
     }
 
@@ -603,6 +613,7 @@ impl Feature {
             Self::Chain { method, .. } => vec![method],
             Self::Argfld { callee, field } => vec![bare_name(callee), field],
             Self::Litpair(a, b) => vec![a, b],
+            Self::GrownList { old, .. } => old.iter().map(String::as_str).collect(),
             Self::Sql(prefix) => prefix
                 .split(' ')
                 .max_by_key(|s| s.len())
@@ -822,6 +833,72 @@ fn features(toks: &[Token], scope: Scope) -> BTreeMap<Feature, Vec<usize>> {
     out
 }
 
+/// Runs of value-position literals no more than [`PAIR_TOKENS`] apart: one
+/// run is one literal list. Each run's texts and its first line.
+fn literal_lists(toks: &[Token], scope: Scope) -> Vec<(BTreeSet<&str>, usize)> {
+    let skip_mapping = matches!(
+        scope,
+        Scope::Tree {
+            canonical_mapping: true
+        }
+    );
+    let mut out: Vec<(BTreeSet<&str>, usize)> = Vec::new();
+    let mut last: Option<usize> = None;
+    for i in 0..toks.len() {
+        if toks[i].kind != TokKind::Str
+            || !value_literal(toks, i)
+            || (skip_mapping && mapping_literal(toks, i))
+        {
+            continue;
+        }
+        match (last, out.last_mut()) {
+            (Some(prev), Some((set, _))) if i - prev <= PAIR_TOKENS => {
+                set.insert(&toks[i].text);
+            }
+            _ => out.push(([toks[i].text.as_str()].into_iter().collect(), toks[i].line)),
+        }
+        last = Some(i);
+    }
+    out
+}
+
+/// Lines where each removed idiom of `lang` occurs in a whole file's tokens.
+fn tree_occurrences<'k, V>(
+    toks: &[Token],
+    scope: Scope,
+    removed: &'k BTreeMap<Key, V>,
+    lang: &'static str,
+) -> Vec<(&'k Key, Vec<usize>)> {
+    let mut out = Vec::new();
+    for (feat, lines) in features(toks, scope) {
+        if let Some((key, _)) = removed.get_key_value(&(lang, feat)) {
+            out.push((key, lines));
+        }
+    }
+    let mut lists: Option<Vec<(BTreeSet<&str>, usize)>> = None;
+    for key in removed.keys() {
+        let (l, Feature::GrownList { old, added }) = key else {
+            continue;
+        };
+        if *l != lang {
+            continue;
+        }
+        let lists = lists.get_or_insert_with(|| literal_lists(toks, scope));
+        let lines: Vec<usize> = lists
+            .iter()
+            .filter(|(set, _)| {
+                old.iter().all(|o| set.contains(o.as_str()))
+                    && !added.iter().any(|a| set.contains(a.as_str()))
+            })
+            .map(|&(_, line)| line)
+            .collect();
+        if !lines.is_empty() {
+            out.push((key, lines));
+        }
+    }
+    out
+}
+
 /// Value-position literals in `toks`, for the grown-list control.
 fn literal_set(toks: &[Token]) -> BTreeSet<&str> {
     (0..toks.len())
@@ -1033,8 +1110,6 @@ struct HunkSignals<'a> {
     removed: BTreeMap<Key, Removed<'a>>,
     /// Hunks that add a new non-generic call near where they removed code.
     wraps: HashSet<usize>,
-    /// Hunks whose literal list grew.
-    grown: HashSet<usize>,
     next_id: usize,
 }
 
@@ -1089,13 +1164,22 @@ impl<'a> HunkSignals<'a> {
             if near_added.difference(&removed_calls).next().is_some() {
                 self.wraps.insert(hid);
             }
+            let mut found = features(rem, Scope::Removed);
             if controls.grown_litset {
                 let (r, a) = (literal_set(rem), literal_set(add));
                 if r.len() >= 2 && r.len() < a.len() && r.is_subset(&a) {
-                    self.grown.insert(hid);
+                    let line = rem
+                        .iter()
+                        .find(|t| r.contains(t.text.as_str()))
+                        .map_or(hunk.old_start, |t| t.line);
+                    let grown = Feature::GrownList {
+                        old: r.iter().map(|s| s.to_string()).collect(),
+                        added: a.difference(&r).map(|s| s.to_string()).collect(),
+                    };
+                    found.insert(grown, vec![line]);
                 }
             }
-            for (feat, lines) in features(rem, Scope::Removed) {
+            for (feat, lines) in found {
                 let entry = self.removed.entry((lang, feat)).or_default();
                 entry.sites.extend(lines.iter().map(|&l| (old_path, l)));
                 entry.origins.push((new_path, hunk.new_start));
@@ -1226,12 +1310,7 @@ pub fn analyze(
         });
     }
     report.diff_fingerprint = fingerprint.finalize().to_hex().to_string();
-    let HunkSignals {
-        removed,
-        wraps,
-        grown,
-        ..
-    } = signals;
+    let HunkSignals { removed, wraps, .. } = signals;
     if removed.is_empty() {
         return Ok(report);
     }
@@ -1244,19 +1323,14 @@ pub fn analyze(
     // The changed files, on both sides.
     for c in &changed {
         if let Some(old) = &c.old {
-            for (feat, lines) in features(&old.tokens, tree_scope) {
-                if let Some((key, _)) = removed.get_key_value(&(c.language, feat)) {
-                    *occ.pre_changed.entry(key).or_default() += lines.len();
-                }
+            for (key, lines) in tree_occurrences(&old.tokens, tree_scope, &removed, c.language) {
+                *occ.pre_changed.entry(key).or_default() += lines.len();
             }
         }
         let (Some(new), Some(path)) = (&c.new, c.new_path) else {
             continue;
         };
-        for (feat, lines) in features(&new.tokens, tree_scope) {
-            let Some((key, _)) = removed.get_key_value(&(c.language, feat)) else {
-                continue;
-            };
+        for (key, lines) in tree_occurrences(&new.tokens, tree_scope, &removed, c.language) {
             *occ.post_changed.entry(key).or_default() += lines.len();
             for l in lines {
                 if c.added.contains(&l) {
@@ -1306,7 +1380,7 @@ pub fn analyze(
                 continue;
             }
         };
-        let wanted: Vec<&Key> = wanted
+        let wanted: HashSet<&Key> = wanted
             .into_iter()
             .filter(|(_, f)| f.needles().iter().all(|n| source.contains(n)))
             .collect();
@@ -1320,19 +1394,18 @@ pub fn analyze(
                 continue;
             }
         };
-        let found = features(&toks.tokens, tree_scope);
-        for key in wanted {
-            let Some(lines) = found.get(&key.1) else {
+        for (key, lines) in tree_occurrences(&toks.tokens, tree_scope, &removed, lang) {
+            if !wanted.contains(key) {
                 continue;
-            };
+            }
             *occ.unchanged.entry(key).or_default() += lines.len();
-            for &l in lines {
+            for l in lines {
                 occ.survive(key, (path, l), &toks.lines);
             }
         }
     }
 
-    let items = classify(&removed, &mut occ, &wraps, &grown);
+    let items = classify(&removed, &mut occ, &wraps);
     let mut findings = group_litpairs(items);
     if controls.group_by_survivors {
         findings = group_by_survivors(findings);
@@ -1371,7 +1444,6 @@ fn classify<'a>(
     removed: &'a BTreeMap<Key, Removed<'a>>,
     occ: &mut Occurrences<'a>,
     wraps: &HashSet<usize>,
-    grown: &HashSet<usize>,
 ) -> Vec<Item<'a>> {
     // An argfld (callee + field) is an idiom only when the handling of that
     // callee's result was rewritten too (`from_str(&x.col).unwrap_or_default()`
@@ -1400,8 +1472,6 @@ fn classify<'a>(
         if sites.is_empty() || sites.len() > MAX_SURVIVORS || occ.pre_df(key) > MAX_DF {
             continue;
         }
-        let grew =
-            matches!(feat, Feature::Litpair(..)) && rem.hunks.iter().any(|h| grown.contains(h));
         let wrapped_in_place = occ.readded.get(key).is_some_and(|re| {
             re.iter().any(|(p, l)| {
                 rem.origins
@@ -1409,7 +1479,7 @@ fn classify<'a>(
                     .any(|(op, start)| op == p && l.abs_diff(*start) <= NEAR)
             })
         }) && rem.hunks.iter().any(|h| wraps.contains(h));
-        let class = if occ.rewritten(key) || grew {
+        let class = if occ.rewritten(key) {
             PatternClass::Rewritten
         } else if wrapped_in_place {
             PatternClass::Wrapped
@@ -1494,6 +1564,7 @@ fn group_litpairs(items: Vec<Item<'_>>) -> Vec<Grouped<'_>> {
                 continue;
             }
             Feature::Sql(_) => IdiomKind::Sql,
+            Feature::GrownList { .. } => IdiomKind::Litset,
             Feature::Chain { .. } => IdiomKind::Chain,
             Feature::Argfld { .. } => IdiomKind::Argfld,
         };

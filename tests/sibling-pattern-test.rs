@@ -223,7 +223,10 @@ fn dart_grown_list_is_rewritten_only_with_the_control_on() {
     let f = &report.findings[0];
     assert_eq!(f.class, PatternClass::Rewritten);
     assert_eq!(f.idioms[0].kind, IdiomKind::Litset);
-    assert_eq!(f.idioms[0].idiom, "{'draft', 'final'}");
+    assert_eq!(
+        f.idioms[0].idiom,
+        "{'draft', 'final'} extended by 'archived'"
+    );
     assert_eq!(f.survivors[0].file, "lib/b.dart");
     assert_eq!(f.survivors[0].line, 2);
 
