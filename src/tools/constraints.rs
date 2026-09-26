@@ -554,9 +554,11 @@ fn handle_baseline(
         &source_refs,
         &registry,
     );
+    // Justified matches are already waived in place; counting them would leave
+    // ack budget that silently cancels a future unjustified sibling.
     let mut target: Vec<_> = findings
         .into_iter()
-        .filter(|f| f.constraint_id.as_ref() == constraint_id)
+        .filter(|f| f.constraint_id.as_ref() == constraint_id && f.justification.is_none())
         .collect();
 
     // Group by (file, enclosing, snippet) without cloning keys: sort, then count
@@ -652,7 +654,7 @@ fn handle_ack(db: &Db, workspace_root: &Path, args: &ConstraintsArgs) -> Result<
     );
     let target: Vec<_> = findings
         .iter()
-        .filter(|f| f.constraint_id.as_ref() == constraint_id)
+        .filter(|f| f.constraint_id.as_ref() == constraint_id && f.justification.is_none())
         .collect();
 
     let selected = match (args.line, args.snippet.as_deref()) {

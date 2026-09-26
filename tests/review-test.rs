@@ -429,6 +429,7 @@ fn constraint_violations_appear_in_output() {
                 line: None,
                 snippet: None,
                 enclosing_symbol: None,
+                justification: None,
             },
             review::ConstraintFinding {
                 constraint_id: "builtin:cycles".into(),
@@ -445,6 +446,7 @@ fn constraint_violations_appear_in_output() {
                 line: None,
                 snippet: None,
                 enclosing_symbol: None,
+                justification: None,
             },
         ],
         resolved_constraint_violations: vec![],
@@ -743,6 +745,7 @@ fn waived_constraint_violations_appear_in_output() {
                 line: None,
                 snippet: None,
                 enclosing_symbol: None,
+                justification: None,
             },
             rationale: "legacy coupling".into(),
             waived_by: "josh".into(),

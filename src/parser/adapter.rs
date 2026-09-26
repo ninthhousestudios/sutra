@@ -142,6 +142,15 @@ pub fn line_in_ranges(ranges: &[(u32, u32)], line: u32) -> bool {
         .any(|&(start, end)| line >= start && line <= end)
 }
 
+/// The source text a tree-sitter node spans. Every adapter parses a `&str`, and
+/// tree-sitter only places node boundaries on code-point boundaries of valid
+/// UTF-8 input, so `utf8_text` cannot fail here — a failure means the bytes
+/// handed in are not the source that was parsed.
+pub fn node_text<'a>(node: tree_sitter::Node<'_>, src: &'a [u8]) -> &'a str {
+    node.utf8_text(src)
+        .expect("invariant: source is UTF-8 and node boundaries fall on char boundaries")
+}
+
 /// True when a *directory* component of `path` equals `dir`. Matches both a
 /// root-level `dir/...` and a nested `packages/foo/dir/...`, since indexed
 /// paths are relative to the workspace root and a monorepo buries each crate's
@@ -256,6 +265,20 @@ impl LanguageRegistry {
             })
             .flat_map(|a| a.extensions().iter().copied())
             .collect()
+    }
+
+    /// The adapter whose pattern-eligible extensions cover `path` — unlike
+    /// [`Self::adapter_for_extension`], this also resolves unindexed stubs
+    /// (`.pyi`).
+    pub fn adapter_for_pattern_path(&self, path: &str) -> Option<&dyn LanguageAdapter> {
+        self.adapters
+            .iter()
+            .find(|a| {
+                a.pattern_extensions()
+                    .iter()
+                    .any(|ext| path.ends_with(&format!(".{ext}")))
+            })
+            .map(|a| a.as_ref())
     }
 
     /// Extensions that are pattern-eligible but never indexed. These files are

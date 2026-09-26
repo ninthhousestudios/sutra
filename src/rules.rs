@@ -121,6 +121,12 @@ pub struct Constraint {
     /// Excluded from constraint identity — toggling it must not orphan waivers
     /// or ratchet registrations.
     pub include_tests: bool,
+    /// `forbidden_pattern` only: a comment marker (e.g. `"swallow:"`) that
+    /// justifies a match in place. A match whose line, or the contiguous comment
+    /// run directly above it, carries the marker followed by non-empty text is
+    /// waived with that text as its rationale. Excluded from constraint identity,
+    /// like `include_tests`.
+    pub justify: Option<String>,
 }
 
 impl Constraint {
@@ -279,6 +285,8 @@ struct RawConstraint {
     ratchet: Option<bool>,
     // test-code opt-in
     include_tests: Option<bool>,
+    // forbidden_pattern: in-place justification marker
+    justify: Option<String>,
 }
 
 impl RawConstraint {
@@ -410,6 +418,20 @@ impl RawConstraint {
                 )));
             }
         };
+        if let Some(marker) = &self.justify {
+            if !matches!(kind, ConstraintKind::ForbiddenPattern { .. }) {
+                return Err(SutraError::Internal(format!(
+                    "constraint kind '{}': 'justify' applies only to forbidden_pattern",
+                    kind.kind_tag()
+                )));
+            }
+            if marker.trim().is_empty() {
+                return Err(SutraError::Internal(
+                    "constraint kind 'forbidden_pattern': 'justify' must be a non-empty marker"
+                        .into(),
+                ));
+            }
+        }
         let severity = self.severity.unwrap_or_else(|| kind.default_severity());
         let id = Constraint::compute_id(&kind, self.scope.as_deref());
         Ok(Constraint {
@@ -421,6 +443,7 @@ impl RawConstraint {
             scope: self.scope,
             ratchet: self.ratchet.unwrap_or(false),
             include_tests: self.include_tests.unwrap_or(false),
+            justify: self.justify.map(|m| m.trim().to_string()),
         })
     }
 }
@@ -517,6 +540,7 @@ impl Rules {
                 scope: None,
                 ratchet: self.ratchet.all,
                 include_tests: false,
+                justify: None,
             });
         }
 

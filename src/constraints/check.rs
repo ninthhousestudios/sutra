@@ -391,6 +391,7 @@ fn evaluate_dd(
                     line: None,
                     snippet: None,
                     enclosing_symbol: None,
+                    justification: None,
                 });
             }
         }
@@ -764,6 +765,7 @@ fn evaluate_dd(
                 line: None,
                 snippet: Some(fingerprint),
                 enclosing_symbol: None,
+                justification: None,
             });
         }
     }
@@ -883,6 +885,7 @@ fn max_fan_in_findings(
                 line: None,
                 snippet: None,
                 enclosing_symbol: None,
+                justification: None,
             });
         }
     }
@@ -923,6 +926,7 @@ fn evaluate_raw(
             line: None,
             snippet: None,
             enclosing_symbol: None,
+            justification: None,
         })
         .collect();
 
@@ -1206,6 +1210,7 @@ fn check_ratchet_violations(
                     line: None,
                     snippet: None,
                     enclosing_symbol: None,
+                    justification: None,
                 });
             }
             Some(c) => {
@@ -1234,6 +1239,7 @@ fn check_ratchet_violations(
                         line: None,
                         snippet: None,
                         enclosing_symbol: None,
+                        justification: None,
                     });
                 }
             }
@@ -1466,6 +1472,7 @@ fn make_finding(
         line: None,
         snippet: None,
         enclosing_symbol: None,
+        justification: None,
     }
 }
 

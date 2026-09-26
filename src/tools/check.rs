@@ -254,6 +254,7 @@ mod tests {
             line,
             snippet: line.map(|_| "bad.clone()".to_string()),
             enclosing_symbol: None,
+            justification: None,
         }
     }
 

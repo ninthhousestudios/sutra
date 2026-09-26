@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-08-28 (sutra/361: accepted.toml is tool-owned, `notes` field for durable context — see "Tool-owned file & notes"; sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
+Last updated: 2026-09-26 (sutra/472: `justify` in-place justification, `@match` capture reporting, rename-robust guard diff — see "In-place justification"; sutra/361: accepted.toml is tool-owned, `notes` field for durable context — see "Tool-owned file & notes"; sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -171,8 +171,11 @@ src/guard.rs        — Lightweight per-edit constraint check.
                       against ForbiddenDep/Boundary constraints, checks waivers.
                       check_proposed_patterns: introduced-only forbidden_pattern
                       enforcement — parses proposed + disk, multiset-diffs matches
-                      by (constraint_id, enclosing_symbol, snippet), denies only
-                      when count increased. format_constraint_deny for dep-kind
+                      via patterns::introduced_in_file: exact (constraint_id,
+                      enclosing_symbol, snippet) first, then leftovers by
+                      (constraint_id, snippet) against disk matches whose symbol
+                      no longer exists (renames don't re-introduce; moves into
+                      a surviving function still do). Denies only the surplus. format_constraint_deny for dep-kind
                       deny messages. format_pattern_deny for pattern deny messages
                       with justification-gate guidance (waive-vs-restructure).
                       Ratchet guard: check_proposed_rules_ratchet — compares
@@ -201,7 +204,8 @@ src/bin/guard.rs    — Guard binary (Claude Code PreToolUse hook).
 Authored rule from `.sutra/rules.toml`. Fields: `id` (blake3 hash, 8 hex chars),
 `kind: ConstraintKind`, `severity: Severity`, `name: Option<String>`,
 `provenance: Option<String>`, `scope: Option<String>`, `ratchet: bool`,
-`include_tests: bool`.
+`include_tests: bool`, `justify: Option<String>` (forbidden_pattern only; see
+"In-place justification").
 
 ### ConstraintKind (rules.rs)
 Enum: `ForbiddenDep { from, to }` (glob patterns), `Boundary { from_component,
@@ -218,7 +222,7 @@ max_fan_in/forbidden_pattern → Advisory (heuristic rules).
 ### Constraint identity (rules.rs)
 blake3 hash of `(kind_tag, kind-specific params, scope)`. Name and provenance
 are excluded — name is an alias for human reference, not identity. `ratchet`
-and `include_tests` are excluded too: they modulate enforcement, and toggling
+, `include_tests` and `justify` are excluded too: they modulate enforcement, and toggling
 them must not orphan waivers or ratchet registrations. Truncated to 8 hex
 chars, matching convention ID style.
 
@@ -604,7 +608,29 @@ ratchet = true                   # optional, registers in ratchet registry at
                                  # index time. Floor never lowers; removal or
                                  # weakening requires `sutra ratchet release`.
 include_tests = false            # optional, default false. See "Test scope".
+justify = "swallow:"             # optional, forbidden_pattern only. See
+                                 # "In-place justification".
 ```
+
+## In-place justification (sutra/472)
+
+A `forbidden_pattern` rule with `justify = "<marker>"` waives a match whose
+line, or the contiguous run of comment-only lines directly above it, has a
+comment line starting (after its delimiters) with the marker followed by
+non-empty text: `// swallow: env var unset is the normal case`. A bare marker
+justifies nothing; a blank line breaks the run; a trailing comment on the code
+line above does not count. Comments are found as tree-sitter `*comment*` nodes,
+so a marker inside a string literal never counts.
+
+`check_forbidden_patterns` sets `ConstraintFinding.justification`, and
+`waivers::partition` waives any finding carrying one (rationale = the text,
+`waived_by = waivers::JUSTIFIED_BY`) before consulting accepted.toml. Guard and
+check both partition, so both agree. The marker is per-rule: it silences no
+other rule.
+
+Findings report the capture named `match` when the query has one, else the
+first capture — so a rule that also captures a receiver reports the `@match`
+line, which is the line a diff adds and where the marker is looked up.
 
 ## Test scope (sutra/290)
 

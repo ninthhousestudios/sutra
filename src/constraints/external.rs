@@ -337,6 +337,7 @@ pub fn config_error_finding(msg: &str) -> ConstraintFinding {
         line: None,
         snippet: None,
         enclosing_symbol: None,
+        justification: None,
     }
 }
 
@@ -376,6 +377,7 @@ fn make_external_finding(
         line: None,
         snippet: None,
         enclosing_symbol: None,
+        justification: None,
     }
 }
 

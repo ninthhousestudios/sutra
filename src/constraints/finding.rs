@@ -17,6 +17,10 @@ pub struct ConstraintFinding {
     pub line: Option<u32>,
     pub snippet: Option<String>,
     pub enclosing_symbol: Option<String>,
+    /// `forbidden_pattern` only: the text after the rule's `justify` marker when
+    /// the match is justified in place. A justified finding is waived by
+    /// [`crate::waivers::partition`], so every surface that partitions agrees.
+    pub justification: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -871,9 +871,7 @@ pub fn check_proposed_patterns(
     rel_path: &str,
     proposed_content: &str,
 ) -> CheckOutcome {
-    use crate::constraints::patterns::{
-        MatchKey, check_forbidden_patterns, match_key, subtract_multiset,
-    };
+    use crate::constraints::patterns::{check_forbidden_patterns, introduced_in_file};
     use crate::rules::{self, ConstraintKind};
     use crate::waivers;
 
@@ -929,15 +927,17 @@ pub fn check_proposed_patterns(
         check_forbidden_patterns(&all_constraints, &[(rel_path, &disk_content)], &registry);
     let (disk_active, _) = waivers::partition(disk_findings, &constraint_waivers);
 
-    // Multiset diff by (constraint_id, enclosing_symbol, snippet) — each disk
-    // match cancels one proposed match with the same key. What remains is
-    // introduced. Shares the fingerprint with the report-path instance-ack
-    // subtraction (sutra/305) so both surfaces key matches identically.
-    let mut disk_multiset: HashMap<MatchKey, usize> = HashMap::new();
-    for f in &disk_active {
-        *disk_multiset.entry(match_key(f)).or_default() += 1;
-    }
-    let introduced = subtract_multiset(proposed_active, disk_multiset);
+    // Multiset diff: each disk match cancels one proposed match with the same
+    // (constraint_id, enclosing_symbol, snippet), then leftovers cancel by
+    // (constraint_id, snippet) against matches of symbols that no longer exist,
+    // so a rename does not re-introduce the matches inside it (sutra/472).
+    let introduced = introduced_in_file(
+        proposed_active,
+        &disk_active,
+        rel_path,
+        proposed_content,
+        &registry,
+    );
 
     CheckOutcome {
         active: introduced,
@@ -1668,6 +1668,7 @@ mod tests {
             line: None,
             snippet: None,
             enclosing_symbol: None,
+            justification: None,
         }
     }
 
@@ -3087,6 +3088,68 @@ scope = "src/"
             outcome.active.is_empty(),
             "pre-existing match should be grandfathered"
         );
+    }
+
+    /// A pure rename changes the enclosing symbol of every match inside the
+    /// function; it must not read as introducing them (f9e19e6, sutra/472).
+    #[test]
+    fn pattern_rename_does_not_reintroduce() {
+        let disk_content =
+            "fn old_name(v: &Vec<u8>) -> Vec<u8> {\n    let a = v.clone();\n    a.clone()\n}\n";
+        let proposed_content =
+            "fn new_name(v: &Vec<u8>) -> Vec<u8> {\n    let a = v.clone();\n    a.clone()\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(
+            outcome.active.is_empty(),
+            "rename re-introduced matches: {:?}",
+            outcome.active
+        );
+
+        // A genuinely added match in the renamed function still counts.
+        let grown = "fn new_name(v: &Vec<u8>) -> Vec<u8> {\n    let a = v.clone();\n    let b = a.clone();\n    a.clone()\n}\n";
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", grown);
+        assert_eq!(outcome.active.len(), 1, "{:?}", outcome.active);
+        assert_eq!(
+            outcome.active[0].enclosing_symbol.as_deref(),
+            Some("new_name")
+        );
+    }
+
+    /// Rename-robustness must not blind the guard to moves: a grandfathered
+    /// match moved into another function that already existed is still new,
+    /// because its source function still exists (sutra-python-repo-notes §4).
+    #[test]
+    fn pattern_move_between_existing_functions_still_introduced() {
+        let disk_content = "fn a(v: &Vec<u8>) -> Vec<u8> {\n    v.clone()\n}\nfn b(v: &Vec<u8>) -> usize {\n    v.len()\n}\n";
+        let proposed_content = "fn a(v: &Vec<u8>) -> usize {\n    v.len()\n}\nfn b(v: &Vec<u8>) -> Vec<u8> {\n    v.clone()\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(outcome.active.len(), 1, "{:?}", outcome.active);
+        assert_eq!(outcome.active[0].enclosing_symbol.as_deref(), Some("b"));
+    }
+
+    /// The `justify` marker waives at the guard exactly as it does at check:
+    /// both go through `check_forbidden_patterns` + `waivers::partition`.
+    #[test]
+    fn pattern_justified_match_waived_at_guard() {
+        let rule = format!("{CLONE_RULE}justify = \"clone:\"\n");
+        let disk_content = "fn main() {\n    let x = 1;\n}\n";
+        let proposed_content = "fn main() {\n    // clone: fixture needs an owned copy\n    let x = vec![1].clone();\n}\n";
+        let (conn, dir) = setup_pattern_db(&rule, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(outcome.active.is_empty(), "{:?}", outcome.active);
+        assert_eq!(outcome.waived.len(), 1);
+        assert_eq!(outcome.waived[0].rationale, "fixture needs an owned copy");
+        assert_eq!(outcome.waived[0].waived_by, crate::waivers::JUSTIFIED_BY);
+
+        // A bare marker records no decision and justifies nothing.
+        let bare = "fn main() {\n    // clone:\n    let x = vec![1].clone();\n}\n";
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", bare);
+        assert_eq!(outcome.active.len(), 1);
     }
 
     #[test]

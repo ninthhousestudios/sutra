@@ -323,6 +323,7 @@ mod tests {
             scope: None,
             ratchet: false,
             include_tests: false,
+            justify: None,
         }
     }
 

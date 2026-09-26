@@ -79,17 +79,17 @@ pub struct WaiverEntry {
     pub by: String,
 }
 
-/// A report-only instance ack. Content-keyed by the guard's `MatchKey` parts
+/// A report-only instance ack. Content-keyed by the `MatchKey` parts
 /// (`enclosing_symbol`, `snippet`) plus `count`; surplus/future siblings surface.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AckEntry {
     /// Constraint NAME (human-stable; resolved to an id at load).
     pub constraint: String,
     pub file: String,
-    /// `enclosing_symbol` — the guard `MatchKey` part.
+    /// `enclosing_symbol` — the `MatchKey` part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
-    /// `snippet` — the matched node's first line, node-relative. The guard
+    /// `snippet` — the matched node's first line, node-relative. The
     /// `MatchKey` part; reindent-stable, rename-fragile (a renamed clone
     /// re-surfaces, which is correct — re-examine).
     #[serde(default, skip_serializing_if = "Option::is_none")]

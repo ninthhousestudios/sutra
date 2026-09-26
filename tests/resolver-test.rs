@@ -24,6 +24,7 @@ fn make_constraint_with_id(id: &str, kind: ConstraintKind) -> Constraint {
         scope: None,
         ratchet: false,
         include_tests: false,
+        justify: None,
     }
 }
 
