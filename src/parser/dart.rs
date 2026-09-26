@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::rust::{FLAG_CFG_TEST, FLAG_FFI_ENTRY, FLAG_OVERRIDE, FLAG_TEST};
 
 pub const DART_LIFECYCLE_METHODS: &[&str] = &[
@@ -226,7 +226,7 @@ fn extract_named_symbol(
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let short_name = name_node.utf8_text(src).ok()?.to_string();
+    let short_name = node_text(name_node, src).to_string();
     let sh = Some(structural_hash::compute(
         node,
         src,
@@ -246,7 +246,7 @@ fn extract_fn_symbol(
     kind: SymbolKind,
 ) -> Option<ExtractedSymbol> {
     let name_node = sig_node.child_by_field_name("name")?;
-    let short_name = name_node.utf8_text(src).ok()?.to_string();
+    let short_name = node_text(name_node, src).to_string();
     let (signature, signature_hash) = build_fn_signature(sig_node, src, &short_name);
     let sh = Some(structural_hash::compute(
         span_node,
@@ -288,7 +288,7 @@ fn extract_method_symbol(
     };
 
     let name_node = inner.child_by_field_name("name")?;
-    let short_name = name_node.utf8_text(src).ok()?.to_string();
+    let short_name = node_text(name_node, src).to_string();
     let (signature, signature_hash) = build_fn_signature(inner, src, &short_name);
     let sh = Some(structural_hash::compute(
         span_node,
@@ -314,7 +314,7 @@ fn extract_type_alias(node: Node, src: &[u8], name_context: &[String]) -> Option
     let name_child = node
         .children(&mut cursor)
         .find(|c| c.kind() == "type_identifier")?;
-    let short_name = name_child.utf8_text(src).ok()?.to_string();
+    let short_name = node_text(name_child, src).to_string();
     let sh = Some(structural_hash::compute(
         node,
         src,
@@ -358,8 +358,7 @@ fn extract_variable_symbols(
         let mut cursor = node.walk();
         node.children(&mut cursor)
             .find(|c| c.kind() == "type")
-            .and_then(|t| t.utf8_text(src).ok())
-            .map(|s| s.to_string())
+            .map(|t| node_text(t, src).to_string())
     };
 
     let modifier = if has_keyword("const") {
@@ -394,9 +393,8 @@ fn extract_variable_symbols(
                         continue;
                     }
                     let mut dc = decl.walk();
-                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier")
-                        && let Ok(name) = ident.utf8_text(src)
-                    {
+                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier") {
+                        let name = node_text(ident, src);
                         let sig = build_sig(name);
                         let sh = Some(structural_hash::compute(
                             decl,
@@ -427,9 +425,8 @@ fn extract_variable_symbols(
                         continue;
                     }
                     let mut dc = decl.walk();
-                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier")
-                        && let Ok(name) = ident.utf8_text(src)
-                    {
+                    if let Some(ident) = decl.children(&mut dc).find(|c| c.kind() == "identifier") {
+                        let name = node_text(ident, src);
                         let sig = build_sig(name);
                         let sh = Some(structural_hash::compute(
                             decl,
@@ -459,23 +456,22 @@ fn extract_variable_symbols(
                     if child.kind() != "identifier" {
                         continue;
                     }
-                    if let Ok(name) = child.utf8_text(src) {
-                        let sig = build_sig(name);
-                        let sh = Some(structural_hash::compute(child, src, None));
-                        if let Some(mut sym) = build_symbol(
-                            child,
-                            src,
-                            name_context,
-                            name.to_string(),
-                            kind,
-                            sig,
-                            None,
-                            sh,
-                        ) {
-                            sym.language_attrs = extract_language_attrs(node, None, src, kind);
-                            sym.flags |= extract_flags(node, src, file_path, None);
-                            symbols.push(sym);
-                        }
+                    let name = node_text(child, src);
+                    let sig = build_sig(name);
+                    let sh = Some(structural_hash::compute(child, src, None));
+                    if let Some(mut sym) = build_symbol(
+                        child,
+                        src,
+                        name_context,
+                        name.to_string(),
+                        kind,
+                        sig,
+                        None,
+                        sh,
+                    ) {
+                        sym.language_attrs = extract_language_attrs(node, None, src, kind);
+                        sym.flags |= extract_flags(node, src, file_path, None);
+                        symbols.push(sym);
                     }
                 }
             }
@@ -548,10 +544,11 @@ fn extract_language_attrs(
                 if let Some(ret_type) = sig_inner
                     .child_by_field_name("return_type")
                     .or_else(|| sig_inner.child_by_field_name("type"))
-                    && let Ok(type_text) = ret_type.utf8_text(src)
-                    && (type_text.starts_with("Future") || type_text.starts_with("FutureOr"))
                 {
-                    attrs.insert("returns_future".into(), true.into());
+                    let type_text = node_text(ret_type, src);
+                    if type_text.starts_with("Future") || type_text.starts_with("FutureOr") {
+                        attrs.insert("returns_future".into(), true.into());
+                    }
                 }
             }
 
@@ -590,7 +587,7 @@ fn has_annotation(node: Node, src: &[u8], name: &str) -> bool {
     node.children(&mut cursor).any(|c| {
         c.kind() == "annotation"
             && c.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(src).ok())
+                .map(|n| node_text(n, src))
                 .is_some_and(|text| text == name)
     })
 }
@@ -628,11 +625,11 @@ fn extract_flags(node: Node, src: &[u8], file_path: &str, short_name: Option<&st
 
     let mut anno_cursor = node.walk();
     for child in node.children(&mut anno_cursor) {
-        if child.kind() == "annotation"
-            && let Ok(text) = child.utf8_text(src)
-            && text.contains("vm:entry-point")
-        {
-            flags |= FLAG_FFI_ENTRY;
+        if child.kind() == "annotation" {
+            let text = node_text(child, src);
+            if text.contains("vm:entry-point") {
+                flags |= FLAG_FFI_ENTRY;
+            }
         }
     }
 
@@ -723,17 +720,17 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
 
     let mut sibling = node.prev_sibling();
     while let Some(sib) = sibling {
-        if let Ok(text) = sib.utf8_text(src)
-            && sib.kind() == "comment"
-            && text.starts_with("///")
-        {
-            let content = text
-                .strip_prefix("/// ")
-                .or_else(|| text.strip_prefix("///"))
-                .unwrap_or(text);
-            doc_lines.push(content.to_string());
-            sibling = sib.prev_sibling();
-            continue;
+        if sib.kind() == "comment" {
+            let text = node_text(sib, src);
+            if text.starts_with("///") {
+                let content = text
+                    .strip_prefix("/// ")
+                    .or_else(|| text.strip_prefix("///"))
+                    .unwrap_or(text);
+                doc_lines.push(content.to_string());
+                sibling = sib.prev_sibling();
+                continue;
+            }
         }
         break;
     }
@@ -745,12 +742,12 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
 fn build_fn_signature(node: Node, src: &[u8], name: &str) -> (Option<String>, Option<String>) {
     let params_text = node
         .child_by_field_name("parameters")
-        .and_then(|n| n.utf8_text(src).ok())
+        .map(|n| node_text(n, src))
         .unwrap_or("()");
 
     let ret_text = node
         .child_by_field_name("return_type")
-        .and_then(|n| n.utf8_text(src).ok());
+        .map(|n| node_text(n, src));
 
     let sig = if let Some(ret) = ret_text {
         format!("{} {}{}", ret.trim(), name, params_text)
@@ -776,8 +773,8 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
 
     if (node.kind() == "identifier" || node.kind() == "type_identifier")
         && !is_definition_name(node)
-        && let Ok(name) = node.utf8_text(src)
     {
+        let name = node_text(node, src);
         let context_kind = classify_ref_context(node);
         if context_kind != RefContextKind::Other {
             let receiver = if context_kind == RefContextKind::Call {
@@ -821,20 +818,20 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
     // `'$_name'` string interpolation parses the name as an
     // `identifier_dollar_escaped` token, so the identifier arm above never
     // sees it (`'${_name}'` parses as a plain identifier and does).
-    if node.kind() == "identifier_dollar_escaped"
-        && let Ok(text) = node.utf8_text(src)
-        && let name = text.trim_start_matches('$')
-        && name.starts_with('_')
-    {
-        refs.push(ExtractedRef {
-            name: name.to_string(),
-            line: node.start_position().row + 1,
-            col: node.start_position().column + (text.len() - name.len()),
-            context_kind: RefContextKind::Read,
-            resolved_local_target: None,
-            receiver: None,
-            qualifier: None,
-        });
+    if node.kind() == "identifier_dollar_escaped" {
+        let text = node_text(node, src);
+        let name = text.trim_start_matches('$');
+        if name.starts_with('_') {
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column + (text.len() - name.len()),
+                context_kind: RefContextKind::Read,
+                resolved_local_target: None,
+                receiver: None,
+                qualifier: None,
+            });
+        }
     }
 
     if cursor.goto_first_child() {
@@ -1000,7 +997,7 @@ fn extract_call_receiver(node: Node, src: &[u8]) -> Option<String> {
     if parent.kind() == "member_expression" && is_property_child(node, parent) {
         let obj = parent.child_by_field_name("object")?;
         if obj.kind() == "identifier" || obj.kind() == "this_expression" {
-            return obj.utf8_text(src).ok().map(|s| s.to_string());
+            return Some(node_text(obj, src).to_string());
         }
     }
     None
@@ -1039,7 +1036,7 @@ fn extract_dart_type_binding(node: Node, src: &[u8]) -> Option<DartTypeBinding> 
     let name_node = node.child_by_field_name("name")?;
     let value_node = node.child_by_field_name("value")?;
 
-    let var_name = name_node.utf8_text(src).ok()?.to_string();
+    let var_name = node_text(name_node, src).to_string();
     let decl_line = name_node.start_position().row + 1;
     let class_name = dart_constructor_type(value_node, src)?;
     let scope_end_line = enclosing_function_end(node);
@@ -1081,14 +1078,14 @@ fn dart_constructor_type(node: Node, src: &[u8]) -> Option<String> {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
                 "identifier" | "type_identifier" => {
-                    let name = func.utf8_text(src).ok()?;
+                    let name = node_text(func, src);
                     if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return Some(name.to_string());
                     }
                 }
                 "member_expression" => {
                     let obj = func.child_by_field_name("object")?;
-                    let obj_name = obj.utf8_text(src).ok()?;
+                    let obj_name = node_text(obj, src);
                     if obj_name.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return Some(obj_name.to_string());
                     }
@@ -1108,7 +1105,7 @@ fn dart_constructor_type(node: Node, src: &[u8]) -> Option<String> {
 
 fn find_first_type_name(node: Node, src: &[u8]) -> Option<String> {
     if node.kind() == "type_identifier" || node.kind() == "identifier" {
-        return node.utf8_text(src).ok().map(|s| s.to_string());
+        return Some(node_text(node, src).to_string());
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -1216,9 +1213,8 @@ fn extract_import_uri(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>
 }
 
 fn find_string_literal(node: Node, src: &[u8]) -> Vec<String> {
-    if node.kind() == "string_literal"
-        && let Ok(text) = node.utf8_text(src)
-    {
+    if node.kind() == "string_literal" {
+        let text = node_text(node, src);
         let raw = text.trim_matches(|c| c == '\'' || c == '"').to_string();
         return vec![raw];
     }

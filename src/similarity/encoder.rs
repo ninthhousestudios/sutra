@@ -1,5 +1,6 @@
 use super::codebook::Codebook;
 use super::hrr::{self, HrrVec};
+use crate::parser::adapter::node_text;
 
 const MAX_DEPTH: usize = 20;
 
@@ -26,10 +27,8 @@ fn encode_recursive(
     let kind_vec = codebook.get_or_create(node.kind());
 
     if depth == 0 || node.child_count() == 0 {
-        if embed_idents
-            && (node.kind() == "identifier" || node.kind() == "type_identifier")
-            && let Ok(text) = node.utf8_text(source)
-        {
+        if embed_idents && (node.kind() == "identifier" || node.kind() == "type_identifier") {
+            let text = node_text(*node, source);
             let name_vec = codebook.get_or_create(&format!("id:{text}"));
             return kind_vec.bind(&name_vec);
         }

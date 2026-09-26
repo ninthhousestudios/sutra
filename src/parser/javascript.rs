@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity, structural_hash,
@@ -99,7 +99,7 @@ pub(super) fn extract_function(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = build_qualified_name(name_context, &name);
 
     let is_async = has_keyword(node, src, "async");
@@ -164,7 +164,7 @@ pub(super) fn extract_class(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = build_qualified_name(name_context, &name);
 
     let docstring = extract_jsdoc(node, src);
@@ -246,7 +246,7 @@ pub(super) fn extract_method(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = build_qualified_name(name_context, &name);
 
     let is_async = has_keyword(node, src, "async");
@@ -255,7 +255,7 @@ pub(super) fn extract_method(
     let is_setter = has_keyword(node, src, "set");
     let is_generator = node
         .children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok("*"));
+        .any(|c| !c.is_named() && node_text(c, src) == "*");
     let is_computed = name_node.kind() == "computed_property_name";
 
     let mut attrs = serde_json::Map::new();
@@ -340,7 +340,7 @@ pub(super) fn extract_field(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("property")?;
-    let name = node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = build_qualified_name(name_context, &name);
 
     let is_static = has_keyword(node, src, "static");
@@ -399,7 +399,7 @@ pub(super) fn extract_variable_declarators(
         "lexical_declaration" => node
             .children(&mut node.walk())
             .find(|c| !c.is_named())
-            .map(|c| node_text(c, src))
+            .map(|c| node_text(c, src).to_string())
             .unwrap_or_default(),
         "variable_declaration" => "var".to_string(),
         _ => return,
@@ -414,7 +414,7 @@ pub(super) fn extract_variable_declarators(
             Some(n) if n.kind() == "identifier" => n,
             _ => continue,
         };
-        let name = node_text(name_node, src);
+        let name = node_text(name_node, src).to_string();
         let qualified_name = build_qualified_name(name_context, &name);
 
         let value = child.child_by_field_name("value");
@@ -530,7 +530,7 @@ pub(super) fn handle_export(
 ) {
     let is_default = node
         .children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok("default"));
+        .any(|c| !c.is_named() && node_text(c, src) == "default");
     let vis = if is_default {
         "export default"
     } else {
@@ -585,9 +585,7 @@ pub(super) fn handle_export(
                     if spec.kind() != "export_specifier" {
                         continue;
                     }
-                    let local_name = spec
-                        .child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(src).ok());
+                    let local_name = spec.child_by_field_name("name").map(|n| node_text(n, src));
                     if let Some(name) = local_name {
                         for sym in symbols.iter_mut().rev() {
                             if sym.short_name == name {
@@ -607,10 +605,6 @@ pub(super) fn handle_export(
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub(super) fn node_text(node: Node, src: &[u8]) -> String {
-    node.utf8_text(src).unwrap_or("").to_string()
-}
-
 pub(super) fn build_qualified_name(name_context: &[&str], name: &str) -> String {
     if name_context.is_empty() {
         name.to_string()
@@ -621,7 +615,7 @@ pub(super) fn build_qualified_name(name_context: &[&str], name: &str) -> String 
 
 pub(super) fn has_keyword(node: Node, src: &[u8], keyword: &str) -> bool {
     node.children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok(keyword))
+        .any(|c| !c.is_named() && node_text(c, src) == keyword)
 }
 
 pub(super) fn body_has_node_kind(body: Option<Node>, kind: &str) -> bool {
@@ -693,7 +687,7 @@ pub(super) fn extract_jsdoc(node: Node, src: &[u8]) -> Option<String> {
     if comment.kind() != "comment" {
         return None;
     }
-    let text = comment.utf8_text(src).ok()?;
+    let text = node_text(comment, src);
     if !text.starts_with("/**") {
         return None;
     }
@@ -774,7 +768,7 @@ pub(super) fn is_inside_test_call(node: Node, src: &[u8]) -> bool {
         if p.kind() == "call_expression"
             && let Some(func) = p.child_by_field_name("function")
         {
-            let name = func.utf8_text(src).unwrap_or("");
+            let name = node_text(func, src);
             if matches!(
                 name,
                 "describe" | "it" | "test" | "beforeEach" | "afterEach" | "beforeAll" | "afterAll"
@@ -799,7 +793,7 @@ pub(super) fn build_fn_signature(
     is_generator: bool,
 ) -> Option<String> {
     let params = node.child_by_field_name("parameters")?;
-    let params_text = params.utf8_text(src).ok()?;
+    let params_text = node_text(params, src);
     let mut sig = String::new();
     if is_async {
         sig.push_str("async ");
@@ -821,9 +815,9 @@ pub(super) fn build_arrow_signature(
     is_async: bool,
 ) -> Option<String> {
     let params_text = if let Some(params) = node.child_by_field_name("parameters") {
-        params.utf8_text(src).ok()?.to_string()
+        node_text(params, src).to_string()
     } else if let Some(param) = node.child_by_field_name("parameter") {
-        format!("({})", param.utf8_text(src).ok()?)
+        format!("({})", node_text(param, src))
     } else {
         return None;
     };
@@ -856,7 +850,7 @@ fn build_method_signature(
     modifiers: MethodModifiers,
 ) -> Option<String> {
     let params = node.child_by_field_name("parameters")?;
-    let params_text = params.utf8_text(src).ok()?;
+    let params_text = node_text(params, src);
     let mut sig = String::new();
     if modifiers.is_static {
         sig.push_str("static ");
@@ -937,7 +931,7 @@ const JS_DEF_KINDS: &[&str] = &[
 
 fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?;
+    let name = node_text(name_node, src);
     let line = node.start_position().row + 1;
     symbols
         .iter()
@@ -978,8 +972,8 @@ fn build_scopes_recursive(
         if (child.kind() == "function_declaration"
             || child.kind() == "generator_function_declaration")
             && let Some(name_node) = child.child_by_field_name("name")
-            && let Ok(name) = name_node.utf8_text(src)
         {
+            let name = node_text(name_node, src);
             let hoist_target = find_hoist_target(arena, parent_idx);
             arena[hoist_target].hoisted_bindings.push(name.to_string());
         }
@@ -1125,12 +1119,11 @@ fn collect_block_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, u
 fn is_block_scoped_declaration(node: Node, src: &[u8]) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Ok(text) = child.utf8_text(src) {
-            match text {
-                "let" | "const" => return true,
-                "var" => return false,
-                _ => {}
-            }
+        let text = node_text(child, src);
+        match text {
+            "let" | "const" => return true,
+            "var" => return false,
+            _ => {}
         }
     }
     false
@@ -1179,8 +1172,8 @@ fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, us
     // Single-param arrow: `x => ...`
     if let Some(param) = func.child_by_field_name("parameter")
         && param.kind() == "identifier"
-        && let Ok(name) = param.utf8_text(src)
     {
+        let name = node_text(param, src);
         bindings.push((name.to_string(), func.start_position().row + 1));
     }
 
@@ -1192,9 +1185,8 @@ fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, us
     for child in params.children(&mut cursor) {
         match child.kind() {
             "identifier" => {
-                if let Ok(name) = child.utf8_text(src) {
-                    bindings.push((name.to_string(), decl_line));
-                }
+                let name = node_text(child, src);
+                bindings.push((name.to_string(), decl_line));
             }
             "assignment_pattern" => {
                 if let Some(left) = child.child_by_field_name("left") {
@@ -1204,9 +1196,8 @@ fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, us
             "rest_pattern" => {
                 let mut rc = child.walk();
                 for inner in child.children(&mut rc) {
-                    if inner.kind() == "identifier"
-                        && let Ok(name) = inner.utf8_text(src)
-                    {
+                    if inner.kind() == "identifier" {
+                        let name = node_text(inner, src);
                         bindings.push((name.to_string(), decl_line));
                     }
                 }
@@ -1222,9 +1213,8 @@ fn collect_param_bindings(func: Node, src: &[u8], bindings: &mut Vec<(String, us
 fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(String, usize)>) {
     match pat.kind() {
         "identifier" => {
-            if let Ok(name) = pat.utf8_text(src)
-                && name != "_"
-            {
+            let name = node_text(pat, src);
+            if name != "_" {
                 names.push((name.to_string(), line));
             }
         }
@@ -1240,18 +1230,16 @@ fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(St
             }
         }
         "shorthand_property_identifier_pattern" => {
-            if let Ok(name) = pat.utf8_text(src)
-                && name != "_"
-            {
+            let name = node_text(pat, src);
+            if name != "_" {
                 names.push((name.to_string(), line));
             }
         }
         "rest_pattern" => {
             let mut cursor = pat.walk();
             for child in pat.children(&mut cursor) {
-                if child.kind() == "identifier"
-                    && let Ok(name) = child.utf8_text(src)
-                {
+                if child.kind() == "identifier" {
+                    let name = node_text(child, src);
                     names.push((name.to_string(), line));
                 }
             }
@@ -1290,9 +1278,8 @@ fn collect_for_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, usiz
                 .is_some_and(|l| l.id() == child.id())
         {
             let decl_line = child.start_position().row + 1;
-            if let Ok(name) = child.utf8_text(src) {
-                bindings.push((name.to_string(), decl_line));
-            }
+            let name = node_text(child, src);
+            bindings.push((name.to_string(), decl_line));
         }
     }
 }
@@ -1396,9 +1383,8 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
 
     match node.kind() {
         "identifier" => {
-            if !is_definition_name(node)
-                && let Ok(name) = node.utf8_text(src)
-            {
+            if !is_definition_name(node) {
+                let name = node_text(node, src);
                 let ctx = classify_ref_context(node);
                 refs.push(ExtractedRef {
                     name: name.to_string(),
@@ -1414,16 +1400,15 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         "property_identifier" => {
             if let Some(parent) = node.parent()
                 && parent.kind() == "member_expression"
-                && let Ok(name) = node.utf8_text(src)
             {
+                let name = node_text(node, src);
                 let is_call = parent
                     .parent()
                     .is_some_and(|gp| gp.kind() == "call_expression");
                 let receiver = parent
                     .child_by_field_name("object")
                     .filter(|o| o.kind() == "identifier")
-                    .and_then(|o| o.utf8_text(src).ok())
-                    .map(|s| s.to_string());
+                    .map(|o| node_text(o, src).to_string());
 
                 refs.push(ExtractedRef {
                     name: name.to_string(),
@@ -1442,17 +1427,16 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
         }
         "shorthand_property_identifier" => {
             // `{ foo }` in an object literal — a value reference.
-            if let Ok(name) = node.utf8_text(src) {
-                refs.push(ExtractedRef {
-                    name: name.to_string(),
-                    line: node.start_position().row + 1,
-                    col: node.start_position().column,
-                    context_kind: RefContextKind::Other,
-                    resolved_local_target: None,
-                    receiver: None,
-                    qualifier: None,
-                });
-            }
+            let name = node_text(node, src);
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind: RefContextKind::Other,
+                resolved_local_target: None,
+                receiver: None,
+                qualifier: None,
+            });
         }
         _ => {}
     }
@@ -1632,11 +1616,11 @@ fn extract_es_import(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>)
                         let mut nc = child.walk();
                         child.children(&mut nc).find(|n| n.kind() == "identifier")
                     }) {
-                        alias = name.utf8_text(src).ok().map(|s| s.to_string());
+                        alias = Some(node_text(name, src).to_string());
                     }
                 }
                 "identifier" => {
-                    alias = child.utf8_text(src).ok().map(|s| s.to_string());
+                    alias = Some(node_text(child, src).to_string());
                 }
                 _ => {}
             }
@@ -1656,9 +1640,7 @@ fn extract_require_or_dynamic_import(node: Node, src: &[u8], imports: &mut Vec<E
     let Some(func) = node.child_by_field_name("function") else {
         return;
     };
-    let Ok(func_name) = func.utf8_text(src) else {
-        return;
-    };
+    let func_name = node_text(func, src);
 
     let kind = match func_name {
         "require" => "require",
@@ -1687,7 +1669,7 @@ fn extract_require_or_dynamic_import(node: Node, src: &[u8], imports: &mut Vec<E
 }
 
 pub(super) fn extract_string_content(node: Node, src: &[u8]) -> Option<String> {
-    let text = node.utf8_text(src).ok()?;
+    let text = node_text(node, src);
     let trimmed = text.trim_matches(|c| c == '\'' || c == '"' || c == '`');
     Some(trimmed.to_string())
 }

@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity, structural_hash,
@@ -52,7 +52,7 @@ fn build_scope_arena(root: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Ve
 /// Find the symbol index matching an AST definition node by name and line.
 fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?;
+    let name = node_text(name_node, src);
     let line = node.start_position().row + 1;
     symbols
         .iter()
@@ -213,9 +213,8 @@ fn collect_let_bindings(block: Node, src: &[u8], bindings: &mut Vec<(String, usi
 fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(String, usize)>) {
     match pat.kind() {
         "identifier" | "shorthand_field_identifier" => {
-            if let Ok(name) = pat.utf8_text(src)
-                && name != "_"
-            {
+            let name = node_text(pat, src);
+            if name != "_" {
                 names.push((name.to_string(), line));
             }
         }
@@ -407,7 +406,7 @@ fn extract_flags(node: Node, src: &[u8]) -> u32 {
     let mut sib = node.prev_sibling();
     while let Some(s) = sib {
         if s.kind() == "attribute_item" {
-            let text = s.utf8_text(src).unwrap_or("");
+            let text = node_text(s, src);
             let (path, _) = attribute_path_and_args(text);
             if is_test_fn_attribute(path) || path == "bench" {
                 flags |= FLAG_TEST;
@@ -432,7 +431,7 @@ fn has_cfg_test_attr(node: Node, src: &[u8]) -> bool {
     let mut sib = node.prev_sibling();
     while let Some(s) = sib {
         if s.kind() == "attribute_item" {
-            let text = s.utf8_text(src).unwrap_or("");
+            let text = node_text(s, src);
             if text.contains("cfg(test)") || text.contains("cfg( test )") {
                 return true;
             }
@@ -658,19 +657,19 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
                 };
                 if let Some(tn) = type_node {
                     let name = match tn.kind() {
-                        "type_identifier" => tn.utf8_text(src).ok(),
+                        "type_identifier" => Some(node_text(tn, src)),
                         "scoped_type_identifier" => {
                             let mut c = tn.walk();
                             tn.children(&mut c)
                                 .filter(|ch| ch.kind() == "type_identifier")
                                 .last()
-                                .and_then(|ch| ch.utf8_text(src).ok())
+                                .map(|ch| node_text(ch, src))
                         }
                         "reference_type" => {
                             let mut c = tn.walk();
                             tn.named_children(&mut c)
                                 .find(|c| c.kind() == "type_identifier")
-                                .and_then(|c| c.utf8_text(src).ok())
+                                .map(|c| node_text(c, src))
                         }
                         _ => None,
                     };
@@ -693,7 +692,7 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
                 let mut pcursor = params.walk();
                 for child in params.children(&mut pcursor) {
                     if child.kind() == "self_parameter" {
-                        let text = child.utf8_text(src).unwrap_or("");
+                        let text = node_text(child, src);
                         if text.contains("&mut") {
                             attrs.insert("takes_self_mut".into(), true.into());
                         } else if text.contains('&') {
@@ -705,7 +704,7 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
             }
 
             if let Some(type_params) = node.child_by_field_name("type_parameters") {
-                let tp_text = type_params.utf8_text(src).unwrap_or("");
+                let tp_text = node_text(type_params, src);
                 if tp_text.contains('\'') {
                     attrs.insert("has_lifetime_params".into(), true.into());
                 }
@@ -716,7 +715,7 @@ fn extract_language_attrs(node: Node, src: &[u8], kind: SymbolKind) -> Option<St
         }
         SymbolKind::Struct | SymbolKind::Enum => {
             if let Some(type_params) = node.child_by_field_name("type_parameters") {
-                let tp_text = type_params.utf8_text(src).unwrap_or("");
+                let tp_text = node_text(type_params, src);
                 if tp_text.contains('\'') {
                     attrs.insert("has_lifetime_params".into(), true.into());
                 }
@@ -793,14 +792,10 @@ fn extract_field_symbols(body: Node, src: &[u8], name_context: &[String]) -> Vec
         let Some(name_node) = child.child_by_field_name("name") else {
             continue;
         };
-        let Ok(field_name) = name_node.utf8_text(src) else {
-            continue;
-        };
+        let field_name = node_text(name_node, src);
         let qualified_name = build_qualified_name(name_context, field_name);
         let visibility = extract_visibility(child, src);
-        let type_text = child
-            .child_by_field_name("type")
-            .and_then(|t| t.utf8_text(src).ok());
+        let type_text = child.child_by_field_name("type").map(|t| node_text(t, src));
         let signature = type_text.map(|t| format!("{field_name}: {t}"));
         let signature_hash = signature
             .as_ref()
@@ -881,13 +876,13 @@ fn derive_impl_name(node: Node, src: &[u8]) -> Option<String> {
     // and field "trait" for the trait being implemented (if any).
     // The "type" field holds the concrete type.
     if let Some(type_node) = node.child_by_field_name("type") {
-        Some(type_node.utf8_text(src).ok()?.to_string())
+        Some(node_text(type_node, src).to_string())
     } else {
         // Fallback: look for a type_identifier child
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "type_identifier" {
-                return Some(child.utf8_text(src).ok()?.to_string());
+                return Some(node_text(child, src).to_string());
             }
         }
         None
@@ -897,13 +892,13 @@ fn derive_impl_name(node: Node, src: &[u8]) -> Option<String> {
 /// Get the text of a node's `name` field child.
 fn node_name_text(node: Node, src: &[u8]) -> Option<String> {
     if let Some(name_node) = node.child_by_field_name("name") {
-        name_node.utf8_text(src).ok().map(|s| s.to_string())
+        Some(node_text(name_node, src).to_string())
     } else {
         // For macro_definition the name child may use a different field
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "identifier" || child.kind() == "type_identifier" {
-                return child.utf8_text(src).ok().map(|s| s.to_string());
+                return Some(node_text(child, src).to_string());
             }
         }
         None
@@ -922,7 +917,7 @@ fn extract_visibility(node: Node, src: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "visibility_modifier" {
-            return child.utf8_text(src).ok().map(|s| s.to_string());
+            return Some(node_text(child, src).to_string());
         }
     }
     None
@@ -935,37 +930,36 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
     let mut sibling = node.prev_sibling();
     while let Some(sib) = sibling {
         let kind = sib.kind();
-        if let Ok(text) = sib.utf8_text(src) {
-            if kind == "line_comment" && (text.starts_with("///") || text.starts_with("//!")) {
-                // Strip the comment prefix
-                let content = if let Some(s) = text.strip_prefix("/// ") {
-                    s
-                } else if let Some(s) = text.strip_prefix("///") {
-                    s
-                } else if let Some(s) = text.strip_prefix("//! ") {
-                    s
-                } else {
-                    text.strip_prefix("//!").unwrap_or(text)
-                };
-                doc_lines.push(content.to_string());
-                sibling = sib.prev_sibling();
-                continue;
-            } else if kind == "block_comment" && text.starts_with("/**") {
-                // Block doc comment — take the whole thing minus delimiters
-                let inner = text
-                    .strip_prefix("/**")
-                    .unwrap_or(text)
-                    .strip_suffix("*/")
-                    .unwrap_or(text)
-                    .trim();
-                doc_lines.push(inner.to_string());
-                sibling = sib.prev_sibling();
-                continue;
-            } else if kind == "attribute_item" || kind == "attribute" {
-                // Attributes like #[derive(...)] can appear between doc comments and the item
-                sibling = sib.prev_sibling();
-                continue;
-            }
+        let text = node_text(sib, src);
+        if kind == "line_comment" && (text.starts_with("///") || text.starts_with("//!")) {
+            // Strip the comment prefix
+            let content = if let Some(s) = text.strip_prefix("/// ") {
+                s
+            } else if let Some(s) = text.strip_prefix("///") {
+                s
+            } else if let Some(s) = text.strip_prefix("//! ") {
+                s
+            } else {
+                text.strip_prefix("//!").unwrap_or(text)
+            };
+            doc_lines.push(content.to_string());
+            sibling = sib.prev_sibling();
+            continue;
+        } else if kind == "block_comment" && text.starts_with("/**") {
+            // Block doc comment — take the whole thing minus delimiters
+            let inner = text
+                .strip_prefix("/**")
+                .unwrap_or(text)
+                .strip_suffix("*/")
+                .unwrap_or(text)
+                .trim();
+            doc_lines.push(inner.to_string());
+            sibling = sib.prev_sibling();
+            continue;
+        } else if kind == "attribute_item" || kind == "attribute" {
+            // Attributes like #[derive(...)] can appear between doc comments and the item
+            sibling = sib.prev_sibling();
+            continue;
         }
         break;
     }
@@ -990,13 +984,11 @@ fn extract_signature(node: Node, src: &[u8], kind: SymbolKind) -> (Option<String
 fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
     let name = node_name_text(node, src).unwrap_or_default();
     let params_node = node.child_by_field_name("parameters");
-    let params_text = params_node
-        .and_then(|n| n.utf8_text(src).ok())
-        .unwrap_or("()");
+    let params_text = params_node.map(|n| node_text(n, src)).unwrap_or("()");
 
     let ret_type = node
         .child_by_field_name("return_type")
-        .and_then(|n| n.utf8_text(src).ok());
+        .map(|n| node_text(n, src));
 
     let mut sig = format!("fn {name}{params_text}");
     if let Some(rt) = ret_type {
@@ -1004,9 +996,8 @@ fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
     }
 
     // Also check for type_parameters (generics)
-    if let Some(tp) = node.child_by_field_name("type_parameters")
-        && let Ok(tp_text) = tp.utf8_text(src)
-    {
+    if let Some(tp) = node.child_by_field_name("type_parameters") {
+        let tp_text = node_text(tp, src);
         let insert_pos = "fn ".len() + name.len();
         sig.insert_str(insert_pos, tp_text);
     }
@@ -1044,24 +1035,24 @@ fn walk_refs_recursive<'t>(
     let node = cursor.node();
     let kind = node.kind();
 
-    if (kind == "identifier" || kind == "type_identifier")
-        && !is_definition_name(node, anc)
-        && let Ok(name) = node.utf8_text(src)
-        && let Some(PathRef {
+    if (kind == "identifier" || kind == "type_identifier") && !is_definition_name(node, anc) {
+        let name = node_text(node, src);
+        if let Some(PathRef {
             context_kind,
             qualifier,
             receiver,
         }) = classify_ref(node, anc, src, in_use)
-    {
-        refs.push(ExtractedRef {
-            name: name.to_string(),
-            line: node.start_position().row + 1,
-            col: node.start_position().column,
-            context_kind,
-            resolved_local_target: None,
-            receiver,
-            qualifier,
-        });
+        {
+            refs.push(ExtractedRef {
+                name: name.to_string(),
+                line: node.start_position().row + 1,
+                col: node.start_position().column,
+                context_kind,
+                resolved_local_target: None,
+                receiver,
+                qualifier,
+            });
+        }
     }
 
     // A `macro_rules!` body is a template over metavariables, not code.
@@ -1094,17 +1085,15 @@ fn walk_refs_recursive<'t>(
     }
 
     // Method names in call position: foo.method()
-    if kind == "field_identifier"
-        && is_method_call_name(anc)
-        && let Ok(name) = node.utf8_text(src)
-    {
+    if kind == "field_identifier" && is_method_call_name(anc) {
+        let name = node_text(node, src);
         // Capture the receiver identifier from the field_expression's value
         // child; an expression receiver (`a.b().name()`) is recorded as "" so
         // the ref still reads as method-call syntax.
         let receiver = up(anc, 0)
             .and_then(|fe| fe.child_by_field_name("value"))
             .map(|v| match v.kind() {
-                "identifier" | "self" => v.utf8_text(src).unwrap_or_default().to_string(),
+                "identifier" | "self" => node_text(v, src).to_string(),
                 _ => String::new(),
             });
         refs.push(ExtractedRef {
@@ -1211,7 +1200,7 @@ fn classify_path_segment(node: Node, anc: &[Node], src: &[u8]) -> Option<PathRef
     };
     let qualifier = scoped
         .child_by_field_name("path")
-        .and_then(|p| p.utf8_text(src).ok())
+        .map(|p| node_text(p, src))
         .filter(|t| !t.starts_with('<'))
         .map(strip_generic_args);
     Some(PathRef {
@@ -1223,7 +1212,7 @@ fn classify_path_segment(node: Node, anc: &[Node], src: &[u8]) -> Option<PathRef
 
 /// A non-final path segment: `Config` in `Config::new()` names a type.
 fn type_path_segment(node: Node, src: &[u8]) -> Option<PathRef> {
-    let text = node.utf8_text(src).ok()?;
+    let text = node_text(node, src);
     (text.starts_with(char::is_uppercase) && text != "Self")
         .then(|| PathRef::bare(RefContextKind::TypeUse))
 }
@@ -1320,7 +1309,7 @@ fn classify_token_tree_ident(node: Node, src: &[u8]) -> Option<PathRef> {
             let receiver = prev
                 .and_then(|dot| dot.prev_sibling())
                 .filter(|r| matches!(r.kind(), "identifier" | "self"))
-                .and_then(|r| r.utf8_text(src).ok())
+                .map(|r| node_text(r, src))
                 .unwrap_or_default()
                 .to_string();
             Some(PathRef {
@@ -1339,7 +1328,7 @@ fn classify_token_tree_ident(node: Node, src: &[u8]) -> Option<PathRef> {
                 else {
                     break;
                 };
-                segments.push(seg.utf8_text(src).ok()?);
+                segments.push(node_text(seg, src));
                 sep = seg.prev_sibling();
             }
             if segments.is_empty() {
@@ -1383,10 +1372,9 @@ fn format_arg(macro_name: &str) -> Option<FormatArg> {
 /// string. `name` is the macro path, `args` its token tree. A name supplied
 /// explicitly (`format!("{x}", x = 1)`) is an argument, not a capture.
 fn push_format_string_refs(refs: &mut Vec<ExtractedRef>, name: Node, args: Node, src: &[u8]) {
-    let Some(position) = name
-        .utf8_text(src)
-        .ok()
-        .and_then(|n| n.rsplit("::").next())
+    let Some(position) = node_text(name, src)
+        .rsplit("::")
+        .next()
         .and_then(format_arg)
     else {
         return;
@@ -1410,7 +1398,7 @@ fn push_format_string_refs(refs: &mut Vec<ExtractedRef>, name: Node, args: Node,
         .iter()
         .filter_map(|arg| match arg {
             [ident, eq, ..] if ident.kind() == "identifier" && eq.kind() == "=" => {
-                ident.utf8_text(src).ok()
+                Some(node_text(*ident, src))
             }
             _ => None,
         })
@@ -1426,9 +1414,7 @@ fn push_format_string_refs(refs: &mut Vec<ExtractedRef>, name: Node, args: Node,
 }
 
 fn push_format_arg_refs(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
-    let Ok(text) = node.utf8_text(src) else {
-        return;
-    };
+    let text = node_text(node, src);
     let start = node.start_position();
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -1480,9 +1466,7 @@ const SERDE_FN_KEYS: &[&str] = &[
 /// Emit a `Call` ref for each function a `#[serde(...)]` attribute names in
 /// a string (`default = "one"`, `skip_serializing_if = "Option::is_none"`).
 fn push_serde_fn_refs(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
-    let Ok(text) = node.utf8_text(src) else {
-        return;
-    };
+    let text = node_text(node, src);
     if !text.contains("serde") {
         return;
     }
@@ -1694,9 +1678,7 @@ fn is_test_fn_attribute(path: &str) -> bool {
 /// `#[test]` (and namespaced variants like `#[tokio::test]`) plus `cfg`
 /// predicates that hold only under `cfg(test)`.
 fn attribute_marks_test(node: Node, src: &[u8]) -> bool {
-    let Ok(text) = node.utf8_text(src) else {
-        return false;
-    };
+    let text = node_text(node, src);
     let (path, args) = attribute_path_and_args(text);
     if is_test_fn_attribute(path) {
         return true;
@@ -1798,9 +1780,8 @@ fn walk_imports_recursive(
 
     // The `argument` field skips a visibility (`pub use`, `pub(crate) use`).
     if node.kind() == "use_declaration" {
-        if let Some(argument) = node.child_by_field_name("argument")
-            && let Ok(raw) = argument.utf8_text(src)
-        {
+        if let Some(argument) = node.child_by_field_name("argument") {
+            let raw = node_text(argument, src);
             let line = node.start_position().row + 1;
             for path in expand_braced_import(raw) {
                 let (raw_path, alias) = match path.split_once(" as ") {
@@ -1823,8 +1804,8 @@ fn walk_imports_recursive(
 
     if node.kind() == "mod_item"
         && let Some(name_node) = node.child_by_field_name("name")
-        && let Ok(name) = name_node.utf8_text(src)
     {
+        let name = node_text(name_node, src);
         if node.child_by_field_name("body").is_none() {
             let mut path = String::from("self");
             for seg in inline_mod_prefix {

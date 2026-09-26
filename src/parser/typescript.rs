@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::javascript;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
@@ -138,7 +138,7 @@ fn extract_interface(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let docstring = javascript::extract_jsdoc(node, src);
@@ -208,13 +208,13 @@ fn extract_property_signature(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let is_readonly = javascript::has_keyword(node, src, "readonly");
     let is_optional = node
         .children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok("?"));
+        .any(|c| !c.is_named() && node_text(c, src) == "?");
 
     let mut attrs = serde_json::Map::new();
     if is_readonly {
@@ -259,21 +259,21 @@ fn extract_method_signature(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let is_optional = node
         .children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok("?"));
+        .any(|c| !c.is_named() && node_text(c, src) == "?");
 
     let mut attrs = serde_json::Map::new();
     if is_optional {
         attrs.insert("optional".into(), true.into());
     }
 
-    let sig = node.child_by_field_name("parameters").and_then(|params| {
-        let params_text = params.utf8_text(src).ok()?;
-        Some(format!("{name}{params_text}"))
+    let sig = node.child_by_field_name("parameters").map(|params| {
+        let params_text = node_text(params, src);
+        format!("{name}{params_text}")
     });
     let sig_hash = sig
         .as_ref()
@@ -317,7 +317,7 @@ fn extract_type_alias(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let docstring = javascript::extract_jsdoc(node, src);
@@ -361,7 +361,7 @@ fn extract_enum(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let docstring = javascript::extract_jsdoc(node, src);
@@ -391,7 +391,7 @@ fn extract_enum(
                 continue;
             };
             let Some(mn) = mn else { continue };
-            let mname = javascript::node_text(mn, src);
+            let mname = node_text(mn, src).to_string();
             let mq = javascript::build_qualified_name(&ctx, &mname);
             let anchor = if member.kind() == "enum_member" {
                 member
@@ -455,7 +455,7 @@ fn extract_namespace(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let docstring = javascript::extract_jsdoc(node, src);
@@ -507,7 +507,7 @@ fn extract_class(
     is_abstract: bool,
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let docstring = javascript::extract_jsdoc(node, src);
@@ -631,7 +631,7 @@ fn extract_field(
     let name_node = node
         .child_by_field_name("property")
         .or_else(|| node.child_by_field_name("name"))?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
 
     let is_static = javascript::has_keyword(node, src, "static");
@@ -707,7 +707,7 @@ fn handle_export(
 ) {
     let is_default = node
         .children(&mut node.walk())
-        .any(|c| !c.is_named() && c.utf8_text(src) == Ok("default"));
+        .any(|c| !c.is_named() && node_text(c, src) == "default");
     let vis = if is_default {
         "export default"
     } else {
@@ -806,9 +806,7 @@ fn handle_export(
                     if spec.kind() != "export_specifier" {
                         continue;
                     }
-                    let local_name = spec
-                        .child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(src).ok());
+                    let local_name = spec.child_by_field_name("name").map(|n| node_text(n, src));
                     if let Some(name) = local_name {
                         for sym in symbols.iter_mut().rev() {
                             if sym.short_name == name {
@@ -902,7 +900,7 @@ fn extract_function_signature(
     name_context: &[&str],
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = javascript::node_text(name_node, src);
+    let name = node_text(name_node, src).to_string();
     let qualified_name = javascript::build_qualified_name(name_context, &name);
     let docstring = javascript::extract_jsdoc(node, src);
     let flags = javascript::extract_flags(node, src, file_path);
@@ -911,9 +909,9 @@ fn extract_function_signature(
         src,
         Some((name_node.start_byte(), name_node.end_byte())),
     );
-    let sig = node.child_by_field_name("parameters").and_then(|params| {
-        let params_text = params.utf8_text(src).ok()?;
-        Some(format!("function {name}{params_text}"))
+    let sig = node.child_by_field_name("parameters").map(|params| {
+        let params_text = node_text(params, src);
+        format!("function {name}{params_text}")
     });
     let sig_hash = sig
         .as_ref()
@@ -948,7 +946,7 @@ fn extract_function_signature(
 fn get_accessibility(node: Node, src: &[u8]) -> Option<String> {
     for child in node.children(&mut node.walk()) {
         if child.kind() == "accessibility_modifier" {
-            return child.utf8_text(src).ok().map(|s| s.to_string());
+            return Some(node_text(child, src).to_string());
         }
     }
     None
@@ -967,9 +965,8 @@ fn collect_decorators(
 ) {
     let mut decorators = Vec::new();
     for child in node.children(&mut node.walk()) {
-        if child.kind() == "decorator"
-            && let Ok(text) = child.utf8_text(src)
-        {
+        if child.kind() == "decorator" {
+            let text = node_text(child, src);
             let name = text.trim_start_matches('@');
             let name = name.split('(').next().unwrap_or(name);
             decorators.push(serde_json::Value::String(name.to_string()));
@@ -992,15 +989,12 @@ fn collect_type_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8])
 fn walk_type_refs(cursor: &mut TreeCursor, src: &[u8], refs: &mut Vec<ExtractedRef>) {
     let node = cursor.node();
 
-    if node.kind() == "type_identifier"
-        && !is_type_definition(node)
-        && let Ok(name) = node.utf8_text(src)
-    {
+    if node.kind() == "type_identifier" && !is_type_definition(node) {
+        let name = node_text(node, src);
         let receiver = node.parent().and_then(|p| {
             if p.kind() == "nested_type_identifier" {
                 p.child_by_field_name("module")
-                    .and_then(|m| m.utf8_text(src).ok())
-                    .map(|s| s.to_string())
+                    .map(|m| node_text(m, src).to_string())
             } else {
                 None
             }
@@ -1106,7 +1100,7 @@ fn has_type_keyword(node: Node, src: &[u8]) -> bool {
     let mut found_lead = false;
     for child in node.children(&mut node.walk()) {
         if !child.is_named() {
-            let text = child.utf8_text(src).unwrap_or("");
+            let text = node_text(child, src);
             if text == "import" || text == "export" {
                 found_lead = true;
             } else if text == "type" && found_lead {

@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::db::Db;
 use crate::git;
-use crate::parser::adapter::LanguageRegistry;
+use crate::parser::adapter::{LanguageRegistry, node_text};
 use crate::similarity::{codebook::Codebook, encoder, hrr::HrrVec};
 
 const RUST_FN_KINDS: &[&str] = &["function_item"];
@@ -104,9 +104,9 @@ fn extract_functions(tree: &tree_sitter::Tree, source: &[u8], fn_kinds: &[&str])
     while let Some(node) = stack.pop() {
         if fn_kinds.contains(&node.kind())
             && let Some(name_node) = node.child_by_field_name("name")
-            && let Ok(name) = name_node.utf8_text(source)
-            && let Ok(src) = node.utf8_text(source)
         {
+            let name = node_text(name_node, source);
+            let src = node_text(node, source);
             results.push(FnNode {
                 name: name.to_string(),
                 source: src.to_string(),

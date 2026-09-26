@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
     complexity, structural_hash,
@@ -234,7 +234,7 @@ fn extract_function(node: Node, src: &[u8], file_path: &str) -> Option<Extracted
 
 fn extract_struct(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
     let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
     let sh = Some(structural_hash::compute(
         node,
@@ -279,9 +279,7 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
         let Some(field_name) = find_field_identifier(child, src) else {
             continue;
         };
-        let type_text = child
-            .child_by_field_name("type")
-            .and_then(|t| t.utf8_text(src).ok());
+        let type_text = child.child_by_field_name("type").map(|t| node_text(t, src));
         let signature = type_text.map(|t| format!("{t} {field_name}"));
         let signature_hash = signature
             .as_ref()
@@ -320,7 +318,7 @@ fn extract_struct_fields(body: Node, src: &[u8], struct_name: &str) -> Vec<Extra
 }
 
 fn find_field_identifier(node: Node, src: &[u8]) -> Option<String> {
-    find_field_identifier_node(node).and_then(|n| n.utf8_text(src).ok().map(|s| s.to_string()))
+    find_field_identifier_node(node).map(|n| node_text(n, src).to_string())
 }
 
 fn find_field_identifier_node(node: Node) -> Option<Node> {
@@ -338,7 +336,7 @@ fn find_field_identifier_node(node: Node) -> Option<Node> {
 
 fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
     let docstring = extract_docstring(doc_anchor.unwrap_or(node), src);
     let sh = Some(structural_hash::compute(
         node,
@@ -370,10 +368,12 @@ fn extract_enum(node: Node, src: &[u8], doc_anchor: Option<Node>) -> Option<Extr
 
 fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<ExtractedSymbol>) {
     let docstring = extract_docstring(node, src);
-    let signature = node
-        .utf8_text(src)
-        .ok()
-        .map(|s| s.trim_end_matches(';').trim().to_string());
+    let signature = Some(
+        node_text(node, src)
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+    );
     let signature_hash = signature
         .as_ref()
         .map(|s| blake3::hash(s.as_bytes()).to_hex().to_string());
@@ -412,7 +412,7 @@ fn collect_typedef_declarators(node: Node, src: &[u8], symbols: &mut Vec<Extract
 
 fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
     let flags = extract_flags(file_path, &name, node);
     let docstring = extract_docstring(node, src);
     let sh = Some(structural_hash::compute(
@@ -445,7 +445,7 @@ fn extract_macro(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSym
 
 fn extract_const_define(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
 
     if is_header_guard(&name) {
         return None;
@@ -555,7 +555,7 @@ fn field_children<'a>(node: Node<'a>, field: &str) -> Vec<Node<'a>> {
 fn find_name_in_declarator(node: Node, src: &[u8]) -> Option<String> {
     match node.kind() {
         "identifier" | "type_identifier" | "field_identifier" | "primitive_type" => {
-            node.utf8_text(src).ok().map(|s| s.to_string())
+            Some(node_text(node, src).to_string())
         }
         "pointer_declarator"
         | "array_declarator"
@@ -611,9 +611,7 @@ fn has_specifier(node: Node, src: &[u8], keyword: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "storage_class_specifier" | "type_qualifier"
-                if child.utf8_text(src).ok() == Some(keyword) =>
-            {
+            "storage_class_specifier" | "type_qualifier" if node_text(child, src) == keyword => {
                 return true;
             }
             _ => {}
@@ -629,20 +627,19 @@ fn extract_docstring(node: Node, src: &[u8]) -> Option<String> {
         if sib.kind() != "comment" {
             break;
         }
-        if let Ok(text) = sib.utf8_text(src) {
-            if let Some(inner) = text.strip_prefix("/**") {
-                let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
-                doc_lines.push(inner.to_string());
-            } else if let Some(inner) = text.strip_prefix("/*") {
-                let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
-                doc_lines.push(inner.to_string());
-            } else {
-                let content = text
-                    .strip_prefix("// ")
-                    .or_else(|| text.strip_prefix("//"))
-                    .unwrap_or(text);
-                doc_lines.push(content.to_string());
-            }
+        let text = node_text(sib, src);
+        if let Some(inner) = text.strip_prefix("/**") {
+            let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
+            doc_lines.push(inner.to_string());
+        } else if let Some(inner) = text.strip_prefix("/*") {
+            let inner = inner.strip_suffix("*/").unwrap_or(inner).trim();
+            doc_lines.push(inner.to_string());
+        } else {
+            let content = text
+                .strip_prefix("// ")
+                .or_else(|| text.strip_prefix("//"))
+                .unwrap_or(text);
+            doc_lines.push(content.to_string());
         }
         sibling = sib.prev_sibling();
     }
@@ -675,7 +672,7 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
     }
 
     if let Some(type_node) = node.child_by_field_name("type")
-        && type_node.utf8_text(src).ok() == Some("void")
+        && node_text(type_node, src) == "void"
         && !has_pointer_return(declarator)
     {
         attrs.insert("returns_void".into(), true.into());
@@ -701,7 +698,7 @@ fn extract_fn_language_attrs(node: Node, src: &[u8], declarator: Node) -> Option
             }
         }
 
-        let params_text = params.utf8_text(src).unwrap_or("");
+        let params_text = node_text(params, src);
         if params_text.contains('*') {
             attrs.insert("takes_ptr".into(), true.into());
         }
@@ -740,42 +737,40 @@ fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, sr
 
     match kind {
         "identifier" if !is_definition_name(node) => {
-            if let Ok(name) = node.utf8_text(src) {
-                let context_kind = classify_ref_context(node);
-                if context_kind != RefContextKind::Other {
-                    refs.push(ExtractedRef {
-                        name: name.to_string(),
-                        line: node.start_position().row + 1,
-                        col: node.start_position().column,
-                        context_kind,
-                        resolved_local_target: None,
-                        receiver: None,
-                        qualifier: None,
-                    });
-                }
+            let name = node_text(node, src);
+            let context_kind = classify_ref_context(node);
+            if context_kind != RefContextKind::Other {
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind,
+                    resolved_local_target: None,
+                    receiver: None,
+                    qualifier: None,
+                });
             }
         }
         "type_identifier" if !is_definition_name(node) => {
-            if let Ok(name) = node.utf8_text(src) {
-                let context_kind = classify_ref_context(node);
-                if context_kind != RefContextKind::Other {
-                    refs.push(ExtractedRef {
-                        name: name.to_string(),
-                        line: node.start_position().row + 1,
-                        col: node.start_position().column,
-                        context_kind,
-                        resolved_local_target: None,
-                        receiver: None,
-                        qualifier: None,
-                    });
-                }
+            let name = node_text(node, src);
+            let context_kind = classify_ref_context(node);
+            if context_kind != RefContextKind::Other {
+                refs.push(ExtractedRef {
+                    name: name.to_string(),
+                    line: node.start_position().row + 1,
+                    col: node.start_position().column,
+                    context_kind,
+                    resolved_local_target: None,
+                    receiver: None,
+                    qualifier: None,
+                });
             }
         }
         "field_identifier" => {
             if let Some(parent) = node.parent()
                 && parent.kind() == "field_expression"
-                && let Ok(name) = node.utf8_text(src)
             {
+                let name = node_text(node, src);
                 let context_kind = if parent
                     .parent()
                     .is_some_and(|gp| gp.kind() == "call_expression")
@@ -898,8 +893,8 @@ fn collect_includes(node: Node, src: &[u8]) -> Vec<ExtractedImport> {
     for child in node.children(&mut cursor) {
         if child.kind() == "preproc_include"
             && let Some(path_node) = child.child_by_field_name("path")
-            && let Ok(raw_path) = path_node.utf8_text(src)
         {
+            let raw_path = node_text(path_node, src);
             imports.push(ExtractedImport {
                 raw_path: raw_path.to_string(),
                 line: child.start_position().row + 1,

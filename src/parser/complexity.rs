@@ -1,3 +1,4 @@
+use crate::parser::adapter::node_text;
 use tree_sitter::Node;
 
 /// Cyclomatic complexity: count of linearly independent paths.
@@ -260,9 +261,8 @@ fn is_logical_operator(node: Node, src: &[u8]) -> bool {
     if node.kind() == "boolean_operator" {
         return true;
     }
-    if let Some(op) = node.child_by_field_name("operator")
-        && let Ok(text) = op.utf8_text(src)
-    {
+    if let Some(op) = node.child_by_field_name("operator") {
+        let text = node_text(op, src);
         return text == "&&" || text == "||" || text == "??";
     }
     false

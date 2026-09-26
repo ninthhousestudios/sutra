@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::parser::adapter::ParseContext;
+use crate::parser::adapter::{ParseContext, node_text};
 use crate::parser::dart::TYPE_TRACKING_PREFIX;
 use crate::parser::{
     ExtractedImport, ExtractedRef, ExtractedSymbol, ParseResult, RefContextKind, SymbolKind,
@@ -49,7 +49,7 @@ fn build_scope_arena(root: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Ve
 
 fn find_symbol_for_node(node: Node, src: &[u8], symbols: &[&ExtractedSymbol]) -> Option<usize> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?;
+    let name = node_text(name_node, src);
     let line = node.start_position().row + 1;
     symbols
         .iter()
@@ -65,7 +65,7 @@ fn find_symbol_for_decorated(
     for child in dec_node.children(&mut cursor) {
         if matches!(child.kind(), "function_definition" | "class_definition") {
             let name_node = child.child_by_field_name("name")?;
-            let name = name_node.utf8_text(src).ok()?;
+            let name = node_text(name_node, src);
             let dec_line = dec_node.start_position().row + 1;
             return symbols
                 .iter()
@@ -177,22 +177,20 @@ fn collect_param_bindings(func_node: Node, src: &[u8], bindings: &mut Vec<(Strin
     for child in params.children(&mut cursor) {
         match child.kind() {
             "identifier" => {
-                if let Ok(name) = child.utf8_text(src) {
-                    bindings.push((name.to_string(), line));
-                }
+                let name = node_text(child, src);
+                bindings.push((name.to_string(), line));
             }
             "typed_parameter" | "typed_default_parameter" | "default_parameter" => {
-                if let Some(name_node) = child.child_by_field_name("name")
-                    && let Ok(name) = name_node.utf8_text(src)
-                {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = node_text(name_node, src);
                     bindings.push((name.to_string(), line));
                 }
             }
             "list_splat_pattern" | "dictionary_splat_pattern" => {
                 if let Some(inner) = child.named_child(0)
                     && inner.kind() == "identifier"
-                    && let Ok(name) = inner.utf8_text(src)
                 {
+                    let name = node_text(inner, src);
                     bindings.push((name.to_string(), line));
                 }
             }
@@ -247,8 +245,8 @@ fn collect_local_bindings(node: Node, src: &[u8], bindings: &mut Vec<(String, us
                     if item.kind() == "as_pattern"
                         && let Some(alias) = item.child_by_field_name("alias")
                         && alias.kind() == "identifier"
-                        && let Ok(name) = alias.utf8_text(src)
                     {
+                        let name = node_text(alias, src);
                         bindings.push((name.to_string(), line));
                     }
                 }
@@ -294,9 +292,8 @@ fn collect_binding_pattern_names(
 ) {
     match node.kind() {
         "identifier" => {
-            if let Ok(name) = node.utf8_text(src)
-                && name != "_"
-            {
+            let name = node_text(node, src);
+            if name != "_" {
                 bindings.push((name.to_string(), line));
             }
         }
@@ -319,8 +316,8 @@ fn collect_except_bindings(try_node: Node, src: &[u8], bindings: &mut Vec<(Strin
                 if grandchild.kind() == "as_pattern"
                     && let Some(alias) = grandchild.child_by_field_name("alias")
                     && alias.kind() == "identifier"
-                    && let Ok(name) = alias.utf8_text(src)
                 {
+                    let name = node_text(alias, src);
                     bindings.push((name.to_string(), child.start_position().row + 1));
                 }
             }
@@ -441,7 +438,7 @@ fn extract_py_type_binding(assign: Node, src: &[u8]) -> Option<PyTypeBinding> {
     if left.kind() != "identifier" {
         return None;
     }
-    let var_name = left.utf8_text(src).ok()?;
+    let var_name = node_text(left, src);
 
     let right = assign.child_by_field_name("right")?;
     let class_name = py_constructor_type(right, src)?;
@@ -459,7 +456,7 @@ fn extract_py_type_binding(assign: Node, src: &[u8]) -> Option<PyTypeBinding> {
 fn py_constructor_type(node: Node, src: &[u8]) -> Option<String> {
     if node.kind() == "call" {
         let func = node.child_by_field_name("function")?;
-        let name = func.utf8_text(src).ok()?;
+        let name = node_text(func, src);
         if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             return Some(name.to_string());
         }
@@ -502,7 +499,7 @@ fn extract_py_call_receiver(node: Node, src: &[u8]) -> Option<String> {
     {
         let obj = parent.child_by_field_name("object")?;
         if obj.kind() == "identifier" {
-            return obj.utf8_text(src).ok().map(|s| s.to_string());
+            return Some(node_text(obj, src).to_string());
         }
     }
     None
@@ -607,10 +604,7 @@ fn has_testcase_superclass(node: Node, src: &[u8]) -> bool {
     let Some(superclasses) = node.child_by_field_name("superclasses") else {
         return false;
     };
-    superclasses
-        .utf8_text(src)
-        .ok()
-        .is_some_and(|text| text.contains("TestCase"))
+    node_text(superclasses, src).contains("TestCase")
 }
 
 // ---------------------------------------------------------------------------
@@ -685,7 +679,7 @@ fn extract_function(
     class_name: Option<&str>,
 ) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
     let sh = Some(structural_hash::compute(
         node,
         src,
@@ -745,7 +739,7 @@ fn extract_function(
 
 fn extract_class(node: Node, src: &[u8], file_path: &str) -> Option<ExtractedSymbol> {
     let name_node = node.child_by_field_name("name")?;
-    let name = name_node.utf8_text(src).ok()?.to_string();
+    let name = node_text(name_node, src).to_string();
     let sh = Some(structural_hash::compute(
         node,
         src,
@@ -803,10 +797,7 @@ fn collect_assignment_symbols(
         _ => return,
     };
 
-    let name = match left.utf8_text(src) {
-        Ok(s) => s.to_string(),
-        Err(_) => return,
-    };
+    let name = node_text(left, src).to_string();
 
     let is_all_caps = !name.is_empty()
         && name
@@ -864,7 +855,7 @@ fn extract_docstring_body(node: Node, src: &[u8]) -> Option<String> {
         let mut inner = child.walk();
         for gc in child.children(&mut inner) {
             if gc.kind() == "string" {
-                let text = gc.utf8_text(src).ok()?;
+                let text = node_text(gc, src);
                 return Some(strip_docstring_quotes(text));
             }
         }
@@ -879,13 +870,12 @@ fn extract_docstring_from_comment(node: Node, src: &[u8]) -> Option<String> {
         if sib.kind() != "comment" {
             break;
         }
-        if let Ok(text) = sib.utf8_text(src) {
-            let content = text
-                .strip_prefix("# ")
-                .or_else(|| text.strip_prefix("#"))
-                .unwrap_or(text);
-            doc_lines.push(content.to_string());
-        }
+        let text = node_text(sib, src);
+        let content = text
+            .strip_prefix("# ")
+            .or_else(|| text.strip_prefix("#"))
+            .unwrap_or(text);
+        doc_lines.push(content.to_string());
         sibling = sib.prev_sibling();
     }
     crate::parser::join_doc_lines(doc_lines)
@@ -911,11 +901,8 @@ fn strip_docstring_quotes(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
-    let name = node.child_by_field_name("name")?.utf8_text(src).ok()?;
-    let params = node
-        .child_by_field_name("parameters")?
-        .utf8_text(src)
-        .ok()?;
+    let name = node_text(node.child_by_field_name("name")?, src);
+    let params = node_text(node.child_by_field_name("parameters")?, src);
 
     let mut sig = String::new();
     if has_async_keyword(node) {
@@ -925,9 +912,8 @@ fn build_fn_signature(node: Node, src: &[u8]) -> Option<String> {
     sig.push_str(name);
     sig.push_str(params);
 
-    if let Some(ret) = node.child_by_field_name("return_type")
-        && let Ok(ret_text) = ret.utf8_text(src)
-    {
+    if let Some(ret) = node.child_by_field_name("return_type") {
+        let ret_text = node_text(ret, src);
         sig.push_str(" -> ");
         sig.push_str(ret_text);
     }
@@ -959,7 +945,7 @@ fn extract_fn_language_attrs(node: Node, src: &[u8]) -> Option<String> {
     }
 
     if let Some(ret) = node.child_by_field_name("return_type")
-        && ret.utf8_text(src).ok() == Some("None")
+        && node_text(ret, src) == "None"
     {
         attrs.insert("returns_none".into(), true.into());
     }
@@ -1007,14 +993,12 @@ fn collect_decorators(node: Node, src: &[u8]) -> Vec<String> {
             }
             match dec_child.kind() {
                 "identifier" | "attribute" => {
-                    if let Ok(name) = dec_child.utf8_text(src) {
-                        decorators.push(name.to_string());
-                    }
+                    let name = node_text(dec_child, src);
+                    decorators.push(name.to_string());
                 }
                 "call" => {
-                    if let Some(func) = dec_child.child_by_field_name("function")
-                        && let Ok(name) = func.utf8_text(src)
-                    {
+                    if let Some(func) = dec_child.child_by_field_name("function") {
+                        let name = node_text(func, src);
                         decorators.push(name.to_string());
                     }
                 }
@@ -1075,10 +1059,8 @@ fn collect_references(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
 fn walk_refs_recursive(refs: &mut Vec<ExtractedRef>, cursor: &mut TreeCursor, src: &[u8]) {
     let node = cursor.node();
 
-    if node.kind() == "identifier"
-        && !is_definition_name(node)
-        && let Ok(name) = node.utf8_text(src)
-    {
+    if node.kind() == "identifier" && !is_definition_name(node) {
+        let name = node_text(node, src);
         let ctx = classify_ref_context(node);
         if ctx != RefContextKind::Other {
             let receiver = if ctx == RefContextKind::Call {
@@ -1134,18 +1116,18 @@ fn build_dotted_call_chain(node: Node, src: &[u8]) -> Option<String> {
         return None;
     }
 
-    let mut segments = vec![node.utf8_text(src).ok()?];
+    let mut segments = vec![node_text(node, src)];
     let mut current = attr_node;
     loop {
         let object = current.child_by_field_name("object")?;
         match object.kind() {
             "identifier" => {
-                segments.push(object.utf8_text(src).ok()?);
+                segments.push(node_text(object, src));
                 break;
             }
             "attribute" => {
                 let attr_part = object.child_by_field_name("attribute")?;
-                segments.push(attr_part.utf8_text(src).ok()?);
+                segments.push(node_text(attr_part, src));
                 current = object;
             }
             _ => return None,
@@ -1319,24 +1301,21 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
     for child in node.children(&mut cursor) {
         match child.kind() {
             "dotted_name" => {
-                if let Ok(path) = child.utf8_text(src) {
-                    imports.push(ExtractedImport {
-                        raw_path: path.to_string(),
-                        line: child.start_position().row + 1,
-                        kind: "import",
-                        alias: None,
-                        is_test: false,
-                    });
-                }
+                let path = node_text(child, src);
+                imports.push(ExtractedImport {
+                    raw_path: path.to_string(),
+                    line: child.start_position().row + 1,
+                    kind: "import",
+                    alias: None,
+                    is_test: false,
+                });
             }
             "aliased_import" => {
-                if let Some(name) = child.child_by_field_name("name")
-                    && let Ok(path) = name.utf8_text(src)
-                {
+                if let Some(name) = child.child_by_field_name("name") {
+                    let path = node_text(name, src);
                     let alias = child
                         .child_by_field_name("alias")
-                        .and_then(|a| a.utf8_text(src).ok())
-                        .map(|s| s.to_string());
+                        .map(|a| node_text(a, src).to_string());
                     imports.push(ExtractedImport {
                         raw_path: path.to_string(),
                         line: name.start_position().row + 1,
@@ -1353,9 +1332,7 @@ fn collect_import_names(node: Node, src: &[u8], imports: &mut Vec<ExtractedImpor
 
 fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport>) {
     let module_node = node.child_by_field_name("module_name");
-    let prefix = module_node
-        .and_then(|m| m.utf8_text(src).ok())
-        .unwrap_or("");
+    let prefix = module_node.map(|m| node_text(m, src)).unwrap_or("");
     let module_id = module_node.map(|m| m.id());
     let line = node.start_position().row + 1;
     let mut found_name = false;
@@ -1366,14 +1343,12 @@ fn collect_import_from(node: Node, src: &[u8], imports: &mut Vec<ExtractedImport
             continue;
         }
         let (name_text, alias_text) = match child.kind() {
-            "dotted_name" => (child.utf8_text(src).ok(), None),
+            "dotted_name" => (Some(node_text(child, src)), None),
             "aliased_import" => (
-                child
-                    .child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(src).ok()),
+                child.child_by_field_name("name").map(|n| node_text(n, src)),
                 child
                     .child_by_field_name("alias")
-                    .and_then(|a| a.utf8_text(src).ok()),
+                    .map(|a| node_text(a, src)),
             ),
             _ => continue,
         };
