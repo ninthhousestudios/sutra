@@ -53,10 +53,11 @@ pub fn rebuild(
             }
         }
 
-        let dart_import_packages = if f.language == "dart" {
-            super::dart_effect_packages(&db.imports_for_file(f.id)?)
-        } else {
-            None
+        let import_effects = match f.language.as_str() {
+            "dart" | "rust" => {
+                super::FileImportEffects::for_file(&f.language, &db.imports_for_file(f.id)?)
+            }
+            _ => None,
         };
 
         for s in &syms {
@@ -72,7 +73,7 @@ pub fn rebuild(
                         &refs,
                         &callee_cache,
                         fca_source,
-                        dart_import_packages.as_ref(),
+                        import_effects.as_ref(),
                     );
                 }
                 all_sym_attrs.push(attrs);

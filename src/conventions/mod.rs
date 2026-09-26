@@ -13,8 +13,8 @@ pub struct SymbolAttrs {
 }
 
 pub use attributes::{
-    AttributeRole, EffectPattern, ResolvedCallee, classify_attribute, dart_effect_packages,
-    enrich_all_effects, enrich_with_dart_import_effects, enrich_with_effects,
+    AttributeRole, EffectPattern, FileImportEffects, ResolvedCallee, classify_attribute,
+    dart_effect_packages, enrich_all_effects, enrich_with_dart_import_effects, enrich_with_effects,
     extract_attrs_for_symbol, extract_cross_language_attrs,
 };
 pub use context::{FormalContext, Implication};

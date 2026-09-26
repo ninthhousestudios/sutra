@@ -155,12 +155,10 @@ pub fn enrich_with_effects(
 
     for pattern in patterns {
         if resolved.iter().any(|c| {
-            pattern.callee_prefixes.iter().any(|p| {
-                c.qualified_name.starts_with(p)
-                    && (c.qualified_name.len() == p.len()
-                        || p.ends_with("::")
-                        || c.qualified_name.as_bytes().get(p.len()) == Some(&b':'))
-            })
+            pattern
+                .callee_prefixes
+                .iter()
+                .any(|p| matches_path_prefix(&c.qualified_name, p))
         }) {
             sym_attrs.attributes.push(pattern.attr_name.to_string());
         }
@@ -214,6 +212,84 @@ pub fn enrich_with_effects(
     {
         sym_attrs.attributes.push("effect:mut_state".into());
     }
+}
+
+/// `path` starts with the `::`-delimited `prefix` at a segment boundary:
+/// `std::fs` matches `std::fs::write` but not `std::fsx`.
+fn matches_path_prefix(path: &str, prefix: &str) -> bool {
+    path.starts_with(prefix)
+        && (path.len() == prefix.len()
+            || prefix.ends_with("::")
+            || path.as_bytes().get(prefix.len()) == Some(&b':'))
+}
+
+/// Rust-specific: detect effects from unresolved path calls. The call's
+/// qualifier and name form the path (`std::fs::write`), and its head segment
+/// expands through the file's `use` bindings, so `fs::write(..)` under
+/// `use std::fs;` and a bare `write(..)` under `use std::fs::write;` both
+/// become `std::fs::write`. Method calls (`conn.execute(..)`) carry a receiver
+/// but no receiver type, so they stay out of reach.
+pub fn enrich_with_rust_path_effects(
+    sym_attrs: &mut SymbolAttrs,
+    call_refs: &[&RefRow],
+    use_bindings: &HashMap<String, String>,
+    patterns: &[EffectPattern],
+) {
+    let paths: Vec<String> = call_refs
+        .iter()
+        .filter(|r| r.target_symbol_id.is_none() && r.receiver.is_none())
+        .filter_map(|r| {
+            let name = r.unresolved_name.as_deref()?;
+            let path = match r.qualifier.as_deref() {
+                Some(q) => format!("{q}::{name}"),
+                None => name.to_string(),
+            };
+            let (head, rest) = match path.split_once("::") {
+                Some((head, rest)) => (head, Some(rest)),
+                None => (path.as_str(), None),
+            };
+            Some(match (use_bindings.get(head), rest) {
+                (Some(full), Some(rest)) => format!("{full}::{rest}"),
+                (Some(full), None) => full.to_string(),
+                (None, _) => path,
+            })
+        })
+        .collect();
+
+    for pattern in patterns {
+        if sym_attrs.attributes.iter().any(|a| a == pattern.attr_name) {
+            continue;
+        }
+        if paths.iter().any(|path| {
+            pattern
+                .callee_prefixes
+                .iter()
+                .any(|p| matches_path_prefix(path, p))
+        }) {
+            sym_attrs.attributes.push(pattern.attr_name.to_string());
+        }
+    }
+}
+
+/// Map each name a Rust file's `use` imports bind to its full path:
+/// `use std::fs;` binds `fs` → `std::fs`, `use std::io::Write as W;` binds
+/// `W` → `std::io::Write`. Glob imports bind no single name and are skipped.
+pub fn rust_use_bindings(imports: &[crate::db::ImportRow]) -> HashMap<String, String> {
+    imports
+        .iter()
+        .filter(|imp| imp.kind == "import")
+        .filter_map(|imp| {
+            let raw = imp.imported_path.trim();
+            let (path, local) = match raw.split_once(" as ") {
+                Some((path, alias)) => (path.trim(), alias.trim()),
+                None => (raw, raw.rsplit("::").next()?),
+            };
+            if local.is_empty() || local == "*" || local == "_" || local == "self" {
+                return None;
+            }
+            Some((local.to_string(), path.to_string()))
+        })
+        .collect()
 }
 
 fn parse_dart_callee_prefix(prefix: &str) -> Option<(&str, Option<&str>)> {
@@ -273,7 +349,8 @@ pub fn enrich_with_dart_import_effects(
     }
 }
 
-/// Shared enrichment: resolved-callee effects + Dart import-based effects.
+/// Shared enrichment: resolved-callee effects + import-based effects (Dart
+/// packages, Rust `use` paths).
 /// Both `conventions/pipeline.rs` rebuild and `tools/review.rs` review-time
 /// attribute building must call this to stay in sync.
 pub fn enrich_all_effects(
@@ -282,7 +359,7 @@ pub fn enrich_all_effects(
     file_refs: &[RefRow],
     callee_cache: &HashMap<i64, ResolvedCallee>,
     fca_source: &dyn crate::parser::adapter::FcaAttributeSource,
-    dart_import_packages: Option<&HashSet<String>>,
+    imports: Option<&FileImportEffects>,
 ) {
     let call_refs: Vec<_> = file_refs
         .iter()
@@ -300,15 +377,45 @@ pub fn enrich_all_effects(
         },
         fca_source.effect_patterns(),
     );
-    if let Some(pkgs) = dart_import_packages {
-        let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();
-        enrich_with_dart_import_effects(
-            attrs,
-            sym,
-            file_refs,
-            &pkg_refs,
-            fca_source.effect_patterns(),
-        );
+    match imports {
+        Some(FileImportEffects::Dart(pkgs)) => {
+            let pkg_refs: HashSet<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+            enrich_with_dart_import_effects(
+                attrs,
+                sym,
+                file_refs,
+                &pkg_refs,
+                fca_source.effect_patterns(),
+            );
+        }
+        Some(FileImportEffects::Rust(bindings)) => {
+            enrich_with_rust_path_effects(
+                attrs,
+                &call_refs,
+                bindings,
+                fca_source.effect_patterns(),
+            );
+        }
+        None => {}
+    }
+}
+
+/// A file's imports, in the shape its language's import-driven effect
+/// detection needs.
+pub enum FileImportEffects {
+    /// Effect-relevant Dart packages the file imports.
+    Dart(HashSet<String>),
+    /// Rust `use` bindings, local name → full path.
+    Rust(HashMap<String, String>),
+}
+
+impl FileImportEffects {
+    pub fn for_file(language: &str, imports: &[crate::db::ImportRow]) -> Option<Self> {
+        match language {
+            "dart" => dart_effect_packages(imports).map(Self::Dart),
+            "rust" => Some(Self::Rust(rust_use_bindings(imports))),
+            _ => None,
+        }
     }
 }
 
@@ -1198,5 +1305,113 @@ mod tests {
             classify_attribute("returns_future"),
             AttributeRole::Obligation
         );
+    }
+
+    fn make_import(path: &str) -> crate::db::ImportRow {
+        crate::db::ImportRow {
+            id: 1,
+            file_id: 1,
+            imported_path: path.into(),
+            resolved_file_id: None,
+            line: 1,
+            kind: "import".into(),
+            alias: None,
+            is_test: false,
+        }
+    }
+
+    fn make_path_call(qualifier: Option<&str>, name: &str) -> RefRow {
+        RefRow {
+            qualifier: qualifier.map(Into::into),
+            ..make_unresolved_ref(name, 3)
+        }
+    }
+
+    /// Effect attrs a Rust function gets from `refs` under `use_paths`,
+    /// through the real Rust adapter's patterns and the shared entry point.
+    fn rust_effects(use_paths: &[&str], refs: &[RefRow]) -> Vec<String> {
+        use crate::parser::adapter::default_registry;
+        let registry = default_registry();
+        let fca_source = registry
+            .adapter_for_language("rust")
+            .and_then(|a| a.as_fca_source())
+            .expect("invariant: the Rust adapter is an FCA attribute source");
+        let sym = make_symbol("function", Some("pub"), Some("fn f()"), None, Some(1), 0);
+        let mut attrs = extract_cross_language_attrs(&sym, "src/lib.rs").unwrap();
+        let imports: Vec<_> = use_paths.iter().map(|p| make_import(p)).collect();
+        let effects = FileImportEffects::for_file("rust", &imports);
+        enrich_all_effects(
+            &mut attrs,
+            &sym,
+            refs,
+            &HashMap::new(),
+            fca_source,
+            effects.as_ref(),
+        );
+        attrs
+            .attributes
+            .into_iter()
+            .filter(|a| a.starts_with("effect:"))
+            .collect()
+    }
+
+    #[test]
+    fn rust_fully_qualified_path_call_is_an_effect() {
+        let refs = [make_path_call(Some("std::fs"), "write")];
+        assert_eq!(rust_effects(&[], &refs), ["effect:fs"]);
+    }
+
+    #[test]
+    fn rust_short_qualifier_expands_through_use() {
+        let refs = [make_path_call(Some("fs"), "write")];
+        assert_eq!(rust_effects(&["std::fs"], &refs), ["effect:fs"]);
+        assert!(rust_effects(&[], &refs).is_empty());
+    }
+
+    #[test]
+    fn rust_imported_type_qualifier_expands_through_use() {
+        let refs = [make_path_call(Some("Connection"), "open")];
+        assert_eq!(
+            rust_effects(&["rusqlite::Connection"], &refs),
+            ["effect:db"]
+        );
+    }
+
+    #[test]
+    fn rust_bare_call_expands_through_use() {
+        let refs = [make_path_call(None, "write")];
+        assert_eq!(rust_effects(&["std::fs::write"], &refs), ["effect:fs"]);
+    }
+
+    #[test]
+    fn rust_aliased_use_expands() {
+        let refs = [make_path_call(Some("net"), "connect")];
+        assert_eq!(rust_effects(&["tokio::net as net"], &refs), ["effect:net"]);
+    }
+
+    #[test]
+    fn rust_method_call_is_not_matched() {
+        let refs = [make_unresolved_ref_with_receiver("execute", "conn", 3)];
+        assert!(rust_effects(&["rusqlite::Connection"], &refs).is_empty());
+    }
+
+    #[test]
+    fn rust_path_match_respects_segment_boundary() {
+        let refs = [make_path_call(Some("std::fsx"), "write")];
+        assert!(rust_effects(&[], &refs).is_empty());
+    }
+
+    #[test]
+    fn rust_use_bindings_skip_globs_and_underscore() {
+        let imports = [
+            make_import("std::fs"),
+            make_import("std::io::*"),
+            make_import("std::io::Write as _"),
+            make_import("std::io::Read as R"),
+        ];
+        let bindings = rust_use_bindings(&imports);
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings["fs"], "std::fs");
+        assert_eq!(bindings["R"], "std::io::Read");
     }
 }
