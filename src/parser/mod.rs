@@ -86,6 +86,23 @@ pub fn join_doc_lines(mut lines: Vec<String>) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// `(start_line, end_line, qualified_name)` of one symbol.
+pub type SymbolSpan = (usize, usize, String);
+
+/// Every symbol's span in `source`, nested symbols included.
+pub fn symbol_spans(
+    pool: &mut adapter::ParserPool,
+    adapter: &dyn adapter::LanguageAdapter,
+    source: &str,
+    path: &str,
+) -> Result<Vec<SymbolSpan>> {
+    let parse = pool.parse_with(adapter, source, path)?;
+    Ok(flatten_symbols(&parse.symbols)
+        .into_iter()
+        .map(|s| (s.start_line, s.end_line, s.qualified_name.to_string()))
+        .collect())
+}
+
 pub fn flatten_symbols(tree: &[ExtractedSymbol]) -> Vec<&ExtractedSymbol> {
     let mut out = Vec::new();
     fn walk<'a>(symbols: &'a [ExtractedSymbol], out: &mut Vec<&'a ExtractedSymbol>) {

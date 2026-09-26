@@ -31,7 +31,7 @@ use crate::db::firings::{FiringContext, FiringRow, ReviewEvent};
 use crate::error::Result;
 use crate::git::{self, CommitChanges, FileHunks, WalkFrom};
 use crate::parser::adapter::{LanguageRegistry, ParserPool};
-use crate::tools::sibling_pattern::{SymbolSpan, symbol_spans};
+use crate::parser::{SymbolSpan, symbol_spans};
 
 // ---------------------------------------------------------------------------
 // Review-event identity
@@ -297,7 +297,9 @@ impl Copies {
     ) -> Self {
         let in_file = count_snippet(text, 1..usize::MAX, snippet);
         let in_symbol = symbol.and_then(|name| {
-            let spans: Vec<SymbolSpan> = symbol_spans(pool, registry, path, text).ok()?;
+            let ext = Path::new(path).extension()?.to_str()?;
+            let adapter = registry.adapter_for_extension(ext)?;
+            let spans: Vec<SymbolSpan> = symbol_spans(pool, adapter, text, path).ok()?;
             let (start, end, _) = spans.into_iter().find(|(_, _, n)| n == name)?;
             Some(count_snippet(text, start..end + 1, snippet))
         });

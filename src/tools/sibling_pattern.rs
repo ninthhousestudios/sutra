@@ -43,7 +43,7 @@ use crate::parser::adapter::{
     path_has_dir_segment,
 };
 use crate::parser::literals;
-use crate::parser::{ExtractedSymbol, ParseResult, flatten_symbols};
+use crate::parser::{ExtractedSymbol, ParseResult, SymbolSpan, flatten_symbols, symbol_spans};
 use crate::tools::firings::{PatchHasher, ReviewedPatch, count_snippet};
 use crate::tools::review::DiffScope;
 use crate::tools::symbol_diff::{
@@ -1893,7 +1893,10 @@ impl<'a> SymbolLookup<'a> {
             let Some(source) = sources.get(path) else {
                 return Vec::new();
             };
-            symbol_spans(&mut parsers.pool, registry, path, source).unwrap_or_else(|e| {
+            let Some(adapter) = adapter_for_path(registry, path) else {
+                return Vec::new();
+            };
+            symbol_spans(&mut parsers.pool, adapter, source, path).unwrap_or_else(|e| {
                 incomplete.push(format!("{path}: {e}"));
                 Vec::new()
             })
@@ -1904,27 +1907,6 @@ impl<'a> SymbolLookup<'a> {
             .min_by_key(|(start, end, _)| end - start)
             .cloned()
     }
-}
-
-/// `(start_line, end_line, qualified_name)` of one symbol.
-pub(crate) type SymbolSpan = (usize, usize, String);
-
-/// Every symbol's span in `source`. Empty for a language the check does not
-/// read.
-pub(crate) fn symbol_spans(
-    pool: &mut ParserPool,
-    registry: &LanguageRegistry,
-    path: &str,
-    source: &str,
-) -> Result<Vec<SymbolSpan>> {
-    let Some(adapter) = adapter_for_path(registry, path) else {
-        return Ok(Vec::new());
-    };
-    let parse = pool.parse_with(adapter, source, path)?;
-    Ok(flatten_symbols(&parse.symbols)
-        .into_iter()
-        .map(|s| (s.start_line, s.end_line, s.qualified_name.to_string()))
-        .collect())
 }
 
 // ---------------------------------------------------------------------------
