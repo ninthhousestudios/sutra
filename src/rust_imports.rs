@@ -21,7 +21,7 @@ pub struct WorkspaceLayout {
 }
 
 impl WorkspaceLayout {
-    fn crate_for_file(&self, file_path: &str) -> Option<(&str, String)> {
+    pub(crate) fn crate_for_file(&self, file_path: &str) -> Option<(&str, String)> {
         for m in &self.members {
             let prefix = format!("{}/", m.dir);
             if file_path.starts_with(&prefix) {
@@ -33,7 +33,7 @@ impl WorkspaceLayout {
             .map(|name| (name, "src".to_string()))
     }
 
-    fn src_prefix_for_crate(&self, crate_name: &str) -> Option<String> {
+    pub(crate) fn src_prefix_for_crate(&self, crate_name: &str) -> Option<String> {
         if self.root_crate.as_deref() == Some(crate_name) {
             return Some("src".to_string());
         }
@@ -284,7 +284,7 @@ pub fn normalize_to_crate_segments(
     None
 }
 
-fn file_to_module_segments(file_path: &str, src_prefix: &str) -> Vec<String> {
+pub(crate) fn file_to_module_segments(file_path: &str, src_prefix: &str) -> Vec<String> {
     let prefix = format!("{src_prefix}/");
     let stripped = file_path.strip_prefix(&prefix).unwrap_or(file_path);
 

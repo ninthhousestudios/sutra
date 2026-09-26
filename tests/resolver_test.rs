@@ -2,6 +2,7 @@ use sutra::db::SymbolEntry;
 use sutra::parser::rust::LOCAL_BINDING_SENTINEL;
 use sutra::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind};
 use sutra::resolver::{self, ResolutionMethod, resolve_refs};
+use sutra::rust_imports::{WorkspaceLayout, WorkspaceMember};
 
 fn resolve(
     file_symbols: &[ExtractedSymbol],
@@ -1121,25 +1122,46 @@ fn make_qualified(name: &str, qualifier: &str, context_kind: RefContextKind) -> 
     }
 }
 
+fn app_crate() -> WorkspaceLayout {
+    WorkspaceLayout {
+        root_crate: Some("app".to_string()),
+        members: Vec::new(),
+    }
+}
+
+/// Resolve `refs` written in file `file_id` of a workspace whose files sit at
+/// `paths`, with the file's own symbols and imports.
+fn resolve_in(
+    refs: &[ExtractedRef],
+    all_symbols: &[SymbolEntry],
+    paths: &[(i64, &str)],
+    layout: &WorkspaceLayout,
+    file_symbols: &[ExtractedSymbol],
+    imports: &[ExtractedImport],
+    file_id: i64,
+) -> Vec<resolver::ResolvedRef> {
+    let index =
+        resolver::SymbolIndex::build(all_symbols).with_file_paths(paths.iter().copied(), layout);
+    resolve_refs(file_symbols, refs, &index, imports, file_id, "rust")
+}
+
 fn resolve_with_paths(
     refs: &[ExtractedRef],
     all_symbols: &[SymbolEntry],
     paths: &[(i64, &str)],
     file_id: i64,
 ) -> Vec<resolver::ResolvedRef> {
-    let index = resolver::SymbolIndex::build(all_symbols).with_file_paths(paths.iter().copied());
-    resolve_refs(&[], refs, &index, &[], file_id, "rust")
+    resolve_in(refs, all_symbols, paths, &app_crate(), &[], &[], file_id)
+}
+
+fn targets(resolved: &[resolver::ResolvedRef]) -> Vec<Option<i64>> {
+    resolved.iter().map(|r| r.target_symbol_id).collect()
 }
 
 /// `tools::calls::handle()` binds the `handle` of the `calls` module, not the
 /// first of many same-named fns.
 #[test]
 fn test_rust_module_qualified_call_binds_that_module() {
-    let refs = vec![make_qualified(
-        "handle",
-        "tools::calls",
-        RefContextKind::Call,
-    )];
     let all = vec![
         sym_in_file(1, "handle", "handle", "function", 1),
         sym_in_file(2, "handle", "handle", "function", 2),
@@ -1149,8 +1171,15 @@ fn test_rust_module_qualified_call_binds_that_module() {
         (1, "src/tools/dead.rs"),
         (2, "src/tools/calls.rs"),
         (3, "src/tools/refs/mod.rs"),
+        (8, "src/lib.rs"),
+        (9, "src/tools/review.rs"),
     ];
-    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    let refs = vec![make_qualified(
+        "handle",
+        "tools::calls",
+        RefContextKind::Call,
+    )];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 8);
     assert_eq!(resolved[0].target_symbol_id, Some(2));
     assert_eq!(
         resolved[0].resolution_method,
@@ -1170,40 +1199,91 @@ fn test_rust_module_qualified_call_binds_that_module() {
     );
 }
 
-/// `Config::new()` binds the method of that type, generics ignored.
+/// Two modules named `calls` under different parents: the full path decides,
+/// never the first same-named module.
+#[test]
+fn test_rust_same_named_modules_do_not_collide() {
+    let all = vec![
+        sym_in_file(1, "handle", "handle", "function", 1),
+        sym_in_file(2, "handle", "handle", "function", 2),
+    ];
+    let paths = [
+        (1, "src/left/calls.rs"),
+        (2, "src/right/calls.rs"),
+        (8, "src/lib.rs"),
+        (9, "src/right/mod.rs"),
+    ];
+    let refs = vec![
+        make_qualified("handle", "crate::right::calls", RefContextKind::Call),
+        make_qualified("handle", "left::calls", RefContextKind::Call),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 8);
+    assert_eq!(targets(&resolved), vec![Some(2), Some(1)]);
+
+    let refs = vec![make_qualified("handle", "calls", RefContextKind::Call)];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(
+        resolved[0].target_symbol_id,
+        Some(2),
+        "a relative path starts at the current module"
+    );
+}
+
+/// `Config::new()` binds the method of that type, generics ignored, including
+/// an `impl` block that sits in another module of the crate.
 #[test]
 fn test_rust_type_qualified_call_binds_that_type() {
+    let all = vec![
+        sym_in_file(1, "Config", "Config", "struct", 1),
+        sym_in_file(2, "Config::new", "new", "method", 1),
+        sym_in_file(3, "Engine", "Engine", "struct", 2),
+        sym_in_file(4, "Engine::new", "new", "method", 2),
+        sym_in_file(5, "Config::build", "build", "method", 2),
+        sym_in_file(6, "Annotator", "Annotator", "struct", 3),
+        sym_in_file(7, "Annotator<'a>::new", "new", "method", 3),
+    ];
+    let paths = [
+        (1, "src/config.rs"),
+        (2, "src/engine.rs"),
+        (3, "src/fresh.rs"),
+        (9, "src/tools/review.rs"),
+    ];
     let refs = vec![
         make_qualified("new", "Config", RefContextKind::Call),
         make_qualified("new", "crate::fresh::Annotator", RefContextKind::Call),
+        make_qualified("build", "Config", RefContextKind::Call),
+        make_qualified("new", "String", RefContextKind::Call),
     ];
-    let all = vec![
-        sym(1, "Engine::new", "new", "method"),
-        sym(2, "Config::new", "new", "method"),
-        sym(3, "Annotator<'a>::new", "new", "method"),
-    ];
-    let resolved = resolve_with_paths(&refs, &all, &[], 9);
-    assert_eq!(resolved[0].target_symbol_id, Some(2));
-    assert_eq!(resolved[1].target_symbol_id, Some(3));
+    let imports = vec![make_import("crate::config::Config", 1)];
+    let resolved = resolve_in(&refs, &all, &paths, &app_crate(), &[], &imports, 9);
+    assert_eq!(
+        targets(&resolved),
+        vec![Some(2), Some(7), Some(5), None],
+        "a prelude type binds nothing"
+    );
 }
 
-/// A path that leaves the workspace stays unresolved instead of falling back
-/// to a same-named workspace symbol.
+/// A path that leaves the workspace stays unresolved instead of binding a
+/// workspace module of the same name.
 #[test]
 fn test_rust_external_path_stays_unresolved() {
-    let refs = vec![make_qualified(
-        "read_to_string",
-        "std::fs",
-        RefContextKind::Call,
-    )];
-    let all = vec![sym_in_file(
-        1,
-        "read_to_string",
-        "read_to_string",
-        "function",
-        1,
-    )];
-    let resolved = resolve_with_paths(&refs, &all, &[(1, "src/io.rs")], 9);
+    let all = vec![
+        sym_in_file(1, "read_to_string", "read_to_string", "function", 1),
+        sym_in_file(2, "read", "read", "function", 1),
+    ];
+    let paths = [(1, "src/fs.rs"), (9, "src/lib.rs"), (10, "src/tools/io.rs")];
+    let refs = vec![
+        make_qualified("read_to_string", "std::fs", RefContextKind::Call),
+        make_qualified("read", "tokio::fs", RefContextKind::Call),
+        make_qualified("read", "::fs", RefContextKind::Call),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    assert_eq!(targets(&resolved), vec![None, None, None]);
+
+    // `use tokio::fs;` then `fs::read()`: the import leaves the workspace.
+    let refs = vec![make_qualified("read", "fs", RefContextKind::Call)];
+    let imports = vec![make_import("tokio::fs", 1)];
+    let resolved = resolve_in(&refs, &all, &paths, &app_crate(), &[], &imports, 10);
     assert_eq!(resolved[0].target_symbol_id, None);
 }
 
@@ -1216,12 +1296,16 @@ fn test_rust_reexported_child_item_resolves() {
         sym_in_file(1, "helper", "helper", "function", 1),
         sym_in_file(2, "helper", "helper", "function", 2),
     ];
-    let paths = [(1, "src/tools/helper.rs"), (2, "src/db/graph.rs")];
+    let paths = [
+        (1, "src/tools/helper.rs"),
+        (2, "src/db/graph.rs"),
+        (9, "src/lib.rs"),
+    ];
     let resolved = resolve_with_paths(&refs, &all, &paths, 9);
     assert_eq!(resolved[0].target_symbol_id, Some(2));
 }
 
-/// A crate root is named for its package directory, `-` read as `_`.
+/// A workspace crate's name roots a path at that crate's source directory.
 #[test]
 fn test_rust_crate_qualified_path_binds_crate_root() {
     let refs = vec![make_qualified("open", "chat_store", RefContextKind::Call)];
@@ -1229,9 +1313,213 @@ fn test_rust_crate_qualified_path_binds_crate_root() {
         sym_in_file(1, "open", "open", "function", 1),
         sym_in_file(2, "open", "open", "function", 2),
     ];
-    let paths = [(1, "server/src/db.rs"), (2, "chat-store/src/lib.rs")];
-    let resolved = resolve_with_paths(&refs, &all, &paths, 9);
+    let paths = [
+        (1, "server/src/db.rs"),
+        (2, "chat-store/src/lib.rs"),
+        (9, "server/src/main.rs"),
+    ];
+    let layout = WorkspaceLayout {
+        root_crate: None,
+        members: vec![
+            WorkspaceMember {
+                name: "chat_store".to_string(),
+                dir: "chat-store".to_string(),
+            },
+            WorkspaceMember {
+                name: "server".to_string(),
+                dir: "server".to_string(),
+            },
+        ],
+    };
+    let resolved = resolve_in(&refs, &all, &paths, &layout, &[], &[], 9);
     assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// `crate::`, `self::` and `super::` start at the crate root, the current
+/// module and its parent, not at whatever a bare name would bind. A local
+/// binding never shadows a path.
+#[test]
+fn test_rust_rooted_paths_start_at_their_module() {
+    let all = vec![
+        sym_in_file(1, "helper", "helper", "function", 1),
+        sym_in_file(2, "helper", "helper", "function", 2),
+    ];
+    let paths = [(1, "src/lib.rs"), (2, "src/child.rs")];
+    let mut shadowed = make_qualified("helper", "self", RefContextKind::Call);
+    shadowed.resolved_local_target = Some(LOCAL_BINDING_SENTINEL.to_string());
+    let refs = vec![
+        make_qualified("helper", "crate", RefContextKind::Call),
+        make_qualified("helper", "self", RefContextKind::Call),
+        make_qualified("helper", "super", RefContextKind::Call),
+        make_qualified("helper", "app", RefContextKind::Call),
+        shadowed,
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 2);
+    assert_eq!(
+        targets(&resolved),
+        vec![Some(1), Some(2), Some(1), Some(1), Some(2)]
+    );
+}
+
+/// Inside an inline `mod tests { use super::*; }`, `super` is the file's
+/// module and glob imports reach its items.
+#[test]
+fn test_rust_inline_module_paths() {
+    let all = vec![
+        sym_in_file(1, "helper", "helper", "function", 1),
+        sym_in_file(2, "helper", "helper", "function", 2),
+        sym_in_file(3, "Config", "Config", "struct", 1),
+        sym_in_file(4, "Config::new", "new", "method", 1),
+    ];
+    let paths = [(1, "src/a.rs"), (2, "src/lib.rs")];
+    let file_symbols = vec![make_symbol("tests", "tests", SymbolKind::Module, 5, 20)];
+    let imports = vec![make_import("super::*", 6)];
+    let mut in_tests = make_qualified("helper", "super", RefContextKind::Call);
+    in_tests.line = 10;
+    let mut config = make_qualified("new", "Config", RefContextKind::Call);
+    config.line = 11;
+    let mut top = make_qualified("helper", "super", RefContextKind::Call);
+    top.line = 2;
+    let resolved = resolve_in(
+        &[in_tests, config, top],
+        &all,
+        &paths,
+        &app_crate(),
+        &file_symbols,
+        &imports,
+        1,
+    );
+    assert_eq!(targets(&resolved), vec![Some(1), Some(4), Some(2)]);
+}
+
+/// `pub use routes::shop::catalog;` in lib.rs makes `crate::catalog` a path
+/// to a module that has no file there: an anchored path takes the module of
+/// that name. An unanchored guess (`catalog::load` with no import) does not.
+#[test]
+fn test_rust_reexported_module_path() {
+    let all = vec![sym_in_file(1, "load", "load", "function", 1)];
+    let paths = [
+        (1, "src/routes/shop/catalog.rs"),
+        (2, "src/main.rs"),
+        (3, "src/routes/mod.rs"),
+    ];
+    let refs = vec![
+        make_qualified("load", "app::catalog", RefContextKind::Call),
+        make_qualified("load", "crate::catalog", RefContextKind::Call),
+        make_qualified("load", "catalog", RefContextKind::Call),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 2);
+    assert_eq!(targets(&resolved), vec![Some(1), Some(1), None]);
+
+    // `crate::routes::load` names a module that exists and lacks `load`.
+    let refs = vec![make_qualified(
+        "load",
+        "crate::routes",
+        RefContextKind::Call,
+    )];
+    let all = vec![sym_in_file(1, "load", "load", "function", 1)];
+    let paths = [
+        (1, "src/other/routes/x.rs"),
+        (2, "src/main.rs"),
+        (3, "src/routes/mod.rs"),
+    ];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 2);
+    assert_eq!(resolved[0].target_symbol_id, None);
+}
+
+/// A re-export reaches a direct child module only: `sutra::constraints` must
+/// not bind a `constraints` fn inside `constraints::accepted::tests`.
+#[test]
+fn test_rust_reexport_is_one_module_deep() {
+    let all = vec![sym_in_file(
+        1,
+        "tests::constraints",
+        "constraints",
+        "function",
+        1,
+    )];
+    let paths = [(1, "src/constraints/accepted.rs"), (2, "src/main.rs")];
+    let refs = vec![make_qualified("constraints", "app", RefContextKind::Read)];
+    let resolved = resolve_with_paths(&refs, &all, &paths, 2);
+    assert_eq!(resolved[0].target_symbol_id, None);
+}
+
+/// Each `tests/*.rs` is its own crate root; `mod common;` there is
+/// `tests/common/mod.rs`, and the crate's name reaches its `src/`.
+#[test]
+fn test_rust_integration_test_crate_paths() {
+    let all = vec![
+        sym_in_file(1, "backend_pool", "backend_pool", "function", 1),
+        sym_in_file(2, "open", "open", "function", 2),
+    ];
+    let paths = [
+        (1, "server/tests/common/mod.rs"),
+        (2, "server/src/db.rs"),
+        (9, "server/tests/chat_turns.rs"),
+    ];
+    let layout = WorkspaceLayout {
+        root_crate: None,
+        members: vec![WorkspaceMember {
+            name: "server".to_string(),
+            dir: "server".to_string(),
+        }],
+    };
+    let refs = vec![
+        make_qualified("backend_pool", "common", RefContextKind::Call),
+        make_qualified("open", "server::db", RefContextKind::Call),
+        make_qualified("backend_pool", "crate::common", RefContextKind::Call),
+    ];
+    let imports = vec![make_import("self::common", 1)];
+    let resolved = resolve_in(&refs, &all, &paths, &layout, &[], &imports, 9);
+    assert_eq!(targets(&resolved), vec![Some(1), Some(2), Some(1)]);
+}
+
+/// A trait `impl` for another crate's type may sit in any crate:
+/// `impl TryFrom<Row> for chat_store::Message` in the server.
+#[test]
+fn test_rust_trait_impl_member_in_another_crate() {
+    let all = vec![
+        sym_in_file(1, "Message", "Message", "struct", 1),
+        sym_in_file(2, "Message::try_from", "try_from", "method", 2),
+    ];
+    let paths = [
+        (1, "chat-store/src/rows.rs"),
+        (2, "server/src/chat/store.rs"),
+    ];
+    let layout = WorkspaceLayout {
+        root_crate: None,
+        members: vec![
+            WorkspaceMember {
+                name: "chat_store".to_string(),
+                dir: "chat-store".to_string(),
+            },
+            WorkspaceMember {
+                name: "server".to_string(),
+                dir: "server".to_string(),
+            },
+        ],
+    };
+    let refs = vec![make_qualified("try_from", "Message", RefContextKind::Read)];
+    let imports = vec![make_import("chat_store::rows::Message", 1)];
+    let resolved = resolve_in(&refs, &all, &paths, &layout, &[], &imports, 2);
+    assert_eq!(resolved[0].target_symbol_id, Some(2));
+}
+
+/// `use crate::db as store;` then `store::open()`.
+#[test]
+fn test_rust_aliased_import_path() {
+    let all = vec![
+        sym_in_file(1, "open", "open", "function", 1),
+        sym_in_file(2, "open", "open", "function", 2),
+    ];
+    let paths = [(1, "src/db.rs"), (2, "src/store.rs"), (9, "src/lib.rs")];
+    let refs = vec![make_qualified("open", "store", RefContextKind::Call)];
+    let imports = vec![ExtractedImport {
+        alias: Some("store".to_string()),
+        ..make_import("crate::db", 1)
+    }];
+    let resolved = resolve_in(&refs, &all, &paths, &app_crate(), &[], &imports, 9);
+    assert_eq!(resolved[0].target_symbol_id, Some(1));
 }
 
 /// A Rust value read binds a const, never a same-named field.

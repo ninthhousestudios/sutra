@@ -67,8 +67,11 @@ fn main() {
     collect_rs_files(&parser_dir, &mut sources);
     // The resolver's output is stored per ref, and an unchanged file is never
     // re-resolved, so a resolver change must invalidate like an extractor
-    // change or it reaches only files edited afterwards (sutra/477).
-    sources.push(Path::new(&manifest_dir).join("src").join("resolver.rs"));
+    // change or it reaches only files edited afterwards (sutra/477). Rust
+    // path resolution reads the crate layout helpers in rust_imports.rs.
+    for resolver_src in ["resolver.rs", "rust_imports.rs"] {
+        sources.push(Path::new(&manifest_dir).join("src").join(resolver_src));
+    }
     sources.sort();
     // Guard (sutra/383): the persisted-output normalization must stay inside the
     // hashed tree. If `flatten_symbols_dfs` is moved out of src/parser/ (e.g.

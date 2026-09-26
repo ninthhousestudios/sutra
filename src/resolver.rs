@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::db::SymbolEntry;
 use crate::parser::dart::TYPE_TRACKING_PREFIX;
 use crate::parser::rust::{LOCAL_BINDING_SENTINEL, strip_generic_args};
-use crate::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind};
+use crate::parser::{ExtractedImport, ExtractedRef, ExtractedSymbol, RefContextKind, SymbolKind};
+use crate::rust_imports::{WorkspaceLayout, file_to_module_segments};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionMethod {
@@ -61,8 +62,50 @@ pub struct SymbolIndex<'a> {
     by_short_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
     by_qualified_name: HashMap<&'a str, Vec<&'a SymbolEntry>>,
     class_members: ClassMembers<'a>,
-    /// Path of each `.rs` file, for resolving `module::item` paths.
-    rust_path_by_file: HashMap<i64, String>,
+    /// Module of each `.rs` file, for resolving `module::item` paths.
+    rust_modules: HashMap<i64, RustFile>,
+    /// Source root of each workspace crate, by import name.
+    crate_srcs: HashMap<String, String>,
+    /// Every Rust module path, file or inline, keyed by [`module_key`].
+    rust_module_paths: HashSet<String>,
+}
+
+/// Where a Rust file sits: its crate's source root and its module path below
+/// that root (`src/db/graph.rs` is `["db", "graph"]` under `src`).
+struct RustFile {
+    src: String,
+    segs: Vec<String>,
+}
+
+/// Directories whose top-level files are each a crate root of their own
+/// (`tests/api.rs`), with shared modules below (`tests/common/mod.rs`).
+const TARGET_DIRS: &[&str] = &["tests", "benches", "examples"];
+
+impl RustFile {
+    /// A file outside every known crate is placed in an unnamed crate at `src`.
+    fn locate(path: &str, layout: &WorkspaceLayout) -> Self {
+        let src = layout
+            .crate_for_file(path)
+            .map_or_else(|| "src".to_string(), |(_, src)| src);
+        let crate_dir = src.strip_suffix("src").unwrap_or_default();
+        for dir in TARGET_DIRS {
+            let root = format!("{crate_dir}{dir}");
+            let Some(rest) = path
+                .strip_prefix(root.as_str())
+                .and_then(|r| r.strip_prefix('/'))
+            else {
+                continue;
+            };
+            let segs = if rest.contains('/') {
+                file_to_module_segments(path, &root)
+            } else {
+                Vec::new()
+            };
+            return Self { src: root, segs };
+        }
+        let segs = file_to_module_segments(path, &src);
+        Self { src, segs }
+    }
 }
 
 impl<'a> SymbolIndex<'a> {
@@ -83,19 +126,72 @@ impl<'a> SymbolIndex<'a> {
             by_short_name,
             by_qualified_name,
             class_members: build_class_members(all_symbols),
-            rust_path_by_file: HashMap::new(),
+            rust_modules: HashMap::new(),
+            crate_srcs: HashMap::new(),
+            rust_module_paths: HashSet::new(),
         }
     }
 
-    /// Supply file paths so `module::item` paths can resolve. Without them a
-    /// module-qualified Rust ref resolves only when the module is inline.
-    pub fn with_file_paths<'p>(mut self, paths: impl IntoIterator<Item = (i64, &'p str)>) -> Self {
-        self.rust_path_by_file = paths
+    /// Supply file paths and the Cargo layout so Rust `module::item` paths can
+    /// resolve. Without them every path-qualified Rust ref stays unresolved.
+    /// A file outside every known crate is placed in an unnamed crate at `src`.
+    pub fn with_file_paths<'p>(
+        mut self,
+        paths: impl IntoIterator<Item = (i64, &'p str)>,
+        layout: &WorkspaceLayout,
+    ) -> Self {
+        self.rust_modules = paths
             .into_iter()
             .filter(|(_, path)| path.ends_with(".rs"))
-            .map(|(id, path)| (id, path.to_string()))
+            .map(|(id, path)| (id, RustFile::locate(path, layout)))
             .collect();
+        self.crate_srcs = layout
+            .all_crate_names()
+            .into_iter()
+            .filter_map(|name| Some((name.to_string(), layout.src_prefix_for_crate(name)?)))
+            .collect();
+        let file_modules = self
+            .rust_modules
+            .values()
+            .flat_map(|f| (0..=f.segs.len()).map(|n| module_key(&f.src, &f.segs[..n].join("::"))));
+        let inline_modules = self
+            .by_short_name
+            .values()
+            .flatten()
+            .filter(|s| s.kind == "module")
+            .filter_map(|s| {
+                let src = &self.rust_modules.get(&s.file_id)?.src;
+                let container = self.item_container(s, src)?;
+                let path = if container.is_empty() {
+                    s.short_name.to_string()
+                } else {
+                    format!("{container}::{}", s.short_name)
+                };
+                Some(module_key(src, &path))
+            });
+        self.rust_module_paths = file_modules.chain(inline_modules).collect();
         self
+    }
+
+    fn is_module(&self, src: &str, path: &str) -> bool {
+        self.rust_module_paths.contains(&module_key(src, path))
+    }
+
+    /// The module path containing `s` (its file's module, then any inline
+    /// module or type in its qualified name), joined with `::`, or `None` when
+    /// `s` is not in the crate rooted at `src`.
+    fn item_container(&self, s: &SymbolEntry, src: &str) -> Option<String> {
+        let file = self.rust_modules.get(&s.file_id).filter(|f| f.src == src)?;
+        let qn = strip_generic_args(&s.qualified_name);
+        let parent = qn.rsplit_once("::").map(|(p, _)| p);
+        Some(
+            file.segs
+                .iter()
+                .map(String::as_str)
+                .chain(parent)
+                .collect::<Vec<_>>()
+                .join("::"),
+        )
     }
 
     fn short(&self, name: &str) -> &[&'a SymbolEntry] {
@@ -105,35 +201,6 @@ impl<'a> SymbolIndex<'a> {
     fn qualified(&self, name: &str) -> &[&'a SymbolEntry] {
         self.by_qualified_name.get(name).map_or(&[], Vec::as_slice)
     }
-}
-
-/// The module a Rust file defines: its stem, or its directory for `mod.rs`.
-/// A crate root (`lib.rs`, `main.rs`) is named for its package directory
-/// (`chat-store/src/lib.rs` is `chat-store`), which [`same_module`] matches
-/// against the crate name `chat_store`. A Cargo `package =` rename is not seen.
-fn rust_module_name(path: &str) -> Option<&str> {
-    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
-    let stem = file.strip_suffix(".rs")?;
-    let mut dirs = dir.rsplit('/').filter(|d| !d.is_empty());
-    match stem {
-        "mod" => dirs.next(),
-        "lib" | "main" => match dirs.next() {
-            Some("src") => dirs.next(),
-            other => other,
-        },
-        _ => Some(stem),
-    }
-}
-
-/// Whether a module or directory name matches a path segment; a package
-/// directory `chat-store` is the crate `chat_store`.
-fn same_module(name: &str, segment: &str) -> bool {
-    name == segment
-        || (name.len() == segment.len()
-            && name
-                .bytes()
-                .zip(segment.bytes())
-                .all(|(a, b)| a == b || (a == b'-' && b == b'_')))
 }
 
 pub fn resolve_refs(
@@ -229,14 +296,19 @@ fn resolve_single(
         KindFilter::Any
     };
 
-    // A Rust path names where the item lives, so it binds only there. Paths
-    // rooted at the current module or impl resolve like a bare name.
+    // A Rust path names where the item lives, so it binds only there. A
+    // `Self::` path is left to the impl's scope chain below.
     if lang == "rust"
         && let Some(qualifier) = r.qualifier.as_deref()
-        && let Some(last) = qualifier.rsplit("::").next()
-        && !matches!(last, "self" | "crate" | "super" | "Self")
+        && qualifier.split("::").next() != Some("Self")
     {
-        return match find_qualified(name, last, filter, index, file_imports, file_id) {
+        let site = PathSite {
+            index,
+            file_symbols,
+            file_imports,
+            file_id,
+        };
+        return match resolve_rust_path(&site, qualifier, name, r.line, filter) {
             Some(id) => resolved(r, id, ResolutionMethod::QualifiedPath),
             None => unresolved(r),
         };
@@ -400,80 +472,293 @@ fn unresolved(r: &ExtractedRef) -> ResolvedRef {
     }
 }
 
-/// Resolve `…::segment::name`. `segment` is a type or trait (`Config::new`,
-/// matched against `Config::new` or `outer::Config::new`, generics ignored) or
-/// a module (`calls::handle`, matched against top-level items of a file whose
-/// module is `calls`). An import alias is followed first. Failing a direct
-/// match, a top-level item of a child module of `segment` is taken: that is
-/// how a `pub use child::name` or `pub use child::*` re-export resolves, and a
-/// path to a child item that is not re-exported would not compile. No match
-/// at all means the path leaves the workspace (`std::fs::read`), so there is
-/// no global fallback.
-fn find_qualified(
-    name: &str,
-    segment: &str,
-    filter: KindFilter<'_>,
-    index: &SymbolIndex<'_>,
-    file_imports: &[ExtractedImport],
+/// The file a Rust path is written in.
+struct PathSite<'a, 'i> {
+    index: &'a SymbolIndex<'i>,
+    file_symbols: &'a [ExtractedSymbol],
+    file_imports: &'a [ExtractedImport],
     file_id: i64,
+}
+
+/// A module or type path from a crate's source root.
+struct RustPath<'a> {
+    src: &'a str,
+    segs: Vec<&'a str>,
+    /// Rooted in the workspace by `crate`/`self`/`super`, a crate name or an
+    /// import, rather than guessed relative to the current module.
+    anchored: bool,
+}
+
+impl RustPath<'_> {
+    fn joined(&self) -> String {
+        self.segs.join("::")
+    }
+}
+
+/// How a path's first segment roots it.
+enum Rooted<'a> {
+    /// `crate`, `self`, `super` or a workspace crate name.
+    Absolute(RustPath<'a>),
+    /// `std`, `core`, `alloc`, `::x`, or `super` above the crate root.
+    External,
+    /// Anything else: an item or import of the current module, or a crate the
+    /// workspace does not define.
+    Relative,
+}
+
+/// Resolve the Rust path `qualifier::name` written on `line`, or `None` when it
+/// leaves the workspace or reaches nothing. The qualifier is made absolute —
+/// from `crate`/`self`/`super`, a crate name, a `use` import, or else the
+/// current module and its glob imports — and the name is looked up only
+/// there, never by name alone: `std::fs::read` must not bind a workspace
+/// `fs::read`, nor `a::calls::handle` the `handle` of `b::calls`.
+fn resolve_rust_path(
+    site: &PathSite<'_, '_>,
+    qualifier: &str,
+    name: &str,
+    line: usize,
+    filter: KindFilter<'_>,
 ) -> Option<i64> {
-    let segment = file_imports
+    let file = site.index.rust_modules.get(&site.file_id)?;
+    let crates = &site.index.crate_srcs;
+    let qualifier = strip_generic_args(qualifier);
+    let segs: Vec<&str> = qualifier.split("::").collect();
+    let here = module_at(file, site.file_symbols, line);
+    let mut targets = Vec::new();
+    match root_path(&segs, &here, crates) {
+        Rooted::Absolute(path) => targets.push(path),
+        Rooted::External => return None,
+        Rooted::Relative => {
+            let imports: Vec<(&str, Option<&str>, usize)> = site
+                .file_imports
+                .iter()
+                .map(|i| (i.raw_path.as_str(), i.alias.as_deref(), i.line))
+                .collect();
+            let named = imports.iter().find(|(path, alias, _)| {
+                !path.ends_with("::*")
+                    && alias
+                        .or_else(|| path.rsplit("::").next())
+                        .is_some_and(|n| n == segs[0])
+            });
+            if let Some(&(path, _, import_line)) = named {
+                let import_site = module_at(file, site.file_symbols, import_line);
+                let full: Vec<&str> = path.split("::").chain(segs[1..].iter().copied()).collect();
+                targets.extend(import_target(full, import_site, crates));
+            } else {
+                targets.push(RustPath {
+                    src: here.src,
+                    segs: here.segs.iter().chain(&segs).copied().collect(),
+                    anchored: false,
+                });
+                for &(path, _, import_line) in &imports {
+                    let Some(prefix) = path.strip_suffix("::*") else {
+                        continue;
+                    };
+                    let import_site = module_at(file, site.file_symbols, import_line);
+                    let full: Vec<&str> = prefix.split("::").chain(segs.iter().copied()).collect();
+                    targets.extend(import_target(full, import_site, crates));
+                }
+            }
+        }
+    }
+    targets
         .iter()
-        .find(|i| i.alias.as_deref() == Some(segment))
-        .and_then(|i| i.raw_path.rsplit("::").next())
-        .unwrap_or(segment);
-    let member = format!("{segment}::{name}");
-    let nested_member = format!("::{member}");
-    let candidates: Vec<&SymbolEntry> = index
+        .find_map(|t| find_item(site.index, t, name, filter, site.file_id))
+        .map(|s| s.id)
+}
+
+/// Where an imported path points. A `use child::item` path that no crate
+/// root anchors is relative to the importing module.
+fn import_target<'a>(
+    path: Vec<&'a str>,
+    site: RustPath<'a>,
+    crates: &'a HashMap<String, String>,
+) -> Option<RustPath<'a>> {
+    match root_path(&path, &site, crates) {
+        Rooted::Absolute(target) => Some(target),
+        Rooted::External => None,
+        Rooted::Relative => Some(RustPath {
+            src: site.src,
+            segs: site.segs.into_iter().chain(path).collect(),
+            anchored: false,
+        }),
+    }
+}
+
+fn root_path<'a>(
+    segs: &[&'a str],
+    here: &RustPath<'a>,
+    crates: &'a HashMap<String, String>,
+) -> Rooted<'a> {
+    let Some((&first, rest)) = segs.split_first() else {
+        return Rooted::External;
+    };
+    let from = |src: &'a str, base: &[&'a str], rest: &[&'a str]| {
+        Rooted::Absolute(RustPath {
+            src,
+            segs: base.iter().chain(rest).copied().collect(),
+            anchored: true,
+        })
+    };
+    match first {
+        "" | "std" | "core" | "alloc" => Rooted::External,
+        "crate" => from(here.src, &[], rest),
+        "self" => from(here.src, &here.segs, rest),
+        "super" => {
+            let ups = segs.iter().take_while(|s| **s == "super").count();
+            match here.segs.len().checked_sub(ups) {
+                Some(keep) => from(here.src, &here.segs[..keep], &segs[ups..]),
+                None => Rooted::External,
+            }
+        }
+        crate_name => match crates.get(crate_name) {
+            Some(src) => from(src, &[], rest),
+            None => Rooted::Relative,
+        },
+    }
+}
+
+/// The module enclosing `line`: the file's module, extended by the innermost
+/// inline `mod name { … }` around the line (`mod tests` in `src/a.rs` is
+/// `a::tests`).
+fn module_at<'a>(
+    file: &'a RustFile,
+    file_symbols: &'a [ExtractedSymbol],
+    line: usize,
+) -> RustPath<'a> {
+    let inline = file_symbols
+        .iter()
+        .filter(|s| {
+            s.kind == SymbolKind::Module
+                && s.start_line < s.end_line
+                && (s.start_line..=s.end_line).contains(&line)
+        })
+        .min_by_key(|s| s.end_line - s.start_line);
+    RustPath {
+        src: &file.src,
+        segs: file
+            .segs
+            .iter()
+            .map(String::as_str)
+            .chain(
+                inline
+                    .into_iter()
+                    .flat_map(|s| s.qualified_name.split("::")),
+            )
+            .collect(),
+        anchored: true,
+    }
+}
+
+/// The item `name` in `path`: directly there; else re-exported from a module
+/// below it (`pub use child::*`, and a path to a child item that is not
+/// re-exported would not compile); else, when `path` ends in a type, a member
+/// of that type, whose `impl` may sit in any module of the crate.
+fn find_item<'i>(
+    index: &SymbolIndex<'i>,
+    path: &RustPath<'_>,
+    name: &str,
+    filter: KindFilter<'_>,
+    file_id: i64,
+) -> Option<&'i SymbolEntry> {
+    let candidates: Vec<(&'i SymbolEntry, String)> = index
         .short(name)
         .iter()
         .filter(|s| filter.accepts(&s.kind))
-        .copied()
+        .filter_map(|s| index.item_container(s, path.src).map(|c| (*s, c)))
         .collect();
-    let module_path = |s: &SymbolEntry| {
-        (s.qualified_name == name)
-            .then(|| index.rust_path_by_file.get(&s.file_id))
-            .flatten()
-    };
-    let direct: Vec<&SymbolEntry> = candidates
-        .iter()
-        .filter(|s| {
-            let qn = if s.qualified_name.contains('<') {
-                std::borrow::Cow::Owned(strip_generic_args(&s.qualified_name))
-            } else {
-                std::borrow::Cow::Borrowed(s.qualified_name.as_str())
-            };
-            qn == member
-                || qn.ends_with(&nested_member)
-                || module_path(s)
-                    .and_then(|p| rust_module_name(p))
-                    .is_some_and(|m| same_module(m, segment))
-        })
-        .copied()
-        .collect();
-    let pick = |matches: &[&SymbolEntry]| {
+    let pick = |matches: Vec<&(&'i SymbolEntry, String)>| {
         matches
             .iter()
-            .find(|s| s.file_id == file_id)
+            .find(|(s, _)| s.file_id == file_id)
             .or_else(|| matches.first())
-            .map(|s| s.id)
+            .map(|(s, _)| *s)
     };
+    let target = path.joined();
+    let direct: Vec<_> = candidates.iter().filter(|(_, c)| *c == target).collect();
     if !direct.is_empty() {
-        return pick(&direct);
+        return pick(direct);
     }
-    let reexported: Vec<&SymbolEntry> = candidates
+
+    // A `pub use child::*` or `pub use child::name` re-export: an item of a
+    // direct child module. Deeper items are reached only through a chain of
+    // re-exports, and taking them binds unrelated items (a `tests` helper).
+    let child_of_target = |c: &str| {
+        let rest = if target.is_empty() {
+            Some(c)
+        } else {
+            c.strip_prefix(target.as_str())
+                .and_then(|r| r.strip_prefix("::"))
+        };
+        rest.is_some_and(|r| !r.contains("::") && is_module_segment(r))
+    };
+    let reexported: Vec<_> = candidates
         .iter()
-        .filter(|s| module_path(s).is_some_and(|p| is_in_module_dir(p, segment)))
-        .copied()
+        .filter(|(_, c)| child_of_target(c))
         .collect();
-    pick(&reexported)
+    if !reexported.is_empty() {
+        return pick(reexported);
+    }
+
+    let (&last, parent) = path.segs.split_last()?;
+    // An anchored path through a module that does not exist there reaches
+    // one re-exported under that name from elsewhere in the crate
+    // (`pub use routes::shop::catalog;` in lib.rs makes `crate::catalog`).
+    if is_module_segment(last) {
+        if !path.anchored || index.is_module(path.src, &target) {
+            return None;
+        }
+        let named: Vec<_> = candidates
+            .iter()
+            .filter(|(_, c)| {
+                c.rsplit("::").next() == Some(last) && c.split("::").all(is_module_segment)
+            })
+            .collect();
+        return pick(named);
+    }
+    let ty = last;
+    let parent = RustPath {
+        src: path.src,
+        segs: parent.to_vec(),
+        anchored: path.anchored,
+    };
+    find_item(
+        index,
+        &parent,
+        ty,
+        KindFilter::Context(&RefContextKind::TypeUse),
+        file_id,
+    )?;
+    // An inherent `impl` sits in the type's crate, but a trait `impl` may sit
+    // in any workspace crate (`impl TryFrom<Row> for chat_store::Message` in
+    // the server), so members are taken from anywhere, the type's crate first.
+    let members: Vec<(&'i SymbolEntry, bool)> = index
+        .short(name)
+        .iter()
+        .filter(|s| filter.accepts(&s.kind))
+        .filter_map(|s| {
+            let file = index.rust_modules.get(&s.file_id)?;
+            let qn = strip_generic_args(&s.qualified_name);
+            let (owner, _) = qn.rsplit_once("::")?;
+            (owner.rsplit("::").next() == Some(ty)).then_some((*s, file.src == path.src))
+        })
+        .collect();
+    members
+        .iter()
+        .find(|(s, home)| *home && s.file_id == file_id)
+        .or_else(|| members.iter().find(|(_, home)| *home))
+        .or_else(|| members.iter().find(|(s, _)| s.file_id == file_id))
+        .or_else(|| members.first())
+        .map(|(s, _)| *s)
 }
 
-/// Whether a file sits below a directory named `module`, making it a
-/// descendant of that module (`src/db/graph.rs` is below `db`).
-fn is_in_module_dir(path: &str, module: &str) -> bool {
-    path.rsplit_once('/')
-        .is_some_and(|(dir, _)| dir.split('/').any(|d| same_module(d, module)))
+fn module_key(src: &str, path: &str) -> String {
+    format!("{src}|{path}")
+}
+
+/// A module name segment (`db`, `r#type`), as opposed to a type (`Config`).
+fn is_module_segment(seg: &str) -> bool {
+    !seg.starts_with(char::is_uppercase)
 }
 
 fn resolved(r: &ExtractedRef, id: i64, method: ResolutionMethod) -> ResolvedRef {

@@ -942,8 +942,10 @@ fn resolve_references(db: &Db, workspace_root: &Path) -> Result<(i64, i64, i64)>
 
     let all_db_symbols = db.all_symbols_summary()?;
     let all_files = db.all_files()?;
-    let symbol_index = resolver::SymbolIndex::build(&all_db_symbols)
-        .with_file_paths(all_files.iter().map(|f| (f.id, &*f.path)));
+    let symbol_index = resolver::SymbolIndex::build(&all_db_symbols).with_file_paths(
+        all_files.iter().map(|f| (f.id, &*f.path)),
+        &crate::rust_imports::parse_workspace_layout(workspace_root),
+    );
     log_phase_rss("post_parse:symbols_loaded");
     let mut resolved_count: i64 = 0;
     let mut unresolved_count: i64 = 0;

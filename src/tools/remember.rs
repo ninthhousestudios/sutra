@@ -353,7 +353,7 @@ fn import_root(imported_path: &str) -> &str {
     if let Some(rest) = imported_path.strip_prefix("package:") {
         return rest.split('/').next().unwrap_or("");
     }
-    if imported_path.starts_with("dart:") || imported_path.starts_with("pub use ") {
+    if imported_path.starts_with("dart:") {
         return "";
     }
     let root = imported_path.split("::").next().unwrap_or("");

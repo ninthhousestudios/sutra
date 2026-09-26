@@ -146,23 +146,50 @@ fn build_scopes_recursive(
             }
             _ => {
                 // Closure parameters and `for`/`match`/`if let` patterns bind
-                // from their own line to the end of the enclosing scope. That
-                // over-extends their reach, which only ever leaves a ref
-                // unresolved; it never binds one to the wrong item.
-                let pattern = match child.kind() {
-                    "closure_expression" => child.child_by_field_name("parameters"),
-                    "for_expression" | "match_arm" | "let_condition" => {
-                        child.child_by_field_name("pattern")
-                    }
-                    _ => None,
+                // only within their construct. A binding that outlived it would
+                // shadow a later call to a same-named item, leaving that item
+                // looking unreferenced.
+                let (pattern, end) = match child.kind() {
+                    "closure_expression" => (child.child_by_field_name("parameters"), child),
+                    "for_expression" | "match_arm" => (child.child_by_field_name("pattern"), child),
+                    "let_condition" => (
+                        child.child_by_field_name("pattern"),
+                        let_condition_extent(child).unwrap_or(child),
+                    ),
+                    _ => (None, child),
                 };
-                if let Some(pat) = pattern {
-                    let line = child.start_position().row + 1;
-                    collect_pattern_names(pat, src, line, &mut arena[parent_idx].bindings);
-                }
-                build_scopes_recursive(child, src, parent_idx, arena, symbols);
+                let Some(pat) = pattern else {
+                    build_scopes_recursive(child, src, parent_idx, arena, symbols);
+                    continue;
+                };
+                let idx = arena.len();
+                arena.push(Scope {
+                    parent: Some(parent_idx),
+                    defs: Vec::new(),
+                    bindings: Vec::new(),
+                    kind: ScopeKind::Block,
+                    start_line: child.start_position().row + 1,
+                    end_line: end.end_position().row + 1,
+                });
+                let line = child.start_position().row + 1;
+                collect_pattern_names(pat, src, line, &mut arena[idx].bindings);
+                build_scopes_recursive(child, src, idx, arena, symbols);
             }
         }
+    }
+}
+
+/// The body an `if let` / `while let` binding is visible in: from the
+/// condition through the consequence (never the `else`).
+fn let_condition_extent(cond: Node) -> Option<Node> {
+    let mut node = cond.parent()?;
+    while node.kind() == "let_chain" {
+        node = node.parent()?;
+    }
+    match node.kind() {
+        "if_expression" => node.child_by_field_name("consequence"),
+        "while_expression" => node.child_by_field_name("body"),
+        _ => None,
     }
 }
 
@@ -206,9 +233,18 @@ fn collect_pattern_names(pat: Node, src: &[u8], line: usize, names: &mut Vec<(St
         | "or_pattern"
         | "field_pattern"
         | "reference_pattern" => {
+            // The path of `Some(x)` or `Point { x, .. }` names a type or
+            // variant; only the sub-patterns bind.
             let mut cursor = pat.walk();
-            for child in pat.children(&mut cursor) {
-                collect_pattern_names(child, src, line, names);
+            if cursor.goto_first_child() {
+                loop {
+                    if cursor.field_name() != Some("type") {
+                        collect_pattern_names(cursor.node(), src, line, names);
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
             }
         }
         _ => {}
@@ -232,19 +268,19 @@ fn find_tightest_scope(arena: &[Scope], line: usize) -> usize {
 
 fn resolve_refs_locally(arena: &[Scope], symbols: &[&ExtractedSymbol], refs: &mut [ExtractedRef]) {
     for r in refs.iter_mut() {
+        // Only `Self::name` paths use the scope chain (the impl's items); every
+        // other path is resolved from its module by the resolver.
         if matches!(r.context_kind, RefContextKind::Import)
-            || r.qualifier
-                .as_deref()
-                .is_some_and(|q| q != "Self" && q != "self")
+            || r.qualifier.as_deref().is_some_and(|q| q != "Self")
         {
             continue;
         }
         let scope_idx = find_tightest_scope(arena, r.line);
-        // `x.name()` looks `name` up on the receiver's type: a local named
-        // `name` cannot shadow it.
-        let method_call = r.receiver.is_some();
+        // `x.name()` looks `name` up on the receiver's type and `Self::name`
+        // on the impl: a local named `name` shadows neither.
+        let skip_bindings = r.receiver.is_some() || r.qualifier.is_some();
         r.resolved_local_target =
-            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line, method_call);
+            resolve_in_scope_chain(arena, symbols, scope_idx, &r.name, r.line, skip_bindings);
     }
 }
 
@@ -254,14 +290,14 @@ fn resolve_in_scope_chain(
     start: usize,
     name: &str,
     ref_line: usize,
-    method_call: bool,
+    skip_bindings: bool,
 ) -> Option<String> {
     let mut idx = start;
     loop {
         let scope = &arena[idx];
 
         // Let-bindings only shadow refs that appear on or after the declaration line.
-        if !method_call
+        if !skip_bindings
             && matches!(scope.kind, ScopeKind::Function | ScopeKind::Block)
             && scope
                 .bindings
@@ -1032,9 +1068,23 @@ fn walk_refs_recursive<'t>(
     if kind == "macro_definition" {
         return;
     }
-    // Rust 2021 inline format args: `format!("{LIMIT}")` reads `LIMIT`.
-    if kind == "string_literal" && up(anc, 0).is_some_and(|p| p.kind() == "token_tree") {
-        push_format_arg_refs(refs, node, src);
+    // Rust 2021 inline format args: `format!("{LIMIT}")` reads `LIMIT`. A
+    // macro nested in a token tree is only tokens (`name`, `!`, tree).
+    if kind == "macro_invocation"
+        && let Some(name) = node.child_by_field_name("macro")
+        && let Some(args) = node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "token_tree")
+    {
+        push_format_string_refs(refs, name, args, src);
+    }
+    if kind == "token_tree" {
+        let tokens: Vec<Node> = node.children(&mut node.walk()).collect();
+        for w in tokens.windows(3) {
+            if w[0].kind() == "identifier" && w[1].kind() == "!" && w[2].kind() == "token_tree" {
+                push_format_string_refs(refs, w[0], w[2], src);
+            }
+        }
     }
     // `#[serde(default = "path")]` and friends name a function in a string;
     // nothing else in an attribute is a reference.
@@ -1248,8 +1298,9 @@ fn classify_token_tree_ident(node: Node, src: &[u8]) -> Option<PathRef> {
     if matches!(next_kind, Some("::")) {
         return type_path_segment(node, src);
     }
-    // `name: value` keys, `name!` nested macros.
-    if matches!(next_kind, Some(":" | "!")) {
+    // `name: value` keys, `name!` nested macros, and `name = value` named
+    // format arguments or tracing fields.
+    if matches!(next_kind, Some(":" | "!" | "=")) {
         return None;
     }
     let calls = next.is_some_and(|n| {
@@ -1308,6 +1359,72 @@ fn classify_token_tree_ident(node: Node, src: &[u8]) -> Option<PathRef> {
 /// Emit a `Read` ref for each `{ident}` / `{ident:spec}` placeholder in a
 /// macro's string literal. `{{` is an escaped brace, and positional or
 /// expression placeholders (`{}`, `{0}`) name nothing.
+/// Which argument of a std, `anyhow`, `log` or `tracing` formatting macro is
+/// its format string: a fixed position, or the first bare string literal
+/// (`info!(target: "t", n = 1, "msg {x}")`). Other macros take no format
+/// string; `stringify!("{X}")` reads nothing.
+enum FormatArg {
+    At(usize),
+    FirstLiteral,
+}
+
+fn format_arg(macro_name: &str) -> Option<FormatArg> {
+    match macro_name {
+        "format" | "format_args" | "print" | "println" | "eprint" | "eprintln" | "panic"
+        | "unreachable" | "todo" | "unimplemented" | "anyhow" | "bail" | "eyre" | "trace"
+        | "debug" | "info" | "warn" | "error" => Some(FormatArg::FirstLiteral),
+        "write" | "writeln" | "assert" | "debug_assert" | "ensure" => Some(FormatArg::At(1)),
+        "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => Some(FormatArg::At(2)),
+        _ => None,
+    }
+}
+
+/// Emit a `Read` ref for each implicit capture in a formatting macro's format
+/// string. `name` is the macro path, `args` its token tree. A name supplied
+/// explicitly (`format!("{x}", x = 1)`) is an argument, not a capture.
+fn push_format_string_refs(refs: &mut Vec<ExtractedRef>, name: Node, args: Node, src: &[u8]) {
+    let Some(position) = name
+        .utf8_text(src)
+        .ok()
+        .and_then(|n| n.rsplit("::").next())
+        .and_then(format_arg)
+    else {
+        return;
+    };
+    // Split the tree's tokens into top-level comma-separated arguments,
+    // dropping the delimiters.
+    let tokens: Vec<Node> = args.children(&mut args.walk()).collect();
+    let inner = tokens
+        .get(1..tokens.len().saturating_sub(1))
+        .unwrap_or_default();
+    let arguments: Vec<&[Node]> = inner.split(|t| t.kind() == ",").collect();
+    let is_literal = |arg: &&[Node]| matches!(arg, [t] if matches!(t.kind(), "string_literal" | "raw_string_literal"));
+    let format_index = match position {
+        FormatArg::At(i) => Some(i).filter(|&i| arguments.get(i).is_some_and(is_literal)),
+        FormatArg::FirstLiteral => arguments.iter().position(is_literal),
+    };
+    let Some(format_index) = format_index else {
+        return;
+    };
+    let named: Vec<&str> = arguments[format_index + 1..]
+        .iter()
+        .filter_map(|arg| match arg {
+            [ident, eq, ..] if ident.kind() == "identifier" && eq.kind() == "=" => {
+                ident.utf8_text(src).ok()
+            }
+            _ => None,
+        })
+        .collect();
+    let before = refs.len();
+    push_format_arg_refs(refs, arguments[format_index][0], src);
+    let captures = refs.split_off(before);
+    refs.extend(
+        captures
+            .into_iter()
+            .filter(|r| !named.contains(&r.name.as_str())),
+    );
+}
+
 fn push_format_arg_refs(refs: &mut Vec<ExtractedRef>, node: Node, src: &[u8]) {
     let Ok(text) = node.utf8_text(src) else {
         return;
@@ -1679,21 +1796,24 @@ fn walk_imports_recursive(
 ) {
     let node = cursor.node();
 
+    // The `argument` field skips a visibility (`pub use`, `pub(crate) use`).
     if node.kind() == "use_declaration" {
-        if let Ok(text) = node.utf8_text(src) {
-            let raw = text
-                .strip_prefix("use ")
-                .unwrap_or(text)
-                .strip_suffix(';')
-                .unwrap_or(text)
-                .trim();
+        if let Some(argument) = node.child_by_field_name("argument")
+            && let Ok(raw) = argument.utf8_text(src)
+        {
             let line = node.start_position().row + 1;
             for path in expand_braced_import(raw) {
+                let (raw_path, alias) = match path.split_once(" as ") {
+                    Some((path, alias)) => {
+                        (path.trim().to_string(), Some(alias.trim().to_string()))
+                    }
+                    None => (path, None),
+                };
                 imports.push(ExtractedImport {
-                    raw_path: path,
+                    raw_path,
                     line,
                     kind: "import",
-                    alias: None,
+                    alias,
                     is_test: false,
                 });
             }
@@ -2449,6 +2569,139 @@ fn setup() {
                 "{dropped} is a local, got {reads:?}"
             );
         }
+    }
+
+    /// Closure, `for`, `match` arm and `if let` bindings end with their
+    /// construct: a later call to a same-named item still binds the item.
+    #[test]
+    fn pattern_bindings_do_not_outlive_their_construct() {
+        let src = "fn helper() -> i32 { 1 }\n\
+                   fn f(xs: Vec<i32>, o: Option<i32>) {\n\
+                       let c = |helper: i32| helper;\n\
+                       helper();\n\
+                       for helper in xs.iter() { let _ = helper; }\n\
+                       helper();\n\
+                       match o { Some(helper) => helper, None => 0 };\n\
+                       helper();\n\
+                       if let Some(helper) = o {\n\
+                           helper();\n\
+                       } else {\n\
+                           helper();\n\
+                       }\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let calls: Vec<(usize, Option<&str>)> = refs_named(&r, "helper")
+            .into_iter()
+            .filter(|x| x.context_kind == RefContextKind::Call)
+            .map(|x| (x.line, x.resolved_local_target.as_deref()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (4, Some("helper")),
+                (6, Some("helper")),
+                (8, Some("helper")),
+                (10, Some(LOCAL_BINDING_SENTINEL)),
+                (12, Some("helper")),
+            ]
+        );
+    }
+
+    /// The path in a tuple-struct or struct pattern is not a binding: in the
+    /// arm `Err(e) => Err(e)`, the second `Err` is a constructor call.
+    #[test]
+    fn pattern_paths_are_not_bindings() {
+        let src = "fn f(r: Result<u8, u8>) -> Result<u8, u8> {\n\
+                       match r {\n\
+                           Ok(n) => Ok(n),\n\
+                           Err(e) => Err(e),\n\
+                       }\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let err = refs_named(&r, "Err");
+        let call = err
+            .iter()
+            .find(|x| x.context_kind == RefContextKind::Call)
+            .expect("Err(e) call ref");
+        assert_ne!(
+            call.resolved_local_target.as_deref(),
+            Some(LOCAL_BINDING_SENTINEL)
+        );
+    }
+
+    /// `Self::name` binds the impl's item even where a local shares the name;
+    /// `self::name` is a module path, left to the resolver.
+    #[test]
+    fn qualified_paths_are_not_shadowed_by_locals() {
+        let src = "struct S;\n\
+                   fn helper() {}\n\
+                   impl S {\n\
+                       fn helper() {}\n\
+                       fn f() {\n\
+                           let helper = 1;\n\
+                           Self::helper();\n\
+                           self::helper();\n\
+                       }\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let calls: Vec<(Option<&str>, Option<&str>)> = refs_named(&r, "helper")
+            .into_iter()
+            .filter(|x| x.context_kind == RefContextKind::Call)
+            .map(|x| (x.qualifier.as_deref(), x.resolved_local_target.as_deref()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![(Some("Self"), Some("S::helper")), (Some("self"), None)]
+        );
+    }
+
+    /// Only a formatting macro's format string captures names; `stringify!`,
+    /// ordinary string arguments and explicitly named arguments read nothing.
+    #[test]
+    fn format_captures_come_only_from_format_strings() {
+        let src = "const UNUSED: u8 = 1;\n\
+                   const USED: u8 = 2;\n\
+                   fn f(w: &mut String) {\n\
+                       let _ = stringify!(\"{UNUSED}\");\n\
+                       println!(\"{}\", \"{UNUSED}\");\n\
+                       println!(\"{UNUSED}\", UNUSED = 3);\n\
+                       let _ = write!(w, \"{USED}\");\n\
+                       assert_eq!(1, 1, \"{USED}\");\n\
+                       tracing::info!(n = 1, \"{USED}\");\n\
+                       let _ = vec![format!(\"{USED}\")];\n\
+                   }";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        assert!(
+            refs_named(&r, "UNUSED").is_empty(),
+            "{:?}",
+            refs_named(&r, "UNUSED")
+        );
+        let used: Vec<usize> = refs_named(&r, "USED").iter().map(|x| x.line).collect();
+        assert_eq!(used, vec![7, 8, 9, 10]);
+    }
+
+    /// A `pub use` records its path without the visibility, and `as` becomes
+    /// the alias.
+    #[test]
+    fn use_declarations_strip_visibility_and_split_alias() {
+        let src = "pub use crate::db::Db;\n\
+                   pub(crate) use crate::db as store;\n\
+                   use std::{fmt as f, io};";
+        let r = parse_rust(src, "src/a.rs").expect("parse");
+        let imports: Vec<(&str, Option<&str>)> = r
+            .imports
+            .iter()
+            .map(|i| (i.raw_path.as_str(), i.alias.as_deref()))
+            .collect();
+        assert_eq!(
+            imports,
+            vec![
+                ("crate::db::Db", None),
+                ("crate::db", Some("store")),
+                ("std::fmt", Some("f")),
+                ("std::io", None),
+            ]
+        );
     }
 
     #[test]
