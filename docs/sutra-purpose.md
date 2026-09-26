@@ -97,7 +97,14 @@ follows these or gives a reason.
    reports `incomplete: <cap>`, never "nothing found" (from sutra/406). The
    same rule applies to SWALLOW in sutra's own code.
 9. **Log firings.** Every mechanism records what it flagged so the acted-on
-   rate can be measured (see Metric).
+   rate can be measured (see Metric). The log is the durable
+   `mechanism_firings` table (`src/db/firings.rs`, built in sutra/467): one
+   row per flagged site (mechanism, finding kind and key, file:line,
+   enclosing symbol, line text), with the diff's identity (spec, revisions,
+   content fingerprint) and the HEAD commit at firing time. Reviewing the
+   same diff twice doesn't add rows. `sutra firings [--mechanism]
+   [--since]` lists rows with a `site_status` (the flagged line is present,
+   changed or its file is gone), the acted-on proxy for sutra/485.
 
 ## What sutra is today
 
@@ -107,7 +114,7 @@ follows these or gives a reason.
 | Navigation | `sutra_explore`, `sutra_lookup`, `sutra_symbol`, `sutra_outline`, `sutra_map`, `sutra_context`, `sutra_refs`, `sutra_calls`, `sutra_trace`, `sutra_deps`, `sutra_impact` | Read side |
 | Freshness | Content-based staleness; refresh before answering ([freshness-map.md](freshness-map.md)) | Every answer carries `as_of`/`is_stale` |
 | Constraints and guard | `.sutra/rules.toml` (forbidden deps, cycles, fan-in, forbidden_patterns), DD engine, `sutra-guard` edit hook, `sutra check`, `sutra_constraints` ([constraints-map.md](constraints-map.md)) | Write side, blocking. Home of the SWALLOW ratchet |
-| Review | `sutra_review`, `sutra_diff_impact`, `sutra_pr_risk`, `sutra_commit_manifest` | Write side, advisory. Home of the PAR, DUP and orphans mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
+| Review | `sutra_review`, `sutra_diff_impact`, `sutra_pr_risk`, `sutra_commit_manifest` | Write side, advisory. Home of the PAR (`sibling_patterns`, sutra/467), DUP and orphans mechanisms. `behavioral_coupling` lists co-change partners with no static edge |
 | Similarity | HRR vectors (embed, strip), lexical tokens, `sutra_similar` ([similarity-map.md](similarity-map.md)) | Substrate for the DUP mechanism. Strip mode is not a duplicate detector (sutra/484) |
 | Dead code | `sutra_dead` | Substrate for the orphans mechanism (resolution corrected in sutra/477) |
 | Git signals | `sutra_cochange`, `sutra_hotspots`, per-symbol cyclomatic/cognitive complexity | Review inputs; hotspots were the one health-era signal that was right on all 4 pilot repos |

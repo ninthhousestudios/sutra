@@ -225,6 +225,68 @@ with no new call. That is the recall this precision cost.
   That needs knowing that N sites share a responsibility (co-change partners,
   near-duplicate siblings), which is mechanism 2 in the evidence doc.
 
+## Production (sutra/467)
+
+Built into review as `sibling_patterns` in `sutra_review` output and a
+not-gating section of `sutra check --diff` (human and JSON). Code:
+`src/tools/sibling_pattern.rs`. Each flagged survivor is written to the shared
+firing log (`mechanism_firings`, see [sutra-purpose.md](sutra-purpose.md)
+rule 9). `sutra firings` reads it back with a per-site status.
+
+Output: pattern-centric, one finding per idiom (or per group of idioms with
+identical survivors). Each survivor carries its enclosing symbol from the index.
+
+```json
+{"idioms": [{"kind": "chain", "idiom": "serde_json::from_str.unwrap_or_default"}],
+ "class": "rewritten", "removed_at": ["src/a.rs:2"],
+ "survivors": [{"file": "src/b.rs", "line": 2, "symbol": "b::load_tags"}],
+ "survivor_count": 1}
+```
+
+### What replaced the prototype heuristics
+
+| Prototype | Production |
+|---|---|
+| Regex tokenizer | tree-sitter leaves: comments dropped, string literals whole, lifetimes opaque. The idiom rules run on these tokens unchanged, to stay at the measured behaviour. |
+| Per-hunk token-multiset format check | Kept, plus `symbol_diff::classify_symbols`: a hunk inside a `CosmeticChanged` symbol is skipped. This drops the final-sample fmt residue (yojana 5fc5716). |
+| Wrap signal from a regex callee scan | Parser call refs (the `callee_diff` data): non-generic calls on added lines within 40 lines of the hunk, minus calls on its removed lines. |
+| Re-tokenize every file for DF and survivors | The index narrows candidates: call idioms go to files with a call ref of that name (refs include macro bodies), literal idioms to files whose content holds the literal. tree-sitter confirms and locates. Pre-change DF = unchanged-file count + base-side count in changed files. |
+| `#[cfg(test)]` tail regex | `LanguageAdapter::test_line_ranges` and `is_test_path`, plus the prototype's test/bench/example directories. |
+
+Scope is Rust and Dart, the languages the stoplist covers. Files the check
+can't read or parse are listed as `incomplete`, never read as clean.
+
+### The three new noise controls, measured
+
+All on by default. `SUTRA_SIBLING_CONTROLS_OFF=<name>[,…]` turns one off for
+measurement. Numbers are items / commits with any report on each sample
+(`run.sh`, which now replays through the production binary; `run.sh --proto`
+runs the frozen prototype).
+
+| Control | Effect when on |
+|---|---|
+| `canonical_mapping`: drop tree literals in a `Path::Variant => "lit"` / `"lit" => Path::Variant` arm (Dart `Enum.x` too) | Removes the canonical-mapping survivors (`state.rs:44/48` `as_str`) and cuts the final-sample 16b954d item from 12 survivors to 5. `guard.rs:407` (an if-chain) still surfaces. |
+| `group_by_survivors`: merge findings with identical survivor sets | No effect on any sample. The c0b57ea pair it targeted has different sets (argfld: 1 site, chain: 15). Kept because it's free. |
+| `grown_litset`: a literal list whose added side is a strict superset of its removed side | **Recovers yojana dd8dc0a** (`tools/project.rs:9 VALID_STATUSES` missing `production`: real, live). The first cut marked every *pair* of the old list as rewritten, and it flagged 15 unrelated status lists on 1138076. Shipped form: a survivor is a literal list holding every old item and none of the added ones. That drops 1138076 to silent and keeps dd8dc0a at 1 survivor. |
+
+### Results vs the prototype
+
+| Sample | v6 prototype | Production |
+|---|---|---|
+| Back-test | 4/4 | **4/4**. Same known sites, and the same later-real sites (`symbol_diff.rs:539`, both `check.rs` sites). Additive pairs silent. |
+| Tuning (seed 462, 23) | 4 / 3 | 5 / 4 (+dd8dc0a, real) |
+| Held-out (seed 7, 38) | 6 / 4 | 5 / 4 (canonical-mapping survivors gone) |
+| **Final (seed 99, 31)** | 3 / 2, all noise | **1 / 1**: 16b954d, stringly status lists (`context.rs`, `db.rs:189 TERMINAL_STATUSES`, `query.rs`, `ready.rs`) surviving the TaskStatus enum sweep. Relevant, by the same label as held-out 7e77aab's `context.rs:344`. |
+
+The final sample is no longer a clean estimate: it was used to judge the
+grown-list fix. The next unbiased check is the sutra/485 re-measure.
+
+One tokenization difference remains. tree-sitter reads `+=` as one token
+where the regex read two, so literals slightly further apart pair up.
+91fedc7 and f114fa5 gain `parser/complexity.rs:141` (`walk_cognitive`, a
+rust/dart dispatch: relevant). Dart generic calls (`x.cast<T>()`) are not
+read as calls, same as the prototype.
+
 ## Caveats
 
 - **Small, author-labelled back-test.** One labeller (Claude). "Real" was
@@ -232,5 +294,5 @@ with no new call. That is the recall this precision cost.
 - **Rust only in practice.** All three repos are Rust.
 - **The generic list is the weakest part.** It is a stoplist; a new codebase's
   own ubiquitous helpers will read as idioms until DF catches them.
-- **Regex tokenizer.** Raw strings, nested generics and macros are
-  approximated. Production should use the tree-sitter parse.
+- **Regex tokenizer (prototype only).** Raw strings, nested generics and
+  macros were approximated. Production uses tree-sitter leaves.
