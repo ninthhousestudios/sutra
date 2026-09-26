@@ -329,6 +329,9 @@ impl Copies {
         let in_symbol = symbol.and_then(|name| {
             let ext = Path::new(path).extension()?.to_str()?;
             let adapter = registry.adapter_for_extension(ext)?;
+            // swallow: a historical snapshot that no longer parses has no
+            // symbol count, and `keeps` then compares whole-file counts on
+            // both sides, so the fallback stays consistent.
             let spans: Vec<SymbolSpan> = symbol_spans(pool, adapter, text, path).ok()?;
             let (start, end, _) = spans.into_iter().find(|(_, _, n)| n == name)?;
             Some(count_snippet(text, start..end + 1, snippet))
@@ -463,11 +466,14 @@ struct PatternSite<'f> {
 /// line's text and its ordinal among identical lines in its enclosing symbol
 /// (in the file when there is none), as the sibling check records them.
 /// `content_of` returns a file's text on the side the findings were read from.
+/// A file with no language adapter has no spans, so its occurrences count
+/// across the whole file; a parse failure is an error, not a silent fallback
+/// to that file-wide count under a symbol name it no longer honours.
 fn pattern_sites<'f>(
     findings: impl IntoIterator<Item = &'f ConstraintFinding>,
     registry: &LanguageRegistry,
     mut content_of: impl FnMut(&str) -> Option<String>,
-) -> Vec<PatternSite<'f>> {
+) -> Result<Vec<PatternSite<'f>>> {
     let mut by_file: BTreeMap<&str, Vec<&ConstraintFinding>> = BTreeMap::new();
     for f in findings
         .into_iter()
@@ -481,12 +487,14 @@ fn pattern_sites<'f>(
         let Some(text) = content_of(path) else {
             continue;
         };
-        let spans: Vec<SymbolSpan> = Path::new(path)
+        let adapter = Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
-            .and_then(|ext| registry.adapter_for_extension(ext))
-            .and_then(|adapter| symbol_spans(&mut pool, adapter, &text, path).ok())
-            .unwrap_or_default();
+            .and_then(|ext| registry.adapter_for_extension(ext));
+        let spans: Vec<SymbolSpan> = match adapter {
+            Some(adapter) => symbol_spans(&mut pool, adapter, &text, path)?,
+            None => Vec::new(),
+        };
         for f in file_findings {
             let Some(line) = f.line.map(|l| l as usize) else {
                 continue;
@@ -512,7 +520,7 @@ fn pattern_sites<'f>(
             });
         }
     }
-    sites
+    Ok(sites)
 }
 
 fn pattern_records<'s>(sites: &'s [PatternSite<'_>]) -> Vec<FiringRecord<'s>> {
@@ -547,7 +555,7 @@ pub fn record_pattern_firings(
     registry: &LanguageRegistry,
     content_of: impl FnMut(&str) -> Option<String>,
 ) -> Result<usize> {
-    let sites = pattern_sites(findings, registry, content_of);
+    let sites = pattern_sites(findings, registry, content_of)?;
     if sites.is_empty() {
         return Ok(0);
     }
@@ -568,7 +576,7 @@ pub fn record_guard_blocks(
 ) -> Result<usize> {
     let sites = pattern_sites(blocked.iter().copied(), registry, |_| {
         Some(proposed.to_string())
-    });
+    })?;
     if sites.is_empty() {
         return Ok(0);
     }
