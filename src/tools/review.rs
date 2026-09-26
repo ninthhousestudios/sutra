@@ -368,6 +368,13 @@ fn file_freshness(db: &Db, workspace_root: &Path, path: &str) -> FreshnessLevel 
         .unwrap_or(FreshnessLevel::StaleIndex)
 }
 
+/// A review partner must have co-changed in at least this many commits. One
+/// shared commit at jaccard >= 0.5 means both files were barely touched: born in
+/// the same commit, or swept by one small sync drop. Across four repos about 6
+/// of 81 such pairs were worth a look (sutra/476). Entity co-change uses the
+/// same floor.
+const MIN_PARTNER_SHARED_COMMITS: i64 = 2;
+
 /// Co-change partners of the changed files that share no static edge with them.
 /// A failure is an `Err`, never an empty list: "no partners" must mean the
 /// history was read and none qualified (sutra/476).
@@ -404,6 +411,9 @@ fn behavioral_coupling(
     let mut entries: Vec<(f64, serde_json::Value)> = cochange_pairs
         .into_iter()
         .filter_map(|(fa, fb, jaccard, shared)| {
+            if shared < MIN_PARTNER_SHARED_COMMITS {
+                return None;
+            }
             let (changed_id, partner_id) =
                 if changed_ids.contains_key(&fa) && !changed_ids.contains_key(&fb) {
                     (fa, fb)

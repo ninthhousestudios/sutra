@@ -209,6 +209,56 @@ fn behavioral_coupling_failure_is_reported_not_empty() {
     assert!(result.get("behavioral_coupling").is_none());
 }
 
+/// Partners need repeated co-change: one shared commit is two files born or
+/// swept together, not coupling (sutra/476).
+#[test]
+fn behavioral_coupling_requires_two_shared_commits() {
+    let (dir, db) = setup_db_with_files();
+    let core = db.file_by_path("src/core.rs").unwrap().unwrap().id;
+    let helper = db.file_by_path("src/helper.rs").unwrap().unwrap().id;
+    let lone = db
+        .upsert_file("src/lone.rs", "rust", "h4", 10, true)
+        .unwrap();
+    let twin = db
+        .upsert_file("src/twin.rs", "rust", "h5", 10, true)
+        .unwrap();
+    let commit = |hash: &str| sutra::db::CommitRow {
+        hash: hash.into(),
+        committed_at: 1,
+        author: "x".into(),
+        file_count: Some(2),
+    };
+    db.replace_commit_files(
+        &[commit("c1"), commit("c2"), commit("c3")],
+        &[
+            ("c1".into(), core),
+            ("c1".into(), helper),
+            ("c2".into(), core),
+            ("c2".into(), helper),
+            ("c3".into(), lone),
+            ("c3".into(), twin),
+        ],
+    )
+    .unwrap();
+
+    let changed = vec!["src/core.rs".to_string(), "src/lone.rs".to_string()];
+    let result = review::compute(
+        &db,
+        dir.path(),
+        &changed,
+        &Default::default(),
+        &no_findings(),
+        false,
+    )
+    .unwrap();
+
+    let partners: Vec<&str> = result["behavioral_coupling"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|e| e["partner"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(partners, vec!["src/helper.rs"], "got {result}");
+}
+
 #[test]
 fn risk_breakdown_sums_correctly() {
     let (dir, db) = setup_db_with_files();
