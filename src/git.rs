@@ -25,7 +25,10 @@ pub struct CommitFile {
 }
 
 pub fn git_diff_files(workspace_root: &Path, base: &str, head: &str) -> Result<Vec<DiffFileEntry>> {
-    git_diff_entries(workspace_root, &[&format!("{base}..{head}")])
+    git_diff_entries(
+        workspace_root,
+        &["--end-of-options", &format!("{base}..{head}")],
+    )
 }
 
 /// Staged changes (index vs HEAD) as entries, renames carrying `old_path`.
@@ -125,7 +128,7 @@ pub fn git_diff_hunks(
             cmd.arg("--cached");
         }
         Some(rev) => {
-            cmd.args([base, rev]);
+            cmd.args(["--end-of-options", base, rev]);
         }
     }
     let output = cmd
@@ -221,6 +224,42 @@ pub fn detect_default_branch(workspace_root: &Path) -> Result<String> {
     ))
 }
 
+/// Resolve a caller-supplied revision to the full OID of the commit it names.
+/// Diff specs come from `sutra_review` / `sutra check --diff` callers, so a
+/// revision is never handed to git raw: one starting with `-` would be parsed
+/// as an option (`--output=<file>` truncates a file). Rejected up front, and
+/// `--end-of-options` keeps rev-parse itself from reading it as one (sutra/493).
+pub fn resolve_commit(workspace_root: &Path, rev: &str) -> Result<String> {
+    if rev.is_empty() || rev.starts_with('-') {
+        return Err(SutraError::InvalidArgument {
+            tool: "diff",
+            argument: "diff",
+            constraint: "a revision must be non-empty and must not start with '-'".to_string(),
+            received: Some(rev.to_string()),
+            next_action: "Pass a commit, branch or tag, e.g. \"HEAD~3..HEAD\" or \"abc123\"."
+                .to_string(),
+        });
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+        .arg(format!("{rev}^{{commit}}"))
+        .output()
+        .map_err(|e| SutraError::Internal(format!("git rev-parse failed: {e}")))?;
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || oid.is_empty() {
+        return Err(SutraError::InvalidArgument {
+            tool: "diff",
+            argument: "diff",
+            constraint: format!("'{rev}' does not name a commit"),
+            received: Some(rev.to_string()),
+            next_action: "Pass a commit, branch or tag that exists in this repository.".to_string(),
+        });
+    }
+    Ok(oid)
+}
+
 pub fn git_merge_base(workspace_root: &Path, branch: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -254,6 +293,7 @@ pub fn git_list_commits(workspace_root: &Path, base: &str, head: &str) -> Result
             "--no-merges",
             "--reverse",
             "--format=%H %at %ae %s",
+            "--end-of-options",
         ])
         .arg(format!("{base}..{head}"))
         .output()
@@ -623,7 +663,7 @@ pub fn git_file_content_at(
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["show", &format!("{revision}:{path}")])
+        .args(["show", "--end-of-options", &format!("{revision}:{path}")])
         .output()
         .map_err(|e| SutraError::Internal(format!("git show failed: {e}")))?;
 

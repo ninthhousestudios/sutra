@@ -1817,3 +1817,94 @@ scope = "src/"
     assert_eq!(acked[0]["snippet"], "foo.clone()");
     assert_eq!(acked[0]["rationale"], "owned-required");
 }
+
+/// Two-commit repo for diff-spec resolution tests.
+fn two_commit_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "--no-verify", "-m", "one"]);
+    fs::write(dir.path().join("a.rs"), "fn a() { let _ = 1; }\n").unwrap();
+    git(&["commit", "-q", "--no-verify", "-am", "two"]);
+    dir
+}
+
+fn rev_parse(root: &std::path::Path, rev: &str) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", rev])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn diff_spec_resolves_both_sides_to_oids() {
+    let repo = two_commit_repo();
+    let root = repo.path();
+    let (head, parent) = (rev_parse(root, "HEAD"), rev_parse(root, "HEAD~1"));
+    for spec in ["HEAD~1..HEAD", "HEAD", "HEAD~1.."] {
+        let scope = review::resolve_diff_entries(root, spec).unwrap();
+        assert_eq!(scope.base_revision, parent, "{spec}");
+        assert_eq!(
+            scope.head_revision.as_deref(),
+            Some(head.as_str()),
+            "{spec}"
+        );
+        assert_eq!(scope.paths(), vec!["a.rs".to_string()], "{spec}");
+    }
+    // Staged/unstaged sentinels are untouched.
+    let staged = review::resolve_diff_entries(root, "staged").unwrap();
+    assert_eq!(
+        (
+            staged.base_revision.as_str(),
+            staged.head_revision.as_deref()
+        ),
+        ("HEAD", Some(""))
+    );
+    let unstaged = review::resolve_diff_entries(root, "unstaged").unwrap();
+    assert_eq!(
+        (unstaged.base_revision.as_str(), unstaged.head_revision),
+        ("", None)
+    );
+}
+
+#[test]
+fn option_like_diff_spec_is_rejected_and_writes_nothing() {
+    let repo = two_commit_repo();
+    let root = repo.path();
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("clobbered");
+    let opt = format!("--output={}", target.display());
+    for spec in [format!("{opt}..HEAD"), format!("HEAD..{opt}"), opt.clone()] {
+        let err = review::resolve_diff_entries(root, &spec);
+        assert!(err.is_err(), "spec {spec:?} must be rejected");
+    }
+    // The shared git sinks other tools call directly must not read it as an
+    // option either.
+    assert!(sutra::git::git_diff_files(root, &opt, "HEAD").is_err());
+    assert!(sutra::git::git_list_commits(root, &opt, "HEAD").is_err());
+    let _ = sutra::git::git_file_content_at(root, &opt, "a.rs");
+    let _ = sutra::git::git_diff_hunks(root, &opt, Some("HEAD"));
+    assert!(
+        !target.exists(),
+        "an option-like revision reached git as an option"
+    );
+}

@@ -215,14 +215,25 @@ pub fn resolve_diff_entries(workspace_root: &Path, mode: &str) -> Result<DiffSco
         "branch" => {
             let default_branch = git::detect_default_branch(workspace_root)?;
             let base = git::git_merge_base(workspace_root, &default_branch)?;
-            let entries = git::git_diff_files(workspace_root, &base, "HEAD")?;
-            (entries, base, Some("HEAD".to_string()))
+            let head = git::resolve_commit(workspace_root, "HEAD")?;
+            let entries = git::git_diff_files(workspace_root, &base, &head)?;
+            (entries, base, Some(head))
         }
+        // Both sides become verified OIDs before anything reaches git: a raw
+        // side starting with `-` would be read as a git option (sutra/493). An
+        // empty side means HEAD, as in `git diff a..`.
         spec => {
-            let (base, head) = if let Some((a, b)) = spec.split_once("..") {
-                (a.to_string(), b.to_string())
-            } else {
-                (format!("{spec}~1"), spec.to_string())
+            fn or_head(s: &str) -> &str {
+                if s.is_empty() { "HEAD" } else { s }
+            }
+            let (base, head) = match spec.split_once("..") {
+                Some((a, b)) => (Some(a), b),
+                None => (None, spec),
+            };
+            let head = git::resolve_commit(workspace_root, or_head(head))?;
+            let base = match base {
+                Some(a) => git::resolve_commit(workspace_root, or_head(a))?,
+                None => git::resolve_commit(workspace_root, &format!("{head}~1"))?,
             };
             let entries = git::git_diff_files(workspace_root, &base, &head)?;
             (entries, base, Some(head))
