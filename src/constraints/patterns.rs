@@ -49,18 +49,27 @@ pub fn subtract_multiset(
 /// 1. By `(constraint_id, enclosing_symbol, snippet)`. A grandfathered match
 ///    moved into another existing function is still new — deliberately, since
 ///    moving a guarded construct around is what the rule wants surfaced.
-/// 2. What is left cancels by `(constraint_id, snippet)` against disk matches
-///    whose enclosing symbol no longer exists in `proposed_source`. A pure
-///    rename changes the symbol of every match inside the function, and without
-///    this pass would "introduce" all of them (observed on f9e19e6), forcing
-///    justifications onto code the edit never touched.
+/// 2. What is left cancels by `(constraint_id, snippet)` between a disk match
+///    whose enclosing symbol vanished and a proposed match whose enclosing
+///    symbol appeared — "vanished"/"appeared" counted per qualified name, so
+///    renaming one of two same-named symbols is seen. A pure rename changes the
+///    symbol of every match inside the function, and without this pass would
+///    "introduce" all of them (observed on f9e19e6), forcing justifications onto
+///    code the edit never touched. Requiring the destination to be new keeps
+///    "delete A, move its match into existing B" a move, not a rename.
 ///
-/// Symbols are only extracted from `proposed_source` when pass 1 leaves both
-/// sides with a remainder.
+/// `justified` are the proposed matches a `justify` comment waives. They are
+/// never returned, but spend disk budget before `proposed` does in both passes:
+/// otherwise justifying the grandfathered match and adding an identical
+/// unjustified one would let the new match inherit the old one's budget.
+///
+/// Symbols are only extracted when pass 1 leaves both sides with a remainder.
 pub fn introduced_in_file(
     proposed: Vec<ConstraintFinding>,
+    justified: &[&ConstraintFinding],
     disk: &[ConstraintFinding],
     path: &str,
+    disk_source: &str,
     proposed_source: &str,
     registry: &LanguageRegistry,
 ) -> Vec<ConstraintFinding> {
@@ -68,6 +77,11 @@ pub fn introduced_in_file(
     for f in disk {
         *exact.entry(symbol_match_key(f)).or_default() += 1;
     }
+    let justified_left: Vec<&ConstraintFinding> = justified
+        .iter()
+        .copied()
+        .filter(|f| !spend(&mut exact, &symbol_match_key(f)))
+        .collect();
     let mut surplus = surplus_mask(&proposed, &mut exact, symbol_match_key);
 
     let disk_left = exact.values().any(|&n| n > 0);
@@ -75,21 +89,48 @@ pub fn introduced_in_file(
         && surplus.contains(&true)
         && let Some(adapter) = registry.adapter_for_pattern_path(path)
     {
-        let live = extract_symbols_for_enclosing(adapter, proposed_source, path);
-        let is_live = |sym: &str| live.iter().any(|(name, _, _)| name == sym);
+        let disk_symbols = extract_symbols_for_enclosing(adapter, disk_source, path);
+        let proposed_symbols = extract_symbols_for_enclosing(adapter, proposed_source, path);
+        let disk_names = name_counts(&disk_symbols);
+        let proposed_names = name_counts(&proposed_symbols);
+        let count = |names: &HashMap<&str, usize>, sym: &str| names.get(sym).copied().unwrap_or(0);
+        let vanished = |sym: &str| count(&disk_names, sym) > count(&proposed_names, sym);
+        let appeared = |f: &ConstraintFinding| {
+            f.enclosing_symbol
+                .as_deref()
+                .is_some_and(|sym| count(&proposed_names, sym) > count(&disk_names, sym))
+        };
+
         let mut orphaned: HashMap<(&str, Option<&str>), usize> = HashMap::new();
         for ((constraint, symbol, snippet), n) in exact {
-            if n > 0 && symbol.is_some_and(|s| !is_live(s)) {
+            if n > 0 && symbol.is_some_and(vanished) {
                 *orphaned.entry((constraint, snippet)).or_default() += n;
             }
         }
+        for f in justified_left {
+            if appeared(f) {
+                spend(&mut orphaned, &(&*f.constraint_id, f.snippet.as_deref()));
+            }
+        }
         for (f, keep) in proposed.iter().zip(surplus.iter_mut()) {
-            if *keep && spend(&mut orphaned, &(&*f.constraint_id, f.snippet.as_deref())) {
+            if *keep
+                && appeared(f)
+                && spend(&mut orphaned, &(&*f.constraint_id, f.snippet.as_deref()))
+            {
                 *keep = false;
             }
         }
     }
     keep_masked(proposed, surplus)
+}
+
+/// Occurrences of each qualified name among `symbols`.
+fn name_counts(symbols: &[(String, usize, usize)]) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for (name, _, _) in symbols {
+        *counts.entry(name.as_str()).or_default() += 1;
+    }
+    counts
 }
 
 /// `(constraint_id, enclosing_symbol, snippet)` borrowed from the finding: the

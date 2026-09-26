@@ -173,9 +173,13 @@ src/guard.rs        — Lightweight per-edit constraint check.
                       enforcement — parses proposed + disk, multiset-diffs matches
                       via patterns::introduced_in_file: exact (constraint_id,
                       enclosing_symbol, snippet) first, then leftovers by
-                      (constraint_id, snippet) against disk matches whose symbol
-                      no longer exists (renames don't re-introduce; moves into
-                      a surviving function still do). Denies only the surplus. format_constraint_deny for dep-kind
+                      (constraint_id, snippet) between a disk match whose symbol
+                      vanished and a proposed match whose symbol appeared, both
+                      counted per qualified name (renames don't re-introduce;
+                      moves into a pre-existing function still do, even if the
+                      source was deleted). Justified proposed matches spend disk
+                      budget first but are never reported, so an unjustified
+                      twin can't inherit it. Denies only the surplus. format_constraint_deny for dep-kind
                       deny messages. format_pattern_deny for pattern deny messages
                       with justification-gate guidance (waive-vs-restructure).
                       Ratchet guard: check_proposed_rules_ratchet — compares

@@ -929,12 +929,21 @@ pub fn check_proposed_patterns(
 
     // Multiset diff: each disk match cancels one proposed match with the same
     // (constraint_id, enclosing_symbol, snippet), then leftovers cancel by
-    // (constraint_id, snippet) against matches of symbols that no longer exist,
-    // so a rename does not re-introduce the matches inside it (sutra/472).
+    // (constraint_id, snippet) between vanished and newly appeared symbols, so a
+    // rename does not re-introduce the matches inside it (sutra/472). Justified
+    // proposed matches spend disk budget first so an unjustified twin cannot
+    // inherit it (sutra/489).
+    let justified: Vec<&ConstraintFinding> = proposed_waived
+        .iter()
+        .filter(|w| w.waived_by == waivers::JUSTIFIED_BY)
+        .map(|w| &w.finding)
+        .collect();
     let introduced = introduced_in_file(
         proposed_active,
+        &justified,
         &disk_active,
         rel_path,
+        &disk_content,
         proposed_content,
         &registry,
     );
@@ -3129,6 +3138,51 @@ scope = "src/"
         let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
         assert_eq!(outcome.active.len(), 1, "{:?}", outcome.active);
         assert_eq!(outcome.active[0].enclosing_symbol.as_deref(), Some("b"));
+    }
+
+    /// Deleting the source function does not turn a move into an existing
+    /// function into a rename: the destination must be a new symbol (sutra/489).
+    #[test]
+    fn pattern_move_into_existing_after_deleting_source_still_introduced() {
+        let disk_content = "fn a(v: &Vec<u8>) -> Vec<u8> {\n    v.clone()\n}\nfn b(v: &Vec<u8>) -> usize {\n    v.len()\n}\n";
+        let proposed_content = "fn b(v: &Vec<u8>) -> Vec<u8> {\n    v.clone()\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert_eq!(outcome.active.len(), 1, "{:?}", outcome.active);
+        assert_eq!(outcome.active[0].enclosing_symbol.as_deref(), Some("b"));
+    }
+
+    /// Justifying the grandfathered match and adding an identical unjustified
+    /// one must not let the new match inherit the old one's budget — with or
+    /// without a rename (sutra/489).
+    #[test]
+    fn pattern_justified_twin_does_not_shield_new_match() {
+        let rule = format!("{CLONE_RULE}justify = \"clone:\"\n");
+        let disk_content = "fn old_name(v: &Vec<u8>) -> Vec<u8> {\n    v.clone()\n}\n";
+        let (conn, dir) = setup_pattern_db(&rule, &[("src/lib.rs", disk_content)]);
+
+        for name in ["old_name", "new_name"] {
+            let proposed_content = format!(
+                "fn {name}(v: &Vec<u8>) -> Vec<u8> {{\n    // clone: fixture needs an owned copy\n    let a = v.clone();\n    let _b = v.clone();\n    a\n}}\n"
+            );
+            let outcome =
+                check_proposed_patterns(&conn, dir.path(), "src/lib.rs", &proposed_content);
+            assert_eq!(outcome.active.len(), 1, "{name}: {:?}", outcome.active);
+            assert_eq!(outcome.active[0].enclosing_symbol.as_deref(), Some(name));
+        }
+    }
+
+    /// Renaming one of two same-named symbols (two `impl S` blocks each with an
+    /// `S::f`) is a rename, not an introduction (sutra/489).
+    #[test]
+    fn pattern_rename_one_of_duplicate_names_does_not_reintroduce() {
+        let disk_content = "struct S;\nimpl S {\n    fn f(v: &Vec<u8>) -> Vec<u8> {\n        v.clone()\n    }\n}\nimpl S {\n    fn f(v: &Vec<u8>) -> Vec<u8> {\n        v.clone()\n    }\n}\n";
+        let proposed_content = "struct S;\nimpl S {\n    fn f(v: &Vec<u8>) -> Vec<u8> {\n        v.clone()\n    }\n}\nimpl S {\n    fn g(v: &Vec<u8>) -> Vec<u8> {\n        v.clone()\n    }\n}\n";
+        let (conn, dir) = setup_pattern_db(CLONE_RULE, &[("src/lib.rs", disk_content)]);
+
+        let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
+        assert!(outcome.active.is_empty(), "{:?}", outcome.active);
     }
 
     /// The `justify` marker waives at the guard exactly as it does at check:
