@@ -5,7 +5,7 @@ storage partitioning, and language adapter interface to support multi-language
 analysis and prepare the foundation for all higher layers.
 
 Brainstorm decisions: sutra/29. Architecture context: `sutra-architecture.md`,
-`sutra-vision.md`.
+`archived/sutra-vision.md`.
 
 ## Problem statement
 

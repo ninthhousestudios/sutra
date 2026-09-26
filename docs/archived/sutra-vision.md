@@ -2,6 +2,8 @@
 
 > **The thread that holds your codebase together.**
 
+> **Archived 2026-09-26.** Superseded by [../sutra-purpose.md](../sutra-purpose.md) (sutra/466).
+
 > **Status note (2026-08):** Planning/vision document, not a canonical spec.
 > Since it was written, `sutra_orient` and the review-time FCA deviation report
 > were removed (sutra/312, sutra/313) after live use showed a high false-positive

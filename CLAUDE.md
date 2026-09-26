@@ -12,6 +12,7 @@ For convention system work, read `docs/conventions-map.md` first — it's a comp
 For constraint system work, read `docs/constraints-map.md` first — same idea, covers DD engine, rules parsing, TOML format, and remaining task graph.
 For similarity/history/complexity work, read `docs/similarity-map.md` first — covers git history ingestion, per-symbol complexity and HRR similarity. The health layer is gone; `docs/health-disposition.md` records what survived and why.
 For freshness / query-path refresh work, read `docs/freshness-map.md` first — covers content-based staleness, the refresh-before-answering flow under the parse lock, and which derived data is refreshed inline vs deferred to a full reparse.
+For write-side mechanism work (review advisories, guard ratchets) or questions about what sutra is for, read `docs/sutra-purpose.md` first — it records the targeted failure modes, the design rules every mechanism follows, and what was deliberately not built.
 For lessons system work, the core module is `src/lessons/` — shared sqlite store at `~/.sutra/lessons.db`, anchor matching engine, confidence lifecycle, and contextual surfacing through `sutra_symbol`/`sutra_impact`.
 
 ## Agent skills

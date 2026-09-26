@@ -1,7 +1,7 @@
 # Brainstorm: constraint system + DD design
 
 Phase 5d brainstorm. Decisions ready for PRD.
-Task: sutra/42. Context: `sutra-vision.md` (L3), `sutra-architecture.md`,
+Task: sutra/42. Context: `archived/sutra-vision.md` (L3), `sutra-architecture.md`,
 `prd-core-model.md`, DD spike (`docs/v1-spikes/differential-dataflow.md`
 on `spike/hdc-ast-encoding`).
 

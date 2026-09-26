@@ -1,7 +1,7 @@
 # sutra software architecture
 
 Decisions about how sutra is structured as software — distinct from what it
-does (see `sutra-vision.md`) and what its terms mean (see `CONTEXT.md`).
+does (see `sutra-purpose.md`) and what its terms mean (see `CONTEXT.md`).
 
 Decided during Phase 3 brainstorm. These decisions apply across all Phase 5
 capability PRDs.

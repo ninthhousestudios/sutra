@@ -2,9 +2,9 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a living architectural model of your codebase, served as an MCP server.
+Code intelligence for [manas](https://github.com/ninthhousestudios/manas) — a symbol graph of your codebase plus write-time checks against the patterns that cause bugs in agent-written code, served as an MCP server.
 
-Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through 31 MCP tools that AI coding agents (and humans) can call.
+Sutra parses your code with tree-sitter, discovers implicit patterns with formal concept analysis (queryable via `sutra_conventions`), enforces constraints with differential dataflow, detects structural similarity with holographic reduced representations and accumulates code-anchored lessons from agent experience. It exposes all of this through MCP tools that AI coding agents (and humans) can call.
 
 The core loop: **explore** (find relevant code in one call, with lessons and conventions surfaced contextually as an agent reads) → **check** (flag architectural violations as code is written) → **review** (produce an architectural change report the human can assess without reading every line) → **teach** (human refines the model by updating constraints and boundaries).
 
@@ -38,7 +38,7 @@ Every response includes a **freshness envelope** (`as_of`, `is_stale`) so caller
 
 ### 2. Architectural components (Layer 1)
 
-Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They're the unit of convention scoping and health scoring.
+Sutra discovers components — groups of related code — via directory-structure clustering and human refinement. Components have stable identity, lifecycle state (`stable` or `sketch`), and human-assigned aliases. They scope conventions and boundary constraints, and feed explore ranking.
 
 ### 3. Convention detection (Layer 2)
 
@@ -256,7 +256,7 @@ One call replaces the iterative `sutra_map` → `sutra_outline` → `sutra_symbo
 Agent: sutra_review(diff="branch")
 → risk score (0.0–1.0) with per-signal breakdown
 → constraint violations (blocking/advisory)
-→ health findings and health delta vs. last snapshot
+→ behavioral coupling: co-change partners with no static edge that the diff didn't touch
 → HRR shape changes (subtle structural shifts)
 → recommended files to inspect manually
 ```
@@ -413,7 +413,7 @@ The core model is language-agnostic. Per-language adapters handle parsing and at
 | **Differential dataflow** (timely) | Constraint enforcement — maintained views over the import graph for cycle detection, forbidden deps, and blast radius. Incremental: feed it edge deltas, all views update automatically |
 | **Formal Concept Analysis** (FCA) | Convention detection — discovers implications in the symbol-attribute matrix, validated by support/confidence thresholds. Per-component adaptive thresholds |
 | **HRR vectors** (1024-dim) | Structural similarity — FFT-based circular convolution encodes AST subtrees into fixed-size vectors. Strip mode removes identifiers for pure structural matching; embed mode preserves them |
-| **Graph metrics** | Health scoring — fan-in, fan-out, instability, PageRank importance, cognitive/cyclomatic complexity from AST, churn and co-change from git history |
+| **Graph metrics** | Review and ranking signals — fan-in, PageRank importance, cognitive/cyclomatic complexity from AST, churn and co-change from git history |
 
 ### Parse pipeline
 
@@ -425,9 +425,8 @@ file changed
   → git co-change computation
   → component membership update
   → FCA convention rebuild
-  → health finding computation
   → HRR vector encoding
-  → snapshot recording (per-file + per-component health scores)
+  → snapshot recording (parse record)
 ```
 
 ### Freshness
@@ -457,7 +456,8 @@ FCA conventions    DD constraints         HRR vectors
     │                    │                     │
     └────────────────────┼─────────────────────┘
                          ▼
-                health findings + scoring
+                review signals (co-change,
+                complexity, dead code)
                          │
                          ▼
                 SQLite snapshots (WAL)          lessons store
@@ -466,21 +466,11 @@ FCA conventions    DD constraints         HRR vectors
                          │               read / impact tools
                          │
                          ▼
-                MCP server (stdio) → 31 tools with freshness envelopes
+                MCP server (stdio) → tools with freshness envelopes
 ```
 
-## Vision
+## Purpose
 
-Sutra's mission is to help human-AI teams produce *coherent* software, not just functional software. The full vision is documented in `docs/sutra-vision.md` and organized as layers:
+Sutra has two jobs for AI agents writing code: a cheap, accurate **map of the code** (the read side), and **stopping the coding patterns that produce bugs** in agent-written repos (the write side). The write side targets failure modes with measured bug cost: incomplete propagation across parallel sites (PAR), duplicated logic (DUP), swallowed errors (SWALLOW) and code built but never wired (UNWIRED). Each mechanism is back-tested against historical bugs before it's built.
 
-| Layer | Domain | Status |
-|---|---|---|
-| 0 | Structural facts (tree-sitter → symbols, refs, imports) | Implemented |
-| 1 | Architecture (components, hierarchy, boundaries) | Implemented (directory-based clustering; graph clustering planned) |
-| 2 | Conventions (FCA detection, `sutra_conventions` list) | Implemented (detection + list; in-loop surfacing retired) |
-| 3 | Constraints (DD enforcement, guard, waivers) | Implemented |
-| 4 | Health (biomarkers, scoring, snapshots, trends) | Removed (sutra/464) |
-| 5 | Vocabulary (human-to-code concept mapping) | Partial (aliases; HRR fuzzy matching planned) |
-| 6 | Similarity (HRR vectors, duplicates, semantic diff) | Implemented |
-| 7 | Lessons (code-anchored negative knowledge, contextual surfacing, confidence lifecycle) | Implemented |
-| 8 | Verification (property tests, model checking, mutation testing) | Deferred |
+See `docs/sutra-purpose.md` for the evidence, the mechanisms and their status, what was removed, and the metric. The earlier layered "living architectural model" vision is archived at `docs/archived/sutra-vision.md`.
