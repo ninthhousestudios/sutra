@@ -864,7 +864,9 @@ pub fn format_constraint_deny(findings: &[&ConstraintFinding]) -> String {
 /// Check proposed content against forbidden_pattern constraints using
 /// introduced-only semantics: deny only if the match count increased
 /// compared to the on-disk version. Waived symbols are excluded from
-/// both counts.
+/// both counts. Only blocking rules are evaluated: an advisory hit here could
+/// reach nothing but the hook's stderr, which the agent never sees, so
+/// advisory (tier B) pattern rules are review-only (sutra/486, sutra/495).
 pub fn check_proposed_patterns(
     conn: &Connection,
     project_root: &Path,
@@ -881,12 +883,12 @@ pub fn check_proposed_patterns(
         Ok(r) => r,
         Err(_) => return CheckOutcome::default(),
     };
-    let (all_constraints, parse_errors) = loaded_rules.all_constraints();
-
-    let has_patterns = all_constraints
-        .iter()
-        .any(|c| matches!(c.kind, ConstraintKind::ForbiddenPattern { .. }));
-    if !has_patterns {
+    let (mut all_constraints, parse_errors) = loaded_rules.all_constraints();
+    all_constraints.retain(|c| {
+        matches!(c.kind, ConstraintKind::ForbiddenPattern { .. })
+            && c.severity == Severity::Blocking
+    });
+    if all_constraints.is_empty() {
         return CheckOutcome {
             parse_errors,
             ..Default::default()
@@ -3347,14 +3349,16 @@ scope = "src/"
     }
 
     #[test]
-    fn pattern_advisory_passthrough() {
+    fn pattern_advisory_not_evaluated() {
         let disk_content = "fn main() {\n    let x = 1;\n}\n";
         let proposed_content = "fn main() {\n    let x = vec![1].clone();\n}\n";
         let (conn, dir) = setup_pattern_db(ADVISORY_CLONE_RULE, &[("src/lib.rs", disk_content)]);
 
         let outcome = check_proposed_patterns(&conn, dir.path(), "src/lib.rs", proposed_content);
-        assert_eq!(outcome.active.len(), 1);
-        assert_eq!(outcome.active[0].severity, Severity::Advisory);
+        assert!(
+            outcome.active.is_empty(),
+            "advisory pattern rules are review-only; the guard must not evaluate them"
+        );
     }
 
     #[test]

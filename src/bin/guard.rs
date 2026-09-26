@@ -223,21 +223,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref proposed_content) = proposed {
         let pattern_outcome =
             guard::check_proposed_patterns(&conn, &project_root, &rel_path, proposed_content);
-        let pattern_blocking: Vec<_> = pattern_outcome
-            .active
-            .iter()
-            .filter(|f| f.severity == Severity::Blocking)
-            .collect();
-        for f in pattern_outcome
-            .active
-            .iter()
-            .filter(|f| f.severity != Severity::Blocking)
-        {
-            eprintln!(
-                "sutra-guard: [{:?}] {} — {}",
-                f.severity, f.constraint_id, f.detail
-            );
-        }
+        // Only blocking rules are evaluated here; advisory ones are review-only.
+        let pattern_blocking: Vec<_> = pattern_outcome.active.iter().collect();
         if !pattern_blocking.is_empty() {
             log_guard_blocks(
                 &db_path,
