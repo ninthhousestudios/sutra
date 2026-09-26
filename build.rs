@@ -9,8 +9,9 @@
 //! graft eliminated by hashing the extractor code into its cache key.
 //!
 //! This build script computes a stamp over the extractor's identity — the
-//! `src/parser/` sources plus the pinned tree-sitter grammar versions plus the
-//! crate version — and exposes it as `SUTRA_PARSER_STAMP`. `parse_workspace`
+//! `src/parser/` sources and `src/resolver.rs` (stored ref targets are its
+//! output) plus the pinned tree-sitter grammar versions plus the crate
+//! version — and exposes it as `SUTRA_PARSER_STAMP`. `parse_workspace`
 //! compares the stamp stored in `index_meta` against this value at parse start
 //! and, on a mismatch, forces exactly one full re-extraction, then records the
 //! new stamp. No migration to forget.
@@ -64,6 +65,10 @@ fn main() {
     println!("cargo:rerun-if-changed={}", parser_dir.display());
     let mut sources: Vec<std::path::PathBuf> = Vec::new();
     collect_rs_files(&parser_dir, &mut sources);
+    // The resolver's output is stored per ref, and an unchanged file is never
+    // re-resolved, so a resolver change must invalidate like an extractor
+    // change or it reaches only files edited afterwards (sutra/477).
+    sources.push(Path::new(&manifest_dir).join("src").join("resolver.rs"));
     sources.sort();
     // Guard (sutra/383): the persisted-output normalization must stay inside the
     // hashed tree. If `flatten_symbols_dfs` is moved out of src/parser/ (e.g.
