@@ -152,6 +152,10 @@ frequent AND sutra has leverage at the moment of writing.
      additive PAR by construction (0 of 4). 29 of 31 fresh ordinary commits
      stayed silent. Per-item precision is low (about 1 real and 3 relevant per
      13 items), but items are rare and cheap to dismiss.
+     Co-change partners (review `behavioral_coupling`) don't cover the
+     additive gap either: 0 of 4, and 3 of those misses are in the diff's own
+     file ([behavioral-coupling-backtest.md](behavioral-coupling-backtest.md),
+     sutra/476). Additive PAR needs symbol-level sibling knowledge.
 2. **SWALLOW is the second target**, and cheap: forbidden_patterns already
    exist. It needs per-language idiom sets, diff attribution, and
    annotation-based waivers.

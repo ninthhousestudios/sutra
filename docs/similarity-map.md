@@ -15,7 +15,19 @@ src/history.rs      — ingest(db, root, now): commit-file history against the
                       probe failure, shallow clone or git log failure retain
                       prior rows. Returns {loaded, churn}; churn feeds
                       semantic anchors, commit_files feeds co-change (review
-                      behavioral_coupling, component clustering).
+                      behavioral_coupling, component clustering). Each commits
+                      row carries file_count = every path git reported, indexed
+                      or not (migration 0087).
+
+src/db/graph.rs     — cochange_pairs_above_threshold: jaccard over commits whose
+                      file_count <= MAX_COCHANGE_COMMIT_FANOUT (30; NULL falls
+                      back to the indexed count), so sync drops and sweeps carry
+                      no co-edit signal. static_file_edges = resolved refs ∪
+                      resolved imports (incl. `mod x;`).
+src/tools/review.rs — behavioral_coupling: partners with no static edge, same
+                      test-ness, >= MIN_PARTNER_SHARED_COMMITS (2) shared
+                      commits. Errors surface as behavioral_coupling_error.
+                      Measurement: behavioral-coupling-backtest.md (sutra/476).
 
 src/parser/
   complexity.rs     — cyclomatic and cognitive (tree-sitter Node + src +
