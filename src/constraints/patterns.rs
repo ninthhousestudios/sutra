@@ -346,6 +346,7 @@ pub fn check_forbidden_patterns(
                     snippet: Some(snippet),
                     enclosing_symbol: enclosing,
                     justification,
+                    justify_marker: constraint.justify.as_ref().map(Arc::clone),
                 });
             }
         }

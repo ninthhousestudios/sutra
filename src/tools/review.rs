@@ -8,7 +8,9 @@ use serde_json::json;
 
 use crate::components;
 use crate::constraints::DdEngine;
-use crate::constraints::check::{self, ContentSource, DiffImportEdges, EvalScope, FactsSource};
+use crate::constraints::check::{
+    self, AddedLines, ContentSource, DiffHead, DiffImportEdges, EvalScope, FactsSource,
+};
 use crate::db::Db;
 use crate::error::Result;
 use crate::freshness::{self, FreshnessLevel};
@@ -81,17 +83,24 @@ pub fn handle(
     };
 
     let registry = crate::parser::adapter::default_registry();
-    let (findings, findings_error) = match build_findings(
-        db,
-        workspace_root,
-        &changed_paths,
-        base_revision,
-        // The compositor assesses current state — read the working tree, not the
-        // diff snapshot, regardless of `diff_mode` (sutra/385).
-        ContentSource::Worktree,
-        dd_engine,
-        &registry,
-    ) {
+    // The compositor assesses current state — read the working tree, not the
+    // diff snapshot, regardless of `diff_mode` (sutra/385).
+    let content = ContentSource::Worktree;
+    let (findings, findings_error) = match diff_added_lines(workspace_root, base_revision, content)
+        .and_then(|added_lines| {
+            build_findings(
+                db,
+                workspace_root,
+                &changed_paths,
+                base_revision,
+                DiffHead {
+                    content,
+                    added_lines: &added_lines,
+                },
+                dd_engine,
+                &registry,
+            )
+        }) {
         Ok(f) => (f, None),
         Err(e) => (ReviewFindings::default(), Some(e.to_string())),
     };
@@ -114,6 +123,20 @@ pub fn handle(
         &registry,
         "review",
         mode,
+    );
+
+    let firing_log_error = record_constraint_firings(
+        db,
+        workspace_root,
+        &scope,
+        FiringSurface {
+            surface: "review",
+            diff_spec: mode,
+            content: ContentSource::Worktree,
+        },
+        &sibling_patterns,
+        &findings.constraint_violations,
+        &registry,
     );
 
     let mut result = compute(
@@ -157,6 +180,9 @@ pub fn handle(
             obj.insert("hrr_shape_changes".into(), json!(shape_out));
         }
         obj.insert("sibling_patterns".into(), sibling_patterns.to_json());
+        if let Some(e) = firing_log_error {
+            obj.insert("constraint_firing_log_error".into(), json!(e));
+        }
     }
     Ok(result)
 }
@@ -278,18 +304,42 @@ fn extract_outgoing_edges(
     )
 }
 
+/// The lines a diff added on the side `content` reads, from `base_revision`,
+/// so a match's line number and the hunk it falls in come from one snapshot.
+pub fn diff_added_lines(
+    workspace_root: &Path,
+    base_revision: &str,
+    content: ContentSource,
+) -> Result<AddedLines> {
+    let hunks = match content {
+        ContentSource::Revision(rev) => {
+            git::git_diff_hunks(workspace_root, base_revision, Some(rev))?
+        }
+        ContentSource::Worktree => git::git_diff_hunks_to_worktree(workspace_root, base_revision)?,
+    };
+    Ok(hunks
+        .into_iter()
+        .filter_map(|fh| {
+            let ranges = fh.hunks.iter().map(git::Hunk::added_lines).collect();
+            Some((fh.new_path?, ranges))
+        })
+        .collect())
+}
+
 pub fn build_findings(
     db: &Db,
     workspace_root: &Path,
     changed_paths: &[String],
     base_revision: &str,
-    // Where forbidden-pattern content is read for the scoped files. `sutra check`
-    // passes the requested snapshot (the staged index or a commit); the review
-    // compositor passes `Worktree` to preserve its assess-current-state contract.
-    content: ContentSource,
+    // Where forbidden-pattern content is read for the scoped files, and which of
+    // its lines the diff added ([`diff_added_lines`]). `sutra check` passes the
+    // requested snapshot (the staged index or a commit); the review compositor
+    // passes `Worktree` to preserve its assess-current-state contract.
+    head: DiffHead,
     shared_dd: Option<&DdEngine>,
     registry: &LanguageRegistry,
 ) -> Result<ReviewFindings> {
+    let content = head.content;
     let _rules = rules::load_rules(workspace_root)?;
     let all_files = db.all_files()?;
     let id_map: HashMap<&str, i64> = all_files.iter().map(|f| (&*f.path, f.id)).collect();
@@ -354,6 +404,7 @@ pub fn build_findings(
             changed_pattern_only_paths: &changed_pattern_only_paths,
             content,
             changed_paths: &changed_set,
+            added_lines: head.added_lines,
         },
         registry,
     )?;
@@ -378,6 +429,84 @@ pub fn build_findings(
         constraint_violations_total,
         acknowledged,
         accepted_warnings,
+    })
+}
+
+/// Which surface fired, on which diff spec, reading findings from where.
+pub struct FiringSurface<'a> {
+    /// `review` or `check`.
+    pub surface: &'a str,
+    pub diff_spec: &'a str,
+    /// Where the findings' files were read, so a site's line text comes from
+    /// the same snapshot.
+    pub content: ContentSource<'a>,
+}
+
+/// Record the active forbidden-pattern findings of a review or check in the
+/// firing log, under the review event the sibling check resolved for the same
+/// diff. Returns the failure, if any, for the surface to report: a firing that
+/// was not logged is said so, never silently dropped.
+pub fn record_constraint_firings(
+    db: &Db,
+    workspace_root: &Path,
+    scope: &DiffScope,
+    at: FiringSurface<'_>,
+    sibling: &crate::tools::sibling_pattern::Advisory,
+    findings: &[ConstraintFinding],
+    registry: &LanguageRegistry,
+) -> Option<String> {
+    let FiringSurface {
+        surface,
+        diff_spec,
+        content,
+    } = at;
+    if let Some(e) = &sibling.error {
+        return Some(format!(
+            "no review event: the diff could not be hashed: {e}"
+        ));
+    }
+    let anchor = git::head_commit_hash(workspace_root);
+    let ctx = crate::db::firings::FiringContext {
+        surface,
+        diff_spec,
+        base_rev: Some(&scope.base_revision),
+        head_rev: scope.head_revision.as_deref(),
+        anchor_commit: anchor.as_deref(),
+    };
+    crate::tools::firings::record_pattern_firings(
+        db,
+        workspace_root,
+        &ctx,
+        &sibling.report.patch,
+        findings,
+        registry,
+        |path| check::read_scoped_content(workspace_root, content, path),
+    )
+    .err()
+    .map(|e| e.to_string())
+}
+
+/// Matches the diff adds that a rule's `justify` comment waives, with their
+/// reasons. Listed on their own so a ritual reason (`// swallow: fine`) reads
+/// as the non-answer it is (sutra/486).
+pub fn justified(
+    waived: &[Waived<ConstraintFinding>],
+) -> impl Iterator<Item = &Waived<ConstraintFinding>> {
+    waived
+        .iter()
+        .filter(|w| w.waived_by == crate::waivers::JUSTIFIED_BY)
+}
+
+/// One justified match as JSON: where, what, and the stated reason.
+pub fn justified_json(w: &Waived<ConstraintFinding>) -> serde_json::Value {
+    let f = &w.finding;
+    json!({
+        "rule": f.constraint_name.as_deref().unwrap_or(&f.constraint_id),
+        "file": f.from_path,
+        "line": f.line,
+        "snippet": f.snippet,
+        "enclosing_symbol": f.enclosing_symbol,
+        "reason": w.rationale,
     })
 }
 
@@ -744,6 +873,12 @@ pub fn compute(
     }
     if let Some(err) = behavioral_error {
         result["behavioral_coupling_error"] = json!(err);
+    }
+    let justified_out: Vec<_> = justified(&findings.waived_constraint_violations)
+        .map(justified_json)
+        .collect();
+    if !justified_out.is_empty() {
+        result["justified"] = json!(justified_out);
     }
     if !findings.acknowledged.is_empty() {
         result["acknowledged"] = json!(findings.acknowledged);

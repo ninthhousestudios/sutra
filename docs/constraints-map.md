@@ -4,7 +4,7 @@ Quick-reference for agents planning or implementing constraint-system tasks.
 Read this first, then do targeted `sutra_outline` / `sutra_symbol` calls on
 specific files. Updated after each constraint-system landing.
 
-Last updated: 2026-09-26 (sutra/472: `justify` in-place justification, `@match` capture reporting, rename-robust guard diff — see "In-place justification"; sutra/361: accepted.toml is tool-owned, `notes` field for durable context — see "Tool-owned file & notes"; sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
+Last updated: 2026-09-26 (sutra/486: diff-scoped pattern findings attributed to added lines, review/check list justifications, pattern firings logged — see "Added-line attribution"; sutra/472: `justify` in-place justification, `@match` capture reporting, rename-robust guard diff — see "In-place justification"; sutra/361: accepted.toml is tool-owned, `notes` field for durable context — see "Tool-owned file & notes"; sutra/360: import cycles acceptable by file-set — see "Cycle acks by file-set"; sutra/309: accepted.toml freshness gate; sutra/297: the shared DD engine resyncs its graph on every evaluation — see "Session-lifetime graph staleness")
 
 ## Module layout
 
@@ -92,7 +92,9 @@ src/constraints/
                       evaluates forbidden_pattern: the guard uses
                       check_proposed_patterns.
                       external via external::check_*, forbidden_pattern via
-                      patterns::check_forbidden_patterns, dead_constraint via
+                      patterns::check_forbidden_patterns (under ChangedFiles,
+                      kept only on the scope's `added_lines`; see "Added-line
+                      attribution"), dead_constraint via
                       constraint_coverage. Pattern scan runs before edge-empty
                       early return (patterns are per-file, not edge-based).
                       Waiver partition at the end.
@@ -635,6 +637,47 @@ other rule.
 Findings report the capture named `match` when the query has one, else the
 first capture — so a rule that also captures a receiver reports the `@match`
 line, which is the line a diff adds and where the marker is looked up.
+
+## Added-line attribution (sutra/486)
+
+Under `EvalScope::ChangedFiles`, `evaluate_dd` scans each changed file whole
+but keeps a `forbidden_pattern` finding only when its line is in the scope's
+`added_lines` (an `AddedLines` map, head path → 1-based ranges); kept findings
+get `delta = Introduced`. An old match elsewhere in a touched file is backlog,
+not the diff's. A file absent from the map added nothing (a pure rename).
+Justified matches go through the same filter, so the waived set holds exactly
+the justifications the diff adds. Workspace scope (`sutra_constraints
+violations`) is unchanged: every match.
+
+The added lines must come from the same snapshot the scan reads, or a line
+number is checked against another file's hunks. `build_findings` takes a
+`DiffHead { content, added_lines }`; callers build `added_lines` with
+`review::diff_added_lines(root, base, content)`: `git diff -U0 base rev` for a
+revision (`--cached` for staged), `git diff -U0 base` against the worktree for
+the review compositor, which reads the worktree whatever the diff mode. A git
+failure is an error, never a fall-back to whole-file scanning.
+
+Surfaces:
+- `sutra_review` adds `justified`: one entry per justification the diff adds
+  (`rule, file, line, snippet, enclosing_symbol, reason`), so a ritual reason
+  reads as the non-answer it is. `sutra check` lists them in the human report
+  and under `justified` in JSON. Both are shared through `review::justified`.
+- The guard's pattern deny names the in-place escape (`<marker> <reason>`) for
+  rules with a `justify` marker (`ConstraintFinding.justify_marker`), and the
+  `accepted.toml` waiver only for rules without one.
+
+Firing log. Active pattern findings are recorded in the shared log
+(`docs/sutra-purpose.md` rule 9) under mechanism `forbidden_pattern`, finding
+kind = rule name, key = constraint id. Review and check record through
+`review::record_constraint_firings` under the review event of the sibling
+check's patch for the same diff; a failure is reported
+(`constraint_firing_log_error`), never swallowed. The guard records its
+blocking denies through `tools::firings::record_guard_blocks`: the hook's
+connection is read-only, so the deny path alone opens a write connection (no
+migrations), and the event's patch is the proposed edit hashed as one
+prefix/suffix hunk, so retrying the same edit is the same event and site.
+Tier-B (advisory) rules still run at the guard but only reach stderr; their
+place is review.
 
 ## Test scope (sutra/290)
 

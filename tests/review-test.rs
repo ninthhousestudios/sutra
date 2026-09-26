@@ -10,6 +10,28 @@ use sutra::tools::change_signals::ChurnMap;
 use sutra::tools::review;
 use sutra::waivers::Waived;
 
+/// Every line of every changed file counts as added. These tests exercise the
+/// finding pipeline, not added-line attribution, and have no git history.
+struct WholeFiles(sutra::constraints::check::AddedLines);
+
+impl WholeFiles {
+    fn head(&self) -> sutra::constraints::check::DiffHead<'_> {
+        sutra::constraints::check::DiffHead {
+            content: sutra::constraints::check::ContentSource::Worktree,
+            added_lines: &self.0,
+        }
+    }
+}
+
+fn whole_files(changed: &[String]) -> WholeFiles {
+    WholeFiles(
+        changed
+            .iter()
+            .map(|p| (p.clone(), std::iter::once(1..usize::MAX).collect()))
+            .collect(),
+    )
+}
+
 fn sym<'a>(
     file_id: i64,
     qn: &'a str,
@@ -430,6 +452,7 @@ fn constraint_violations_appear_in_output() {
                 snippet: None,
                 enclosing_symbol: None,
                 justification: None,
+                justify_marker: None,
             },
             review::ConstraintFinding {
                 constraint_id: "builtin:cycles".into(),
@@ -447,6 +470,7 @@ fn constraint_violations_appear_in_output() {
                 snippet: None,
                 enclosing_symbol: None,
                 justification: None,
+                justify_marker: None,
             },
         ],
         resolved_constraint_violations: vec![],
@@ -522,7 +546,7 @@ severity = "blocking"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -586,7 +610,7 @@ severity = "blocking"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -703,7 +727,7 @@ forbidden_deps = [
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -746,6 +770,7 @@ fn waived_constraint_violations_appear_in_output() {
                 snippet: None,
                 enclosing_symbol: None,
                 justification: None,
+                justify_marker: None,
             },
             rationale: "legacy coupling".into(),
             waived_by: "josh".into(),
@@ -859,7 +884,7 @@ forbidden_deps = [
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -960,7 +985,7 @@ name = "ui-not-db"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -1095,7 +1120,7 @@ forbidden_deps = [
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         Some(&shared),
         &registry,
     )
@@ -1293,7 +1318,7 @@ fn build_findings_surfaces_error_on_bad_rules() {
         dir.path(),
         &["src/foo.rs".to_string()],
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&["src/foo.rs".to_string()]).head(),
         None,
         &registry,
     );
@@ -1331,7 +1356,7 @@ fn build_findings_cycle_violations_counted_in_total() {
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -1467,6 +1492,7 @@ forbidden_deps = [
             changed_pattern_only_paths: &[],
             content: sutra::constraints::check::ContentSource::Worktree,
             changed_paths: &changed_paths,
+            added_lines: &Default::default(),
         },
         &registry,
     )
@@ -1538,7 +1564,7 @@ scope = "src/"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -1607,7 +1633,7 @@ scope = "src/"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -1686,7 +1712,7 @@ name = "no-unsafe"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )
@@ -1777,7 +1803,7 @@ scope = "src/"
         dir.path(),
         &changed,
         "HEAD",
-        sutra::constraints::check::ContentSource::Worktree,
+        whole_files(&changed).head(),
         None,
         &registry,
     )

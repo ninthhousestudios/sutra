@@ -980,11 +980,33 @@ pub fn format_pattern_deny(findings: &[&ConstraintFinding]) -> String {
             reason.push_str(&format!(": {snippet}"));
         }
     }
-    reason.push_str(
-        ". If this use is intentional and justified, waive for this symbol via \
-         `sutra_constraints action=waive` with a rationale explaining why. \
-         Otherwise restructure to avoid the pattern.",
-    );
+    // A rule with a `justify` marker waives at the site, with its reason next to
+    // the code (sutra/486); a central waiver is the escape only for rules without
+    // one.
+    let mut markers: Vec<&str> = findings
+        .iter()
+        .filter_map(|f| f.justify_marker.as_deref())
+        .collect();
+    markers.sort_unstable();
+    markers.dedup();
+    if !markers.is_empty() {
+        let examples: Vec<String> = markers.iter().map(|m| format!("`{m} <reason>`")).collect();
+        reason.push_str(&format!(
+            ". Fix the site if the error must surface. If silence is correct here, \
+             justify it in place: a comment {} on the matched line or in the comment \
+             lines directly above it, saying why. Review lists every justification \
+             with its reason",
+            examples.join(" / "),
+        ));
+    }
+    if findings.iter().any(|f| f.justify_marker.is_none()) {
+        reason.push_str(
+            ". If this use is intentional and justified, waive for this symbol via \
+             `sutra_constraints action=waive` with a rationale explaining why. \
+             Otherwise restructure to avoid the pattern",
+        );
+    }
+    reason.push('.');
     reason
 }
 
@@ -1678,6 +1700,7 @@ mod tests {
             snippet: None,
             enclosing_symbol: None,
             justification: None,
+            justify_marker: None,
         }
     }
 

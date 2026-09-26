@@ -126,7 +126,7 @@ pub struct Constraint {
     /// run directly above it, carries the marker followed by non-empty text is
     /// waived with that text as its rationale. Excluded from constraint identity,
     /// like `include_tests`.
-    pub justify: Option<String>,
+    pub justify: Option<Arc<str>>,
 }
 
 impl Constraint {
@@ -443,7 +443,7 @@ impl RawConstraint {
             scope: self.scope,
             ratchet: self.ratchet.unwrap_or(false),
             include_tests: self.include_tests.unwrap_or(false),
-            justify: self.justify.map(|m| m.trim().to_string()),
+            justify: self.justify.map(|m| Arc::from(m.trim())),
         })
     }
 }

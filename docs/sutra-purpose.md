@@ -48,7 +48,7 @@ each classified by the mechanism that made it possible.
 
 Build order (encoded as yojana dependencies):
 
-1. sutra/472 (swallow engine: justify marker, rename-robust match key) and
+done1. sutra/472 (swallow engine: justify marker, rename-robust match key) and
    sutra/467 (sibling pattern) in parallel. They don't share files. 467 also
    builds the shared firing log that every later mechanism reuses.
 2. sutra/486 (swallow review side, rule adoption, tier A on), after both.
@@ -114,7 +114,10 @@ follows these or gives a reason.
    from its symbol, `present` otherwise (a rename alone is `present`, with
    `moved_in`), `file_deleted`, `not_at_anchor` (the line was only in the
    index or worktree when it fired) or `anchor_unreachable` (history was
-   rewritten). This is the acted-on proxy for sutra/485.
+   rewritten). This is the acted-on proxy for sutra/485. Forbidden-pattern
+   rules (the SWALLOW ratchet among them) record as mechanism
+   `forbidden_pattern`, kind = rule name: review and check hits on added
+   lines, and guard blocks (surface `guard`, one event per proposed edit).
 
 ## What sutra is today
 

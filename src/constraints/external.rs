@@ -338,6 +338,7 @@ pub fn config_error_finding(msg: &str) -> ConstraintFinding {
         snippet: None,
         enclosing_symbol: None,
         justification: None,
+        justify_marker: None,
     }
 }
 
@@ -378,6 +379,7 @@ fn make_external_finding(
         snippet: None,
         enclosing_symbol: None,
         justification: None,
+        justify_marker: None,
     }
 }
 

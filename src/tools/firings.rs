@@ -26,10 +26,13 @@ use std::path::Path;
 
 use serde_json::json;
 
+use rusqlite::Connection;
+
+use crate::constraints::ConstraintFinding;
 use crate::db::Db;
-use crate::db::firings::{FiringContext, FiringRow, ReviewEvent};
+use crate::db::firings::{self, FiringContext, FiringRecord, FiringRow, ReviewEvent};
 use crate::error::Result;
-use crate::git::{self, CommitChanges, FileHunks, WalkFrom};
+use crate::git::{self, CommitChanges, FileHunks, Hunk, WalkFrom};
 use crate::parser::adapter::{LanguageRegistry, ParserPool};
 use crate::parser::{SymbolSpan, symbol_spans};
 
@@ -152,12 +155,39 @@ pub fn resolve_event(
     ctx: &FiringContext<'_>,
     patch: &ReviewedPatch,
 ) -> Result<i64> {
-    let epoch = match db.latest_review_event(&patch.id)? {
+    let latest = db.latest_review_event(&patch.id)?;
+    resolve_event_from(workspace_root, patch, latest, |epoch| {
+        db.ensure_review_event(ctx, &patch.id, epoch)
+    })
+}
+
+/// [`resolve_event`] on a bare connection, for the guard.
+pub fn resolve_event_on(
+    conn: &Connection,
+    workspace_root: &Path,
+    ctx: &FiringContext<'_>,
+    patch: &ReviewedPatch,
+) -> Result<i64> {
+    let latest = firings::latest_review_event_on(conn, &patch.id)?;
+    resolve_event_from(workspace_root, patch, latest, |epoch| {
+        firings::ensure_review_event_on(conn, ctx, &patch.id, epoch)
+    })
+}
+
+/// The epoch decision shared by both stores. The git walk runs between the
+/// read and the insert, so no store lock is held across it.
+fn resolve_event_from(
+    workspace_root: &Path,
+    patch: &ReviewedPatch,
+    latest: Option<ReviewEvent>,
+    ensure: impl FnOnce(i64) -> Result<i64>,
+) -> Result<i64> {
+    let epoch = match latest {
         None => 0,
         Some(prev) if reverted_since(workspace_root, &prev, patch)? => prev.epoch + 1,
         Some(prev) => return Ok(prev.id),
     };
-    db.ensure_review_event(ctx, &patch.id, epoch)
+    ensure(epoch)
 }
 
 /// Whether a commit after `prev` fired reverts `patch`. The window starts at
@@ -413,6 +443,178 @@ impl Evaluator<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Forbidden-pattern firings (sutra/486)
+// ---------------------------------------------------------------------------
+
+/// Mechanism name for `forbidden_pattern` hits: review and check hits on added
+/// lines, and guard blocks. The rule's name is the finding kind, its id the key.
+pub const PATTERN_MECHANISM: &str = "forbidden_pattern";
+
+/// One flagged pattern site, owning what a [`FiringRecord`] borrows.
+struct PatternSite<'f> {
+    finding: &'f ConstraintFinding,
+    line: usize,
+    snippet: String,
+    occurrence: usize,
+}
+
+/// The sites of the active `forbidden_pattern` findings, with each flagged
+/// line's text and its ordinal among identical lines in its enclosing symbol
+/// (in the file when there is none), as the sibling check records them.
+/// `content_of` returns a file's text on the side the findings were read from.
+fn pattern_sites<'f>(
+    findings: impl IntoIterator<Item = &'f ConstraintFinding>,
+    registry: &LanguageRegistry,
+    mut content_of: impl FnMut(&str) -> Option<String>,
+) -> Vec<PatternSite<'f>> {
+    let mut by_file: BTreeMap<&str, Vec<&ConstraintFinding>> = BTreeMap::new();
+    for f in findings
+        .into_iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+    {
+        by_file.entry(&f.from_path).or_default().push(f);
+    }
+    let mut pool = ParserPool::new(std::time::Duration::from_secs(5));
+    let mut sites = Vec::new();
+    for (path, file_findings) in by_file {
+        let Some(text) = content_of(path) else {
+            continue;
+        };
+        let spans: Vec<SymbolSpan> = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| registry.adapter_for_extension(ext))
+            .and_then(|adapter| symbol_spans(&mut pool, adapter, &text, path).ok())
+            .unwrap_or_default();
+        for f in file_findings {
+            let Some(line) = f.line.map(|l| l as usize) else {
+                continue;
+            };
+            let snippet = text.lines().nth(line - 1).unwrap_or("").trim().to_string();
+            // The innermost span of the named symbol holding the line.
+            let start = f
+                .enclosing_symbol
+                .as_deref()
+                .and_then(|name| {
+                    spans
+                        .iter()
+                        .filter(|(s, e, n)| n == name && (*s..=*e).contains(&line))
+                        .max_by_key(|(s, _, _)| *s)
+                })
+                .map_or(1, |(s, _, _)| *s);
+            let occurrence = count_snippet(&text, start..line, &snippet);
+            sites.push(PatternSite {
+                finding: f,
+                line,
+                snippet,
+                occurrence,
+            });
+        }
+    }
+    sites
+}
+
+fn pattern_records<'s>(sites: &'s [PatternSite<'_>]) -> Vec<FiringRecord<'s>> {
+    sites
+        .iter()
+        .map(|s| FiringRecord {
+            mechanism: PATTERN_MECHANISM,
+            finding_kind: s
+                .finding
+                .constraint_name
+                .as_deref()
+                .unwrap_or(&s.finding.constraint_id),
+            finding_key: &s.finding.constraint_id,
+            file_path: &s.finding.from_path,
+            line: Some(i64::try_from(s.line).expect("invariant: a source line number fits in i64")),
+            symbol: s.finding.enclosing_symbol.as_deref(),
+            snippet: Some(&s.snippet),
+            occurrence: i64::try_from(s.occurrence).expect("invariant: a line count fits in i64"),
+        })
+        .collect()
+}
+
+/// Record the active `forbidden_pattern` findings of a review or check under
+/// the diff's review event (the same `patch` the sibling check records under).
+/// Returns the number of new rows.
+pub fn record_pattern_firings(
+    db: &Db,
+    workspace_root: &Path,
+    ctx: &FiringContext<'_>,
+    patch: &ReviewedPatch,
+    findings: &[ConstraintFinding],
+    registry: &LanguageRegistry,
+    content_of: impl FnMut(&str) -> Option<String>,
+) -> Result<usize> {
+    let sites = pattern_sites(findings, registry, content_of);
+    if sites.is_empty() {
+        return Ok(0);
+    }
+    let event_id = resolve_event(db, workspace_root, ctx, patch)?;
+    db.record_firings(event_id, &pattern_records(&sites))
+}
+
+/// Record the pattern matches a guard deny blocked. The reviewed change is the
+/// proposed edit (`disk` to `proposed`), hashed as one hunk spanning what
+/// differs between the two, so retrying the same edit is the same event.
+pub fn record_guard_blocks(
+    conn: &Connection,
+    workspace_root: &Path,
+    rel_path: &str,
+    (disk, proposed): (&str, &str),
+    blocked: &[&ConstraintFinding],
+    registry: &LanguageRegistry,
+) -> Result<usize> {
+    let sites = pattern_sites(blocked.iter().copied(), registry, |_| {
+        Some(proposed.to_string())
+    });
+    if sites.is_empty() {
+        return Ok(0);
+    }
+    let mut hasher = PatchHasher::default();
+    hasher.add_file(
+        &edit_hunks(rel_path, disk, proposed),
+        Some(disk),
+        Some(proposed),
+    );
+    let patch = hasher.finish();
+    let anchor = git::head_commit_hash(workspace_root);
+    let ctx = FiringContext {
+        surface: "guard",
+        diff_spec: "edit",
+        base_rev: None,
+        head_rev: None,
+        anchor_commit: anchor.as_deref(),
+    };
+    let event_id = resolve_event_on(conn, workspace_root, &ctx, &patch)?;
+    firings::record_firings_on(conn, event_id, &pattern_records(&sites))
+}
+
+/// One hunk covering the lines between the common prefix and suffix of `old`
+/// and `new`: a coarse diff, but a deterministic one.
+fn edit_hunks(path: &str, old: &str, new: &str) -> FileHunks {
+    let (a, b): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (old_len, new_len) = (a.len() - prefix - suffix, b.len() - prefix - suffix);
+    FileHunks {
+        old_path: Some(path.to_string()),
+        new_path: Some(path.to_string()),
+        hunks: vec![Hunk {
+            old_start: prefix + 1,
+            old_len,
+            new_start: prefix + 1,
+            new_len,
+        }],
+    }
+}
+
 /// Every firing (optionally one mechanism, fired at or after `since`) with
 /// its site status at HEAD, plus per-mechanism totals.
 pub fn handle(
@@ -471,7 +673,6 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::Hunk;
 
     fn fh(old: Option<&str>, new: Option<&str>, hunks: Vec<Hunk>) -> FileHunks {
         FileHunks {

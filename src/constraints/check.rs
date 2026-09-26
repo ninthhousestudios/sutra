@@ -107,6 +107,27 @@ impl DiffImportEdges {
     }
 }
 
+/// The head side of a diff scope: where forbidden-pattern content is read, and
+/// which of its lines the diff added. The two must describe one snapshot, or a
+/// match's line number is checked against another file's hunks.
+#[derive(Clone, Copy)]
+pub struct DiffHead<'a> {
+    pub content: ContentSource<'a>,
+    pub added_lines: &'a AddedLines,
+}
+
+/// 1-based line ranges each diff added, keyed by head-side path. A changed file
+/// absent from the map added no lines (a pure rename, a pure deletion).
+pub type AddedLines = HashMap<String, Vec<std::ops::Range<usize>>>;
+
+/// Whether `f` sits on a line the diff added.
+fn on_added_line(added: &AddedLines, f: &ConstraintFinding) -> bool {
+    let (Some(ranges), Some(line)) = (added.get(f.from_path.as_str()), f.line) else {
+        return false;
+    };
+    ranges.iter().any(|r| r.contains(&(line as usize)))
+}
+
 pub enum EvalScope<'a> {
     Workspace,
     ChangedFiles {
@@ -122,6 +143,11 @@ pub enum EvalScope<'a> {
         changed_pattern_only_paths: &'a [String],
         /// Where forbidden-pattern content is read from for the scoped files.
         content: ContentSource<'a>,
+        /// The lines the diff added to each file, as read from `content`. A
+        /// forbidden-pattern match is attributed to the diff only on one of
+        /// these: an old match elsewhere in a touched file is backlog, not
+        /// something the diff did (sutra/486).
+        added_lines: &'a AddedLines,
         /// Every path in the diff (source files, stubs, and manifests alike).
         /// Manifest findings are scoped to this set so a staged commit isn't
         /// blocked by a forbidden dependency in an untouched Cargo.toml
@@ -392,6 +418,7 @@ fn evaluate_dd(
                     snippet: None,
                     enclosing_symbol: None,
                     justification: None,
+                    justify_marker: None,
                 });
             }
         }
@@ -440,8 +467,8 @@ fn evaluate_dd(
         };
         // Stub files have no id, so the scope's id set can't carry them: a
         // workspace audit takes every stub on disk, a review takes the ones the
-        // caller reports as changed. Matches the indexed-file contract, where a
-        // changed file is scanned whole rather than diffed for introduced matches.
+        // caller reports as changed. Both are scanned whole; under a diff scope
+        // only matches on added lines are kept, below.
         let scan_stub_paths: &[String] = match scope {
             EvalScope::Workspace => &stub_paths,
             EvalScope::ChangedFiles {
@@ -469,11 +496,24 @@ fn evaluate_dd(
                 .iter()
                 .map(|(p, c)| (p.as_str(), c.as_str()))
                 .collect();
-            findings.extend(super::patterns::check_forbidden_patterns(
-                &all_constraints,
-                &source_refs,
-                registry,
-            ));
+            let matches =
+                super::patterns::check_forbidden_patterns(&all_constraints, &source_refs, registry);
+            match scope {
+                // Justified matches go through the same filter, so review lists
+                // exactly the justifications the diff adds.
+                EvalScope::ChangedFiles { added_lines, .. } => {
+                    findings.extend(
+                        matches
+                            .into_iter()
+                            .filter(|f| on_added_line(added_lines, f))
+                            .map(|mut f| {
+                                f.delta = FindingDelta::Introduced;
+                                f
+                            }),
+                    );
+                }
+                _ => findings.extend(matches),
+            }
         }
     }
 
@@ -766,6 +806,7 @@ fn evaluate_dd(
                 snippet: Some(fingerprint),
                 enclosing_symbol: None,
                 justification: None,
+                justify_marker: None,
             });
         }
     }
@@ -886,6 +927,7 @@ fn max_fan_in_findings(
                 snippet: None,
                 enclosing_symbol: None,
                 justification: None,
+                justify_marker: None,
             });
         }
     }
@@ -927,6 +969,7 @@ fn evaluate_raw(
             snippet: None,
             enclosing_symbol: None,
             justification: None,
+            justify_marker: None,
         })
         .collect();
 
@@ -1211,6 +1254,7 @@ fn check_ratchet_violations(
                     snippet: None,
                     enclosing_symbol: None,
                     justification: None,
+                    justify_marker: None,
                 });
             }
             Some(c) => {
@@ -1240,6 +1284,7 @@ fn check_ratchet_violations(
                         snippet: None,
                         enclosing_symbol: None,
                         justification: None,
+                        justify_marker: None,
                     });
                 }
             }
@@ -1473,6 +1518,7 @@ fn make_finding(
         snippet: None,
         enclosing_symbol: None,
         justification: None,
+        justify_marker: None,
     }
 }
 

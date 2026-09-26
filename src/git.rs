@@ -227,20 +227,31 @@ pub fn git_diff_hunks(
     base: &str,
     head: Option<&str>,
 ) -> Result<Vec<FileHunks>> {
+    match head {
+        None => run_diff_hunks(workspace_root, &[]),
+        Some("") => run_diff_hunks(workspace_root, &["--cached"]),
+        Some(rev) => run_diff_hunks(workspace_root, &["--end-of-options", base, rev]),
+    }
+}
+
+/// Line-level hunks from `base` to the worktree, for a surface that reads the
+/// worktree whatever the diff mode (the review compositor). `base` `""` is the
+/// index, so an unstaged review compares what `git diff` compares.
+pub fn git_diff_hunks_to_worktree(workspace_root: &Path, base: &str) -> Result<Vec<FileHunks>> {
+    if base.is_empty() {
+        run_diff_hunks(workspace_root, &[])
+    } else {
+        run_diff_hunks(workspace_root, &["--end-of-options", base])
+    }
+}
+
+fn run_diff_hunks(workspace_root: &Path, sides: &[&str]) -> Result<Vec<FileHunks>> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(workspace_root)
         .args(["-c", "core.quotePath=false", "diff", "-U0", "--no-color"])
-        .args(["--no-ext-diff", "-M"]);
-    match head {
-        None => {}
-        Some("") => {
-            cmd.arg("--cached");
-        }
-        Some(rev) => {
-            cmd.args(["--end-of-options", base, rev]);
-        }
-    }
+        .args(["--no-ext-diff", "-M"])
+        .args(sides);
     let output = cmd
         .output()
         .map_err(|e| SutraError::Internal(format!("git diff failed: {e}")))?;

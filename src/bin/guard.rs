@@ -239,6 +239,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         if !pattern_blocking.is_empty() {
+            log_guard_blocks(
+                &db_path,
+                &project_root,
+                &rel_path,
+                proposed_content,
+                &pattern_blocking,
+            );
             let reason = guard::format_pattern_deny(&pattern_blocking);
             if let Some(json) = guard::render_stdout(
                 &guard::GuardDecision::Deny { reason },
@@ -399,6 +406,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// Look up and emit lessons on the advisory channel. Called only from paths
 /// that did not deny, so a denied write never pays to open lessons.db. Falls
 /// back to stderr for harnesses without a structured advisory field.
+/// Record a pattern deny in the firing log (sutra/486). The hook's connection is
+/// read-only, so the deny path alone opens a write connection; it never
+/// migrates, so an index predating the log reports a missing table here. A
+/// failure goes to stderr and never changes the decision.
+fn log_guard_blocks(
+    db_path: &std::path::Path,
+    project_root: &std::path::Path,
+    rel_path: &str,
+    proposed: &str,
+    blocked: &[&sutra::constraints::ConstraintFinding],
+) {
+    let record = || -> Result<usize, Box<dyn std::error::Error>> {
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_millis(500))?;
+        let disk = match std::fs::read_to_string(project_root.join(rel_path)) {
+            Ok(text) => text,
+            // A new file: the whole proposed content is the edit.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let registry = sutra::parser::adapter::default_registry();
+        Ok(sutra::tools::firings::record_guard_blocks(
+            &conn,
+            project_root,
+            rel_path,
+            (&disk, proposed),
+            blocked,
+            &registry,
+        )?)
+    };
+    if let Err(e) = record() {
+        eprintln!("sutra-guard: firing log not written: {e}");
+    }
+}
+
 fn emit_lessons(
     conn: &Connection,
     project_root: &std::path::Path,

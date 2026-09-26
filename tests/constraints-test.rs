@@ -1600,6 +1600,10 @@ severity = "blocking"
     let changed_paths: HashSet<&str> = HashSet::from(["src/lib.rs"]);
     let old_edges: HashSet<(i64, i64)> = HashSet::new();
     let no_stubs: Vec<String> = Vec::new();
+    let added_lines: sutra::constraints::check::AddedLines =
+        [("src/lib.rs".to_string(), std::iter::once(1..2).collect())]
+            .into_iter()
+            .collect();
     let registry = default_registry();
     let engine = DdEngine::new(Duration::from_secs(60));
 
@@ -1617,6 +1621,7 @@ severity = "blocking"
                 changed_pattern_only_paths: &no_stubs,
                 content,
                 changed_paths: &changed_paths,
+                added_lines: &added_lines,
             },
             &registry,
         )
@@ -1890,6 +1895,12 @@ name = "no-unsafe"
             changed_pattern_only_paths: &[],
             content: sutra::constraints::check::ContentSource::Worktree,
             changed_paths: &changed_paths,
+            added_lines: &[
+                ("src/a.rs".to_string(), std::iter::once(1..2).collect()),
+                ("src/b.rs".to_string(), std::iter::once(1..2).collect()),
+            ]
+            .into_iter()
+            .collect(),
         },
         &registry,
     )
@@ -1906,6 +1917,94 @@ name = "no-unsafe"
         "only src/a.rs is changed, src/b.rs should not be scanned"
     );
     assert_eq!(pattern_findings[0].from_path, "src/a.rs");
+}
+
+/// sutra/486: under a diff scope a pattern match is the diff's only when its
+/// line is one the diff added. Old matches elsewhere in a touched file are
+/// backlog, and a justified match is filtered the same way, so the waived set
+/// holds exactly the justifications the diff adds.
+#[test]
+fn evaluate_dd_pattern_changed_files_attributes_added_lines_only() {
+    use sutra::constraints::check::{EvalScope, FactsSource, evaluate};
+    use sutra::db::Db;
+    use sutra::parser::adapter::default_registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open_unchecked("test", dir.path()).unwrap();
+    let rules_dir = dir.path().join(".sutra");
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("rules.toml"),
+        r#"
+[[constraint]]
+kind = "forbidden_pattern"
+language = "rust"
+query = '(unsafe_block) @match'
+name = "no-unsafe"
+justify = "unsafe:"
+"#,
+    )
+    .unwrap();
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("a.rs"),
+        "fn old() { unsafe { }; }\n\
+         fn new() { unsafe { }; }\n\
+         // unsafe: old code, justified\n\
+         fn old_justified() { unsafe { }; }\n\
+         // unsafe: new code, justified\n\
+         fn new_justified() { unsafe { }; }\n",
+    )
+    .unwrap();
+    db.upsert_file("src/a.rs", "rust", "h1", 1, true).unwrap();
+    let fa = db.file_by_path("src/a.rs").unwrap().unwrap();
+
+    let engine = DdEngine::new(Duration::from_secs(60));
+    let changed_ids: std::collections::HashSet<i64> = [fa.id].into_iter().collect();
+    let changed_paths: std::collections::HashSet<&str> = ["src/a.rs"].into_iter().collect();
+    // The diff added line 2 and lines 5-6.
+    let added_lines: sutra::constraints::check::AddedLines =
+        [("src/a.rs".to_string(), vec![2..3, 5..7])]
+            .into_iter()
+            .collect();
+    let registry = default_registry();
+    let outcome = evaluate(
+        &FactsSource::DdBacked {
+            db: &db,
+            dd_engine: Some(&engine),
+        },
+        dir.path(),
+        EvalScope::ChangedFiles {
+            changed_ids: &changed_ids,
+            old_edges: &std::collections::HashSet::new(),
+            import_delta: &Default::default(),
+            changed_pattern_only_paths: &[],
+            content: sutra::constraints::check::ContentSource::Worktree,
+            changed_paths: &changed_paths,
+            added_lines: &added_lines,
+        },
+        &registry,
+    )
+    .unwrap();
+
+    let active: Vec<Option<u32>> = outcome
+        .active
+        .iter()
+        .filter(|f| f.constraint_kind == "forbidden_pattern")
+        .map(|f| f.line)
+        .collect();
+    assert_eq!(active, vec![Some(2)], "only the added unjustified match");
+    assert_eq!(
+        outcome.active[0].delta,
+        sutra::constraints::finding::FindingDelta::Introduced
+    );
+    let justified: Vec<(Option<u32>, &str)> = outcome
+        .waived
+        .iter()
+        .map(|w| (w.finding.line, w.rationale.as_str()))
+        .collect();
+    assert_eq!(justified, vec![(Some(6), "new code, justified")]);
 }
 
 #[test]

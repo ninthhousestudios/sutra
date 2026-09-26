@@ -21,6 +21,9 @@ pub struct ConstraintFinding {
     /// the match is justified in place. A justified finding is waived by
     /// [`crate::waivers::partition`], so every surface that partitions agrees.
     pub justification: Option<String>,
+    /// `forbidden_pattern` only: the rule's `justify` marker, so a surface that
+    /// reports an unjustified match can name the in-place escape.
+    pub justify_marker: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

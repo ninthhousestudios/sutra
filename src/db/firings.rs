@@ -12,7 +12,7 @@
 //! (mechanism, kind, key, file, enclosing symbol, line text, occurrence) within
 //! an event. Recording the same site for the same event twice is a no-op.
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::Result;
 
@@ -83,87 +83,109 @@ pub struct FiringRow {
     pub fired_at: String,
 }
 
+/// The latest epoch recorded for `patch_id`, if any. On a bare connection so
+/// the guard, which holds no [`Db`], records through the same code.
+pub fn latest_review_event_on(conn: &Connection, patch_id: &str) -> Result<Option<ReviewEvent>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, patch_id, epoch, anchor_commit, fired_at FROM review_events \
+             WHERE patch_id = ?1 ORDER BY epoch DESC LIMIT 1",
+            params![patch_id],
+            |row| {
+                Ok(ReviewEvent {
+                    id: row.get(0)?,
+                    patch_id: row.get(1)?,
+                    epoch: row.get(2)?,
+                    anchor_commit: row.get(3)?,
+                    fired_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// The id of event `(patch_id, epoch)`, created from `ctx` if new. A
+/// concurrent writer that created it first wins; its row is returned.
+pub fn ensure_review_event_on(
+    conn: &Connection,
+    ctx: &FiringContext<'_>,
+    patch_id: &str,
+    epoch: i64,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT OR IGNORE INTO review_events \
+         (patch_id, epoch, surface, diff_spec, base_rev, head_rev, anchor_commit) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            patch_id,
+            epoch,
+            ctx.surface,
+            ctx.diff_spec,
+            ctx.base_rev,
+            ctx.head_rev,
+            ctx.anchor_commit,
+        ],
+    )?;
+    Ok(conn.query_row(
+        "SELECT id FROM review_events WHERE patch_id = ?1 AND epoch = ?2",
+        params![patch_id, epoch],
+        |row| row.get(0),
+    )?)
+}
+
+/// Record a batch of firings under one review event. Returns how many rows
+/// were new; a site already recorded for the event is skipped.
+pub fn record_firings_on(
+    conn: &Connection,
+    event_id: i64,
+    records: &[FiringRecord<'_>],
+) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let mut inserted = 0;
+    {
+        let mut stmt = conn.prepare_cached(
+            "INSERT OR IGNORE INTO mechanism_firings \
+             (event_id, mechanism, finding_kind, finding_key, file_path, symbol, snippet, \
+              occurrence, line) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )?;
+        for r in records {
+            inserted += stmt.execute(params![
+                event_id,
+                r.mechanism,
+                r.finding_kind,
+                r.finding_key,
+                r.file_path,
+                r.symbol,
+                r.snippet,
+                r.occurrence,
+                r.line,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
 impl Db {
-    /// The latest epoch recorded for `patch_id`, if any.
+    /// See [`latest_review_event_on`].
     pub fn latest_review_event(&self, patch_id: &str) -> Result<Option<ReviewEvent>> {
-        let conn = self.conn.lock();
-        Ok(conn
-            .query_row(
-                "SELECT id, patch_id, epoch, anchor_commit, fired_at FROM review_events \
-                 WHERE patch_id = ?1 ORDER BY epoch DESC LIMIT 1",
-                params![patch_id],
-                |row| {
-                    Ok(ReviewEvent {
-                        id: row.get(0)?,
-                        patch_id: row.get(1)?,
-                        epoch: row.get(2)?,
-                        anchor_commit: row.get(3)?,
-                        fired_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()?)
+        latest_review_event_on(&self.conn.lock(), patch_id)
     }
 
-    /// The id of event `(patch_id, epoch)`, created from `ctx` if new. A
-    /// concurrent writer that created it first wins; its row is returned.
+    /// See [`ensure_review_event_on`].
     pub fn ensure_review_event(
         &self,
         ctx: &FiringContext<'_>,
         patch_id: &str,
         epoch: i64,
     ) -> Result<i64> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT OR IGNORE INTO review_events \
-             (patch_id, epoch, surface, diff_spec, base_rev, head_rev, anchor_commit) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                patch_id,
-                epoch,
-                ctx.surface,
-                ctx.diff_spec,
-                ctx.base_rev,
-                ctx.head_rev,
-                ctx.anchor_commit,
-            ],
-        )?;
-        Ok(conn.query_row(
-            "SELECT id FROM review_events WHERE patch_id = ?1 AND epoch = ?2",
-            params![patch_id, epoch],
-            |row| row.get(0),
-        )?)
+        ensure_review_event_on(&self.conn.lock(), ctx, patch_id, epoch)
     }
 
-    /// Record a batch of firings under one review event. Returns how many rows
-    /// were new; a site already recorded for the event is skipped.
+    /// See [`record_firings_on`].
     pub fn record_firings(&self, event_id: i64, records: &[FiringRecord<'_>]) -> Result<usize> {
-        let conn = self.conn.lock();
-        let tx = conn.unchecked_transaction()?;
-        let mut inserted = 0;
-        {
-            let mut stmt = conn.prepare_cached(
-                "INSERT OR IGNORE INTO mechanism_firings \
-                 (event_id, mechanism, finding_kind, finding_key, file_path, symbol, snippet, \
-                  occurrence, line) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-            for r in records {
-                inserted += stmt.execute(params![
-                    event_id,
-                    r.mechanism,
-                    r.finding_kind,
-                    r.finding_key,
-                    r.file_path,
-                    r.symbol,
-                    r.snippet,
-                    r.occurrence,
-                    r.line,
-                ])?;
-            }
-        }
-        tx.commit()?;
-        Ok(inserted)
+        record_firings_on(&self.conn.lock(), event_id, records)
     }
 
     /// Firings with their review event, oldest first, optionally narrowed to

@@ -13,7 +13,7 @@ use std::path::Path;
 use serde_json::json;
 
 use crate::constraints::ConstraintFinding;
-use crate::constraints::check::ContentSource;
+use crate::constraints::check::{ContentSource, DiffHead};
 use crate::error::Result;
 use crate::parser::adapter::LanguageRegistry;
 use crate::rules::{ConstraintParseError, Severity};
@@ -39,6 +39,9 @@ pub struct CheckReport {
     pub scanned_files: usize,
     /// The "you fixed 1 of N" advisory (sutra/467). Reported, never gating.
     pub sibling_patterns: Option<sibling_pattern::Advisory>,
+    /// Why the constraint findings were not recorded in the firing log, if
+    /// they were not (sutra/486). Reported, never gating.
+    pub firing_log_error: Option<String>,
 }
 
 impl CheckReport {
@@ -72,18 +75,35 @@ pub fn handle(
         Some(rev) => ContentSource::Revision(rev),
         None => ContentSource::Worktree,
     };
+    let added_lines = review::diff_added_lines(workspace_root, base_revision, content)?;
     let findings = review::build_findings(
         db,
         workspace_root,
         &changed_paths,
         base_revision,
-        content,
+        DiffHead {
+            content,
+            added_lines: &added_lines,
+        },
         None,
         registry,
     )?;
 
     let sibling_patterns =
         sibling_pattern::run_advisory(db, workspace_root, &scope, registry, "check", diff_mode);
+    let firing_log_error = review::record_constraint_firings(
+        db,
+        workspace_root,
+        &scope,
+        review::FiringSurface {
+            surface: "check",
+            diff_spec: diff_mode,
+            content,
+        },
+        &sibling_patterns,
+        &findings.constraint_violations,
+        registry,
+    );
 
     let (blocking, below_threshold): (Vec<_>, Vec<_>) = findings
         .constraint_violations
@@ -99,6 +119,7 @@ pub fn handle(
         threshold,
         scanned_files: changed_paths.len(),
         sibling_patterns: Some(sibling_patterns),
+        firing_log_error,
     })
 }
 
@@ -187,8 +208,28 @@ pub fn render_human(report: &CheckReport) -> String {
     if !report.waived.is_empty() {
         let _ = writeln!(out, "\n{} waived violation(s).", report.waived.len());
     }
+    let justified: Vec<_> = review::justified(&report.waived).collect();
+    if !justified.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} match(es) justified in place by this diff (not gating):",
+            justified.len()
+        );
+        for w in justified {
+            let f = &w.finding;
+            let name = f
+                .constraint_name
+                .as_deref()
+                .unwrap_or(f.constraint_id.as_ref());
+            let line = f.line.map(|l| format!(":{l}")).unwrap_or_default();
+            let _ = writeln!(out, "  {}{line}  {name}: {}", f.from_path, w.rationale);
+        }
+    }
     if let Some(advisory) = &report.sibling_patterns {
         render_sibling_patterns(advisory, &mut out);
+    }
+    if let Some(e) = &report.firing_log_error {
+        let _ = writeln!(out, "\n(constraint firings not logged: {e})");
     }
 
     out
@@ -282,6 +323,7 @@ pub fn to_json(report: &CheckReport) -> serde_json::Value {
             entry["waived_by"] = json!(w.waived_by);
             entry
         }).collect::<Vec<_>>(),
+        "justified": review::justified(&report.waived).map(review::justified_json).collect::<Vec<_>>(),
         "parse_errors": report.parse_errors.iter().map(|e| json!({
             "severity": "blocking",
             "index": e.index,
@@ -289,6 +331,7 @@ pub fn to_json(report: &CheckReport) -> serde_json::Value {
             "error": e.error,
         })).collect::<Vec<_>>(),
         "sibling_patterns": report.sibling_patterns.as_ref().map(sibling_pattern::Advisory::to_json),
+        "constraint_firing_log_error": report.firing_log_error,
     })
 }
 
@@ -314,6 +357,7 @@ mod tests {
             snippet: line.map(|_| "bad.clone()".to_string()),
             enclosing_symbol: None,
             justification: None,
+            justify_marker: None,
         }
     }
 
@@ -333,6 +377,7 @@ mod tests {
             threshold: Severity::Blocking,
             scanned_files: 3,
             sibling_patterns: None,
+            firing_log_error: None,
         }
     }
 
